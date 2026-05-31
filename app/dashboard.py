@@ -91,17 +91,47 @@ def main():
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
 
-    # --- Simple levels (from the put/call walls) ---------------------------
+    # --- Simple levels (position-aware: a wall above price isn't "support") --
     st.markdown("#### Simple levels")
+
+    def _wall(price, kind):
+        above = price > L.spot
+        if kind == "put":
+            emoji = "🟢" if not above else "🟠"
+            desc = "support (below price)" if not above else "now OVERHEAD — price fell below it"
+        else:
+            emoji = "🔴" if above else "🟠"
+            desc = "resistance (above price)" if above else "BELOW price — broke above it"
+        return emoji, desc
+
+    pe, p_desc = _wall(L.put_wall, "put")
+    ce, c_desc = _wall(L.call_wall, "call")
     s1, s2, s3 = st.columns(3)
-    s1.metric("🟢 Support (put wall)", f"{L.put_wall:,.0f}", f"{L.put_wall - L.spot:+,.0f}")
-    s2.metric("🔴 Resistance (call wall)", f"{L.call_wall:,.0f}", f"{L.call_wall - L.spot:+,.0f}")
-    s3.metric("🧲 Middle / magnet", f"{L.magnet:,.0f}", f"{L.magnet - L.spot:+,.0f}")
-    width = L.call_wall - L.put_wall
-    st.caption(
-        f"Likely band when range-bound: **{L.put_wall:,.0f} – {L.call_wall:,.0f}** "
-        f"({width:,.0f} pts wide). Stops go just **beyond** the walls, never at them."
-    )
+    s1.metric(f"{pe} Put wall", f"{L.put_wall:,.0f}", f"{L.put_wall - L.spot:+,.0f}", delta_color="off")
+    s1.caption(p_desc)
+    s2.metric(f"{ce} Call wall", f"{L.call_wall:,.0f}", f"{L.call_wall - L.spot:+,.0f}", delta_color="off")
+    s2.caption(c_desc)
+    s3.metric("🧲 Magnet (pull)", f"{L.magnet:,.0f}", f"{L.magnet - L.spot:+,.0f}", delta_color="off")
+
+    lo, hi = min(L.put_wall, L.call_wall), max(L.put_wall, L.call_wall)
+    flip_txt = f"{L.flip:,.0f}" if L.flip else "the flip"
+    if L.spot < lo:
+        st.caption(
+            f"⚠️ Price is **below both walls** — the nearest dealer levels "
+            f"(**{lo:,.0f}, {hi:,.0f}**) are **overhead**. In a calm (positive-gamma) "
+            f"regime price often gets pulled **up** toward them; but a break below the "
+            f"flip (**{flip_txt}**) can turn it into a downside trend."
+        )
+    elif L.spot > hi:
+        st.caption(
+            f"⚠️ Price is **above both walls** (**{lo:,.0f}, {hi:,.0f}**) — extended; "
+            "dealers lean against further upside."
+        )
+    else:
+        st.caption(
+            f"Likely band when range-bound: **{lo:,.0f} – {hi:,.0f}** ({hi - lo:,.0f} pts "
+            "wide). Stops go just **beyond** the walls, never at them."
+        )
 
     # --- Levels table ------------------------------------------------------
     def d(x):
