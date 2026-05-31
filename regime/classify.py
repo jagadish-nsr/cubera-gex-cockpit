@@ -150,11 +150,12 @@ def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magne
 
     if regime == "POSITIVE":  # calm / mean-reverting
         if put_wall <= spot <= call_wall:
+            toward = f" toward {magnet:,.0f}" if magnet is not None else ""
             return (
                 "RANGE-BOUND",
                 f"Likely to stay range-bound between {put_wall:,.0f} (support) and "
-                f"{call_wall:,.0f} (resistance). Moves to the edges tend to fade back "
-                f"toward {magnet:,.0f}.",
+                f"{call_wall:,.0f} (resistance). Moves to the edges tend to fade back"
+                f"{toward}.",
             )
         if spot > call_wall:
             return (

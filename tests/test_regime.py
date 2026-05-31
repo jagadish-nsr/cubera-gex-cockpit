@@ -68,3 +68,13 @@ def test_flip_missing_is_flagged_not_invented():
     assert v.put_wall_role == "unknown"
     assert "flip" in v.headline.lower()
     assert any("flip" in n.lower() for n in v.notes)
+
+
+def test_plain_mode_handles_none_magnet():
+    # magnet/max_pain default to None — the plain-mode text must not crash.
+    v = classify(
+        spot=100, call_wall=110, put_wall=90, flip=95,
+        regime="POSITIVE", total_net_gex=1e9,
+    )
+    assert v.mode_label == "RANGE-BOUND"
+    assert v.mode_plain  # non-empty, no formatting crash
