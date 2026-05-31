@@ -103,9 +103,15 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
     openInterest is a CONTRACT count (multiplied by lot size downstream).
     """
     records = payload.get("records") or {}
-    spot = records.get("underlyingValue")
+    filtered = payload.get("filtered") or {}
+    data = records.get("data") or filtered.get("data") or []
+    spot = (
+        records.get("underlyingValue")
+        or filtered.get("underlyingValue")
+        or payload.get("underlyingValue")
+    )
     if spot is None:
-        raise ValueError("NSE payload missing records.underlyingValue (spot)")
+        raise ValueError("NSE payload missing underlyingValue (spot)")
 
     def _mid(side: dict) -> float | None:
         bid, ask = side.get("bidprice"), side.get("askPrice")
@@ -119,7 +125,7 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
         return (iv / 100.0) if iv else None  # percent -> decimal; 0/None -> None
 
     rows: list[dict] = []
-    for row in records.get("data", []):
+    for row in data:
         for side_key, typ in (("CE", "C"), ("PE", "P")):
             side = row.get(side_key)
             if not side:
@@ -142,42 +148,122 @@ def _parse_nse_date(s: str):
     return _dt.strptime(s, "%d-%b-%Y").date()
 
 
-def fetch_chain(symbol: str = "NIFTY", retries: int = 3, timeout: int = 10) -> dict:
-    """Live pull from the official NSE endpoint (PoC source).
+# Browser-like headers confirmed working from a live capture of the NSE
+# option-chain page (Akamai bot-manager passes with these + primed cookies).
+# Accept-Encoding is limited to gzip/deflate so `requests` can decode it without
+# the brotli/zstd packages.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://www.nseindia.com/option-chain",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not/A)Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+}
 
-    NSE bot-gates the API: it requires browser-like headers AND a session cookie
-    primed by first visiting the option-chain page. It also rate-limits / blocks
-    datacenter IPs — this is most reliable from a normal (Indian) connection.
-    Returns the raw JSON payload; pass it to parse_nse_option_chain().
-    """
+_V3_URL = "https://www.nseindia.com/api/option-chain-v3"
+_INDICES_URL = "https://www.nseindia.com/api/option-chain-indices"
+
+
+def _primed_session(timeout: int = 10):
+    """A requests.Session with NSE's Akamai cookies primed (homepage + page)."""
     import requests
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-        ),
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/option-chain",
-    }
     s = requests.Session()
-    s.headers.update(headers)
-    last_err = None
-    for _ in range(retries):
-        try:
-            # prime cookies (homepage then the option-chain page)
-            s.get("https://www.nseindia.com", timeout=timeout)
-            s.get("https://www.nseindia.com/option-chain", timeout=timeout)
-            r = s.get(
-                "https://www.nseindia.com/api/option-chain-indices",
-                params={"symbol": symbol}, timeout=timeout,
-            )
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:  # noqa: BLE001 - surface after retries
-            last_err = e
-    raise RuntimeError(
-        f"NSE fetch failed after {retries} tries ({last_err}). NSE blocks bots / "
-        "datacenter IPs — run from a normal connection, or switch to a broker API."
+    s.headers.update(_BROWSER_HEADERS)
+    s.get("https://www.nseindia.com", timeout=timeout)
+    s.get("https://www.nseindia.com/option-chain", timeout=timeout)
+    return s
+
+
+def _nse_date(d) -> str:
+    return d.strftime("%d-%b-%Y")  # e.g. 30-Jun-2026
+
+
+def fetch_chain_v3(symbol: str, expiry: str, session=None, timeout: int = 10) -> dict:
+    """One expiry via the current v3 endpoint (confirmed live: 200 OK).
+
+    `expiry` is an NSE date string like "30-Jun-2026".
+    """
+    s = session or _primed_session(timeout)
+    r = s.get(
+        _V3_URL,
+        params={"type": "Indices", "symbol": symbol, "expiry": expiry},
+        timeout=timeout,
     )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: int = 10) -> dict:
+    """Live pull, assembled into a single {records:{data, underlyingValue}} payload.
+
+    Strategy (NSE bot-gates this; run from a normal/Indian connection):
+      1. Prime Akamai cookies.
+      2. Try the all-expiries `option-chain-indices` endpoint — one call, done.
+      3. Fall back to looping the per-expiry `option-chain-v3` endpoint over the
+         in-window expiries (Tuesdays through the next monthly), merging results.
+
+    Pass `expiries` (list of date/"DD-Mon-YYYY") to override discovery — useful if
+    NSE's expiry list comes from a call you capture in your browser.
+    """
+    s = _primed_session(timeout)
+
+    # 2) all-expiries endpoint (matches the parser directly)
+    try:
+        r = s.get(_INDICES_URL, params={"symbol": symbol}, timeout=timeout)
+        if r.ok:
+            payload = r.json()
+            if (payload.get("records") or {}).get("data"):
+                return payload
+    except Exception:  # noqa: BLE001 - fall through to v3
+        pass
+
+    # 3) per-expiry v3 loop
+    exp_strs = _resolve_expiries(expiries)
+    merged_data: list[dict] = []
+    spot = None
+    errors = []
+    for e in exp_strs:
+        try:
+            p = fetch_chain_v3(symbol, e, session=s, timeout=timeout)
+            rec = p.get("records") or p.get("filtered") or {}
+            merged_data.extend(rec.get("data", []))
+            spot = spot or rec.get("underlyingValue")
+        except Exception as ex:  # noqa: BLE001
+            errors.append(f"{e}: {ex}")
+    if not merged_data:
+        raise RuntimeError(
+            "NSE fetch produced no data. NSE blocks bots/datacenter IPs — run from "
+            f"a normal connection. v3 errors: {errors or 'indices endpoint also empty'}. "
+            "If the expiry list is wrong, capture the expiry-dropdown call in your "
+            "browser and pass expiries=[...]."
+        )
+    return {"records": {"data": merged_data, "underlyingValue": spot}}
+
+
+def _resolve_expiries(expiries: list | None) -> list[str]:
+    """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
+    expiries from today through the next monthly, using the NSE calendar."""
+    from datetime import date, timedelta
+
+    from data.expiry import next_monthly_expiry, next_weekly_expiry
+
+    if expiries:
+        return [e if isinstance(e, str) else _nse_date(e) for e in expiries]
+
+    today = date.today()
+    end = next_monthly_expiry(today)
+    out, d = [], next_weekly_expiry(today)
+    while d <= end:
+        out.append(_nse_date(d))
+        d = d + timedelta(days=7)
+    return out

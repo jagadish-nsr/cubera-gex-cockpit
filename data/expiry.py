@@ -17,8 +17,12 @@ from datetime import date, timedelta
 
 VALID_WINDOWS = {"0dte", "weekly", "monthly", "all", "0dte_to_next_monthly"}
 
-# Monday=0 .. Sunday=6. Thursday=3. VERIFY against current NSE rules.
-WEEKLY_EXPIRY_WEEKDAY = 3  # Thursday
+# Monday=0 .. Sunday=6.
+# NSE Nifty expiry is now TUESDAY (weekday=1), per SEBI's exchange-day split
+# (NSE=Tuesday, BSE=Thursday). Confirmed from a live NSE endpoint capture:
+# option-chain-v3 served expiry=30-Jun-2026, which is a Tuesday. Re-verify if
+# NSE changes the rule again.
+WEEKLY_EXPIRY_WEEKDAY = 1  # Tuesday
 
 
 def last_weekday_of_month(year: int, month: int, weekday: int) -> date:
