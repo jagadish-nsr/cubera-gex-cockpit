@@ -6,5 +6,5 @@ __pycache__/
 .venv/
 venv/
 
-# Large live snapshot captures (keep the small committed fixture polygon_sample.json)
-data/fixtures/spx_live_*.json
+# Large live snapshot captures
+data/fixtures/nse_nifty_*.json
