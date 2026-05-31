@@ -114,7 +114,9 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
         raise ValueError("NSE payload missing underlyingValue (spot)")
 
     def _mid(side: dict) -> float | None:
-        bid, ask = side.get("bidprice"), side.get("askPrice")
+        # v3 uses buyPrice1/sellPrice1; the old endpoint used bidprice/askPrice.
+        bid = side.get("buyPrice1") or side.get("bidprice")
+        ask = side.get("sellPrice1") or side.get("askPrice")
         if bid and ask and bid > 0 and ask > 0:
             return (bid + ask) / 2.0
         lp = side.get("lastPrice")
@@ -130,9 +132,21 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
             side = row.get(side_key)
             if not side:
                 continue
+            # v3: expiry lives in the side dict (DD-MM-YYYY); old endpoint: row-level
+            # (DD-Mon-YYYY). Fall back to the row's expiryDates list if a side omits it.
+            exp_raw = side.get("expiryDate") or row.get("expiryDate")
+            if not exp_raw:
+                ed = row.get("expiryDates")
+                if isinstance(ed, (list, tuple)) and ed:
+                    exp_raw = ed[0]
+                elif isinstance(ed, str):
+                    exp_raw = ed
+            if not exp_raw:
+                continue  # cannot place on the expiry timeline -> skip this contract
+            strike = side.get("strikePrice", row.get("strikePrice"))
             rows.append({
-                "expiry": _parse_nse_date(row["expiryDate"]),
-                "strike": float(row["strikePrice"]),
+                "expiry": _parse_nse_date(exp_raw),
+                "strike": float(strike),
                 "type": typ,
                 "oi": side.get("openInterest") or 0.0,
                 "iv": _iv(side),
@@ -144,8 +158,15 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
 
 
 def _parse_nse_date(s: str):
+    """Parse NSE date strings. v3 responses use DD-MM-YYYY ('30-06-2026');
+    the v3 request param and the old endpoint use DD-Mon-YYYY ('30-Jun-2026')."""
     from datetime import datetime as _dt
-    return _dt.strptime(s, "%d-%b-%Y").date()
+    for fmt in ("%d-%m-%Y", "%d-%b-%Y"):
+        try:
+            return _dt.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    raise ValueError(f"unrecognised NSE date: {s!r}")
 
 
 # Browser-like headers confirmed working from a live capture of the NSE
