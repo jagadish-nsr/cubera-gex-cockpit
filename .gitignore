@@ -1,0 +1,10 @@
+.env
+.claude/settings.local.json
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Large live snapshot captures (keep the small committed fixture polygon_sample.json)
+data/fixtures/spx_live_*.json
