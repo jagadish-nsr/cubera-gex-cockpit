@@ -24,6 +24,9 @@ def test_positive_range_fade():
     assert v.conflict is False
     assert v.bias == "range fade"
     assert v.headline == "Positive gamma, flip 113pts below, call wall 22 above — range fade"
+    assert v.mode_label == "RANGE-BOUND"
+    assert "range-bound between" in v.mode_plain.lower()
+    assert "7,000" in v.mode_plain and "7,600" in v.mode_plain  # support/resistance shown
 
 
 def test_negative_momentum():
@@ -38,6 +41,8 @@ def test_negative_momentum():
     assert v.conflict is False
     assert v.bias.startswith("momentum")
     assert v.headline.startswith("Negative gamma, flip 100pts above")
+    assert v.mode_label == "TRENDING (volatile)"
+    assert "amplif" in v.mode_plain.lower() or "fast moves" in v.mode_plain.lower()
 
 
 def test_conflict_desizes():
@@ -50,6 +55,7 @@ def test_conflict_desizes():
     assert v.conflict is True
     assert "de-size" in v.bias
     assert any("conflict" in n.lower() for n in v.notes)
+    assert v.mode_label == "CAUTION"
 
 
 def test_flip_missing_is_flagged_not_invented():

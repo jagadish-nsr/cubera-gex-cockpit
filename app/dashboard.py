@@ -69,10 +69,19 @@ def main():
 
     L, V = data.levels, data.view
 
-    # --- Playbook headline -------------------------------------------------
-    st.subheader(f"📋 {V.headline}")
-    if V.conflict:
-        st.warning("Regime/flip **conflict** — de-size, wait for confirmation.")
+    # --- Market mode (plain language, prominent) ---------------------------
+    box = st.info
+    if V.mode_label.startswith("RANGE-BOUND"):
+        box = st.success
+    elif V.mode_label.startswith("TRENDING"):
+        box = st.warning
+    elif V.mode_label == "CAUTION":
+        box = st.error
+    box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
+    st.caption(
+        "GEX reads market *behaviour* (calm vs wild), not a guaranteed direction. "
+        f"Technical read: {V.headline}"
+    )
     if data.source == "DEMO-SYNTHETIC":
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
@@ -81,6 +90,18 @@ def main():
     c1.metric("Spot", f"{L.spot:,.2f}")
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+
+    # --- Simple levels (from the put/call walls) ---------------------------
+    st.markdown("#### Simple levels")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("🟢 Support (put wall)", f"{L.put_wall:,.0f}", f"{L.put_wall - L.spot:+,.0f}")
+    s2.metric("🔴 Resistance (call wall)", f"{L.call_wall:,.0f}", f"{L.call_wall - L.spot:+,.0f}")
+    s3.metric("🧲 Middle / magnet", f"{L.magnet:,.0f}", f"{L.magnet - L.spot:+,.0f}")
+    width = L.call_wall - L.put_wall
+    st.caption(
+        f"Likely band when range-bound: **{L.put_wall:,.0f} – {L.call_wall:,.0f}** "
+        f"({width:,.0f} pts wide). Stops go just **beyond** the walls, never at them."
+    )
 
     # --- Levels table ------------------------------------------------------
     def d(x):

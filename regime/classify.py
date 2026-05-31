@@ -38,6 +38,8 @@ class RegimeView:
     conflict: bool
     bias: str
     headline: str
+    mode_label: str = ""             # plain words: RANGE-BOUND | TRENDING | CAUTION
+    mode_plain: str = ""             # one-sentence plain-English description
     notes: list[str] = field(default_factory=list)
 
 
@@ -101,6 +103,11 @@ def classify(
     else:
         bias = "momentum, trade with the break (reduce size)"
 
+    # --- plain-language mode (for non-experts) ----------------------------
+    mode_label, mode_plain = _plain_mode(
+        regime, conflict, in_pos, spot, call_wall, put_wall, flip, magnet
+    )
+
     view = RegimeView(
         regime=regime,
         total_net_gex=total_net_gex,
@@ -120,10 +127,54 @@ def classify(
         conflict=conflict,
         bias=bias,
         headline="",  # filled below
+        mode_label=mode_label,
+        mode_plain=mode_plain,
         notes=notes,
     )
     view.headline = one_sentence(view)
     return view
+
+
+def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magnet):
+    """Plain-English market mode. GEX reads BEHAVIOUR (calm vs wild), not a
+    guaranteed direction — so we describe geography + a hedged tilt, never a
+    bald bullish/bearish call."""
+    if conflict or flip is None:
+        return (
+            "CAUTION",
+            "Signals are mixed (or the calm/wild switch is unclear). Better to wait "
+            "than force a trade.",
+        )
+    if regime == "FLAT":
+        return ("NEUTRAL", "No clear edge right now.")
+
+    if regime == "POSITIVE":  # calm / mean-reverting
+        if put_wall <= spot <= call_wall:
+            return (
+                "RANGE-BOUND",
+                f"Likely to stay range-bound between {put_wall:,.0f} (support) and "
+                f"{call_wall:,.0f} (resistance). Moves to the edges tend to fade back "
+                f"toward {magnet:,.0f}.",
+            )
+        if spot > call_wall:
+            return (
+                "RANGE-BOUND (above resistance)",
+                f"Price is above the call wall {call_wall:,.0f} — dealers lean against "
+                "it, so upside is sticky; a clean break can squeeze though.",
+            )
+        return (
+            "RANGE-BOUND (below support)",
+            f"Price is below the put wall {put_wall:,.0f} — support is weak here; "
+            "watch for a snap back into the range.",
+        )
+
+    # NEGATIVE / wild: moves amplify; tilt follows the break direction
+    return (
+        "TRENDING (volatile)",
+        f"Big, fast moves likely (1.5–2x normal). Below the gamma flip {flip:,.0f}, "
+        "so down-moves can accelerate (a 'trapdoor'). Trade WITH the move, smaller "
+        "size — don't sell options here.",
+    )
 
 
 def from_levels(levels) -> RegimeView:
