@@ -146,6 +146,9 @@ def main():
     ]
     st.table(pd.DataFrame(rows, columns=["Level", "Price", "Δ from spot (pts)", "Role"]))
 
+    # --- What trade fits this mode? (illustrative, unvalidated) -----------
+    _trade_explainer(L, V, data)
+
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
 
@@ -167,6 +170,33 @@ def main():
     st.caption(
         "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
     )
+
+
+def _trade_explainer(L, V, data):
+    """Illustrative regime->structure mapping. NOT a validated recommendation."""
+    from structures.suggest import suggest_structure
+
+    nearest = data.expiries[0] if data.expiries else None
+    cs = suggest_structure(L, V, lot_size=config.CONTRACT_SIZE, nearest_expiry=nearest)
+
+    with st.expander("💡 What trade fits this mode?  (ILLUSTRATIVE — not validated, paper only)",
+                     expanded=False):
+        st.markdown(f"**{cs.name}**")
+        if cs.legs:
+            legs_txt = "   ·   ".join(
+                f"{a} {k:,} {'CE' if t == 'C' else 'PE'}" for a, t, k in cs.legs
+            )
+            st.code(legs_txt, language=None)
+        if cs.rationale:
+            st.markdown(f"- **Why:** {cs.rationale}")
+        if cs.risk_note and cs.risk_note != "—":
+            st.markdown(f"- **Defined risk:** {cs.risk_note}")
+        st.markdown(f"- **Exit:** {cs.exit_by}")
+        st.warning(
+            "Illustrative textbook structure from the rules — the signal is **NOT "
+            "validated for Nifty** (the dealer-sign could even be inverted). Do **not** "
+            "trade this; for learning / paper practice only. You decide everything."
+        )
 
 
 def _gex_chart(L):

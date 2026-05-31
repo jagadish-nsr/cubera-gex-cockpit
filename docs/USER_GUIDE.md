@@ -55,19 +55,30 @@ That's it — after this you never touch setup again.
 - **Caveats panel** — the assumptions (lot size, expiry weighting, data time) and
   any ⚠️ warnings (e.g. "stale prices — re-run during market hours").
 
-## 5. What it does NOT do (yet)
-- ❌ It does **not** suggest specific trades (exact strikes/structures) — *coming later.*
+## 5. "What trade fits this mode?" (illustrative)
+There's an expandable section **"💡 What trade fits this mode?"**. Open it to see
+a **textbook structure** for the current mode — e.g. an iron condor (sell premium)
+in a calm range, or a debit spread (buy premium) in a wild trend, with the strikes
+taken from the walls and a defined-risk note.
+
+> **Read this carefully:** it is **illustrative only** — a textbook example from
+> the rules, **not a validated recommendation**. The signal isn't proven for Nifty
+> yet (the dealer-sign could even be inverted). Use it to *learn the logic* and to
+> *paper trade*, never as a real instruction.
+
+## 6. What it does NOT do (yet)
 - ❌ It does **not** keep a trade journal/scorecard — *coming later.*
 - ❌ It **never** places or sends orders. You decide and trade yourself.
+- ❌ The trade idea is **not validated** — practice only.
 
-## 6. If something looks off
+## 7. If something looks off
 - **"Refresh failed"** → it shows the last good data with a time. Just wait and
   press Refresh again (the NSE website sometimes throttles).
 - **A ⚠️ "implausible/stale" flag** → the prices are stale (e.g. outside market
   hours). The walls are still roughly right; re-run during market hours for clean
   numbers.
 
-## 7. The mindset
+## 8. The mindset
 **Calm market → be the casino** (sell premium around the walls).
 **Wild market → be the careful gambler** (buy premium with the trend).
 The **flip** tells you which one today is. The app measures it; **you** decide.
