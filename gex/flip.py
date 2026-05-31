@@ -62,6 +62,8 @@ def gamma_flip_profile(
     oi = df["oi"].to_numpy(dtype=float)
     r = df["r"].to_numpy(dtype=float)
     q = df["q"].to_numpy(dtype=float)
+    # optional expiry weight (applied identically at every hypothetical spot)
+    weight = df["weight"].to_numpy(dtype=float) if "weight" in df.columns else 1.0
 
     n_steps = int(round(2 * grid_range / grid_step)) + 1
     grid = spot * (1 - grid_range + grid_step * np.arange(n_steps))
@@ -69,7 +71,7 @@ def gamma_flip_profile(
     totals = np.empty(n_steps)
     for i, s_hyp in enumerate(grid):
         g = bs_gamma(s_hyp, K, T, iv, r, q)
-        gex = sign * g * oi * contract_size * s_hyp * s_hyp * 0.01
+        gex = sign * g * oi * weight * contract_size * s_hyp * s_hyp * 0.01
         totals[i] = gex.sum()
 
     profile = pd.DataFrame({"spot": grid, "total_gex": totals})

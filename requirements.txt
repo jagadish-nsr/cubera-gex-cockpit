@@ -1,12 +1,12 @@
-# Phase 1 dependencies. Justification per CLAUDE.md (prefer stdlib + numpy/scipy/pandas):
-#   numpy/scipy  - vectorised Black-Scholes gamma + the flip-profile grid; scipy.stats.norm for N'(d1).
-#   pandas       - hold/filter the options chain (expiry/strike/type) cleanly.
-#   requests     - Polygon REST snapshot pull (single well-understood HTTP dep).
-#   python-dotenv- load POLYGON_API_KEY from .env without leaking it into the repo.
-#   pytest       - test runner for the hand-checkable fixtures.
+# gex-indian dependencies. Prefer stdlib + numpy/scipy/pandas (per CLAUDE.md).
+#   numpy/scipy - vectorised Black-Scholes gamma + the flip-profile grid.
+#   pandas      - hold/filter the options chain.
+#   requests    - NSE option-chain pull.
+#   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
+#   pytest      - test runner for the hand-checkable fixtures.
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
 requests>=2.31
-python-dotenv>=1.0
+streamlit>=1.40
 pytest>=8.0

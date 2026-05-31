@@ -66,6 +66,8 @@ def main():
         snap, contract_size=config.CONTRACT_SIZE,
         grid_range=config.FLIP_GRID_RANGE, grid_step=config.FLIP_GRID_STEP,
         oi_stale_hours=config.OI_STALE_HOURS,
+        expiry_weighting=config.EXPIRY_WEIGHTING,
+        weight_halflife_days=config.EXPIRY_WEIGHT_HALFLIFE_DAYS,
     )
     from regime.classify import from_levels
 

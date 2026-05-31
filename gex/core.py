@@ -52,8 +52,9 @@ def per_strike_gex(
         raise ValueError(f"contract type must be 'C' or 'P'; got {sorted(bad)}")
 
     scale = _scale(spot, contract_size)
-    # dollar GEX magnitude per contract row
-    df["_mag"] = df["gamma"] * df["oi"] * scale
+    # dollar GEX magnitude per contract row, times the (optional) expiry weight
+    w = df["weight"] if "weight" in df.columns else 1.0
+    df["_mag"] = df["gamma"] * df["oi"] * scale * w
     df["_call"] = df["_mag"].where(df["type"] == "C", 0.0)
     df["_put"] = df["_mag"].where(df["type"] == "P", 0.0)
 

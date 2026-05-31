@@ -36,6 +36,7 @@ class Levels:
     oi_timestamp: object
     oi_stale: bool
     source: str
+    expiry_weighting: str = "equal"
     parity_fits: dict = field(default_factory=dict)
     flip_result: FlipResult | None = None
     flags: list[str] = field(default_factory=list)
@@ -48,6 +49,8 @@ def compute_levels(
     grid_range: float = 0.10,
     grid_step: float = 0.0025,
     oi_stale_hours: float = 30.0,
+    expiry_weighting: str = "equal",
+    weight_halflife_days: float = 5.0,
 ) -> Levels:
     snapshot.validate()
     flags: list[str] = []
@@ -98,9 +101,24 @@ def compute_levels(
         usable["q"].to_numpy(float),
     )
 
+    # 3b. Expiry weight per contract (near-dated gamma weighted up). Explicit +
+    # logged. Single-expiry chains get a uniform weight -> no effect on levels.
+    from gex.weighting import expiry_weights
+
+    days = usable["T"].to_numpy(float) * 365.25
+    usable["weight"] = expiry_weights(
+        days, scheme=expiry_weighting, halflife_days=weight_halflife_days
+    )
+    if expiry_weighting != "equal":
+        flags.append(
+            f"expiry weighting = {expiry_weighting}"
+            + (f" (half-life {weight_halflife_days:g}d)" if expiry_weighting == "exp" else "")
+            + " — near-dated walls weighted up"
+        )
+
     # 4. Per-strike GEX, walls, magnet, regime.
     per_strike = core.per_strike_gex(
-        usable[["strike", "type", "gamma", "oi"]],
+        usable[["strike", "type", "gamma", "oi", "weight"]],
         spot=spot,
         contract_size=contract_size,
         dealer_sign_model=snapshot.dealer_sign_model,
@@ -108,7 +126,7 @@ def compute_levels(
 
     # 5. Gamma flip as a zero-crossing profile (recomputes gamma over the grid).
     flip_res = gamma_flip_profile(
-        usable[["strike", "type", "oi", "iv", "T", "r", "q"]],
+        usable[["strike", "type", "oi", "iv", "T", "r", "q", "weight"]],
         spot=spot,
         contract_size=contract_size,
         grid_range=grid_range,
@@ -144,6 +162,7 @@ def compute_levels(
         oi_timestamp=snapshot.oi_timestamp,
         oi_stale=oi_stale,
         source=snapshot.source,
+        expiry_weighting=expiry_weighting,
         parity_fits=parity_fits,
         flip_result=flip_res,
         flags=flags,

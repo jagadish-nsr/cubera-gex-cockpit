@@ -29,6 +29,13 @@ EXPIRY_WINDOW_DEFAULT = "0dte_to_next_monthly"
 FLIP_GRID_RANGE = 0.10   # +/- 10% around spot
 FLIP_GRID_STEP = 0.0025  # 0.25% steps
 
+# --- Expiry weighting -------------------------------------------------------
+# Near-dated gamma drives intraday action, so weight each contract's GEX by its
+# days-to-expiry. Explicit + logged + tunable (gex/weighting.py). 'equal' = off.
+#   'exp' with a 5-day half-life: a 5-DTE contract counts half a 0-DTE one.
+EXPIRY_WEIGHTING = "exp"           # equal | exp | inverse | nearest
+EXPIRY_WEIGHT_HALFLIFE_DAYS = 5.0  # only used by 'exp'
+
 # --- OI staleness -----------------------------------------------------------
 OI_STALE_HOURS = 30  # NSE OI is end-of-day lagging; flag beyond ~1 trading day
 
