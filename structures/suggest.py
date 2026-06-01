@@ -22,6 +22,7 @@ class CandidateStructure:
     rationale: str = ""
     risk_note: str = ""
     exit_by: str = ""
+    expiry_note: str = ""   # set on expiry day (pin vs gamma-blast context)
     illustrative: bool = True
 
 
@@ -30,6 +31,34 @@ def _round_strike(x: float, step: int = 50) -> int:
 
 
 def suggest_structure(
+    levels,
+    view,
+    lot_size: int = 75,
+    spread_width: int = 100,
+    nearest_expiry=None,
+    is_expiry_day: bool = False,
+) -> CandidateStructure:
+    cs = _base_structure(levels, view, lot_size, spread_width, nearest_expiry)
+    if is_expiry_day:
+        cs.expiry_note = _expiry_note(levels, view)
+    return cs
+
+
+def _expiry_note(levels, view) -> str:
+    """Expiry-day reading: gamma is huge, so the pin (and the blast tail) intensify."""
+    if view.conflict or levels.regime == "FLAT" or levels.flip is None:
+        return ("EXPIRY DAY: mixed signals + huge gamma — both a pin and a blast are "
+                "possible and it's very hard to trade. Best to wait.")
+    if levels.regime == "POSITIVE":
+        return ("EXPIRY DAY: gamma is huge → strong PIN toward the magnet / max pain "
+                "(a premium-sellers' day). A late, decisive break of a wall can flip it "
+                "into a GAMMA BLAST (sharp move) — that's the tail risk, not the base case.")
+    return ("EXPIRY DAY + below the flip: GAMMA-BLAST risk — moves can explode in the "
+            "last hour. Buying OTM beyond the wall is a low-probability lottery (theta "
+            "crush is brutal) — tiny size only, if at all.")
+
+
+def _base_structure(
     levels,
     view,
     lot_size: int = 75,

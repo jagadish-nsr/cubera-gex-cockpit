@@ -53,6 +53,19 @@ def test_fixtureC_conflict_no_add():
     assert "wait" in cs.name.lower()
 
 
+def test_expiry_day_notes():
+    # Positive range-bound on expiry -> pin + blast tail note.
+    L = _Levels(spot=23800, call_wall=24000, put_wall=23600, flip=23500, regime="POSITIVE")
+    cs = suggest_structure(L, _view(L), lot_size=75, is_expiry_day=True)
+    assert "PIN" in cs.expiry_note and "BLAST" in cs.expiry_note
+    # Negative below flip on expiry -> blast-risk note.
+    Ln = _Levels(spot=23000, call_wall=23200, put_wall=22800, flip=23300, regime="NEGATIVE")
+    csn = suggest_structure(Ln, _view(Ln), lot_size=75, is_expiry_day=True)
+    assert "BLAST" in csn.expiry_note
+    # Not expiry day -> no note.
+    assert suggest_structure(L, _view(L), lot_size=75, is_expiry_day=False).expiry_note == ""
+
+
 def test_positive_but_outside_band_waits():
     # calm but spot below the put wall -> no clean condor -> wait.
     L = _Levels(spot=23547, call_wall=24000, put_wall=23700, flip=23522, regime="POSITIVE")

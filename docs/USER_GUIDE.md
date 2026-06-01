@@ -71,14 +71,40 @@ taken from the walls and a defined-risk note.
 - ❌ It **never** places or sends orders. You decide and trade yourself.
 - ❌ The trade idea is **not validated** — practice only.
 
-## 7. If something looks off
+## 7. Reading the levels on EXPIRY DAY (Nifty = Tuesday)
+On expiry day the app shows a **⚡ EXPIRY DAY** banner. Gamma is at its strongest
+near expiry, so the levels matter most — in **two opposite ways**:
+
+- **Calm (positive gamma) → strong PIN.** Price tends to get glued toward the
+  **magnet / max pain** into the close. This is the common case — a
+  premium-sellers' day, low movement, fast time decay.
+- **Wild (negative gamma, below the flip) → GAMMA BLAST risk.** If price breaks a
+  wall or the flip late in the day, the move can **explode** in the last hour
+  (sellers get squeezed and chase it). Big, fast, one-directional.
+
+How to read each level on expiry:
+- 🔀 **Gamma flip** — the on/off switch. *Above it* = pin mode; *breaking below it*
+  = blast mode. Watch it closely in the afternoon.
+- 🧱 **Walls** — the **trigger** levels. A decisive break **above the call wall**
+  (upside blast) or **below the put wall** (downside blast) is where a blast ignites.
+- 🧲 **Magnet / 🎯 Max pain** — the **pin targets**; in calm mode price drifts here
+  into the close.
+
+> **Honest warning about gamma blasts:** most expiries **pin** (the blast is the
+> rare tail). Buying cheap OTM options for a blast is a **low-probability lottery**
+> and **time decay is brutal** on expiry day. Also, our open-interest data is
+> end-of-day, so it's **least reliable on 0DTE** — exactly when blasts happen. Treat
+> the app as showing you the *map* (where a blast could trigger), **not** a signal
+> to take one. Paper only, especially here.
+
+## 8. If something looks off
 - **"Refresh failed"** → it shows the last good data with a time. Just wait and
   press Refresh again (the NSE website sometimes throttles).
 - **A ⚠️ "implausible/stale" flag** → the prices are stale (e.g. outside market
   hours). The walls are still roughly right; re-run during market hours for clean
   numbers.
 
-## 8. The mindset
+## 9. The mindset
 **Calm market → be the casino** (sell premium around the walls).
 **Wild market → be the careful gambler** (buy premium with the trend).
 The **flip** tells you which one today is. The app measures it; **you** decide.
