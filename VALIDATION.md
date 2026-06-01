@@ -36,19 +36,21 @@ First live market-hours validation pull.
 Goal: confirm the `long_call_short_put` gamma convention by checking whether price
 behaves as the regime predicts — the honest, free path (no paid GEX feed).
 
-1. Run **`python scripts/log_session.py`** near the **open** each trading day. It
-   appends spot/regime/mode/walls/flip to `data/journal/sessions.csv` (gitignored).
-2. At the **close**, fill the outcome columns: `eod_spot`, `stayed_in_range`
-   (did spot stay between the put & call walls?), `broke_flip` (did it cross the
-   flip?), `trended` (big directional move?), `notes`.
-3. After **~10 sessions**, analyse:
-   - **POSITIVE-gamma days should mostly RANGE/pin** between the walls; days that
-     break the flip should **TREND / get volatile**.
-   - Holds → **sign CONFIRMED.**
-   - Inverted (positive days trend, below-flip days pin) → **flip
-     `config.DEALER_SIGN_MODEL` and re-validate.**
+1. **Automated:** `setup_scheduler.bat` (one-time) logs **twice each weekday** via
+   `scripts/log_session.py` → `data/journal/sessions.csv` (gitignored):
+   - **OPEN** ~09:20 IST = **04:50 BST**, and **AFTERNOON** 15:00 IST = **10:30 BST**.
+   - (UK machine. DST: in GMT use 03:50 / 09:30 — see the .bat.)
+2. **Score:** after ~10 sessions, run **`python scripts/score_sessions.py`**. It
+   pairs each day's open + 3PM snapshots and checks whether the 3PM price **pinned
+   inside the open's wall range** — so scoring is largely automatic (the manual
+   outcome columns are optional backup).
+3. **Read the verdict:**
+   - **POSITIVE-gamma days should mostly PIN** inside the walls; if they do →
+     **sign CONSISTENT** with `long_call_short_put`.
+   - If POSITIVE days routinely **escape** the range (and/or NEGATIVE days pin) →
+     the sign may be **INVERTED** → flip `config.DEALER_SIGN_MODEL` and re-validate.
 
-Until confirmed, all trade suggestions stay **ILLUSTRATIVE** (the app says so).
+Until the verdict reads clearly, all trade suggestions stay **ILLUSTRATIVE**.
 
 ## Acceptance status
 - [x] Live market-hours pull + walls match a third-party OI read.
