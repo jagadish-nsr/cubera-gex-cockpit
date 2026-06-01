@@ -16,6 +16,17 @@
 #  - After running, Windows returns to sleep on the "unattended sleep timeout".
 
 $ErrorActionPreference = 'Stop'
+
+# S4U ("run whether logged on or not") + wake timers BOTH require Administrator.
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+           ).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "ADMIN REQUIRED: this sets a wake-from-sleep / run-if-not-logged-in task," -ForegroundColor Yellow
+    Write-Host "which needs Administrator. Right-click PowerShell -> 'Run as administrator',"
+    Write-Host "then re-run:  & '$PSCommandPath'"
+    exit 1
+}
+
 $bat = Join-Path $PSScriptRoot 'run_logger.bat'
 $days = 'Monday','Tuesday','Wednesday','Thursday','Friday'
 
@@ -29,21 +40,25 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -
 $tOpen = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $days -At 4:50am
 $tAft  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $days -At 10:30am
 
-Register-ScheduledTask -TaskName 'NiftyGEX-OpenLog'      -Action $action -Trigger $tOpen -Settings $settings -Principal $principal -Force | Out-Null
-Register-ScheduledTask -TaskName 'NiftyGEX-AfternoonLog' -Action $action -Trigger $tAft  -Settings $settings -Principal $principal -Force | Out-Null
-Write-Host 'Registered NiftyGEX-OpenLog (04:50) and NiftyGEX-AfternoonLog (10:30): wake-to-run + run-if-not-logged-in.'
-
-# Enable "Allow wake timers" in the active power plan (needs admin).
 try {
-    $sleep = '238C9FA8-0AAD-41ED-83F4-97BE242C8F20'   # SUB_SLEEP
-    $waketimers = 'BD3B718A-0680-4D9D-8AB2-E1D2B4AC806D'  # Allow wake timers
-    powercfg /SETACVALUEINDEX SCHEME_CURRENT $sleep $waketimers 1 | Out-Null
-    powercfg /SETDCVALUEINDEX SCHEME_CURRENT $sleep $waketimers 1 | Out-Null
-    powercfg /SETACTIVE SCHEME_CURRENT | Out-Null
-    Write-Host 'Wake timers enabled in the active power plan.'
+    Register-ScheduledTask -TaskName 'NiftyGEX-OpenLog'      -Action $action -Trigger $tOpen -Settings $settings -Principal $principal -Force | Out-Null
+    Register-ScheduledTask -TaskName 'NiftyGEX-AfternoonLog' -Action $action -Trigger $tAft  -Settings $settings -Principal $principal -Force | Out-Null
+    Write-Host 'OK: registered NiftyGEX-OpenLog (04:50) and NiftyGEX-AfternoonLog (10:30) — wake-to-run + run-if-not-logged-in.' -ForegroundColor Green
 } catch {
-    Write-Host 'Could NOT enable wake timers (need Administrator). Re-run this script as admin,'
-    Write-Host 'or set Power Options -> Sleep -> "Allow wake timers" = Enable manually.'
+    Write-Host "FAILED to register tasks: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+# Enable "Allow wake timers" in the active power plan.
+$sleep = '238C9FA8-0AAD-41ED-83F4-97BE242C8F20'      # SUB_SLEEP
+$waketimers = 'BD3B718A-0680-4D9D-8AB2-E1D2B4AC806D'  # Allow wake timers
+powercfg /SETACVALUEINDEX SCHEME_CURRENT $sleep $waketimers 1 *> $null
+powercfg /SETDCVALUEINDEX SCHEME_CURRENT $sleep $waketimers 1 *> $null
+powercfg /SETACTIVE SCHEME_CURRENT *> $null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host 'Wake timers enabled in the active power plan.' -ForegroundColor Green
+} else {
+    Write-Host 'WARN: could not enable wake timers; set Power Options -> Sleep -> "Allow wake timers" = Enable manually.' -ForegroundColor Yellow
 }
 
 Write-Host ''
