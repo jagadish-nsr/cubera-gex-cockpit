@@ -8,3 +8,6 @@ venv/
 
 # Large live snapshot captures
 data/fixtures/nse_nifty_*.json
+
+# session logs (personal data)
+data/journal/

@@ -5,13 +5,14 @@
   python cli.py --live --window 0dte
 
 Every assumption is logged: lot size (VERIFY), dealer-sign model (UNVERIFIED for
-India), expiry window, OI timestamp, and parity-implied r/q.
+India), expiry window, OI timestamp, and the parity-implied forward + carry.
 Decision-support only — not financial advice.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from datetime import datetime, timezone
 
@@ -71,12 +72,14 @@ def _print_table(levels, n_contracts: int) -> None:
     print(f"    contracts used : {n_contracts}")
     print(f"    source         : {L.source}")
     print(f"    OI timestamp   : {L.oi_timestamp}  (stale={L.oi_stale})")
-    print("    r/q per expiry : implied from put-call parity")
+    print("    forward & carry: implied from put-call parity (robust forward)")
     for exp, fit in sorted(L.parity_fits.items(), key=lambda kv: str(kv[0])):
-        if fit.flagged:
+        if fit.flagged or not fit.forward:
             print(f"      {exp}: FLAGGED — {fit.note}")
         else:
-            print(f"      {exp}: r={fit.r:.4f} q={fit.q:.4f}  ({fit.note})")
+            carry = math.log(fit.forward / L.spot) / fit.T
+            print(f"      {exp}: F={fit.forward:,.1f}  carry(r-q)={carry * 100:+.2f}%  "
+                  f"({fit.n_strikes} strikes)")
     if L.flags:
         print("-" * 66)
         print("  FLAGS:")

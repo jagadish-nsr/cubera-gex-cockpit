@@ -56,30 +56,44 @@ def compute_levels(
     flags: list[str] = []
     spot = snapshot.spot
 
-    # 1. Imply r, q per expiry from put-call parity (no hard-coded macro inputs).
+    # 1. Imply the FORWARD per expiry from put-call parity, and derive gamma's
+    # rate inputs from it. The forward is robust (it's the x-intercept where
+    # C-P=0); the slope-implied *rate* is NOT (fragile for short-dated options).
+    # Gamma's d1 needs only the carry c = ln(F/S)/T, which the robust forward
+    # gives -> set r=c, q=0 (the e^{-qT} dividend prefactor ~1 for short-dated
+    # index options is negligible). Market-implied, but without the fragile rate.
     contracts, parity_fits = attach_parity_rates(snapshot.contracts, spot)
     flagged_expiries = [str(e) for e, f in parity_fits.items() if f.flagged]
     if flagged_expiries:
         flags.append(f"parity fit failed for expiries: {flagged_expiries}")
 
-    # Loud sanity check: non-physical implied rates (|r| or |q| > 50%) usually
-    # mean stale/unsynchronised prices (e.g. weekend EOD closes) corrupting the
-    # parity slope. Surface it rather than presenting absurd rates as clean.
-    implausible = [
-        str(e) for e, f in parity_fits.items()
-        if not f.flagged and (abs(f.r) > 0.5 or abs(f.q) > 0.5)
+    contracts = contracts.copy()
+    contracts["r"] = np.nan
+    contracts["q"] = 0.0
+    for exp, fit in parity_fits.items():
+        if fit.flagged or not fit.forward:
+            continue
+        mask = contracts["expiry"] == exp
+        T = contracts.loc[mask, "T"].clip(lower=1e-6)
+        contracts.loc[mask, "r"] = np.log(fit.forward / spot) / T  # implied carry
+
+    # Sanity check on the FORWARD (robust, T-independent): a forward sitting far
+    # from spot means stale/illiquid prices. Replaces the old slope-rate flag.
+    bad_fwd = [
+        str(exp) for exp, fit in parity_fits.items()
+        if not fit.flagged and fit.forward and abs(fit.forward / spot - 1) > 0.03
     ]
-    if implausible:
+    if bad_fwd:
         flags.append(
-            f"IMPLAUSIBLE parity rates (>50%) for {len(implausible)} expiries "
-            "— likely stale/illiquid prices; re-run during market hours with live quotes"
+            f"implied forward >3% from spot for {len(bad_fwd)} expiries "
+            "— likely stale/illiquid prices; re-run during market hours"
         )
 
-    # Drop rows whose expiry parity failed (r/q NaN) so we never compute on a
-    # silently-wrong rate. Fail loud if that leaves nothing.
+    # Drop rows whose expiry parity failed (no forward) so we never compute on a
+    # bad fit. Fail loud if that leaves nothing.
     usable = contracts[contracts["r"].notna()].copy()
     if usable.empty:
-        raise ValueError("no expiry produced a usable parity fit — cannot compute GEX")
+        raise ValueError("no expiry produced a usable parity forward — cannot compute GEX")
 
     # 2. Back out IV from mid price where the vendor omitted it (flag the count).
     n_missing_iv = int(usable["iv"].isna().sum())
