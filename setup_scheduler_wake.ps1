@@ -43,7 +43,7 @@ $tAft  = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $days -At 10:30am
 try {
     Register-ScheduledTask -TaskName 'NiftyGEX-OpenLog'      -Action $action -Trigger $tOpen -Settings $settings -Principal $principal -Force | Out-Null
     Register-ScheduledTask -TaskName 'NiftyGEX-AfternoonLog' -Action $action -Trigger $tAft  -Settings $settings -Principal $principal -Force | Out-Null
-    Write-Host 'OK: registered NiftyGEX-OpenLog (04:50) and NiftyGEX-AfternoonLog (10:30) — wake-to-run + run-if-not-logged-in.' -ForegroundColor Green
+    Write-Host 'OK: registered NiftyGEX-OpenLog (04:50) and NiftyGEX-AfternoonLog (10:30) - wake-to-run + run-if-not-logged-in.' -ForegroundColor Green
 } catch {
     Write-Host "FAILED to register tasks: $($_.Exception.Message)" -ForegroundColor Red
     exit 1

@@ -82,7 +82,7 @@ def main():
     print(f"Logged -> {LOG.relative_to(ROOT)}")
     flip_txt = f"{lv.flip:,.0f}" if lv.flip else "NONE"
     print(f"{ist:%Y-%m-%d %H:%M IST}  spot {lv.spot:,.2f}  {lv.regime} / {v.mode_label}")
-    print(f"  range {lv.put_wall:,.0f}–{lv.call_wall:,.0f} · flip {flip_txt} · magnet {lv.magnet:,.0f}")
+    print(f"  range {lv.put_wall:,.0f}-{lv.call_wall:,.0f} | flip {flip_txt} | magnet {lv.magnet:,.0f}")
     print("At the CLOSE, fill: eod_spot, stayed_in_range (Y/N), broke_flip (Y/N), trended (Y/N), notes.")
 
 
