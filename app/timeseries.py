@@ -1,0 +1,151 @@
+"""Phase A — intraday GEX time-series: storage, row-building, loading.
+
+One row per snapshot, one CSV per IST trading day under
+``data/journal/timeseries/YYYY-MM-DD.csv`` (the whole ``data/journal/`` tree is
+gitignored — personal data). Shared by ``scripts/log_timeseries.py`` (the writer)
+and the dashboard (reader / chart) so the capture format lives in ONE place.
+
+Each row carries the 5 GEX levels + spot + regime, the OI/volume build-up
+aggregates, and full provenance (source, dealer-sign model, staleness). The
+engine schema is untouched — the OI/volume aggregates are computed off the raw
+NSE payload in ``data/nse.aggregate_oi_volume``. Decision-support only.
+"""
+
+from __future__ import annotations
+
+import csv
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+TS_DIR = ROOT / "data" / "journal" / "timeseries"
+
+# One row per snapshot. Keep this list and build_row() in lock-step.
+FIELDS = [
+    "timestamp_utc", "time_ist", "date_ist", "spot",
+    "regime", "mode_label", "flip",
+    "call_wall", "put_wall", "magnet", "max_pain", "net_gex",
+    # OI / volume build-up (off the raw payload; vs previous close for ΔOI)
+    "call_oi", "put_oi", "pcr_oi", "call_doi", "put_doi", "call_vol", "put_vol",
+    # provenance
+    "dealer_sign_model", "expiry_weighting", "n_contracts", "source", "stale",
+]
+
+
+def _ist(now_utc: datetime) -> datetime:
+    return now_utc + timedelta(hours=5, minutes=30)
+
+
+def _f(x, nd=None):
+    """Format a numeric cell: None/NaN -> "" (blank), else value (optionally rounded)."""
+    if x is None:
+        return ""
+    try:
+        if x != x:  # NaN
+            return ""
+    except TypeError:
+        return x
+    return round(x, nd) if nd is not None else x
+
+
+def ts_path_for(date_ist: str) -> Path:
+    return TS_DIR / f"{date_ist}.csv"
+
+
+def available_days() -> list[str]:
+    """Sorted IST dates (YYYY-MM-DD) for which a time-series file exists."""
+    if not TS_DIR.exists():
+        return []
+    return sorted(p.stem for p in TS_DIR.glob("*.csv"))
+
+
+def build_row(data) -> dict:
+    """Flatten a DashboardData bundle into one time-series row (keys == FIELDS)."""
+    L, V = data.levels, data.view
+    fa = data.fetched_at
+    if fa.tzinfo is None:
+        fa = fa.replace(tzinfo=timezone.utc)
+    ist = _ist(fa)
+    ov = data.oi_volume or {}
+    return {
+        "timestamp_utc": fa.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "time_ist": ist.strftime("%H:%M"),
+        "date_ist": ist.strftime("%Y-%m-%d"),
+        "spot": round(L.spot, 2),
+        "regime": L.regime,
+        "mode_label": V.mode_label,
+        "flip": round(L.flip, 1) if L.flip else "",
+        "call_wall": int(L.call_wall),
+        "put_wall": int(L.put_wall),
+        "magnet": int(L.magnet),
+        "max_pain": int(L.max_pain),
+        "net_gex": int(L.total_net_gex),
+        "call_oi": _f(ov.get("call_oi")),
+        "put_oi": _f(ov.get("put_oi")),
+        "pcr_oi": _f(ov.get("pcr_oi"), 3),
+        "call_doi": _f(ov.get("call_doi")),
+        "put_doi": _f(ov.get("put_doi")),
+        "call_vol": _f(ov.get("call_vol")),
+        "put_vol": _f(ov.get("put_vol")),
+        "dealer_sign_model": L.dealer_sign_model,
+        "expiry_weighting": L.expiry_weighting,
+        "n_contracts": data.n_contracts,
+        "source": data.source,
+        "stale": L.oi_stale,
+    }
+
+
+def append_row(row: dict, date_ist: str | None = None) -> Path:
+    """Append one row to that IST day's CSV (writing a header for a new file)."""
+    date_ist = date_ist or row["date_ist"]
+    path = ts_path_for(date_ist)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=FIELDS)
+        if new_file:
+            w.writeheader()
+        w.writerow(row)
+    return path
+
+
+def load_day(date_ist: str) -> pd.DataFrame:
+    """Load one IST day's time-series (empty DataFrame if none captured yet)."""
+    path = ts_path_for(date_ist)
+    if not path.exists():
+        return pd.DataFrame(columns=FIELDS)
+    return pd.read_csv(path)
+
+
+def _parse_utc(ts: str) -> datetime | None:
+    try:
+        return datetime.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def last_capture_utc(date_ist: str) -> datetime | None:
+    """UTC timestamp of the most recent saved row for that IST day, or None."""
+    df = load_day(date_ist)
+    if df.empty or "timestamp_utc" not in df.columns:
+        return None
+    return _parse_utc(df["timestamp_utc"].iloc[-1])
+
+
+def append_if_due(row: dict, min_gap_minutes: float = 10.0) -> tuple[Path, bool]:
+    """Append unless a row was already saved < min_gap_minutes ago (dedup guard).
+
+    Lets independent writers (the capture loop + the dashboard auto-save) share
+    one file without doubling up. Returns (path, written); on skip written=False
+    and nothing is written. min_gap_minutes <= 0 disables the guard.
+    """
+    date_ist = row["date_ist"]
+    if min_gap_minutes > 0:
+        last = last_capture_utc(date_ist)
+        now = _parse_utc(row["timestamp_utc"])
+        if last is not None and now is not None:
+            if (now - last).total_seconds() < min_gap_minutes * 60:
+                return ts_path_for(date_ist), False
+    return append_row(row), True

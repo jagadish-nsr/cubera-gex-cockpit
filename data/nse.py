@@ -157,6 +157,34 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
     return rows, float(spot)
 
 
+def aggregate_oi_volume(payload: dict) -> dict:
+    """Aggregate OI / ΔOI / volume across the chain, split call vs put.
+
+    Pulled straight from the raw NSE payload because the engine schema
+    deliberately drops these (the GEX maths doesn't need them). The time-series
+    uses them to track *OI build-up* (put OI building = support forming; call OI
+    building = resistance forming) and *volume build-up* alongside the levels.
+
+    Scope = whatever expiries the feed returned (labelled in the UI). ``pcr_oi``
+    is put/call OI. Defensive: a missing field counts as 0, never raises.
+    """
+    records = payload.get("records") or {}
+    filtered = payload.get("filtered") or {}
+    data = records.get("data") or filtered.get("data") or []
+    agg = {k: 0.0 for k in
+           ("call_oi", "put_oi", "call_doi", "put_doi", "call_vol", "put_vol")}
+    for row in data:
+        for side_key, pfx in (("CE", "call"), ("PE", "put")):
+            side = row.get(side_key)
+            if not side:
+                continue
+            agg[f"{pfx}_oi"] += float(side.get("openInterest") or 0.0)
+            agg[f"{pfx}_doi"] += float(side.get("changeinOpenInterest") or 0.0)
+            agg[f"{pfx}_vol"] += float(side.get("totalTradedVolume") or 0.0)
+    agg["pcr_oi"] = (agg["put_oi"] / agg["call_oi"]) if agg["call_oi"] else float("nan")
+    return agg
+
+
 def _parse_nse_date(s: str):
     """Parse NSE date strings. v3 responses use DD-MM-YYYY ('30-06-2026');
     the v3 request param and the old endpoint use DD-Mon-YYYY ('30-Jun-2026')."""

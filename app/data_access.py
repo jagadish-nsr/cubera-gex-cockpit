@@ -27,6 +27,7 @@ class DashboardData:
     expiries: list
     window: str
     source: str
+    oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False) -> DashboardData:
@@ -38,10 +39,12 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
 
         rows, spot = build_demo_rows(fetched_at=fetched_at)
         source = "DEMO-SYNTHETIC"
+        payload = None
     else:
-        from data.nse import fetch_chain, parse_nse_option_chain
+        from data.nse import aggregate_oi_volume, fetch_chain, parse_nse_option_chain
 
-        rows, spot = parse_nse_option_chain(fetch_chain(config.UNDERLYING))
+        payload = fetch_chain(config.UNDERLYING)   # single live pull
+        rows, spot = parse_nse_option_chain(payload)
         source = "nse"
 
     snap = from_nse_results(
@@ -61,7 +64,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     )
     view = from_levels(levels)
     expiries = sorted(snap.contracts["expiry"].unique().tolist())
+    oi_volume = aggregate_oi_volume(payload) if payload is not None else None
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
+        oi_volume=oi_volume,
     )
