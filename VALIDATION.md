@@ -52,6 +52,27 @@ behaves as the regime predicts — the honest, free path (no paid GEX feed).
 
 Until the verdict reads clearly, all trade suggestions stay **ILLUSTRATIVE**.
 
+### Audit — 2026-06-06: out-of-hours captures were contaminating the score
+Auditing `sessions.csv` showed `date_ist` is computed correctly (every row matches
+`timestamp_utc + 5:30`), but only **3 of 7** snapshots were taken during NSE hours.
+The 4 off-hours rows were evening UK runs of stale end-of-day OI; worse, the ones
+captured after ~18:30 UTC roll past IST midnight and get filed under the **next**
+trading day, where the scorer (earliest row of the day = "open") mistook them for
+that day's open. Concretely, **2026-06-02 was mislabelled POSITIVE/pinned** off a
+ghost midnight row — the real 09:20 open was **NEGATIVE and price escaped the
+walls** (+162, outside 23,250–23,300).
+
+Fixes:
+- `scripts/log_session.py` now **skips outside 09:15–15:30 IST (weekdays)**
+  (`--ignore-session` to force) — stops the contamination at the source.
+- `scripts/score_sessions.py` **drops out-of-hours rows before scoring** and
+  reports how many it ignored, so a stray capture can never become an "open".
+
+After the fix the clean log has **1 paired day (NEGATIVE, escaped) and 0 paired
+POSITIVE days** — i.e. effectively no signal yet. This is concrete evidence that
+the **Phase A 15-min intraday time-series (session-guarded by design) supersedes
+this twice-daily log** for settling the dealer-sign question.
+
 ## Acceptance status
 - [x] Live market-hours pull + walls match a third-party OI read.
 - [x] Forward-based gamma (rate fragility removed; levels invariant).

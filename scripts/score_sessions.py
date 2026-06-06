@@ -17,10 +17,17 @@ from __future__ import annotations
 import csv
 import sys
 from collections import defaultdict
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / "data" / "journal" / "sessions.csv"
+
+# NSE session 09:15-15:30 IST, in minutes-of-day. Snapshots taken outside this
+# window are stale end-of-day reads, NOT a live session view; worse, evening UTC
+# captures roll past IST midnight and get filed under the NEXT trading day, where
+# they would be mistaken for that day's "open". So we drop them before scoring.
+_OPEN_MIN, _CLOSE_MIN = 9 * 60 + 15, 15 * 60 + 30
 
 
 def _f(x):
@@ -28,6 +35,16 @@ def _f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def in_session(row: dict) -> bool:
+    """True if the row's UTC timestamp falls within NSE hours (09:15-15:30 IST)."""
+    try:
+        u = datetime.strptime(row.get("timestamp_utc", ""), "%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError):
+        return False
+    ist = u + timedelta(hours=5, minutes=30)
+    return _OPEN_MIN <= ist.hour * 60 + ist.minute <= _CLOSE_MIN
 
 
 def pair_by_day(rows: list[dict]) -> list[tuple]:
@@ -44,7 +61,11 @@ def pair_by_day(rows: list[dict]) -> list[tuple]:
 
 
 def score(rows: list[dict]) -> list[dict]:
-    """Per-day record: did the afternoon price stay inside the open's wall range?"""
+    """Per-day record: did the afternoon price stay inside the open's wall range?
+
+    Only in-session snapshots are scored (out-of-hours rows are dropped first), so
+    a stray evening capture can never be mistaken for a day's open."""
+    rows = [r for r in rows if in_session(r)]
     recs = []
     for d, op, aft in pair_by_day(rows):
         pw, cw = _f(op.get("put_wall")), _f(op.get("call_wall"))
@@ -109,6 +130,10 @@ def main():
         print(f"No log yet at {LOG}. Run scripts/log_session.py first.")
         return
     rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
+    dropped = sum(1 for r in rows if not in_session(r))
+    if dropped:
+        print(f"(ignored {dropped} of {len(rows)} rows captured outside NSE hours "
+              "09:15-15:30 IST — stale, not session reads)\n")
     recs = score(rows)
     print(f"{'date':<12}{'regime':<10}{'open':>9}{'3pm':>9}{'move':>7}  in-range")
     for r in recs:

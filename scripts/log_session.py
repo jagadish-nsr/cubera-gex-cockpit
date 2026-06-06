@@ -36,9 +36,22 @@ FIELDS = [
 ]
 
 
-def main():
+def main(ignore_session: bool = False):
     fa = datetime.now(timezone.utc)
     ist = fa + timedelta(hours=5, minutes=30)
+
+    # Only record live session reads (09:15-15:30 IST, weekdays). Off-hours runs
+    # are stale end-of-day OI and pollute the dealer-sign scoring (see VALIDATION).
+    minute = ist.hour * 60 + ist.minute
+    in_session = ist.weekday() < 5 and 9 * 60 + 15 <= minute <= 15 * 60 + 30
+    if not ignore_session and not in_session:
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+        print(f"{ist:%Y-%m-%d %H:%M IST}  outside NSE session - skipped "
+              "(use --ignore-session to force).")
+        return
 
     rows, spot = parse_nse_option_chain(fetch_chain(config.UNDERLYING))
     snap = from_nse_results(
@@ -87,4 +100,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    ap = argparse.ArgumentParser(description="Log one Nifty GEX session snapshot.")
+    ap.add_argument("--ignore-session", action="store_true",
+                    help="record even outside NSE hours (testing)")
+    main(ignore_session=ap.parse_args().ignore_session)
