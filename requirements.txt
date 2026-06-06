@@ -3,10 +3,12 @@
 #   pandas      - hold/filter the options chain.
 #   requests    - NSE option-chain pull.
 #   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
+#   streamlit-autorefresh - non-blocking timer for the dashboard auto-refresh.
 #   pytest      - test runner for the hand-checkable fixtures.
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
 requests>=2.31
 streamlit>=1.40
+streamlit-autorefresh>=1.0
 pytest>=8.0

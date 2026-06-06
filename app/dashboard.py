@@ -49,13 +49,52 @@ def main():
         )
         window = st.selectbox("Expiry window", WINDOW_CHOICES, index=0)
         refresh = st.button("🔄 Refresh", type="primary", width="stretch")
+        save_ts = st.button(
+            "📈 Save snapshot to time-series", width="stretch",
+            help="Append the current levels to today's intraday series "
+                 "(data/journal/timeseries/). Live NSE only.",
+        )
+        st.divider()
+        auto = st.checkbox(
+            "⏱️ Auto-refresh", value=False,
+            help="Re-pull the chain on a timer (non-blocking).",
+        )
+        auto_mins = st.selectbox(
+            "Interval", [1, 3, 5, 15], index=3,
+            format_func=lambda m: f"{m} min", disabled=not auto,
+        )
+        auto_save = st.checkbox(
+            "Save each tick to time-series", value=False, disabled=not auto,
+            help="Append a snapshot on every auto tick (live NSE) — in-app "
+                 "capture while the dashboard stays open.",
+        )
+
+    # Non-blocking auto-refresh timer (a new tick value => time to re-pull).
+    tick = None
+    if auto:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+
+            tick = st_autorefresh(interval=auto_mins * 60_000, key="auto_tick")
+        except ModuleNotFoundError:
+            st.sidebar.warning(
+                "Auto-refresh needs `streamlit-autorefresh` "
+                "(`pip install streamlit-autorefresh`). Using manual refresh."
+            )
+            auto = False
 
     st.session_state.setdefault("data", None)
     st.session_state.setdefault("err", None)
 
-    if refresh or st.session_state.data is None:
+    auto_fired = auto and tick is not None and tick != st.session_state.get("last_tick")
+    if auto:
+        st.session_state["last_tick"] = tick
+
+    if refresh or auto_fired or st.session_state.data is None:
         with st.spinner("Pulling the option chain & computing GEX…"):
             _refresh(window, use_demo)
+    if auto:
+        st.caption(f"⏱️ Auto-refreshing every {auto_mins} min.")
 
     if st.session_state.err:
         st.warning(f"Refresh failed: {st.session_state.err}")
@@ -68,6 +107,23 @@ def main():
     data = st.session_state.data
     if data is None:
         st.stop()
+
+    if save_ts:                                    # explicit click → always write
+        if data.source == "nse":
+            from app.timeseries import append_row, build_row
+
+            p = append_row(build_row(data))
+            st.sidebar.success(f"Saved snapshot → {p.name}")
+        else:
+            st.sidebar.warning("Not saved — demo data is synthetic.")
+    elif auto_save and auto_fired and data.source == "nse":
+        from app.timeseries import append_if_due, build_row
+
+        # Guard just below the tick interval so a co-running capture loop (or a
+        # double-fire) doesn't double up, without blocking the app's own cadence.
+        p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0))
+        if written:
+            st.sidebar.success(f"Saved snapshot → {p.name}")
 
     L, V = data.levels, data.view
 
@@ -163,6 +219,9 @@ def main():
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
 
+    # --- Intraday time-series (Phase A) -----------------------------------
+    _timeseries_section(data)
+
     # --- Caveats -----------------------------------------------------------
     with st.expander("Assumptions & caveats (please read)", expanded=True):
         st.markdown(
@@ -211,6 +270,84 @@ def _trade_explainer(L, V, data, is_expiry_day=False):
             "validated for Nifty** (the dealer-sign could even be inverted). Do **not** "
             "trade this; for learning / paper practice only. You decide everything."
         )
+
+
+def _timeseries_section(data):
+    """Phase A: spot vs the migrating levels through the day, + OI/volume build-up."""
+    from app.timeseries import available_days, load_day
+
+    ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    df = load_day(ist_today)
+    label = ist_today
+    if df.empty:
+        days = available_days()
+        if not days:
+            st.markdown("#### Intraday time-series")
+            st.caption(
+                "No snapshots captured yet. Run `python scripts/log_timeseries.py` "
+                "during market hours, or click **📈 Save snapshot to time-series** "
+                "(sidebar) to record points manually."
+            )
+            return
+        label = days[-1]            # fall back to the most recent captured day
+        df = load_day(label)
+
+    st.markdown(f"#### Intraday time-series — {label}")
+    try:
+        import altair as alt
+
+        levels = ["spot", "magnet", "call_wall", "put_wall", "flip"]
+        long = df.melt(
+            id_vars=["time_ist"], value_vars=[c for c in levels if c in df.columns],
+            var_name="level", value_name="price",
+        )
+        long["price"] = pd.to_numeric(long["price"], errors="coerce")
+        long = long.dropna(subset=["price"])
+        colors = {"spot": "#000000", "magnet": "#9467bd", "call_wall": "#d62728",
+                  "put_wall": "#2ca02c", "flip": "#1f77b4"}
+        chart = alt.Chart(long).mark_line(point=True).encode(
+            x=alt.X("time_ist:N", title="IST", sort=None),
+            y=alt.Y("price:Q", title="Level", scale=alt.Scale(zero=False)),
+            color=alt.Color(
+                "level:N",
+                scale=alt.Scale(domain=list(colors), range=list(colors.values())),
+                legend=alt.Legend(title=None, orient="top"),
+            ),
+            tooltip=["time_ist", "level", "price"],
+        )
+        st.altair_chart(chart, width="stretch")
+        st.caption(
+            "Spot vs the migrating dealer levels through the day — black=spot, "
+            "purple=magnet, red=call wall, green=put wall, blue=flip."
+        )
+    except Exception as e:  # noqa: BLE001 - chart is non-essential
+        st.caption(f"(time-series chart unavailable: {e})")
+        st.dataframe(df, width="stretch")
+
+    _oi_buildup_caption(df)
+
+
+def _oi_buildup_caption(df):
+    """OI / volume build-up from the latest captured row (exploratory)."""
+    if df.empty or "pcr_oi" not in df.columns:
+        return
+    last = df.iloc[-1]
+
+    def fmt(key, nd=0):
+        try:
+            return f"{float(last.get(key)):,.{nd}f}"
+        except (TypeError, ValueError):
+            return "—"
+
+    st.caption(
+        f"**OI / volume build-up (latest {last.get('time_ist', '')} IST):** "
+        f"PCR(OI) {fmt('pcr_oi', 2)} · "
+        f"Call ΔOI {fmt('call_doi')} / Put ΔOI {fmt('put_doi')} · "
+        f"Call vol {fmt('call_vol')} / Put vol {fmt('put_vol')}. "
+        "*ΔOI is vs the previous close — put OI building = support forming, "
+        "call OI building = resistance forming. Exploratory, across the returned "
+        "expiries; not yet validated.*"
+    )
 
 
 def _gex_chart(L):
