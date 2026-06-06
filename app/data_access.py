@@ -28,6 +28,7 @@ class DashboardData:
     window: str
     source: str
     oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
+    india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False) -> DashboardData:
@@ -40,11 +41,14 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
         rows, spot = build_demo_rows(fetched_at=fetched_at)
         source = "DEMO-SYNTHETIC"
         payload = None
+        india_vix = None
     else:
-        from data.nse import aggregate_oi_volume, fetch_chain, parse_nse_option_chain
+        from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
+                              parse_nse_option_chain)
 
         payload = fetch_chain(config.UNDERLYING)   # single live pull
         rows, spot = parse_nse_option_chain(payload)
+        india_vix = fetch_india_vix()              # secondary call, fail-soft
         source = "nse"
 
     snap = from_nse_results(
@@ -68,5 +72,5 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
-        oi_volume=oi_volume,
+        oi_volume=oi_volume, india_vix=india_vix,
     )

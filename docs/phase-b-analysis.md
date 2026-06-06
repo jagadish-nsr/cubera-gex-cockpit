@@ -4,8 +4,8 @@
 (`data/journal/timeseries/YYYY-MM-DD.csv`). Read `CLAUDE.md` first — especially
 the dealer-sign landmine and "GEX is a probability map, not a predictor".
 
-Phase A captures intraday GEX levels + OI/volume build-up every ~15 min. Phase B
-turns that into two things:
+Phase A captures intraday GEX levels + OI/volume build-up + **India VIX** every
+~15 min. Phase B turns that into two things:
 
 1. **Validation** — settle, empirically, whether the `long_call_short_put`
    dealer-sign convention is correct *for Nifty* (or inverted).
@@ -53,6 +53,11 @@ mean high–low range per snapshot interval).
   realised vol than POSITIVE-labelled.
 - **Inverted if:** our "POSITIVE" periods are systematically the *more volatile*
   ones.
+- **India VIX cross-check (independent anchor):** India VIX is implied vol computed
+  *without* our dealer-sign assumption. If NEGATIVE-labelled periods coincide with
+  elevated/rising VIX and POSITIVE with low/falling VIX, that corroborates the sign
+  using a yardstick that doesn't beg the question. (Also: VIX vs realised vol = the
+  vol-risk premium; and low VIX + negative gamma = fragile complacency.)
 
 ### B. Return autocorrelation by regime  *(validation — the sharpest test)*
 Lag-1 (and lag-k) autocorrelation of 15-min returns, conditioned on regime. This

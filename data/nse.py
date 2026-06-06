@@ -185,6 +185,27 @@ def aggregate_oi_volume(payload: dict) -> dict:
     return agg
 
 
+def parse_india_vix(payload: dict) -> dict | None:
+    """Extract India VIX from an NSE allIndices payload.
+
+    Returns {last, change, pct_change} or None if absent/malformed. India VIX is
+    the market's *implied* (expected) 30-day vol — complementary to GEX (which is
+    a *positioning* read) and, crucially, computed without our dealer-sign
+    assumption, so it's an independent anchor for the Phase B sign validation.
+    """
+    for d in payload.get("data") or []:
+        name = (d.get("indexSymbol") or d.get("index") or "").upper()
+        if name == "INDIA VIX":
+            last = d.get("last")
+            if last is None:
+                return None
+            def _num(x):
+                return float(x) if x is not None else None
+            return {"last": float(last), "change": _num(d.get("variation")),
+                    "pct_change": _num(d.get("percentChange"))}
+    return None
+
+
 def _parse_nse_date(s: str):
     """Parse NSE date strings. v3 responses use DD-MM-YYYY ('30-06-2026');
     the v3 request param and the old endpoint use DD-Mon-YYYY ('30-Jun-2026')."""
@@ -220,6 +241,7 @@ _BROWSER_HEADERS = {
 
 _V3_URL = "https://www.nseindia.com/api/option-chain-v3"
 _INDICES_URL = "https://www.nseindia.com/api/option-chain-indices"
+_ALL_INDICES_URL = "https://www.nseindia.com/api/allIndices"  # carries India VIX
 
 
 def _primed_session(timeout: int = 10):
@@ -297,6 +319,22 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: in
             "browser and pass expiries=[...]."
         )
     return {"records": {"data": merged_data, "underlyingValue": spot}}
+
+
+def fetch_india_vix(session=None, timeout: int = 10) -> dict | None:
+    """Best-effort live India VIX via the allIndices endpoint.
+
+    Returns {last, change, pct_change} or None on ANY failure: VIX is secondary
+    context, so a miss must never break a GEX snapshot (the chain stays the
+    primary, fail-loud data). One extra small NSE call per snapshot.
+    """
+    try:
+        s = session or _primed_session(timeout)
+        r = s.get(_ALL_INDICES_URL, timeout=timeout)
+        r.raise_for_status()
+        return parse_india_vix(r.json())
+    except Exception:  # noqa: BLE001 - fail soft; VIX is optional context
+        return None
 
 
 def _resolve_expiries(expiries: list | None) -> list[str]:

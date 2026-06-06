@@ -29,6 +29,8 @@ FIELDS = [
     "call_wall", "put_wall", "magnet", "max_pain", "net_gex",
     # OI / volume build-up (off the raw payload; vs previous close for ΔOI)
     "call_oi", "put_oi", "pcr_oi", "call_doi", "put_doi", "call_vol", "put_vol",
+    # India VIX (implied vol; independent of our dealer-sign assumption)
+    "india_vix", "vix_pct_chg",
     # provenance
     "dealer_sign_model", "expiry_weighting", "n_contracts", "source", "stale",
 ]
@@ -89,6 +91,8 @@ def build_row(data) -> dict:
         "put_doi": _f(ov.get("put_doi")),
         "call_vol": _f(ov.get("call_vol")),
         "put_vol": _f(ov.get("put_vol")),
+        "india_vix": _f((data.india_vix or {}).get("last"), 2),
+        "vix_pct_chg": _f((data.india_vix or {}).get("pct_change"), 2),
         "dealer_sign_model": L.dealer_sign_model,
         "expiry_weighting": L.expiry_weighting,
         "n_contracts": data.n_contracts,

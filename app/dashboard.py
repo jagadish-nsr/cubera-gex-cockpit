@@ -153,10 +153,17 @@ def main():
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
     # --- Key metrics -------------------------------------------------------
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Spot", f"{L.spot:,.2f}")
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+    vix = data.india_vix
+    if vix:
+        chg = vix.get("pct_change")
+        c4.metric("India VIX", f"{vix['last']:.2f}",
+                  f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
+    else:
+        c4.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
 
     # --- Simple levels (position-aware: a wall above price isn't "support") --
     st.markdown("#### Simple levels")
@@ -305,7 +312,7 @@ def _timeseries_section(data):
         long = long.dropna(subset=["price"])
         colors = {"spot": "#000000", "magnet": "#9467bd", "call_wall": "#d62728",
                   "put_wall": "#2ca02c", "flip": "#1f77b4"}
-        chart = alt.Chart(long).mark_line(point=True).encode(
+        levels_chart = alt.Chart(long).mark_line(point=True).encode(
             x=alt.X("time_ist:N", title="IST", sort=None),
             y=alt.Y("price:Q", title="Level", scale=alt.Scale(zero=False)),
             color=alt.Color(
@@ -315,10 +322,23 @@ def _timeseries_section(data):
             ),
             tooltip=["time_ist", "level", "price"],
         )
+        chart, vix_note = levels_chart, ""
+        if "india_vix" in df.columns:                       # overlay VIX (right axis)
+            vdf = df[["time_ist", "india_vix"]].copy()
+            vdf["india_vix"] = pd.to_numeric(vdf["india_vix"], errors="coerce")
+            vdf = vdf.dropna(subset=["india_vix"])
+            if not vdf.empty:
+                vix_line = alt.Chart(vdf).mark_line(strokeDash=[4, 2], color="#ff7f0e").encode(
+                    x=alt.X("time_ist:N", sort=None),
+                    y=alt.Y("india_vix:Q", title="India VIX (%)", scale=alt.Scale(zero=False)),
+                    tooltip=["time_ist", "india_vix"],
+                )
+                chart = alt.layer(levels_chart, vix_line).resolve_scale(y="independent")
+                vix_note = " Orange dashed = India VIX (right axis)."
         st.altair_chart(chart, width="stretch")
         st.caption(
             "Spot vs the migrating dealer levels through the day — black=spot, "
-            "purple=magnet, red=call wall, green=put wall, blue=flip."
+            "purple=magnet, red=call wall, green=put wall, blue=flip." + vix_note
         )
     except Exception as e:  # noqa: BLE001 - chart is non-essential
         st.caption(f"(time-series chart unavailable: {e})")
