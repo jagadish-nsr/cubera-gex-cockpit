@@ -125,6 +125,15 @@ def main():
         if written:
             st.sidebar.success(f"Saved snapshot → {p.name}")
 
+    # Accumulate each live pull in-session so the intraday chart persists across
+    # auto-refresh reruns (session_state survives reruns) and the line grows --
+    # independent of whether anything is being written to disk.
+    if data.source == "nse":
+        from app.timeseries import build_row
+
+        r = build_row(data)
+        st.session_state.setdefault("ts_points", {})[r["timestamp_utc"]] = r
+
     L, V = data.levels, data.view
 
     # --- Market mode (plain language, prominent) ---------------------------
@@ -284,16 +293,27 @@ def _timeseries_section(data):
     from app.timeseries import available_days, load_day
 
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-    df = load_day(ist_today)
+    # Merge today's on-disk captures (scheduler / saved) with the points pulled
+    # this browser session (held in session_state so they survive auto-refresh
+    # reruns), deduped by timestamp -> the line persists and grows.
+    disk = load_day(ist_today)
+    sess = pd.DataFrame(list(st.session_state.get("ts_points", {}).values()))
+    if not sess.empty and "date_ist" in sess.columns:
+        sess = sess[sess["date_ist"] == ist_today]
+    frames = [f for f in (disk, sess) if not f.empty]
     label = ist_today
-    if df.empty:
+    if frames:
+        df = (pd.concat(frames, ignore_index=True)
+              .drop_duplicates(subset="timestamp_utc")
+              .sort_values("timestamp_utc"))
+    else:
         days = available_days()
         if not days:
             st.markdown("#### Intraday time-series")
             st.caption(
-                "No snapshots captured yet. Run `python scripts/log_timeseries.py` "
-                "during market hours, or click **📈 Save snapshot to time-series** "
-                "(sidebar) to record points manually."
+                "No snapshots yet. Points accumulate here as you refresh (live NSE); "
+                "they also persist to disk if you enable **Save each tick** (sidebar) "
+                "or run `python scripts/log_timeseries.py`."
             )
             return
         label = days[-1]            # fall back to the most recent captured day
@@ -313,7 +333,7 @@ def _timeseries_section(data):
         colors = {"spot": "#000000", "magnet": "#9467bd", "call_wall": "#d62728",
                   "put_wall": "#2ca02c", "flip": "#1f77b4"}
         levels_chart = alt.Chart(long).mark_line(point=True).encode(
-            x=alt.X("time_ist:N", title="IST", sort=None),
+            x=alt.X("time_ist:N", title="IST", sort="ascending"),
             y=alt.Y("price:Q", title="Level", scale=alt.Scale(zero=False)),
             color=alt.Color(
                 "level:N",
@@ -328,8 +348,8 @@ def _timeseries_section(data):
             vdf["india_vix"] = pd.to_numeric(vdf["india_vix"], errors="coerce")
             vdf = vdf.dropna(subset=["india_vix"])
             if not vdf.empty:
-                vix_line = alt.Chart(vdf).mark_line(strokeDash=[4, 2], color="#ff7f0e").encode(
-                    x=alt.X("time_ist:N", sort=None),
+                vix_line = alt.Chart(vdf).mark_line(point=True, strokeDash=[4, 2], color="#ff7f0e").encode(
+                    x=alt.X("time_ist:N", sort="ascending"),
                     y=alt.Y("india_vix:Q", title="India VIX (%)", scale=alt.Scale(zero=False)),
                     tooltip=["time_ist", "india_vix"],
                 )
