@@ -31,13 +31,35 @@ FIELDS = [
     "call_oi", "put_oi", "pcr_oi", "call_doi", "put_doi", "call_vol", "put_vol",
     # India VIX (implied vol; independent of our dealer-sign assumption)
     "india_vix", "vix_pct_chg",
+    # USD/INR near-month future (FX context; sign-assumption-free)
+    "usdinr", "usdinr_pct_chg",
+    # News-intensity (free RSS; flags exogenous-catalyst days for Phase B)
+    "news_count", "news_impact", "news_top",
     # provenance
     "dealer_sign_model", "expiry_weighting", "n_contracts", "source", "stale",
 ]
 
 
+_OPEN_IST = (9, 15)     # NSE cash session 09:15-15:30 IST
+_CLOSE_IST = (15, 30)
+
+
 def _ist(now_utc: datetime) -> datetime:
     return now_utc + timedelta(hours=5, minutes=30)
+
+
+def in_nse_session(now_utc: datetime) -> bool:
+    """True if a UTC instant falls inside the NSE cash session (Mon-Fri,
+    09:15-15:30 IST). Holiday-unaware. Single source for the session window so
+    the writer (scheduler), the dashboard auto-save guard, and the offline
+    analyser all agree on what counts as an in-session snapshot."""
+    if now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=timezone.utc)
+    ist = _ist(now_utc)
+    if ist.weekday() >= 5:
+        return False
+    minute = ist.hour * 60 + ist.minute
+    return _OPEN_IST[0] * 60 + _OPEN_IST[1] <= minute <= _CLOSE_IST[0] * 60 + _CLOSE_IST[1]
 
 
 def _f(x, nd=None):
@@ -50,6 +72,13 @@ def _f(x, nd=None):
     except TypeError:
         return x
     return round(x, nd) if nd is not None else x
+
+
+def _news_top(s) -> str:
+    """One-line, length-capped headline for the CSV (commas are quoted by csv)."""
+    if not s:
+        return ""
+    return " ".join(str(s).split())[:120]
 
 
 def ts_path_for(date_ist: str) -> Path:
@@ -93,6 +122,11 @@ def build_row(data) -> dict:
         "put_vol": _f(ov.get("put_vol")),
         "india_vix": _f((data.india_vix or {}).get("last"), 2),
         "vix_pct_chg": _f((data.india_vix or {}).get("pct_change"), 2),
+        "usdinr": _f((data.usdinr or {}).get("last"), 4),
+        "usdinr_pct_chg": _f((data.usdinr or {}).get("pct_change"), 2),
+        "news_count": _f((data.news or {}).get("count")),
+        "news_impact": _f((data.news or {}).get("impact")),
+        "news_top": _news_top((data.news or {}).get("top")),
         "dealer_sign_model": L.dealer_sign_model,
         "expiry_weighting": L.expiry_weighting,
         "n_contracts": data.n_contracts,

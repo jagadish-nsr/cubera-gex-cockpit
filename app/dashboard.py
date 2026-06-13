@@ -24,6 +24,9 @@ from app.data_access import WINDOW_CHOICES, load_dashboard  # noqa: E402
 
 st.set_page_config(page_title="Nifty GEX", page_icon="📈", layout="wide")
 
+# Keep in sync with IMPACT_FLAG in scripts/analyze_timeseries.py (the day-level gauge).
+_NEWS_IMPACT_FLAG = 4
+
 
 def _refresh(window: str, use_demo: bool):
     try:
@@ -117,22 +120,31 @@ def main():
         else:
             st.sidebar.warning("Not saved — demo data is synthetic.")
     elif auto_save and auto_fired and data.source == "nse":
-        from app.timeseries import append_if_due, build_row
+        from app.timeseries import append_if_due, build_row, in_nse_session
 
-        # Guard just below the tick interval so a co-running capture loop (or a
-        # double-fire) doesn't double up, without blocking the app's own cadence.
-        p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0))
-        if written:
-            st.sidebar.success(f"Saved snapshot → {p.name}")
+        # Session guard: a dashboard left open after 15:30 IST keeps re-pulling
+        # the SAME frozen post-close chain — without this it would auto-save
+        # dozens of duplicate rows (spot frozen, stale=False) and poison the
+        # day's file. Only the explicit "Save snapshot" button overrides this.
+        if not in_nse_session(data.fetched_at):
+            st.sidebar.caption("⏸️ Outside NSE hours — auto-save paused.")
+        else:
+            # Guard just below the tick interval so a co-running capture loop (or
+            # a double-fire) doesn't double up, without blocking the app's cadence.
+            p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0))
+            if written:
+                st.sidebar.success(f"Saved snapshot → {p.name}")
 
-    # Accumulate each live pull in-session so the intraday chart persists across
+    # Accumulate each in-session live pull so the intraday chart persists across
     # auto-refresh reruns (session_state survives reruns) and the line grows --
-    # independent of whether anything is being written to disk.
+    # independent of whether anything is being written to disk. Skip post-close
+    # pulls so frozen end-of-day points don't flat-line the chart.
     if data.source == "nse":
-        from app.timeseries import build_row
+        from app.timeseries import build_row, in_nse_session
 
-        r = build_row(data)
-        st.session_state.setdefault("ts_points", {})[r["timestamp_utc"]] = r
+        if in_nse_session(data.fetched_at):
+            r = build_row(data)
+            st.session_state.setdefault("ts_points", {})[r["timestamp_utc"]] = r
 
     L, V = data.levels, data.view
 
@@ -162,7 +174,7 @@ def main():
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
     # --- Key metrics -------------------------------------------------------
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Spot", f"{L.spot:,.2f}")
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
@@ -173,6 +185,15 @@ def main():
                   f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
     else:
         c4.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
+    usdinr = data.usdinr
+    if usdinr:
+        uchg = usdinr.get("pct_change")
+        c5.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
+                  f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
+                  help="NSE near-month USD/INR future — the rupee level; live NSE, best-effort.")
+    else:
+        c5.metric("USD/INR (NSE fut)", "—",
+                  help="NSE near-month USD/INR future; live NSE only, best-effort.")
 
     # --- Simple levels (position-aware: a wall above price isn't "support") --
     st.markdown("#### Simple levels")
@@ -216,6 +237,23 @@ def main():
             "wide). Stops go just **beyond** the walls, never at them."
         )
 
+    for note in _structure_notes(L):
+        st.warning(note)
+
+    # News-intensity (free RSS, best-effort). A burst of high-impact headlines means
+    # the move is likely exogenous — GEX levels become secondary (headlines override).
+    news = data.news
+    if news and (news.get("count") or news.get("top")):
+        impact, count, top = news.get("impact") or 0, news.get("count") or 0, news.get("top") or ""
+        if impact >= _NEWS_IMPACT_FLAG:
+            st.warning(
+                f"📰 **Elevated news flow** — {count} fresh headline(s), impact {impact}. "
+                "Treat GEX levels as **secondary**; an exogenous catalyst can override the "
+                f"dealer map." + (f"\n\nLatest: _{top}_" if top else "")
+            )
+        elif top:
+            st.caption(f"📰 News: {count} fresh headline(s), impact {impact}. Latest: {top}")
+
     # --- Levels table ------------------------------------------------------
     def d(x):
         return f"{x - L.spot:+,.0f}" if x is not None else "—"
@@ -256,6 +294,53 @@ def main():
     st.caption(
         "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
     )
+
+
+def _structure_notes(L) -> list[str]:
+    """Plain-language flags for UNUSUAL wall/magnet geometry (inverted sandwich,
+    magnet outside the wall range). These configurations carry meaning that the
+    'support below / resistance above' shorthand misses. Reading assumes the
+    dealer-sign model (UNVALIDATED for Nifty), so they're framed as tendencies.
+    """
+    notes: list[str] = []
+    lo, hi = min(L.put_wall, L.call_wall), max(L.put_wall, L.call_wall)
+    neg = L.regime == "NEGATIVE"
+
+    # 1. Inverted sandwich: heaviest puts sit ABOVE heaviest calls.
+    if L.put_wall > L.call_wall:
+        msg = (
+            f"⚠️ **Inverted walls — put wall ({L.put_wall:,.0f}) is ABOVE the call wall "
+            f"({L.call_wall:,.0f}).** The normal support-below / resistance-above sandwich "
+            "is flipped: the heaviest puts are **overhead**, typical of a **falling / "
+            "bearish structure** where price has slipped below the put concentration. "
+            "Don't read the put wall as a floor here"
+        )
+        msg += (
+            " — in this NEGATIVE regime, dealer hedging at that strike **amplifies** moves "
+            "rather than cushioning them." if neg else
+            ", treat it as overhead supply until reclaimed."
+        )
+        notes.append(msg)
+
+    # 2. Magnet (strongest pin) sitting OUTSIDE the wall range.
+    if L.magnet > hi:
+        notes.append(
+            f"🧲 **Magnet ({L.magnet:,.0f}) is above both walls** — the strongest pin sits "
+            "above the wall band, i.e. gamma is **top-heavy** (call-dominated up high). "
+            + ("In this POSITIVE regime price tends to get pulled **up** toward it."
+               if not neg else
+               "In this NEGATIVE regime that pull is weak — treat the magnet as an "
+               "unreliable target, not a destination.")
+        )
+    elif L.magnet < lo:
+        notes.append(
+            f"🧲 **Magnet ({L.magnet:,.0f}) is below both walls** — the strongest pin sits "
+            "below the wall band, i.e. gamma is **bottom-heavy**. "
+            + ("In this POSITIVE regime price tends to get pulled **down** toward it."
+               if not neg else
+               "In this NEGATIVE regime that pull is weak — an unreliable target.")
+        )
+    return notes
 
 
 def _trade_explainer(L, V, data, is_expiry_day=False):
@@ -365,6 +450,38 @@ def _timeseries_section(data):
         st.dataframe(df, width="stretch")
 
     _oi_buildup_caption(df)
+    _news_day_caption(df)
+
+
+def _news_day_caption(df):
+    """Day-level news read for the time-series section: a NEWS-DOMINATED badge (same
+    gauge as scripts/analyze_timeseries.py) + the day's highest-impact headline. Flags
+    when the day's move was likely exogenous, so the GEX / dealer-sign read is
+    confounded — the dashboard mirror of the offline quarantine."""
+    if df.empty or "news_impact" not in df.columns:
+        return
+    imp = pd.to_numeric(df["news_impact"], errors="coerce")
+    if not imp.notna().any():
+        return
+    peak = float(imp.max())
+    top = ""
+    if "news_top" in df.columns:
+        pos = int(imp.fillna(-1).to_numpy().argmax())
+        val = df["news_top"].iloc[pos]
+        top = "" if pd.isna(val) else str(val)
+    if peak >= _NEWS_IMPACT_FLAG:
+        st.warning(
+            f"📰 **News-dominated day** (peak headline impact {peak:.0f}). The day's move "
+            "was likely driven by an exogenous catalyst, so the GEX / dealer-sign read is "
+            "**confounded** — this day is quarantined from sign-validation."
+            + (f"\n\nTop headline: _{top}_" if top else "")
+        )
+    else:
+        st.caption(
+            f"📰 News this day: peak headline impact {peak:.0f} "
+            f"(below the {_NEWS_IMPACT_FLAG} flag — not news-dominated)."
+            + (f" Top: {top}" if top else "")
+        )
 
 
 def _oi_buildup_caption(df):

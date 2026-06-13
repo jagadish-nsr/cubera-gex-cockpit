@@ -52,7 +52,7 @@ def capture_once(min_gap: float = 10.0) -> str:
     head = (f"{row['date_ist']} {row['time_ist']} IST  spot {row['spot']:,}  "
             f"{row['regime']}/{row['mode_label']}  "
             f"walls {row['put_wall']:,}-{row['call_wall']:,}  magnet {row['magnet']:,}  "
-            f"PCR {row['pcr_oi']}")
+            f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})")
     if not written:
         return f"{head}  -> skipped (a row < {min_gap:g} min old exists)"
     return f"{head}  -> {path.name}"

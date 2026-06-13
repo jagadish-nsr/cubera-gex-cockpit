@@ -206,6 +206,34 @@ def parse_india_vix(payload: dict) -> dict | None:
     return None
 
 
+def parse_usdinr(payload: dict) -> dict | None:
+    """Extract the USD/INR near-month futures last from an NSE marketStatus payload.
+
+    NSE's marketStatus carries a ``currencyfuture`` marketState entry — the headline
+    USD/INR future (the rupee level a trader watches). Returns
+    {last, change, pct_change, as_of} or None if absent/empty (e.g. a blank ``last``
+    on a holiday). ``variation``/``percentChange`` are populated live, blank at close.
+    USD/INR is FX context, independent of our dealer-sign assumption.
+    """
+    for m in payload.get("marketState") or []:
+        if (m.get("market") or "").lower() == "currencyfuture":
+            last = m.get("last")
+            try:
+                last = float(last)
+            except (TypeError, ValueError):
+                return None
+
+            def _num(x):
+                try:
+                    return float(x)
+                except (TypeError, ValueError):
+                    return None
+
+            return {"last": last, "change": _num(m.get("variation")),
+                    "pct_change": _num(m.get("percentChange")), "as_of": m.get("tradeDate")}
+    return None
+
+
 def _parse_nse_date(s: str):
     """Parse NSE date strings. v3 responses use DD-MM-YYYY ('30-06-2026');
     the v3 request param and the old endpoint use DD-Mon-YYYY ('30-Jun-2026')."""
@@ -242,6 +270,7 @@ _BROWSER_HEADERS = {
 _V3_URL = "https://www.nseindia.com/api/option-chain-v3"
 _INDICES_URL = "https://www.nseindia.com/api/option-chain-indices"
 _ALL_INDICES_URL = "https://www.nseindia.com/api/allIndices"  # carries India VIX
+_MARKET_STATUS_URL = "https://www.nseindia.com/api/marketStatus"  # carries USD/INR future
 
 
 def _primed_session(timeout: int = 10):
@@ -334,6 +363,21 @@ def fetch_india_vix(session=None, timeout: int = 10) -> dict | None:
         r.raise_for_status()
         return parse_india_vix(r.json())
     except Exception:  # noqa: BLE001 - fail soft; VIX is optional context
+        return None
+
+
+def fetch_usdinr(session=None, timeout: int = 10) -> dict | None:
+    """Best-effort live USD/INR near-month future via the marketStatus endpoint.
+
+    Returns {last, change, pct_change, as_of} or None on ANY failure: FX is secondary
+    context, so a miss must never break a GEX snapshot. One extra small NSE call.
+    """
+    try:
+        s = session or _primed_session(timeout)
+        r = s.get(_MARKET_STATUS_URL, timeout=timeout)
+        r.raise_for_status()
+        return parse_usdinr(r.json())
+    except Exception:  # noqa: BLE001 - fail soft; USD/INR is optional context
         return None
 
 
