@@ -23,11 +23,17 @@ ROOT = Path(__file__).resolve().parents[1]
 TS_DIR = ROOT / "data" / "journal" / "timeseries"
 # Per-strike OI/ΔOI capture (long format: one row per strike per snapshot).
 OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"
+# Expiry-day 1-min capture for the gamma-blast study (same per-strike schema,
+# finer cadence, bounded window) — kept separate so it doesn't mix cadences.
+GAMMA_BLAST_DIR = ROOT / "data" / "journal" / "gamma_blast"
 
 # One row per strike per snapshot. Keep this list and build_strike_rows() in step.
+# call_ltp/put_ltp = nearest-expiry mid premiums (for the crossover watch);
+# net_gex = engine gamma exposure at the strike (for the Δgamma / blast-strike map).
 STRIKE_FIELDS = [
     "timestamp_utc", "time_ist", "date_ist", "spot", "strike",
     "call_oi", "call_doi", "put_oi", "put_doi", "call_vol", "put_vol",
+    "call_ltp", "put_ltp", "net_gex",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -166,21 +172,25 @@ def build_strike_rows(data) -> list[dict]:
             "call_oi": _f(s.get("call_oi")), "call_doi": _f(s.get("call_doi")),
             "put_oi": _f(s.get("put_oi")), "put_doi": _f(s.get("put_doi")),
             "call_vol": _f(s.get("call_vol")), "put_vol": _f(s.get("put_vol")),
+            "call_ltp": _f(s.get("call_ltp"), 2), "put_ltp": _f(s.get("put_ltp"), 2),
+            "net_gex": _f(s.get("net_gex")),
         })
     return rows
 
 
-def strikes_path_for(date_ist: str) -> Path:
-    return OISTRIKES_DIR / f"{date_ist}.csv"
+def strikes_path_for(date_ist: str, directory: Path = OISTRIKES_DIR) -> Path:
+    return directory / f"{date_ist}.csv"
 
 
-def append_strike_rows(rows: list[dict], date_ist: str | None = None) -> Path | None:
-    """Append per-strike rows to that IST day's oi_strikes CSV (header on a new
-    file). No-op returning None if there are no rows."""
+def append_strike_rows(rows: list[dict], date_ist: str | None = None,
+                       directory: Path = OISTRIKES_DIR) -> Path | None:
+    """Append per-strike rows to that IST day's CSV under ``directory`` (header on
+    a new file). No-op returning None if there are no rows. ``directory`` lets the
+    1-min gamma-blast logger write to its own folder with the same schema."""
     if not rows:
         return None
     date_ist = date_ist or rows[0]["date_ist"]
-    path = strikes_path_for(date_ist)
+    path = strikes_path_for(date_ist, directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     new_file = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as fh:
@@ -191,9 +201,9 @@ def append_strike_rows(rows: list[dict], date_ist: str | None = None) -> Path | 
     return path
 
 
-def load_strikes_day(date_ist: str) -> pd.DataFrame:
-    """Load one IST day's per-strike OI capture (empty frame if none yet)."""
-    path = strikes_path_for(date_ist)
+def load_strikes_day(date_ist: str, directory: Path = OISTRIKES_DIR) -> pd.DataFrame:
+    """Load one IST day's per-strike capture (empty frame if none yet)."""
+    path = strikes_path_for(date_ist, directory)
     if not path.exists():
         return pd.DataFrame(columns=STRIKE_FIELDS)
     return pd.read_csv(path)

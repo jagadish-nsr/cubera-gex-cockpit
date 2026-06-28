@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import app.timeseries as ts
 from app.data_access import load_dashboard
-from data.nse import aggregate_oi_volume, per_strike_oi
+from data.nse import aggregate_oi_volume, nearest_expiry_premiums, per_strike_oi
 
 
 def test_aggregate_oi_volume_hand_checkable():
@@ -52,6 +52,21 @@ def test_per_strike_oi_hand_checkable():
     assert [r["strike"] for r in per_strike_oi(payload)] == [100.0, 110.0]
 
 
+def test_nearest_expiry_premiums():
+    from datetime import date
+    rows = [
+        {"expiry": date(2026, 7, 2), "strike": 100.0, "type": "C", "price": 5.0},
+        {"expiry": date(2026, 7, 2), "strike": 100.0, "type": "P", "price": 4.0},
+        {"expiry": date(2026, 7, 2), "strike": 110.0, "type": "C", "price": 1.5},
+        # later expiry -> ignored (we only want the expiring contract's premium)
+        {"expiry": date(2026, 7, 9), "strike": 100.0, "type": "C", "price": 9.0},
+    ]
+    prem = nearest_expiry_premiums(rows)
+    assert prem[100.0] == {"call_ltp": 5.0, "put_ltp": 4.0}   # 7/2 only, not 9.0
+    assert prem[110.0] == {"call_ltp": 1.5, "put_ltp": None}  # no PE row
+    assert nearest_expiry_premiums([]) == {}
+
+
 def test_strike_rows_build_and_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "OISTRIKES_DIR", tmp_path)
     data = SimpleNamespace(
@@ -59,9 +74,11 @@ def test_strike_rows_build_and_roundtrip(tmp_path, monkeypatch):
         levels=SimpleNamespace(spot=24010.7),
         oi_strikes=[
             {"strike": 24000.0, "call_oi": 1, "call_doi": 2, "put_oi": 3,
-             "put_doi": 4, "call_vol": 5, "put_vol": 6},
+             "put_doi": 4, "call_vol": 5, "put_vol": 6,
+             "call_ltp": 120.5, "put_ltp": 110.25, "net_gex": 999},
             {"strike": 24100.0, "call_oi": 7, "call_doi": 8, "put_oi": 9,
-             "put_doi": 10, "call_vol": 11, "put_vol": 12},
+             "put_doi": 10, "call_vol": 11, "put_vol": 12,
+             "call_ltp": 60.0, "put_ltp": 150.0, "net_gex": -42},
         ],
     )
     rows = ts.build_strike_rows(data)
@@ -69,11 +86,13 @@ def test_strike_rows_build_and_roundtrip(tmp_path, monkeypatch):
     assert set(rows[0]) == set(ts.STRIKE_FIELDS)            # keys in lock-step
     assert rows[0]["date_ist"] == "2026-06-30"             # 05:00 UTC -> 10:30 IST
     assert rows[0]["spot"] == 24010.7 and rows[0]["strike"] == 24000.0
+    assert rows[0]["call_ltp"] == 120.5 and rows[0]["net_gex"] == 999
 
     ts.append_strike_rows(rows)
     df = ts.load_strikes_day("2026-06-30")
     assert len(df) == 2 and list(df.columns) == ts.STRIKE_FIELDS
     assert df["put_doi"].tolist() == [4, 10]
+    assert df["put_ltp"].tolist() == [110.25, 150.0]
 
 
 def test_strike_rows_empty_is_noop(tmp_path, monkeypatch):

@@ -224,6 +224,29 @@ def per_strike_oi(payload: dict, spot: float | None = None,
     return [by_strike[k] for k in sorted(by_strike)]
 
 
+def nearest_expiry_premiums(rows: list[dict]) -> dict:
+    """Per-strike call/put PREMIUM (mid) for the NEAREST expiry only.
+
+    The gamma-blast crossover watches the expiring contract's ATM call vs put,
+    so premiums must come from a SINGLE expiry (the nearest) — unlike OI, which
+    we sum across expiries. ``rows`` are the normalised output of
+    ``parse_nse_option_chain`` (each has expiry: date, strike, type 'C'/'P',
+    price: mid|None). Returns {strike(float): {"call_ltp": x|None, "put_ltp": y|None}}.
+    """
+    exps = [r["expiry"] for r in rows if r.get("expiry") is not None]
+    if not exps:
+        return {}
+    nearest = min(exps)
+    out: dict[float, dict] = {}
+    for r in rows:
+        if r.get("expiry") != nearest:
+            continue
+        k = float(r["strike"])
+        cell = out.setdefault(k, {"call_ltp": None, "put_ltp": None})
+        cell["call_ltp" if r["type"] == "C" else "put_ltp"] = r.get("price")
+    return out
+
+
 def parse_india_vix(payload: dict) -> dict | None:
     """Extract India VIX from an NSE allIndices payload.
 

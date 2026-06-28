@@ -50,7 +50,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     else:
         from data.news import fetch_news
         from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
-                              fetch_usdinr, parse_nse_option_chain, per_strike_oi)
+                              fetch_usdinr, nearest_expiry_premiums,
+                              parse_nse_option_chain, per_strike_oi)
 
         payload = fetch_chain(config.UNDERLYING)   # single live pull
         rows, spot = parse_nse_option_chain(payload)
@@ -79,6 +80,18 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     oi_volume = aggregate_oi_volume(payload) if payload is not None else None
     oi_strikes = (per_strike_oi(payload, spot=spot, band_pts=config.OI_STRIKE_BAND_PTS)
                   if payload is not None else None)
+    if oi_strikes is not None:
+        # Enrich each strike with the nearest-expiry premium (for the crossover
+        # watch) and the engine's gamma exposure (net_gex, for the Δgamma map).
+        prem = nearest_expiry_premiums(rows)
+        gex = (dict(zip(levels.per_strike["strike"], levels.per_strike["net_gex"]))
+               if levels.per_strike is not None else {})
+        for s in oi_strikes:
+            k = s["strike"]
+            p = prem.get(k, {})
+            s["call_ltp"] = p.get("call_ltp")
+            s["put_ltp"] = p.get("put_ltp")
+            s["net_gex"] = gex.get(k)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
