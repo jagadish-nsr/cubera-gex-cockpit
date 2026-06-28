@@ -28,6 +28,7 @@ class DashboardData:
     window: str
     source: str
     oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
+    oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot (live NSE)
     india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
     usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
     news: dict | None = None       # {count, impact, top}; free RSS, best-effort
@@ -49,7 +50,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     else:
         from data.news import fetch_news
         from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
-                              fetch_usdinr, parse_nse_option_chain)
+                              fetch_usdinr, parse_nse_option_chain, per_strike_oi)
 
         payload = fetch_chain(config.UNDERLYING)   # single live pull
         rows, spot = parse_nse_option_chain(payload)
@@ -76,8 +77,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     view = from_levels(levels)
     expiries = sorted(snap.contracts["expiry"].unique().tolist())
     oi_volume = aggregate_oi_volume(payload) if payload is not None else None
+    oi_strikes = (per_strike_oi(payload, spot=spot, band_pts=config.OI_STRIKE_BAND_PTS)
+                  if payload is not None else None)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
-        oi_volume=oi_volume, india_vix=india_vix, usdinr=usdinr, news=news,
+        oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
+        usdinr=usdinr, news=news,
     )

@@ -21,6 +21,14 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 TS_DIR = ROOT / "data" / "journal" / "timeseries"
+# Per-strike OI/ΔOI capture (long format: one row per strike per snapshot).
+OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"
+
+# One row per strike per snapshot. Keep this list and build_strike_rows() in step.
+STRIKE_FIELDS = [
+    "timestamp_utc", "time_ist", "date_ist", "spot", "strike",
+    "call_oi", "call_doi", "put_oi", "put_doi", "call_vol", "put_vol",
+]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
 FIELDS = [
@@ -133,6 +141,62 @@ def build_row(data) -> dict:
         "source": data.source,
         "stale": L.oi_stale,
     }
+
+
+def build_strike_rows(data) -> list[dict]:
+    """Flatten a DashboardData bundle's per-strike OI into long-format rows
+    (keys == STRIKE_FIELDS). Empty list if the bundle carries no per-strike OI
+    (e.g. the demo path, which has no raw NSE payload)."""
+    strikes = data.oi_strikes or []
+    if not strikes:
+        return []
+    fa = data.fetched_at
+    if fa.tzinfo is None:
+        fa = fa.replace(tzinfo=timezone.utc)
+    ist = _ist(fa)
+    ts_utc = fa.strftime("%Y-%m-%dT%H:%M:%SZ")
+    t_ist = ist.strftime("%H:%M")
+    d_ist = ist.strftime("%Y-%m-%d")
+    spot = round(data.levels.spot, 2)
+    rows = []
+    for s in strikes:
+        rows.append({
+            "timestamp_utc": ts_utc, "time_ist": t_ist, "date_ist": d_ist,
+            "spot": spot, "strike": _f(s.get("strike")),
+            "call_oi": _f(s.get("call_oi")), "call_doi": _f(s.get("call_doi")),
+            "put_oi": _f(s.get("put_oi")), "put_doi": _f(s.get("put_doi")),
+            "call_vol": _f(s.get("call_vol")), "put_vol": _f(s.get("put_vol")),
+        })
+    return rows
+
+
+def strikes_path_for(date_ist: str) -> Path:
+    return OISTRIKES_DIR / f"{date_ist}.csv"
+
+
+def append_strike_rows(rows: list[dict], date_ist: str | None = None) -> Path | None:
+    """Append per-strike rows to that IST day's oi_strikes CSV (header on a new
+    file). No-op returning None if there are no rows."""
+    if not rows:
+        return None
+    date_ist = date_ist or rows[0]["date_ist"]
+    path = strikes_path_for(date_ist)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new_file = not path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=STRIKE_FIELDS)
+        if new_file:
+            w.writeheader()
+        w.writerows(rows)
+    return path
+
+
+def load_strikes_day(date_ist: str) -> pd.DataFrame:
+    """Load one IST day's per-strike OI capture (empty frame if none yet)."""
+    path = strikes_path_for(date_ist)
+    if not path.exists():
+        return pd.DataFrame(columns=STRIKE_FIELDS)
+    return pd.read_csv(path)
 
 
 def append_row(row: dict, date_ist: str | None = None) -> Path:

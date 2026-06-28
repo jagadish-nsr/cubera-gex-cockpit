@@ -185,6 +185,45 @@ def aggregate_oi_volume(payload: dict) -> dict:
     return agg
 
 
+def per_strike_oi(payload: dict, spot: float | None = None,
+                  band_pts: float | None = None) -> list[dict]:
+    """Per-strike OI / ΔOI / volume, split call vs put — one dict per strike.
+
+    Same raw fields as ``aggregate_oi_volume`` (openInterest, changeinOpenInterest,
+    totalTradedVolume), but kept per strike instead of summed, so Phase B can ask
+    whether price respects the strike where OI is BUILDING (a put-OI build acting
+    as support, a call-OI build as resistance) — the question aggregate ΔOI can't
+    answer. Strikes are summed across whatever expiries the feed returned (same
+    scope as the aggregate). When ``spot`` and ``band_pts`` are given, only strikes
+    within ``band_pts`` of spot are returned (far-OTM strikes carry negligible OI).
+
+    Each dict: strike, call_oi, call_doi, call_vol, put_oi, put_doi, put_vol.
+    Defensive: a missing field counts as 0, never raises. Sorted by strike.
+    """
+    records = payload.get("records") or {}
+    filtered = payload.get("filtered") or {}
+    data = records.get("data") or filtered.get("data") or []
+    by_strike: dict[float, dict] = {}
+    for row in data:
+        k = row.get("strikePrice")
+        if k is None:
+            continue
+        k = float(k)
+        if spot is not None and band_pts is not None and abs(k - spot) > band_pts:
+            continue
+        cell = by_strike.setdefault(k, {
+            "strike": k, "call_oi": 0.0, "call_doi": 0.0, "call_vol": 0.0,
+            "put_oi": 0.0, "put_doi": 0.0, "put_vol": 0.0})
+        for side_key, pfx in (("CE", "call"), ("PE", "put")):
+            side = row.get(side_key)
+            if not side:
+                continue
+            cell[f"{pfx}_oi"] += float(side.get("openInterest") or 0.0)
+            cell[f"{pfx}_doi"] += float(side.get("changeinOpenInterest") or 0.0)
+            cell[f"{pfx}_vol"] += float(side.get("totalTradedVolume") or 0.0)
+    return [by_strike[k] for k in sorted(by_strike)]
+
+
 def parse_india_vix(payload: dict) -> dict | None:
     """Extract India VIX from an NSE allIndices payload.
 

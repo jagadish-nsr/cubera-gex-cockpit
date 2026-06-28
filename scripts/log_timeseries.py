@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.data_access import load_dashboard  # noqa: E402
-from app.timeseries import append_if_due, build_row  # noqa: E402
+from app.timeseries import (append_if_due, append_strike_rows, build_row,  # noqa: E402
+                            build_strike_rows)
 
 _OPEN_IST = (9, 15)    # NSE session 09:15-15:30 IST
 _CLOSE_IST = (15, 30)
@@ -55,7 +56,12 @@ def capture_once(min_gap: float = 10.0) -> str:
             f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})")
     if not written:
         return f"{head}  -> skipped (a row < {min_gap:g} min old exists)"
-    return f"{head}  -> {path.name}"
+    # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
+    # row so the two captures never drift (skip writes nothing on either side).
+    strike_rows = build_strike_rows(data)
+    append_strike_rows(strike_rows, date_ist=row["date_ist"])
+    extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
+    return f"{head}  -> {path.name}{extra}"
 
 
 def _print(s: str) -> None:

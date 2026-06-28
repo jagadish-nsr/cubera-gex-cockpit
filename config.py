@@ -39,6 +39,13 @@ EXPIRY_WEIGHT_HALFLIFE_DAYS = 5.0  # only used by 'exp'
 # --- OI staleness -----------------------------------------------------------
 OI_STALE_HOURS = 30  # NSE OI is end-of-day lagging; flag beyond ~1 trading day
 
+# --- Per-strike OI/ΔOI capture ----------------------------------------------
+# Phase A also logs per-strike OI / ΔOI (to test whether price respects the
+# strike where OI builds — the question aggregate ΔOI can't answer). To bound
+# the file, only strikes within this many points of spot are kept (the walls
+# always sit well inside this band; far-OTM strikes carry negligible OI).
+OI_STRIKE_BAND_PTS = 2000
+
 # --- Market / timezone ------------------------------------------------------
 MARKET_TZ = "Asia/Kolkata"   # NSE session 09:15–15:30 IST
 UNDERLYING = "NIFTY"

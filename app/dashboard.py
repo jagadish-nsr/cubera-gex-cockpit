@@ -113,14 +113,17 @@ def main():
 
     if save_ts:                                    # explicit click → always write
         if data.source == "nse":
-            from app.timeseries import append_row, build_row
+            from app.timeseries import (append_row, append_strike_rows,
+                                        build_row, build_strike_rows)
 
             p = append_row(build_row(data))
+            append_strike_rows(build_strike_rows(data))   # per-strike OI, same fetch
             st.sidebar.success(f"Saved snapshot → {p.name}")
         else:
             st.sidebar.warning("Not saved — demo data is synthetic.")
     elif auto_save and auto_fired and data.source == "nse":
-        from app.timeseries import append_if_due, build_row, in_nse_session
+        from app.timeseries import (append_if_due, append_strike_rows, build_row,
+                                    build_strike_rows, in_nse_session)
 
         # Session guard: a dashboard left open after 15:30 IST keeps re-pulling
         # the SAME frozen post-close chain — without this it would auto-save
@@ -133,6 +136,7 @@ def main():
             # a double-fire) doesn't double up, without blocking the app's cadence.
             p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0))
             if written:
+                append_strike_rows(build_strike_rows(data))  # lock-step with the row
                 st.sidebar.success(f"Saved snapshot → {p.name}")
 
     # Accumulate each in-session live pull so the intraday chart persists across
