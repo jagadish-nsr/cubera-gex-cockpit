@@ -267,6 +267,50 @@ def _ac(ps: np.ndarray):
     return float(np.corrcoef(ps[:, 0], ps[:, 1])[0, 1]), 1.0 / np.sqrt(len(ps))
 
 
+def pcr_vol_crosscheck(days: dict[str, pd.DataFrame]):
+    """SIGN-FREE corroboration of the dealer-sign read using PCR (put/call OI).
+
+    PCR owes NOTHING to the dealer-sign assumption, so it is an independent axis.
+    We pool 15-min |returns| by the PCR tercile at each interval's start. Low PCR
+    means call-heavy OI, which is the SAME state as net_gex>0 (the G+ bucket): so
+    if the low-PCR tercile is the WILDER one, it independently corroborates that
+    G+ behaves short-gamma (convention B / India-inverted), since the US default
+    (A) says G+ should be the CALM bucket.
+
+    Returns (rows, verdict) where rows = [(label, n, rv_pct, drift_pct), ...] for
+    low/mid/high terciles, or (None, msg) if the pcr_oi column is unusable.
+    """
+    vals: list[tuple[float, float]] = []   # (pcr_at_start, 15m_return_pct)
+    for d in days.values():
+        if "pcr_oi" not in d.columns:
+            continue
+        lr = np.log(d["spot"]).diff() * 100
+        pc = pd.to_numeric(d["pcr_oi"], errors="coerce")
+        for i in range(1, len(d)):
+            if np.isfinite(lr.iloc[i]) and np.isfinite(pc.iloc[i - 1]):
+                vals.append((float(pc.iloc[i - 1]), float(lr.iloc[i])))
+    if len(vals) < 9:
+        return None, "PCR cross-check skipped (no usable pcr_oi column / too few rows)."
+    a = np.array(vals)
+    pcr, ret = a[:, 0], a[:, 1]
+    q1, q2 = np.quantile(pcr, [1 / 3, 2 / 3])
+    masks = [("low PCR  (<%.2f, call-heavy=G+)" % q1, pcr < q1),
+             ("mid PCR", (pcr >= q1) & (pcr < q2)),
+             ("high PCR (>=%.2f, put-heavy=G-)" % q2, pcr >= q2)]
+    rows = [(lab, int(m.sum()), float(ret[m].std()), float(ret[m].mean())) for lab, m in masks]
+    rv_low, rv_high = rows[0][2], rows[2][2]
+    if np.isfinite(rv_low) and np.isfinite(rv_high):
+        if rv_low > rv_high:
+            verdict = ("Low-PCR (call-heavy = G+) is the WILDER tercile — INDEPENDENTLY "
+                       "corroborates convention B (G+ behaves short-gamma).")
+        else:
+            verdict = ("High-PCR (put-heavy = G-) is the wilder tercile — leans the OTHER "
+                       "way (toward US convention A), or just noise.")
+    else:
+        verdict = "PCR terciles too thin to read."
+    return rows, verdict
+
+
 def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     """Decisive test for the dealer-sign landmine: which convention's labels
     better predict REALISED Nifty behaviour? Quarantine is OFF here on purpose —
@@ -344,6 +388,19 @@ def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     add("MODEL PREDICTIONS, SCORED PER CONVENTION  (P1 = the robust one)")
     a = block("A  long_call_short_put  (US default)", "G-", "G+")
     b = block("B  short_call_long_put  (India-inverted)", "G+", "G-")
+
+    # Sign-free corroboration: PCR (owes nothing to the dealer-sign assumption).
+    pcr_rows, pcr_verdict = pcr_vol_crosscheck(days)
+    add("")
+    add("-" * 76)
+    add("SIGN-FREE CROSS-CHECK — realised vol by PCR tercile (PCR is independent of")
+    add("the dealer-sign assumption)")
+    if pcr_rows is not None:
+        for lab, n, rv, drift in pcr_rows:
+            add(f"  {lab:34} n={n:3}  rv={rv:.3f}%  drift={drift:+.3f}%")
+        add(f"  -> {pcr_verdict}")
+    else:
+        add(f"  {pcr_verdict}")
 
     add("")
     add("-" * 76)
