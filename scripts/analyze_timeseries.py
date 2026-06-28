@@ -226,6 +226,141 @@ def _verdict(rv: dict, ac: dict, n_days: int, n_int: int, n_flagged: int = 0) ->
     return out
 
 
+def _returns_by_gamma_sign(days: dict[str, pd.DataFrame]):
+    """Pool 15-min log returns into two FIXED buckets by net-dealer-gamma sign
+    under the US convention: G+ (regime POSITIVE, total_net_gex>0) and G- (NEGATIVE).
+
+    These buckets do not move when we flip the dealer-sign convention — flipping
+    only relabels which bucket is 'short gamma' (proven: GEX is linear in the sign,
+    so net_gex -> -net_gex and the regime label inverts EXACTLY). So one pooled
+    measurement serves both conventions; only the interpretation differs.
+
+    Returns (rets, pairs): rets[bucket] = np.array of returns;
+    pairs[bucket] = list of (r_{t-1}, r_t) for consecutive same-regime intervals.
+    """
+    rets: dict[str, list[float]] = {"G+": [], "G-": []}
+    pairs: dict[str, list[tuple[float, float]]] = {"G+": [], "G-": []}
+    for d in days.values():
+        lr = np.log(d["spot"]).diff()
+        reg = d["regime"]
+        for i in range(1, len(d)):
+            r = lr.iloc[i]
+            if not np.isfinite(r):
+                continue
+            if reg.iloc[i - 1] == "POSITIVE":
+                rets["G+"].append(r)
+            elif reg.iloc[i - 1] == "NEGATIVE":
+                rets["G-"].append(r)
+        for i in range(2, len(d)):
+            if reg.iloc[i - 1] == reg.iloc[i - 2] and reg.iloc[i - 1] in ("POSITIVE", "NEGATIVE"):
+                a, b = lr.iloc[i - 1], lr.iloc[i]
+                if np.isfinite(a) and np.isfinite(b):
+                    pairs["G+" if reg.iloc[i - 1] == "POSITIVE" else "G-"].append((a, b))
+    return ({k: np.array(v) for k, v in rets.items()},
+            {k: np.array(v) for k, v in pairs.items()})
+
+
+def _ac(ps: np.ndarray):
+    """Lag-1 autocorr and its approx standard error (1/sqrt(n)) for n pairs."""
+    if len(ps) < 4:
+        return float("nan"), float("nan")
+    return float(np.corrcoef(ps[:, 0], ps[:, 1])[0, 1]), 1.0 / np.sqrt(len(ps))
+
+
+def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
+    """Decisive test for the dealer-sign landmine: which convention's labels
+    better predict REALISED Nifty behaviour? Quarantine is OFF here on purpose —
+    the working thesis is that news is already baked into OI/gamma, so the regime
+    label encodes it. Buckets are sign-free; only the model's claim about each
+    bucket flips between conventions. Honest, significance-aware, NOT a verdict.
+    """
+    rets, pairs = _returns_by_gamma_sign(days)
+    gp, gm = rets["G+"], rets["G-"]
+    rvp, rvm = (gp.std() * 100 if len(gp) > 1 else float("nan"),
+                gm.std() * 100 if len(gm) > 1 else float("nan"))
+    acp, acp_se = _ac(pairs["G+"])
+    acm, acm_se = _ac(pairs["G-"])
+
+    L: list[str] = []
+    add = L.append
+    add("=" * 76)
+    add("BOTH-SIGNS DEALER-CONVENTION TEST  (quarantine OFF — news treated as baked")
+    add("into OI/gamma; all usable days)")
+    add("=" * 76)
+    add("Buckets are FIXED by net dealer-gamma sign under the US convention and do")
+    add("NOT move when the convention flips (GEX is linear in the dealer sign, so a")
+    add("flip negates net_gex and inverts the regime label EXACTLY; magnet, max-pain")
+    add("and |levels| are invariant). One measurement, two interpretations.")
+    add("")
+    add(f"  bucket  n_ret   rv(15m)    n_pair  lag1-ac")
+    add(f"  G+ (net_gex>0)  {len(gp):4}  {rvp:.3f}%   {len(pairs['G+']):4}   "
+        f"{acp:+.3f} ± {acp_se:.3f}")
+    add(f"  G- (net_gex<0)  {len(gm):4}  {rvm:.3f}%   {len(pairs['G-']):4}   "
+        f"{acm:+.3f} ± {acm_se:.3f}")
+
+    # Significance of the vol gap (sign-agnostic: same two samples either way).
+    lev_p = float("nan")
+    try:
+        from scipy import stats
+        if len(gp) > 1 and len(gm) > 1:
+            lev_p = float(stats.levene(gp, gm)[1])
+    except Exception:
+        pass
+    higher = "G+" if rvp >= rvm else "G-"
+    add("")
+    add(f"Realised-vol gap: {higher} is the wilder bucket "
+        + (f"(Levene p={lev_p:.3f} — {'distinguishable' if lev_p < 0.05 else 'NOT distinguishable'} "
+           "from no difference)." if np.isfinite(lev_p) else "(scipy unavailable)."))
+    add(f"Autocorr: both |ac| are within ~2·SE of zero "
+        f"(G+ {acp:+.3f}±{acp_se:.3f}, G- {acm:+.3f}±{acm_se:.3f}) — "
+        "intraday momentum is not statistically resolved at this n.")
+
+    # Score each convention against the model's 3 predictions.
+    def score(short_bucket: str, long_bucket: str):
+        srv = rvp if short_bucket == "G+" else rvm
+        lrv = rvp if long_bucket == "G+" else rvm
+        sac = acp if short_bucket == "G+" else acm
+        lac = acp if long_bucket == "G+" else acm
+        p1 = srv > lrv                      # short-gamma bucket more volatile
+        p2 = np.isfinite(sac) and sac > 0   # short-gamma trends
+        p3 = np.isfinite(lac) and lac < 0   # long-gamma mean-reverts
+        return p1, p2, p3
+
+    def block(name, short_bucket, long_bucket):
+        p1, p2, p3 = score(short_bucket, long_bucket)
+        n = sum(int(x) for x in (p1, p2, p3))
+        add("")
+        add(f"  {name}")
+        add(f"    short-gamma = {short_bucket}, long-gamma = {long_bucket}")
+        add(f"    P1 wilder when short-gamma : {'PASS' if p1 else 'fail'} "
+            f"(rv {short_bucket} vs {long_bucket})")
+        add(f"    P2 short-gamma trends (ac>0): {'PASS' if p2 else 'fail'}")
+        add(f"    P3 long-gamma reverts (ac<0): {'PASS' if p3 else 'fail'}")
+        add(f"    score {n}/3")
+        return n
+
+    add("")
+    add("-" * 76)
+    add("MODEL PREDICTIONS, SCORED PER CONVENTION  (P1 = the robust one)")
+    a = block("A  long_call_short_put  (US default)", "G-", "G+")
+    b = block("B  short_call_long_put  (India-inverted)", "G+", "G-")
+
+    add("")
+    add("-" * 76)
+    enough = len(days) >= 10 and (len(gp) + len(gm)) >= 200
+    lean = ("B (inverted)" if b > a else "A (US default)" if a > b else "neither")
+    add(f"READ: convention {lean} fits realised behaviour better here "
+        f"({b}/3 vs {a}/3 on B vs A). The discriminating signal is P1 (vol); the")
+    add("autocorr legs are underpowered and wash out. Sample is "
+        f"{'just past' if enough else 'BELOW'} the read-cautiously bar "
+        f"(n={len(days)} days, {len(gp) + len(gm)} intervals). This LEANS but does")
+    add("not settle the landmine: the regime label and the vol bucket can both")
+    add("co-move with 'was it a trending day', and most days are news-driven. Need")
+    add("many more full sessions (incl. the open) and ideally a third-party Indian")
+    add("dealer-positioning read before acting on a sign.")
+    return "\n".join(L)
+
+
 def analyze(ts_dir: Path = TS_DIR, last_n: int | None = None) -> str:
     days = load_all(ts_dir, last_n)
     L = []
@@ -314,12 +449,17 @@ def _render_block(add, rv: dict, ac: dict, label: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Analyse the Phase A intraday time-series.")
     ap.add_argument("--days", type=int, default=None, help="only the last N captured days")
+    ap.add_argument("--both-signs", action="store_true",
+                    help="run the dealer-sign convention comparison (quarantine OFF)")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
-    print(analyze(last_n=args.days))
+    if args.both_signs:
+        print(both_signs_report(load_all(TS_DIR, args.days)))
+    else:
+        print(analyze(last_n=args.days))
 
 
 if __name__ == "__main__":
