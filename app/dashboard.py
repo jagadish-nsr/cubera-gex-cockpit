@@ -178,25 +178,35 @@ def main():
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
     # --- Key metrics -------------------------------------------------------
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Spot", f"{L.spot:,.2f}")
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+    ov = data.oi_volume or {}
+    pcr = ov.get("pcr_oi")
+    if pcr is not None and pcr == pcr:   # not NaN
+        # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory, sign-free.
+        c4.metric("PCR (OI)", f"{pcr:.2f}",
+                  help="Put/Call open interest across the returned expiries. "
+                       ">1 put-heavy, <1 call-heavy. Independent of the dealer-sign "
+                       "assumption; exploratory.")
+    else:
+        c4.metric("PCR (OI)", "—", help="Put/Call OI; live NSE only.")
     vix = data.india_vix
     if vix:
         chg = vix.get("pct_change")
-        c4.metric("India VIX", f"{vix['last']:.2f}",
+        c5.metric("India VIX", f"{vix['last']:.2f}",
                   f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
     else:
-        c4.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
+        c5.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
     usdinr = data.usdinr
     if usdinr:
         uchg = usdinr.get("pct_change")
-        c5.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
+        c6.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
                   f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
                   help="NSE near-month USD/INR future — the rupee level; live NSE, best-effort.")
     else:
-        c5.metric("USD/INR (NSE fut)", "—",
+        c6.metric("USD/INR (NSE fut)", "—",
                   help="NSE near-month USD/INR future; live NSE only, best-effort.")
 
     # --- Simple levels (position-aware: a wall above price isn't "support") --
@@ -276,6 +286,9 @@ def main():
 
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
+
+    # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
+    _gamma_blast_section(data, is_expiry)
 
     # --- Intraday time-series (Phase A) -----------------------------------
     _timeseries_section(data)
@@ -509,6 +522,144 @@ def _oi_buildup_caption(df):
         "call OI building = resistance forming. Exploratory, across the returned "
         "expiries; not yet validated.*"
     )
+
+
+_ANCHOR_TIME_IST = (13, 45)   # freeze the anchors at 1:45pm IST (the folklore time)
+
+
+def _gamma_blast_section(data, is_expiry):
+    """Expiry-day crossover watch on two FIXED strikes (magnet + 1:45pm ATM).
+
+    By put-call parity the anchored strike's call/put premiums cross exactly when
+    spot crosses that strike — a breakout pivot that, near expiry, can 'gamma
+    blast'. Plus a gamma-concentration strip (candidate blast strikes). Live NSE
+    only; parity-based and SIGN-FREE; decision-support, no directional claim.
+    """
+    from app.gammablast import (crossover_state, detect_crossovers,
+                                gamma_concentration, pick_anchors, strike_premiums)
+
+    st.markdown("#### ⚡ Gamma-blast crossover watch")
+    if data.source != "nse" or not data.oi_strikes:
+        st.caption("Live NSE only — per-strike premiums aren't available on demo data.")
+        return
+
+    L = data.levels
+    ist = data.fetched_at + timedelta(hours=5, minutes=30)
+    ist_today = ist.strftime("%Y-%m-%d")
+    ist_min = ist.hour * 60 + ist.minute
+    anchor_min = _ANCHOR_TIME_IST[0] * 60 + _ANCHOR_TIME_IST[1]
+
+    blast = st.session_state.get("blast")
+    if not blast or blast.get("date") != ist_today:   # fresh state each IST day
+        blast = {"date": ist_today, "anchors": None, "points": {}}
+        st.session_state["blast"] = blast
+
+    col_a, col_b = st.columns([3, 1])
+    with col_b:
+        if st.button("📍 Anchor now", help="Freeze the magnet & ATM strikes at the "
+                     "current moment (overrides the 1:45pm auto-anchor)."):
+            blast["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet),
+                                "at": ist.strftime("%H:%M")}
+    # Auto-anchor at 1:45pm IST if not set yet (only in-session, live).
+    if blast["anchors"] is None and ist_min >= anchor_min:
+        blast["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet),
+                            "at": ist.strftime("%H:%M")}
+
+    anchors = blast["anchors"]
+    with col_a:
+        if anchors is None:
+            st.info(f"Anchors freeze automatically at **{_ANCHOR_TIME_IST[0]}:"
+                    f"{_ANCHOR_TIME_IST[1]:02d} IST** (now {ist:%H:%M}); or press "
+                    "**Anchor now**. The strikes are then held FIXED so a crossover "
+                    "means spot crossing that level.")
+        else:
+            tag = " — ⚡ expiry day" if is_expiry else " (strongest on expiry day)"
+            st.caption(f"Anchored at **{anchors['at']} IST**{tag}. "
+                       "Crossover = spot crossing the strike (put-call parity).")
+
+    # Accumulate this pull's anchored-strike premiums (survives auto-refresh reruns).
+    if anchors:
+        mc, mp = strike_premiums(data.oi_strikes, anchors["magnet"])
+        ac, ap = strike_premiums(data.oi_strikes, anchors["atm"])
+        blast["points"][ist.strftime("%H:%M")] = {
+            "magnet_call": mc, "magnet_put": mp, "atm_call": ac, "atm_put": ap}
+
+        cols = st.columns(2)
+        _blast_anchor_block(cols[0], "🧲 Magnet", anchors["magnet"], blast["points"],
+                            "magnet", crossover_state, detect_crossovers)
+        _blast_anchor_block(cols[1], "🎯 ATM @1:45", anchors["atm"], blast["points"],
+                            "atm", crossover_state, detect_crossovers)
+
+    # Gamma-concentration strip: where the gamma energy is piling up near spot.
+    conc = gamma_concentration(data.oi_strikes, L.spot)
+    if conc:
+        st.markdown("**Gamma concentration near spot** (candidate blast strikes — "
+                    "biggest |gamma exposure|; whether they pin or blast depends on the "
+                    "*unvalidated* dealer sign):")
+        cdf = pd.DataFrame([{
+            "Strike": f"{c['strike']:,.0f}", "Δ spot": f"{c['dist']:+,.0f}",
+            "Net GEX": f"{c['net_gex']:,.0f}",
+            "Call ΔOI": _fmt_num(c["call_doi"]), "Put ΔOI": _fmt_num(c["put_doi"]),
+        } for c in conc])
+        st.table(cdf)
+    st.caption("Parity-based and **sign-free**; it flags *where* and *when* a pivot "
+               "happens, not the direction. Decision-support only — you confirm.")
+
+
+def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_crossovers):
+    """One anchored strike: current crossover state + a call-vs-put premium chart."""
+    series = [{"time_ist": t, "call": v.get(f"{key}_call"), "put": v.get(f"{key}_put")}
+              for t, v in sorted(points.items())]
+    latest = next((s for s in reversed(series)
+                   if s["call"] is not None and s["put"] is not None), None)
+    with col:
+        if strike is None:
+            col.caption(f"{name}: no strike."); return
+        col.markdown(f"**{name} — {strike:,.0f}**")
+        if latest is None:
+            col.caption("waiting for premiums…"); return
+        state = crossover_state(latest["call"], latest["put"])
+        emoji = {"at_cross": "🔶", "call_rich": "🔼", "put_rich": "🔽"}.get(state["side"], "")
+        col.metric(f"{emoji} Call / Put", f"{latest['call']:.1f} / {latest['put']:.1f}",
+                   f"{state['diff']:+.1f}", delta_color="off")
+        col.caption(state["label"])
+        evs = detect_crossovers(series)
+        if evs:
+            last = evs[-1]
+            col.success(f"✅ Crossover at **{last['time_ist']}** "
+                        f"({last['from'].replace('_', ' ')} → {last['to'].replace('_', ' ')})"
+                        + (f"  ·  {len(evs)} total today" if len(evs) > 1 else ""))
+        _blast_chart(col, series)
+
+
+def _blast_chart(col, series):
+    """Call (red) vs Put (green) premium over time for one anchored strike."""
+    try:
+        import altair as alt
+
+        df = pd.DataFrame(series).dropna(subset=["call", "put"])
+        if len(df) < 2:
+            return
+        long = df.melt(id_vars=["time_ist"], value_vars=["call", "put"],
+                       var_name="leg", value_name="premium")
+        chart = alt.Chart(long).mark_line(point=True).encode(
+            x=alt.X("time_ist:N", title="IST", sort="ascending"),
+            y=alt.Y("premium:Q", title="Premium", scale=alt.Scale(zero=False)),
+            color=alt.Color("leg:N", scale=alt.Scale(domain=["call", "put"],
+                            range=["#d62728", "#2ca02c"]),
+                            legend=alt.Legend(title=None, orient="top")),
+            tooltip=["time_ist", "leg", "premium"],
+        )
+        col.altair_chart(chart, width="stretch")
+    except Exception as e:  # noqa: BLE001 - chart is non-essential
+        col.caption(f"(chart unavailable: {e})")
+
+
+def _fmt_num(x, nd=0):
+    try:
+        return f"{float(x):,.{nd}f}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 def _gex_chart(L):
