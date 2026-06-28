@@ -75,6 +75,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ''
-Write-Host 'Snapshots -> data\journal\timeseries\YYYY-MM-DD.csv ; run log -> data\journal\timeseries_run.log'
+Write-Host 'Snapshots -> data\journal\timeseries\YYYY-MM-DD.csv (1 row/snapshot)'
+Write-Host 'Per-strike OI/dOI -> data\journal\oi_strikes\YYYY-MM-DD.csv (1 row/strike) ; run log -> data\journal\timeseries_run.log'
 Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-TimeSeries'
 Write-Host 'Remove with:    Unregister-ScheduledTask -TaskName NiftyGEX-TimeSeries -Confirm:$false'

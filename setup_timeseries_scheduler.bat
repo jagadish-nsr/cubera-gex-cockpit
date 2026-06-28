@@ -25,6 +25,7 @@ schtasks /Create /TN "NiftyGEX-TimeSeries" /TR "\"%DIR%run_timeseries.bat\"" /SC
 echo.
 echo Created task NiftyGEX-TimeSeries (LOCAL/BST): every 15 min from 04:45 for 6h15m
 echo   = 09:15-15:30 IST. Snapshots -> data\journal\timeseries\YYYY-MM-DD.csv
+echo   Per-strike OI/dOI -> data\journal\oi_strikes\YYYY-MM-DD.csv
 echo   Run log -> data\journal\timeseries_run.log
 echo Winter (GMT): re-run this file after editing /ST to 03:45.
 echo Test now:  schtasks /Run /TN "NiftyGEX-TimeSeries"

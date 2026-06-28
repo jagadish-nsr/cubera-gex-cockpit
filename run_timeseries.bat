@@ -1,7 +1,8 @@
 @echo off
 rem Launcher called by the scheduled task — appends ONE intraday Nifty GEX snapshot
-rem to data\journal\timeseries\YYYY-MM-DD.csv. The script skips on weekends and
-rem outside 09:15-15:30 IST, so off-window fires are safe no-ops.
+rem to data\journal\timeseries\YYYY-MM-DD.csv, plus the per-strike OI/dOI rows to
+rem data\journal\oi_strikes\YYYY-MM-DD.csv (same fetch). The script skips on
+rem weekends and outside 09:15-15:30 IST, so off-window fires are safe no-ops.
 rem Console output + any errors append to data\journal\timeseries_run.log.
 cd /d "%~dp0"
 if not exist "data\journal" mkdir "data\journal"
