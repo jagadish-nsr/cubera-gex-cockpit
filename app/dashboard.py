@@ -293,6 +293,9 @@ def main():
     # --- Intraday time-series (Phase A) -----------------------------------
     _timeseries_section(data)
 
+    # --- Morning magnet-pull IC (research readout, historical) -------------
+    _ic_readout()
+
     # --- Caveats -----------------------------------------------------------
     with st.expander("Assumptions & caveats (please read)", expanded=True):
         st.markdown(
@@ -525,6 +528,44 @@ def _oi_buildup_caption(df):
 
 
 _ANCHOR_TIME_IST = (13, 45)   # freeze the anchors at 1:45pm IST (the folklore time)
+
+
+def _ic_readout():
+    """Historical research readout: morning vs afternoon Information Coefficient of
+    the magnet-pull signal over ALL captured days. Backward-looking and sign-free
+    (magnet location is dealer-sign-invariant); NOT a live signal. Collapsed by
+    default; see scripts/analyze_ic.py for the full report + bootstrap CIs."""
+    with st.expander("🧪 Morning magnet-pull IC (research, all captured days)", expanded=False):
+        try:
+            from scripts.analyze_ic import (build_samples, session_split,
+                                            spearman_ic)
+            from scripts.analyze_timeseries import load_all
+
+            days = load_all()
+            samples = build_samples(days, horizon_min=60.0)
+            if samples.empty or samples["day"].nunique() < 3 or len(samples) < 20:
+                st.caption("Accruing — needs a few more captured days before the IC "
+                           "is worth showing. Run `python scripts/analyze_ic.py` later.")
+                return
+            morning, afternoon = session_split(samples)
+            rm, pm, nm = spearman_ic(morning, "magnet_gap")
+            ra, pa, na = spearman_ic(afternoon, "magnet_gap")
+            c1, c2 = st.columns(2)
+            c1.metric("Morning IC (<12:00)", f"{rm:+.2f}",
+                      f"p={pm:.3f} · n={nm}", delta_color="off")
+            c2.metric("Afternoon IC (≥12:00)", f"{ra:+.2f}",
+                      f"p={pa:.3f} · n={na}", delta_color="off")
+            st.caption(
+                f"IC = rank corr( magnet-gap at t , next-60-min return ), over "
+                f"{samples['day'].nunique()} captured days. The pin (price pulled "
+                "toward the magnet) has historically predicted the next hour in the "
+                "**morning**, not the afternoon. **Sign-free** (magnet location is "
+                "independent of the dealer-sign assumption). Backward-looking, "
+                "exploratory, war-confounded — **not a live trade signal**. Full "
+                "stats + bootstrap CIs: `scripts/analyze_ic.py`."
+            )
+        except Exception as e:  # noqa: BLE001 - research readout is non-essential
+            st.caption(f"(IC readout unavailable: {e})")
 
 
 def _gamma_blast_section(data, is_expiry):
