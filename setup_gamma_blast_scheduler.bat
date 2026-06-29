@@ -22,13 +22,17 @@ rem Remove with:  schtasks /Delete /TN "NiftyGEX-GammaBlast" /F
 setlocal
 set "DIR=%~dp0"
 
-schtasks /Create /TN "NiftyGEX-GammaBlast" /TR "\"%DIR%run_gamma_blast.bat\"" /SC DAILY /ST 08:30 /RI 1 /DU 0002:30 /F
+rem One task per index — the launcher self-gates to each index's expiry day (Nifty:
+rem weekly Tuesday; Bank Nifty: monthly last Tuesday), so daily fires are no-ops
+rem otherwise. Per-index journal subfolder (data\journal\gamma_blast\<SYMBOL>\...).
+schtasks /Create /TN "NiftyGEX-GammaBlast" /TR "\"%DIR%run_gamma_blast.bat\" NIFTY" /SC DAILY /ST 08:30 /RI 1 /DU 0002:30 /F
+schtasks /Create /TN "BankNiftyGEX-GammaBlast" /TR "\"%DIR%run_gamma_blast.bat\" BANKNIFTY" /SC DAILY /ST 08:30 /RI 1 /DU 0002:30 /F
 
 echo.
-echo Created task NiftyGEX-GammaBlast (LOCAL/BST): every 1 min from 08:30 for 2h30m
-echo   = 13:00-15:30 IST, expiry days only. Per-strike 1-min capture ->
-echo   data\journal\gamma_blast\YYYY-MM-DD.csv
-echo   Run log -> data\journal\gamma_blast_run.log
-echo Winter (GMT): re-run this file after editing /ST to 07:30.
-echo Test now:  schtasks /Run /TN "NiftyGEX-GammaBlast"
+echo Created tasks NiftyGEX-GammaBlast + BankNiftyGEX-GammaBlast (LOCAL/BST):
+echo   every 1 min from 08:30 for 2h30m = 13:00-15:30 IST, expiry days only.
+echo   Per-strike 1-min capture -> data\journal\gamma_blast\<SYMBOL>\YYYY-MM-DD.csv
+echo   Run logs -> data\journal\gamma_blast_run_<SYMBOL>.log
+echo Winter (GMT): re-run this file after editing both /ST to 07:30.
+echo Test now:  schtasks /Run /TN "NiftyGEX-GammaBlast"   (or BankNiftyGEX-GammaBlast)
 pause

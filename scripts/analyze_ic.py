@@ -37,7 +37,8 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from scripts.analyze_timeseries import TS_DIR, load_all  # noqa: E402
+import config  # noqa: E402
+from scripts.analyze_timeseries import load_all  # noqa: E402
 
 MORNING_CUTOFF_MIN = 12 * 60      # IST minute that splits morning / afternoon
 MATCH_TOL_MIN = 8.0               # how close a row must be to t+horizon to pair
@@ -162,12 +163,15 @@ def bootstrap_ic_ci(samples: pd.DataFrame, signal: str, n_boot: int = BOOTSTRAP_
     return (float(lo), float(np.median(vals)), float(hi))
 
 
-def analyze(ts_dir: Path = TS_DIR, last_n: int | None = None, horizon_min: float = 60.0) -> str:
-    days = load_all(ts_dir, last_n)
+def analyze(symbol: str | None = None, last_n: int | None = None,
+            horizon_min: float = 60.0) -> str:
+    idx = config.get_index(symbol)
+    days = load_all(symbol, last_n)
     L: list[str] = []
     add = L.append
     add("=" * 78)
-    add(f"INFORMATION COEFFICIENT — GEX signals vs forward {horizon_min:g}-min return")
+    add(f"INFORMATION COEFFICIENT — {idx.label} ({idx.symbol}) — GEX signals vs "
+        f"forward {horizon_min:g}-min return")
     add("=" * 78)
     samples = build_samples(days, horizon_min)
     if samples.empty or len(samples) < 10:
@@ -240,12 +244,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="IC of GEX signals vs forward returns, by time-of-day.")
     ap.add_argument("--horizon", type=float, default=60.0, help="forward horizon in minutes")
     ap.add_argument("--days", type=int, default=None, help="only the last N captured days")
+    ap.add_argument("--symbol", default=config.DEFAULT_INDEX,
+                    help=f"index to analyse ({'/'.join(config.INDICES)}); default {config.DEFAULT_INDEX}")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
-    print(analyze(last_n=args.days, horizon_min=args.horizon))
+    print(analyze(symbol=args.symbol, last_n=args.days, horizon_min=args.horizon))
 
 
 if __name__ == "__main__":

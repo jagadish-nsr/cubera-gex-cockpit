@@ -27,6 +27,8 @@ class DashboardData:
     expiries: list
     window: str
     source: str
+    symbol: str = config.DEFAULT_INDEX   # which index this bundle is for
+    index_label: str = ""                # display name ("Nifty 50" / "Bank Nifty")
     oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
     oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot (live NSE)
     india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
@@ -34,8 +36,10 @@ class DashboardData:
     news: dict | None = None       # {count, impact, top}; free RSS, best-effort
 
 
-def load_dashboard(window: str | None = None, use_demo: bool = False) -> DashboardData:
+def load_dashboard(window: str | None = None, use_demo: bool = False,
+                   symbol: str | None = None) -> DashboardData:
     window = window or config.EXPIRY_WINDOW_DEFAULT
+    idx = config.get_index(symbol)             # resolves symbol -> lot size, weekly, band
     fetched_at = datetime.now(timezone.utc)
 
     if use_demo:
@@ -53,7 +57,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
                               fetch_usdinr, nearest_expiry_premiums,
                               parse_nse_option_chain, per_strike_oi)
 
-        payload = fetch_chain(config.UNDERLYING)   # single live pull
+        payload = fetch_chain(idx.symbol, has_weekly=idx.has_weekly)  # single live pull
         rows, spot = parse_nse_option_chain(payload)
         india_vix = fetch_india_vix()              # secondary call, fail-soft
         usdinr = fetch_usdinr()                    # USD/INR future, fail-soft
@@ -63,13 +67,14 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     snap = from_nse_results(
         rows, spot=spot, expiry_window=window,
         dealer_sign_model=config.DEALER_SIGN_MODEL, source=source,
-        fetched_at=fetched_at, oi_timestamp=fetched_at, underlying=config.UNDERLYING,
+        fetched_at=fetched_at, oi_timestamp=fetched_at, underlying=idx.symbol,
     )
-    snap.contracts = filter_expiry_window(snap.contracts, window, fetched_at.date())
+    snap.contracts = filter_expiry_window(snap.contracts, window, fetched_at.date(),
+                                          has_weekly=idx.has_weekly)
     snap.validate()
 
     levels = compute_levels(
-        snap, contract_size=config.CONTRACT_SIZE,
+        snap, contract_size=idx.lot_size,
         grid_range=config.FLIP_GRID_RANGE, grid_step=config.FLIP_GRID_STEP,
         oi_stale_hours=config.OI_STALE_HOURS,
         expiry_weighting=config.EXPIRY_WEIGHTING,
@@ -78,7 +83,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     view = from_levels(levels)
     expiries = sorted(snap.contracts["expiry"].unique().tolist())
     oi_volume = aggregate_oi_volume(payload) if payload is not None else None
-    oi_strikes = (per_strike_oi(payload, spot=spot, band_pts=config.OI_STRIKE_BAND_PTS)
+    oi_strikes = (per_strike_oi(payload, spot=spot, band_pts=idx.band_pts)
                   if payload is not None else None)
     if oi_strikes is not None:
         # Enrich each strike with the nearest-expiry premium (for the crossover
@@ -95,6 +100,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False) -> Dashboa
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
+        symbol=idx.symbol, index_label=idx.label,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
         usdinr=usdinr, news=news,
     )

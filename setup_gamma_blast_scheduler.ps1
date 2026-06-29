@@ -43,7 +43,11 @@ if (-not $isAdmin) {
 $bat  = Join-Path $PSScriptRoot 'run_gamma_blast.bat'
 $days = 'Monday','Tuesday','Wednesday','Thursday','Friday'
 
-$action = New-ScheduledTaskAction -Execute $bat
+# One task per index — the launcher self-gates to each index's expiry day, so a
+# daily 1-min fire is a no-op except on that index's expiry (Nifty: weekly Tuesday;
+# Bank Nifty: monthly last Tuesday).
+$tasks = [ordered]@{ 'NiftyGEX-GammaBlast' = 'NIFTY'; 'BankNiftyGEX-GammaBlast' = 'BANKNIFTY' }
+
 # 1-min cadence: cap each run to 2 min and never stack instances.
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable `
@@ -58,13 +62,17 @@ $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `
     -RepetitionInterval (New-TimeSpan -Minutes $EveryMins) `
     -RepetitionDuration (New-TimeSpan -Hours $WindowHours -Minutes $WindowMinutes)).Repetition
 
-try {
-    Register-ScheduledTask -TaskName 'NiftyGEX-GammaBlast' -Action $action -Trigger $trigger `
-        -Settings $settings -Principal $principal -Force | Out-Null
-    Write-Host "OK: registered NiftyGEX-GammaBlast - every $EveryMins min from $StartTime for ${WindowHours}h${WindowMinutes}m (= 13:00-15:30 IST), weekdays, expiry-day-gated, wake-to-run + run-if-not-logged-in." -ForegroundColor Green
-} catch {
-    Write-Host "FAILED to register task: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+foreach ($name in $tasks.Keys) {
+    $sym = $tasks[$name]
+    $action = New-ScheduledTaskAction -Execute $bat -Argument $sym
+    try {
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal -Force | Out-Null
+        Write-Host "OK: registered $name ($sym) - every $EveryMins min from $StartTime for ${WindowHours}h${WindowMinutes}m (= 13:00-15:30 IST), weekdays, expiry-day-gated, wake-to-run + run-if-not-logged-in." -ForegroundColor Green
+    } catch {
+        Write-Host "FAILED to register ${name}: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Enable "Allow wake timers" in the active power plan.
@@ -80,7 +88,8 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ''
-Write-Host 'Per-strike 1-min capture -> data\journal\gamma_blast\YYYY-MM-DD.csv (expiry days only)'
-Write-Host 'Run log -> data\journal\gamma_blast_run.log'
-Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-GammaBlast'
+Write-Host 'Per-strike 1-min capture -> data\journal\gamma_blast\<SYMBOL>\YYYY-MM-DD.csv (expiry days only)'
+Write-Host 'Run logs -> data\journal\gamma_blast_run_<SYMBOL>.log'
+Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-GammaBlast  (or BankNiftyGEX-GammaBlast)'
 Write-Host 'Remove with:    Unregister-ScheduledTask -TaskName NiftyGEX-GammaBlast -Confirm:$false'
+Write-Host '                Unregister-ScheduledTask -TaskName BankNiftyGEX-GammaBlast -Confirm:$false'

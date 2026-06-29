@@ -113,7 +113,7 @@ def test_build_and_roundtrip(tmp_path, monkeypatch):
     assert row["source"] == "DEMO-SYNTHETIC"
 
     path = ts.append_row(row)
-    assert path.parent == tmp_path
+    assert path.parent == tmp_path / "NIFTY"            # per-index subfolder
     ts.append_row(row)                                  # second point, same day
 
     df = ts.load_day(row["date_ist"])

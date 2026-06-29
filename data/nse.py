@@ -365,7 +365,8 @@ def fetch_chain_v3(symbol: str, expiry: str, session=None, timeout: int = 10) ->
     return r.json()
 
 
-def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: int = 10) -> dict:
+def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: int = 10,
+                has_weekly: bool = True) -> dict:
     """Live pull, assembled into a single {records:{data, underlyingValue}} payload.
 
     Strategy (NSE bot-gates this; run from a normal/Indian connection):
@@ -373,6 +374,11 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: in
       2. Try the all-expiries `option-chain-indices` endpoint — one call, done.
       3. Fall back to looping the per-expiry `option-chain-v3` endpoint over the
          in-window expiries (Tuesdays through the next monthly), merging results.
+
+    ``has_weekly=False`` (Bank Nifty, monthly-only): the v3 fallback fetches ONLY
+    the next monthly expiry, never the intervening weekly Tuesdays (which have no
+    Bank Nifty series). The all-expiries endpoint already returns just the served
+    expiries, so this only matters on the fallback path.
 
     Pass `expiries` (list of date/"DD-Mon-YYYY") to override discovery — useful if
     NSE's expiry list comes from a call you capture in your browser.
@@ -390,7 +396,7 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list | None = None, timeout: in
         pass
 
     # 3) per-expiry v3 loop
-    exp_strs = _resolve_expiries(expiries)
+    exp_strs = _resolve_expiries(expiries, has_weekly=has_weekly)
     merged_data: list[dict] = []
     spot = None
     errors = []
@@ -443,9 +449,13 @@ def fetch_usdinr(session=None, timeout: int = 10) -> dict | None:
         return None
 
 
-def _resolve_expiries(expiries: list | None) -> list[str]:
+def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[str]:
     """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
-    expiries from today through the next monthly, using the NSE calendar."""
+    expiries from today through the next monthly, using the NSE calendar.
+
+    ``has_weekly=False`` (Bank Nifty): fetch ONLY the next monthly expiry — the
+    intervening Tuesdays carry no series, so looping them is wasted calls that
+    return nothing."""
     from datetime import date, timedelta
 
     from data.expiry import next_monthly_expiry, next_weekly_expiry
@@ -455,6 +465,8 @@ def _resolve_expiries(expiries: list | None) -> list[str]:
 
     today = date.today()
     end = next_monthly_expiry(today)
+    if not has_weekly:
+        return [_nse_date(end)]
     out, d = [], next_weekly_expiry(today)
     while d <= end:
         out.append(_nse_date(d))

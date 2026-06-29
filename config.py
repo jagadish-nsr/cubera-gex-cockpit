@@ -8,6 +8,52 @@ memory (NSE changes lot sizes and expiry rules by circular).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+# --- Tradable indices (the per-index landmines) -----------------------------
+# Each index carries ONLY what differs between indices: the NSE option-chain
+# symbol, the contract multiplier (lot size), whether the index still has WEEKLY
+# expiries, and the per-strike OI band half-width. The pure GEX engine is
+# index-agnostic and reused unchanged; only these knobs change.
+#
+# ⚠️ lot_size + has_weekly are "VERIFY LIVE, never guess" landmines (CLAUDE.md):
+# NSE revises lot sizes and expiry rules by circular. The dealer-sign model is
+# the SAME unvalidated landmine for BOTH indices (India retail-SELLING flow);
+# Bank Nifty is, if anything, more retail-heavy — no extra trust there.
+@dataclass(frozen=True)
+class Index:
+    symbol: str        # NSE option-chain symbol ("NIFTY" / "BANKNIFTY")
+    label: str         # display name
+    lot_size: int      # contract multiplier — VERIFY against the current NSE circular
+    has_weekly: bool   # are weekly expiries served? (drives the expiry window/fetch)
+    band_pts: float    # per-strike OI band: keep strikes within ± this of spot
+
+
+# VERIFIED 2026-06 (confirm against your broker before trusting):
+#  - NIFTY: lot 75; WEEKLY + monthly, expiry Tuesday.
+#  - BANKNIFTY: lot 30 (NSE circular NSE/FAOP/70616, eff. Jan-2026 cycle, was 35);
+#    MONTHLY ONLY (last Tuesday) — NSE discontinued Bank Nifty weeklies on
+#    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
+#    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
+INDICES: dict[str, Index] = {
+    "NIFTY":     Index("NIFTY", "Nifty 50", 75, True, 2000),       # VERIFY lot size
+    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30, False, 4000),  # VERIFY lot + monthly-only
+}
+DEFAULT_INDEX = "NIFTY"
+
+
+def get_index(symbol: str | None) -> Index:
+    """Resolve a symbol to its Index (None -> the default). Fails loud on an
+    unknown symbol rather than silently trading the wrong contract."""
+    sym = (symbol or DEFAULT_INDEX).upper()
+    try:
+        return INDICES[sym]
+    except KeyError:
+        raise ValueError(
+            f"unknown index {sym!r}; known: {sorted(INDICES)}"
+        ) from None
+
+
 # --- Dealer gamma sign convention -------------------------------------------
 # ⚠️ UNVERIFIED FOR INDIA. The long-call/short-put-gamma convention is the US
 # index-dealer read. India's retail-option-SELLING microstructure may invert or
@@ -15,10 +61,11 @@ from __future__ import annotations
 # any Nifty output is trusted (see docs/nifty-nse-adapter-scope.md §6).
 DEALER_SIGN_MODEL = "long_call_short_put"  # VERIFY for Nifty before trusting
 
-# --- Contract multiplier (Nifty lot size) -----------------------------------
-# ⚠️ VERIFY LIVE. NSE revises the Nifty lot size by circular (recently raised to
-# keep contract value in a target band). This scales EVERY GEX number.
-NIFTY_LOT_SIZE = 75  # VERIFY against the current NSE circular
+# --- Contract multiplier (default index lot size) ---------------------------
+# ⚠️ VERIFY LIVE. NSE revises lot sizes by circular. This scales EVERY GEX number.
+# Back-compat aliases for the default index; per-index code reads Index.lot_size
+# off the INDICES registry above (the single source of truth).
+NIFTY_LOT_SIZE = INDICES[DEFAULT_INDEX].lot_size  # VERIFY against the current NSE circular
 CONTRACT_SIZE = NIFTY_LOT_SIZE
 
 # --- Expiry window ----------------------------------------------------------
@@ -44,11 +91,12 @@ OI_STALE_HOURS = 30  # NSE OI is end-of-day lagging; flag beyond ~1 trading day
 # strike where OI builds — the question aggregate ΔOI can't answer). To bound
 # the file, only strikes within this many points of spot are kept (the walls
 # always sit well inside this band; far-OTM strikes carry negligible OI).
-OI_STRIKE_BAND_PTS = 2000
+# Back-compat alias for the default index (per-index code reads Index.band_pts).
+OI_STRIKE_BAND_PTS = INDICES[DEFAULT_INDEX].band_pts
 
 # --- Market / timezone ------------------------------------------------------
 MARKET_TZ = "Asia/Kolkata"   # NSE session 09:15–15:30 IST
-UNDERLYING = "NIFTY"
+UNDERLYING = INDICES[DEFAULT_INDEX].symbol   # back-compat alias for the default index
 
 # --- Risk-free / dividend sourcing ------------------------------------------
 # r and q are IMPLIED per-expiry from put-call parity off the same chain — no

@@ -53,11 +53,16 @@ def next_weekly_expiry(ref: date) -> date:
     return ref + timedelta(days=(WEEKLY_EXPIRY_WEEKDAY - ref.weekday()) % 7)
 
 
-def filter_expiry_window(contracts, window: str, ref: date):
+def filter_expiry_window(contracts, window: str, ref: date, has_weekly: bool = True):
     """Return only contracts whose expiry falls inside the named window.
 
     Mirrors the SPX adapter's interface so the rest of the engine is unchanged.
     `contracts` is a DataFrame with an 'expiry' (datetime.date) column.
+
+    ``has_weekly=False`` (e.g. Bank Nifty, monthly-only since Nov-2024): the
+    "weekly" window collapses to the next MONTHLY expiry, since there is no weekly
+    Tuesday contract to bound it — without this the weekly window would silently
+    return an empty chain (the next weekly Tuesday has no Bank Nifty series).
     """
     if window not in VALID_WINDOWS:
         raise ValueError(f"unknown expiry window {window!r}; valid: {sorted(VALID_WINDOWS)}")
@@ -67,7 +72,8 @@ def filter_expiry_window(contracts, window: str, ref: date):
     elif window == "0dte":
         mask = exp == ref
     elif window == "weekly":
-        mask = (exp >= ref) & (exp <= next_weekly_expiry(ref))
+        end = next_weekly_expiry(ref) if has_weekly else next_monthly_expiry(ref)
+        mask = (exp >= ref) & (exp <= end)
     elif window in ("monthly", "0dte_to_next_monthly"):
         mask = (exp >= ref) & (exp <= next_monthly_expiry(ref))
     else:  # pragma: no cover

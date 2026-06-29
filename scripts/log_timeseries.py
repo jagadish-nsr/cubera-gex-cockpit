@@ -46,11 +46,11 @@ def _in_session(ist: datetime) -> bool:
     return o <= ist <= c
 
 
-def capture_once(min_gap: float = 10.0) -> str:
-    data = load_dashboard()  # live NSE, single fetch
+def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> str:
+    data = load_dashboard(symbol=symbol)  # live NSE, single fetch
     row = build_row(data)
-    path, written = append_if_due(row, min_gap_minutes=min_gap)
-    head = (f"{row['date_ist']} {row['time_ist']} IST  spot {row['spot']:,}  "
+    path, written = append_if_due(row, min_gap_minutes=min_gap, symbol=data.symbol)
+    head = (f"[{data.symbol}] {row['date_ist']} {row['time_ist']} IST  spot {row['spot']:,}  "
             f"{row['regime']}/{row['mode_label']}  "
             f"walls {row['put_wall']:,}-{row['call_wall']:,}  magnet {row['magnet']:,}  "
             f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})")
@@ -59,7 +59,7 @@ def capture_once(min_gap: float = 10.0) -> str:
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
     # row so the two captures never drift (skip writes nothing on either side).
     strike_rows = build_strike_rows(data)
-    append_strike_rows(strike_rows, date_ist=row["date_ist"])
+    append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol)
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
     return f"{head}  -> {path.name}{extra}"
 
@@ -73,8 +73,10 @@ def _print(s: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Intraday Nifty GEX time-series capture.")
+    ap = argparse.ArgumentParser(description="Intraday index GEX time-series capture.")
     ap.add_argument("--once", action="store_true", help="single snapshot then exit")
+    ap.add_argument("--symbol", default=None,
+                    help="index to capture (NIFTY/BANKNIFTY); default NIFTY")
     ap.add_argument("--loop", type=float, default=15.0, help="interval in minutes (loop mode)")
     ap.add_argument("--min-gap", type=float, default=10.0,
                     help="dedup guard: skip if a row was saved < this many minutes ago "
@@ -89,7 +91,7 @@ def main() -> None:
             _print(f"{ist:%Y-%m-%d %H:%M} IST  outside NSE session - skipped")
             return                                  # clean exit: weekend / off-window fire
         try:
-            _print(capture_once(min_gap=args.min_gap))
+            _print(capture_once(min_gap=args.min_gap, symbol=args.symbol))
         except Exception as e:  # noqa: BLE001 - surface and exit non-zero for schedulers
             _print(f"capture FAILED: {e}")
             sys.exit(1)
@@ -105,7 +107,7 @@ def main() -> None:
             ist = _ist_now()
             if args.ignore_session or _in_session(ist):
                 try:
-                    _print(capture_once(min_gap=gap))
+                    _print(capture_once(min_gap=gap, symbol=args.symbol))
                 except Exception as e:  # noqa: BLE001 - one bad pull must not stop the day
                     _print(f"{ist:%H:%M} IST  capture FAILED (kept looping): {e}")
             else:

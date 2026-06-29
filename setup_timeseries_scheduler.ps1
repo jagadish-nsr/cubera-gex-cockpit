@@ -39,7 +39,11 @@ if (-not $isAdmin) {
 $bat  = Join-Path $PSScriptRoot 'run_timeseries.bat'
 $days = 'Monday','Tuesday','Wednesday','Thursday','Friday'
 
-$action = New-ScheduledTaskAction -Execute $bat
+# One task per index — each passes its symbol to the launcher, which writes to the
+# per-index journal subfolder. Bank Nifty is monthly-only, but the 15-min session
+# capture still applies (it records the monthly chain every session day).
+$tasks = [ordered]@{ 'NiftyGEX-TimeSeries' = 'NIFTY'; 'BankNiftyGEX-TimeSeries' = 'BANKNIFTY' }
+
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
@@ -53,13 +57,17 @@ $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `
     -RepetitionInterval (New-TimeSpan -Minutes $EveryMins) `
     -RepetitionDuration (New-TimeSpan -Hours $WindowHours -Minutes $WindowMinutes)).Repetition
 
-try {
-    Register-ScheduledTask -TaskName 'NiftyGEX-TimeSeries' -Action $action -Trigger $trigger `
-        -Settings $settings -Principal $principal -Force | Out-Null
-    Write-Host "OK: registered NiftyGEX-TimeSeries - every $EveryMins min from $StartTime for ${WindowHours}h${WindowMinutes}m (= 09:15-15:30 IST), weekdays, wake-to-run + run-if-not-logged-in." -ForegroundColor Green
-} catch {
-    Write-Host "FAILED to register task: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+foreach ($name in $tasks.Keys) {
+    $sym = $tasks[$name]
+    $action = New-ScheduledTaskAction -Execute $bat -Argument $sym
+    try {
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal -Force | Out-Null
+        Write-Host "OK: registered $name ($sym) - every $EveryMins min from $StartTime for ${WindowHours}h${WindowMinutes}m (= 09:15-15:30 IST), weekdays, wake-to-run + run-if-not-logged-in." -ForegroundColor Green
+    } catch {
+        Write-Host "FAILED to register ${name}: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
 }
 
 # Enable "Allow wake timers" in the active power plan.
@@ -75,7 +83,9 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Host ''
-Write-Host 'Snapshots -> data\journal\timeseries\YYYY-MM-DD.csv (1 row/snapshot)'
-Write-Host 'Per-strike OI/dOI -> data\journal\oi_strikes\YYYY-MM-DD.csv (1 row/strike) ; run log -> data\journal\timeseries_run.log'
-Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-TimeSeries'
+Write-Host 'Snapshots -> data\journal\timeseries\<SYMBOL>\YYYY-MM-DD.csv (1 row/snapshot)'
+Write-Host 'Per-strike OI/dOI -> data\journal\oi_strikes\<SYMBOL>\YYYY-MM-DD.csv (1 row/strike)'
+Write-Host 'Run logs -> data\journal\timeseries_run_<SYMBOL>.log'
+Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-TimeSeries  (or BankNiftyGEX-TimeSeries)'
 Write-Host 'Remove with:    Unregister-ScheduledTask -TaskName NiftyGEX-TimeSeries -Confirm:$false'
+Write-Host '                Unregister-ScheduledTask -TaskName BankNiftyGEX-TimeSeries -Confirm:$false'
