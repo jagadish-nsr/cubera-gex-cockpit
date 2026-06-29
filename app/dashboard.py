@@ -287,14 +287,14 @@ def main():
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
 
+    # --- Morning magnet-pull IC (research readout, historical) -------------
+    _ic_readout()
+
     # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
     _gamma_blast_section(data, is_expiry)
 
     # --- Intraday time-series (Phase A) -----------------------------------
     _timeseries_section(data)
-
-    # --- Morning magnet-pull IC (research readout, historical) -------------
-    _ic_readout()
 
     # --- Caveats -----------------------------------------------------------
     with st.expander("Assumptions & caveats (please read)", expanded=True):
@@ -535,7 +535,7 @@ def _ic_readout():
     the magnet-pull signal over ALL captured days. Backward-looking and sign-free
     (magnet location is dealer-sign-invariant); NOT a live signal. Collapsed by
     default; see scripts/analyze_ic.py for the full report + bootstrap CIs."""
-    with st.expander("🧪 Morning magnet-pull IC (research, all captured days)", expanded=False):
+    with st.expander("🧪 Morning magnet-pull IC (research, all captured days)", expanded=True):
         try:
             from scripts.analyze_ic import (build_samples, session_split,
                                             spearman_ic)
