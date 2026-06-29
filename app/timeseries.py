@@ -178,15 +178,18 @@ def build_strike_rows(data) -> list[dict]:
     return rows
 
 
-def strikes_path_for(date_ist: str, directory: Path = OISTRIKES_DIR) -> Path:
-    return directory / f"{date_ist}.csv"
+def strikes_path_for(date_ist: str, directory: Path | None = None) -> Path:
+    # Resolve the module global at CALL time (default-arg binding would capture it
+    # at def-time and break monkeypatch in tests / any reassignment of OISTRIKES_DIR).
+    return (directory or OISTRIKES_DIR) / f"{date_ist}.csv"
 
 
 def append_strike_rows(rows: list[dict], date_ist: str | None = None,
-                       directory: Path = OISTRIKES_DIR) -> Path | None:
+                       directory: Path | None = None) -> Path | None:
     """Append per-strike rows to that IST day's CSV under ``directory`` (header on
     a new file). No-op returning None if there are no rows. ``directory`` lets the
-    1-min gamma-blast logger write to its own folder with the same schema."""
+    1-min gamma-blast logger write to its own folder with the same schema; None
+    => OISTRIKES_DIR (resolved at call time)."""
     if not rows:
         return None
     date_ist = date_ist or rows[0]["date_ist"]
@@ -201,8 +204,9 @@ def append_strike_rows(rows: list[dict], date_ist: str | None = None,
     return path
 
 
-def load_strikes_day(date_ist: str, directory: Path = OISTRIKES_DIR) -> pd.DataFrame:
-    """Load one IST day's per-strike capture (empty frame if none yet)."""
+def load_strikes_day(date_ist: str, directory: Path | None = None) -> pd.DataFrame:
+    """Load one IST day's per-strike capture (empty frame if none yet).
+    directory=None => OISTRIKES_DIR (resolved at call time)."""
     path = strikes_path_for(date_ist, directory)
     if not path.exists():
         return pd.DataFrame(columns=STRIKE_FIELDS)
