@@ -22,30 +22,33 @@ import streamlit as st  # noqa: E402
 import config  # noqa: E402
 from app.data_access import WINDOW_CHOICES, load_dashboard  # noqa: E402
 
-st.set_page_config(page_title="Nifty GEX", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Index GEX", page_icon="📈", layout="wide")
 
 # Keep in sync with IMPACT_FLAG in scripts/analyze_timeseries.py (the day-level gauge).
 _NEWS_IMPACT_FLAG = 4
 
 
-def _refresh(window: str, use_demo: bool):
+def _refresh(window: str, use_demo: bool, symbol: str):
     try:
-        st.session_state.data = load_dashboard(window=window, use_demo=use_demo)
+        st.session_state.data = load_dashboard(window=window, use_demo=use_demo, symbol=symbol)
         st.session_state.err = None
     except Exception as e:  # noqa: BLE001 - shown to the user, last-good kept
         st.session_state.err = str(e)
 
 
 def main():
-    st.title("Nifty GEX — Dashboard")
-    st.caption("Decision-support only — **NOT** financial advice. **Paper trading only.**")
-    st.error(
-        "⚠️ The dealer-sign model is **UNVALIDATED for Nifty** — the regime could be "
-        "inverted. Use this for practice and learning only, not real trades."
-    )
-
     with st.sidebar:
         st.header("Controls")
+        # Index picker FIRST — it drives the symbol, lot size, expiry rules and the
+        # per-index journals. Bank Nifty is monthly-only (no weeklies since Nov-2024).
+        symbols = list(config.INDICES)
+        symbol = st.selectbox(
+            "Index", symbols, index=symbols.index(config.DEFAULT_INDEX),
+            format_func=lambda s: config.INDICES[s].label,
+            help="Which index to read. Lot size, expiry rules and the captured "
+                 "journals are all per-index.",
+        )
+        idx = config.get_index(symbol)
         use_demo = st.checkbox(
             "Use demo data (offline)", value=False,
             help="Synthetic chain — runs without NSE. NOT a market read.",
@@ -72,6 +75,23 @@ def main():
                  "capture while the dashboard stays open.",
         )
 
+    st.title(f"{idx.label} GEX — Dashboard")
+    st.caption("Decision-support only — **NOT** financial advice. **Paper trading only.**")
+    st.error(
+        f"⚠️ The dealer-sign model is **UNVALIDATED for {idx.label}** — the regime could "
+        "be inverted. Use this for practice and learning only, not real trades."
+    )
+
+    # Switching index must drop the other index's accumulated points / anchors and
+    # force a fresh pull, so the two never bleed together.
+    if symbol != st.session_state.get("last_symbol"):
+        st.session_state["ts_points"] = {}
+        st.session_state.pop("blast", None)
+        st.session_state["last_symbol"] = symbol
+        st.session_state["symbol_changed"] = True
+    else:
+        st.session_state["symbol_changed"] = False
+
     # Non-blocking auto-refresh timer (a new tick value => time to re-pull).
     tick = None
     if auto:
@@ -93,9 +113,10 @@ def main():
     if auto:
         st.session_state["last_tick"] = tick
 
-    if refresh or auto_fired or st.session_state.data is None:
+    if (refresh or auto_fired or st.session_state.data is None
+            or st.session_state.get("symbol_changed")):
         with st.spinner("Pulling the option chain & computing GEX…"):
-            _refresh(window, use_demo)
+            _refresh(window, use_demo, symbol)
     if auto:
         st.caption(f"⏱️ Auto-refreshing every {auto_mins} min.")
 
@@ -116,9 +137,9 @@ def main():
             from app.timeseries import (append_row, append_strike_rows,
                                         build_row, build_strike_rows)
 
-            p = append_row(build_row(data))
-            append_strike_rows(build_strike_rows(data))   # per-strike OI, same fetch
-            st.sidebar.success(f"Saved snapshot → {p.name}")
+            p = append_row(build_row(data), symbol=data.symbol)
+            append_strike_rows(build_strike_rows(data), symbol=data.symbol)  # per-strike, same fetch
+            st.sidebar.success(f"Saved {data.symbol} snapshot → {p.name}")
         else:
             st.sidebar.warning("Not saved — demo data is synthetic.")
     elif auto_save and auto_fired and data.source == "nse":
@@ -134,10 +155,11 @@ def main():
         else:
             # Guard just below the tick interval so a co-running capture loop (or
             # a double-fire) doesn't double up, without blocking the app's cadence.
-            p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0))
+            p, written = append_if_due(build_row(data), min_gap_minutes=max(1.0, auto_mins - 1.0),
+                                       symbol=data.symbol)
             if written:
-                append_strike_rows(build_strike_rows(data))  # lock-step with the row
-                st.sidebar.success(f"Saved snapshot → {p.name}")
+                append_strike_rows(build_strike_rows(data), symbol=data.symbol)  # lock-step
+                st.sidebar.success(f"Saved {data.symbol} snapshot → {p.name}")
 
     # Accumulate each in-session live pull so the intraday chart persists across
     # auto-refresh reruns (session_state survives reruns) and the line grows --
@@ -161,8 +183,12 @@ def main():
     elif V.mode_label == "CAUTION":
         box = st.error
     box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
+    # Sign-free, time-of-day magnet-pull overlay — our strongest finding, and the
+    # one read that does NOT depend on the unvalidated dealer sign behind the label.
+    _magnet_pull_note(data, L)
     st.caption(
-        "GEX reads market *behaviour* (calm vs wild), not a guaranteed direction. "
+        "The mode label above reads behaviour (calm vs wild) off the **unvalidated** "
+        "dealer sign. The magnet line is **sign-free**. "
         f"Technical read: {V.headline}"
     )
 
@@ -288,7 +314,7 @@ def main():
     _gex_chart(L)
 
     # --- Morning magnet-pull IC (research readout, historical) -------------
-    _ic_readout()
+    _ic_readout(data.symbol)
 
     # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
     _gamma_blast_section(data, is_expiry)
@@ -298,8 +324,12 @@ def main():
 
     # --- Caveats -----------------------------------------------------------
     with st.expander("Assumptions & caveats (please read)", expanded=True):
+        _idx = config.get_index(data.symbol)
         st.markdown(
-            f"- **Lot size:** {config.CONTRACT_SIZE} — *VERIFY against the current NSE circular.*\n"
+            f"- **Index:** {_idx.label} (`{data.symbol}`) — "
+            + ("WEEKLY + monthly expiries." if _idx.has_weekly
+               else "**MONTHLY-ONLY** (no weeklies since Nov-2024).") + "\n"
+            f"- **Lot size:** {_idx.lot_size} — *VERIFY against the current NSE circular.*\n"
             f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **UNVALIDATED for India.**\n"
             f"- **Expiry weighting:** `{L.expiry_weighting}` — near-dated walls weighted up.\n"
             f"- **Expiry window:** {L.expiry_window} · contracts {data.n_contracts} · "
@@ -314,6 +344,56 @@ def main():
     st.caption(
         "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
     )
+
+
+_MORNING_CUTOFF_MIN = 12 * 60   # matches MORNING_CUTOFF_MIN in scripts/analyze_ic.py
+
+
+def _magnet_pull_note(data, L):
+    """Sign-free, time-of-day magnet-pull line for the market-mode header.
+
+    The mode label is built on the UNVALIDATED dealer sign. The magnet (peak
+    |net_gex| strike) is dealer-sign-INVARIANT, and our IC analysis
+    (scripts/analyze_ic.py) found the magnet pull predicts the next hour in the
+    MORNING (IC +0.45) and fades after noon — so this is the most landmine-immune
+    read of the day. Exploratory (n=11, war-confounded); a map, never a live signal.
+    """
+    from app.timeseries import in_nse_session
+
+    magnet = L.magnet
+    if magnet is None:
+        return
+    ist = data.fetched_at + timedelta(hours=5, minutes=30)
+    minute = ist.hour * 60 + ist.minute
+    gap = magnet - L.spot                         # +ve => magnet sits above spot
+    tol = max(L.spot * 0.001, 1.0)                # within ~0.1% of spot => "pinned"
+    direction = "up" if gap > 0 else "down"
+    where = f"**{magnet:,.0f}** ({gap:+,.0f} pts {'above' if gap > 0 else 'below'} spot)"
+    in_sess = data.source == "nse" and in_nse_session(data.fetched_at)
+
+    if abs(gap) <= tol:
+        st.info(f"🧲 **Price is sitting at the magnet ({magnet:,.0f}).** The pin is "
+                "already in — little directional pull either way from here. "
+                "*(Magnet is sign-free; exploratory.)*")
+    elif not in_sess:
+        st.caption(f"🧲 Magnet at {where}. The magnet-pull guide applies *during* the "
+                   "NSE session (strongest before noon IST) — sign-free, exploratory.")
+    elif minute < _MORNING_CUTOFF_MIN:
+        st.success(
+            f"🌅 **Morning ({ist:%H:%M} IST) — pull toward the magnet at {where}.** "
+            "Our IC analysis found the **morning** magnet-pull predicts the next hour "
+            "(IC **+0.45**, **sign-free** — independent of the unvalidated dealer "
+            f"sign), so price has a modest historical tendency to drift **{direction}** "
+            "toward the magnet this session. Exploratory (n=11, war-confounded) — a "
+            "map, **not a live signal**."
+        )
+    else:
+        st.info(
+            f"🕑 **Afternoon ({ist:%H:%M} IST) — magnet at {where}.** Our IC analysis "
+            "found the magnet-pull **fades after noon** (afternoon IC ≈ 0), so don't "
+            "lean on the pull now — weight the walls / flip below instead. "
+            "*(Sign-free, exploratory.)*"
+        )
 
 
 def _structure_notes(L) -> list[str]:
@@ -368,8 +448,8 @@ def _trade_explainer(L, V, data, is_expiry_day=False):
     from structures.suggest import suggest_structure
 
     nearest = data.expiries[0] if data.expiries else None
-    cs = suggest_structure(L, V, lot_size=config.CONTRACT_SIZE, nearest_expiry=nearest,
-                           is_expiry_day=is_expiry_day)
+    cs = suggest_structure(L, V, lot_size=config.get_index(data.symbol).lot_size,
+                           nearest_expiry=nearest, is_expiry_day=is_expiry_day)
 
     with st.expander("💡 What trade fits this mode?  (ILLUSTRATIVE — not validated, paper only)",
                      expanded=False):
@@ -400,8 +480,8 @@ def _timeseries_section(data):
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     # Merge today's on-disk captures (scheduler / saved) with the points pulled
     # this browser session (held in session_state so they survive auto-refresh
-    # reruns), deduped by timestamp -> the line persists and grows.
-    disk = load_day(ist_today)
+    # reruns), deduped by timestamp -> the line persists and grows. Per-index.
+    disk = load_day(ist_today, data.symbol)
     sess = pd.DataFrame(list(st.session_state.get("ts_points", {}).values()))
     if not sess.empty and "date_ist" in sess.columns:
         sess = sess[sess["date_ist"] == ist_today]
@@ -412,17 +492,17 @@ def _timeseries_section(data):
               .drop_duplicates(subset="timestamp_utc")
               .sort_values("timestamp_utc"))
     else:
-        days = available_days()
+        days = available_days(data.symbol)
         if not days:
             st.markdown("#### Intraday time-series")
             st.caption(
-                "No snapshots yet. Points accumulate here as you refresh (live NSE); "
-                "they also persist to disk if you enable **Save each tick** (sidebar) "
-                "or run `python scripts/log_timeseries.py`."
+                f"No {data.symbol} snapshots yet. Points accumulate here as you refresh "
+                "(live NSE); they also persist to disk if you enable **Save each tick** "
+                f"(sidebar) or run `python scripts/log_timeseries.py --symbol {data.symbol}`."
             )
             return
         label = days[-1]            # fall back to the most recent captured day
-        df = load_day(label)
+        df = load_day(label, data.symbol)
 
     st.markdown(f"#### Intraday time-series — {label}")
     try:
@@ -530,18 +610,18 @@ def _oi_buildup_caption(df):
 _ANCHOR_TIME_IST = (13, 45)   # freeze the anchors at 1:45pm IST (the folklore time)
 
 
-def _ic_readout():
+def _ic_readout(symbol: str | None = None):
     """Historical research readout: morning vs afternoon Information Coefficient of
-    the magnet-pull signal over ALL captured days. Backward-looking and sign-free
-    (magnet location is dealer-sign-invariant); NOT a live signal. Collapsed by
-    default; see scripts/analyze_ic.py for the full report + bootstrap CIs."""
+    the magnet-pull signal over ALL captured days for THIS index. Backward-looking
+    and sign-free (magnet location is dealer-sign-invariant); NOT a live signal.
+    See scripts/analyze_ic.py for the full report + bootstrap CIs."""
     with st.expander("🧪 Morning magnet-pull IC (research, all captured days)", expanded=True):
         try:
             from scripts.analyze_ic import (build_samples, session_split,
                                             spearman_ic)
             from scripts.analyze_timeseries import load_all
 
-            days = load_all()
+            days = load_all(symbol)
             samples = build_samples(days, horizon_min=60.0)
             if samples.empty or samples["day"].nunique() < 3 or len(samples) < 20:
                 st.caption("Accruing — needs a few more captured days before the IC "
@@ -591,8 +671,8 @@ def _gamma_blast_section(data, is_expiry):
     anchor_min = _ANCHOR_TIME_IST[0] * 60 + _ANCHOR_TIME_IST[1]
 
     blast = st.session_state.get("blast")
-    if not blast or blast.get("date") != ist_today:   # fresh state each IST day
-        blast = {"date": ist_today, "anchors": None, "points": {}}
+    if not blast or blast.get("date") != ist_today or blast.get("symbol") != data.symbol:
+        blast = {"date": ist_today, "symbol": data.symbol, "anchors": None, "points": {}}
         st.session_state["blast"] = blast
 
     col_a, col_b = st.columns([3, 1])
