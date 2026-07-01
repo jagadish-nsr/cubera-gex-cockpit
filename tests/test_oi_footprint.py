@@ -2,7 +2,8 @@
 
 import pandas as pd
 
-from app.oi_footprint import build_footprint, footprint_series
+from app.oi_footprint import (build_footprint, classify_buildup, footprint_series,
+                              intraday_premium_change, top_builds)
 
 
 def test_build_footprint_weighted_centers():
@@ -35,6 +36,38 @@ def test_empty_and_no_adds():
     assert build_footprint([]) is None
     fp = build_footprint([{"strike": 100, "put_doi": 0, "call_doi": 0}])
     assert fp["support_build"] is None and fp["resistance_build"] is None
+
+
+def test_classify_buildup_matrix():
+    assert classify_buildup(100, -5) == "writing (short build-up)"   # OI up, prem down
+    assert classify_buildup(100, +5) == "long build-up"              # OI up, prem up
+    assert classify_buildup(-100, +5) == "short covering"            # OI down, prem up
+    assert classify_buildup(-100, -5) == "long unwinding"            # OI down, prem down
+    assert classify_buildup(100, 0) == "no clear build"              # premium flat
+    assert classify_buildup(100, None) is None                       # missing premium
+
+
+def test_top_builds_ranks_positive_doi_within_band():
+    rows = [
+        {"strike": 24000, "put_doi": 143000, "put_ltp": 120.0, "put_vol": 9},
+        {"strike": 23900, "put_doi": 108000, "put_ltp": 95.0, "put_vol": 8},
+        {"strike": 23800, "put_doi": -5000, "put_ltp": 70.0, "put_vol": 7},   # unwind -> excluded
+        {"strike": 20000, "put_doi": 999999, "put_ltp": 5.0, "put_vol": 1},   # far OTM -> banded out
+    ]
+    top = top_builds(rows, "put", spot=24000, band_pts=500, top_n=6)
+    assert [t["strike"] for t in top] == [24000.0, 23900.0]          # sorted desc, positive, in-band
+    assert top[0]["doi"] == 143000 and top[0]["ltp"] == 120.0
+
+
+def test_intraday_premium_change_first_vs_last():
+    df = pd.DataFrame({
+        "time_ist": ["09:30", "09:30", "15:15", "15:15"],
+        "strike": [24000, 24100, 24000, 24100],
+        "call_ltp": [50.0, 30.0, 65.0, 20.0], "put_ltp": [40.0, 60.0, 55.0, 70.0],
+    })
+    ch = intraday_premium_change(df)
+    assert ch[24000.0]["call"] == 15.0 and ch[24000.0]["put"] == 15.0   # 65-50, 55-40
+    assert ch[24100.0]["call"] == -10.0                                  # 20-30
 
 
 def test_footprint_series_over_snapshots():

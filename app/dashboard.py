@@ -968,7 +968,8 @@ def _oi_footprint_section(data):
     resistance) and how it drifts intraday. Raw OI => sign-free; the put-build =
     support / call-build = resistance mapping is the standard exploratory heuristic."""
     from app.magnet_trend import classify_trend
-    from app.oi_footprint import build_footprint, footprint_series
+    from app.oi_footprint import (build_footprint, classify_buildup,
+                                  footprint_series, intraday_premium_change, top_builds)
     from app.timeseries import load_strikes_day
 
     st.markdown("#### 🏗️ Positioning footprint (per-strike ΔOI build)")
@@ -990,9 +991,39 @@ def _oi_footprint_section(data):
     c3.metric("Net ΔOI skew", f"{skew:+,.0f}",
               "put-writing" if skew > 0 else "call-writing", delta_color="off")
 
-    # Intraday drift from today's captured snapshots (journal).
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-    ser = footprint_series(load_strikes_day(ist_today, data.symbol))
+    day_df = load_strikes_day(ist_today, data.symbol)
+
+    # Top-6 OI build-ups per side, each tagged with the price+OI build-up type
+    # (writing / long build-up / short covering / long unwinding). Premium change is
+    # the day's first-vs-latest snapshot; volume is intensity, shown but not a tag.
+    prem = intraday_premium_change(day_df)
+
+    def _build_table(side, label):
+        builds = top_builds(data.oi_strikes, side, spot=L.spot, band_pts=L.spot * 0.03, top_n=6)
+        if not builds:
+            return
+        rows = []
+        for b in builds:
+            dprem = (prem.get(b["strike"]) or {}).get(side)
+            rows.append({
+                "Strike": f"{b['strike']:,.0f}",
+                "ΔOI": f"{b['doi']:,.0f}",
+                "Prem": f"{b['ltp']:,.1f}" if b["ltp"] is not None else "—",
+                "Vol": f"{b['vol']:,.0f}" if b["vol"] is not None else "—",
+                "Build-up": classify_buildup(b["doi"], dprem) or "—",
+            })
+        st.markdown(label)
+        st.table(pd.DataFrame(rows))
+
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        _build_table("put", "**🟢 Top support builds (put ΔOI)**")
+    with tcol2:
+        _build_table("call", "**🔴 Top resistance builds (call ΔOI)**")
+
+    # Intraday drift of the weighted centers (same journal).
+    ser = footprint_series(day_df)
     if len(ser) >= 2:
         sup = [s for _, s, _, _ in ser]
         res = [r for _, _, r, _ in ser]
@@ -1002,7 +1033,7 @@ def _oi_footprint_section(data):
             arrow = {"rising": "🔼 rolling UP", "falling": "🔽 rolling DOWN",
                      "flat": "⏸️ steady"}.get(tr["trend"], "")
             parts.append(f"{lbl} {arrow} ({tr['drift_pts']:+,.0f} since open)")
-        st.caption("Intraday drift — " + "  ·  ".join(parts))
+        st.caption("Weighted-center intraday drift — " + "  ·  ".join(parts))
 
     if skew > 0:
         st.success("Net **put-writing** near spot — big players laying support; "
@@ -1010,9 +1041,14 @@ def _oi_footprint_section(data):
     else:
         st.warning("Net **call-writing** near spot — big players capping upside; "
                    "positioning bias **down / capped**.")
-    st.caption("Reads where OI is *being added* (ΔOI vs previous close): put-build = "
-               "support, call-build = resistance (standard heuristic). Raw OI, so "
-               "**sign-free** (no dealer-gamma-sign assumption). Exploratory — not a live signal.")
+    st.caption(
+        "Reads where OI is *being added* (ΔOI vs previous close): put-build = support, "
+        "call-build = resistance (standard heuristic). Sign-free (raw OI). **Build-up tag** "
+        "= price+OI matrix: OI↑ & premium↓ = *writing*, OI↑ & premium↑ = *long build-up*, "
+        "OI↓ & premium↑ = *short covering*, OI↓ & premium↓ = *long unwinding*; **volume is "
+        "intensity, not a classifier**. Caveat: premium change is the day's first→latest "
+        "snapshot and LTP is nearest-expiry while ΔOI is summed across expiries — so the tag "
+        "is approximate. Exploratory — not a live signal.")
 
 
 def _gex_chart(L):
