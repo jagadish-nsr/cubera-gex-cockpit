@@ -16,7 +16,7 @@ def test_modal_magnet_is_the_mode():
 def test_rising_trend():
     r = classify_trend([23000, 23500, 24000], current=24000)
     assert r["trend"] == "rising"
-    assert r["drift_pts"] == 1000
+    assert abs(r["drift_pts"] - 1000) < 1e-6          # fitted slope over the window
     assert r["anchor"] == 23500                       # median of the window
     assert r["current_state"] == "above"              # 24000 vs 23500 anchor
 
@@ -34,6 +34,14 @@ def test_repositioning_flag():
     r = classify_trend([24000, 24000, 24000], current=24500)
     assert r["repositioning"] is True
     assert r["current_gap"] == 500
+
+
+def test_slope_ignores_a_single_endpoint_dip():
+    # rose 24000->24300 then a one-day dip to 23900: last<first, but the window
+    # leans flat overall -> slope-based drift must NOT call it "falling".
+    r = classify_trend([24000, 24100, 24200, 24300, 23900], current=24000)
+    assert r["trend"] == "flat"
+    assert abs(r["drift_pts"]) < 60          # near-zero fitted slope over the window
 
 
 def test_falling_and_empty():

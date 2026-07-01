@@ -86,14 +86,23 @@ def classify_trend(magnets: list[float], current: float | None,
     if not magnets:
         return {"trend": "unknown", "n": 0}
 
+    n = len(magnets)
     first, last = magnets[0], magnets[-1]
-    drift = last - first
     anchor = float(np.median(magnets))
     tol = max(anchor * tol_frac, 1.0)
+    # Drift = the fitted total change over the window from a least-squares SLOPE,
+    # not last-minus-first — so a single-day spike/dip at an endpoint can't
+    # masquerade as a trend (the slope only calls it a trend if the whole window
+    # leans that way). For n<2 there is no slope, so drift is 0 (flat).
+    if n >= 2:
+        slope = float(np.polyfit(np.arange(n), magnets, 1)[0])
+        drift = slope * (n - 1)
+    else:
+        drift = 0.0
     trend = "rising" if drift > tol else "falling" if drift < -tol else "flat"
 
     res = {"trend": trend, "drift_pts": drift, "anchor": anchor,
-           "first": first, "last": last, "n": len(magnets)}
+           "first": first, "last": last, "n": n}
     if current is not None and np.isfinite(current):
         gap = float(current) - anchor
         res.update({
