@@ -135,6 +135,89 @@ def lodo_ic(samples: pd.DataFrame, factors: list[str]):
     }
 
 
+def day_open_vix(days: dict[str, pd.DataFrame]) -> dict[str, float]:
+    """day -> that day's OPENING India VIX (first in-session reading; PIT — known
+    at 09:15). Days with no VIX column/value are omitted."""
+    out: dict[str, float] = {}
+    for name, df in days.items():
+        if "india_vix" not in df.columns:
+            continue
+        v = pd.to_numeric(df["india_vix"], errors="coerce").dropna()
+        if len(v):
+            out[name] = float(v.iloc[0])
+    return out
+
+
+def vix_regime_report(days: dict[str, pd.DataFrame], horizon_min: float = 60.0,
+                      symbol=None) -> str:
+    """Does the sign-free morning magnet-pull depend on the VOLATILITY regime?
+    Split whole days at the MEDIAN day-open India VIX (a fixed, non-optimized
+    threshold) into calm/low-VIX vs stressed/high-VIX, then compare the magnet_gap
+    IC within each. Interaction, not an additive weight — the idea VIX may *gate*
+    the pin rather than predict direction itself."""
+    from scripts.analyze_ic import bootstrap_ic_ci, spearman_ic
+
+    idx = config.get_index(symbol)
+    samples = build_mf_samples(days, horizon_min)
+    L: list[str] = []
+    add = L.append
+    add("=" * 82)
+    add(f"VIX-REGIME CONDITIONER — {idx.label} ({idx.symbol}) — does the morning "
+        "magnet-pull depend on the vol regime?")
+    add("=" * 82)
+
+    dv = day_open_vix(days)
+    if len(dv) < 4 or samples.empty:
+        add("Too few days with VIX (need >=4). Capture more, then re-run.")
+        return "\n".join(L)
+    thr = float(np.median(list(dv.values())))
+    low_days = {d for d, v in dv.items() if v <= thr}
+    high_days = {d for d, v in dv.items() if v > thr}
+    add(f"\nWhole-day split at the MEDIAN day-open India VIX = {thr:.2f}  "
+        f"(low-vol days {len(low_days)}, high-vol days {len(high_days)}).")
+    add("Signal = magnet_gap (sign-free GEX). IC = Spearman(magnet_gap_t, forward "
+        f"{horizon_min:g}m return). Fixed median split (NOT optimized); day-block "
+        "bootstrap 95% CI. Exploratory — tiny n per bucket.")
+
+    def block(name: str, sub: pd.DataFrame) -> None:
+        add("\n" + "-" * 82)
+        add(name)
+        for reg, dset in (("LOW-VIX (calm)", low_days), ("HIGH-VIX (stressed)", high_days)):
+            ss = sub[sub["day"].isin(dset)]
+            ic, p, n = spearman_ic(ss, "gex")
+            lo, med, hi = bootstrap_ic_ci(ss, "gex")
+            ci = f"[{lo:+.2f}, {hi:+.2f}]" if np.isfinite(lo) else "[n/a]"
+            excl = "excl 0" if np.isfinite(lo) and (lo > 0 or hi < 0) else "incl 0"
+            add(f"  {reg:20} IC={ic:+.3f}  p={p:.3f}  n={n:3}  days={ss['day'].nunique():2}"
+                f"  bootCI {ci} ({excl})")
+
+    mor = samples[samples["min_ist"] < MORNING_CUTOFF_MIN]
+    aft = samples[samples["min_ist"] >= MORNING_CUTOFF_MIN]
+    block("MORNING (<12:00)", mor)
+    block("AFTERNOON (>=12:00)", aft)
+    block("ALL SESSION", samples)
+
+    # Confound check: is "high-VIX" just re-labelling the news-dominated days? Show
+    # each day's VIX regime beside its news flag so the reader can judge.
+    from scripts.analyze_timeseries import news_day_flag
+    add("\n" + "-" * 82)
+    add("CONFOUND CHECK — VIX regime vs news-dominated flag (are they the same axis?)")
+    add(f"  {'day':12} {'openVIX':>7} {'regime':>10}  news-flag")
+    for d in sorted(dv):
+        reg = "HIGH-VIX" if dv[d] > thr else "low-vix"
+        add(f"  {d:12} {dv[d]:7.2f} {reg:>10}  {news_day_flag(days[d]) or '-'}")
+
+    add("\n" + "=" * 82)
+    add("READ: the pin hypothesis says the magnet works when dealers can pin — i.e. "
+        "LOW-VIX morning IC should be HIGHER than HIGH-VIX. If so, the vol regime "
+        "GATES the magnet pull (a conditioner), which is more useful than adding VIX "
+        "linearly (which failed). Check the confound table: if low-vix days are still "
+        "news-flagged, the VIX gate is NOT merely the news quarantine. Caveats: tiny "
+        "buckets, compressed VIX range, high-VIX bucket skews to the early war-spike "
+        "days (time-confounded), median threshold peeks — hypothesis-generating.")
+    return "\n".join(L)
+
+
 def _fmt(r):
     if r is None:
         return "n/a (too few days/rows)"
@@ -206,12 +289,19 @@ def main() -> None:
     ap.add_argument("--symbol", default=config.DEFAULT_INDEX,
                     help=f"index ({'/'.join(config.INDICES)}); default {config.DEFAULT_INDEX}")
     ap.add_argument("--horizon", type=float, default=60.0, help="forward horizon (min)")
+    ap.add_argument("--vix-regime", action="store_true",
+                    help="instead of the combo search, split days by VIX and compare "
+                         "the magnet-pull IC in calm vs stressed regimes")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
-    print(analyze(symbol=args.symbol, horizon_min=args.horizon))
+    if args.vix_regime:
+        print(vix_regime_report(load_all(args.symbol), horizon_min=args.horizon,
+                                symbol=args.symbol))
+    else:
+        print(analyze(symbol=args.symbol, horizon_min=args.horizon))
 
 
 if __name__ == "__main__":
