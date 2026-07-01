@@ -322,8 +322,8 @@ def main():
     # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
     _oi_footprint_section(data)
 
-    # --- Morning magnet-pull IC (research readout, historical) -------------
-    _ic_readout(data.symbol)
+    # --- Morning magnet-pull IC + live GEX conditioning (research) --------
+    _ic_readout(data)
 
     # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
     _gamma_blast_section(data, is_expiry)
@@ -645,12 +645,14 @@ def _oi_buildup_caption(df):
 _ANCHOR_TIME_IST = (13, 45)   # freeze the anchors at 1:45pm IST (the folklore time)
 
 
-def _ic_readout(symbol: str | None = None):
+def _ic_readout(data):
     """Historical research readout: morning vs afternoon Information Coefficient of
-    the magnet-pull signal over ALL captured days for THIS index. Backward-looking
+    the magnet-pull signal over ALL captured days for THIS index, PLUS the live GEX
+    (gamma-magnitude) conditioning — is today a strong-pin regime? Backward-looking
     and sign-free (magnet location is dealer-sign-invariant); NOT a live signal.
-    See scripts/analyze_ic.py for the full report + bootstrap CIs."""
-    with st.expander("🧪 Morning magnet-pull IC (research, all captured days)", expanded=True):
+    See scripts/analyze_ic.py / analyze_multifactor.py for the full reports."""
+    symbol, L = data.symbol, data.levels
+    with st.expander("🧪 Morning magnet-pull IC + GEX conditioning (research)", expanded=True):
         try:
             from scripts.analyze_ic import (build_samples, session_split,
                                             spearman_ic)
@@ -672,15 +674,57 @@ def _ic_readout(symbol: str | None = None):
                       f"p={pa:.3f} · n={na}", delta_color="off")
             st.caption(
                 f"IC = rank corr( magnet-gap at t , next-60-min return ), over "
-                f"{samples['day'].nunique()} captured days. The pin (price pulled "
-                "toward the magnet) has historically predicted the next hour in the "
-                "**morning**, not the afternoon. **Sign-free** (magnet location is "
-                "independent of the dealer-sign assumption). Backward-looking, "
-                "exploratory, war-confounded — **not a live trade signal**. Full "
-                "stats + bootstrap CIs: `scripts/analyze_ic.py`."
+                f"{samples['day'].nunique()} captured days. **These are IN-SAMPLE**; "
+                "leave-one-day-out the honest morning IC is **~+0.27** (see "
+                "`analyze_multifactor.py`). The pin has historically predicted the next "
+                "hour in the **morning**, not the afternoon. **Sign-free**, exploratory, "
+                "war-confounded — **not a live trade signal**."
             )
+            _pin_strength_block(days, L)
         except Exception as e:  # noqa: BLE001 - research readout is non-essential
             st.caption(f"(IC readout unavailable: {e})")
+
+
+def _pin_strength_block(days, L):
+    """GEX conditioning, live: split captured days by day-open |net GEX| (sign-free
+    gamma magnitude) at the median, show the morning magnet-pull IC in the HIGH vs
+    LOW bucket, and place TODAY's |net GEX| against that threshold — is the pin
+    expected to be strong or weak now? (See analyze_multifactor.py --conditioner gamma.)"""
+    from scripts.analyze_ic import spearman_ic
+    from scripts.analyze_multifactor import build_mf_samples, day_gamma_magnitude
+
+    gm = day_gamma_magnitude(days)
+    if len(gm) < 4:
+        return
+    thr = float(pd.Series(list(gm.values())).median())
+    mf = build_mf_samples(days, 60.0)
+    morning = mf[mf["min_ist"] < 12 * 60]
+    hi = {d for d, v in gm.items() if v > thr}
+    lo = {d for d, v in gm.items() if v <= thr}
+    ic_hi, _, n_hi = spearman_ic(morning[morning["day"].isin(hi)], "gex")
+    ic_lo, _, n_lo = spearman_ic(morning[morning["day"].isin(lo)], "gex")
+
+    cur = abs(float(L.total_net_gex))
+    strong = cur > thr
+
+    def f(x):
+        return f"{x:+.2f}" if x == x else "n/a"   # NaN-safe
+
+    st.markdown("**🎯 Pin strength — GEX conditioning (live):**")
+    g1, g2 = st.columns(2)
+    g1.metric("Today |net GEX|", f"{cur:,.0f}",
+              "HIGH-gamma → strong pin" if strong else "LOW-gamma → weak pin",
+              delta_color="off")
+    g2.metric("Strong-pin threshold", f"> {thr:,.0f}",
+              f"morning IC {f(ic_hi)} vs {f(ic_lo)}", delta_color="off")
+    st.caption(
+        f"On captured days, the morning magnet-pull is stronger when |net GEX| is "
+        f"**above ~{thr:,.0f}** (the median split): IC **{f(ic_hi)}** (n={n_hi}) vs "
+        f"**{f(ic_lo)}** (n={n_lo}) below. **Today's |net GEX| = {cur:,.0f} → "
+        f"{'HIGH-gamma, pin historically STRONGER' if strong else 'LOW-gamma, pin historically WEAKER'}.** "
+        "The threshold is an in-sample median on a few war-confounded days and |net GEX| "
+        "scale drifts with the OI build — treat as directional, not precise."
+    )
 
 
 def _gamma_blast_section(data, is_expiry):
