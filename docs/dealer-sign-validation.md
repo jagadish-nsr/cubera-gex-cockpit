@@ -12,10 +12,20 @@ There is a **weak, non-significant lean toward INVERSION** — i.e. the data lea
 toward: the engine's **NEGATIVE** label behaving *calm/pinned* and its
 **POSITIVE** label behaving *trendy/wild* — the opposite of the US convention the
 engine ships with. Two independent axes (gamma-bucket **volatility** and **PCR**)
-point the same way. **But** it is statistically insignificant (Levene p = 0.48),
-the **momentum/autocorrelation** evidence pulls the *other* way, magnet-pinning
+point the same way. **But** it is statistically insignificant, the
+**momentum/autocorrelation** evidence pulls the *other* way, magnet-pinning
 itself was not demonstrated, and **every captured day is contaminated by the
 Israel–Iran war**. **Dealer sign stays UNVALIDATED.** Do not trade a flipped sign.
+
+> **Refresh 2026-07-01 (n=12 usable days, 290 intervals):** the lean **holds** —
+> convention **B (inverted) scores 2/3 vs A 1/3**; G+ (net_gex>0) is the wilder
+> bucket and the **sign-free PCR tercile check independently corroborates B**
+> (low-PCR/call-heavy is wildest). Still **not significant** (Levene p ≈ 0.43).
+> The dashboard now surfaces this: the Market-mode header shows the calm-vs-wild
+> read **two-sided and leads with the inverted lean** (`_sign_calm_wild_note`),
+> rather than asserting the US-textbook "NEGATIVE ⇒ trending". The config sign is
+> deliberately **left on the US default** (a p≈0.43 lean does not justify silently
+> inverting every wall/flip/regime output).
 
 ---
 

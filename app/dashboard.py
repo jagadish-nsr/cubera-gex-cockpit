@@ -183,6 +183,9 @@ def main():
     elif V.mode_label == "CAUTION":
         box = st.error
     box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
+    # The calm-vs-wild claim in that label hinges on the unvalidated dealer sign —
+    # and our own captures LEAN the inverted way. Show both, lead with the lean.
+    _sign_calm_wild_note(V)
     # Sign-free, time-of-day magnet-pull overlay — our strongest finding, and the
     # one read that does NOT depend on the unvalidated dealer sign behind the label.
     _magnet_pull_note(data, L)
@@ -343,6 +346,32 @@ def main():
     st.divider()
     st.caption(
         "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
+    )
+
+
+def _sign_calm_wild_note(V):
+    """Reframe the mode label's calm-vs-wild claim, which hinges on the UNVALIDATED
+    dealer sign. Our own both-signs test + a sign-free PCR cross-check LEAN toward
+    the inverted India sign (see docs/dealer-sign-validation.md), under which the
+    calm/wild reading flips: a NEGATIVE-gamma read becomes the CALMER state, a
+    POSITIVE-gamma read the wilder one. Show both, lead with the lean, never assert
+    (the lean is not statistically settled)."""
+    if V.regime not in ("POSITIVE", "NEGATIVE"):
+        return
+    if V.regime == "NEGATIVE":
+        textbook, inverted = "TRENDING / volatile", "CALM / range-bound"
+    else:
+        textbook, inverted = "CALM / range-bound", "TRENDING / volatile"
+    st.warning(
+        "⚖️ **Calm-vs-wild here depends on the *unvalidated* dealer sign — and our "
+        "data leans the inverted way.**\n\n"
+        f"- US textbook sign → **{textbook}** (what the label above assumes).\n"
+        f"- Inverted India sign → **{inverted}**.\n\n"
+        f"Our accumulated captures (both-signs test + a sign-free PCR check) **lean "
+        f"toward the inverted read**, so this is *more likely* **{inverted}** than the "
+        "label suggests — but it is **not statistically settled**. Don't commit to "
+        "calm-vs-wild; the walls/flip and the sign-free magnet line below are the "
+        "safer guide. Details: `docs/dealer-sign-validation.md`."
     )
 
 
