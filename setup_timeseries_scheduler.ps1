@@ -44,9 +44,13 @@ $days = 'Monday','Tuesday','Wednesday','Thursday','Friday'
 # capture still applies (it records the monthly chain every session day).
 $tasks = [ordered]@{ 'NiftyGEX-TimeSeries' = 'NIFTY'; 'BankNiftyGEX-TimeSeries' = 'BANKNIFTY' }
 
+# ExecutionTimeLimit spans the whole session: on an EXPIRY day the 15-min fire
+# that first lands in the blast window (13:00 IST) stays resident at 1-min cadence
+# until 15:30 IST (bundled gamma-blast — no separate task). MultipleInstances
+# IgnoreNew stops the later 15-min fires from stacking on top of that loop.
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 8)
 # S4U: run whether logged on or not, no stored password, keeps network access.
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -RunLevel Limited
 
@@ -85,6 +89,8 @@ if ($LASTEXITCODE -eq 0) {
 Write-Host ''
 Write-Host 'Snapshots -> data\journal\timeseries\<SYMBOL>\YYYY-MM-DD.csv (1 row/snapshot)'
 Write-Host 'Per-strike OI/dOI -> data\journal\oi_strikes\<SYMBOL>\YYYY-MM-DD.csv (1 row/strike)'
+Write-Host 'EXPIRY DAYS: this same task auto-captures 1-min gamma-blast 13:00-15:30 IST'
+Write-Host '   -> data\journal\gamma_blast\<SYMBOL>\YYYY-MM-DD.csv  (no separate task needed)'
 Write-Host 'Run logs -> data\journal\timeseries_run_<SYMBOL>.log'
 Write-Host 'Test now with:  Start-ScheduledTask -TaskName NiftyGEX-TimeSeries  (or BankNiftyGEX-TimeSeries)'
 Write-Host 'Remove with:    Unregister-ScheduledTask -TaskName NiftyGEX-TimeSeries -Confirm:$false'
