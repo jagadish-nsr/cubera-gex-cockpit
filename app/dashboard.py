@@ -316,6 +316,9 @@ def main():
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
 
+    # --- Dealer-positioning trend (multi-day magnet drift, sign-free) ------
+    _magnet_drift_section(data)
+
     # --- Morning magnet-pull IC (research readout, historical) -------------
     _ic_readout(data.symbol)
 
@@ -810,6 +813,56 @@ def _fmt_num(x, nd=0):
         return f"{float(x):,.{nd}f}"
     except (TypeError, ValueError):
         return "—"
+
+
+def _magnet_drift_section(data):
+    """Multi-day magnet drift = the sign-free dealer-positioning TREND. Compares the
+    last few days' daily magnets (from the journal) with today's point-in-time
+    magnet to read whether positioning is drifting, anchored, or repositioning."""
+    from app.magnet_trend import classify_trend, recent_daily_magnets
+
+    L = data.levels
+    ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    recent = recent_daily_magnets(data.symbol, ist_today, n=5)
+
+    st.markdown("#### 🧲 Dealer-positioning trend (magnet drift)")
+    if len(recent) < 2:
+        st.caption(f"Need a few prior {data.symbol} days to read the magnet trend — "
+                   "accruing from the capture.")
+        return
+
+    magnets = [m for _, m in recent]
+    info = classify_trend(magnets, L.magnet)
+    hist = " → ".join(f"{m:,.0f}" for m in magnets)
+    st.markdown(f"**Last {info['n']} days' magnets:** {hist}  →  **today {L.magnet:,.0f}**")
+
+    trend = info["trend"]
+    drift = info.get("drift_pts", 0.0)
+    anchor = info.get("anchor", L.magnet)
+    if trend == "rising":
+        st.success(f"🔼 **Positioning drifting UP** — the magnet rose {drift:+,.0f} pts over "
+                   f"{info['n']} days (structural bias higher).")
+    elif trend == "falling":
+        st.warning(f"🔽 **Positioning drifting DOWN** — the magnet fell {drift:+,.0f} pts over "
+                   f"{info['n']} days (structural bias lower).")
+    else:
+        st.info(f"⏸️ **Positioning anchored ~{anchor:,.0f}** for {info['n']} days — a settled "
+                "pin / consolidation (range-bound bias).")
+
+    if info.get("repositioning"):
+        st.warning(f"⚠️ Today's magnet {L.magnet:,.0f} has **jumped {info['current_gap']:+,.0f}** "
+                   f"vs the {info['n']}-day anchor ({anchor:,.0f}) — **repositioning**; the anchor "
+                   "may be moving. Watch for a new trend forming.")
+    elif info.get("current_state") == "at":
+        st.caption(f"Today's magnet sits AT the {info['n']}-day anchor ({anchor:,.0f}) — "
+                   "positioning consistent with recent days.")
+    else:
+        st.caption(f"Today's magnet is {info.get('current_gap', 0):+,.0f} "
+                   f"{info.get('current_state', '')} the {info['n']}-day anchor ({anchor:,.0f}).")
+
+    st.caption("The magnet marks where dealer gamma (big-player option positioning) "
+               "concentrates; its multi-day drift is the positioning *trend*. **Sign-free** — "
+               "independent of the dealer-sign landmine. Exploratory, not a live signal.")
 
 
 def _gex_chart(L):
