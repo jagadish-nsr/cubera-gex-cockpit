@@ -319,6 +319,9 @@ def main():
     # --- Dealer-positioning trend (multi-day magnet drift, sign-free) ------
     _magnet_drift_section(data)
 
+    # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
+    _oi_footprint_section(data)
+
     # --- Morning magnet-pull IC (research readout, historical) -------------
     _ic_readout(data.symbol)
 
@@ -863,6 +866,58 @@ def _magnet_drift_section(data):
     st.caption("The magnet marks where dealer gamma (big-player option positioning) "
                "concentrates; its multi-day drift is the positioning *trend*. **Sign-free** — "
                "independent of the dealer-sign landmine. Exploratory, not a live signal.")
+
+
+def _oi_footprint_section(data):
+    """Per-strike ΔOI footprint: where big players are BUILDING OI (support vs
+    resistance) and how it drifts intraday. Raw OI => sign-free; the put-build =
+    support / call-build = resistance mapping is the standard exploratory heuristic."""
+    from app.magnet_trend import classify_trend
+    from app.oi_footprint import build_footprint, footprint_series
+    from app.timeseries import load_strikes_day
+
+    st.markdown("#### 🏗️ Positioning footprint (per-strike ΔOI build)")
+    if data.source != "nse" or not data.oi_strikes:
+        st.caption("Live NSE only — per-strike ΔOI isn't available on demo data.")
+        return
+    L = data.levels
+    fp = build_footprint(data.oi_strikes, spot=L.spot, band_pts=L.spot * 0.03)
+    if not fp or fp["support_build"] is None or fp["resistance_build"] is None:
+        st.caption("No meaningful OI additions near spot yet.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 Support building", f"{fp['support_build']:,.0f}",
+              f"peak {fp['peak_put_strike']:,.0f}", delta_color="off")
+    c2.metric("🔴 Resistance building", f"{fp['resistance_build']:,.0f}",
+              f"peak {fp['peak_call_strike']:,.0f}", delta_color="off")
+    skew = fp["net_skew"]
+    c3.metric("Net ΔOI skew", f"{skew:+,.0f}",
+              "put-writing" if skew > 0 else "call-writing", delta_color="off")
+
+    # Intraday drift from today's captured snapshots (journal).
+    ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    ser = footprint_series(load_strikes_day(ist_today, data.symbol))
+    if len(ser) >= 2:
+        sup = [s for _, s, _, _ in ser]
+        res = [r for _, _, r, _ in ser]
+        parts = []
+        for lbl, tr in (("Support", classify_trend(sup, sup[-1])),
+                        ("Resistance", classify_trend(res, res[-1]))):
+            arrow = {"rising": "🔼 rolling UP", "falling": "🔽 rolling DOWN",
+                     "flat": "⏸️ steady"}.get(tr["trend"], "")
+            parts.append(f"{lbl} {arrow} ({tr['drift_pts']:+,.0f} since open)")
+        st.caption("Intraday drift — " + "  ·  ".join(parts))
+
+    if skew > 0:
+        st.success("Net **put-writing** near spot — big players laying support; "
+                   "positioning bias **up / supported**.")
+    else:
+        st.warning("Net **call-writing** near spot — big players capping upside; "
+                   "positioning bias **down / capped**.")
+    st.caption("Reads where OI is *being added* (ΔOI vs previous close): put-build = "
+               "support, call-build = resistance (standard heuristic). Raw OI, so "
+               "**sign-free** (no dealer-gamma-sign assumption). Exploratory — not a live signal.")
 
 
 def _gex_chart(L):
