@@ -48,6 +48,16 @@ def test_lodo_needs_enough_days():
     assert lodo_ic(s, ["gex"]) is None            # < 3 days -> no OOS estimate
 
 
+def test_day_open_metrics():
+    from scripts.analyze_multifactor import day_gamma_magnitude, day_open_vix
+    days = {
+        "d1": pd.DataFrame({"india_vix": [13.0, 14.0], "net_gex": [-500, 200]}),
+        "d2": pd.DataFrame({"india_vix": [np.nan, 16.0], "net_gex": [300, -100]}),
+    }
+    assert day_open_vix(days) == {"d1": 13.0, "d2": 16.0}          # first non-NaN open
+    assert day_gamma_magnitude(days) == {"d1": 500.0, "d2": 300.0}  # |open net_gex|, sign-free
+
+
 def test_build_mf_day_columns():
     df = pd.DataFrame({
         "timestamp_utc": ["2026-06-12T03:45:00Z", "2026-06-12T04:00:00Z",

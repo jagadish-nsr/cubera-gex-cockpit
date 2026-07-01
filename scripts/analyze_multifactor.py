@@ -135,61 +135,76 @@ def lodo_ic(samples: pd.DataFrame, factors: list[str]):
     }
 
 
-def day_open_vix(days: dict[str, pd.DataFrame]) -> dict[str, float]:
-    """day -> that day's OPENING India VIX (first in-session reading; PIT — known
-    at 09:15). Days with no VIX column/value are omitted."""
+def _day_open(days: dict[str, pd.DataFrame], col: str, transform=None) -> dict[str, float]:
+    """day -> that day's OPENING value of ``col`` (first in-session reading; PIT).
+    ``transform`` maps the raw value (e.g. abs). Days lacking the column are omitted."""
     out: dict[str, float] = {}
     for name, df in days.items():
-        if "india_vix" not in df.columns:
+        if col not in df.columns:
             continue
-        v = pd.to_numeric(df["india_vix"], errors="coerce").dropna()
+        v = pd.to_numeric(df[col], errors="coerce").dropna()
         if len(v):
-            out[name] = float(v.iloc[0])
+            x = float(v.iloc[0])
+            out[name] = transform(x) if transform else x
     return out
 
 
-def vix_regime_report(days: dict[str, pd.DataFrame], horizon_min: float = 60.0,
-                      symbol=None) -> str:
-    """Does the sign-free morning magnet-pull depend on the VOLATILITY regime?
-    Split whole days at the MEDIAN day-open India VIX (a fixed, non-optimized
-    threshold) into calm/low-VIX vs stressed/high-VIX, then compare the magnet_gap
-    IC within each. Interaction, not an additive weight — the idea VIX may *gate*
-    the pin rather than predict direction itself."""
-    from scripts.analyze_ic import bootstrap_ic_ci, spearman_ic
+def day_open_vix(days):
+    return _day_open(days, "india_vix")
 
-    idx = config.get_index(symbol)
+
+def day_gamma_magnitude(days):
+    """|net GEX| at the day's open — the SIGN-FREE size of net dealer gamma
+    (invariant to flipping the dealer sign, since |−x|=|x|). Bigger => a stronger
+    net pinning force (before we know its direction)."""
+    return _day_open(days, "net_gex", abs)
+
+
+def _conditioner_report(days, horizon_min, symbol, *, title, metric_name, day_metric,
+                        low_label, high_label, hypothesis, threshold=None,
+                        valfmt="{:.2f}") -> str:
+    """Split whole days by a day-level metric (median, or a fixed ``threshold``) and
+    compare the sign-free magnet_gap IC in the low vs high bucket, morning /
+    afternoon / all, with day-block bootstrap CIs. A confound table prints the
+    metric beside VIX, |net GEX| and the news flag so overlaps are visible."""
+    from scripts.analyze_ic import bootstrap_ic_ci, spearman_ic
+    from scripts.analyze_timeseries import news_day_flag
+
     samples = build_mf_samples(days, horizon_min)
     L: list[str] = []
     add = L.append
     add("=" * 82)
-    add(f"VIX-REGIME CONDITIONER — {idx.label} ({idx.symbol}) — does the morning "
-        "magnet-pull depend on the vol regime?")
+    add(title)
     add("=" * 82)
-
-    dv = day_open_vix(days)
-    if len(dv) < 4 or samples.empty:
-        add("Too few days with VIX (need >=4). Capture more, then re-run.")
+    if len(day_metric) < 4 or samples.empty:
+        add(f"Too few days with {metric_name} (need >=4). Capture more, then re-run.")
         return "\n".join(L)
-    thr = float(np.median(list(dv.values())))
-    low_days = {d for d, v in dv.items() if v <= thr}
-    high_days = {d for d, v in dv.items() if v > thr}
-    add(f"\nWhole-day split at the MEDIAN day-open India VIX = {thr:.2f}  "
-        f"(low-vol days {len(low_days)}, high-vol days {len(high_days)}).")
-    add("Signal = magnet_gap (sign-free GEX). IC = Spearman(magnet_gap_t, forward "
-        f"{horizon_min:g}m return). Fixed median split (NOT optimized); day-block "
-        "bootstrap 95% CI. Exploratory — tiny n per bucket.")
 
-    def block(name: str, sub: pd.DataFrame) -> None:
+    if threshold is None:
+        thr = float(np.median(list(day_metric.values())))
+        split_desc = "MEDIAN"
+    else:
+        thr = float(threshold)
+        split_desc = "FIXED"
+    low_days = {d for d, v in day_metric.items() if v <= thr}
+    high_days = {d for d, v in day_metric.items() if v > thr}
+    add(f"\nWhole-day split on {metric_name}")
+    add(f"  at the {split_desc} = {valfmt.format(thr)}  "
+        f"({low_label}: {len(low_days)} days, {high_label}: {len(high_days)} days).")
+    add("Signal = magnet_gap (sign-free GEX). IC = Spearman(magnet_gap_t, forward "
+        f"{horizon_min:g}m return). Day-block bootstrap 95% CI. Exploratory — tiny n.")
+
+    def block(name, sub):
         add("\n" + "-" * 82)
         add(name)
-        for reg, dset in (("LOW-VIX (calm)", low_days), ("HIGH-VIX (stressed)", high_days)):
+        for reg, dset in ((low_label, low_days), (high_label, high_days)):
             ss = sub[sub["day"].isin(dset)]
             ic, p, n = spearman_ic(ss, "gex")
             lo, med, hi = bootstrap_ic_ci(ss, "gex")
             ci = f"[{lo:+.2f}, {hi:+.2f}]" if np.isfinite(lo) else "[n/a]"
             excl = "excl 0" if np.isfinite(lo) and (lo > 0 or hi < 0) else "incl 0"
-            add(f"  {reg:20} IC={ic:+.3f}  p={p:.3f}  n={n:3}  days={ss['day'].nunique():2}"
-                f"  bootCI {ci} ({excl})")
+            add(f"  {reg:22} IC={ic:+.3f}  p={p:.3f}  n={n:3}  "
+                f"days={ss['day'].nunique():2}  bootCI {ci} ({excl})")
 
     mor = samples[samples["min_ist"] < MORNING_CUTOFF_MIN]
     aft = samples[samples["min_ist"] >= MORNING_CUTOFF_MIN]
@@ -197,25 +212,57 @@ def vix_regime_report(days: dict[str, pd.DataFrame], horizon_min: float = 60.0,
     block("AFTERNOON (>=12:00)", aft)
     block("ALL SESSION", samples)
 
-    # Confound check: is "high-VIX" just re-labelling the news-dominated days? Show
-    # each day's VIX regime beside its news flag so the reader can judge.
-    from scripts.analyze_timeseries import news_day_flag
+    # Confound table: the split metric beside VIX, |net GEX|, and the news flag.
+    vix, gam = day_open_vix(days), day_gamma_magnitude(days)
     add("\n" + "-" * 82)
-    add("CONFOUND CHECK — VIX regime vs news-dominated flag (are they the same axis?)")
-    add(f"  {'day':12} {'openVIX':>7} {'regime':>10}  news-flag")
-    for d in sorted(dv):
-        reg = "HIGH-VIX" if dv[d] > thr else "low-vix"
-        add(f"  {d:12} {dv[d]:7.2f} {reg:>10}  {news_day_flag(days[d]) or '-'}")
+    add("CONFOUND CHECK — split metric vs VIX / |net GEX| / news (same axis?)")
+    add(f"  {'day':12} {'metric':>13} {'bin':>4}  {'openVIX':>7} {'|netGEX|open':>14}  news-flag")
+    for d in sorted(day_metric):
+        b = "HIGH" if day_metric[d] > thr else "low"
+        add(f"  {d:12} {valfmt.format(day_metric[d]):>13} {b:>4}  "
+            f"{vix.get(d, float('nan')):7.2f} {gam.get(d, float('nan')):14,.0f}  "
+            f"{news_day_flag(days[d]) or '-'}")
 
     add("\n" + "=" * 82)
-    add("READ: the pin hypothesis says the magnet works when dealers can pin — i.e. "
-        "LOW-VIX morning IC should be HIGHER than HIGH-VIX. If so, the vol regime "
-        "GATES the magnet pull (a conditioner), which is more useful than adding VIX "
-        "linearly (which failed). Check the confound table: if low-vix days are still "
-        "news-flagged, the VIX gate is NOT merely the news quarantine. Caveats: tiny "
-        "buckets, compressed VIX range, high-VIX bucket skews to the early war-spike "
-        "days (time-confounded), median threshold peeks — hypothesis-generating.")
+    add(hypothesis)
     return "\n".join(L)
+
+
+def vix_regime_report(days, horizon_min=60.0, symbol=None, threshold=None) -> str:
+    idx = config.get_index(symbol)
+    return _conditioner_report(
+        days, horizon_min, symbol,
+        title=(f"VIX-REGIME CONDITIONER — {idx.label} ({idx.symbol}) — does the "
+               "morning magnet-pull depend on the vol regime?"),
+        metric_name="day-open India VIX", day_metric=day_open_vix(days),
+        low_label="LOW-VIX (calm)", high_label="HIGH-VIX (stressed)",
+        threshold=threshold, valfmt="{:.2f}",
+        hypothesis=("READ: pin hypothesis -> LOW-VIX morning IC should EXCEED HIGH-VIX "
+                    "(calm regimes pin). Mechanism: higher IV lowers gamma, weakening the "
+                    "pin. Confound cols: if low-VIX days still carry news / high |netGEX|, "
+                    "the gate isn't just the news quarantine. Caveats: tiny buckets, "
+                    "compressed VIX range, high-VIX skews to early war-spike days, "
+                    "median peeks — hypothesis-generating, not an edge."))
+
+
+def gamma_regime_report(days, horizon_min=60.0, symbol=None, threshold=None) -> str:
+    idx = config.get_index(symbol)
+    return _conditioner_report(
+        days, horizon_min, symbol,
+        title=(f"GAMMA-MAGNITUDE CONDITIONER — {idx.label} ({idx.symbol}) — does the "
+               "morning magnet-pull depend on how much dealer gamma is positioned?"),
+        metric_name="day-open |net GEX| (sign-free dealer-gamma magnitude)",
+        day_metric=day_gamma_magnitude(days),
+        low_label="LOW-gamma (weak pin)", high_label="HIGH-gamma (strong pin)",
+        threshold=threshold, valfmt="{:,.0f}",
+        hypothesis=("READ: the DIRECT positioning test -> HIGH-gamma morning IC should "
+                    "EXCEED LOW-gamma (more net dealer gamma => stronger pin => the magnet "
+                    "pulls). |net GEX| is SIGN-FREE (invariant to the dealer-sign flip), so "
+                    "this reads big-player positioning directly, not the news response. "
+                    "Cross-check the VIX col: high gamma should coincide with LOW VIX (higher "
+                    "IV mechanically lowers gamma) — if HIGH-gamma also wins on IC, it "
+                    "corroborates the VIX gate via the actual mechanism. Caveats: |netGEX| "
+                    "scale drifts with the OI build, tiny buckets, war-confounded, median peeks."))
 
 
 def _fmt(r):
@@ -289,17 +336,22 @@ def main() -> None:
     ap.add_argument("--symbol", default=config.DEFAULT_INDEX,
                     help=f"index ({'/'.join(config.INDICES)}); default {config.DEFAULT_INDEX}")
     ap.add_argument("--horizon", type=float, default=60.0, help="forward horizon (min)")
-    ap.add_argument("--vix-regime", action="store_true",
-                    help="instead of the combo search, split days by VIX and compare "
-                         "the magnet-pull IC in calm vs stressed regimes")
+    ap.add_argument("--conditioner", choices=["vix", "gamma"], default=None,
+                    help="instead of the combo search, condition the magnet-pull IC on a "
+                         "day-level regime: 'vix' (vol) or 'gamma' (|net GEX| positioning)")
+    ap.add_argument("--vix-regime", action="store_true", help="alias for --conditioner vix")
+    ap.add_argument("--threshold", type=float, default=None,
+                    help="fixed split threshold for --conditioner (default: in-sample median)")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
-    if args.vix_regime:
-        print(vix_regime_report(load_all(args.symbol), horizon_min=args.horizon,
-                                symbol=args.symbol))
+    cond = args.conditioner or ("vix" if args.vix_regime else None)
+    if cond == "vix":
+        print(vix_regime_report(load_all(args.symbol), args.horizon, args.symbol, args.threshold))
+    elif cond == "gamma":
+        print(gamma_regime_report(load_all(args.symbol), args.horizon, args.symbol, args.threshold))
     else:
         print(analyze(symbol=args.symbol, horizon_min=args.horizon))
 
