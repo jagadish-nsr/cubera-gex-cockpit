@@ -5,6 +5,36 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-02 03:12 IST — Precise per-strike build-up classification (fix the expiry/window mismatch)
+
+**Why:** the dashboard "Top support/resistance builds" tables (footprint section,
+`app/oi_footprint.py::classify_buildup`) tag each strike as writing / long build-up /
+short covering / long unwinding from the **price+OI matrix**. It works, but the tag is
+**approximate** because of a data mismatch:
+- **ΔOI** (`call_doi`/`put_doi`) is `changeinOpenInterest` **summed across ALL expiries**,
+  measured **vs previous close**.
+- **Premium change** is computed intraday (**first → latest snapshot LTP**), and the
+  captured `call_ltp`/`put_ltp` is the **NEAREST expiry only**.
+So price and OI use different expiries AND different windows. Fine for near-money,
+nearest-expiry-dominated strikes; wrong for multi-expiry or far strikes.
+
+**Fix (schema addition to the capture):** log, per strike, the fields that let price and
+OI share the same expiry + window:
+1. Capture **per-strike, per-nearest-expiry OI + OI-change-vs-prev-close** (not summed
+   across expiries) so ΔOI matches the LTP's expiry. OR additionally store the
+   **previous-close premium** per strike so "premium change vs prev close" lines up with
+   `call_doi` (which is already vs prev close).
+2. Then `classify_buildup` uses same-expiry, same-window ΔOI + Δpremium → an exact tag.
+3. Update `STRIKE_FIELDS` (`app/timeseries.py`) + `per_strike_oi`/`nearest_expiry_premiums`
+   (`data/nse.py`); keep back-compat with existing CSVs (missing columns → degrade to the
+   current approximate tag).
+
+**Scope note:** low urgency — the approximate intraday tag is usable now. Do this when
+tightening the footprint, ideally together with the participant-OI work below (both are
+positioning-precision improvements). See `memory/positioning-footprint-suite.md`.
+
+---
+
 ## 2026-07-02 02:55 IST — Add NSE participant-wise OI capture  (STARTED, endpoint verified; parser + wiring pending)
 
 **Why:** the direct **big-player positioning** read (the thesis in
