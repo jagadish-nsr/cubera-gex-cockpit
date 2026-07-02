@@ -85,7 +85,9 @@ def top_builds(rows, side: str, spot: float | None = None,
     """Top ``top_n`` strikes by OI ADDITION for one side ('call' or 'put') from a
     snapshot's per-strike rows. Positive ΔOI only (builds, not unwinds), banded to
     ±band_pts of spot, sorted by ΔOI descending. Each dict carries strike, doi, ltp,
-    vol so the caller can attach a premium-change build-up tag."""
+    vol so the caller can attach a premium-change build-up tag. It also passes through
+    the nearest-expiry OI-change (``doi_near``) and premium-change (``dprem``), both vs
+    prev close, when present — the aligned inputs for an EXACT build-up tag."""
     out = []
     for r in rows:
         k = r.get("strike")
@@ -98,7 +100,8 @@ def top_builds(rows, side: str, spot: float | None = None,
         if doi <= 0:
             continue
         out.append({"strike": k, "doi": doi,
-                    "ltp": r.get(f"{side}_ltp"), "vol": r.get(f"{side}_vol")})
+                    "ltp": r.get(f"{side}_ltp"), "vol": r.get(f"{side}_vol"),
+                    "doi_near": r.get(f"{side}_doi_near"), "dprem": r.get(f"{side}_dprem")})
     out.sort(key=lambda x: -x["doi"])
     return out[:top_n]
 

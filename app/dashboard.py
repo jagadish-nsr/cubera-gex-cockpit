@@ -998,9 +998,12 @@ def _oi_footprint_section(data):
     day_df = load_strikes_day(ist_today, data.symbol)
 
     # Top-6 OI build-ups per side, each tagged with the price+OI build-up type
-    # (writing / long build-up / short covering / long unwinding). Premium change is
-    # the day's first-vs-latest snapshot; volume is intensity, shown but not a tag.
+    # (writing / long build-up / short covering / long unwinding). Preferred: the
+    # nearest-expiry OI-change + premium-change carried on the live snapshot, both vs
+    # prev close (EXACT tag). Fallback for old CSVs/demo: the day's first→latest LTP.
     prem = intraday_premium_change(day_df)
+    exact_tag = any(b.get("dprem") is not None
+                    for b in data.oi_strikes)  # new-schema live data present?
 
     def _build_table(side, label):
         builds = top_builds(data.oi_strikes, side, spot=L.spot, band_pts=L.spot * 0.03, top_n=6)
@@ -1008,13 +1011,17 @@ def _oi_footprint_section(data):
             return
         rows = []
         for b in builds:
-            dprem = (prem.get(b["strike"]) or {}).get(side)
+            if b.get("dprem") is not None:            # exact: aligned expiry + window
+                tag = classify_buildup(b.get("doi_near"), b["dprem"])
+            else:                                     # fallback: intraday first→latest
+                dprem = (prem.get(b["strike"]) or {}).get(side)
+                tag = classify_buildup(b["doi"], dprem)
             rows.append({
                 "Strike": f"{b['strike']:,.0f}",
                 "ΔOI": f"{b['doi']:,.0f}",
                 "Prem": f"{b['ltp']:,.1f}" if b["ltp"] is not None else "—",
                 "Vol": f"{b['vol']:,.0f}" if b["vol"] is not None else "—",
-                "Build-up": classify_buildup(b["doi"], dprem) or "—",
+                "Build-up": tag or "—",
             })
         st.markdown(label)
         st.table(pd.DataFrame(rows))
@@ -1044,14 +1051,18 @@ def _oi_footprint_section(data):
     else:
         st.warning("Net **call-writing** near spot — big players capping upside; "
                    "positioning bias **down / capped**.")
+    tag_note = ("**Build-up tag is EXACT** — nearest-expiry OI-change and premium-change, "
+                "both vs previous close (aligned expiry + window)."
+                if exact_tag else
+                "Caveat: premium change is the day's first→latest snapshot (nearest expiry) "
+                "while ΔOI is summed across expiries — so the tag is APPROXIMATE (pre-upgrade "
+                "data).")
     st.caption(
         "Reads where OI is *being added* (ΔOI vs previous close): put-build = support, "
         "call-build = resistance (standard heuristic). Sign-free (raw OI). **Build-up tag** "
         "= price+OI matrix: OI↑ & premium↓ = *writing*, OI↑ & premium↑ = *long build-up*, "
         "OI↓ & premium↑ = *short covering*, OI↓ & premium↓ = *long unwinding*; **volume is "
-        "intensity, not a classifier**. Caveat: premium change is the day's first→latest "
-        "snapshot and LTP is nearest-expiry while ΔOI is summed across expiries — so the tag "
-        "is approximate. Exploratory — not a live signal.")
+        f"intensity, not a classifier**. {tag_note} Exploratory — not a live signal.")
 
 
 def _fii_drift_readout(n: int = 5):

@@ -224,6 +224,73 @@ def per_strike_oi(payload: dict, spot: float | None = None,
     return [by_strike[k] for k in sorted(by_strike)]
 
 
+def per_strike_nearest_changes(payload: dict, spot: float | None = None,
+                               band_pts: float | None = None) -> dict:
+    """Per-strike NEAREST-EXPIRY OI-change and premium-change, both vs PREVIOUS CLOSE.
+
+    The aligned inputs the build-up tag needs: unlike ``per_strike_oi`` (which sums
+    ``changeinOpenInterest`` across all expiries), this restricts to the nearest expiry
+    and also pulls the side's ``change`` (= lastPrice − previous close). Both come from
+    the SAME expiry and the SAME window (vs prev close), so ``classify_buildup`` on them
+    is exact — no intraday first→last approximation. Returns
+    ``{strike: {call_doi_near, put_doi_near, call_dprem, put_dprem}}`` (banded to
+    ±``band_pts`` of ``spot`` like ``per_strike_oi``). Defensive: a missing field →
+    0.0 (OI change) / None (premium change); never raises.
+    """
+    records = payload.get("records") or {}
+    filtered = payload.get("filtered") or {}
+    data = records.get("data") or filtered.get("data") or []
+
+    # Nearest expiry across the whole payload (side-level DD-MM-YYYY or row-level
+    # DD-Mon-YYYY; same resolution as parse_nse_option_chain).
+    def _exp(side, row):
+        raw = side.get("expiryDate") or row.get("expiryDate")
+        if not raw:
+            ed = row.get("expiryDates")
+            raw = (ed[0] if isinstance(ed, (list, tuple)) and ed else ed) or None
+        try:
+            return _parse_nse_date(raw) if raw else None
+        except ValueError:
+            return None
+
+    exps = []
+    for row in data:
+        for sk in ("CE", "PE"):
+            s = row.get(sk)
+            if s:
+                e = _exp(s, row)
+                if e is not None:
+                    exps.append(e)
+    if not exps:
+        return {}
+    nearest = min(exps)
+
+    def _num(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    out: dict[float, dict] = {}
+    for row in data:
+        k = row.get("strikePrice")
+        if k is None:
+            continue
+        k = float(k)
+        if spot is not None and band_pts is not None and abs(k - spot) > band_pts:
+            continue
+        for side_key, pfx in (("CE", "call"), ("PE", "put")):
+            side = row.get(side_key)
+            if not side or _exp(side, row) != nearest:
+                continue
+            cell = out.setdefault(k, {
+                "call_doi_near": 0.0, "put_doi_near": 0.0,
+                "call_dprem": None, "put_dprem": None})
+            cell[f"{pfx}_doi_near"] = float(side.get("changeinOpenInterest") or 0.0)
+            cell[f"{pfx}_dprem"] = _num(side.get("change"))
+    return out
+
+
 def nearest_expiry_premiums(rows: list[dict]) -> dict:
     """Per-strike call/put PREMIUM (mid) for the NEAREST expiry only.
 

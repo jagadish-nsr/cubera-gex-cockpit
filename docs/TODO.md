@@ -5,7 +5,51 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-02 03:12 IST — Precise per-strike build-up classification (fix the expiry/window mismatch)
+## 2026-07-03 03:33 IST — Intraday mini-buildup streak detector (5/15-min) + dashboard list
+
+**Why (user request):** the vs-prev-close build-up tag says *net* build since yesterday,
+but not the intraday *momentum*. Compute a per-snapshot (5-min or 15-min) MINI build-up per
+strike from the intraday deltas — ΔOI and premium-%-change *between consecutive snapshots* —
+classify each interval green (long build-up) / red (short/writing) / neutral, and when a
+strike prints **3 greens in a row** (accelerating long build) or **3 reds in a row**
+(accelerating writing), surface it on the dashboard as a flagged list. Needs data analysis
+(pick cadence, thresholds, and whether % or absolute).
+
+**What to build:**
+1. Intraday per-strike deltas from the `oi_strikes` day frame (consecutive snapshots):
+   `ΔOI_step = oi[t] − oi[t-1]` (or use `call_doi`/`put_doi` step-over-step) and
+   `prem_pct_step = (ltp[t]/ltp[t-1] − 1)`. New pure fns in `app/oi_footprint.py`
+   (e.g. `intraday_steps(day_df, side, cadence)` + `streak_flags(steps, run=3)`), tested.
+2. Classify each step via the existing matrix (`classify_buildup(ΔOI_step, prem_step)`):
+   green = "long build-up", red = "writing (short build-up)". Count consecutive runs.
+3. Cadence: the 15-min time-series already gives ~24 steps/day; resample/aggregate for a
+   5-min view only if the capture cadence supports it (it doesn't at 15-min baseline — decide
+   whether to tighten capture or offer 15-min only). ANALYSE first on captured `oi_strikes`
+   history (06-29 onward) to set sensible ΔOI/premium thresholds (avoid noise flags).
+4. Dashboard: a "🔥 Intraday build-up streaks" list under the footprint — strike, side,
+   3× green/red, cumulative ΔOI + premium move over the run. Sign-free, exploratory.
+5. Point-in-time / fail-soft; degrade cleanly when a day has < a few snapshots.
+
+**Scope note:** builds directly on the exact-tag work below (same `classify_buildup` matrix,
+now aligned). Analysis-first (thresholds), then wire. See `docs/participant-oi.md` sibling
+for the footprint context.
+
+---
+
+## 2026-07-02 03:12 IST — Precise per-strike build-up classification (fix the expiry/window mismatch)  ✅ DONE (2026-07-03, live-verified)
+
+**Built:** NSE payload carries per-side `change` (LTP vs prev close) alongside
+`changeinOpenInterest` — so `data/nse.py::per_strike_nearest_changes` captures per-strike
+**nearest-expiry** OI-change + premium-change, both vs prev close (aligned expiry + window).
+Wired through `app/data_access.py` (enrich `oi_strikes`), `app/timeseries.py`
+(`STRIKE_FIELDS` + `build_strike_rows`, back-compat), `app/oi_footprint.py::top_builds`
+(passthrough `doi_near`/`dprem`), and `app/dashboard.py::_oi_footprint_section` (prefer the
+EXACT tag from a single snapshot, fall back to the intraday first→latest method for old
+CSVs; caption states which). Tests in `tests/test_oi_footprint.py` (fixture: CE 23550 →
++221 / −76.25 → writing). The build-up tag is now exact for live snapshots, no ≥2-snapshot
+dependency.
+
+<details><summary>original spec</summary>
 
 **Why:** the dashboard "Top support/resistance builds" tables (footprint section,
 `app/oi_footprint.py::classify_buildup`) tag each strike as writing / long build-up /
@@ -32,6 +76,8 @@ OI share the same expiry + window:
 **Scope note:** low urgency — the approximate intraday tag is usable now. Do this when
 tightening the footprint, ideally together with the participant-OI work below (both are
 positioning-precision improvements). See `memory/positioning-footprint-suite.md`.
+
+</details>
 
 ---
 

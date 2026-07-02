@@ -1,9 +1,15 @@
 """Hand-checkable tests for the per-strike ΔOI positioning footprint."""
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from app.oi_footprint import (build_footprint, classify_buildup, footprint_series,
                               intraday_premium_change, top_builds)
+from data.nse import per_strike_nearest_changes
+
+_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "fixtures" / "nse_v3_sample.json"
 
 
 def test_build_footprint_weighted_centers():
@@ -68,6 +74,34 @@ def test_intraday_premium_change_first_vs_last():
     ch = intraday_premium_change(df)
     assert ch[24000.0]["call"] == 15.0 and ch[24000.0]["put"] == 15.0   # 65-50, 55-40
     assert ch[24100.0]["call"] == -10.0                                  # 20-30
+
+
+def test_per_strike_nearest_changes_on_fixture():
+    payload = json.loads(_FIXTURE.read_text())
+    nc = per_strike_nearest_changes(payload)
+    # All fixture rows share expiry 30-06-2026 (the nearest). CE 23550: dOI +221, chg -76.25.
+    c = nc[23550.0]
+    assert c["call_doi_near"] == 221.0 and c["call_dprem"] == -76.25
+    assert c["put_doi_near"] == 207.0 and c["put_dprem"] == 105.4
+    # These aligned inputs give the EXACT tag: OI up + premium down = writing.
+    assert classify_buildup(c["call_doi_near"], c["call_dprem"]) == "writing (short build-up)"
+    assert classify_buildup(c["put_doi_near"], c["put_dprem"]) == "long build-up"
+
+
+def test_per_strike_nearest_changes_bands_and_empty():
+    payload = json.loads(_FIXTURE.read_text())
+    nc = per_strike_nearest_changes(payload, spot=23550, band_pts=60)  # drop 23450 (100 away)
+    assert set(nc) == {23500.0, 23550.0, 23600.0}
+    assert per_strike_nearest_changes({}) == {}          # defensive: no data -> {}
+
+
+def test_top_builds_passes_through_nearest_change_fields():
+    rows = [{"strike": 24000, "put_doi": 143000, "put_ltp": 120.0, "put_vol": 9,
+             "put_doi_near": 90000, "put_dprem": -15.0}]
+    top = top_builds(rows, "put", spot=24000, band_pts=500, top_n=6)
+    assert top[0]["doi_near"] == 90000 and top[0]["dprem"] == -15.0
+    # Exact tag off the aligned nearest fields: OI up + premium down = writing.
+    assert classify_buildup(top[0]["doi_near"], top[0]["dprem"]) == "writing (short build-up)"
 
 
 def test_footprint_series_over_snapshots():

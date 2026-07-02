@@ -55,7 +55,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         from data.news import fetch_news
         from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
                               fetch_usdinr, nearest_expiry_premiums,
-                              parse_nse_option_chain, per_strike_oi)
+                              parse_nse_option_chain, per_strike_nearest_changes,
+                              per_strike_oi)
 
         payload = fetch_chain(idx.symbol, has_weekly=idx.has_weekly)  # single live pull
         rows, spot = parse_nse_option_chain(payload)
@@ -89,6 +90,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         # Enrich each strike with the nearest-expiry premium (for the crossover
         # watch) and the engine's gamma exposure (net_gex, for the Δgamma map).
         prem = nearest_expiry_premiums(rows)
+        # Nearest-expiry OI-change + premium-change (both vs prev close) so the
+        # footprint build-up tag is exact (aligned expiry + window), not approximate.
+        nc = per_strike_nearest_changes(payload, spot=spot, band_pts=idx.band_pts)
         gex = (dict(zip(levels.per_strike["strike"], levels.per_strike["net_gex"]))
                if levels.per_strike is not None else {})
         for s in oi_strikes:
@@ -97,6 +101,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["call_ltp"] = p.get("call_ltp")
             s["put_ltp"] = p.get("put_ltp")
             s["net_gex"] = gex.get(k)
+            c = nc.get(k, {})
+            s["call_doi_near"] = c.get("call_doi_near")
+            s["put_doi_near"] = c.get("put_doi_near")
+            s["call_dprem"] = c.get("call_dprem")
+            s["put_dprem"] = c.get("put_dprem")
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,

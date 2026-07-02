@@ -49,6 +49,9 @@ STRIKE_FIELDS = [
     "timestamp_utc", "time_ist", "date_ist", "spot", "strike",
     "call_oi", "call_doi", "put_oi", "put_doi", "call_vol", "put_vol",
     "call_ltp", "put_ltp", "net_gex",
+    # Nearest-expiry OI-change + premium-change, both vs prev close (for the EXACT
+    # build-up tag). Appended last so old CSVs stay readable (missing => optional).
+    "call_doi_near", "put_doi_near", "call_dprem", "put_dprem",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -192,6 +195,10 @@ def build_strike_rows(data) -> list[dict]:
             "call_vol": _f(s.get("call_vol")), "put_vol": _f(s.get("put_vol")),
             "call_ltp": _f(s.get("call_ltp"), 2), "put_ltp": _f(s.get("put_ltp"), 2),
             "net_gex": _f(s.get("net_gex")),
+            "call_doi_near": _f(s.get("call_doi_near")),
+            "put_doi_near": _f(s.get("put_doi_near")),
+            "call_dprem": _f(s.get("call_dprem"), 2),
+            "put_dprem": _f(s.get("put_dprem"), 2),
         })
     return rows
 
