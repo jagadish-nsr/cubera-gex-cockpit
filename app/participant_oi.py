@@ -18,6 +18,8 @@ import csv
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 # Flat, market-wide (not per-index): data/journal/participant_oi/YYYY-MM-DD.csv.
 # The whole data/journal/ tree is gitignored (personal data).
@@ -137,6 +139,56 @@ def derive_signals(parsed: dict) -> dict | None:
     return {"per_participant": per, "top_option_writer": top_writer,
             "dealer_sign_hint": hint,
             "fii_net_fut": (per.get("FII") or {}).get("net_fut")}
+
+
+def _net_calls_puts(v: dict) -> tuple[int | None, int | None]:
+    """(net_calls, net_puts) = long − short, per side. Net short puts = bullish
+    (put writing); net short calls = bearish (call writing)."""
+    cl, cs = v.get("opt_call_long"), v.get("opt_call_short")
+    pl, ps = v.get("opt_put_long"), v.get("opt_put_short")
+    nc = cl - cs if cl is not None and cs is not None else None
+    npu = pl - ps if pl is not None and ps is not None else None
+    return nc, npu
+
+
+def participant_series(who: str = "FII", n: int = 5, days: list[str] | None = None) -> list[dict]:
+    """Per-day positioning metrics for one participant over the last ``n`` captured
+    days (chronological). Each row: date, net_fut (fut long−short), net_writing
+    (opt short−long), net_calls, net_puts. Skips days missing that participant.
+    Reads the flat market-wide journal (participant OI is not per-index)."""
+    days = days if days is not None else available_days()
+    out: list[dict] = []
+    for d in days[-n:] if n else days:
+        parsed = load_participant_day(d)
+        if not parsed or who not in parsed:
+            continue
+        v = parsed[who]
+        sig = (derive_signals(parsed) or {}).get("per_participant", {}).get(who, {})
+        nc, npu = _net_calls_puts(v)
+        out.append({"date": d, "net_fut": sig.get("net_fut"),
+                    "net_writing": sig.get("net_opt_writing"),
+                    "net_calls": nc, "net_puts": npu})
+    return out
+
+
+def series_drift(values, tol_frac: float = 0.10) -> dict:
+    """Slope-based drift for a SIGNED series that may cross zero (FII net-futures,
+    option-writing). Unlike classify_trend (whose tolerance is level-relative and
+    degenerates near zero), the "meaningful move" band here scales with the series'
+    typical MAGNITUDE (mean |value|). Returns trend (rising/falling/flat), the fitted
+    drift over the window, first/last, and n. Rising = getting more positive."""
+    vals = [float(v) for v in values if v is not None and np.isfinite(v)]
+    n = len(vals)
+    if n == 0:
+        return {"trend": "unknown", "n": 0}
+    if n < 2:
+        return {"trend": "flat", "drift": 0.0, "first": vals[0], "last": vals[0], "n": n}
+    slope = float(np.polyfit(np.arange(n), vals, 1)[0])
+    drift = slope * (n - 1)
+    scale = float(np.mean(np.abs(vals))) or 1.0
+    tol = max(scale * tol_frac, 1.0)
+    trend = "rising" if drift > tol else "falling" if drift < -tol else "flat"
+    return {"trend": trend, "drift": drift, "first": vals[0], "last": vals[-1], "n": n}
 
 
 def _ist_today() -> str:

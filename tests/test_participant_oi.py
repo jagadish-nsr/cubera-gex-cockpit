@@ -117,3 +117,47 @@ def test_capture_latest_returns_none_when_unreachable(tmp_path, monkeypatch):
     got = poi.capture_latest("2026-07-01", fetch_fn=lambda d: None,
                              parse_fn=parse_participant_oi, max_back=3)
     assert got is None
+
+
+def _save_days(tmp_path, monkeypatch, day_to_fut):
+    """Write minimal FII-only participant files (one per date) with a given
+    net-futures level, so participant_series/series_drift can be exercised."""
+    monkeypatch.setattr(poi, "PARTICIPANT_DIR", tmp_path / "participant_oi")
+    for d, fut_long in day_to_fut.items():
+        poi.save_participant_day(d, {"FII": {
+            "fut_long": fut_long, "fut_short": 0,
+            "opt_call_long": 0, "opt_put_long": 0,
+            "opt_call_short": 0, "opt_put_short": 0}})
+
+
+def test_participant_series_chronological_and_last_n(tmp_path, monkeypatch):
+    _save_days(tmp_path, monkeypatch,
+               {"2026-06-29": 10, "2026-06-30": 20, "2026-07-01": 30, "2026-07-02": 40})
+    ser = poi.participant_series("FII", n=3)
+    assert [r["date"] for r in ser] == ["2026-06-30", "2026-07-01", "2026-07-02"]  # last 3
+    assert [r["net_fut"] for r in ser] == [20, 30, 40]                            # long−short
+
+
+def test_series_drift_rising_falling_flat():
+    up = poi.series_drift([100, 200, 300, 400])
+    assert up["trend"] == "rising" and up["drift"] > 0 and up["last"] == 400
+    down = poi.series_drift([-100, -200, -300])          # FII adding shorts
+    assert down["trend"] == "falling" and down["drift"] < 0
+    flat = poi.series_drift([500, 500, 500])
+    assert flat["trend"] == "flat"
+
+
+def test_series_drift_handles_zero_crossing_and_short_input():
+    # A signed series crossing zero: magnitude-based tolerance, not level-relative.
+    cross = poi.series_drift([-300000, -100000, 100000, 300000])
+    assert cross["trend"] == "rising"                    # getting less short -> bullish shift
+    assert poi.series_drift([])["trend"] == "unknown"
+    one = poi.series_drift([42])
+    assert one["trend"] == "flat" and one["n"] == 1
+
+
+def test_net_calls_puts():
+    v = {"opt_call_long": 100, "opt_call_short": 250,   # net short calls (bearish)
+         "opt_put_long": 900, "opt_put_short": 400}     # net long puts (bearish)
+    nc, npu = poi._net_calls_puts(v)
+    assert nc == -150 and npu == 500

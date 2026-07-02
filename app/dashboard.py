@@ -1054,6 +1054,47 @@ def _oi_footprint_section(data):
         "is approximate. Exploratory — not a live signal.")
 
 
+def _fii_drift_readout(n: int = 5):
+    """Multi-day FII-positioning drift over the last ``n`` captured days — the
+    'drift beats level' read (same idea as the magnet drift). FII index-futures
+    net position is the closest thing to a smart-money directional tell; whether
+    it's getting MORE short or covering matters more than the single-day level.
+    Sign-free, decision-support only."""
+    from app.participant_oi import participant_series, series_drift
+
+    ser = participant_series("FII", n=n)
+    if len(ser) < 2:
+        if ser:
+            st.caption("FII drift — need ≥2 captured days for a trend (accruing).")
+        return
+    fut = [r["net_fut"] for r in ser]
+    wri = [r["net_writing"] for r in ser]
+    fd, wd = series_drift(fut), series_drift(wri)
+    days = f"{ser[0]['date']}→{ser[-1]['date']} ({fd['n']}d)"
+
+    # Direction words: for FII net-FUTURES, rising = covering shorts / adding longs
+    # = bullish SHIFT; falling = adding shorts = bearish SHIFT.
+    fut_word = {"rising": "🐂 turning more BULLISH (covering shorts / adding longs)",
+                "falling": "🐻 turning more BEARISH (adding shorts)",
+                "flat": "⏸️ steady"}.get(fd["trend"], "")
+    # For option-WRITING, rising = writing more (selling premium); the bull/bear
+    # sense depends on call-vs-put mix, so keep this one neutral (flow, not direction).
+    wri_word = {"rising": "🔼 writing MORE options", "falling": "🔽 writing FEWER / buying back",
+                "flat": "⏸️ steady"}.get(wd["trend"], "")
+
+    st.markdown(f"**📈 FII positioning drift** ({days})")
+    st.caption(
+        f"Net index futures {fut[-1]:+,.0f} — {fut_word} "
+        f"({fd['drift']:+,.0f} over window).  ·  "
+        f"Net option-writing {wri[-1]:+,.0f} — {wri_word} ({wd['drift']:+,.0f}).")
+    if fd["trend"] == "falling":
+        st.warning("FII adding index-futures shorts across days — a **cautious/bearish** "
+                   "positioning drift (caveat: FII futures shorts are often cash hedges).")
+    elif fd["trend"] == "rising":
+        st.success("FII covering shorts / adding index-futures longs across days — a "
+                   "**constructive/bullish** positioning drift.")
+
+
 def _participant_oi_section(data):
     """Big players: NSE participant-wise OI (Client/DII/FII/Pro index F&O). The DIRECT
     positioning read — who is net long/short index futures and who WRITES index options
@@ -1098,6 +1139,10 @@ def _participant_oi_section(data):
                f"DII {_wri('DII')}.")
     if sig.get("dealer_sign_hint"):
         st.info(f"🔎 Dealer-sign hint: {sig['dealer_sign_hint']}")
+
+    # --- Multi-day FII-positioning drift (the "drift beats level" read) --------
+    _fii_drift_readout()
+
     st.caption(
         f"NSE clearing-corp participant OI, **as of {date_ist}** (EOD — T+0 after close). "
         "Market-wide (index+stock file; **index** columns only), NOT split "
