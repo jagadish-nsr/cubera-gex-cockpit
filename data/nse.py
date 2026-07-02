@@ -449,6 +449,87 @@ def fetch_usdinr(session=None, timeout: int = 10) -> dict | None:
         return None
 
 
+# NSE clearing-corp EOD file: participant-wise open interest (Client/DII/FII/Pro).
+# The www host 404s; the archives host serves it. Daily, one file per trading day.
+_PARTICIPANT_OI_URL = (
+    "https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_{ddmmyyyy}.csv"
+)
+
+
+def parse_participant_oi(text: str) -> dict | None:
+    """Parse the participant-wise OI CSV into ``{participant: {index F&O fields}}``.
+
+    The direct big-player positioning read (Client/DII/FII/Pro long-vs-short in index
+    F&O) — sign-free, and the cleanest clue to WHO writes index options (the
+    dealer-sign landmine). Keeps only the **index** columns; stock/total columns are
+    ignored. Layout (verified 2026-07-01): line 0 title (stray quotes, skip), line 1
+    header (some cols have trailing spaces), then Client/DII/FII/Pro/TOTAL rows.
+
+    ⚠️ the option column order is **Call Long, Put Long, Call Short, Put Short**
+    (not Long/Short paired per type). Returns None on malformed input.
+    """
+    if not text:
+        return None
+    import csv as _csv
+    import io
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 3:               # need title + header + >=1 data row
+        return None
+    # Drop the title line; parse the rest (header + data) with the csv reader.
+    reader = _csv.reader(io.StringIO("\n".join(lines[1:])))
+    rows = list(reader)
+    if not rows:
+        return None
+    header = [h.strip() for h in rows[0]]
+    idx = {name: i for i, name in enumerate(header)}
+    # Required index columns, by their verified header names.
+    cols = {
+        "fut_long": "Future Index Long",
+        "fut_short": "Future Index Short",
+        "opt_call_long": "Option Index Call Long",
+        "opt_put_long": "Option Index Put Long",
+        "opt_call_short": "Option Index Call Short",
+        "opt_put_short": "Option Index Put Short",
+    }
+    if not all(c in idx for c in cols.values()):
+        return None                  # header not as expected -> fail soft
+
+    def _num(cells, i):
+        try:
+            return int(float(str(cells[i]).strip()))
+        except (ValueError, IndexError, TypeError):
+            return None
+
+    out: dict[str, dict] = {}
+    wanted = {"CLIENT", "DII", "FII", "PRO", "TOTAL"}
+    for cells in rows[1:]:
+        if not cells:
+            continue
+        who = str(cells[0]).strip()
+        if who.upper() not in wanted:
+            continue
+        out[who] = {k: _num(cells, idx[col]) for k, col in cols.items()}
+    return out or None
+
+
+def fetch_participant_oi(date, session=None, timeout: int = 10) -> str | None:
+    """Best-effort raw participant-OI CSV text for a trading ``date`` (date/datetime).
+
+    Fail-soft None on ANY error (non-200, network, bot-block): participant OI is
+    secondary EOD context and must never break a snapshot. Fetched via the primed
+    NSE session; the file lives on the archives host and is published after close.
+    """
+    try:
+        ddmmyyyy = date.strftime("%d%m%Y")
+        s = session or _primed_session(timeout)
+        r = s.get(_PARTICIPANT_OI_URL.format(ddmmyyyy=ddmmyyyy), timeout=timeout)
+        r.raise_for_status()
+        return r.text
+    except Exception:  # noqa: BLE001 - fail soft; participant OI is optional EOD context
+        return None
+
+
 def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[str]:
     """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
     expiries from today through the next monthly, using the NSE calendar.

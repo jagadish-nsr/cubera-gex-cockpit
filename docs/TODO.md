@@ -35,7 +35,18 @@ positioning-precision improvements). See `memory/positioning-footprint-suite.md`
 
 ---
 
-## 2026-07-02 02:55 IST — Add NSE participant-wise OI capture  (STARTED, endpoint verified; parser + wiring pending)
+## 2026-07-02 02:55 IST — Add NSE participant-wise OI capture  ✅ DONE (2026-07-02, live-verified)
+
+**Built:** `data/nse.py::parse_participant_oi`/`fetch_participant_oi` (fail-soft, index
+cols only), `app/participant_oi.py` (journal I/O + `derive_signals` + `capture_latest`
+walk-back), `scripts/log_participant_oi.py` (daily post-close task), dashboard
+`_participant_oi_section` (FII net fut, option-writing, dealer-sign hint), and
+`tests/test_participant_oi.py`. Live capture 2026-07-02 confirmed: **Client is the
+dominant index-option writer → supports the INVERTED dealer-sign lean (model B)**,
+corroborating `memory/both-signs-dealer-sign-read`. Wire a Windows scheduled task
+~18:30 IST to `scripts/log_participant_oi.py` for guaranteed daily history.
+
+<details><summary>original spec</summary>
 
 **Why:** the direct **big-player positioning** read (the thesis in
 `memory/positioning-footprint-suite.md`): GEX/VIX are *responses* to news; participant
@@ -87,3 +98,5 @@ the inverted dealer sign.
 
 **Sample row captured (Client, 01-Jul-2026):** FutIdx L 251066 / S 63543 ·
 OptIdx CallL 2163161 / PutL 1888743 / CallS 2028147 / PutS 2586510.
+
+</details>

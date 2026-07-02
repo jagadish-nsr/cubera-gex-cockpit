@@ -329,6 +329,9 @@ def main():
     # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
     _oi_footprint_section(data)
 
+    # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
+    _participant_oi_section(data)
+
     # --- Morning magnet-pull IC + live GEX conditioning (research) --------
     _ic_readout(data, pin_stats)
 
@@ -1049,6 +1052,57 @@ def _oi_footprint_section(data):
         "intensity, not a classifier**. Caveat: premium change is the day's first→latest "
         "snapshot and LTP is nearest-expiry while ΔOI is summed across expiries — so the tag "
         "is approximate. Exploratory — not a live signal.")
+
+
+def _participant_oi_section(data):
+    """Big players: NSE participant-wise OI (Client/DII/FII/Pro index F&O). The DIRECT
+    positioning read — who is net long/short index futures and who WRITES index options
+    (the dealer-sign clue). EOD + market-wide (not per-index), sign-free, exploratory."""
+    from app.participant_oi import capture_latest, derive_signals, latest_available
+
+    st.markdown("#### 🏦 Big players (participant-wise OI)")
+    got = None
+    try:
+        got = capture_latest()          # best-effort live fetch + daily cache
+    except Exception:  # noqa: BLE001 - fail soft; participant OI is optional EOD context
+        got = None
+    if got is None:
+        got = latest_available()        # fall back to whatever's in the journal
+    if got is None:
+        st.caption("No participant-OI file captured yet — NSE publishes it after close "
+                   "(evening, IST). Run `scripts/log_participant_oi.py` or open the "
+                   "dashboard post-close.")
+        return
+
+    date_ist, parsed = got
+    sig = derive_signals(parsed) or {}
+    per = sig.get("per_participant", {})
+
+    def _fut(who):
+        v = (per.get(who) or {}).get("net_fut")
+        return f"{v:+,.0f}" if v is not None else "—"
+
+    def _wri(who):
+        v = (per.get(who) or {}).get("net_opt_writing")
+        return f"{v:+,.0f}" if v is not None else "—"
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("FII net index futures", _fut("FII"),
+              "long" if (per.get("FII") or {}).get("net_fut", 0) > 0 else "short",
+              delta_color="off")
+    c2.metric("FII net option-writing", _wri("FII"), delta_color="off")
+    c3.metric("Client net option-writing", _wri("Client"), delta_color="off")
+
+    st.caption(f"Net option-writing (short − long calls+puts, >0 = net **writer**) — "
+               f"Client {_wri('Client')} · Pro {_wri('Pro')} · FII {_wri('FII')} · "
+               f"DII {_wri('DII')}.")
+    if sig.get("dealer_sign_hint"):
+        st.info(f"🔎 Dealer-sign hint: {sig['dealer_sign_hint']}")
+    st.caption(
+        f"NSE clearing-corp participant OI, **as of {date_ist}** (EOD — T+0 after close). "
+        "Market-wide (index+stock file; **index** columns only), NOT split "
+        "Nifty-vs-BankNifty. Sign-free (raw long/short counts). The dealer-sign hint is a "
+        "*lean*, not a resolution of the landmine — decision-support only.")
 
 
 def _gex_chart(L):
