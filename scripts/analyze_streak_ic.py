@@ -3,10 +3,11 @@
 Point-in-time IC for the intraday streak signal (`app/oi_footprint.intraday_buildup_streaks`
 logic). At the snapshot where a strike's per-interval build-up colour first reaches a run of
 ``RUN`` (green = long build-up OI↑&prem↑, red = writing OI↑&prem↓), we "buy the naked option"
-at that snapshot's premium and measure the forward premium return one 15-min step later
-(long-only: the option's own % change). Signal = +1 green / −1 red. IC = Spearman rank corr
-between signal and forward return; a positive IC ⇒ the streak has momentum (green→premium up,
-red→premium down) so a long-on-green / avoid-on-red trade has edge.
+at that snapshot's premium and measure the forward premium return at 15m / 30m / 1h ahead
+(1/2/4 steps on the 15-min grid; long-only: the option's own % change). Signal = +1 green /
+−1 red. IC = Spearman rank corr between signal and forward return per horizon; a positive IC
+⇒ the streak has momentum (green→premium up, red→premium down) so a long-on-green /
+avoid-on-red trade has edge at that horizon.
 
   python scripts/analyze_streak_ic.py
 
@@ -34,6 +35,8 @@ TOL_PREM_PCT = 0.5
 MIN_CUM_DOI = 2000.0
 BAND_FRAC = 0.03
 SYMBOL = "NIFTY"
+# Forward horizons on the 15-min grid: label -> number of steps ahead.
+HORIZONS = {"15m": 1, "30m": 2, "1h": 4}
 
 
 def _print(s: str = "") -> None:
@@ -101,17 +104,21 @@ def _events_for_day(df: pd.DataFrame) -> list[dict]:
                 if i - RUN >= 0 and kinds[i - RUN] == kind:
                     continue                       # not the onset (run already ≥RUN+1)
                 buy_idx = i + 1                     # snapshot at run end = buy price
-                if buy_idx + 1 >= m:                # need a forward step to sell
+                if buy_idx + min(HORIZONS.values()) >= m:   # need the shortest horizon
                     continue
                 cum_doi = float(oi[buy_idx] - oi[i - RUN + 1])
                 if abs(cum_doi) < MIN_CUM_DOI:
                     continue
-                buy, sell = ltp[buy_idx], ltp[buy_idx + 1]
-                if not (buy and buy == buy and sell == sell) or buy <= 0:
+                buy = ltp[buy_idx]
+                if not (buy and buy == buy) or buy <= 0:
                     continue
-                ev.append({"side": side, "strike": k, "kind": kind,
-                           "signal": 1 if kind == "green" else -1,
-                           "fwd_ret_pct": (sell / buy - 1.0) * 100.0})
+                rec = {"side": side, "strike": k, "kind": kind,
+                       "signal": 1 if kind == "green" else -1}
+                for lbl, h in HORIZONS.items():     # forward long-option return per horizon
+                    j = buy_idx + h
+                    sell = ltp[j] if j < m else np.nan
+                    rec[lbl] = (sell / buy - 1.0) * 100.0 if sell == sell else np.nan
+                ev.append(rec)
     return ev
 
 
@@ -122,34 +129,33 @@ def main() -> None:
     for d in days:
         events.extend(_events_for_day(load_strikes_day(d, SYMBOL)))
 
-    _print("Intraday 3×15-min build-up streak  ->  naked LONG option, next-step return "
-           "(point-in-time)\n")
+    _print("Intraday 3×15-min build-up streak  ->  naked LONG option, forward return "
+           "at 15m / 30m / 1h  (point-in-time)\n")
     _print(f"Captured days: {days or '(none)'}   ·   streak events: {len(events)}")
     if len(events) < 3:
         _print("Too few events for an IC — accrue more intraday capture days, then re-run.")
         return
 
     df = pd.DataFrame(events)
-    ic = df["signal"].corr(df["fwd_ret_pct"], method="spearman")
-    _print(f"\nSpearman IC (signal ∈ +1 green / −1 red  vs  forward long-option %): "
-           f"{ic:+.2f}   (n={len(df)})")
+    _print("\nSpearman IC  (signal ∈ +1 green / −1 red  vs  forward long-option %):")
+    for lbl in HORIZONS:
+        sub = df[["signal", lbl]].dropna()
+        ic = sub["signal"].corr(sub[lbl], method="spearman") if len(sub) >= 3 else float("nan")
+        _print(f"  {lbl:>3}:  IC {ic:+.2f}   (n={len(sub)})")
 
     for kind in ("green", "red"):
-        sub = df[df["kind"] == kind]["fwd_ret_pct"]
-        if len(sub):
-            hit = (sub > 0).mean() * 100
-            _print(f"  {kind:>5} streaks (n={len(sub):>3}): long-option next-step "
-                   f"mean {sub.mean():+.1f}%  median {sub.median():+.1f}%  "
-                   f"P(return>0) {hit:.0f}%")
+        _print(f"\n{kind.upper()} streaks — naked-long forward return:")
+        for lbl in HORIZONS:
+            sub = df[df["kind"] == kind][lbl].dropna()
+            if len(sub):
+                _print(f"  {lbl:>3}:  mean {sub.mean():+.1f}%  median {sub.median():+.1f}%  "
+                       f"P(return>0) {(sub > 0).mean()*100:.0f}%   (n={len(sub)})")
 
-    green = df[df["kind"] == "green"]["fwd_ret_pct"]
-    if len(green):
-        _print(f"\nLong-ONLY on GREEN streaks (the actual naked-long trade): n={len(green)}, "
-               f"win-rate {(green > 0).mean()*100:.0f}%, mean {green.mean():+.1f}% per step.")
     _print("\n⚠️ EXPLORATORY — tiny n, 15-min option premia are noisy, overlapping "
            "strikes/days autocorrelate. Read the SIGN and hit-rate only; do NOT trade this. "
-           "A positive IC ⇒ streaks show short-horizon MOMENTUM; negative ⇒ they MEAN-REVERT "
-           "(the naked-long-on-green trade would lose). Re-run as capture accrues.")
+           "Positive IC ⇒ short-horizon MOMENTUM (long-on-green pays); negative ⇒ MEAN-"
+           "REVERSION. GREEN = the actual naked-long trade; RED points at the writer side. "
+           "Re-run as capture accrues.")
 
 
 if __name__ == "__main__":
