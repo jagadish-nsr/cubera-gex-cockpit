@@ -156,6 +156,22 @@ def test_series_drift_handles_zero_crossing_and_short_input():
     assert one["trend"] == "flat" and one["n"] == 1
 
 
+def test_backfill_caches_available_days_and_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setattr(poi, "PARTICIPANT_DIR", tmp_path / "participant_oi")
+    # 02-Jul available, 01-Jul a "holiday" (None), 30-Jun available.
+    served = {date(2026, 7, 2): SAMPLE, date(2026, 6, 30): SAMPLE}
+
+    def fake_fetch(d):
+        return served.get(d)
+
+    got = poi.backfill(n_days=3, today_ist="2026-07-02",
+                       fetch_fn=fake_fetch, parse_fn=parse_participant_oi)
+    assert got == ["2026-06-30", "2026-07-02"]        # 01-Jul skipped (no file)
+    # Idempotent: a second run captures nothing new (all cached).
+    assert poi.backfill(n_days=3, today_ist="2026-07-02",
+                        fetch_fn=fake_fetch, parse_fn=parse_participant_oi) == []
+
+
 def test_net_calls_puts():
     v = {"opt_call_long": 100, "opt_call_short": 250,   # net short calls (bearish)
          "opt_put_long": 900, "opt_put_short": 400}     # net long puts (bearish)

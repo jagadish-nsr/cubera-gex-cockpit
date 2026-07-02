@@ -12,13 +12,14 @@ scheduler surfaces the miss. Sign-free, decision-support only.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.participant_oi import capture_latest, derive_signals  # noqa: E402
+from app.participant_oi import backfill, capture_latest, derive_signals  # noqa: E402
 
 
 def _print(s: str) -> None:
@@ -30,6 +31,21 @@ def _print(s: str) -> None:
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser(description="Capture NSE participant-wise OI (EOD).")
+    ap.add_argument("--backfill", type=int, metavar="N", default=0,
+                    help="fetch every available file over the last N calendar days "
+                         "(idempotent) instead of just the newest")
+    args = ap.parse_args()
+
+    if args.backfill:
+        got = backfill(n_days=args.backfill)
+        if not got:
+            _print(f"backfill: nothing new in the last {args.backfill} days "
+                    "(already cached, or none reachable).")
+            return
+        _print(f"backfill: captured {len(got)} day(s): {', '.join(got)}")
+        return
+
     got = capture_latest()
     if not got:
         _print("participant OI capture FAILED — no file reachable (bot-block, not "

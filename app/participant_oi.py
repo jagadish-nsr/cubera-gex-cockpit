@@ -224,3 +224,30 @@ def capture_latest(today_ist: str | None = None, fetch_fn=None, parse_fn=None,
             return (date_ist, parsed)
         day = day - timedelta(days=1)
     return None
+
+
+def backfill(n_days: int = 10, today_ist: str | None = None,
+             fetch_fn=None, parse_fn=None) -> list[str]:
+    """Fetch + cache every available participant-OI file over the last ``n_days``
+    calendar days (today back). Non-trading days (weekends/holidays) simply 404 and
+    are skipped; already-cached days are left as-is (idempotent). Returns the list of
+    dates newly captured this run, oldest first. Unlike capture_latest (newest only),
+    this fills the whole recent history so the multi-day FII drift has data."""
+    if fetch_fn is None or parse_fn is None:
+        from data.nse import fetch_participant_oi, parse_participant_oi
+        fetch_fn = fetch_fn or fetch_participant_oi
+        parse_fn = parse_fn or parse_participant_oi
+
+    today_ist = today_ist or _ist_today()
+    day = datetime.strptime(today_ist, "%Y-%m-%d").date()
+    captured: list[str] = []
+    for _ in range(n_days):
+        date_ist = day.strftime("%Y-%m-%d")
+        if load_participant_day(date_ist) is None:
+            text = fetch_fn(day)
+            parsed = parse_fn(text) if text else None
+            if parsed:
+                save_participant_day(date_ist, parsed)
+                captured.append(date_ist)
+        day = day - timedelta(days=1)
+    return sorted(captured)
