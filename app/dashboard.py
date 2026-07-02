@@ -329,6 +329,9 @@ def main():
     # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
     _oi_footprint_section(data)
 
+    # --- Intraday mini build-up streaks (3× green/red per strike) ----------
+    _buildup_streaks_section(data)
+
     # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
     _participant_oi_section(data)
 
@@ -1063,6 +1066,65 @@ def _oi_footprint_section(data):
         "= price+OI matrix: OI↑ & premium↓ = *writing*, OI↑ & premium↑ = *long build-up*, "
         "OI↓ & premium↑ = *short covering*, OI↓ & premium↓ = *long unwinding*; **volume is "
         f"intensity, not a classifier**. {tag_note} Exploratory — not a live signal.")
+
+
+# (side, kind) -> what the intraday streak MEANS directionally.
+_STREAK_READ = {
+    ("call", "green"): "🐂 call buying — bullish",
+    ("call", "red"): "🧱 call writing — resistance / capping",
+    ("put", "green"): "🐻 put buying — bearish / hedging",
+    ("put", "red"): "🛡️ put writing — support / bullish",
+}
+
+
+def _buildup_streaks_section(data):
+    """Intraday mini build-up streaks: strikes printing ≥3 consecutive same-colour
+    intervals (green = long build-up OI↑&prem↑, red = writing OI↑&prem↓) between
+    snapshots today. Momentum companion to the vs-prev-close footprint tag: it shows
+    where OI is building *right now*, accelerating. Sign-free, exploratory."""
+    from app.oi_footprint import intraday_buildup_streaks
+    from app.timeseries import load_strikes_day
+
+    st.markdown("#### 🔥 Intraday build-up streaks (3× in a row)")
+    if data.source != "nse":
+        st.caption("Live NSE only — needs the intraday per-strike capture.")
+        return
+    L = data.levels
+    ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+    day_df = load_strikes_day(ist_today, data.symbol)
+    if day_df is None or day_df.empty:
+        st.caption("No intraday per-strike snapshots captured yet today.")
+        return
+
+    flags = []
+    for side in ("call", "put"):
+        flags += intraday_buildup_streaks(day_df, side, run=3, spot=L.spot,
+                                          band_pts=L.spot * 0.03)
+    if not flags:
+        st.caption("No 3-in-a-row build-up streaks near spot yet today "
+                   "(needs ≥4 snapshots and a sustained OI+premium move).")
+        return
+    flags.sort(key=lambda x: (-x["run_len"], -abs(x["cum_doi"])))
+
+    rows = []
+    for f in flags[:10]:
+        dot = "🟢" if f["kind"] == "green" else "🔴"
+        rows.append({
+            "Strike": f"{f['strike']:,.0f}",
+            "Side": f["side"].upper(),
+            "Streak": f"{dot}×{f['run_len']}" + (" ⏺ live" if f["live"] else ""),
+            "Cum ΔOI": f"{f['cum_doi']:+,.0f}",
+            "Cum Prem": f"{f['cum_prem_pct']:+.1f}%" if f["cum_prem_pct"] is not None else "—",
+            "Window": f"{f['start_time']}–{f['end_time']}",
+            "Read": _STREAK_READ.get((f["side"], f["kind"]), ""),
+        })
+    st.table(pd.DataFrame(rows))
+    st.caption(
+        "Each interval between consecutive snapshots is tagged green (long build-up, "
+        "OI↑ & premium↑) or red (writing/short, OI↑ & premium↓); a strike is listed when "
+        "one colour runs ≥3 in a row. **⏺ live** = the run is ongoing at the latest snapshot "
+        "(accelerating now). Premium is nearest-expiry, ΔOI all-expiry, both step-over-step. "
+        "Momentum read — not a signal; a headline overrides it.")
 
 
 def _fii_drift_readout(n: int = 5):

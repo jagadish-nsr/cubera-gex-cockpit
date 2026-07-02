@@ -5,7 +5,25 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-03 03:33 IST — Intraday mini-buildup streak detector (5/15-min) + dashboard list
+## 2026-07-03 03:33 IST — Intraday mini-buildup streak detector (5/15-min) + dashboard list  ✅ DONE (2026-07-03)
+
+**Built:** `app/oi_footprint.py::intraday_buildup_streaks` — per-strike consecutive-snapshot
+mini build-up (ΔOI step + premium %-step via the `classify_buildup` matrix), flags a strike
+when one colour runs ≥3 (green = long build-up, red = writing). Analysis first: step
+magnitudes scale with capture cadence (15-min day ~4–7k ΔOI/step & ~3–4%/step; finer day
+~540 & ~1.5%), so absolute per-step thresholds don't generalise → **direction + run length
+is the filter**, with `min_cum_doi` (default 2000) killing deep-OTM illiquid noise and
+`tol_prem_pct` (0.5%) screening flat premiums. Dashboard `_buildup_streaks_section` lists
+strike/side/streak/cum-ΔOI/cum-prem%/window + a **directional read** (call-green=bullish,
+call-red=resistance, put-green=bearish/hedge, put-red=support) and a **⏺ live** marker when
+the run is ongoing at the latest snapshot. Tests in `tests/test_oi_footprint.py` (red/green
+runs, run<3, illiquid floor, OI-drop break). Validated on 06-29/07-01/07-02 captures.
+
+**Cadence note:** baseline capture is 15-min (~24 steps/day) so the detector runs at 15-min;
+a true 5-min view needs tightening the capture cadence (deferred — 15-min already flags the
+sustained builds). Momentum companion to the vs-prev-close footprint tag. Sign-free.
+
+<details><summary>original spec</summary>
 
 **Why (user request):** the vs-prev-close build-up tag says *net* build since yesterday,
 but not the intraday *momentum*. Compute a per-snapshot (5-min or 15-min) MINI build-up per
@@ -33,6 +51,8 @@ strike prints **3 greens in a row** (accelerating long build) or **3 reds in a r
 **Scope note:** builds directly on the exact-tag work below (same `classify_buildup` matrix,
 now aligned). Analysis-first (thresholds), then wire. See `docs/participant-oi.md` sibling
 for the footprint context.
+
+</details>
 
 ---
 

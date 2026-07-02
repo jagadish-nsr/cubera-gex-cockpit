@@ -132,6 +132,83 @@ def intraday_premium_change(day_df: pd.DataFrame) -> dict:
     return out
 
 
+def _longest_run(kinds: list) -> tuple[int, int, str | None]:
+    """Longest contiguous run of the SAME non-None value in ``kinds``.
+    Returns (start_idx, end_idx_inclusive, kind); (−1, −1, None) if none."""
+    best = (-1, -1, None)
+    i, n = 0, len(kinds)
+    while i < n:
+        if kinds[i] is None:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and kinds[j + 1] == kinds[i]:
+            j += 1
+        if (j - i) > (best[1] - best[0]):
+            best = (i, j, kinds[i])
+        i = j + 1
+    return best
+
+
+def intraday_buildup_streaks(day_df: pd.DataFrame, side: str, run: int = 3,
+                             tol_prem_pct: float = 0.5, min_cum_doi: float = 2000.0,
+                             spot: float | None = None,
+                             band_pts: float | None = None) -> list[dict]:
+    """Per-strike INTRADAY mini build-up streaks for one side ('call'/'put').
+
+    Between consecutive snapshots each interval is classified from (ΔOI step, premium
+    %-change step) via the same price+OI matrix: **green** = long build-up (OI↑ &
+    premium↑), **red** = writing / short build-up (OI↑ & premium↓); OI-down intervals
+    (covering/unwinding) and sub-tolerance premium moves break the run. A strike is
+    flagged when its LONGEST contiguous run of one colour reaches ``run`` (default 3).
+    Absolute per-step ΔOI thresholds don't generalise across capture cadences, so
+    direction + run length is the filter; ``tol_prem_pct`` screens premium noise (%) and
+    ``min_cum_doi`` requires the run's CUMULATIVE OI build to be non-trivial (drops
+    deep-OTM illiquid strikes whose premium %-swings are wild on ~zero OI).
+
+    Returns dicts sorted by run length then |cum ΔOI|: {strike, side, kind (green/red),
+    run_len, cum_doi, cum_prem_pct, start_time, end_time, live (run ends at the latest
+    snapshot)}. Sign-free, exploratory. Empty if too few snapshots.
+    """
+    if day_df is None or day_df.empty or "time_ist" not in day_df.columns:
+        return []
+    oi_col, ltp_col = f"{side}_oi", f"{side}_ltp"
+    if oi_col not in day_df.columns or ltp_col not in day_df.columns:
+        return []
+    out = []
+    for k, sub in day_df.groupby("strike"):
+        k = float(k)
+        if spot is not None and band_pts is not None and abs(k - spot) > band_pts:
+            continue
+        sub = sub.drop_duplicates("time_ist").sort_values("time_ist")
+        if len(sub) < run + 1:                     # need run+1 points for `run` intervals
+            continue
+        times = sub["time_ist"].tolist()
+        oi = pd.to_numeric(sub[oi_col], errors="coerce").to_numpy()
+        ltp = pd.to_numeric(sub[ltp_col], errors="coerce").to_numpy()
+        kinds = []
+        for i in range(1, len(sub)):
+            doi = oi[i] - oi[i - 1]
+            prem_pct = (ltp[i] / ltp[i - 1] - 1.0) * 100.0 if ltp[i - 1] else np.nan
+            lab = classify_buildup(doi, prem_pct, tol_prem=tol_prem_pct)
+            kinds.append("green" if lab == "long build-up"
+                         else "red" if lab == "writing (short build-up)" else None)
+        s, e, kind = _longest_run(kinds)           # interval indices
+        if kind is None or (e - s + 1) < run:
+            continue
+        # interval i spans snapshots [i, i+1]; run covers snapshots [s, e+1]
+        cum_doi = float(oi[e + 1] - oi[s])
+        if abs(cum_doi) < min_cum_doi:             # skip illiquid-strike noise
+            continue
+        cum_prem_pct = float((ltp[e + 1] / ltp[s] - 1.0) * 100.0) if ltp[s] else None
+        out.append({"strike": k, "side": side, "kind": kind, "run_len": e - s + 1,
+                    "cum_doi": cum_doi, "cum_prem_pct": cum_prem_pct,
+                    "start_time": times[s], "end_time": times[e + 1],
+                    "live": (e == len(kinds) - 1)})
+    out.sort(key=lambda x: (-x["run_len"], -abs(x["cum_doi"])))
+    return out
+
+
 def footprint_series(day_df: pd.DataFrame, band_frac: float = 0.03):
     """Per-snapshot (time_ist, support_build, resistance_build, net_skew) over one
     day's oi_strikes frame, restricting each snapshot to ±``band_frac`` of its spot.
