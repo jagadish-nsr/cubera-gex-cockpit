@@ -773,8 +773,9 @@ def _gamma_blast_section(data, is_expiry):
     blast'. Plus a gamma-concentration strip (candidate blast strikes). Live NSE
     only; parity-based and SIGN-FREE; decision-support, no directional claim.
     """
-    from app.gammablast import (crossover_state, detect_crossovers,
-                                gamma_concentration, pick_anchors, strike_premiums)
+    from app.gammablast import (blast_score, crossover_state, detect_crossovers,
+                                gamma_concentration, next_strike, pick_anchors,
+                                strike_oi, strike_premiums)
 
     st.markdown("#### ⚡ Gamma-blast crossover watch")
     if data.source != "nse" or not data.oi_strikes:
@@ -819,14 +820,19 @@ def _gamma_blast_section(data, is_expiry):
     if anchors:
         mc, mp = strike_premiums(data.oi_strikes, anchors["magnet"])
         ac, ap = strike_premiums(data.oi_strikes, anchors["atm"])
+        mco, mpo = strike_oi(data.oi_strikes, anchors["magnet"])
+        aco, apo = strike_oi(data.oi_strikes, anchors["atm"])
         blast["points"][ist.strftime("%H:%M")] = {
-            "magnet_call": mc, "magnet_put": mp, "atm_call": ac, "atm_put": ap}
+            "magnet_call": mc, "magnet_put": mp, "atm_call": ac, "atm_put": ap,
+            "magnet_coi": mco, "magnet_poi": mpo, "atm_coi": aco, "atm_poi": apo}
 
         cols = st.columns(2)
         _blast_anchor_block(cols[0], "🧲 Magnet", anchors["magnet"], blast["points"],
-                            "magnet", crossover_state, detect_crossovers)
+                            "magnet", crossover_state, detect_crossovers,
+                            data.oi_strikes, blast_score, next_strike, strike_oi)
         _blast_anchor_block(cols[1], "🎯 ATM @1:45", anchors["atm"], blast["points"],
-                            "atm", crossover_state, detect_crossovers)
+                            "atm", crossover_state, detect_crossovers,
+                            data.oi_strikes, blast_score, next_strike, strike_oi)
 
     # Gamma-concentration strip: where the gamma energy is piling up near spot.
     conc = gamma_concentration(data.oi_strikes, L.spot)
@@ -844,8 +850,10 @@ def _gamma_blast_section(data, is_expiry):
                "happens, not the direction. Decision-support only — you confirm.")
 
 
-def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_crossovers):
-    """One anchored strike: current crossover state + a call-vs-put premium chart."""
+def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_crossovers,
+                        oi_strikes=None, blast_score=None, next_strike=None, strike_oi=None):
+    """One anchored strike: current crossover state, a TRUE-vs-FAKE blast score once
+    a crossover fires, and a call-vs-put premium chart."""
     series = [{"time_ist": t, "call": v.get(f"{key}_call"), "put": v.get(f"{key}_put")}
               for t, v in sorted(points.items())]
     latest = next((s for s in reversed(series)
@@ -867,7 +875,39 @@ def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_
             col.success(f"✅ Crossover at **{last['time_ist']}** "
                         f"({last['from'].replace('_', ' ')} → {last['to'].replace('_', ' ')})"
                         + (f"  ·  {len(evs)} total today" if len(evs) > 1 else ""))
+            if blast_score is not None:
+                _blast_score_readout(col, strike, points, key, last, oi_strikes,
+                                     blast_score, next_strike, strike_oi)
         _blast_chart(col, series)
+
+
+def _blast_score_readout(col, strike, points, key, last_cross, oi_strikes,
+                         blast_score, next_strike, strike_oi):
+    """Grade the LATEST crossover TRUE (sustaining) vs FAKE (pin/cap) from the anchored
+    strike's OI covering + premium expansion since the crossing, plus the wall one strike
+    ahead (current snapshot). Sign-free staying-power read — not a direction call."""
+    direction = "up" if last_cross["to"] == "call_rich" else "down"
+    # Window: stored points from the crossover time forward (covering builds after the cross).
+    win = [v for t, v in sorted(points.items()) if t >= last_cross["time_ist"]]
+    crossed = [{"call_oi": v.get(f"{key}_coi"), "put_oi": v.get(f"{key}_poi"),
+                "call_ltp": v.get(f"{key}_call"), "put_ltp": v.get(f"{key}_put")} for v in win]
+    ahead = None
+    if next_strike is not None and strike_oi is not None:
+        nb = next_strike(oi_strikes, strike, direction)
+        nco, npo = strike_oi(oi_strikes, nb)      # current wall size (single snapshot)
+        if nb is not None:
+            ahead = [{"call_oi": nco, "put_oi": npo, "call_ltp": None, "put_ltp": None}]
+    sc = blast_score(direction, crossed, ahead)
+    if not sc:
+        return
+    icon = "🚀" if sc["grade"].startswith("TRUE") else "🎯" if "pin/cap" in sc["grade"] \
+        else "🛡️" if "defending" in sc["grade"] else "❓"
+    pe = f"{sc['prem_exp']*100:+.0f}%" if sc["prem_exp"] is not None else "—"
+    wr = f"{sc['wall_ratio']:.1f}×" if sc["wall_ratio"] is not None else "—"
+    col.markdown(f"{icon} **Blast score {sc['score']}/100** — {sc['grade']}")
+    col.caption(f"{sc['itm_side']}-writers ΔOI {sc['cover_frac']*100:+.0f}% "
+                f"(−ve = covering = fuel) · premium {pe} · wall ahead {wr}× the strike. "
+                "Sign-free staying-power grade, not a direction call — you confirm.")
 
 
 def _blast_chart(col, series):
