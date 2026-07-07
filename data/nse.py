@@ -597,6 +597,86 @@ def fetch_participant_oi(date, session=None, timeout: int = 10) -> str | None:
         return None
 
 
+# NSE F&O UDiFF "Common Bhavcopy" (daily EOD, per-contract: OHLC, OI, ΔOI, volume,
+# settle). Current format since ~Jul-2024; verified live 2026-07-07. One zip per
+# trading day. Index futures are FinInstrmTp == "IDF".
+_FO_BHAVCOPY_URL = (
+    "https://nsearchives.nseindia.com/content/fo/"
+    "BhavCopy_NSE_FO_0_0_0_{yyyymmdd}_F_0000.csv.zip"
+)
+
+
+def fetch_fo_bhavcopy(date, session=None, timeout: int = 20) -> str | None:
+    """Best-effort F&O bhavcopy CSV text for a trading ``date`` (date/datetime).
+
+    Downloads the UDiFF zip, unzips it in memory, returns the CSV text. Fail-soft
+    None on ANY error — a weekend/holiday/not-yet-published day simply 404s, and this
+    is EOD context that must never break a snapshot. Fetched via the primed session
+    (archives host, published after close).
+    """
+    import io
+    import zipfile
+
+    try:
+        s = session or _primed_session(timeout)
+        r = s.get(_FO_BHAVCOPY_URL.format(yyyymmdd=date.strftime("%Y%m%d")), timeout=timeout)
+        if r.status_code != 200 or r.content[:2] != b"PK":   # not a zip -> no file that day
+            return None
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        names = z.namelist()
+        return z.read(names[0]).decode("utf-8", "replace") if names else None
+    except Exception:  # noqa: BLE001 - fail soft; bhavcopy is optional EOD context
+        return None
+
+
+def parse_index_futures(text: str, symbol: str = "NIFTY") -> dict | None:
+    """Parse index-future rows (``FinInstrmTp == 'IDF'``) for ``symbol`` from the F&O
+    bhavcopy CSV into a daily futures build-up record. Sign-free (futures OI + price).
+
+    Returns near-month price/OI/ΔOI/volume PLUS the same summed ACROSS the serial-month
+    contracts (``agg_*``) — the aggregate nets out monthly-expiry **rollover**, which
+    distorts single-contract ΔOI near expiry (OI leaves the front and appears in the
+    back month, not real unwinding). ``dprice`` is the near-month close vs prev close.
+    None if the symbol has no index-future rows. ⚠️ bhavcopy volume/OI are in **lots**;
+    the live quote endpoint reports **units** (lot-size multiple apart) — don't mix.
+    """
+    if not text:
+        return None
+    import csv as _csv
+    import io
+
+    fut = [r for r in _csv.DictReader(io.StringIO(text))
+           if r.get("TckrSymb") == symbol and r.get("FinInstrmTp") == "IDF"]
+    if not fut:
+        return None
+
+    def _num(r, k):
+        try:
+            return float(r.get(k))
+        except (TypeError, ValueError):
+            return None
+
+    def _sum(k):
+        vals = [v for v in (_num(r, k) for r in fut) if v is not None]
+        return sum(vals) if vals else None
+
+    fut.sort(key=lambda r: r.get("XpryDt") or "")       # earliest expiry = near month
+    near = fut[0]
+    close, prev = _num(near, "ClsPric"), _num(near, "PrvsClsgPric")
+    return {
+        "symbol": symbol,
+        "expiry": near.get("XpryDt"),
+        "close": close, "prev_close": prev,
+        "dprice": (close - prev) if (close is not None and prev is not None) else None,
+        "near_oi": _num(near, "OpnIntrst"), "near_doi": _num(near, "ChngInOpnIntrst"),
+        "near_vol": _num(near, "TtlTradgVol"),
+        "agg_oi": _sum("OpnIntrst"), "agg_doi": _sum("ChngInOpnIntrst"),
+        "agg_vol": _sum("TtlTradgVol"),
+        "spot": _num(near, "UndrlygPric"),
+        "n_contracts": len(fut),
+    }
+
+
 def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[str]:
     """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
     expiries from today through the next monthly, using the NSE calendar.
