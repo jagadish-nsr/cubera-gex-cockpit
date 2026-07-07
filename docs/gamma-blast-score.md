@@ -47,8 +47,8 @@ compares it to the **realized** forward continuation (did spot hold past K over 
 40 min?). Point-in-time: the score uses only OI/premium from the crossing forward; the
 move is measured after.
 
-- **NIFTY: Spearman(score, end-continuation) = +0.86** (n=15) — every "writers
-  defending" fake reverted; every high score held.
+- **NIFTY: Spearman(score, end-continuation) = +0.79** (n=24 across 6 days) — every
+  "writers defending" fake reverted; every high score held.
 - **BANKNIFTY: +0.37** (n=11) — weaker. The thresholds were fit on NIFTY; BankNifty's
   wider strikes / different microstructure don't transfer cleanly (some pin/cap-graded
   moves still held). Re-calibrate per index before trusting it there.
@@ -57,6 +57,42 @@ move is measured after.
 python scripts/analyze_blast.py            # NIFTY
 python scripts/analyze_blast.py BANKNIFTY
 ```
+
+## Live validation — 2026-07-07 (first day with a real sustained move)
+07-07 (Tue expiry) rose to 24524 midday then sold off to the 24363 close — the first
+captured day with a large *sustained* directional move. The score called all four
+meaningful crossings correctly:
+
+| Time | Crossing | Score | Grade | Outcome |
+|---|---|---|---|---|
+| 09:43 | 24450 up | 77 | TRUE | ran +51, held |
+| 09:28 | 24450 down | 17 | FAKE (writers adding +98% OI) | reverted −31 |
+| 12:18 | 24500 down | 87 | TRUE | held +44 below |
+| 15:03 | 24450 down (final leg) | 91 | TRUE | ran +87 to the close low |
+
+**Confirmation lag** (how long until the grade firms up) depends on how violently writers
+cover: ~5 min for a violent blast (15:03), ~15–30 min for an ordinary sustain, and the
+early readings are **biased toward FAKE** (a genuine slow-burn read FAKE for its first
+~25 min). It's a confirmation signal, not a pivot-entry trigger.
+
+## Auxiliary signals tested and REJECTED
+We tried to add an *earlier* / *independent* confirm to the OI-covering core. Both failed
+validation on the same history — the instructive lesson is that **OI covering is the only
+input that isn't just price restated**:
+
+- **Turnover-adjusted ignition** (scale cover_frac by interval volume ÷ OI): no lift. Full
+  window a dead heat (+0.89→+0.89), and at the +10-min early window it was *worse*
+  (+0.59→+0.56). Turnover is high at *every* crossing (the crossed strike is ATM), so it
+  adds variance, not signal.
+- **Two-sided parity confirm** (does the OTM side collapse): the *spread* `call−put` is just
+  `spot−K` (tautological). The OTM-collapse feature scored a tempting IC +0.93 — but the
+  momentum control exposed it as circular: the OTM premium is a near-deterministic function
+  of spot, so it's **early spot momentum in disguise** and adds *negative* value over simply
+  watching price. Only the OI-covering signal survives the momentum control.
+
+Conclusion: the score stays **OI-covering at its core**; no premium/volume transform earns a
+place. (See also `docs/intraday-buildup-streaks.md` — the same "volume = size, not direction"
+lesson recurs there.)
 
 ## Dashboard
 Under **⚡ Gamma-blast crossover watch**, once an anchored strike (magnet / 1:45 ATM)

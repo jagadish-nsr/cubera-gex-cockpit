@@ -16,8 +16,12 @@ options. Decision-support only — **not financial advice, no order execution.**
 - ✅ CLI table + playbook (`cli.py`) and a local Streamlit dashboard (`app/`).
 - ✅ Intraday time-series logging + Windows Task Scheduler setup; captures India
   VIX, USD/INR, and a news-intensity gauge alongside the GEX levels.
-- ✅ **55 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
-  adapter/parse, expiry calendar, regime, parity, and time-series scoring.
+- ✅ **Sign-free positioning suite** (all immune to the dealer-sign landmine):
+  magnet drift, per-strike ΔOI footprint, participant-wise OI (FII/Client/DII/Pro),
+  intraday build-up streaks, a true-vs-fake **gamma-blast score**, and **Nifty
+  futures OI build-up** (daily bhavcopy + live intraday). See **Research & findings**.
+- ✅ **133 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
+  adapter/parse, expiry calendar, regime, parity, positioning, and scoring.
 - ⏳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
 
 ## Install
@@ -53,10 +57,26 @@ python -m pytest -q
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).
 - `config.py` — India config: `NIFTY_LOT_SIZE` (VERIFY), expiry window, dealer
   model (UNVERIFIED for India), flip grid, OI staleness.
-- `app/` — Streamlit dashboard, data access, and intraday time-series capture.
-- `scripts/` — session logging, time-series logging/analysis, live smoke test.
-- `*.bat` / `setup_*scheduler*` — Windows launchers + scheduled capture setup.
-- `docs/` — scoping, user guide, and Phase-B analysis notes.
+- `app/` — Streamlit dashboard, data access, intraday time-series capture, and the
+  sign-free positioning modules (`oi_footprint`, `gammablast`, `participant_oi`,
+  `futures_buildup`, `magnet_trend`).
+- `scripts/` — session/time-series logging, EOD captures (participant OI, futures
+  bhavcopy), and the point-in-time IC studies (`analyze_*`).
+- `*.bat` / `setup_*scheduler*` — Windows launchers + scheduled capture setup
+  (time-series, participant OI, futures build-up, gamma-blast).
+- `docs/` — scoping, user guide, and the research/findings notes below.
+
+## Research & findings (sign-free, decision-support only)
+Exploratory studies — read the **sign** and hit-rate, never the decimals; tiny,
+autocorrelated samples. The recurring result: **OI/volume/turnover read *positioning*
+and *expected move size*, not next-move *direction*.**
+- `docs/futures-buildup.md` — Nifty futures OI build-up: verified NSE endpoints
+  (bhavcopy + live), the rollover/units landmines, next-day IC (underpowered, ~0).
+- `docs/gamma-blast-score.md` — true-vs-fake blast score (Spearman +0.79; live-
+  validated 07-07); turnover-ignition and two-sided-parity confirms both **rejected**.
+- `docs/intraday-buildup-streaks.md` — live-only + turnover rework; turnover predicts
+  move *size* (|move| IC +0.3) not *direction* (IC ≈ 0); streaks mean-revert.
+- `docs/participant-oi.md` — participant-wise OI + FII-drift IC.
 
 ## Verify-live before trusting (never guess — see `BUILD_PLAN.md` §3)
 1. NSE data source + pricing.   2. Current Nifty lot size.
