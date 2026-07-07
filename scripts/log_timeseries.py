@@ -109,7 +109,16 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     strike_rows = build_strike_rows(data)
     append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol)
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
-    return f"{head}  -> {path.name}{extra}{blast_tag}", data
+    # Index-futures intraday snapshot (SEPARATE live call; best-effort, never fatal).
+    fut_tag = ""
+    try:
+        from app.futures_buildup import capture_futures_snapshot
+        got = capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=min_gap)
+        if got and got[1]:
+            fut_tag = " +fut"
+    except Exception:  # noqa: BLE001 - futures capture is optional context
+        pass
+    return f"{head}  -> {path.name}{extra}{fut_tag}{blast_tag}", data
 
 
 def _run_blast_window(symbol: str | None) -> None:

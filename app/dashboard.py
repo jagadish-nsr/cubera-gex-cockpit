@@ -332,6 +332,9 @@ def main():
     # --- Intraday mini build-up streaks (3× green/red per strike) ----------
     _buildup_streaks_section(data)
 
+    # --- Nifty FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
+    _futures_buildup_section(data)
+
     # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
     _participant_oi_section(data)
 
@@ -1172,6 +1175,69 @@ def _buildup_streaks_section(data):
         "premium spike mean-reverts. So this is a **structure / where-the-money-is** read, NOT "
         "a buy-the-strike signal. Premium nearest-expiry, ΔOI all-expiry, step-over-step; a "
         "headline overrides it.")
+
+
+_FUT_ICON = {"long build-up": "🐂", "short build-up": "🐻",
+             "short covering": "🔄", "long unwinding": "📉", "flat": "➖"}
+
+
+def _futures_buildup_section(data):
+    """Nifty index-futures OI build-up — the sign-free directional read. Daily (from the
+    F&O bhavcopy, aggregate across serial months to net out rollover) + today's intraday
+    build-up from the live-endpoint snapshots. Best-effort captures both on load."""
+    from app.futures_buildup import (capture_futures_snapshot, classify_futures_buildup,
+                                     futures_series, intraday_futures_buildup,
+                                     load_futures_intraday_day)
+
+    st.markdown("#### 🐂🐻 Nifty futures OI build-up")
+    if data.source != "nse":
+        st.caption("Live NSE only — futures build-up needs the NSE derivatives feed.")
+        return
+    ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+
+    # Best-effort captures (daily bhavcopy after close; a live intraday snapshot now).
+    try:
+        capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=10.0)
+    except Exception:  # noqa: BLE001 - optional
+        pass
+
+    ser = futures_series(data.symbol, n=6)
+    if ser:
+        latest = ser[-1]
+        label = latest.get("agg_buildup")
+        icon = _FUT_ICON.get(label, "")
+        cols = st.columns(3)
+        cols[0].metric("Daily build-up (EOD)", f"{icon} {label or '—'}",
+                       latest.get("agg_bias") or "", delta_color="off")
+        cols[1].metric("ΔPrice (near)", f"{latest.get('dprice'):+,.0f}"
+                       if latest.get("dprice") is not None else "—")
+        cols[2].metric("Aggregate ΔOI", f"{latest.get('agg_doi'):+,.0f}"
+                       if latest.get("agg_doi") is not None else "—")
+        st.caption(f"EOD {latest['date']} · near-month {latest.get('expiry')} · "
+                   "aggregate ΔOI nets out monthly-expiry rollover (trust it over near-month).")
+        # Recent-days strip.
+        strip = " → ".join(f"{r['date'][5:]} {_FUT_ICON.get(r.get('agg_buildup'), '')}"
+                           for r in ser)
+        st.caption(f"Last {len(ser)} days: {strip}")
+    else:
+        st.caption("No daily futures history yet — run `scripts/log_futures_buildup.py "
+                   "--backfill 30` to seed it from the F&O bhavcopy.")
+
+    # Today's intraday build-up (forward-only capture; accrues as the session runs).
+    intr = intraday_futures_buildup(load_futures_intraday_day(ist_today, data.symbol))
+    if intr and intr.get("buildup"):
+        icon = _FUT_ICON.get(intr["buildup"], "")
+        st.markdown(f"**Intraday so far ({intr['start_time']}–{intr['end_time']}, "
+                    f"n={intr['n']}):** {icon} **{intr['buildup']}** "
+                    f"({intr.get('bias') or '—'}) · ΔPrice {intr['dprice']:+,.0f} · "
+                    f"aggΔOI {intr['doi']:+,.0f}")
+    else:
+        st.caption("Intraday futures build-up starts accruing once the timeseries capture "
+                   "runs during market hours (forward-only; no free historical intraday).")
+    st.caption("Price ↑ & OI ↑ = long build-up (bullish) · ↓ & ↑ = short build-up (bearish) "
+               "· ↑ & ↓ = short covering · ↓ & ↓ = long unwinding. **Sign-free** (futures "
+               "OI+price, no dealer-sign landmine); volume = conviction, not direction. "
+               "Decision-support — you confirm.")
 
 
 def _fii_drift_readout(n: int = 5):

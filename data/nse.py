@@ -677,6 +677,75 @@ def parse_index_futures(text: str, symbol: str = "NIFTY") -> dict | None:
     }
 
 
+# Live index-futures quote (real-time intraday: price, OI, volume levels per serial
+# month). Verified live 2026-07-07. changeinOpenInterest/totalTradedVolume come back
+# null here — difference OI/volume across your own snapshots for the intraday build-up.
+_LIVE_FUT_URL = "https://www.nseindia.com/api/liveEquity-derivatives"
+_LIVE_FUT_INDEX = {"NIFTY": "nse50_fut", "BANKNIFTY": "niftybank_fut"}
+
+
+def fetch_futures_live(symbol: str = "NIFTY", session=None, timeout: int = 10) -> dict | None:
+    """Best-effort live index-futures quote JSON for ``symbol`` (real-time intraday).
+
+    Uses the derivatives-quote referer (the option-chain-primed session's cookies work,
+    but this endpoint needs its own referer). Fail-soft None on ANY error or an unknown
+    symbol — futures context must never break a snapshot.
+    """
+    idx = _LIVE_FUT_INDEX.get(symbol)
+    if not idx:
+        return None
+    try:
+        s = session or _primed_session(timeout)
+        r = s.get(_LIVE_FUT_URL, params={"index": idx}, timeout=timeout,
+                  headers={"Referer": f"https://www.nseindia.com/get-quotes/derivatives?symbol={symbol}"})
+        r.raise_for_status()
+        return r.json()
+    except Exception:  # noqa: BLE001 - fail soft; live futures is optional context
+        return None
+
+
+def parse_futures_live(payload: dict, symbol: str = "NIFTY") -> dict | None:
+    """Parse the live index-futures quote into the same shape as parse_index_futures,
+    but from real-time levels: near-month + aggregate-across-serial-months price/OI/
+    volume + spot. ``change`` is the near-month move vs prev close. ΔOI/volume aren't
+    provided live (difference across snapshots). None if no futures rows. Sign-free."""
+    if not payload:
+        return None
+    rows = [r for r in (payload.get("data") or []) if r.get("instrumentType") == "FUTIDX"]
+
+    def _exp(r):
+        try:
+            return _parse_nse_date(r.get("expiryDate"))
+        except (ValueError, TypeError):
+            return None
+
+    fut = [r for r in rows if _exp(r) is not None]
+    if not fut:
+        return None
+
+    def _num(r, k):
+        try:
+            return float(r.get(k))
+        except (TypeError, ValueError):
+            return None
+
+    def _sum(k):
+        vals = [v for v in (_num(r, k) for r in fut) if v is not None]
+        return sum(vals) if vals else None
+
+    fut.sort(key=_exp)                                   # earliest expiry = near month
+    near = fut[0]
+    return {
+        "symbol": symbol,
+        "expiry": near.get("expiryDate"),
+        "price": _num(near, "lastPrice"), "change": _num(near, "change"),
+        "oi": _num(near, "openInterest"), "volume": _num(near, "volume"),
+        "agg_oi": _sum("openInterest"), "agg_vol": _sum("volume"),
+        "spot": _num(near, "underlyingValue"),
+        "n_contracts": len(fut),
+    }
+
+
 def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[str]:
     """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
     expiries from today through the next monthly, using the NSE calendar.

@@ -83,6 +83,63 @@ def test_backfill_idempotent_with_injected_fetch(tmp_path, monkeypatch):
     assert got2 == []
 
 
+def _live_payload(near_oi=250000, near_vol=2900000, price=24410.0, change=-72.9):
+    """Minimal liveEquity-derivatives payload: 3 index futures (unsorted expiries)."""
+    return {"data": [
+        {"instrumentType": "FUTIDX", "expiryDate": "25-Aug-2026", "lastPrice": 24503.8,
+         "change": -67.2, "openInterest": 24000, "volume": 400000, "underlyingValue": 24398.7},
+        {"instrumentType": "FUTIDX", "expiryDate": "28-Jul-2026", "lastPrice": price,
+         "change": change, "openInterest": near_oi, "volume": near_vol, "underlyingValue": 24398.7},
+        {"instrumentType": "FUTIDX", "expiryDate": "29-Sep-2026", "lastPrice": 24676.5,
+         "change": -66.5, "openInterest": 3000, "volume": 2000, "underlyingValue": 24398.7},
+    ]}
+
+
+def test_parse_futures_live_near_and_aggregate():
+    from data.nse import parse_futures_live
+    rec = parse_futures_live(_live_payload(), "NIFTY")
+    assert rec["expiry"] == "28-Jul-2026" and rec["n_contracts"] == 3   # near = earliest
+    assert rec["price"] == 24410.0 and rec["oi"] == 250000
+    assert rec["agg_oi"] == 250000 + 24000 + 3000
+    assert rec["agg_vol"] == 2900000 + 400000 + 2000
+    assert parse_futures_live({}, "NIFTY") is None
+
+
+def test_intraday_capture_and_buildup(tmp_path, monkeypatch):
+    import pandas as pd
+    monkeypatch.setattr(fb, "FUTURES_INTRADAY_DIR", tmp_path)
+    from data.nse import parse_futures_live
+    # Two snapshots: price rises, aggregate OI rises -> intraday LONG build-up.
+    from datetime import datetime, timezone
+    t0 = datetime(2026, 7, 8, 5, 0, tzinfo=timezone.utc)    # 10:30 IST
+    t1 = datetime(2026, 7, 8, 6, 0, tzinfo=timezone.utc)    # 11:30 IST
+    fb.capture_futures_snapshot("NIFTY", now_utc=t0, parse_fn=parse_futures_live,
+                                fetch_fn=lambda sym: _live_payload(near_oi=250000, price=24400.0))
+    fb.capture_futures_snapshot("NIFTY", now_utc=t1, parse_fn=parse_futures_live,
+                                fetch_fn=lambda sym: _live_payload(near_oi=270000, price=24460.0))
+    df = fb.load_futures_intraday_day("2026-07-08", "NIFTY")
+    assert df is not None and len(df) == 2
+    intr = fb.intraday_futures_buildup(df)
+    assert intr["dprice"] == 60.0 and intr["doi"] == 20000.0
+    assert intr["buildup"] == "long build-up" and intr["bias"] == "bullish"
+
+
+def test_intraday_min_gap_skips_double_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(fb, "FUTURES_INTRADAY_DIR", tmp_path)
+    from data.nse import parse_futures_live
+    from datetime import datetime, timezone
+    t = datetime(2026, 7, 8, 5, 0, tzinfo=timezone.utc)
+    fb.capture_futures_snapshot("NIFTY", now_utc=t, parse_fn=parse_futures_live,
+                                fetch_fn=lambda s: _live_payload())
+    # 2 min later with a 10-min gap guard -> skipped (not written).
+    from datetime import timedelta
+    got = fb.capture_futures_snapshot("NIFTY", now_utc=t + timedelta(minutes=2),
+                                      parse_fn=parse_futures_live, min_gap_minutes=10.0,
+                                      fetch_fn=lambda s: _live_payload())
+    assert got is not None and got[1] is False
+    assert len(fb.load_futures_intraday_day("2026-07-08", "NIFTY")) == 1
+
+
 def test_capture_latest_walks_back(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "FUTURES_DIR", tmp_path)
 

@@ -26,6 +26,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 # Per-index: data/journal/futures/<SYMBOL>/YYYY-MM-DD.csv (one row/day). Gitignored.
 FUTURES_DIR = ROOT / "data" / "journal" / "futures"
+# Intraday snapshots (live endpoint), one row per snapshot: futures_intraday/<SYMBOL>/.
+FUTURES_INTRADAY_DIR = ROOT / "data" / "journal" / "futures_intraday"
+FUTURES_INTRADAY_FIELDS = [
+    "timestamp_utc", "time_ist", "date_ist", "symbol", "expiry",
+    "price", "change", "oi", "volume", "agg_oi", "agg_vol", "spot",
+]
 
 FUTURES_FIELDS = [
     "date_ist", "symbol", "expiry",
@@ -137,6 +143,125 @@ def futures_series(symbol: str = "NIFTY", n: int = 10, days: list[str] | None = 
                     "near_buildup": near, "near_bias": buildup_bias(near),
                     "agg_buildup": agg, "agg_bias": buildup_bias(agg)})
     return out
+
+
+# --- Intraday capture (live endpoint; forward-only history) --------------------
+def _intraday_path(date_ist: str, symbol: str) -> Path:
+    return FUTURES_INTRADAY_DIR / symbol / f"{date_ist}.csv"
+
+
+def _hhmm(t: str) -> int | None:
+    try:
+        h, m = str(t).split(":"); return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def _last_time_ist(path: Path) -> str | None:
+    """The time_ist of the last row in an intraday CSV (cheap tail read), or None."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            last = None
+            for line in fh:
+                if line.strip():
+                    last = line
+        if not last or last.startswith("timestamp_utc"):
+            return None
+        parts = last.rstrip("\n").split(",")
+        return parts[1] if len(parts) > 1 else None       # time_ist is column 2
+    except OSError:
+        return None
+
+
+def append_futures_snapshot(rec: dict, timestamp_utc: str, time_ist: str, date_ist: str,
+                            symbol: str | None = None, min_gap_minutes: float = 0.0):
+    """Append one live futures snapshot (from parse_futures_live) to the intraday
+    journal. ``min_gap_minutes`` skips the write if the last row is younger than that
+    (keeps a best-effort dashboard capture from double-writing between logger ticks).
+    Returns (path, written)."""
+    if not rec:
+        return None, False
+    symbol = symbol or rec.get("symbol")
+    if not symbol:
+        return None, False
+    path = _intraday_path(date_ist, symbol)
+    if min_gap_minutes and path.exists():
+        last = _last_time_ist(path)
+        a, b = _hhmm(last), _hhmm(time_ist)
+        if a is not None and b is not None and (b - a) < min_gap_minutes:
+            return path, False
+    new = not path.exists()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"timestamp_utc": timestamp_utc, "time_ist": time_ist,
+           "date_ist": date_ist, "symbol": symbol}
+    row.update({k: rec.get(k) for k in FUTURES_INTRADAY_FIELDS[4:]})
+    with open(path, "a", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=FUTURES_INTRADAY_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
+    return path, True
+
+
+def load_futures_intraday_day(date_ist: str, symbol: str):
+    """Today's intraday futures snapshots as a DataFrame (sorted by time), or None."""
+    path = _intraday_path(date_ist, symbol)
+    if not path.exists():
+        return None
+    import pandas as pd
+    df = pd.read_csv(path)
+    return df.sort_values("time_ist") if not df.empty else None
+
+
+def capture_futures_snapshot(symbol: str = "NIFTY", now_utc: datetime | None = None,
+                             fetch_fn=None, parse_fn=None, min_gap_minutes: float = 0.0):
+    """Best-effort: fetch the live futures quote and append an intraday snapshot.
+    Returns (path, written) or None if unreachable/unsupported symbol. fetch_fn/parse_fn
+    injectable for tests (default to the live data.nse functions)."""
+    if fetch_fn is None or parse_fn is None:
+        from data.nse import fetch_futures_live, parse_futures_live
+        fetch_fn = fetch_fn or fetch_futures_live
+        parse_fn = parse_fn or parse_futures_live
+    payload = fetch_fn(symbol)
+    rec = parse_fn(payload, symbol) if payload else None
+    if not rec:
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    ist = now + timedelta(hours=5, minutes=30)
+    return append_futures_snapshot(rec, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                   ist.strftime("%H:%M"), ist.strftime("%Y-%m-%d"),
+                                   symbol, min_gap_minutes)
+
+
+def intraday_futures_buildup(day_df) -> dict | None:
+    """Today's INTRADAY futures build-up from the first vs latest captured snapshot:
+    ΔPrice (near-month) + ΔOI (aggregate, rollover-netted) + Δvolume over the session,
+    classified via the same matrix. Uses aggregate OI so intraday rollover doesn't
+    distort it. None if fewer than 2 snapshots. Sign-free."""
+    if day_df is None or getattr(day_df, "empty", True):
+        return None
+    import pandas as pd
+    df = day_df.sort_values("time_ist").drop_duplicates("time_ist")
+    if len(df) < 2:
+        return None
+    first, last = df.iloc[0], df.iloc[-1]
+
+    def _f(r, k):
+        v = pd.to_numeric(r.get(k), errors="coerce")
+        return float(v) if v == v else None
+
+    p0, p1 = _f(first, "price"), _f(last, "price")
+    o0, o1 = _f(first, "agg_oi"), _f(last, "agg_oi")
+    v0, v1 = _f(first, "agg_vol"), _f(last, "agg_vol")
+    dprice = (p1 - p0) if (p0 is not None and p1 is not None) else None
+    doi = (o1 - o0) if (o0 is not None and o1 is not None) else None
+    label = classify_futures_buildup(dprice, doi)
+    return {"dprice": dprice, "doi": doi,
+            "dvol": (v1 - v0) if (v0 is not None and v1 is not None) else None,
+            "buildup": label, "bias": buildup_bias(label),
+            "price_now": p1, "oi_now": o1, "spot_now": _f(last, "spot"),
+            "start_time": first.get("time_ist"), "end_time": last.get("time_ist"),
+            "n": len(df)}
 
 
 def _ist_today() -> str:
