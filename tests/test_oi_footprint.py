@@ -105,14 +105,18 @@ def test_top_builds_passes_through_nearest_change_fields():
     assert classify_buildup(top[0]["doi_near"], top[0]["dprem"]) == "writing (short build-up)"
 
 
-def _streak_df(oi_seq, ltp_seq, strike=24000, side="call"):
-    """Build a one-strike day frame with given OI and LTP per snapshot."""
+def _streak_df(oi_seq, ltp_seq, strike=24000, side="call", vol_seq=None):
+    """Build a one-strike day frame with given OI and LTP (and optional cumulative
+    volume) per snapshot."""
     n = len(oi_seq)
-    return pd.DataFrame({
+    d = {
         "time_ist": [f"09:{30 + i:02d}" for i in range(n)],
         "spot": [24000] * n, "strike": [strike] * n,
         f"{side}_oi": oi_seq, f"{side}_ltp": ltp_seq,
-    })
+    }
+    if vol_seq is not None:
+        d[f"{side}_vol"] = vol_seq
+    return pd.DataFrame(d)
 
 
 def test_intraday_streaks_detects_red_writing_run():
@@ -147,6 +151,36 @@ def test_intraday_streaks_broken_by_oi_drop():
     df = _streak_df([100000, 108000, 104000, 110000, 116000],
                     [100.0, 108.0, 103.0, 111.0, 120.0])
     assert intraday_buildup_streaks(df, "call", run=3, min_cum_doi=1000) == []
+
+
+def test_intraday_streaks_only_live_drops_stale_runs():
+    # A 3-red run EARLY (09:30-09:33) then the last two intervals go neutral/covering.
+    # default (longest) surfaces the stale morning run; only_live hides it.
+    df = _streak_df([100000, 105000, 110000, 116000, 116000, 112000],
+                    [200.0, 190.0, 180.0, 170.0, 170.0, 175.0])
+    default = intraday_buildup_streaks(df, "call", run=3, min_cum_doi=1000)
+    assert default and default[0]["kind"] == "red" and default[0]["live"] is False
+    assert intraday_buildup_streaks(df, "call", run=3, min_cum_doi=1000, only_live=True) == []
+
+
+def test_intraday_streaks_only_live_keeps_trailing_run():
+    # A quiet start then a live 3-green run ending at the latest snapshot.
+    df = _streak_df([100000, 100000, 106000, 112000, 118000],
+                    [100.0, 100.0, 108.0, 116.0, 125.0])
+    fl = intraday_buildup_streaks(df, "call", run=3, min_cum_doi=1000, only_live=True)
+    assert len(fl) == 1 and fl[0]["kind"] == "green" and fl[0]["live"] is True
+    assert fl[0]["run_len"] == 3 and fl[0]["end_time"] == "09:34"
+
+
+def test_intraday_streaks_turnover_from_volume():
+    # Cumulative volume over the 3-interval run = 300000-30000 = 270000; OI end 116000.
+    df = _streak_df([100000, 105000, 110000, 116000], [200.0, 190.0, 180.0, 170.0],
+                    vol_seq=[30000, 120000, 210000, 300000])
+    f = intraday_buildup_streaks(df, "call", run=3, min_cum_doi=1000)[0]
+    assert abs(f["turnover"] - 270000 / 116000) < 1e-6
+    # No volume column -> turnover is None (back-compat with old CSVs).
+    df2 = _streak_df([100000, 105000, 110000, 116000], [200.0, 190.0, 180.0, 170.0])
+    assert intraday_buildup_streaks(df2, "call", run=3, min_cum_doi=1000)[0]["turnover"] is None
 
 
 def test_footprint_series_over_snapshots():

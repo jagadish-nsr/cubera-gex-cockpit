@@ -1125,7 +1125,7 @@ def _buildup_streaks_section(data):
     from app.oi_footprint import intraday_buildup_streaks
     from app.timeseries import load_strikes_day
 
-    st.markdown("#### 🔥 Intraday build-up streaks (3× in a row)")
+    st.markdown("#### 🔥 Intraday build-up streaks (live, 3× in a row)")
     if data.source != "nse":
         st.caption("Live NSE only — needs the intraday per-strike capture.")
         return
@@ -1139,32 +1139,39 @@ def _buildup_streaks_section(data):
     flags = []
     for side in ("call", "put"):
         flags += intraday_buildup_streaks(day_df, side, run=3, spot=L.spot,
-                                          band_pts=L.spot * 0.03)
+                                          band_pts=L.spot * 0.03, only_live=True)
     if not flags:
-        st.caption("No 3-in-a-row build-up streaks near spot yet today "
-                   "(needs ≥4 snapshots and a sustained OI+premium move).")
+        st.caption("No **live** build-up streak near spot at the latest snapshot — "
+                   "nothing is accelerating right now (stale morning runs are hidden).")
         return
-    flags.sort(key=lambda x: (-x["run_len"], -abs(x["cum_doi"])))
+    # Rank LIVE streaks by conviction: turnover (run volume ÷ OI) first, then |cum ΔOI|.
+    flags.sort(key=lambda x: (-(x.get("turnover") or -1.0), -abs(x["cum_doi"])))
 
     rows = []
     for f in flags[:10]:
         dot = "🟢" if f["kind"] == "green" else "🔴"
+        turn = f.get("turnover")
         rows.append({
             "Strike": f"{f['strike']:,.0f}",
             "Side": f["side"].upper(),
-            "Streak": f"{dot}×{f['run_len']}" + (" ⏺ live" if f["live"] else ""),
+            "Streak": f"{dot}×{f['run_len']}",
+            "Turnover": f"{turn:.1f}×" if turn is not None else "—",
             "Cum ΔOI": f"{f['cum_doi']:+,.0f}",
             "Cum Prem": f"{f['cum_prem_pct']:+.1f}%" if f["cum_prem_pct"] is not None else "—",
-            "Window": f"{f['start_time']}–{f['end_time']}",
+            "Since": f["start_time"],
             "Read": _STREAK_READ.get((f["side"], f["kind"]), ""),
         })
     st.table(pd.DataFrame(rows))
     st.caption(
-        "Each interval between consecutive snapshots is tagged green (long build-up, "
-        "OI↑ & premium↑) or red (writing/short, OI↑ & premium↓); a strike is listed when "
-        "one colour runs ≥3 in a row. **⏺ live** = the run is ongoing at the latest snapshot "
-        "(accelerating now). Premium is nearest-expiry, ΔOI all-expiry, both step-over-step. "
-        "Momentum read — not a signal; a headline overrides it.")
+        "Only **live** streaks — one colour running ≥3 intervals and still building at the "
+        "latest snapshot (stale runs that already ended are dropped). Green = long build-up "
+        "(OI↑ & premium↑), red = writing/short (OI↑ & premium↓). **Turnover** = volume traded "
+        "over the run ÷ current OI; rows are ranked by it. ⚠️ Turnover flags the **expected "
+        "MOVE SIZE, not its direction** — validated: high turnover predicts a bigger swing "
+        "(|move| IC ≈ +0.3) but **no** directional edge (IC ≈ 0), and buying an aggressive "
+        "premium spike mean-reverts. So this is a **structure / where-the-money-is** read, NOT "
+        "a buy-the-strike signal. Premium nearest-expiry, ΔOI all-expiry, step-over-step; a "
+        "headline overrides it.")
 
 
 def _fii_drift_readout(n: int = 5):
