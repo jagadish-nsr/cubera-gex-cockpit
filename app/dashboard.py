@@ -1179,65 +1179,157 @@ def _buildup_streaks_section(data):
 
 _FUT_ICON = {"long build-up": "🐂", "short build-up": "🐻",
              "short covering": "🔄", "long unwinding": "📉", "flat": "➖"}
+# Bullish↔bearish diverging STATUS scale (validated: good green / critical red, ΔE 12.4
+# deutan — legal only WITH the icon+label+matrix-position secondary encoding used below).
+_FUT_COLOR = {                                   # label -> (hex, is_strong/fresh-money)
+    "long build-up": ("#0ca30c", True), "short covering": ("#0ca30c", False),
+    "short build-up": ("#d03b3b", True), "long unwinding": ("#d03b3b", False),
+    "flat": ("#898781", False),
+}
+_MUTE = "#898781"                                 # shared muted ink (works light + dark)
+
+
+def _fut_abbr(x) -> str:
+    if x is None or x != x:
+        return "—"
+    s, a = ("-" if x < 0 else "+"), abs(float(x))
+    if a >= 1e6:
+        return f"{s}{a / 1e6:.2f}M"
+    if a >= 1e3:
+        return f"{s}{a / 1e3:.0f}k"
+    return f"{s}{a:.0f}"
+
+
+def _fut_chip(title: str, arrow: str, value: str, color: str, sub: str) -> str:
+    return (f'<div style="flex:1;border:1px solid {color}55;background:{color}12;'
+            f'border-radius:9px;padding:9px 6px;text-align:center;min-width:0">'
+            f'<div style="font-size:10.5px;color:{_MUTE};letter-spacing:.5px">{title}</div>'
+            f'<div style="font-size:19px;font-weight:800;color:{color};margin:1px 0">{arrow} {value}</div>'
+            f'<div style="font-size:10px;color:{_MUTE}">{sub}</div></div>')
+
+
+def _fut_matrix_html(active: str | None) -> str:
+    axl = f"font-size:10px;color:{_MUTE};display:flex;align-items:center;justify-content:center;font-weight:700"
+    vax = axl + ";writing-mode:vertical-rl;transform:rotate(180deg)"
+
+    def cell(lbl: str) -> str:
+        icon, color = _FUT_ICON[lbl], _FUT_COLOR[lbl][0]
+        on = lbl == active
+        bg = f"{color}26" if on else "rgba(136,135,129,0.06)"
+        border = f"2px solid {color}" if on else "1px solid rgba(136,135,129,0.28)"
+        glow = f"box-shadow:0 0 0 3px {color}22;" if on else ""
+        txt = color if on else _MUTE
+        tag = (f'<div style="font-size:9px;color:{color};font-weight:700">◀ today</div>'
+               if on else "")
+        return (f'<div style="background:{bg};border:{border};{glow}border-radius:8px;'
+                f'padding:8px 4px;text-align:center;min-height:56px;display:flex;'
+                f'flex-direction:column;justify-content:center;gap:1px">'
+                f'<div style="font-size:16px">{icon}</div>'
+                f'<div style="font-size:11px;font-weight:{"800" if on else "600"};'
+                f'color:{txt};line-height:1.12">{lbl}</div>{tag}</div>')
+
+    return (f'<div style="display:grid;grid-template-columns:30px 1fr 1fr;gap:6px;margin:2px 0 12px">'
+            f'<div></div><div style="{axl}">Price ▲</div><div style="{axl}">Price ▼</div>'
+            f'<div style="{vax}">OI ▲</div>{cell("long build-up")}{cell("short build-up")}'
+            f'<div style="{vax}">OI ▼</div>{cell("short covering")}{cell("long unwinding")}</div>')
 
 
 def _futures_buildup_section(data):
-    """Nifty index-futures OI build-up — the sign-free directional read. Daily (from the
-    F&O bhavcopy, aggregate across serial months to net out rollover) + today's intraday
-    build-up from the live-endpoint snapshots. Best-effort captures both on load."""
-    from app.futures_buildup import (capture_futures_snapshot, classify_futures_buildup,
-                                     futures_series, intraday_futures_buildup,
-                                     load_futures_intraday_day)
+    """Nifty index-futures OI build-up — the sign-free directional read, rendered as a
+    visual card: a state banner, colored Price/OI/Volume signal chips, the 2×2 price+OI
+    build-up matrix (today's quadrant lit), and a multi-day regime strip. Daily from the
+    F&O bhavcopy (aggregate across serial months to net out rollover) + today's intraday
+    build-up. Best-effort captures both on load. Color always pairs with icon+label."""
+    from app.futures_buildup import (capture_futures_snapshot, futures_series,
+                                     intraday_futures_buildup, load_futures_intraday_day)
 
     st.markdown("#### 🐂🐻 Nifty futures OI build-up")
     if data.source != "nse":
         st.caption("Live NSE only — futures build-up needs the NSE derivatives feed.")
         return
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-
-    # Best-effort captures (daily bhavcopy after close; a live intraday snapshot now).
     try:
         capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=10.0)
     except Exception:  # noqa: BLE001 - optional
         pass
 
-    ser = futures_series(data.symbol, n=6)
-    if ser:
-        latest = ser[-1]
-        label = latest.get("agg_buildup")
-        icon = _FUT_ICON.get(label, "")
-        cols = st.columns(3)
-        cols[0].metric("Daily build-up (EOD)", f"{icon} {label or '—'}",
-                       latest.get("agg_bias") or "", delta_color="off")
-        cols[1].metric("ΔPrice (near)", f"{latest.get('dprice'):+,.0f}"
-                       if latest.get("dprice") is not None else "—")
-        cols[2].metric("Aggregate ΔOI", f"{latest.get('agg_doi'):+,.0f}"
-                       if latest.get("agg_doi") is not None else "—")
-        st.caption(f"EOD {latest['date']} · near-month {latest.get('expiry')} · "
-                   "aggregate ΔOI nets out monthly-expiry rollover (trust it over near-month).")
-        # Recent-days strip.
-        strip = " → ".join(f"{r['date'][5:]} {_FUT_ICON.get(r.get('agg_buildup'), '')}"
-                           for r in ser)
-        st.caption(f"Last {len(ser)} days: {strip}")
-    else:
+    ser = futures_series(data.symbol, n=10)
+    if not ser:
         st.caption("No daily futures history yet — run `scripts/log_futures_buildup.py "
                    "--backfill 30` to seed it from the F&O bhavcopy.")
+        return
+    latest = ser[-1]
+    label = latest.get("agg_buildup") or "flat"
+    color, strong = _FUT_COLOR.get(label, (_MUTE, False))
+    dp, doi, vol = latest.get("dprice"), latest.get("agg_doi"), latest.get("agg_vol")
 
-    # Today's intraday build-up (forward-only capture; accrues as the session runs).
+    # Volume vs the trailing average = conviction (heavy/light) — NOT direction.
+    prior = [r.get("agg_vol") for r in ser[:-1] if r.get("agg_vol")]
+    avg = (sum(prior) / len(prior)) if prior else None
+    if vol and avg:
+        vtxt = "heavy" if vol > 1.15 * avg else "light" if vol < 0.85 * avg else "average"
+    else:
+        vtxt = "—"
+
+    # --- State banner (the interpretation) ---
+    strength = "fresh money" if strong else "position-squaring"
+    st.markdown(
+        f'<div style="border-left:6px solid {color};background:{color}14;border-radius:10px;'
+        f'padding:13px 18px;display:flex;align-items:center;gap:16px;margin:2px 0 12px">'
+        f'<div style="font-size:36px;line-height:1">{_FUT_ICON.get(label, "")}</div>'
+        f'<div style="flex:1;min-width:0">'
+        f'<div style="font-size:18px;font-weight:800;color:{color};letter-spacing:.3px">{label.upper()}</div>'
+        f'<div style="font-size:12px;color:{_MUTE};margin-top:2px">{latest.get("agg_bias") or ""} · '
+        f'{strength} · EOD {latest["date"]} · near-month {latest.get("expiry", "—")}</div></div>'
+        f'<div style="text-align:right;font-size:12.5px;line-height:1.55;color:{_MUTE};white-space:nowrap">'
+        f'ΔPrice <b style="color:inherit;font-size:15px">{_fut_abbr(dp)}</b><br>'
+        f'aggΔOI <b style="color:inherit;font-size:15px">{_fut_abbr(doi)}</b></div></div>',
+        unsafe_allow_html=True)
+
+    # --- Signal chips (the raw facts): Price = bull/bear axis, OI = building/reducing, Vol = intensity ---
+    pc = "#0ca30c" if (dp or 0) > 0 else "#d03b3b" if (dp or 0) < 0 else _MUTE
+    oc = "#2a78d6" if (doi or 0) > 0 else _MUTE            # blue=adding, muted=reducing (not bull/bear)
+    st.markdown(
+        f'<div style="display:flex;gap:9px;margin-bottom:10px">'
+        + _fut_chip("PRICE", "▲" if (dp or 0) > 0 else "▼", _fut_abbr(dp), pc, "vs prev close")
+        + _fut_chip("OPEN INTEREST", "▲" if (doi or 0) > 0 else "▼", _fut_abbr(doi), oc,
+                    "positions " + ("added" if (doi or 0) > 0 else "reduced"))
+        + _fut_chip("VOLUME", "≈", _fut_abbr(vol), "#c98500", f"{vtxt} vs {len(prior)}d avg")
+        + '</div>', unsafe_allow_html=True)
+
+    # --- The 2×2 build-up matrix (today's quadrant lit) ---
+    st.markdown(_fut_matrix_html(label), unsafe_allow_html=True)
+
+    # --- Multi-day regime strip ---
+    strip = ""
+    for r in ser:
+        c = _FUT_COLOR.get(r.get("agg_buildup"), (_MUTE, False))[0]
+        strip += (f'<div style="flex:1;background:{c}1f;border:1px solid {c}55;border-radius:6px;'
+                  f'padding:5px 1px;text-align:center;min-width:0">'
+                  f'<div style="font-size:13px">{_FUT_ICON.get(r.get("agg_buildup"), "")}</div>'
+                  f'<div style="font-size:9px;color:{_MUTE};white-space:nowrap">{r["date"][5:]}</div></div>')
+    st.markdown(f'<div style="font-size:10.5px;color:{_MUTE};margin-bottom:3px">Last {len(ser)} '
+                f'days (aggregate, rollover-netted)</div>'
+                f'<div style="display:flex;gap:4px;margin-bottom:6px">{strip}</div>',
+                unsafe_allow_html=True)
+
+    # --- Today's intraday build-up (forward-only capture) ---
     intr = intraday_futures_buildup(load_futures_intraday_day(ist_today, data.symbol))
     if intr and intr.get("buildup"):
-        icon = _FUT_ICON.get(intr["buildup"], "")
-        st.markdown(f"**Intraday so far ({intr['start_time']}–{intr['end_time']}, "
-                    f"n={intr['n']}):** {icon} **{intr['buildup']}** "
-                    f"({intr.get('bias') or '—'}) · ΔPrice {intr['dprice']:+,.0f} · "
-                    f"aggΔOI {intr['doi']:+,.0f}")
+        ic = _FUT_COLOR.get(intr["buildup"], (_MUTE, False))[0]
+        st.markdown(
+            f'<div style="border-left:4px solid {ic};background:{ic}10;border-radius:7px;'
+            f'padding:7px 12px;font-size:12.5px;margin-bottom:4px">'
+            f'<b style="color:{ic}">{_FUT_ICON.get(intr["buildup"], "")} intraday: {intr["buildup"]}</b> '
+            f'<span style="color:{_MUTE}">({intr.get("bias") or "—"}) · {intr["start_time"]}–'
+            f'{intr["end_time"]}, n={intr["n"]} · ΔPrice {_fut_abbr(intr["dprice"])} · '
+            f'aggΔOI {_fut_abbr(intr["doi"])}</span></div>', unsafe_allow_html=True)
     else:
-        st.caption("Intraday futures build-up starts accruing once the timeseries capture "
-                   "runs during market hours (forward-only; no free historical intraday).")
-    st.caption("Price ↑ & OI ↑ = long build-up (bullish) · ↓ & ↑ = short build-up (bearish) "
-               "· ↑ & ↓ = short covering · ↓ & ↓ = long unwinding. **Sign-free** (futures "
-               "OI+price, no dealer-sign landmine); volume = conviction, not direction. "
-               "Decision-support — you confirm.")
+        st.caption("Intraday futures build-up accrues once the timeseries capture runs during "
+                   "market hours (forward-only; no free historical intraday).")
+    st.caption("🟢 bullish · 🔴 bearish · faint = position-squaring (weaker). Aggregate ΔOI "
+               "nets out monthly-expiry rollover. **Sign-free** (futures OI+price, no dealer-sign "
+               "landmine); **volume = conviction, not direction.** Decision-support — you confirm.")
 
 
 def _fii_drift_readout(n: int = 5):
