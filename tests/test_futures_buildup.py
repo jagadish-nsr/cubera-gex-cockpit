@@ -124,6 +124,22 @@ def test_intraday_capture_and_buildup(tmp_path, monkeypatch):
     assert intr["buildup"] == "long build-up" and intr["bias"] == "bullish"
 
 
+def test_intraday_futures_steps_trajectory():
+    import pandas as pd
+    # 3 snapshots: price+OI up (long build-up), then price up + OI down (short covering).
+    df = pd.DataFrame({
+        "time_ist": ["09:20", "09:25", "09:30"],
+        "price": [24400.0, 24420.0, 24440.0],
+        "agg_oi": [250000.0, 260000.0, 255000.0],
+        "agg_vol": [100000.0, 180000.0, 250000.0],
+    })
+    steps = fb.intraday_futures_steps(df)
+    assert [s["state"] for s in steps] == ["long build-up", "short covering"]
+    assert steps[0]["doi"] == 10000.0 and steps[1]["doi"] == -5000.0
+    assert steps[0]["dvol"] == 80000.0
+    assert fb.intraday_futures_steps(df.head(1)) == []      # <2 snapshots -> empty
+
+
 def test_intraday_min_gap_skips_double_write(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "FUTURES_INTRADAY_DIR", tmp_path)
     from data.nse import parse_futures_live

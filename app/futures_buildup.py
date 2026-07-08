@@ -264,6 +264,35 @@ def intraday_futures_buildup(day_df) -> dict | None:
             "n": len(df)}
 
 
+def intraday_futures_steps(day_df) -> list[dict]:
+    """Per-interval intraday build-up trajectory: between consecutive snapshots, classify
+    from (near-month price step, AGGREGATE OI step). Returns [{time, dprice, doi, dvol,
+    state}] oldest→newest — how the futures build-up EVOLVED through the session (the
+    substrate for the intraday-direction study). Aggregate OI so intraday rollover doesn't
+    distort it. Empty if < 2 snapshots. Sign-free."""
+    if day_df is None or getattr(day_df, "empty", True):
+        return []
+    import pandas as pd
+    df = day_df.sort_values("time_ist").drop_duplicates("time_ist")
+    if len(df) < 2:
+        return []
+    t = df["time_ist"].tolist()
+    price = pd.to_numeric(df["price"], errors="coerce").to_numpy()
+    oi = pd.to_numeric(df["agg_oi"], errors="coerce").to_numpy()
+    vol = pd.to_numeric(df["agg_vol"], errors="coerce").to_numpy()
+
+    def _d(a, b):
+        return float(a - b) if (a == a and b == b) else None
+
+    out = []
+    for i in range(1, len(df)):
+        dp, do = _d(price[i], price[i - 1]), _d(oi[i], oi[i - 1])
+        out.append({"time": t[i], "dprice": dp, "doi": do,
+                    "dvol": _d(vol[i], vol[i - 1]),
+                    "state": classify_futures_buildup(dp, do)})
+    return out
+
+
 def _ist_today() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
 
