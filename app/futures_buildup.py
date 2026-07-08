@@ -268,6 +268,25 @@ def intraday_futures_buildup(day_df) -> dict | None:
             "n": len(df)}
 
 
+def latest_intraday_snapshot(day_df) -> dict | None:
+    """The latest captured intraday snapshot's LEVELS (price + change-vs-prev-close, OI,
+    volume, spot) — a partial read for when only ONE snapshot exists (a build-up delta
+    needs 2). ``change`` comes straight from the feed, so price direction is known even
+    from a single snapshot; OI/volume are levels (no Δ yet). None if empty."""
+    if day_df is None or getattr(day_df, "empty", True):
+        return None
+    import pandas as pd
+    df = day_df.sort_values("time_ist").drop_duplicates("time_ist")
+    r = df.iloc[-1]
+
+    def _f(k):
+        v = pd.to_numeric(r.get(k), errors="coerce")
+        return float(v) if v == v else None
+
+    return {"time_ist": r.get("time_ist"), "price": _f("price"), "change": _f("change"),
+            "agg_oi": _f("agg_oi"), "agg_vol": _f("agg_vol"), "spot": _f("spot"), "n": len(df)}
+
+
 def intraday_futures_steps(day_df) -> list[dict]:
     """Per-interval intraday build-up trajectory: between consecutive snapshots, classify
     from (near-month price step, AGGREGATE OI step). Returns [{time, dprice, doi, dvol,

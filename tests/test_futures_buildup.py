@@ -143,6 +143,16 @@ def test_intraday_futures_steps_trajectory():
     assert fb.intraday_futures_steps(df.head(1)) == []      # <2 snapshots -> empty
 
 
+def test_latest_intraday_snapshot_single():
+    import pandas as pd
+    df = pd.DataFrame({"time_ist": ["12:37"], "price": [24224.8], "change": [-172.9],
+                       "agg_oi": [281787.0], "agg_vol": [2311985.0], "spot": [24210.0]})
+    snap = fb.latest_intraday_snapshot(df)
+    assert snap["n"] == 1 and snap["time_ist"] == "12:37"
+    assert snap["price"] == 24224.8 and snap["change"] == -172.9 and snap["agg_oi"] == 281787.0
+    assert fb.latest_intraday_snapshot(None) is None
+
+
 def test_intraday_min_gap_skips_double_write(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "FUTURES_INTRADAY_DIR", tmp_path)
     from data.nse import parse_futures_live

@@ -1292,7 +1292,7 @@ def _futures_buildup_section(data):
     demoted to a compact context strip. Color always pairs with icon+label+matrix position."""
     from app.futures_buildup import (capture_futures_snapshot, futures_series,
                                      intraday_futures_buildup, intraday_futures_steps,
-                                     load_futures_intraday_day)
+                                     latest_intraday_snapshot, load_futures_intraday_day)
 
     st.markdown("#### 🐂🐻 Nifty futures OI build-up — **intraday**")
     if data.source != "nse":
@@ -1350,9 +1350,27 @@ def _futures_buildup_section(data):
                         f'(colour = build-up state, opacity = |ΔOI%| strength; hover for ΔOI%/Δvol)</div>'
                         + _fut_timeline_html(steps), unsafe_allow_html=True)
     else:
-        st.info("⏳ **Intraday futures build-up leads here during market hours** — accruing "
-                "from the 5-min capture (forward-only; no free historical intraday). "
-                "This is the direction signal; EOD below is context.")
+        # Partial read: with 1 snapshot we can't compute a build-up delta, but the feed's
+        # `change` gives price direction now — show live levels instead of a blank wait.
+        snap = latest_intraday_snapshot(day_df)
+        if snap and snap.get("price"):
+            ch = snap.get("change")
+            pc = "#0ca30c" if (ch or 0) > 0 else "#d03b3b" if (ch or 0) < 0 else _MUTE
+            st.markdown(
+                f'<div style="font-size:11px;color:{_MUTE};font-weight:600;margin-bottom:3px">'
+                f'⏳ First snapshot {snap["time_ist"]} (n={snap["n"]}) — live levels; '
+                f'build-up <b>direction</b> computes at the 2nd snapshot</div>'
+                '<div style="display:flex;gap:9px;margin-bottom:8px">'
+                + _fut_chip("PRICE (near)", "▲" if (ch or 0) > 0 else "▼", f'{snap["price"]:,.0f}', pc,
+                            f'{_fut_abbr(ch)} vs prev close')
+                + _fut_chip("OPEN INTEREST", "•", _fut_abbr(snap.get("agg_oi")), "#2a78d6",
+                            "level (Δ needs 2nd snap)")
+                + _fut_chip("VOLUME", "Σ", _fut_abbr(snap.get("agg_vol")), "#c98500", "traded so far")
+                + '</div>', unsafe_allow_html=True)
+        else:
+            st.info("⏳ **Intraday futures build-up leads here during market hours** — accruing "
+                    "from the 5-min capture (forward-only; no free historical intraday). "
+                    "This is the direction signal; EOD below is context.")
 
     # ===== EOD context (demoted): prev-close state + multi-day regime strip =====
     ser = futures_series(data.symbol, n=10)
