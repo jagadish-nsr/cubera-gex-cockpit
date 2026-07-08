@@ -255,9 +255,13 @@ def intraday_futures_buildup(day_df) -> dict | None:
     v0, v1 = _f(first, "agg_vol"), _f(last, "agg_vol")
     dprice = (p1 - p0) if (p0 is not None and p1 is not None) else None
     doi = (o1 - o0) if (o0 is not None and o1 is not None) else None
+    dvol = (v1 - v0) if (v0 is not None and v1 is not None) else None
     label = classify_futures_buildup(dprice, doi)
-    return {"dprice": dprice, "doi": doi,
-            "dvol": (v1 - v0) if (v0 is not None and v1 is not None) else None,
+    return {"dprice": dprice, "doi": doi, "dvol": dvol,
+            # strength %s (both unit-consistent, live feed): OI build since open, and
+            # turnover = today's volume ÷ current OI (conviction). NOT vs bhavcopy (lots≠units).
+            "doi_pct": (doi / o0 * 100.0) if (doi is not None and o0) else None,
+            "turnover_pct": (dvol / o1 * 100.0) if (dvol is not None and o1) else None,
             "buildup": label, "bias": buildup_bias(label),
             "price_now": p1, "oi_now": o1, "spot_now": _f(last, "spot"),
             "start_time": first.get("time_ist"), "end_time": last.get("time_ist"),
@@ -287,7 +291,9 @@ def intraday_futures_steps(day_df) -> list[dict]:
     out = []
     for i in range(1, len(df)):
         dp, do = _d(price[i], price[i - 1]), _d(oi[i], oi[i - 1])
+        prev_oi = oi[i - 1] if oi[i - 1] == oi[i - 1] else None
         out.append({"time": t[i], "dprice": dp, "doi": do,
+                    "doi_pct": (do / prev_oi * 100.0) if (do is not None and prev_oi) else None,
                     "dvol": _d(vol[i], vol[i - 1]),
                     "state": classify_futures_buildup(dp, do)})
     return out

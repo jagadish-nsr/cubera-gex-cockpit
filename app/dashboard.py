@@ -1179,13 +1179,17 @@ def _buildup_streaks_section(data):
 
 _FUT_ICON = {"long build-up": "🐂", "short build-up": "🐻",
              "short covering": "🔄", "long unwinding": "📉", "flat": "➖"}
-# Bullish↔bearish diverging STATUS scale (validated: good green / critical red, ΔE 12.4
-# deutan — legal only WITH the icon+label+matrix-position secondary encoding used below).
-_FUT_COLOR = {                                   # label -> (hex, is_strong/fresh-money)
-    "long build-up": ("#0ca30c", True), "short covering": ("#0ca30c", False),
-    "short build-up": ("#d03b3b", True), "long unwinding": ("#d03b3b", False),
-    "flat": ("#898781", False),
+# FOUR distinct state colors so the trajectory separates all four (not just bull/bear).
+# Validated as a categorical set (worst adjacent CVD ΔE 16.2 deutan) — cool green/aqua =
+# bullish family, warm orange/red = bearish family. Always paired with icon+label+position.
+_FUT_COLOR = {
+    "long build-up": "#0ca30c",    # green  — strong bull (fresh longs)
+    "short covering": "#1baf7a",   # aqua   — bull, position-squaring (shorts exit)
+    "long unwinding": "#eb6834",   # orange — bear, position-squaring (longs exit)
+    "short build-up": "#e34948",   # red    — strong bear (fresh shorts)
+    "flat": "#898781",
 }
+_FUT_FRESH = {"long build-up", "short build-up"}  # fresh money (vs position-squaring)
 _MUTE = "#898781"                                 # shared muted ink (works light + dark)
 
 
@@ -1213,7 +1217,7 @@ def _fut_matrix_html(active: str | None) -> str:
     vax = axl + ";writing-mode:vertical-rl;transform:rotate(180deg)"
 
     def cell(lbl: str) -> str:
-        icon, color = _FUT_ICON[lbl], _FUT_COLOR[lbl][0]
+        icon, color = _FUT_ICON[lbl], _FUT_COLOR[lbl]
         on = lbl == active
         bg = f"{color}26" if on else "rgba(136,135,129,0.06)"
         border = f"2px solid {color}" if on else "1px solid rgba(136,135,129,0.28)"
@@ -1234,15 +1238,50 @@ def _fut_matrix_html(active: str | None) -> str:
             f'<div style="{vax}">OI ▼</div>{cell("short covering")}{cell("long unwinding")}</div>')
 
 
-def _fut_ribbon_html(steps: list) -> str:
-    """A thin regime ribbon: one colored segment per intraday interval (the build-up
-    trajectory through the session). Sign-free; color pairs with the strip legend."""
-    segs = ""
-    for s in steps:
-        c = _FUT_COLOR.get(s.get("state"), (_MUTE, False))[0]
-        segs += f'<div style="flex:1;background:{c}cc;height:15px" title="{s.get("time","")} {s.get("state","")}"></div>'
-    return (f'<div style="display:flex;gap:1px;border-radius:5px;overflow:hidden;'
-            f'border:1px solid rgba(136,135,129,0.3);margin:2px 0 6px">{segs}</div>')
+def _fut_timeline_html(steps: list, cadence: int = 5) -> str:
+    """Fixed FULL-SESSION timeline (09:15→15:30): one slot per ``cadence`` minutes,
+    pre-filled as empty/pending boxes and coloured as the session fills in left→right.
+    Each captured interval colours its slot by build-up state (4 distinct colours),
+    with opacity ∝ |ΔOI%| (strength) and ΔOI%/Δvol on hover. Sign-free."""
+    open_m, close_m = 9 * 60 + 15, 15 * 60 + 30
+    n = (close_m - open_m) // cadence + 1
+
+    def _hm(t):
+        try:
+            h, m = str(t).split(":"); return int(h) * 60 + int(m)
+        except (ValueError, AttributeError):
+            return None
+
+    slot = {}
+    for s in steps:                                  # bucket each interval to its slot
+        m = _hm(s.get("time"))
+        if m is None:
+            continue
+        i = round((m - open_m) / cadence)
+        if 0 <= i < n:
+            slot[i] = s
+
+    cells = ""
+    for i in range(n):
+        s = slot.get(i)
+        if s and s.get("state"):
+            c = _FUT_COLOR.get(s["state"], _MUTE)
+            dpct = s.get("doi_pct")
+            alpha = 0.45 + min(abs(dpct or 0) / 2.0, 1.0) * 0.55   # strength -> opacity
+            hx = format(int(round(alpha * 255)), "02x")
+            dtxt = f"{dpct:+.2f}%" if dpct is not None else "—"
+            title = f'{s.get("time","")} · {s["state"]} · ΔOI {dtxt} · Δvol {_fut_abbr(s.get("dvol"))}'
+            cells += f'<div style="flex:1;background:{c}{hx};height:22px" title="{title}"></div>'
+        else:                                        # empty / pending slot
+            cells += ('<div style="flex:1;background:rgba(136,135,129,0.12);height:22px;'
+                      'border-right:1px solid rgba(136,135,129,0.10)" title="pending"></div>')
+
+    ticks = "".join(f'<div style="flex:1;text-align:{a}">{t}</div>'
+                    for t, a in [("09:15", "left"), ("11:00", "center"), ("13:00", "center"),
+                                 ("15:30", "right")])
+    return (f'<div style="display:flex;gap:0;border-radius:5px;overflow:hidden;'
+            f'border:1px solid rgba(136,135,129,0.35);margin:2px 0 1px">{cells}</div>'
+            f'<div style="display:flex;font-size:9px;color:{_MUTE};margin-bottom:6px">{ticks}</div>')
 
 
 def _futures_buildup_section(data):
@@ -1260,18 +1299,24 @@ def _futures_buildup_section(data):
         st.caption("Live NSE only — futures build-up needs the NSE derivatives feed.")
         return
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-    try:
-        capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=4.0)
-    except Exception:  # noqa: BLE001 - optional
-        pass
+    # Best-effort snapshot — ONLY in-session, so an off-hours dashboard load doesn't
+    # write stale (frozen post-close) rows into the intraday journal.
+    from app.timeseries import in_nse_session
+    if in_nse_session(data.fetched_at):
+        try:
+            capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=4.0)
+        except Exception:  # noqa: BLE001 - optional
+            pass
 
     # ===== INTRADAY (the goldmine): current vs prev close, since the session open =====
     day_df = load_futures_intraday_day(ist_today, data.symbol)
     intr = intraday_futures_buildup(day_df)
     if intr and intr.get("buildup"):
         label = intr["buildup"]
-        color, strong = _FUT_COLOR.get(label, (_MUTE, False))
+        color = _FUT_COLOR.get(label, _MUTE)
+        strong = label in _FUT_FRESH
         dp, doi, dvol = intr.get("dprice"), intr.get("doi"), intr.get("dvol")
+        doi_pct, turn_pct = intr.get("doi_pct"), intr.get("turnover_pct")
         strength = "fresh money" if strong else "position-squaring"
         st.markdown(
             f'<div style="border-left:6px solid {color};background:{color}18;border-radius:10px;'
@@ -1287,20 +1332,23 @@ def _futures_buildup_section(data):
             unsafe_allow_html=True)
         pc = "#0ca30c" if (dp or 0) > 0 else "#d03b3b" if (dp or 0) < 0 else _MUTE
         oc = "#2a78d6" if (doi or 0) > 0 else _MUTE       # blue=adding / muted=reducing (not bull/bear)
+        oi_pct = f" ({doi_pct:+.2f}%)" if doi_pct is not None else ""
+        turn_txt = f"{turn_pct:.0f}% of OI" if turn_pct is not None else "conviction"
         st.markdown(
             '<div style="display:flex;gap:9px;margin-bottom:10px">'
             + _fut_chip("PRICE", "▲" if (dp or 0) > 0 else "▼", _fut_abbr(dp), pc, "since prev close")
-            + _fut_chip("OPEN INTEREST", "▲" if (doi or 0) > 0 else "▼", _fut_abbr(doi), oc,
-                        "positions " + ("added" if (doi or 0) > 0 else "reduced"))
-            + _fut_chip("VOLUME", "Σ", _fut_abbr(dvol), "#c98500", "traded today (conviction)")
+            + _fut_chip("OPEN INTEREST", "▲" if (doi or 0) > 0 else "▼", _fut_abbr(doi) + oi_pct, oc,
+                        "positions " + ("added" if (doi or 0) > 0 else "reduced") + " (ΔOI%)")
+            + _fut_chip("VOLUME", "Σ", _fut_abbr(dvol), "#c98500", f"turnover {turn_txt}")
             + '</div>', unsafe_allow_html=True)
         st.markdown(_fut_matrix_html(label), unsafe_allow_html=True)
         steps = intraday_futures_steps(day_df)
         if steps:
-            st.markdown(f'<div style="font-size:10.5px;color:{_MUTE};margin-bottom:2px">'
-                        f'Session trajectory — {steps[0]["time"]}→{steps[-1]["time"]}, '
-                        f'{len(steps)} intervals (each = one snapshot-to-snapshot build-up)</div>'
-                        + _fut_ribbon_html(steps), unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:11px;color:{_MUTE};font-weight:600;margin-bottom:1px">'
+                        f'📊 Session trajectory · {steps[-1]["time"]} latest · '
+                        f'{len(steps)}/{(15*60+30-9*60-15)//5} slots filled '
+                        f'(colour = build-up state, opacity = |ΔOI%| strength; hover for ΔOI%/Δvol)</div>'
+                        + _fut_timeline_html(steps), unsafe_allow_html=True)
     else:
         st.info("⏳ **Intraday futures build-up leads here during market hours** — accruing "
                 "from the 5-min capture (forward-only; no free historical intraday). "
@@ -1310,10 +1358,10 @@ def _futures_buildup_section(data):
     ser = futures_series(data.symbol, n=10)
     if ser:
         latest = ser[-1]
-        ec = _FUT_COLOR.get(latest.get("agg_buildup"), (_MUTE, False))[0]
+        ec = _FUT_COLOR.get(latest.get("agg_buildup"), _MUTE)
         strip = ""
         for r in ser:
-            c = _FUT_COLOR.get(r.get("agg_buildup"), (_MUTE, False))[0]
+            c = _FUT_COLOR.get(r.get("agg_buildup"), _MUTE)
             strip += (f'<div style="flex:1;background:{c}1f;border:1px solid {c}55;border-radius:6px;'
                       f'padding:4px 1px;text-align:center;min-width:0">'
                       f'<div style="font-size:12px">{_FUT_ICON.get(r.get("agg_buildup"), "")}</div>'
@@ -1323,10 +1371,15 @@ def _futures_buildup_section(data):
             f'prev close <b style="color:{ec}">{latest.get("agg_buildup") or "—"}</b> '
             f'(ΔOI {_fut_abbr(latest.get("agg_doi"))}) · last {len(ser)} days (aggregate, rollover-netted):</div>'
             f'<div style="display:flex;gap:3px;margin-bottom:6px">{strip}</div>', unsafe_allow_html=True)
-    st.caption("🟢 bullish · 🔴 bearish · faint = position-squaring (weaker). Intraday ΔOI is "
-               "aggregate (rollover-netted), since the session open ≈ prev close. **Sign-free** "
-               "(futures OI+price, no dealer-sign landmine); **volume = conviction, not direction.** "
-               "Decision-support — you confirm.")
+    # 4-state legend (color never alone — decoded here + on every icon/hover).
+    leg = "  ".join(f'<span style="color:{_FUT_COLOR[k]}">■</span> {_FUT_ICON[k]} {k}'
+                    for k in ("long build-up", "short covering", "long unwinding", "short build-up"))
+    st.markdown(f'<div style="font-size:10px;color:{_MUTE};margin-bottom:2px">{leg}</div>',
+                unsafe_allow_html=True)
+    st.caption("Green/aqua = bullish · orange/red = bearish; **build-up = fresh money, "
+               "covering/unwinding = position-squaring (weaker).** Intraday ΔOI is aggregate "
+               "(rollover-netted), since session open ≈ prev close. **Sign-free** (futures OI+price, "
+               "no dealer-sign landmine); **volume = conviction, not direction.** You confirm.")
 
 
 def _fii_drift_readout(n: int = 5):

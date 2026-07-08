@@ -122,6 +122,8 @@ def test_intraday_capture_and_buildup(tmp_path, monkeypatch):
     intr = fb.intraday_futures_buildup(df)
     assert intr["dprice"] == 60.0 and intr["doi"] == 20000.0
     assert intr["buildup"] == "long build-up" and intr["bias"] == "bullish"
+    assert abs(intr["doi_pct"] - 20000.0 / 277000.0 * 100) < 1e-6      # agg OI build since open %
+    assert intr["turnover_pct"] is not None                            # vol ÷ OI (conviction)
 
 
 def test_intraday_futures_steps_trajectory():
@@ -137,6 +139,7 @@ def test_intraday_futures_steps_trajectory():
     assert [s["state"] for s in steps] == ["long build-up", "short covering"]
     assert steps[0]["doi"] == 10000.0 and steps[1]["doi"] == -5000.0
     assert steps[0]["dvol"] == 80000.0
+    assert abs(steps[0]["doi_pct"] - 10000.0 / 250000.0 * 100) < 1e-6   # per-interval ΔOI%
     assert fb.intraday_futures_steps(df.head(1)) == []      # <2 snapshots -> empty
 
 
