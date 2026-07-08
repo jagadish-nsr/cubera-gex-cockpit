@@ -1,4 +1,4 @@
-# RECOMMENDED setup: capture an intraday Nifty GEX snapshot every 15 min through
+# RECOMMENDED setup: capture an intraday Nifty GEX snapshot every 5 min through
 # the NSE session, each WEEKDAY, even when NOT logged in, WAKING the PC from sleep.
 # This is the reliable unattended path (the dashboard's auto-refresh needs an open
 # browser; see CLAUDE.md / the time-series notes).
@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 # --- EDIT for winter (GMT): change to '3:45am' and re-run -------------------
 $StartTime   = '4:45am'                          # 09:15 IST in BST
 $WindowHours = 6; $WindowMinutes = 15            # NSE session length (09:15-15:30)
-$EveryMins   = 15                                # capture cadence
+$EveryMins   = 5                                 # capture cadence (5-min; was 15)
 # ---------------------------------------------------------------------------
 
 # S4U ("run whether logged on or not") + wake timers BOTH require Administrator.
@@ -40,21 +40,21 @@ $bat  = Join-Path $PSScriptRoot 'run_timeseries.bat'
 $days = 'Monday','Tuesday','Wednesday','Thursday','Friday'
 
 # One task per index — each passes its symbol to the launcher, which writes to the
-# per-index journal subfolder. Bank Nifty is monthly-only, but the 15-min session
+# per-index journal subfolder. Bank Nifty is monthly-only, but the 5-min session
 # capture still applies (it records the monthly chain every session day).
 $tasks = [ordered]@{ 'NiftyGEX-TimeSeries' = 'NIFTY'; 'BankNiftyGEX-TimeSeries' = 'BANKNIFTY' }
 
-# ExecutionTimeLimit spans the whole session: on an EXPIRY day the 15-min fire
+# ExecutionTimeLimit spans the whole session: on an EXPIRY day the 5-min fire
 # that first lands in the blast window (13:00 IST) stays resident at 1-min cadence
 # until 15:30 IST (bundled gamma-blast — no separate task). MultipleInstances
-# IgnoreNew stops the later 15-min fires from stacking on top of that loop.
+# IgnoreNew stops the later 5-min fires from stacking on top of that loop.
 $settings = New-ScheduledTaskSettingsSet -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RunOnlyIfNetworkAvailable `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 8)
 # S4U: run whether logged on or not, no stored password, keeps network access.
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -RunLevel Limited
 
-# Weekly weekday trigger, with a 15-min repetition grafted on so it fires through
+# Weekly weekday trigger, with a 5-min repetition grafted on so it fires through
 # the whole session window then stops until the next weekday (the documented idiom).
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $days -At $StartTime
 $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $StartTime `

@@ -1,9 +1,9 @@
 """Phase A capture loop — append an intraday index GEX snapshot to the day's
 time-series (``data/journal/timeseries/<SYMBOL>/YYYY-MM-DD.csv``, gitignored).
 
-  python scripts/log_timeseries.py             # loop every 15 min during NSE hours
+  python scripts/log_timeseries.py             # loop every 5 min during NSE hours
   python scripts/log_timeseries.py --once       # one snapshot, then exit (for schedulers)
-  python scripts/log_timeseries.py --loop 5     # custom interval (minutes)
+  python scripts/log_timeseries.py --loop 15    # custom interval (minutes)
   python scripts/log_timeseries.py --once --ignore-session   # capture off-hours (testing)
 
 Reuses the dashboard pipeline (ONE NSE fetch -> levels + OI/volume aggregates), so
@@ -14,7 +14,7 @@ BUNDLED GAMMA-BLAST: on an EXPIRY day, once we reach the blast window
 (13:00-15:30 IST), the SAME task switches to a 1-min per-strike gamma-blast
 capture until the close — no separate scheduled task needed. Expiry is detected
 live from the pull itself (``data.expiries[0] == today``), so nothing to maintain.
-The 15-min time-series keeps flowing (deduped) through the window.
+The 5-min time-series keeps flowing (deduped) through the window.
 
 NOTE: the session guard does NOT know NSE holidays — on a holiday it will idle
 during 09:15-15:30 IST and record flat/stale data (the OI staleness flag covers
@@ -85,7 +85,7 @@ def _save_blast(data) -> int:
 
 
 def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str, object]:
-    """One live pull -> 15-min time-series row (+ per-strike OI, deduped). On an
+    """One live pull -> 5-min time-series row (+ per-strike OI, deduped). On an
     expiry day inside the blast window it ALSO appends a 1-min gamma-blast row from
     the SAME pull. Returns (log line, DashboardData) so the caller can decide
     whether to enter the bundled 1-min blast loop."""
@@ -124,8 +124,8 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
 def _run_blast_window(symbol: str | None) -> None:
     """On an expiry day, keep capturing at 1-min cadence until the blast window
     ends (15:30 IST). Each tick reuses capture_once, which writes the 1-min
-    gamma-blast row every time and the 15-min time-series row when due (min_gap
-    ~14). Triggered from the same 15-min task — no separate scheduled task."""
+    gamma-blast row every time and the 5-min time-series row when due (min_gap
+    ~4). Triggered from the same 5-min task — no separate scheduled task."""
     while True:
         _time.sleep(60)
         ist = _ist_now()
@@ -133,7 +133,7 @@ def _run_blast_window(symbol: str | None) -> None:
             _print(f"{ist:%H:%M} IST  blast window over — bundled 1-min capture stopped")
             return
         try:
-            msg, data = capture_once(min_gap=14.0, symbol=symbol)
+            msg, data = capture_once(min_gap=4.0, symbol=symbol)
             _print(msg)
             if not _is_expiry_day(data):
                 _print("nearest expiry rolled — bundled capture stopped")
@@ -155,8 +155,8 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="single snapshot then exit")
     ap.add_argument("--symbol", default=None,
                     help="index to capture (NIFTY/BANKNIFTY); default NIFTY")
-    ap.add_argument("--loop", type=float, default=15.0, help="interval in minutes (loop mode)")
-    ap.add_argument("--min-gap", type=float, default=10.0,
+    ap.add_argument("--loop", type=float, default=5.0, help="interval in minutes (loop mode)")
+    ap.add_argument("--min-gap", type=float, default=4.0,
                     help="dedup guard: skip if a row was saved < this many minutes ago "
                          "(auto-clamped below the loop interval; <=0 disables)")
     ap.add_argument("--ignore-session", action="store_true",
@@ -177,7 +177,7 @@ def main() -> None:
         # Bundled gamma-blast: on an expiry day inside the blast window, this SAME
         # --once fire stays resident at 1-min cadence until 15:30 IST (no separate
         # task). Safe: the scheduler's ExecutionTimeLimit spans the window and
-        # IgnoreNew stops the 15-min re-fires from stacking on top of this loop.
+        # IgnoreNew stops the 5-min re-fires from stacking on top of this loop.
         if _is_expiry_day(data) and _in_blast_window(ist):
             _print(f"[{data.symbol}] {ist:%H:%M} IST  EXPIRY DAY — bundled 1-min "
                    "gamma-blast capture until 15:30 IST")

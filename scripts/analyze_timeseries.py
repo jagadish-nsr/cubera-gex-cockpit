@@ -150,7 +150,7 @@ def day_summary(day: str, d: pd.DataFrame) -> dict:
 
 
 def realized_vol_by_regime(days: dict[str, pd.DataFrame]) -> dict[str, dict]:
-    """Std of 15-min log returns, bucketed by the regime at the START of each
+    """Std of per-interval log returns (at the capture cadence), bucketed by the regime at the START of each
     interval. Model predicts NEGATIVE > POSITIVE (short gamma amplifies)."""
     buckets: dict[str, list[float]] = {}
     for d in days.values():
@@ -168,7 +168,7 @@ def realized_vol_by_regime(days: dict[str, pd.DataFrame]) -> dict[str, dict]:
 
 
 def autocorr_by_regime(days: dict[str, pd.DataFrame]) -> dict[str, dict]:
-    """Lag-1 autocorrelation of 15-min returns over consecutive pairs that are
+    """Lag-1 autocorrelation of per-interval returns over consecutive pairs that are
     BOTH inside one regime. Model predicts: POSITIVE -> negative (mean-revert),
     NEGATIVE -> positive (momentum). This is the sharp test (no walls needed)."""
     pairs: dict[str, list[tuple[float, float]]] = {}
@@ -233,7 +233,7 @@ def _verdict(rv: dict, ac: dict, n_days: int, n_int: int, n_flagged: int = 0) ->
 
 
 def _returns_by_gamma_sign(days: dict[str, pd.DataFrame]):
-    """Pool 15-min log returns into two FIXED buckets by net-dealer-gamma sign
+    """Pool per-interval log returns into two FIXED buckets by net-dealer-gamma sign
     under the US convention: G+ (regime POSITIVE, total_net_gex>0) and G- (NEGATIVE).
 
     These buckets do not move when we flip the dealer-sign convention — flipping
@@ -277,7 +277,10 @@ def pcr_vol_crosscheck(days: dict[str, pd.DataFrame]):
     """SIGN-FREE corroboration of the dealer-sign read using PCR (put/call OI).
 
     PCR owes NOTHING to the dealer-sign assumption, so it is an independent axis.
-    We pool 15-min |returns| by the PCR tercile at each interval's start. Low PCR
+    We pool per-interval |returns| (at the capture cadence) by the PCR tercile at each
+    interval's start. ⚠️ the capture cadence changed 15-min → 5-min (2026-07); a
+    per-interval return is over the cadence, so RV magnitudes are NOT comparable across
+    days of different cadence — treat pre/post-switch pools separately. Low PCR
     means call-heavy OI, which is the SAME state as net_gex>0 (the G+ bucket): so
     if the low-PCR tercile is the WILDER one, it independently corroborates that
     G+ behaves short-gamma (convention B / India-inverted), since the US default
@@ -286,7 +289,7 @@ def pcr_vol_crosscheck(days: dict[str, pd.DataFrame]):
     Returns (rows, verdict) where rows = [(label, n, rv_pct, drift_pct), ...] for
     low/mid/high terciles, or (None, msg) if the pcr_oi column is unusable.
     """
-    vals: list[tuple[float, float]] = []   # (pcr_at_start, 15m_return_pct)
+    vals: list[tuple[float, float]] = []   # (pcr_at_start, per_interval_return_pct)
     for d in days.values():
         if "pcr_oi" not in d.columns:
             continue
@@ -342,7 +345,7 @@ def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     add("flip negates net_gex and inverts the regime label EXACTLY; magnet, max-pain")
     add("and |levels| are invariant). One measurement, two interpretations.")
     add("")
-    add(f"  bucket  n_ret   rv(15m)    n_pair  lag1-ac")
+    add(f"  bucket  n_ret   rv/step    n_pair  lag1-ac")
     add(f"  G+ (net_gex>0)  {len(gp):4}  {rvp:.3f}%   {len(pairs['G+']):4}   "
         f"{acp:+.3f} ± {acp_se:.3f}")
     add(f"  G- (net_gex<0)  {len(gm):4}  {rvm:.3f}%   {len(pairs['G-']):4}   "
