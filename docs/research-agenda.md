@@ -148,6 +148,27 @@ The paywalled ones most worth reading in full for methodology we'd borrow:
 - **Xing, Zhang & Zhao (2010), JFQA** — the smirk measure definition.
 - **Hong & Yogo (2011), NBER** — aggregate-OI signal construction.
 
+## Results log (studies run so far)
+- **#1 Dealer-gamma → realized vol** (`analyze_gamma_vol.py`, 19 days): sign-free |gamma|→RV
+  ≈ 0 (no concentration effect); signed raw +0.34/1h but **cross-day-confounded** (de-meaned
+  ≈ 0, non-monotonic). Notable: G− (model-A short-gamma) is the **calmest** tercile → backwards
+  for model A, right for the **inverted India sign (model B)** → a 3rd weak dealer-sign nudge
+  toward B. No clean tradeable gamma→vol signal; our `net_gex` may not match SqueezeMetrics'
+  dealer-book method.
+- **#2 Pinning to magnet / max-pain** (`analyze_pinning.py`, 19 days, 2 expiry): naive gap→move
+  IC looks strong (−0.27 to −0.55 into the close, stronger on expiry/afternoon) **but a
+  60-min trailing-mean CONTROL beats the magnet everywhere** (−0.47 to −0.61). So OI-pinning is
+  **NOT validated as distinct** — what's there is **generic intraday mean-reversion** (revert to
+  recent price), plus a mild mechanical bias (spot in both gap and move). The magnet adds nothing
+  over price.
+
+**The unifying empirical finding across every study** (streaks, build-ups, turnover, thrust,
+gamma→vol, pinning): **intraday Nifty MEAN-REVERTS**, strongly and robustly, especially into the
+close/afternoon — but this is **generic (revert-to-recent-price), not specific to any OI
+structure**. OI/GEX reads *structure and expected move size*, not directional edge beyond price.
+The documented OI→direction edge is daily-to-monthly (see the reframe up top) — that's the
+untested frontier once the daily journals accrue.
+
 ## Honest caveats
 - Most cited edges are **US/large-sample**; India (writer-dominated, retail-heavy, weekly-expiry
   churn) may differ — re-validate, never assume (CLAUDE.md).
