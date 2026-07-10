@@ -123,7 +123,9 @@ def main() -> None:
     days = sorted(p.stem for p in base.glob("*.csv")) if base.exists() else []
     events: list[dict] = []
     for d in days:
-        events.extend(_events_for_day(load_futures_intraday_day(d, symbol)))
+        for e in _events_for_day(load_futures_intraday_day(d, symbol)):
+            e["day"] = d                              # tag for per-day de-trending
+            events.append(e)
 
     _print(f"Intraday futures build-up ({TRAIL_MIN}m trailing)  ->  forward futures return "
            f"at 15m/30m/1h  (point-in-time)  ·  {symbol}\n")
@@ -134,22 +136,38 @@ def main() -> None:
         return
 
     df = pd.DataFrame(events)
-    _print("\nSpearman IC vs forward return:")
+    # DE-TREND: subtract each day's mean forward return so we test the SIGNAL, not the
+    # day's drift (a one-directional window otherwise biases every forward return and
+    # can fake or hide a signal). IC on the residual is the honest read.
     for lbl in HORIZONS_MIN:
-        im, n = _ic(df["mom"], df[lbl])
-        ib, _ = _ic(df["bias"], df[lbl])
-        ifr, _ = _ic(df["fresh"], df[lbl])
-        io, _ = _ic(df["doi"], df[lbl])
-        _print(f"  {lbl:>3}:  momentum {im:+.2f}   bias {ib:+.2f}   fresh {ifr:+.2f}   "
-               f"rawΔOI {io:+.2f}   (n={n})")
+        df[lbl + "_dt"] = df[lbl] - df.groupby("day")[lbl].transform("mean")
 
-    _print("\nForward return by build-up state:")
+    _print("\nSpearman IC vs forward return  [RAW | DE-TRENDED (per-day drift removed)]:")
+    for lbl in HORIZONS_MIN:
+        row = []
+        for sig in ("mom", "bias", "fresh", "doi"):
+            raw, n = _ic(df[sig], df[lbl])
+            det, _ = _ic(df[sig], df[lbl + "_dt"])
+            row.append(f"{sig if sig != 'doi' else 'rawΔOI'} {raw:+.2f}|{det:+.2f}")
+        _print(f"  {lbl:>3} (n={n}):  " + "   ".join(row))
+    _print("  (each cell RAW|DET — DET removes the day's drift; read DET as the signal.)")
+
+    _print("\nDE-TRENDED 30m forward return by build-up state (day drift removed):")
     for st in ("long build-up", "short covering", "short build-up", "long unwinding"):
-        sub = df[df["state"] == st]
-        s = sub["30m"].dropna() if "30m" in sub else pd.Series(dtype=float)
+        s = df[df["state"] == st]["30m_dt"].dropna()
         if len(s):
-            _print(f"  {st:16s} ({str(buildup_bias(st) or '-')[:12]:12s}): 30m mean {s.mean():+.2f}%  "
+            _print(f"  {st:16s} ({str(buildup_bias(st) or '-')[:12]:12s}): mean {s.mean():+.3f}%  "
                    f"P(>0) {(s > 0).mean()*100:.0f}%  (n={len(s)})")
+
+    # BUILD-UP ONLY — the user's strategy focus: fresh-money trends (long/short build-up),
+    # ignoring short covering / long unwinding (position-squaring / short-term events).
+    bu = df[df["state"].isin(["long build-up", "short build-up"])]
+    _print(f"\nBUILD-UP ONLY (fresh trends: long/short build-up, n={len(bu)}) — de-trended:")
+    for lbl in HORIZONS_MIN:
+        det, n = _ic(bu["bias"], bu[lbl + "_dt"])
+        r = (bu["bias"] * bu[lbl + "_dt"]).dropna()   # return in the signal's direction
+        hit = f"dir-return mean {r.mean():+.3f}%  P(>0) {(r > 0).mean()*100:.0f}%" if len(r) else "—"
+        _print(f"  {lbl:>3}:  bias IC {det:+.2f}   {hit}   (n={n})")
 
     _print("\n⚠️ EXPLORATORY — tiny n, overlapping windows autocorrelate. The bias sign tracks "
            "sign(ΔPrice) so its IC ≈ momentum; the question is whether the OI dimension "
