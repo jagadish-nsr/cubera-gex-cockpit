@@ -91,6 +91,7 @@ def _events_for_day(df: pd.DataFrame) -> list[dict]:
     mm = [_mins(t) for t in df["time_ist"].tolist()]
     price = pd.to_numeric(df["price"], errors="coerce").to_numpy()
     oi = pd.to_numeric(df["agg_oi"], errors="coerce").to_numpy()
+    vol = pd.to_numeric(df["agg_vol"], errors="coerce").to_numpy()
     ev = []
     for i in range(len(df)):
         b = _idx_at_or_before(mm, i, TRAIL_MIN)
@@ -99,9 +100,12 @@ def _events_for_day(df: pd.DataFrame) -> list[dict]:
         dp, do = price[i] - price[b], oi[i] - oi[b]
         if not (dp == dp and do == do):
             continue
+        # trailing turnover = volume traded over the window ÷ current OI = CONVICTION.
+        dv = vol[i] - vol[b]
+        turn = (dv / oi[i]) if (oi[i] and dv == dv) else np.nan
         state = classify_futures_buildup(dp, do)
         rec = {"state": state, "mom": float(np.sign(dp)), "bias": _bias_sign(state),
-               "fresh": _FRESH.get(state, 0), "doi": float(do)}
+               "fresh": _FRESH.get(state, 0), "doi": float(do), "turn": float(turn) if turn == turn else np.nan}
         ok = False
         for lbl, h in HORIZONS_MIN.items():
             j = _idx_at_or_after(mm, i, h)
@@ -168,6 +172,19 @@ def main() -> None:
         r = (bu["bias"] * bu[lbl + "_dt"]).dropna()   # return in the signal's direction
         hit = f"dir-return mean {r.mean():+.3f}%  P(>0) {(r > 0).mean()*100:.0f}%" if len(r) else "—"
         _print(f"  {lbl:>3}:  bias IC {det:+.2f}   {hit}   (n={n})")
+
+    # BUILD-UP × TURNOVER — the key hypothesis: does CONVICTION (high trailing turnover)
+    # make a build-up's DIRECTION hold? Split build-ups at the median trailing turnover.
+    tv = bu["turn"].median()
+    _print(f"\nBUILD-UP × TURNOVER (median turnover {tv:.3f}×OI) — dir-return (signal direction):")
+    for name, sub in [("HI-turnover build-up", bu[bu["turn"] >= tv]),
+                      ("LO-turnover build-up", bu[bu["turn"] < tv])]:
+        cells = []
+        for lbl in HORIZONS_MIN:
+            r = (sub["bias"] * sub[lbl + "_dt"]).dropna()
+            cells.append(f"{lbl} {r.mean():+.3f}%/{ (r > 0).mean()*100:.0f}%" if len(r) else f"{lbl} —")
+        _print(f"  {name} (n={len(sub)}):  " + "   ".join(cells))
+    _print("  (mean/hit in the build-up's direction; HI-turnover should beat LO if conviction matters.)")
 
     _print("\n⚠️ EXPLORATORY — tiny n, overlapping windows autocorrelate. The bias sign tracks "
            "sign(ΔPrice) so its IC ≈ momentum; the question is whether the OI dimension "
