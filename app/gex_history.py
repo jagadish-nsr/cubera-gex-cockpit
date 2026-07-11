@@ -122,24 +122,43 @@ def gex_series(symbol: str = "NIFTY", refresh: bool = True,
     return dict(sorted(cached.items()))
 
 
-def vol_regime(symbol: str = "NIFTY", lookback: int = 252) -> dict | None:
-    """Sign-free volatility-regime read from the latest day's |GEX| vs its recent history.
-    High |GEX| (gamma concentration) → historically CALMER ahead; low → WILDER (validated
-    inverse |GEX|→RV, IC ≈ −0.17 at 10d). Returns None if too few days. ``max_new`` caps the
-    per-call compute so the dashboard never rebuilds the whole series on load."""
+RV_HORIZON = 10                  # forward realized-vol horizon (matches the −0.20 validation)
+
+
+def vol_regime(symbol: str = "NIFTY") -> dict | None:
+    """Sign-free volatility-regime read: the latest day's |GEX| vs its full-history
+    distribution, PLUS the historical mean forward realized vol (annualized %) for each
+    |GEX| tercile — so the read is QUANTIFIED (high |GEX| → ~X% vol vs ~Y% in low-gamma).
+    Validated inverse |GEX|→RV (IC ≈ −0.20 at 10d). Returns None if too few days."""
+    import numpy as np
+    from app.options_eod import daily_spot
+
     s = gex_series(symbol, max_new=3)
-    if len(s) < 20:
+    sp = daily_spot(symbol)
+    days = [d for d in sorted(s) if d in sp]
+    if len(days) < 40:
         return None
-    days = sorted(s)
-    absg = [abs(s[d]) for d in days]
-    recent = absg[-lookback:]
+    absg = np.array([abs(s[d]) for d in days])
+    spot = np.array([sp[d] for d in days])
+    lr = np.diff(np.log(spot), prepend=np.nan)
+    rv = np.array([np.nanstd(lr[i + 1:i + 1 + RV_HORIZON]) * np.sqrt(252) * 100
+                   if i + 1 + RV_HORIZON <= len(lr) else np.nan for i in range(len(days))])
+
+    q1, q2 = np.percentile(absg, [33, 66])
     cur = absg[-1]
-    pct = 100.0 * sum(1 for v in recent if v <= cur) / len(recent)
-    if pct >= 66:
-        read, tag = "HIGH gamma concentration → expect CALMER / mean-reverting", "calm"
-    elif pct <= 33:
-        read, tag = "LOW gamma concentration → expect WILDER / trending", "wild"
+    pct = 100.0 * float((absg <= cur).mean())
+
+    def _mrv(mask):
+        r = rv[mask & ~np.isnan(rv)]
+        return float(np.mean(r)) if len(r) else float("nan")
+
+    lo_rv, hi_rv = _mrv(absg <= q1), _mrv(absg >= q2)
+    if cur >= q2:
+        tag, read, exp_rv = "calm", "HIGH gamma concentration → expect CALMER / mean-reverting", hi_rv
+    elif cur <= q1:
+        tag, read, exp_rv = "wild", "LOW gamma concentration → expect WILDER / trending", lo_rv
     else:
-        read, tag = "MID gamma concentration → neutral vol regime", "mid"
-    return {"day": days[-1], "gex": s[days[-1]], "absgex": cur, "pct": pct,
-            "n": len(recent), "read": read, "tag": tag}
+        tag, read, exp_rv = "mid", "MID gamma concentration → neutral vol regime", _mrv((absg > q1) & (absg < q2))
+    return {"day": days[-1], "gex": s[days[-1]], "absgex": cur, "pct": pct, "n": len(days),
+            "read": read, "tag": tag, "exp_rv": exp_rv, "lo_rv": lo_rv, "hi_rv": hi_rv,
+            "horizon": RV_HORIZON}

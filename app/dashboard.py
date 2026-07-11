@@ -1421,15 +1421,22 @@ def _gex_vol_regime_section(data):
         return
     color = {"calm": "#2a78d6", "wild": "#eb6834", "mid": _MUTE}.get(vr["tag"], _MUTE)
     icon = {"calm": "🟦", "wild": "🟧", "mid": "⬜"}.get(vr["tag"], "")
+    exp = f"{vr['exp_rv']:.0f}%" if vr.get("exp_rv") == vr.get("exp_rv") else "—"
+    lo, hi = vr.get("lo_rv"), vr.get("hi_rv")
+    ctx = (f"(this regime historically → ~{exp} realized vol over the next {vr['horizon']}d; "
+           f"vs ~{hi:.0f}% high-gamma / ~{lo:.0f}% low-gamma)"
+           if lo == lo and hi == hi else "")
     st.markdown(
         f'<div style="border-left:6px solid {color};background:{color}14;border-radius:10px;'
         f'padding:12px 16px;margin:2px 0 6px">'
         f'<div style="font-size:16px;font-weight:800;color:{color}">{icon} {vr["read"]}</div>'
+        f'<div style="font-size:13px;color:{color};font-weight:700;margin-top:4px">'
+        f'≈ {exp} expected realized vol · next {vr["horizon"]} days</div>'
         f'<div style="font-size:12px;color:{_MUTE};margin-top:3px">|GEX| in the '
-        f'<b>{vr["pct"]:.0f}ᵗʰ percentile</b> of the last {vr["n"]} days · as of EOD '
-        f'{vr["day"]}</div></div>', unsafe_allow_html=True)
+        f'<b>{vr["pct"]:.0f}ᵗʰ percentile</b> of {vr["n"]} days · as of EOD {vr["day"]} '
+        f'{ctx}</div></div>', unsafe_allow_html=True)
     st.caption("Sign-free (gamma **magnitude**, not sign — dodges the dealer-sign landmine). "
-               "Validated inverse |GEX|→realized-vol (Spearman ≈ −0.17 at 10d on 2 yrs; "
+               "Validated inverse |GEX|→realized-vol (Spearman ≈ −0.20 at 10d on 2 yrs; "
                "SqueezeMetrics pattern). A VOLATILITY-regime read, NOT a direction call. "
                "EOD (updates after each day's bhavcopy). Decision-support — you confirm.")
 
