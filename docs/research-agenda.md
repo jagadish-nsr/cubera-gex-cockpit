@@ -162,12 +162,23 @@ The paywalled ones most worth reading in full for methodology we'd borrow:
   recent price), plus a mild mechanical bias (spot in both gap and move). The magnet adds nothing
   over price.
 
-**The unifying empirical finding across every study** (streaks, build-ups, turnover, thrust,
-gamma→vol, pinning): **intraday Nifty MEAN-REVERTS**, strongly and robustly, especially into the
-close/afternoon — but this is **generic (revert-to-recent-price), not specific to any OI
-structure**. OI/GEX reads *structure and expected move size*, not directional edge beyond price.
-The documented OI→direction edge is daily-to-monthly (see the reframe up top) — that's the
-untested frontier once the daily journals accrue.
+- **#4 OTM-OI growth → next-day** (`analyze_otm_oi_ic.py`): backfilled the FREE bhavcopy to
+  **n=542** (2 yrs). The exciting small-sample hint (OTM-call IC −0.71 at n=8) was **NOISE** —
+  at full sample IC ≈ **−0.02** (all signals −0.06…+0.06). **No daily OTM-OI edge.**
+- **#5 FII positioning → next-day** (`analyze_participant_ic.py`, n=154): the n=11 hint
+  (−0.74) collapses to **−0.21** (FII net-fut level; hedging-pressure −0.08). A *weak*
+  contrarian lean survives (borderline sig, ~2.6σ) but the mirage is gone. The one directional
+  *survivor* worth watching as the participant archive completes.
+
+**Bottom line after both horizons at full sample:** neither intraday NOR daily OI/options/
+futures signals give Nifty a clean DIRECTIONAL edge in our data. The US/large-sample literature
+edges don't clearly transfer (India is writer-dominated, different microstructure), and every
+promising small-n hint deflated under proper sample size. The backfill's value was catching that
+before we chased noise. What holds up: (a) the intraday MEAN-REVERSION (generic, revert-to-
+recent-price — not OI-specific); (b) the sign-free gamma-blast STAYING-POWER grade (+0.79,
+confirmation not prediction); (c) a weak FII-net-futures CONTRARIAN lean (−0.21); (d) accumulating
+dealer-sign evidence toward the inverted model B. OI/GEX here is a **structure / positioning /
+expected-volatility** tool for a human to read — **not a directional-alpha signal**.
 
 ## Honest caveats
 - Most cited edges are **US/large-sample**; India (writer-dominated, retail-heavy, weekly-expiry
