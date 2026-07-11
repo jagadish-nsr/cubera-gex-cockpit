@@ -76,6 +76,33 @@ def test_parse_index_options_aggregates_and_bands():
     assert parse_index_options("", "NIFTY") is None
 
 
+_RAW_HEADER = ("TradDt,TckrSymb,FinInstrmTp,XpryDt,StrkPric,OptnTp,OpnPric,HghPric,LwPric,"
+               "ClsPric,PrvsClsgPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,UndrlygPric")
+_RAW = "\n".join([
+    _RAW_HEADER,
+    "2026-07-11,NIFTY,IDF,2026-07-28,0,-,24450,24560,24400,24500,24540,24500,163107,-3192,45637,24480",
+    "2026-07-11,NIFTY,IDO,2026-07-14,24500,CE,120,140,110,130,150,130,100,10,5,24480",
+    "2026-07-11,NIFTY,IDO,2026-07-14,24300,PE,90,100,80,95,88,95,200,30,7,24480",
+    "2026-07-11,RELIANCE,STF,2026-07-28,0,-,3000,3010,2990,3005,2995,3005,5000,100,200,3000",  # ignore
+])
+
+
+def test_bhavcopy_raw_roundtrip(tmp_path, monkeypatch):
+    import app.bhavcopy_raw as br
+    monkeypatch.setattr(br, "RAW_FO_DIR", tmp_path)
+    br.save_raw_fo_day("2026-07-11", _RAW, "NIFTY")
+    br.save_raw_fo_day("2026-07-11", _RAW, "NIFTY")           # idempotent
+    df = br.load_raw_fo_day("2026-07-11", "NIFTY")
+    assert len(df) == 3 and set(df["instr"]) == {"IDF", "IDO"}   # RELIANCE filtered out
+    opt = df[df["instr"] == "IDO"]
+    assert set(opt["opt"]) == {"CE", "PE"}
+    ce = opt[opt["strike"] == 24500].iloc[0]
+    assert ce["close"] == 130.0 and ce["oi"] == 100 and ce["doi"] == 10   # premium + OI kept
+    assert df["spot"].iloc[0] == 24480.0
+    assert br.available_days("NIFTY") == ["2026-07-11"]
+    assert br.save_raw_fo_day("2026-07-11", "", "NIFTY") is None
+
+
 def test_options_eod_roundtrip_and_otm_signal(tmp_path, monkeypatch):
     import app.options_eod as oe
     from data.nse import parse_index_options
