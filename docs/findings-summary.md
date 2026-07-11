@@ -86,8 +86,16 @@ The FII signal's **monotonic decay** (−0.74 → −0.21 → −0.10 as n went 
 textbook signature of a small-sample mirage.
 
 ## 5. What holds up (it isn't nothing)
-1. **Gamma-blast staying-power grade** (+0.79, sign-free, validated) — the one real signal;
-   confirmation of a break's momentum, not a directional predictor.
+0. **Dealer-gamma concentration → forward realized VOLATILITY** (the strongest, most
+   theory-consistent result). On 2 yrs of raw bhavcopy, **|GEX| → forward RV is inversely
+   related** (Spearman **−0.20 at 10d** with per-strike-IV GEX; −0.15 at 5d), coherent and
+   growing with horizon — the sign-free SqueezeMetrics "gamma dampens vol" pattern. **Not a
+   direction call** (signed GEX ≈ 0; dealer sign still open). Productionized as the dashboard
+   **🌡️ volatility-regime gauge** (`app/gex_history.py`): high |GEX| = expect calmer /
+   mean-reverting, low = wilder / trending. Weak/borderline but *right*, and the one signal
+   the data genuinely supports.
+1. **Gamma-blast staying-power grade** (+0.79, sign-free, validated) — confirmation of a
+   break's momentum, not a directional predictor.
 2. **Intraday mean-reversion** — strong and robust, but **generic** (revert-to-recent-price),
    *not* specific to any OI structure (a naive trailing mean beats the magnet).
 3. **Turnover = expected move size, not direction** — validated repeatedly; useful for sizing /
