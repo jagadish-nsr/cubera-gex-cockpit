@@ -170,6 +170,19 @@ The paywalled ones most worth reading in full for methodology we'd borrow:
   (n=352)**. Hedging-pressure −0.07, drift ≈ 0. Textbook small-sample mirage; **no real FII
   directional edge.**
 
+- **#6 PCR horizons** (`analyze_pcr_horizons.py`, 543 days, full-chain): PCR-OI and PCR-vol →
+  return at 1/2/5/12d all **±0.07 = null**. The 2001–2013 MDPI ~12-day OI-PCR result **does not
+  replicate** on 2024–26 (regime/microstructure changed — weeklies, retail).
+- **#8 Option skew** (`analyze_skew.py`, 542 days): OTM put/call premium skew → return is
+  **weakly POSITIVE and grows with horizon** (+0.07/+0.10/+0.12 at 1/2/5d) — the **India-inverted
+  sign** (steep put skew = writer-driven support = bullish, opposite the US Xing-Zhang-Zhao). The
+  strongest *directional* hint found, but borderline significant given overlap.
+- **#1 GEX → realized vol at scale** (`analyze_gex_vol.py`, 538 days, GEX recomputed per-strike
+  from raw): **|GEX| → forward RV is NEGATIVE (−0.12/−0.17 at 5/10d), coherent + growing with
+  horizon** — the sign-free SqueezeMetrics "gamma dampens vol" pattern, at the daily horizon. The
+  **most theory-consistent result of the project** (weak/borderline, but right sign, sign-free).
+  Signed GEX ≈ 0 (dealer sign still inconclusive).
+
 **Bottom line after both horizons at full sample:** neither intraday NOR daily OI/options/
 futures signals give Nifty a clean DIRECTIONAL edge in our data. The US/large-sample literature
 edges don't clearly transfer (India is writer-dominated, different microstructure), and every
