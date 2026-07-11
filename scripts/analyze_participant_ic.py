@@ -41,16 +41,20 @@ def _print(s: str = "") -> None:
 
 
 def nifty_daily_close(symbol: str = "NIFTY") -> dict[str, float]:
-    """{date_ist: close} from the time-series journal — the last clean in-session
-    spot each day (frozen/partial days with < _MIN_ROWS snapshots are dropped)."""
+    """{date_ist: close}. Prefers the DEEP options_eod journal (bhavcopy UndrlygPric = the
+    official NIFTY close, months–years back); falls back to the time-series last-clean spot
+    for very recent days the bhavcopy hasn't published yet. The deep source is what lets the
+    FII IC run at full sample."""
+    from app.options_eod import daily_spot
     out: dict[str, float] = {}
-    for d in ts_days(symbol):
+    for d in ts_days(symbol):                     # recent, from timeseries (fallback)
         clean = _clean_day(load_day(d, symbol))
         if clean is None or clean.empty or len(clean) < _MIN_ROWS:
             continue
         sp = pd.to_numeric(clean["spot"], errors="coerce").dropna()
         if len(sp):
             out[d] = float(sp.iloc[-1])
+    out.update(daily_spot(symbol))                # authoritative EOD close overrides
     return out
 
 

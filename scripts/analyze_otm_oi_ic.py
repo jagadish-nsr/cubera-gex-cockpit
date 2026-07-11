@@ -5,7 +5,7 @@ growth in OTM (esp. call) option OI predicts higher future returns — informed 
 prefer cheap OTM options, so OI building there leads price. DAILY horizon (the literature's
 horizon; our intraday direction studies found nothing).
 
-At each day's LAST oi_strikes snapshot (EOD proxy) we sum the ΔOI (vs prev close) of
+From each day's bhavcopy EOD per-strike option OI (data/journal/options_eod), we sum the ΔOI (vs prev day) of
 near-OTM calls (strike>spot) and near-OTM puts (strike<spot) within ±BAND, and test each
 signal against the next trading day's close-to-close return (point-in-time).
 
@@ -17,8 +17,8 @@ both-signs work). SIGN-of-the-signal is the open question; magnitude/predictivit
 
   python scripts/analyze_otm_oi_ic.py            # NIFTY
 
-⚠️ Exploratory — only ~9 oi_strikes days (8 pairs) so far; overlapping expiries; tiny n.
-Read the SIGN and re-run as capture accrues. Not a trade rule."""
+⚠️ Exploratory — backfilled from the free F&O bhavcopy (months–years of days), overlapping
+expiries. Read the SIGN and re-run after backfill_daily.py. Not a trade rule."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.timeseries import OISTRIKES_DIR, load_strikes_day  # noqa: E402
+from app.options_eod import available_days, load_options_day, otm_oi_signal  # noqa: E402
 
 BAND_FRAC = 0.03                 # near-OTM band = ±3% of spot
 
@@ -50,35 +50,21 @@ def _gap_days(d0, d1):
 
 
 def _eod_signal(day: str, symbol: str) -> dict | None:
-    df = load_strikes_day(day, symbol)
-    if df is None or df.empty or "time_ist" not in df.columns:
+    rec = load_options_day(day, symbol)          # EOD per-strike from the bhavcopy journal
+    if not rec or not rec.get("spot"):
         return None
-    last = df["time_ist"].max()
-    snap = df[df["time_ist"] == last]
-    spot = pd.to_numeric(snap["spot"], errors="coerce").dropna()
-    if spot.empty:
+    sig = otm_oi_signal(rec, band_frac=BAND_FRAC)
+    if not sig:
         return None
-    spot = float(spot.iloc[-1])
-    band = spot * BAND_FRAC
-    k = pd.to_numeric(snap["strike"], errors="coerce")
-    cd = pd.to_numeric(snap["call_doi"], errors="coerce")
-    pd_ = pd.to_numeric(snap["put_doi"], errors="coerce")
-    otm_c = (k > spot) & (k <= spot + band)
-    otm_p = (k < spot) & (k >= spot - band)
-    call_growth = float(cd[otm_c].clip(lower=0).sum())      # OTM-call OI building (adds only)
-    put_growth = float(pd_[otm_p].clip(lower=0).sum())      # OTM-put OI building
-    tot = call_growth + put_growth
-    return {"day": day, "spot": spot,
-            "otm_call_growth": call_growth, "otm_put_growth": put_growth,
-            # normalized net OTM call-vs-put building, comparable across days
-            "net_otm": (call_growth - put_growth) / tot if tot else np.nan,
-            "otm_pcr_doi": put_growth / call_growth if call_growth else np.nan}
+    return {"day": day, "spot": float(rec["spot"]),
+            "otm_call_growth": sig["otm_call_growth"], "otm_put_growth": sig["otm_put_growth"],
+            "net_otm": sig["net_otm"] if sig["net_otm"] is not None else np.nan,
+            "otm_pcr_doi": sig["otm_pcr_doi"] if sig["otm_pcr_doi"] is not None else np.nan}
 
 
 def main() -> None:
     symbol = sys.argv[1] if len(sys.argv) > 1 else "NIFTY"
-    base = OISTRIKES_DIR / symbol
-    days = sorted(p.stem for p in base.glob("*.csv")) if base.exists() else []
+    days = available_days(symbol)
     sig = [s for s in (_eod_signal(d, symbol) for d in days) if s]
     # pair each signal-day with the next signal-day's return (close-to-close via last-snap spot)
     rows = []
@@ -90,9 +76,9 @@ def main() -> None:
     df = df[df["gap"] <= 4] if not df.empty else df
 
     _print(f"EOD OTM option-OI growth  ->  next-day Nifty return  (point-in-time)  ·  {symbol}\n")
-    _print(f"oi_strikes days: {len(sig)}   ·   usable next-day pairs: {len(df)}")
+    _print(f"signal days: {len(sig)}   ·   usable next-day pairs: {len(df)}")
     if len(df) < 5:
-        _print("Too few pairs — accrue more oi_strikes days, then re-run.")
+        _print("Too few pairs — run scripts/backfill_daily.py, then re-run.")
         return
 
     _print("\nSpearman IC vs next-day return:")
@@ -107,7 +93,7 @@ def main() -> None:
            "(US buyer-driven, Zhou). NEGATIVE ⇒ call building = WRITING/resistance = bearish "
            "(India writer-dominated). The sign is itself dealer-microstructure evidence.")
     _print("\n⚠️ EXPLORATORY — tiny n, overlapping expiries, sign-free target. Not a trade rule. "
-           "Re-run as oi_strikes days accrue.")
+           "Re-run after backfill_daily.py.")
 
 
 if __name__ == "__main__":
