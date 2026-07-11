@@ -45,14 +45,26 @@ class _Session:
         self.n = 0
         self.refresh = refresh
 
+    def _reprime(self):
+        try:
+            self.s = _primed_session()
+        except Exception:                  # noqa: BLE001 - network hiccup; keep old session
+            pass
+
     def fetch(self, fetch_fn, arg):
         self.n += 1
         if self.n % self.refresh == 0:
-            self.s = _primed_session()
-        r = fetch_fn(arg, session=self.s)
-        if r is None:                      # maybe cookie/bot block — re-prime once, retry
-            self.s = _primed_session()
+            self._reprime()
+        try:
             r = fetch_fn(arg, session=self.s)
+        except Exception:                  # noqa: BLE001 - one bad day must not kill the backfill
+            r = None
+        if r is None:                      # maybe cookie/bot block — re-prime once, retry
+            self._reprime()
+            try:
+                r = fetch_fn(arg, session=self.s)
+            except Exception:              # noqa: BLE001
+                r = None
         return r
 
 
