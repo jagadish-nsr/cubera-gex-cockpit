@@ -31,11 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.bhavcopy_raw import available_days, load_raw_fo_day  # noqa: E402
-from gex.bs import bs_gamma, implied_vol_call  # noqa: E402
+from app.gex_history import compute_day_gex  # noqa: E402
 
 HORIZONS = [5, 10]
-MIN_DTE = 3
-BAND_FRAC = 0.10                 # strikes within ±10% of spot contribute to GEX
 
 
 def _print(s: str = "") -> None:
@@ -50,37 +48,16 @@ def _day_gex(day: str, symbol: str) -> dict | None:
     df = load_raw_fo_day(day, symbol)
     if df is None:
         return None
-    opt = df[df["instr"] == "IDO"].copy()
-    if opt.empty or opt["expiry"].isna().all():
+    spot = pd.to_numeric(df["spot"], errors="coerce").dropna()
+    if spot.empty:
         return None
-    spot = float(pd.to_numeric(df["spot"], errors="coerce").dropna().iloc[0])
-    d0 = date.fromisoformat(day)
-    exps = sorted(opt["expiry"].dropna().unique())
-    exp = next((e for e in exps if (date.fromisoformat(e) - d0).days >= MIN_DTE), None)
-    if exp is None:
+    g_smile = compute_day_gex(day, symbol, smile=True)      # per-strike IV (the smile)
+    g_flat = compute_day_gex(day, symbol, smile=False)      # one ATM IV (crude)
+    if g_smile is None or g_flat is None:
         return None
-    T = (date.fromisoformat(exp) - d0).days / 365.0
-    near = opt[opt["expiry"] == exp]
-    # ATM IV from the ATM call
-    ce = near[(near["opt"] == "CE") & (near["close"] > 0)]
-    if ce.empty:
-        return None
-    atm = ce.iloc[(ce["strike"] - spot).abs().argmin()]
-    iv = implied_vol_call(float(atm["close"]), spot, float(atm["strike"]), T)
-    if not (iv and iv == iv) or iv <= 0:
-        return None
-    # net GEX = Σ gamma·(callOI − putOI) over near-money strikes (model A dealer sign)
-    gex = 0.0
-    for k, g in near.groupby("strike"):
-        k = float(k)
-        if abs(k - spot) > spot * BAND_FRAC:
-            continue
-        gam = bs_gamma(spot, k, T, iv)
-        coi = float(g[g["opt"] == "CE"]["oi"].sum())
-        poi = float(g[g["opt"] == "PE"]["oi"].sum())
-        gex += gam * (coi - poi)
-    gex *= spot * spot * 0.01           # standard $-gamma-per-1% scaling (units arbitrary for IC)
-    return {"day": day, "spot": spot, "gex": gex, "absgex": abs(gex)}
+    return {"day": day, "spot": float(spot.iloc[0]),
+            "gex": g_smile, "absgex": abs(g_smile),
+            "gex_flat": g_flat, "absgex_flat": abs(g_flat)}
 
 
 def main() -> None:
@@ -101,15 +78,16 @@ def main() -> None:
 
     _print(f"Historical dealer GEX → forward realized vol  ·  {symbol}  ·  {len(df)} days "
            f"({df['day'].iloc[0]} … {df['day'].iloc[-1]})\n")
-    _print("Spearman IC vs forward RV:")
+    _print("Spearman IC vs forward RV  [per-strike-IV smile | flat ATM-IV]:")
     for h in HORIZONS:
-        a = df[["absgex", f"rv_{h}"]].dropna()
-        s = df[["gex", f"rv_{h}"]].dropna()
-        ica = a["absgex"].corr(a[f"rv_{h}"], method="spearman")
-        ics = s["gex"].corr(s[f"rv_{h}"], method="spearman")
-        _print(f"  {h}d:  |GEX| {ica:+.2f}   signed GEX {ics:+.2f}   (n={len(a)})")
-    _print("\n  |GEX|→RV sign-free (concentration). signed: NEG ⇒ +gamma calmer (US model A); "
-           "POS ⇒ +gamma wilder ⇒ inverted India sign (model B).")
+        def _ic(col):
+            s = df[[col, f"rv_{h}"]].dropna()
+            return s[col].corr(s[f"rv_{h}"], method="spearman"), len(s)
+        ica, n = _ic("absgex"); icaf, _ = _ic("absgex_flat")
+        ics, _ = _ic("gex"); icsf, _ = _ic("gex_flat")
+        _print(f"  {h}d (n={n}):  |GEX| {ica:+.2f}|{icaf:+.2f}    signed {ics:+.2f}|{icsf:+.2f}")
+    _print("\n  |GEX|→RV sign-free (concentration; NEG = concentration dampens vol, the "
+           "SqueezeMetrics pattern). signed: NEG ⇒ +gamma calmer (US model A), POS ⇒ inverted (B).")
     _print("\n⚠️ EXPLORATORY — approximate EOD GEX (one ATM IV/day, r=q=0); overlapping RV "
            "windows autocorrelate. Sign-free for |GEX|. Not a trade rule.")
 

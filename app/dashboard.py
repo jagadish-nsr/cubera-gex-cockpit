@@ -335,6 +335,9 @@ def main():
     # --- Nifty FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
     _futures_buildup_section(data)
 
+    # --- Volatility-regime gauge (dealer gamma, sign-free; the one validated signal) --
+    _gex_vol_regime_section(data)
+
     # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
     _participant_oi_section(data)
 
@@ -1398,6 +1401,37 @@ def _futures_buildup_section(data):
                "covering/unwinding = position-squaring (weaker).** Intraday ΔOI is aggregate "
                "(rollover-netted), since session open ≈ prev close. **Sign-free** (futures OI+price, "
                "no dealer-sign landmine); **volume = conviction, not direction.** You confirm.")
+
+
+def _gex_vol_regime_section(data):
+    """The one signal the research phase validated: sign-free dealer-gamma CONCENTRATION →
+    forward realized VOLATILITY (SqueezeMetrics; |GEX|→RV IC ≈ −0.17/10d on 2 yrs of raw
+    bhavcopy). An EOD vol-REGIME read — high |GEX| = expect calmer/mean-reverting, low =
+    wilder/trending. Not a direction call (that's the unvalidated dealer-sign landmine)."""
+    from app.gex_history import vol_regime
+
+    st.markdown("#### 🌡️ Volatility regime (dealer gamma · EOD · sign-free)")
+    try:
+        vr = vol_regime(data.symbol)
+    except Exception:  # noqa: BLE001 - optional/analytical
+        vr = None
+    if not vr:
+        st.caption("Building — needs the raw-bhavcopy GEX history cache "
+                   "(`python -c \"from app.gex_history import gex_series; gex_series()\"`).")
+        return
+    color = {"calm": "#2a78d6", "wild": "#eb6834", "mid": _MUTE}.get(vr["tag"], _MUTE)
+    icon = {"calm": "🟦", "wild": "🟧", "mid": "⬜"}.get(vr["tag"], "")
+    st.markdown(
+        f'<div style="border-left:6px solid {color};background:{color}14;border-radius:10px;'
+        f'padding:12px 16px;margin:2px 0 6px">'
+        f'<div style="font-size:16px;font-weight:800;color:{color}">{icon} {vr["read"]}</div>'
+        f'<div style="font-size:12px;color:{_MUTE};margin-top:3px">|GEX| in the '
+        f'<b>{vr["pct"]:.0f}ᵗʰ percentile</b> of the last {vr["n"]} days · as of EOD '
+        f'{vr["day"]}</div></div>', unsafe_allow_html=True)
+    st.caption("Sign-free (gamma **magnitude**, not sign — dodges the dealer-sign landmine). "
+               "Validated inverse |GEX|→realized-vol (Spearman ≈ −0.17 at 10d on 2 yrs; "
+               "SqueezeMetrics pattern). A VOLATILITY-regime read, NOT a direction call. "
+               "EOD (updates after each day's bhavcopy). Decision-support — you confirm.")
 
 
 def _fii_drift_readout(n: int = 5):
