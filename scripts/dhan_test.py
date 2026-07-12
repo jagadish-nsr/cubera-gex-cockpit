@@ -31,10 +31,10 @@ def main() -> None:
     to_d = date.today()
     from_d = to_d - timedelta(days=7)
     strike = sys.argv[1] if len(sys.argv) > 1 else "ATM"
-    _print(f"Dhan rollingoption test — NIFTY {strike} CALL, WEEK expiryCode=0, 1-min, "
+    _print(f"Dhan rollingoption test — NIFTY {strike} CALL, WEEK expiryCode=1, 1-min, "
            f"{from_d}..{to_d}\n")
     resp = fetch_rolling_option(from_date=str(from_d), to_date=str(to_d), strike=strike,
-                                opt_type="CALL", expiry_flag="WEEK", expiry_code=0, interval="1")
+                                opt_type="CALL", expiry_flag="WEEK", expiry_code=1, interval="1")
     if resp and "_error" in resp:
         _print(f"❌ API error: {resp['_error']}  body: {resp.get('_body')}")
         _print("   (401/403 = token/auth; check DHAN_ACCESS_TOKEN or data/.dhan_token, and "
