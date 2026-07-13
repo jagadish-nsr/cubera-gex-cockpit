@@ -198,7 +198,7 @@ def main():
     if is_expiry:
         st.warning("⚡ **EXPIRY DAY** — gamma is at its strongest. Positive gamma → "
                    "strong pin toward the magnet/max pain; a break of a wall can trigger "
-                   "a **gamma blast**. See 'What trade fits this mode?' below.")
+                   "a **gamma blast**. See 'What trade fits this regime?' below.")
     if data.source == "DEMO-SYNTHETIC":
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
@@ -305,8 +305,8 @@ def main():
     ]
     st.table(pd.DataFrame(rows, columns=["Level", "Price", "Δ from spot (pts)", "Role"]))
 
-    # --- What trade fits this mode? (illustrative, unvalidated) -----------
-    _trade_explainer(L, V, data, is_expiry)
+    # --- What trade fits this regime? (illustrative; vol-regime driven) ----
+    _trade_explainer(L, data, is_expiry)
 
     # --- Net-GEX-by-strike chart ------------------------------------------
     _gex_chart(L)
@@ -457,15 +457,19 @@ def _structure_notes(L) -> list[str]:
     return notes
 
 
-def _trade_explainer(L, V, data, is_expiry_day=False):
-    """Illustrative regime->structure mapping. NOT a validated recommendation."""
+def _trade_explainer(L, data, is_expiry_day=False):
+    """Illustrative VOL-REGIME -> structure mapping. The regime read is validated (|vanna|/charm →
+    forward vol); the specific STRUCTURE is illustrative textbook, NOT a validated recommendation."""
     from structures.suggest import suggest_structure
+    from app.intraday_features import regime_now
 
+    vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
+    tag = vr["tag"] if vr else None
     nearest = data.expiries[0] if data.expiries else None
-    cs = suggest_structure(L, V, lot_size=config.get_index(data.symbol).lot_size,
+    cs = suggest_structure(L, tag, lot_size=config.get_index(data.symbol).lot_size,
                            nearest_expiry=nearest, is_expiry_day=is_expiry_day)
 
-    with st.expander("💡 What trade fits this mode?  (ILLUSTRATIVE — not validated, paper only)",
+    with st.expander("💡 What trade fits this regime?  (ILLUSTRATIVE — paper only)",
                      expanded=False):
         st.markdown(f"**{cs.name}**")
         if cs.legs:
@@ -481,9 +485,10 @@ def _trade_explainer(L, V, data, is_expiry_day=False):
         if cs.expiry_note:
             st.info(f"⚡ {cs.expiry_note}")
         st.warning(
-            "Illustrative textbook structure from the rules — the signal is **NOT "
-            "validated for Nifty**. Do **not** trade this; for learning / paper "
-            "practice only. You decide everything."
+            "Structure is mapped from the **sign-free vol-regime** (the |vanna|/charm gauge — "
+            "validated → forward realized vol). The **regime read is validated**; the specific "
+            "**structure is illustrative textbook**, NOT a validated recommendation. For learning "
+            "/ paper practice only — you decide everything."
         )
 
 
