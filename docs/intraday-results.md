@@ -259,3 +259,27 @@ forward 30-min return (direction) and vol (size). NIFTY, stride-4 sample, 23,303
 |VANNA| is a ~2× sharper vol-regime metric than |GEX| — candidate to upgrade the dashboard gauge
 (vanna weights OTM OI differently: zero at ATM, peaks OTM). TODO before productionizing: confirm on
 full sample (stride 1) + BankNifty.
+
+## Study #9 — ΔPCR conditioned on GEX regime  → NULL
+`scripts/analyze_deltapcr_gex.py`. Static PCR was null; this tests the intraday ΔPCR flow (30-min
+change in putOI/callOI — meaningful because Dhan OI updates live) vs de-trended forward return, by
+|GEX| tercile and GEX sign. NIFTY, 1239 days, 93k stamps.
+
+- POOLED and every |GEX| bin ~0 (|IC|≤0.05). Only the GEX− bin nudges +0.06 (15/30m, n=15.9k) — one
+  bin, weak, no LOW-vs-HIGH sign flip; the classic decays-to-zero shape. No regime-conditional edge.
+
+ΔPCR flow adds nothing over static PCR (both null). Consistent with the OI-positioning direction null.
+
+### Study #8 confirmed on FULL sample (stride 1) + BankNifty
+|·|→fvol | IV-partial (the real test — beats GEX beyond IV?):
+| metric | NIFTY-W | BANKNIFTY |
+|--------|--------:|----------:|
+| VANNA  | −0.187 | −0.190 |
+| GEX    | −0.128 | −0.169 |
+| CHARM  | −0.228 | −0.182 |
+| VEGA   | +0.080 | −0.149 |
+
+**|VANNA| beats |GEX| in BOTH books** (strongly NIFTY ~46%, modestly BankNifty ~12%); direction
+still dead (signed→ret/Δ15→ret ~0 everywhere). CHARM is strongest on NIFTY (−0.228) but inconsistent
+(only ~GEX on BankNifty). Running a strike-weighting bake-off (GEX vs GEXpeak/GEXkey3/GEXotm vs
+VANNA vs CHARM) to pick the single best vol-regime metric before wiring it into the dashboard gauge.

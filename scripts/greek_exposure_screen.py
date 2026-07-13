@@ -29,7 +29,7 @@ GRID = 5
 _OPEN = 9 * 60 + 15
 H = 6                             # 30-min forward horizon (6×5min)
 BPY = 252 * 75
-METRICS = ["DEX", "DFLOW", "DDOI", "CHARM", "VANNA", "VEGA", "GEX"]
+METRICS = ["DEX", "DFLOW", "DDOI", "CHARM", "VANNA", "VEGA", "GEX", "GEXpeak", "GEXkey3", "GEXotm"]
 
 
 def _print(s: str = "") -> None:
@@ -97,6 +97,13 @@ def _day_metrics(store, day, T):
         cO, pO = coi[good], poi[good]
         cV, pV = cv[good], pv[good]
         dcO, dpO = dcoi[good], dpoi[good]
+        # per-strike gamma exposure + strike-weighting variants ("GEX at key levels")
+        netg = gamma * (cO - pO)                          # per-strike, unscaled
+        tot = cO + pO
+        s2 = spot * spot * 0.01
+        order = np.argsort(tot)[::-1]                     # strikes by total OI (the "key levels")
+        step = (np.diff(np.sort(Kk)).min() if len(Kk) > 1 else 50.0)
+        otm = np.abs(Kk - spot) > 1.5 * step             # OTM-only (drop ATM, like vanna's weighting)
         rows.append({
             "day": day, "time_ist": st, "spot": spot,
             "DEX": float(np.sum(dc * cO + dp * pO)),
@@ -105,7 +112,10 @@ def _day_metrics(store, day, T):
             "CHARM": float(np.sum(charm * (cO - pO))),
             "VANNA": float(np.sum(vanna * (cO - pO))),
             "VEGA": float(np.sum(vega * (cO + pO))),
-            "GEX": float(np.sum(gamma * (cO - pO)) * spot * spot * 0.01),
+            "GEX": float(np.sum(netg) * s2),                             # aggregate (current gauge)
+            "GEXpeak": float(netg[order[0]] * s2),                      # single peak-OI strike
+            "GEXkey3": float(np.sum(netg[order[:3]]) * s2),             # top-3 OI strikes (key levels)
+            "GEXotm": float(np.sum(netg[otm]) * s2),                    # OTM-only aggregate
         })
     return rows
 
