@@ -5,6 +5,34 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-13 IST — Charm vs Gamma-blast analysis  ⏳ TODO
+
+**Why:** **charm** (∂delta/∂time) is the dealer greek that drives **expiry-day directional drift**
+(forced one-way re-hedging as deltas decay — "charm flow"), and it's a near-expiry-dominated signal
+(∝ 1/T). The **gamma blast** is an expiry-day strike-crossing phenomenon. So charm is the most
+theory-plausible thing to connect to blast *direction/continuation* — the one dimension the blast
+score can't predict (Study #6: direction is a coin flip). In the greek screen charm was also the
+strongest vol metric on NIFTY (IV-partial −0.228) but inconsistent on BankNifty. See
+`docs/vanna-charm.md`, `docs/intraday-results.md` #5/#6/#8.
+
+**What to test (point-in-time, leak-free — reuse `scripts/analyze_dhan_blast.py` /
+`build_blast_dataset.py` crossing machinery):**
+1. Charm EXPOSURE (signed, model-A) and its 15-min change at/just-after a crossing → does it
+   predict the *direction* of continuation (up vs down) or the true-vs-fake blast, beyond momentum?
+   (The signed test the blast score fails — charm is the candidate because it's directional flow.)
+2. Charm at KEY LEVELS (the crossed strike / wall ahead) vs aggregate charm.
+3. Does charm-flow SIGN align with the blast direction on true blasts specifically (near expiry)?
+4. Add `CHARM` (and its Δ) as a feature to the blast ML dataset and re-check the walk-forward AUC /
+   EV — does the one greek with a directional mechanism move the needle?
+
+**Honest prior:** low (direction has been null everywhere, incl. charm's signed→ret ~0 in the
+pooled screen) — BUT charm × expiry-day × blast is the one untested *interaction*, and charm's
+1/T concentration means a pooled test dilutes it. Condition on DTE≤1.5 (0-DTE). Sign-dependent
+(dealer-sign landmine) → report |IC| + both signs. Exploratory; confirmation-not-alpha unless it
+clearly beats momentum.
+
+---
+
 ## 2026-07-03 03:33 IST — Intraday mini-buildup streak detector (5/15-min) + dashboard list  ✅ DONE (2026-07-03)
 
 **Built:** `app/oi_footprint.py::intraday_buildup_streaks` — per-strike consecutive-snapshot
