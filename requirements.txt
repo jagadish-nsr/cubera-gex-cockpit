@@ -5,6 +5,8 @@
 #   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
 #   streamlit-autorefresh - non-blocking timer for the dashboard auto-refresh.
 #   pytest      - test runner for the hand-checkable fixtures.
+#   pyarrow     - parquet I/O for the Dhan intraday store + feature caches.
+#   scikit-learn - gamma-blast ML studies (HistGradientBoosting / logistic).
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
@@ -12,3 +14,5 @@ requests>=2.31
 streamlit>=1.40
 streamlit-autorefresh>=1.0
 pytest>=8.0
+pyarrow>=15.0
+scikit-learn>=1.5

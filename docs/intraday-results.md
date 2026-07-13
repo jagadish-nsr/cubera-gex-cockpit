@@ -209,3 +209,16 @@ already in the option price.**
 partial|momentum IC **+0.003** (raw −0.019), %continued flat ~50% across score buckets. The blast
 score has no point-in-time predictive power for BankNifty either (small-n was +0.37, didn't
 transfer). Confirmation-only in both indices.
+
+## Study #6c — do INTRADAY FUTURES help the blast model? (50-day subset)  → NO
+`scripts/blast_futures_test.py`. Only ~50 days have Dhan intraday futures (90-day cap). Added
+3 point-in-time futures features (OI build-up %, direction-aligned price momentum, turnover) to
+the crossing set (NIFTY, 50 days, 810 crossings) and compared options-only vs options+futures.
+
+- Univariate Spearman vs continuation: fut_doi +0.041, fut_mom +0.044, fut_to +0.023 — all noise.
+- Walk-forward CV AUC: options-only 0.514, options+futures 0.512, **futures-only 0.490** (no skill);
+  **Δ from futures −0.002**. Intraday futures OI/volume add nothing, even where available.
+
+Consistent with the futures-OI directional null. Confirms: the gamma blast is not predictable, and
+futures data does not change that. (Futures intraday remains useful only as the shallow 90-day
+descriptive store, not as a blast predictor.)

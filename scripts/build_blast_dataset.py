@@ -45,7 +45,33 @@ def _frac(a, b):
     return (b - a) / a if (a and a == a and b == b) else 0.0
 
 
-def _day_rows(store, day, dte, gex_map):
+def fut_map(store, day, stamps):
+    """Align the 1-min near-month futures (OHLC+vol+OI) to the option 5-min grid: per stamp,
+    {oi, close, vol5=volume in the 5 min ending at the stamp}. None if no futures for the day."""
+    import numpy as np
+    from data.dhan import load_futures_intraday_day
+    fdf = load_futures_intraday_day(store, day)
+    if fdf is None or fdf.empty:
+        return None
+
+    def mins(t):
+        h, m = t.split(":")
+        return int(h) * 60 + int(m)
+    fm = np.array([mins(t) for t in fdf["time_ist"]])
+    order = np.argsort(fm)
+    fm, foi, fcl, fv = fm[order], fdf["oi"].to_numpy()[order], fdf["close"].to_numpy()[order], fdf["volume"].to_numpy()[order]
+    out = {}
+    for t in stamps:
+        M = mins(t)
+        j = np.searchsorted(fm, M, side="right") - 1          # last futures bar ≤ stamp
+        if j < 0:
+            continue
+        w = (fm > M - GRID_MIN) & (fm <= M)
+        out[t] = {"oi": float(foi[j]), "close": float(fcl[j]), "vol5": float(np.nansum(fv[w]))}
+    return out or None
+
+
+def _day_rows(store, day, dte, gex_map, futm=None):
     import numpy as np
     from data.dhan import load_intraday_day
 
@@ -135,6 +161,16 @@ def _day_rows(store, day, dte, gex_map):
                 pcr = tp / tc if tc else np.nan
                 rv_sofar = np.nanstd(lr[1:i + 1]) * np.sqrt(252 * 75) * 100 if i > 3 else np.nan
                 absg = gex_map.get((day, stamps[io]), np.nan)
+                # --- intraday FUTURES features over [i, io] (only where futures data exists) ---
+                fut_doi = fut_mom = fut_to = np.nan
+                if futm is not None:
+                    a, b = futm.get(stamps[i]), futm.get(stamps[io])
+                    if a and b and a["oi"]:
+                        fut_doi = (b["oi"] - a["oi"]) / a["oi"]                 # futures OI build-up %
+                        fut_mom = dirs * (b["close"] / a["close"] - 1) * 100 if a["close"] else np.nan
+                        vobs = sum(futm[stamps[j]]["vol5"] for j in range(i + 1, io + 1)
+                                   if stamps[j] in futm)
+                        fut_to = vobs / b["oi"] if b["oi"] else np.nan          # futures turnover
                 # --- target over [io, i+HORIZON] (no lookahead) ---
                 fut = spot[io + 1:i + HORIZON + 1]
                 cont = dirs * (spot[i + HORIZON] - spot[io]) / spot[io] * 100
@@ -154,6 +190,8 @@ def _day_rows(store, day, dte, gex_map):
                     # straddle at the crossed strike K: entry (at io) & exit (at i+HORIZON) premiums
                     "strad_entry": (d["cl"][io] + d["pl"][io]),
                     "strad_exit": (d["cl"][i + HORIZON] + d["pl"][i + HORIZON]),
+                    # intraday futures (NaN where no futures data for the day)
+                    "fut_doi": fut_doi, "fut_mom": fut_mom, "fut_to": fut_to,
                 })
             prev = side
     return rows
