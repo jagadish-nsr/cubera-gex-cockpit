@@ -1477,13 +1477,36 @@ def _regime_posture_note(data):
         return
     head, tips = _POSTURE[vr["tag"]]
     body = "".join(f"<div style='font-size:13px;margin-top:3px'>• {t}</div>" for t in tips)
+    ex = _posture_example(vr["tag"], data.levels)
+    ex_html = (f"<div style='font-size:12.5px;margin-top:6px;padding:6px 10px;background:#00000010;"
+               f"border-radius:6px'>{ex}</div>" if ex else "")
     st.markdown(
         f"<div style='border-left:4px solid {_MUTE};background:#00000008;border-radius:8px;"
         f"padding:8px 14px;margin:2px 0 8px'>"
         f"<div style='font-size:14px;font-weight:700'>🎯 How to trade this regime: {head}</div>"
-        f"{body}<div style='font-size:12px;color:{_MUTE};margin-top:4px'>Sign-free vol-regime "
-        f"posture (≈{vr['exp_rv']:.0f}% expected vol, next {vr['horizon_min']}min) — <b>not a "
-        f"direction call</b>; you confirm every trade.</div></div>", unsafe_allow_html=True)
+        f"{body}{ex_html}<div style='font-size:12px;color:{_MUTE};margin-top:4px'>Sign-free "
+        f"vol-regime posture (≈{vr['exp_rv']:.0f}% expected vol, next {vr['horizon_min']}min) — "
+        f"<b>not a direction call</b>; illustrative examples, you confirm every trade.</div></div>",
+        unsafe_allow_html=True)
+
+
+def _posture_example(tag, L):
+    """Concrete illustrative example trades wired to the LIVE levels (walls / magnet / spot).
+    Illustrative only — decision-support, not advice."""
+    def f(x):
+        return f"{x:,.0f}" if x is not None and x == x else "—"
+    cw, pw, mag, sp = L.call_wall, L.put_wall, L.magnet, L.spot
+    if tag == "calm":
+        return (f"<b>Examples:</b> a push up to the call wall <b>{f(cw)}</b> → <b>fade</b> back "
+                f"toward the magnet <b>{f(mag)}</b> (buy put-spread / sell call-spread); or "
+                f"<b>sell a strangle</b> around <b>{f(pw)} / {f(cw)}</b> — pinning favours "
+                f"premium sellers. Stops just <i>outside</i> the walls.")
+    if tag == "wild":
+        return (f"<b>Examples:</b> a clean <b>break above {f(cw)}</b> → go <b>long / buy calls</b> "
+                f"(stop back under {f(cw)}); a <b>break below {f(pw)}</b> → <b>short / buy puts</b>. "
+                f"<b>Buy</b> options for convexity, don't sell premium, don't fade the move.")
+    return (f"<b>Example:</b> wait for spot <b>{f(sp)}</b> to reach a wall (<b>{f(pw)} / {f(cw)}</b>) "
+            f"or the flip; trade the level with small size until the regime picks a side.")
 
 
 def _gex_vol_regime_section(data):
