@@ -185,16 +185,23 @@ REGIME_METRIC = "vanna"          # vol-regime metric: |vanna| beats |GEX| beyond
                                  # cross-book). Falls back to net_gex on pre-vanna caches.
 
 
-@functools.lru_cache(maxsize=16)
-def _regime_stats(store: str, horizon_min: int, mtime: float, metric: str = REGIME_METRIC):
+@functools.lru_cache(maxsize=32)
+def _regime_stats(store: str, horizon_min: int, mtime: float, metric: str = REGIME_METRIC,
+                  dte_max: float | None = None):
     """Cached (sorted |metric| array, tercile cuts, median forward RV per tercile) from the feature
     cache. ``mtime`` is the cache-file mtime so a rebuilt cache invalidates this automatically.
+    ``dte_max`` restricts the distribution to days with DTE ≤ dte_max — needed for the 0-DTE charm
+    metric (charm ∝ 1/T explodes near expiry, so it must be ranked within the 0-DTE distribution).
     Sign-free. Forward RV = std of the next horizon_min/5 five-min spot log-returns, annualized."""
     import numpy as np
     f = load_features(store)
     if f is None or len(f) < 1000:
         return None
     col = metric if metric in f.columns else "net_gex"   # graceful fallback for old caches
+    if dte_max is not None and "dte" in f.columns:
+        f = f[f["dte"] <= dte_max]
+    if len(f) < 500:
+        return None
     f = f.sort_values(["day", "time_ist"]).reset_index(drop=True)
     m = max(1, horizon_min // GRID_MIN)
     rv = np.full(len(f), np.nan)
@@ -220,20 +227,35 @@ def _regime_stats(store: str, horizon_min: int, mtime: float, metric: str = REGI
     return np.sort(absg), float(q1), float(q2), lo_rv, mid_rv, hi_rv, int(len(a))
 
 
+DTE_CHARM_MAX = 1.5              # ≤ this DTE the gauge uses |charm| (sharper near expiry, T1b);
+                                 # above it uses |vanna|. Validated cross-book (Study #8/T1b).
+
+
+def regime_now(store: str, vanna_now: float | None, charm_now: float | None,
+               dte_now: float | None, horizon_min: int = REGIME_HORIZON_MIN) -> dict | None:
+    """The live gauge entry point: DTE-switch between |charm| (≤1.5 DTE, sharper near expiry) and
+    |vanna| (else), each ranked within its own DTE-appropriate distribution. Returns the regime
+    dict (adds 'metric')."""
+    if dte_now is not None and dte_now <= DTE_CHARM_MAX and charm_now is not None:
+        return intraday_vol_regime(store, charm_now, horizon_min, metric="charm",
+                                   dte_max=DTE_CHARM_MAX)
+    return intraday_vol_regime(store, vanna_now, horizon_min, metric="vanna")
+
+
 def intraday_vol_regime(store: str, value_now: float | None,
                         horizon_min: int = REGIME_HORIZON_MIN,
-                        metric: str = REGIME_METRIC) -> dict | None:
-    """Sign-free live regime read: place the CURRENT |metric| (dealer-vanna exposure by default —
-    a sharper vol predictor than |GEX|; in cache units, see the dashboard scale bridge) in the
-    5-yr intraday distribution, and return the historical median forward realized vol (annualized
-    %, next ``horizon_min``) for its tercile. HIGH → calmer/SIDEWAYS; LOW → wilder/TRENDING. None
-    if no cache / no current value."""
+                        metric: str = REGIME_METRIC, dte_max: float | None = None) -> dict | None:
+    """Sign-free live regime read: place the CURRENT |metric| (dealer-vanna by default, or dealer-
+    charm at 0-DTE via ``regime_now``; in cache units, see the dashboard scale bridge) in the 5-yr
+    intraday distribution (restricted to DTE ≤ ``dte_max`` when given), and return the historical
+    median forward realized vol (annualized %, next ``horizon_min``) for its tercile. HIGH →
+    calmer/SIDEWAYS; LOW → wilder/TRENDING. None if no cache / no current value."""
     import numpy as np
     p = _cache_path(store)
     if not p.exists() or value_now is None or not np.isfinite(value_now):
         return None
     value_now = abs(value_now)
-    stats = _regime_stats(store, horizon_min, p.stat().st_mtime, metric)
+    stats = _regime_stats(store, horizon_min, p.stat().st_mtime, metric, dte_max)
     if stats is None:
         return None
     srt, q1, q2, lo_rv, mid_rv, hi_rv, n = stats

@@ -1385,16 +1385,14 @@ def _gex_regime_banner(data):
     no clean regime/direction info, but the |GEX| BUCKET robustly gauges TRENDING (low |GEX|) vs
     SIDEWAYS (high |GEX|). Live-intraday: current |GEX| placed in the 5yr Dhan distribution, with
     the historical expected forward realized vol for that bucket."""
-    from app.intraday_features import intraday_vol_regime
+    from app.intraday_features import intraday_vol_regime, regime_now
 
-    # Prefer live dealer-VANNA exposure (a sharper vol-regime metric than |GEX|, Study #8);
-    # fall back to the |GEX| scale-bridge if vanna isn't available (e.g. pre-vanna cache/demo).
-    if data.vanna_now is not None:
-        val, metric = data.vanna_now, "vanna"
-    else:
-        val, metric = _current_absgex_cache_units(data), "net_gex"
+    # DTE-switched dealer greek: |charm| ≤1.5 DTE (sharper near expiry), |vanna| else (Study #8/
+    # T1b). Fall back to the |GEX| scale-bridge if the live greeks aren't available (demo/pre-cache).
     try:
-        vr = intraday_vol_regime(data.symbol, val, metric=metric)
+        vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
+        if vr is None and data.vanna_now is None:
+            vr = intraday_vol_regime(data.symbol, _current_absgex_cache_units(data), metric="net_gex")
     except Exception:  # noqa: BLE001 - non-essential overlay
         vr = None
     if not vr:
@@ -1406,7 +1404,8 @@ def _gex_regime_banner(data):
              "mid": "NEUTRAL / MIXED"}[vr["tag"]]
     gword = {"calm": "HIGH", "wild": "LOW", "mid": "MID"}[vr["tag"]]
     box = {"calm": st.success, "wild": st.warning, "mid": st.info}[vr["tag"]]
-    mname = "dealer-vanna" if vr.get("metric") == "vanna" else "dealer-gamma (|GEX|)"
+    mname = {"vanna": "dealer-vanna", "charm": "dealer-charm (0-DTE)"}.get(
+        vr.get("metric"), "dealer-gamma (|GEX|)")
     tail = vr["read"].split("→")[-1].strip()
     box(f"### Market regime: {label}  ·  {gword} concentration\n\n"
         f"{mname.capitalize()} **concentration** sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
@@ -1434,12 +1433,10 @@ def _regime_posture_note(data):
     """Turn the sign-free vol-REGIME read into a concrete 'how to trade this regime' posture
     (mean-revert vs momentum, premium buy/sell, stop placement, sizing). The regime is validated
     (|vanna|→forward vol); the POSTURE is the standard vol-regime playbook, not a direction call."""
-    from app.intraday_features import intraday_vol_regime
+    from app.intraday_features import regime_now
 
-    if data.vanna_now is None:
-        return
     try:
-        vr = intraday_vol_regime(data.symbol, data.vanna_now, metric="vanna")
+        vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
     except Exception:  # noqa: BLE001 - non-essential overlay
         vr = None
     if not vr:

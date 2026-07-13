@@ -35,27 +35,32 @@ class DashboardData:
     usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
     news: dict | None = None       # {count, impact, top}; free RSS, best-effort
     vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
+    charm_now: float | None = None  # live dealer-charm exposure (better vol metric at 0-DTE)
+    dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
 
 
-def _live_vanna(contracts, spot: float, lot: float) -> float | None:
-    """Current dealer-vanna exposure |Σ vanna·(callOI−putOI)| over the ~21 nearest strikes of the
-    nearest expiry, ×lot so it matches the Dhan feature-cache scale (Dhan OI is already in shares).
-    The gauge's regime metric (sharper vol predictor than |GEX|, Study #8). None if unusable."""
+def _live_greeks(contracts, spot: float, lot: float) -> dict:
+    """Current dealer VANNA & CHARM exposure |Σ greek·(callOI−putOI)| over the ~21 nearest strikes
+    of the nearest expiry, ×lot to match the Dhan cache scale (Dhan OI is already in shares) —
+    plus days-to-expiry. The gauge uses charm ≤1.5 DTE (sharper there, Study #8/T1b) else vanna.
+    Returns {vanna, charm, dte} (values may be None) — non-essential, never raises."""
     import numpy as np
     from scipy.stats import norm
+    out = {"vanna": None, "charm": None, "dte": None}
     try:
         df = contracts.dropna(subset=["strike", "oi", "iv", "T"])
         exp = df["expiry"].min()
         d = df[df["expiry"] == exp]
         T = float(d["T"].iloc[0])
         if not (T > 0) or not (spot > 0) or not lot:
-            return None
+            return out
+        out["dte"] = T * 365.0
         typ = d["type"].astype(str).str.upper()
         calls = d[typ.str.startswith(("C",))].set_index("strike")
         puts = d[typ.str.startswith(("P",))].set_index("strike")
         strikes = sorted(set(calls.index) & set(puts.index), key=lambda k: abs(k - spot))[:21]
         sq = T ** 0.5
-        total = 0.0
+        vanna = charm = 0.0
         for k in strikes:
             coi = float(calls.loc[k, "oi"]); poi = float(puts.loc[k, "oi"])
             iv = float(calls.loc[k, "iv"]) if k >= spot else float(puts.loc[k, "iv"])
@@ -63,10 +68,14 @@ def _live_vanna(contracts, spot: float, lot: float) -> float | None:
                 continue
             d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)
             d2 = d1 - iv * sq
-            total += (-norm.pdf(d1) * d2 / iv) * (coi - poi)
-        return abs(total) * float(lot)
+            phi = norm.pdf(d1)
+            vanna += (-phi * d2 / iv) * (coi - poi)
+            charm += (phi * d2 / (2.0 * T)) * (coi - poi)
+        out["vanna"] = abs(vanna) * float(lot)
+        out["charm"] = abs(charm) * float(lot)
+        return out
     except Exception:  # noqa: BLE001 - gauge overlay is non-essential
-        return None
+        return out
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
@@ -139,11 +148,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["put_doi_near"] = c.get("put_doi_near")
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
-    vanna_now = _live_vanna(snap.contracts, float(levels.spot), idx.lot_size)
+    gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
         symbol=idx.symbol, index_label=idx.label,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
-        usdinr=usdinr, news=news, vanna_now=vanna_now,
+        usdinr=usdinr, news=news, vanna_now=gk["vanna"], charm_now=gk["charm"], dte_now=gk["dte"],
     )
