@@ -87,3 +87,50 @@ Same shape as the EOD research arc: ONE genuine sign-free effect — **|GEX| →
 realized vol** (cross-instrument, survives ATM-IV partial) — and **no directional edge** from OI
 positioning (pinning = generic reversion; turnover thrust = reversion, not continuation). The tool
 is a vol-regime / mean-reversion read, not a direction predictor.
+
+## Study #4 — signed GEX × bucket: does the SIGN gauge regime / resolve the landmine?  → INCONCLUSIVE
+`scripts/analyze_intraday_gex_sign.py` (NIFTY, 1239 days). Tests whether the dealer-gamma SIGN
+splits the tape into trending vs mean-reverting (and thus which sign is long-gamma).
+
+- Confirms the MAGNITUDE reading (sign-free): LOW |GEX| → rv ~9 (wilder), HIGH |GEX| → rv ~6–8
+  (calmer). The bucket gauges trendy vs sideways — robust.
+- **Sign is NOT resolvable here.** Magnitude-controlled (|GEX| tercile × sign) continuation IC is
+  tiny (|·|≤0.05) and flips across bands (neg cont60 +0.032 / −0.017 / +0.052 for LOW/MID/HIGH) —
+  no convention makes one sign consistently calm+mean-reverting. HIGH-|GEX|-negative is calmer
+  (6.8 vs 8.0, would lean model B) but is simultaneously the MOST trending (+0.052, contradicts B).
+  Vol says B, continuation says A → contradictory, thin negative sample.
+- meanFwd ≈ 0 in every bucket: GEX sign gives no up/down directional edge (as theory predicts).
+
+**Takeaway:** use the SIGN-FREE |GEX| magnitude bucket for the vol-regime gauge (what works); the
+dealer-sign landmine remains genuinely unvalidated ([[both-signs-dealer-sign-read]]).
+
+## Cross-book completion + gamma-blast (2026-07-13)
+
+**Study #3 (turnover thrust) — NIFTY_M & BANKNIFTY: REFUTED too.** ≥3%+high-TO jump → −4.4% f15
+(NIFTY_M) / −4.3% (BANKNIFTY), ~25–28% hit vs baseline ~48%. Same mean-reversion as NIFTY weekly
+in all three books.
+
+**Study #4 (signed-GEX regime) — NIFTY_M & BANKNIFTY: INCONCLUSIVE too.** Magnitude-controlled
+continuation ICs tiny (|·|≤0.13) and incoherent across bands in both books — the dealer sign does
+not resolve. Generalizes the NIFTY finding.
+
+**Study #5 — gamma-blast score re-validation (`scripts/analyze_dhan_blast.py`, NIFTY, 556 near-
+expiry days DTE≤2.5, 8352 crossings).** The blast_score (TRUE-vs-FAKE staying-power) was validated
+on only n=24 (+0.79). At real n:
+- **Contemporaneous (score over the full 40-min window vs continuation over the SAME window):
+  Spearman +0.64**, cleanly monotone (TRUE-leaning 94% continue / +66pts; FAKE-defending 20% / −29pts).
+  Looks amazing — but score and outcome share the window.
+- **POINT-IN-TIME (score from first 15 min → continuation over the remaining 25 min): +0.020**,
+  momentum benchmark +0.006, **partial (beyond momentum) +0.019**, %continued flat ~50% across all
+  score buckets. **No predictive power.**
+
+**Conclusion:** the gamma-blast score is a strong **real-time CONFIRMATION** descriptor (writers
+covering + premium expanding *is* the break unfolding) but **NOT a point-in-time predictor** — the
++0.79/+0.64 collapses to ~0 once observation and outcome windows are separated. Same decay-to-zero
+as every other hint, now rigorously shown at n=8352, not asserted from n=24. Confirmation, not alpha.
+
+**Data-quality note:** all three Dhan caches carry ~1.8% corrupt spot ticks (spurious >3% 5-min
+jumps). Rank-based ICs are robust to them; a mean forward-RV is not — so the live vol-regime gauge
+uses the **median** forward RV per |GEX| tercile (+ an 8% return clip). Realistic terciles: NIFTY
+7.4/6.8/5.9, NIFTY_M 7.2/7.2/6.7, BANKNIFTY 10.6/9.1/7.9 (lo/mid/hi). Option-premium studies
+(#3, #5) are unaffected (they don't use spot RV).
