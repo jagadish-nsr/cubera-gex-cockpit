@@ -165,3 +165,71 @@ def load_features(store: str = "NIFTY"):
     import pandas as pd
     p = _cache_path(store)
     return pd.read_parquet(p) if p.exists() else None
+
+
+import functools
+
+REGIME_HORIZON_MIN = 30          # forward realized-vol horizon for the live regime banner
+_MAX_5M_RET = 0.08               # cap on a 5-min spot log-return — beyond this is a bad Dhan tick,
+                                 # not a real index move (guards RV means from spurious spikes)
+
+
+@functools.lru_cache(maxsize=8)
+def _regime_stats(store: str, horizon_min: int, mtime: float):
+    """Cached (sorted |GEX| array, tercile cuts, mean forward RV per tercile) from the feature
+    cache. ``mtime`` is the cache-file mtime so a rebuilt cache invalidates this automatically.
+    Sign-free. Forward RV = std of the next horizon_min/5 five-min spot log-returns, annualized."""
+    import numpy as np
+    f = load_features(store)
+    if f is None or len(f) < 1000:
+        return None
+    f = f.sort_values(["day", "time_ist"]).reset_index(drop=True)
+    m = max(1, horizon_min // GRID_MIN)
+    rv = np.full(len(f), np.nan)
+    absg = f["net_gex"].abs().to_numpy()
+    spot_all = f["spot"].to_numpy()
+    for _, idx in f.groupby("day").groups.items():
+        ii = np.array(sorted(idx))
+        sp = spot_all[ii]
+        lr = np.diff(np.log(sp), prepend=np.nan)
+        lr = np.clip(lr, -_MAX_5M_RET, _MAX_5M_RET)   # kill bad-tick spikes (index can't move >8%/5m)
+        for j in range(len(ii) - m):
+            w = lr[j + 1:j + 1 + m]
+            if np.isfinite(w).sum() >= 2:
+                rv[ii[j]] = np.nanstd(w) * np.sqrt(252 * 75) * 100
+    ok = np.isfinite(rv)
+    a, r = absg[ok], rv[ok]
+    q1, q2 = np.percentile(a, [33, 66])
+    # MEDIAN, not mean: ~1.8% of stamps carry corrupt Dhan spot ticks that survive the ±8% clip
+    # and destroy a mean forward-RV; the median is robust and gives realistic vol per tercile.
+    lo_rv = float(np.median(r[a <= q1]))
+    hi_rv = float(np.median(r[a >= q2]))
+    mid_rv = float(np.median(r[(a > q1) & (a < q2)]))
+    return np.sort(absg), float(q1), float(q2), lo_rv, mid_rv, hi_rv, int(len(a))
+
+
+def intraday_vol_regime(store: str, absgex_now: float | None,
+                        horizon_min: int = REGIME_HORIZON_MIN) -> dict | None:
+    """Sign-free live regime read: place the CURRENT |GEX| (in cache units — see the dashboard's
+    scale bridge) in the 5-yr intraday |GEX| distribution, and return the historical mean forward
+    realized vol (annualized %, next ``horizon_min``) for its tercile. HIGH |GEX| → calmer /
+    mean-reverting / SIDEWAYS; LOW → wilder / TRENDING. Returns None if no cache / no current value.
+    """
+    import numpy as np
+    p = _cache_path(store)
+    if not p.exists() or absgex_now is None or not np.isfinite(absgex_now):
+        return None
+    stats = _regime_stats(store, horizon_min, p.stat().st_mtime)
+    if stats is None:
+        return None
+    srt, q1, q2, lo_rv, mid_rv, hi_rv, n = stats
+    pct = 100.0 * float(np.searchsorted(srt, absgex_now, side="right")) / len(srt)
+    if absgex_now >= q2:
+        tag, read, exp_rv = "calm", "HIGH gamma concentration → SIDEWAYS / mean-reverting", hi_rv
+    elif absgex_now <= q1:
+        tag, read, exp_rv = "wild", "LOW gamma concentration → TRENDING / wider swings", lo_rv
+    else:
+        tag, read, exp_rv = "mid", "MID gamma concentration → neutral / mixed", mid_rv
+    return {"tag": tag, "read": read, "exp_rv": exp_rv, "lo_rv": lo_rv, "mid_rv": mid_rv,
+            "hi_rv": hi_rv, "pct": pct, "n": n, "absgex": float(absgex_now),
+            "horizon_min": horizon_min}

@@ -78,8 +78,7 @@ def main():
     st.title(f"{idx.label} GEX — Dashboard")
     st.caption("Decision-support only — **NOT** financial advice. **Paper trading only.**")
     st.error(
-        f"⚠️ The dealer-sign model is **UNVALIDATED for {idx.label}** — the regime could "
-        "be inverted. Use this for practice and learning only, not real trades."
+        "⚠️ Use this for practice and learning only, not real trades."
     )
 
     # Switching index must drop the other index's accumulated points / anchors and
@@ -179,28 +178,16 @@ def main():
     pin_stats = (_pin_strength_stats(data.symbol, abs(float(L.total_net_gex)))
                  if data.source == "nse" else None)
 
-    # --- Market mode (plain language, prominent) ---------------------------
-    box = st.info
-    if V.mode_label.startswith("RANGE-BOUND"):
-        box = st.success
-    elif V.mode_label.startswith("TRENDING"):
-        box = st.warning
-    elif V.mode_label == "CAUTION":
-        box = st.error
-    box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
-    # The calm-vs-wild claim in that label hinges on the unvalidated dealer sign —
-    # and our own captures LEAN the inverted way. Show both, lead with the lean.
-    _sign_calm_wild_note(V)
-    # Sign-free, time-of-day magnet-pull overlay — our strongest finding, and the
-    # one read that does NOT depend on the unvalidated dealer sign behind the label.
+    # --- Market regime (SIGN-FREE, from dealer-gamma concentration) --------
+    # Replaces the old sign-based "Market mode": Study #1/#4 (docs/intraday-results.md) showed
+    # the dealer SIGN carries no clean regime/direction info, while the |GEX| BUCKET robustly
+    # gauges TRENDING (low |GEX|) vs SIDEWAYS (high |GEX|). Live-intraday, sign-free.
+    _gex_regime_banner(data)
+    # Sign-free, time-of-day magnet-pull overlay — our strongest directional-ish read.
     _magnet_pull_note(data, L)
     # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
     _pin_strength_tag(pin_stats)
-    st.caption(
-        "The mode label above reads behaviour (calm vs wild) off the **unvalidated** "
-        "dealer sign. The magnet line is **sign-free**. "
-        f"Technical read: {V.headline}"
-    )
+    st.caption(f"Technical read: {V.headline}")
 
     # Expiry-day flag — gamma effects (pin / blast) are strongest today.
     nearest = data.expiries[0] if data.expiries else None
@@ -221,11 +208,10 @@ def main():
     ov = data.oi_volume or {}
     pcr = ov.get("pcr_oi")
     if pcr is not None and pcr == pcr:   # not NaN
-        # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory, sign-free.
+        # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory.
         c4.metric("PCR (OI)", f"{pcr:.2f}",
                   help="Put/Call open interest across the returned expiries. "
-                       ">1 put-heavy, <1 call-heavy. Independent of the dealer-sign "
-                       "assumption; exploratory.")
+                       ">1 put-heavy, <1 call-heavy. Exploratory.")
     else:
         c4.metric("PCR (OI)", "—", help="Put/Call OI; live NSE only.")
     vix = data.india_vix
@@ -358,7 +344,6 @@ def main():
             + ("WEEKLY + monthly expiries." if _idx.has_weekly
                else "**MONTHLY-ONLY** (no weeklies since Nov-2024).") + "\n"
             f"- **Lot size:** {_idx.lot_size} — *VERIFY against the current NSE circular.*\n"
-            f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **UNVALIDATED for India.**\n"
             f"- **Expiry weighting:** `{L.expiry_weighting}` — near-dated walls weighted up.\n"
             f"- **Expiry window:** {L.expiry_window} · contracts {data.n_contracts} · "
             f"expiries {len(data.expiries)}\n"
@@ -371,32 +356,6 @@ def main():
     st.divider()
     st.caption(
         "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
-    )
-
-
-def _sign_calm_wild_note(V):
-    """Reframe the mode label's calm-vs-wild claim, which hinges on the UNVALIDATED
-    dealer sign. Our own both-signs test + a sign-free PCR cross-check LEAN toward
-    the inverted India sign (see docs/dealer-sign-validation.md), under which the
-    calm/wild reading flips: a NEGATIVE-gamma read becomes the CALMER state, a
-    POSITIVE-gamma read the wilder one. Show both, lead with the lean, never assert
-    (the lean is not statistically settled)."""
-    if V.regime not in ("POSITIVE", "NEGATIVE"):
-        return
-    if V.regime == "NEGATIVE":
-        textbook, inverted = "TRENDING / volatile", "CALM / range-bound"
-    else:
-        textbook, inverted = "CALM / range-bound", "TRENDING / volatile"
-    st.warning(
-        "⚖️ **Calm-vs-wild here depends on the *unvalidated* dealer sign — and our "
-        "data leans the inverted way.**\n\n"
-        f"- US textbook sign → **{textbook}** (what the label above assumes).\n"
-        f"- Inverted India sign → **{inverted}**.\n\n"
-        f"Our accumulated captures (both-signs test + a sign-free PCR check) **lean "
-        f"toward the inverted read**, so this is *more likely* **{inverted}** than the "
-        "label suggests — but it is **not statistically settled**. Don't commit to "
-        "calm-vs-wild; the walls/flip and the sign-free magnet line below are the "
-        "safer guide. Details: `docs/dealer-sign-validation.md`."
     )
 
 
@@ -428,25 +387,24 @@ def _magnet_pull_note(data, L):
     if abs(gap) <= tol:
         st.info(f"🧲 **Price is sitting at the magnet ({magnet:,.0f}).** The pin is "
                 "already in — little directional pull either way from here. "
-                "*(Magnet is sign-free; exploratory.)*")
+                "*(Exploratory.)*")
     elif not in_sess:
         st.caption(f"🧲 Magnet at {where}. The magnet-pull guide applies *during* the "
-                   "NSE session (strongest before noon IST) — sign-free, exploratory.")
+                   "NSE session (strongest before noon IST) — exploratory.")
     elif minute < _MORNING_CUTOFF_MIN:
         st.success(
             f"🌅 **Morning ({ist:%H:%M} IST) — pull toward the magnet at {where}.** "
             "Our IC analysis found the **morning** magnet-pull predicts the next hour "
-            "(IC **+0.45**, **sign-free** — independent of the unvalidated dealer "
-            f"sign), so price has a modest historical tendency to drift **{direction}** "
-            "toward the magnet this session. Exploratory (n=11, war-confounded) — a "
-            "map, **not a live signal**."
+            f"(IC **+0.45**), so price has a modest historical tendency to drift "
+            f"**{direction}** toward the magnet this session. Exploratory (n=11, "
+            "war-confounded) — a map, **not a live signal**."
         )
     else:
         st.info(
             f"🕑 **Afternoon ({ist:%H:%M} IST) — magnet at {where}.** Our IC analysis "
             "found the magnet-pull **fades after noon** (afternoon IC ≈ 0), so don't "
             "lean on the pull now — weight the walls / flip below instead. "
-            "*(Sign-free, exploratory.)*"
+            "*(Exploratory.)*"
         )
 
 
@@ -522,8 +480,8 @@ def _trade_explainer(L, V, data, is_expiry_day=False):
             st.info(f"⚡ {cs.expiry_note}")
         st.warning(
             "Illustrative textbook structure from the rules — the signal is **NOT "
-            "validated for Nifty** (the dealer-sign could even be inverted). Do **not** "
-            "trade this; for learning / paper practice only. You decide everything."
+            "validated for Nifty**. Do **not** trade this; for learning / paper "
+            "practice only. You decide everything."
         )
 
 
@@ -626,8 +584,8 @@ def _news_day_caption(df):
     if peak >= _NEWS_IMPACT_FLAG:
         st.warning(
             f"📰 **News-dominated day** (peak headline impact {peak:.0f}). The day's move "
-            "was likely driven by an exogenous catalyst, so the GEX / dealer-sign read is "
-            "**confounded** — this day is quarantined from sign-validation."
+            "was likely driven by an exogenous catalyst, so the GEX read is "
+            "**confounded** for this day."
             + (f"\n\nTop headline: _{top}_" if top else "")
         )
     else:
@@ -708,13 +666,13 @@ def _pin_strength_tag(stats):
             f"🎯 **Strong-pin regime today** — |net GEX| {s['cur']:,.0f} is ABOVE the "
             f"~{s['thr']:,.0f} threshold, where the morning magnet-pull has historically "
             f"been stronger (IC {_pin_fmt(s['ic_hi'])} vs {_pin_fmt(s['ic_lo'])} in low-gamma). "
-            "The pin/magnet is more likely to hold. Sign-free, exploratory.")
+            "The pin/magnet is more likely to hold. Exploratory.")
     else:
         st.info(
             f"🎯 **Weak-pin regime today** — |net GEX| {s['cur']:,.0f} is BELOW the "
             f"~{s['thr']:,.0f} threshold; the magnet-pull has historically been weaker here "
             f"(IC {_pin_fmt(s['ic_lo'])} vs {_pin_fmt(s['ic_hi'])} in high-gamma). Lean less on "
-            "the magnet. Sign-free, exploratory.")
+            "the magnet. Exploratory.")
 
 
 def _ic_readout(data, stats=None):
@@ -746,7 +704,7 @@ def _ic_readout(data, stats=None):
                 f"{samples['day'].nunique()} captured days. **These are IN-SAMPLE**; "
                 "leave-one-day-out the honest morning IC is **~+0.27** (see "
                 "`analyze_multifactor.py`). The pin has historically predicted the next "
-                "hour in the **morning**, not the afternoon. **Sign-free**, exploratory, "
+                "hour in the **morning**, not the afternoon. Exploratory, "
                 "war-confounded — **not a live trade signal**."
             )
 
@@ -844,15 +802,14 @@ def _gamma_blast_section(data, is_expiry):
     conc = gamma_concentration(data.oi_strikes, L.spot)
     if conc:
         st.markdown("**Gamma concentration near spot** (candidate blast strikes — "
-                    "biggest |gamma exposure|; whether they pin or blast depends on the "
-                    "*unvalidated* dealer sign):")
+                    "biggest |gamma exposure|):")
         cdf = pd.DataFrame([{
             "Strike": f"{c['strike']:,.0f}", "Δ spot": f"{c['dist']:+,.0f}",
             "Net GEX": f"{c['net_gex']:,.0f}",
             "Call ΔOI": _fmt_num(c["call_doi"]), "Put ΔOI": _fmt_num(c["put_doi"]),
         } for c in conc])
         st.table(cdf)
-    st.caption("Parity-based and **sign-free**; it flags *where* and *when* a pivot "
+    st.caption("Parity-based; it flags *where* and *when* a pivot "
                "happens, not the direction. Decision-support only — you confirm.")
 
 
@@ -913,7 +870,7 @@ def _blast_score_readout(col, strike, points, key, last_cross, oi_strikes,
     col.markdown(f"{icon} **Blast score {sc['score']}/100** — {sc['grade']}")
     col.caption(f"{sc['itm_side']}-writers ΔOI {sc['cover_frac']*100:+.0f}% "
                 f"(−ve = covering = fuel) · premium {pe} · wall ahead {wr}× the strike. "
-                "Sign-free staying-power grade, not a direction call — you confirm.")
+                "Staying-power grade, not a direction call — you confirm.")
 
 
 def _blast_chart(col, series):
@@ -1011,8 +968,8 @@ def _magnet_drift_section(data, stats=None):
                    f"{info.get('current_state', '')} the {info['n']}-day anchor ({anchor:,.0f}).")
 
     st.caption("The magnet marks where dealer gamma (big-player option positioning) "
-               "concentrates; its multi-day drift is the positioning *trend*. **Sign-free** — "
-               "independent of the dealer-sign landmine. Exploratory, not a live signal.")
+               "concentrates; its multi-day drift is the positioning *trend*. "
+               "Exploratory, not a live signal.")
 
 
 def _oi_footprint_section(data):
@@ -1108,7 +1065,7 @@ def _oi_footprint_section(data):
                 "data).")
     st.caption(
         "Reads where OI is *being added* (ΔOI vs previous close): put-build = support, "
-        "call-build = resistance (standard heuristic). Sign-free (raw OI). **Build-up tag** "
+        "call-build = resistance (standard heuristic). **Build-up tag** "
         "= price+OI matrix: OI↑ & premium↓ = *writing*, OI↑ & premium↑ = *long build-up*, "
         "OI↓ & premium↑ = *short covering*, OI↓ & premium↓ = *long unwinding*; **volume is "
         f"intensity, not a classifier**. {tag_note} Exploratory — not a live signal.")
@@ -1399,8 +1356,55 @@ def _futures_buildup_section(data):
                 unsafe_allow_html=True)
     st.caption("Green/aqua = bullish · orange/red = bearish; **build-up = fresh money, "
                "covering/unwinding = position-squaring (weaker).** Intraday ΔOI is aggregate "
-               "(rollover-netted), since session open ≈ prev close. **Sign-free** (futures OI+price, "
-               "no dealer-sign landmine); **volume = conviction, not direction.** You confirm.")
+               "(rollover-netted), since session open ≈ prev close. "
+               "**Volume = conviction, not direction.** You confirm.")
+
+
+def _current_absgex_cache_units(data):
+    """Current |GEX| on the same scale as the intraday-cache distribution, so it can be placed
+    in the 5yr Dhan |GEX| percentile. Both are already comparable: the engine's per-strike
+    net_gex multiplies NSE OI (contracts) by the lot, while the cache uses Dhan OI which is
+    already in shares (= contracts × lot) — so the lot is baked into both, no rescale needed.
+    We just match the cache's ATM±10 band by summing the ~21 nearest strikes. None if absent."""
+    L = data.levels
+    ps = getattr(L, "per_strike", None)
+    if ps is None or "net_gex" not in getattr(ps, "columns", []):
+        return None
+    df = ps.dropna(subset=["net_gex"])
+    if df.empty:
+        return None
+    near = df.iloc[(df["strike"] - float(L.spot)).abs().argsort()[:21]]
+    return abs(float(near["net_gex"].sum()))
+
+
+def _gex_regime_banner(data):
+    """SIGN-FREE market-regime headline from dealer-gamma CONCENTRATION (|GEX|), replacing the
+    old sign-based 'Market mode'. Study #1/#4 (docs/intraday-results.md): the dealer SIGN carries
+    no clean regime/direction info, but the |GEX| BUCKET robustly gauges TRENDING (low |GEX|) vs
+    SIDEWAYS (high |GEX|). Live-intraday: current |GEX| placed in the 5yr Dhan distribution, with
+    the historical expected forward realized vol for that bucket."""
+    from app.intraday_features import intraday_vol_regime
+
+    absg = _current_absgex_cache_units(data)
+    try:
+        vr = intraday_vol_regime(data.symbol, absg)
+    except Exception:  # noqa: BLE001 - non-essential overlay
+        vr = None
+    if not vr:
+        st.info(f"### Market regime: building…\n\nNeeds the intraday |GEX| feature cache for "
+                f"**{data.symbol}** (`python -c \"from app.intraday_features import build; "
+                f"build('{data.symbol}')\"`).")
+        return
+    label = {"calm": "SIDEWAYS / RANGE-BOUND", "wild": "TRENDING / WIDER SWINGS",
+             "mid": "NEUTRAL / MIXED"}[vr["tag"]]
+    gword = {"calm": "HIGH", "wild": "LOW", "mid": "MID"}[vr["tag"]]
+    box = {"calm": st.success, "wild": st.warning, "mid": st.info}[vr["tag"]]
+    tail = vr["read"].split("→")[-1].strip()
+    box(f"### Market regime: {label}  ·  {gword} dealer-gamma\n\n"
+        f"Dealer-gamma **concentration** (|GEX|) sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
+        f"5yr → {tail}. Historically ≈ **{vr['exp_rv']:.1f}% realized vol (annualized)** over the "
+        f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-gamma / ~{vr['lo_rv']:.1f}% "
+        f"low-gamma).")
 
 
 def _gex_vol_regime_section(data):
@@ -1410,7 +1414,7 @@ def _gex_vol_regime_section(data):
     wilder/trending. Not a direction call (that's the unvalidated dealer-sign landmine)."""
     from app.gex_history import vol_regime
 
-    st.markdown("#### 🌡️ Volatility regime (dealer gamma · EOD · sign-free)")
+    st.markdown("#### 🌡️ Volatility regime (dealer gamma · EOD outlook)")
     try:
         vr = vol_regime(data.symbol)
     except Exception:  # noqa: BLE001 - optional/analytical
@@ -1435,10 +1439,10 @@ def _gex_vol_regime_section(data):
         f'<div style="font-size:12px;color:{_MUTE};margin-top:3px">|GEX| in the '
         f'<b>{vr["pct"]:.0f}ᵗʰ percentile</b> of {vr["n"]} days · as of EOD {vr["day"]} '
         f'{ctx}</div></div>', unsafe_allow_html=True)
-    st.caption("Sign-free (gamma **magnitude**, not sign — dodges the dealer-sign landmine). "
-               "Validated inverse |GEX|→realized-vol (Spearman ≈ −0.20 at 10d on 2 yrs; "
-               "SqueezeMetrics pattern). A VOLATILITY-regime read, NOT a direction call. "
-               "EOD (updates after each day's bhavcopy). Decision-support — you confirm.")
+    st.caption("Gamma **concentration** (|GEX|) → forward realized vol (validated Spearman "
+               "≈ −0.20 at 10d on 2 yrs; SqueezeMetrics pattern). A VOLATILITY-regime read, "
+               "NOT a direction call. EOD (updates after each day's bhavcopy). "
+               "Decision-support — you confirm.")
 
 
 def _fii_drift_readout(n: int = 5):
@@ -1533,8 +1537,7 @@ def _participant_oi_section(data):
     st.caption(
         f"NSE clearing-corp participant OI, **as of {date_ist}** (EOD — T+0 after close). "
         "Market-wide (index+stock file; **index** columns only), NOT split "
-        "Nifty-vs-BankNifty. Sign-free (raw long/short counts). The dealer-sign hint is a "
-        "*lean*, not a resolution of the landmine — decision-support only.")
+        "Nifty-vs-BankNifty. Raw long/short counts — decision-support only.")
 
 
 def _gex_chart(L):
