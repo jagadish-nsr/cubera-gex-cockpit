@@ -298,3 +298,20 @@ crossings for the thing the blast score can't do — direction.
 (delta/charm/vanna/flow). Charm-FLOW is marginally the least-dead (flow>level, consistent with the
 project's pattern) but not tradeable. Charm remains a strong near-expiry VOL metric only. Closes the
 Charm-vs-blast TODO.
+
+## Study #11 (T4) — vol-risk-premium: does vanna add beyond IV?  → MODEST cross-book residual
+`scripts/analyze_vol_risk_premium.py`. VRP = IV − realized (entry 09:20 → close). NIFTY 1234 days.
+
+- **Unconditional VRP +8.3%** (IV 17.8 vs realized 9.5; IV>RV 97% of days) — the classic vol risk
+  premium (sell vol generally pays, but it's crash-risk compensation, not alpha).
+- Dominant driver is IV LEVEL: Spearman(IV, VRP) +0.80 ("sell high IV"). Raw vanna→VRP −0.36 is
+  just vanna∝1/IV re-encoding that.
+- **Decisive control:** partial(|vanna|, VRP | IV) = **+0.33**, | IV+DTE = **+0.11** (NIFTY),
+  **+0.24 (BankNifty)** — FLIPS positive and holds cross-book. At matched IV+DTE, higher vanna →
+  larger VRP → IV under-adjusts for the extra calm vanna predicts → a regime-timed short-vol tilt.
+
+**Verdict:** the FIRST vol result to survive IV+DTE controls in the theoretically-correct direction
+AND replicate cross-book — genuinely promising vs the sea of nulls, BUT modest (+0.11/+0.24) and NOT
+yet a proven tradeable edge. Follow-up (new TODO): robust RV (BankNifty mean RV is bad-tick-corrupted
+— rank partials survive but a P&L needs clean RV), a cost-adjusted regime-timed short-vol backtest,
+and out-of-sample. This is the one thread worth pursuing for actual vol-alpha.
