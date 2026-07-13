@@ -744,6 +744,12 @@ def _gamma_blast_section(data, is_expiry):
                                 strike_oi, strike_premiums)
 
     st.markdown("#### ⚡ Gamma-blast crossover watch")
+    if is_expiry:
+        st.caption("⚡ **Expiry day — LIVE confirmation tool.** When a crossover fires, watch the blast "
+                   "score BUILD: writer-covering (fuel) + premium expansion + a thin wall ahead = a break "
+                   "that SUSTAINS. It CONFIRMS the move as it unfolds (violent ~5min, ordinary ~15–30min), "
+                   "it does NOT predict the pivot — early reads bias FAKE. Not a fresh-entry trigger; "
+                   "size on your plan.")
     if data.source != "nse" or not data.oi_strikes:
         st.caption("Live NSE only — per-strike premiums aren't available on demo data.")
         return
@@ -848,14 +854,14 @@ def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_
 
 def _blast_score_readout(col, strike, points, key, last_cross, oi_strikes,
                          blast_score, next_strike, strike_oi):
-    """Grade the LATEST crossover TRUE (sustaining) vs FAKE (pin/cap) from the anchored
-    strike's OI covering + premium expansion since the crossing, plus the wall one strike
-    ahead (current snapshot). Sign-free staying-power read — not a direction call."""
+    """LIVE confirmation panel for the latest crossover: TRUE (sustaining) vs FAKE (pin/cap) from
+    the crossed strike's writer-COVERING + premium expansion since the cross, the wall ahead, PLUS
+    a confirmation-lag state (early reads bias FAKE) and an actionable bias. Sign-free staying-power
+    read — CONFIRMATION as the move unfolds, NOT a fresh-entry/pivot trigger."""
     direction = "up" if last_cross["to"] == "call_rich" else "down"
-    # Window: stored points from the crossover time forward (covering builds after the cross).
-    win = [v for t, v in sorted(points.items()) if t >= last_cross["time_ist"]]
+    win = [(t, v) for t, v in sorted(points.items()) if t >= last_cross["time_ist"]]
     crossed = [{"call_oi": v.get(f"{key}_coi"), "put_oi": v.get(f"{key}_poi"),
-                "call_ltp": v.get(f"{key}_call"), "put_ltp": v.get(f"{key}_put")} for v in win]
+                "call_ltp": v.get(f"{key}_call"), "put_ltp": v.get(f"{key}_put")} for _, v in win]
     ahead = None
     if next_strike is not None and strike_oi is not None:
         nb = next_strike(oi_strikes, strike, direction)
@@ -865,14 +871,42 @@ def _blast_score_readout(col, strike, points, key, last_cross, oi_strikes,
     sc = blast_score(direction, crossed, ahead)
     if not sc:
         return
-    icon = "🚀" if sc["grade"].startswith("TRUE") else "🎯" if "pin/cap" in sc["grade"] \
-        else "🛡️" if "defending" in sc["grade"] else "❓"
+
+    def _m(t):
+        h, mm = t.split(":")
+        return int(h) * 60 + int(mm)
+    elapsed = _m(win[-1][0]) - _m(last_cross["time_ist"]) if win else 0
+    move = "UP ↑" if direction == "up" else "DOWN ↓"
+    side = sc["itm_side"]
+    grade = sc["grade"]
+    if grade.startswith("TRUE"):
+        icon, box = "🚀", col.success
+        read = (f"Break **SUSTAINING** — {side}-writers **covering** (fuel). Bias: continuation "
+                f"**{move}** toward the next wall. **Confirmation, not a fresh entry** — act on your plan.")
+    elif "defending" in grade:
+        icon, box = "🛡️", col.warning
+        read = (f"Writers **DEFENDING {strike:,.0f}** (OI rising) → likely **PIN/CAP**. "
+                "Bias: fade back toward the magnet; don't chase the break.")
+    elif "pin/cap" in grade:
+        icon, box = "🎯", col.info
+        read = ("Likely **PIN / CAP** — thin fuel or an intact wall ahead. Bias: revert toward the magnet.")
+    else:
+        icon, box = "❓", col.info
+        read = "**Unconfirmed** — mixed signals; wait for the covering / premium to build."
+    box(f"{icon} **Blast {sc['score']}/100 — {grade}**  ·  {read}")
+
+    # confirmation-lag state (early reads bias FAKE — violent moves confirm ~5min, ordinary ~15–30min)
+    if elapsed < 5:
+        conf = f"⏳ Fresh cross ({elapsed}min) — EARLY & biased to FAKE; wait ~5min (violent) / ~15–30min (ordinary)."
+    elif elapsed < 15:
+        conf = f"🔎 Firming up ({elapsed}min) — violent breaks confirm by ~5min; give ordinary ones ~15–30min."
+    else:
+        conf = f"✔️ Confirmable ({elapsed}min since the cross)."
     pe = f"{sc['prem_exp']*100:+.0f}%" if sc["prem_exp"] is not None else "—"
     wr = f"{sc['wall_ratio']:.1f}×" if sc["wall_ratio"] is not None else "—"
-    col.markdown(f"{icon} **Blast score {sc['score']}/100** — {sc['grade']}")
-    col.caption(f"{sc['itm_side']}-writers ΔOI {sc['cover_frac']*100:+.0f}% "
-                f"(−ve = covering = fuel) · premium {pe} · wall ahead {wr}× the strike. "
-                "Staying-power grade, not a direction call — you confirm.")
+    col.caption(
+        f"🔥 **Fuel:** {side}-writer ΔOI **{sc['cover_frac']*100:+.0f}%** (−ve = covering = fuel) · "
+        f"premium **{pe}** · wall ahead **{wr}** the strike.  ·  {conf}  Sign-free — you confirm.")
 
 
 def _blast_chart(col, series):
