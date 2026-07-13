@@ -34,6 +34,39 @@ class DashboardData:
     india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
     usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
     news: dict | None = None       # {count, impact, top}; free RSS, best-effort
+    vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
+
+
+def _live_vanna(contracts, spot: float, lot: float) -> float | None:
+    """Current dealer-vanna exposure |Σ vanna·(callOI−putOI)| over the ~21 nearest strikes of the
+    nearest expiry, ×lot so it matches the Dhan feature-cache scale (Dhan OI is already in shares).
+    The gauge's regime metric (sharper vol predictor than |GEX|, Study #8). None if unusable."""
+    import numpy as np
+    from scipy.stats import norm
+    try:
+        df = contracts.dropna(subset=["strike", "oi", "iv", "T"])
+        exp = df["expiry"].min()
+        d = df[df["expiry"] == exp]
+        T = float(d["T"].iloc[0])
+        if not (T > 0) or not (spot > 0) or not lot:
+            return None
+        typ = d["type"].astype(str).str.upper()
+        calls = d[typ.str.startswith(("C",))].set_index("strike")
+        puts = d[typ.str.startswith(("P",))].set_index("strike")
+        strikes = sorted(set(calls.index) & set(puts.index), key=lambda k: abs(k - spot))[:21]
+        sq = T ** 0.5
+        total = 0.0
+        for k in strikes:
+            coi = float(calls.loc[k, "oi"]); poi = float(puts.loc[k, "oi"])
+            iv = float(calls.loc[k, "iv"]) if k >= spot else float(puts.loc[k, "iv"])
+            if not (iv == iv and iv > 0):
+                continue
+            d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)
+            d2 = d1 - iv * sq
+            total += (-norm.pdf(d1) * d2 / iv) * (coi - poi)
+        return abs(total) * float(lot)
+    except Exception:  # noqa: BLE001 - gauge overlay is non-essential
+        return None
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
@@ -106,10 +139,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["put_doi_near"] = c.get("put_doi_near")
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
+    vanna_now = _live_vanna(snap.contracts, float(levels.spot), idx.lot_size)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
         symbol=idx.symbol, index_label=idx.label,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
-        usdinr=usdinr, news=news,
+        usdinr=usdinr, news=news, vanna_now=vanna_now,
     )

@@ -1385,26 +1385,32 @@ def _gex_regime_banner(data):
     the historical expected forward realized vol for that bucket."""
     from app.intraday_features import intraday_vol_regime
 
-    absg = _current_absgex_cache_units(data)
+    # Prefer live dealer-VANNA exposure (a sharper vol-regime metric than |GEX|, Study #8);
+    # fall back to the |GEX| scale-bridge if vanna isn't available (e.g. pre-vanna cache/demo).
+    if data.vanna_now is not None:
+        val, metric = data.vanna_now, "vanna"
+    else:
+        val, metric = _current_absgex_cache_units(data), "net_gex"
     try:
-        vr = intraday_vol_regime(data.symbol, absg)
+        vr = intraday_vol_regime(data.symbol, val, metric=metric)
     except Exception:  # noqa: BLE001 - non-essential overlay
         vr = None
     if not vr:
-        st.info(f"### Market regime: building…\n\nNeeds the intraday |GEX| feature cache for "
-                f"**{data.symbol}** (`python -c \"from app.intraday_features import build; "
-                f"build('{data.symbol}')\"`).")
+        st.info(f"### Market regime: building…\n\nNeeds the intraday vol-regime (dealer-vanna) "
+                f"feature cache for **{data.symbol}** (`python -c \"from app.intraday_features "
+                f"import build; build('{data.symbol}')\"`).")
         return
     label = {"calm": "SIDEWAYS / RANGE-BOUND", "wild": "TRENDING / WIDER SWINGS",
              "mid": "NEUTRAL / MIXED"}[vr["tag"]]
     gword = {"calm": "HIGH", "wild": "LOW", "mid": "MID"}[vr["tag"]]
     box = {"calm": st.success, "wild": st.warning, "mid": st.info}[vr["tag"]]
+    mname = "dealer-vanna" if vr.get("metric") == "vanna" else "dealer-gamma (|GEX|)"
     tail = vr["read"].split("→")[-1].strip()
-    box(f"### Market regime: {label}  ·  {gword} dealer-gamma\n\n"
-        f"Dealer-gamma **concentration** (|GEX|) sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
+    box(f"### Market regime: {label}  ·  {gword} concentration\n\n"
+        f"{mname.capitalize()} **concentration** sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
         f"5yr → {tail}. Historically ≈ **{vr['exp_rv']:.1f}% realized vol (annualized)** over the "
-        f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-gamma / ~{vr['lo_rv']:.1f}% "
-        f"low-gamma).")
+        f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-concentration / "
+        f"~{vr['lo_rv']:.1f}% low-concentration).")
 
 
 def _gex_vol_regime_section(data):

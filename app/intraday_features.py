@@ -57,6 +57,7 @@ def day_features(store: str, day: str):
     """Reduce one raw day to its 5-min feature rows (DataFrame) or None if unusable."""
     from data.dhan import load_intraday_day
     from gex.bs import bs_gamma
+    from scipy.stats import norm
     import numpy as np
     import pandas as pd
 
@@ -98,10 +99,11 @@ def day_features(store: str, day: str):
         strikes = sorted(set(ce_oi.index) | set(pe_oi.index))
         if not strikes:
             continue
-        gex = tot_c = tot_p = 0.0
+        gex = vanna_ex = tot_c = tot_p = 0.0
         peak_k, peak_oi = spot, -1.0
         atm_k = min(strikes, key=lambda kk: abs(kk - spot))
         atm_iv = None
+        sq = T ** 0.5
         for k in strikes:
             coi = float(ce_oi.get(k, 0.0))
             poi = float(pe_oi.get(k, 0.0))
@@ -114,11 +116,14 @@ def day_features(store: str, day: str):
                 atm_iv = iv
             if iv == iv and iv > 0:                                    # all offsets are near-money
                 gex += bs_gamma(spot, k, T, iv) * (coi - poi)
+                d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)   # vanna exposure (sharper
+                d2 = d1 - iv * sq                                        # vol-regime metric than GEX,
+                vanna_ex += (-norm.pdf(d1) * d2 / iv) * (coi - poi)      # validated Study #8)
         gex *= spot * spot * 0.01
         tot = tot_c + tot_p
         d_oi = (tot - prev_tot) if prev_tot is not None else 0.0
         prev_tot = tot
-        rows.append({"day": day, "time_ist": st, "spot": spot, "net_gex": gex,
+        rows.append({"day": day, "time_ist": st, "spot": spot, "net_gex": gex, "vanna": vanna_ex,
                      "atm_iv": atm_iv, "dte": T * 365.0, "peak_oi_strike": peak_k,
                      "tot_call_oi": tot_c, "tot_put_oi": tot_p, "d_tot_oi": d_oi})
     return pd.DataFrame(rows)
@@ -174,19 +179,24 @@ _MAX_5M_RET = 0.08               # cap on a 5-min spot log-return — beyond thi
                                  # not a real index move (guards RV means from spurious spikes)
 
 
-@functools.lru_cache(maxsize=8)
-def _regime_stats(store: str, horizon_min: int, mtime: float):
-    """Cached (sorted |GEX| array, tercile cuts, mean forward RV per tercile) from the feature
+REGIME_METRIC = "vanna"          # vol-regime metric: |vanna| beats |GEX| beyond IV (Study #8,
+                                 # cross-book). Falls back to net_gex on pre-vanna caches.
+
+
+@functools.lru_cache(maxsize=16)
+def _regime_stats(store: str, horizon_min: int, mtime: float, metric: str = REGIME_METRIC):
+    """Cached (sorted |metric| array, tercile cuts, median forward RV per tercile) from the feature
     cache. ``mtime`` is the cache-file mtime so a rebuilt cache invalidates this automatically.
     Sign-free. Forward RV = std of the next horizon_min/5 five-min spot log-returns, annualized."""
     import numpy as np
     f = load_features(store)
     if f is None or len(f) < 1000:
         return None
+    col = metric if metric in f.columns else "net_gex"   # graceful fallback for old caches
     f = f.sort_values(["day", "time_ist"]).reset_index(drop=True)
     m = max(1, horizon_min // GRID_MIN)
     rv = np.full(len(f), np.nan)
-    absg = f["net_gex"].abs().to_numpy()
+    absg = f[col].abs().to_numpy()
     spot_all = f["spot"].to_numpy()
     for _, idx in f.groupby("day").groups.items():
         ii = np.array(sorted(idx))
@@ -208,28 +218,30 @@ def _regime_stats(store: str, horizon_min: int, mtime: float):
     return np.sort(absg), float(q1), float(q2), lo_rv, mid_rv, hi_rv, int(len(a))
 
 
-def intraday_vol_regime(store: str, absgex_now: float | None,
-                        horizon_min: int = REGIME_HORIZON_MIN) -> dict | None:
-    """Sign-free live regime read: place the CURRENT |GEX| (in cache units — see the dashboard's
-    scale bridge) in the 5-yr intraday |GEX| distribution, and return the historical mean forward
-    realized vol (annualized %, next ``horizon_min``) for its tercile. HIGH |GEX| → calmer /
-    mean-reverting / SIDEWAYS; LOW → wilder / TRENDING. Returns None if no cache / no current value.
-    """
+def intraday_vol_regime(store: str, value_now: float | None,
+                        horizon_min: int = REGIME_HORIZON_MIN,
+                        metric: str = REGIME_METRIC) -> dict | None:
+    """Sign-free live regime read: place the CURRENT |metric| (dealer-vanna exposure by default —
+    a sharper vol predictor than |GEX|; in cache units, see the dashboard scale bridge) in the
+    5-yr intraday distribution, and return the historical median forward realized vol (annualized
+    %, next ``horizon_min``) for its tercile. HIGH → calmer/SIDEWAYS; LOW → wilder/TRENDING. None
+    if no cache / no current value."""
     import numpy as np
     p = _cache_path(store)
-    if not p.exists() or absgex_now is None or not np.isfinite(absgex_now):
+    if not p.exists() or value_now is None or not np.isfinite(value_now):
         return None
-    stats = _regime_stats(store, horizon_min, p.stat().st_mtime)
+    value_now = abs(value_now)
+    stats = _regime_stats(store, horizon_min, p.stat().st_mtime, metric)
     if stats is None:
         return None
     srt, q1, q2, lo_rv, mid_rv, hi_rv, n = stats
-    pct = 100.0 * float(np.searchsorted(srt, absgex_now, side="right")) / len(srt)
-    if absgex_now >= q2:
-        tag, read, exp_rv = "calm", "HIGH gamma concentration → SIDEWAYS / mean-reverting", hi_rv
-    elif absgex_now <= q1:
-        tag, read, exp_rv = "wild", "LOW gamma concentration → TRENDING / wider swings", lo_rv
+    pct = 100.0 * float(np.searchsorted(srt, value_now, side="right")) / len(srt)
+    if value_now >= q2:
+        tag, read, exp_rv = "calm", "HIGH dealer-gamma concentration → SIDEWAYS / mean-reverting", hi_rv
+    elif value_now <= q1:
+        tag, read, exp_rv = "wild", "LOW dealer-gamma concentration → TRENDING / wider swings", lo_rv
     else:
-        tag, read, exp_rv = "mid", "MID gamma concentration → neutral / mixed", mid_rv
+        tag, read, exp_rv = "mid", "MID dealer-gamma concentration → neutral / mixed", mid_rv
     return {"tag": tag, "read": read, "exp_rv": exp_rv, "lo_rv": lo_rv, "mid_rv": mid_rv,
-            "hi_rv": hi_rv, "pct": pct, "n": n, "absgex": float(absgex_now),
-            "horizon_min": horizon_min}
+            "hi_rv": hi_rv, "pct": pct, "n": n, "absgex": float(value_now),
+            "horizon_min": horizon_min, "metric": metric}
