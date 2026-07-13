@@ -5,7 +5,7 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-13 IST — Charm vs Gamma-blast analysis  ⏳ TODO
+## 2026-07-13 IST — Charm vs Gamma-blast analysis  ✅ DONE (2026-07-13 — NULL: charm doesn't call blast direction; docs/intraday-results.md #10)
 
 **Why:** **charm** (∂delta/∂time) is the dealer greek that drives **expiry-day directional drift**
 (forced one-way re-hedging as deltas decay — "charm flow"), and it's a near-expiry-dominated signal

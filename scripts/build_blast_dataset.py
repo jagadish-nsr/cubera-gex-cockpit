@@ -73,8 +73,10 @@ def fut_map(store, day, stamps):
 
 def _day_rows(store, day, dte, gex_map, futm=None):
     import numpy as np
+    from scipy.stats import norm
     from data.dhan import load_intraday_day
 
+    T = (dte / 365.0) if (dte and dte > 0) else None
     df = load_intraday_day(store, day)
     if df is None or df.empty:
         return []
@@ -101,6 +103,30 @@ def _day_rows(store, day, dte, gex_map, futm=None):
     step = min((b - a) for a, b in zip(strikes, strikes[1:]))
     # session realized vol up to each stamp (context)
     lr = np.clip(np.diff(np.log(np.where(spot > 0, spot, np.nan)), prepend=np.nan), -0.08, 0.08)
+
+    sqT = (T ** 0.5) if T else None
+
+    def charm_ex(j, sref):
+        """Signed dealer-charm exposure Σ charm·(callOI−putOI) over ATM±NEAR at stamp j (raw iv
+        is percent → /100). Directional flow that drives expiry drift — the candidate blast-
+        direction signal."""
+        if not T:
+            return np.nan
+        tot = 0.0
+        for Kk in strikes:
+            if abs(Kk - sref) > NEAR * step:
+                continue
+            dd = L[Kk]
+            coi = dd["co"][j] if dd["co"][j] == dd["co"][j] else 0.0
+            poi = dd["po"][j] if dd["po"][j] == dd["po"][j] else 0.0
+            iv = (dd["civ"][j] if Kk >= sref else dd["piv"][j])
+            if not (iv == iv and iv > 0):
+                continue
+            iv = iv / 100.0
+            d1 = (np.log(sref / Kk) + 0.5 * iv * iv * T) / (iv * sqT)
+            d2 = d1 - iv * sqT
+            tot += (norm.pdf(d1) * d2 / (2.0 * T)) * (coi - poi)
+        return tot
 
     rows = []
     for K in strikes:
@@ -177,6 +203,8 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                 exc = dirs * (fut - spot[io]) / spot[io] * 100
                 mfe = float(np.nanmax(exc)) if len(exc) else 0.0
                 mae = float(np.nanmin(exc)) if len(exc) else 0.0
+                charm = charm_ex(io, spot[io])                              # signed dealer-charm
+                charm_flow = (charm - charm_ex(i, spot[i])) if T else np.nan
                 rows.append({
                     "day": day, "K": K, "dir": 1 if up else 0, "dte": dte,
                     "tod": (_OPEN + i * GRID_MIN),
@@ -185,6 +213,7 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                     "wall_erode": wall_erode, "mom_obs": mom * 100, "iv": ivn, "div_obs": div,
                     "skew": skew, "turnover": turnover, "pcr": pcr, "rv_sofar": rv_sofar,
                     "absg": absg, "dist_step": (K - spot[i]) / step,
+                    "charm": charm, "charm_flow": charm_flow,
                     # targets
                     "cont": cont, "mfe": mfe, "mae": mae,
                     # straddle at the crossed strike K: entry (at io) & exit (at i+HORIZON) premiums

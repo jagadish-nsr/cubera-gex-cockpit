@@ -283,3 +283,18 @@ change in putOI/callOI — meaningful because Dhan OI updates live) vs de-trende
 still dead (signed→ret/Δ15→ret ~0 everywhere). CHARM is strongest on NIFTY (−0.228) but inconsistent
 (only ~GEX on BankNifty). Running a strike-weighting bake-off (GEX vs GEXpeak/GEXkey3/GEXotm vs
 VANNA vs CHARM) to pick the single best vol-regime metric before wiring it into the dashboard gauge.
+
+## Study #10 — Charm vs Gamma-blast (does charm call blast DIRECTION?)  → NO
+`scripts/analyze_charm_blast.py` (+ `charm`/`charm_flow` added to build_blast_dataset). Charm is the
+one greek with a directional mechanism (expiry re-hedging drift), tested at the 8142 near-expiry
+crossings for the thing the blast score can't do — direction.
+
+- signed charm → market direction: IC +0.030; charm_flow → direction +0.022; momentum −0.003. Null.
+- charm·(crossing dir) → continuation: −0.003 (level) / +0.014 (flow) at 0-DTE; partial-vs-mom ~0. Null.
+- TRUE-blast alignment (0-DTE): charm-flow sign matches the crossing direction 55% (vs 50%) — the
+  ONLY thing above noise, but +5pp, post-hoc (conditioned on the outcome), forward-IC +0.014. Noise.
+
+**Verdict:** charm does NOT predict blast direction — direction is dead across the ENTIRE greek suite
+(delta/charm/vanna/flow). Charm-FLOW is marginally the least-dead (flow>level, consistent with the
+project's pattern) but not tradeable. Charm remains a strong near-expiry VOL metric only. Closes the
+Charm-vs-blast TODO.
