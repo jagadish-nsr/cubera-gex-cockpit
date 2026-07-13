@@ -241,3 +241,21 @@ opening |GEX|. NIFTY, 1229 days.
 edge — the vol is in the premium; the raw "edge" was theta-by-expiry. Same efficient-market result
 as the blast straddle (#6b). Expiry-day (≤1.5d) band shows fat-tailed LONG-vol payoff (0-DTE blast
 lottery), not a clean/sellable edge.
+
+## Study #8 — greek-exposure screen (beyond GEX)  → direction dead; |VANNA| > |GEX| for vol
+`scripts/greek_exposure_screen.py`. Dealer exposures from per-strike OTM-smile greeks (r=q=0),
+ATM±10: DEX (Σδ·OI), DFLOW (δ·volume), DDOI (δ·ΔOI), CHARM, VANNA, VEGA, GEX. Point-in-time IC vs
+forward 30-min return (direction) and vol (size). NIFTY, stride-4 sample, 23,303 stamps.
+
+- **DIRECTION: dead.** signed→ret and Δ15→ret ~0 for ALL greeks (|IC|≤0.045) — delta/charm/vanna/
+  flow/fresh-ΔOI included. No greek predicts direction. Closes the "other greeks for edge" question.
+- **VOL: |VANNA| beats |GEX|.** raw |·|→fvol / partial-vs-IV / partial-vs-DTE:
+  VANNA −0.419 / **−0.169** / −0.421 ; GEX −0.164 / **−0.088** / −0.206 ; VEGA −0.217 / **+0.098** / −0.215.
+  VANNA's raw signal is ~⅔ IV confound (∝1/σ) but the IV-partial (−0.169) still ~2× GEX (−0.088) and
+  survives DTE — genuinely better forward-vol prediction. VEGA is pure IV (flips +0.098 under control).
+  GEX survives both controls (gauge not a DTE artifact).
+
+**Takeaway:** no new alpha (vanna is still a vol-REGIME metric; direction dead, vol priced-in), but
+|VANNA| is a ~2× sharper vol-regime metric than |GEX| — candidate to upgrade the dashboard gauge
+(vanna weights OTM OI differently: zero at ATM, peaks OTM). TODO before productionizing: confirm on
+full sample (stride 1) + BankNifty.
