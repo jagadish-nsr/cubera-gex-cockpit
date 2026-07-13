@@ -183,6 +183,8 @@ def main():
     # the dealer SIGN carries no clean regime/direction info, while the |GEX| BUCKET robustly
     # gauges TRENDING (low |GEX|) vs SIDEWAYS (high |GEX|). Live-intraday, sign-free.
     _gex_regime_banner(data)
+    # Turn the regime into a concrete trading POSTURE (mean-revert vs momentum, sizing, stops).
+    _regime_posture_note(data)
     # Sign-free, time-of-day magnet-pull overlay — our strongest directional-ish read.
     _magnet_pull_note(data, L)
     # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
@@ -1411,6 +1413,46 @@ def _gex_regime_banner(data):
         f"5yr → {tail}. Historically ≈ **{vr['exp_rv']:.1f}% realized vol (annualized)** over the "
         f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-concentration / "
         f"~{vr['lo_rv']:.1f}% low-concentration).")
+
+
+_POSTURE = {
+    "calm": ("🟦 **Range-bound / pinning** — MEAN-REVERSION favoured", [
+        "Fade extremes back toward the **magnet**; breakouts here tend to fail.",
+        "Sell premium near the **walls**; tighter stops; you can size UP.",
+    ]),
+    "wild": ("🟧 **Trending / expansion** — MOMENTUM favoured", [
+        "Respect a **break of a wall**; fading the move is dangerous here.",
+        "Buy premium / trade directional; stops **beyond** the walls; size DOWN (bigger swings).",
+    ]),
+    "mid": ("⬜ **Neutral vol regime** — no strong tilt", [
+        "Trade the levels with modest size; wait for a clearer regime to lean.",
+    ]),
+}
+
+
+def _regime_posture_note(data):
+    """Turn the sign-free vol-REGIME read into a concrete 'how to trade this regime' posture
+    (mean-revert vs momentum, premium buy/sell, stop placement, sizing). The regime is validated
+    (|vanna|→forward vol); the POSTURE is the standard vol-regime playbook, not a direction call."""
+    from app.intraday_features import intraday_vol_regime
+
+    if data.vanna_now is None:
+        return
+    try:
+        vr = intraday_vol_regime(data.symbol, data.vanna_now, metric="vanna")
+    except Exception:  # noqa: BLE001 - non-essential overlay
+        vr = None
+    if not vr:
+        return
+    head, tips = _POSTURE[vr["tag"]]
+    body = "".join(f"<div style='font-size:13px;margin-top:3px'>• {t}</div>" for t in tips)
+    st.markdown(
+        f"<div style='border-left:4px solid {_MUTE};background:#00000008;border-radius:8px;"
+        f"padding:8px 14px;margin:2px 0 8px'>"
+        f"<div style='font-size:14px;font-weight:700'>🎯 How to trade this regime: {head}</div>"
+        f"{body}<div style='font-size:12px;color:{_MUTE};margin-top:4px'>Sign-free vol-regime "
+        f"posture (≈{vr['exp_rv']:.0f}% expected vol, next {vr['horizon_min']}min) — <b>not a "
+        f"direction call</b>; you confirm every trade.</div></div>", unsafe_allow_html=True)
 
 
 def _gex_vol_regime_section(data):

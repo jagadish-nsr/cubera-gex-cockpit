@@ -99,7 +99,7 @@ def day_features(store: str, day: str):
         strikes = sorted(set(ce_oi.index) | set(pe_oi.index))
         if not strikes:
             continue
-        gex = vanna_ex = tot_c = tot_p = 0.0
+        gex = vanna_ex = charm_ex = tot_c = tot_p = 0.0
         peak_k, peak_oi = spot, -1.0
         atm_k = min(strikes, key=lambda kk: abs(kk - spot))
         atm_iv = None
@@ -116,15 +116,17 @@ def day_features(store: str, day: str):
                 atm_iv = iv
             if iv == iv and iv > 0:                                    # all offsets are near-money
                 gex += bs_gamma(spot, k, T, iv) * (coi - poi)
-                d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)   # vanna exposure (sharper
-                d2 = d1 - iv * sq                                        # vol-regime metric than GEX,
-                vanna_ex += (-norm.pdf(d1) * d2 / iv) * (coi - poi)      # validated Study #8)
+                d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)   # vanna: sharper vol-regime
+                d2 = d1 - iv * sq                                        # metric than GEX (Study #8);
+                phi = norm.pdf(d1)                                       # charm: best @0-DTE (T1b blend)
+                vanna_ex += (-phi * d2 / iv) * (coi - poi)
+                charm_ex += (phi * d2 / (2.0 * T)) * (coi - poi)
         gex *= spot * spot * 0.01
         tot = tot_c + tot_p
         d_oi = (tot - prev_tot) if prev_tot is not None else 0.0
         prev_tot = tot
         rows.append({"day": day, "time_ist": st, "spot": spot, "net_gex": gex, "vanna": vanna_ex,
-                     "atm_iv": atm_iv, "dte": T * 365.0, "peak_oi_strike": peak_k,
+                     "charm": charm_ex, "atm_iv": atm_iv, "dte": T * 365.0, "peak_oi_strike": peak_k,
                      "tot_call_oi": tot_c, "tot_put_oi": tot_p, "d_tot_oi": d_oi})
     return pd.DataFrame(rows)
 
