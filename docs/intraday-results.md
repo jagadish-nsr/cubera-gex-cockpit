@@ -222,3 +222,22 @@ the crossing set (NIFTY, 50 days, 810 crossings) and compared options-only vs op
 Consistent with the futures-OI directional null. Confirms: the gamma blast is not predictable, and
 futures data does not change that. (Futures intraday remains useful only as the shallow 90-day
 descriptive store, not as a blast predictor.)
+
+## Study #7 — daily straddle vol-timing around the GEX regime  → NO EDGE (DTE confound)
+`scripts/straddle_gex_timing.py`. Hypothesis: HIGH opening |GEX| → realized vol < implied → sell
+straddle. Entry ATM straddle 09:20, hold to 15:25 (value the SAME strikes at exit); bucket by
+opening |GEX|. NIFTY, 1229 days.
+
+- **RAW looked amazing** (SELL high-|GEX| straddle +34%/trade, 99% win) — but it's a **DTE confound**:
+  |GEX| ∝ 1/√T, so HIGH-|GEX| ≈ near-expiry (dte 1.9 vs LOW 5.0). "Sell high-|GEX| vol" = "sell
+  near-expiry straddles" = harvest theta, nothing to do with GEX. (An early version also had a
+  selection bug — required same ATM strike open→close, dropping trending days; fixed.)
+- **DTE-CONTROLLED (decisive):** within a DTE band, LOW vs HIGH |GEX| straddle P&L barely differs
+  (1.5–3d: −2.14% vs −2.50%, move/BE 0.48 vs 0.46). If anything HIGH-|GEX| has slightly HIGHER
+  move/BE (long better) — OPPOSITE of the sell-vol thesis. HIGH-|GEX| days carry LOWER ATM IV
+  (15.4 vs 18.7%) but the same realized move/BE → IV already prices the calmer vol.
+
+**Conclusion:** |GEX|→vol is a real REGIME read (the dashboard gauge) but NOT a tradeable straddle
+edge — the vol is in the premium; the raw "edge" was theta-by-expiry. Same efficient-market result
+as the blast straddle (#6b). Expiry-day (≤1.5d) band shows fat-tailed LONG-vol payoff (0-DTE blast
+lottery), not a clean/sellable edge.
