@@ -315,3 +315,17 @@ AND replicate cross-book — genuinely promising vs the sea of nulls, BUT modest
 yet a proven tradeable edge. Follow-up (new TODO): robust RV (BankNifty mean RV is bad-tick-corrupted
 — rank partials survive but a P&L needs clean RV), a cost-adjusted regime-timed short-vol backtest,
 and out-of-sample. This is the one thread worth pursuing for actual vol-alpha.
+
+## Study #11b (T4b) — is the vanna-VRP residual TRADEABLE?  → NO (intraday horizon)
+`scripts/backtest_vanna_shortvol.py`. Sell ATM straddle 09:20→close, ACTUAL premium P&L (robust to
+spot bad-ticks), cost 2%, walk-forward OOS. NIFTY 1229 days.
+
+- Unconditional sell-every-day: net −1.27%, win 62% (small wins, occasional big-move loss).
+- **partial(|vanna|, seller P&L | IV+DTE) = −0.017** (Study #11's VRP partial was +0.11) — the
+  residual VANISHES in actual straddle P&L. HIGH−LOW vanna seller P&L negative in 3/4 DTE bands.
+- **Walk-forward OOS: vanna-selected days −1.07% vs unconditional +0.60%** — selection underperforms.
+
+**Verdict:** the #11 spot-RV residual does NOT monetize — the straddle premium already prices the
+vanna signal; intraday theta/tail noise swamps a +0.11 stat edge. Efficient, same as #6b/#7. Caveat:
+this is entry→CLOSE (1-day) straddle — a poor VRP vehicle; the proper **to-EXPIRY** hold is the one
+untested horizon (low prior). Vol stays a REGIME read, not alpha — now with an OOS backtest behind it.
