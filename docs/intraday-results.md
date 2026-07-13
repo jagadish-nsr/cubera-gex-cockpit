@@ -134,3 +134,78 @@ jumps). Rank-based ICs are robust to them; a mean forward-RV is not — so the l
 uses the **median** forward RV per |GEX| tercile (+ an 8% return clip). Realistic terciles: NIFTY
 7.4/6.8/5.9, NIFTY_M 7.2/7.2/6.7, BANKNIFTY 10.6/9.1/7.9 (lo/mid/hi). Option-premium studies
 (#3, #5) are unaffected (they don't use spot RV).
+
+## Study #1 deep-dive — NIFTY vs BANKNIFTY (GEX→vol head-to-head)
+`|GEX|` scale differs ~16× (NIFTY median 4.9e10 vs BANKNIFTY 3.0e9) → never compare raw |GEX|
+across indices; each needs its own percentile distribution (the dashboard gauge is per-store).
+
+Spearman IC (more negative = stronger vol-damping); `partial|IV` = |GEX| after removing ATM-IV
+(the genuine-gamma content, the meaningful control):
+
+| horizon | IC raw N/B | IC tod-neutral N/B | **partial\|IV N/B** | atm_iv IC N/B |
+|--------:|-----------:|-------------------:|--------------------:|--------------:|
+| 15m | −0.147 / −0.143 | −0.138 / −0.082 | **−0.099 / −0.113** | +0.323 / +0.327 |
+| 30m | −0.186 / −0.196 | −0.182 / −0.099 | **−0.132 / −0.168** | +0.431 / +0.426 |
+| 60m | −0.206 / −0.245 | −0.201 / −0.176 | **−0.153 / −0.225** | +0.505 / +0.474 |
+
+Vol-damping — median forward RV by |GEX| tercile (annualized %):
+
+| index | 15m lo→hi | 30m lo→hi | 60m lo→hi | high-gamma calmer |
+|-------|-----------|-----------|-----------|-------------------|
+| NIFTY     | 5.9→4.6 | 7.4→5.9 | 8.1→6.3 | ~21–22% |
+| BANKNIFTY | 8.2→6.3 | 10.6→7.9 | 12.0→8.7 | ~23–27% |
+
+**Read:**
+- BANKNIFTY is genuinely STRONGER at longer horizons and in the IV-partial: 60m partial|IV
+  −0.225 vs NIFTY −0.153; its damping grows with horizon (27% @60m vs NIFTY's flat ~22%).
+- But at SHORT horizons NIFTY is the CLEANER signal: BANKNIFTY's tod-neutral IC collapses
+  (−0.082 vs −0.138 @15m) → much of BankNifty's raw 15m signal is the shared intraday U-shape,
+  while NIFTY's survives time-of-day neutralization. So: NIFTY cleaner ≤15m, BANKNIFTY stronger ≥30–60m.
+- BANKNIFTY is simply more volatile (60m RV 12% low-gamma vs NIFTY 8%) and more gamma-sensitive
+  (higher-beta, bank-concentrated → dealer hedging bites harder over the hour).
+- Practical: use NIFTY's gauge for the next 15–30m, BANKNIFTY's for 30–60m — each is sharpest there.
+
+## Study #6 — ML to predict a TRUE gamma blast (point-in-time)  → NO DIRECTIONAL EDGE
+`scripts/build_blast_dataset.py` (leak-free features over a 10-min obs window; target =
+continuation AFTER, over the next 30 min) + `scripts/train_blast_model.py` (HistGradientBoosting +
+logistic, WALK-FORWARD temporal split, shuffle control, EV-by-decile). NIFTY, 8142 crossings,
+16 features (blast-score components + per-strike OI/ΔOI/IV/skew/premium/turnover + |GEX|/PCR/
+momentum-so-far/rv-so-far/DTE/time-of-day). Target: big blast = cont > 0.15% (base rate ~16–19%).
+
+- Test AUC **0.642** (GBM) / 0.640 (logistic) — LOOKS like skill, but:
+  - **EV ~0 across ALL deciles**: top-predicted-prob decile mean cont −0.011% (vs base −0.002%);
+    no positive EV gradient. It concentrates big moves (25% big vs 16%) but with SYMMETRIC
+    excursions (MFE +0.12% ≈ |MAE| −0.14%) — bigger moves BOTH ways, not a directional edge.
+  - **Top features are all volatility proxies** (iv 0.094, turnover, rv_sofar, absg) → the model
+    re-learned move SIZE (the known |GEX|/IV→vol signal), NOT direction.
+  - **Overfit/leak flags**: train AUC 0.816 vs test 0.642; SHUFFLE control 0.522 (not clean 0.50).
+
+**Verdict:** no predictable DIRECTIONAL gamma-blast edge — direction at entry is a coin flip
+(base 51%, top-decile EV ~0). Full ML confirms Study #5 / the whole arc: **volatility (size) is
+predictable, direction is not.** The only tradeable read here is NON-DIRECTIONAL: high blast-
+probability = a big move likely EITHER way → a straddle/vol play, not a directional entry.
+Next (if pursued): straddle-at-crossing P&L to see if the vol concentration beats theta/spread.
+
+## Study #6b — straddle-at-crossing P&L (the non-directional angle)  → NO EDGE
+`scripts/straddle_pnl.py`. The model predicts move SIZE, not direction → test a straddle (buy
+crossed-strike CE+PE at +10min, exit +30min). NIFTY test set, 3% round-trip cost.
+
+| | mean net P&L | win |
+|---|---|---|
+| Unconditional (every straddle) | −4.29% | 22% |
+| Top blast-prob decile | **−4.74%** | 21% |
+
+Move size rises monotonically by decile (0.10%→0.27%) — the vol prediction IS real — but the
+straddle loses in EVERY decile, even GROSS of cost (top decile −1.74% gross). The premium already
+prices in the expected vol, so predicting size gives no straddle edge; theta finishes it. Top
+decile is even worse than unconditional. **Market is efficient here: the forecastable vol is
+already in the option price.**
+
+**Gamma-blast final verdict:** not a systematic edge in EITHER form — direction is a coin flip
+(Study #6), size is predictable but priced-in (#6b). Blast score = real-time CONFIRMATION only.
+
+## Study #5 across books — BANKNIFTY blast (point-in-time)  → ~0, same as NIFTY
+`analyze_dhan_blast.py BANKNIFTY` (138 near-expiry days — monthly-only, 2746 crossings):
+partial|momentum IC **+0.003** (raw −0.019), %continued flat ~50% across score buckets. The blast
+score has no point-in-time predictive power for BankNifty either (small-n was +0.37, didn't
+transfer). Confirmation-only in both indices.
