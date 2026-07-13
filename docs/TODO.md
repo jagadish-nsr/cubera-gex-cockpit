@@ -62,6 +62,22 @@ edge could hide. Effort: med.
 
 ---
 
+## 2026-07-13 IST — [T4b] Vanna-VRP follow-up — is the residual TRADEABLE?  📋 BACKLOG (the one vol-alpha thread)
+
+**Why:** Study #11 (T4) found the FIRST vol result to survive IV+DTE controls in the right direction
+AND replicate cross-book: partial(|vanna|, VRP | IV+DTE) = +0.11 NIFTY / +0.24 BankNifty (higher vanna
+→ IV under-prices the calm → larger VRP → short-vol tilt). Modest but real — the only tradeable-vol
+candidate left.
+
+**What to do:** (1) ROBUST realized vol (BankNifty mean RV is bad-tick-corrupted — median/winsorized,
+or drop the ~1.8% corrupt-spot days) so the P&L magnitude is trustworthy; (2) a proper regime-timed
+**short-vol backtest** — sell the ATM straddle on high-vanna days (matched IV+DTE bucket), hold to
+close/expiry, **net of a realistic cost + slippage**; (3) OUT-OF-SAMPLE / walk-forward split;
+(4) also a daily/overnight horizon (not just entry→close). If the cost-adjusted, OOS edge holds, this
+is the first genuinely tradeable thing in the project. Honest prior: modest, may not clear costs.
+
+---
+
 ## 2026-07-13 IST — [T3] Self-healing capture via nightly Dhan backfill  📋 BACKLOG
 
 **Why:** we keep LOSING live sessions (S0-machine sleep, no wake-timer) — but it's now RECOVERABLE
