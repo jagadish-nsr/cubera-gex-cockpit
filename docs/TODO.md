@@ -5,7 +5,7 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-13 IST — [T1a] Regime → risk-posture overlay  ⏳ TODO (PRIORITY — start first)
+## 2026-07-13 IST — [T1a] Regime → risk-posture overlay  ✅ DONE (2026-07-13 — `_regime_posture_note` card under the regime banner)
 
 **Why:** the vanna gauge tells you the REGIME but not what to DO. Turn the one confirmed edge
 (|vanna|→forward vol) into a decision. The dashboard currently stops at "SIDEWAYS/TRENDING".
@@ -21,7 +21,7 @@ Feed both the live-intraday vanna regime AND the EOD `gex_history` regime (daily
 
 ---
 
-## 2026-07-13 IST — [T1b] DTE-aware regime metric (vanna + charm blend)  ⏳ TODO (PRIORITY — start first)
+## 2026-07-13 IST — [T1b] DTE-aware regime metric (vanna + charm blend)  ✅ DONE (2026-07-13 — charm@≤1.5DTE / vanna else via `regime_now`; validated cross-book)
 
 **Why:** Study #8 — **charm** is the best vol metric at **0-DTE** (IV-partial −0.20) while **vanna**
 wins otherwise. A DTE-switched/blended gauge should beat either alone. Builds directly on done work.
