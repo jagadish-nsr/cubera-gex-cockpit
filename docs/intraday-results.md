@@ -377,3 +377,23 @@ flip*: an afternoon blast is more likely when the morning is ALREADY wide (≥1%
 vol persistence/momentum, the tell is a morning that's already moving. Consistent with the arc (vol is
 a REGIME/persistence read; the blast is confirmation-not-prediction, #6). Recorded DEAD as a filter;
 if anything, invert it (don't expect a blast off an ultra-quiet morning). Sign-free; 1-min range.
+
+## Study #14 (B1/B2) — WALL bounce (calm) vs break (wild): a regime-conditional DIRECTION?  → NEGATIVE
+`scripts/analyze_wall_break.py` (scenario catalog B). SAME geometry (spot approaching a wall) split by
+regime: does HIGH concentration (calm) → REJECT (bounce away) and LOW (wild) → BREAK (continue
+through)? Signed "push toward the wall" over 15/30/60m (day-detrended, ±8% clipped), concentration =
+|vanna| (|charm| ≤1.5 DTE), same-distance MID-ZONE placebo. NIFTY 1239 / NIFTY_M 1239 / BankNifty 1222.
+
+- **Direction NULL, all three books.** Push near a wall is ~0 in every tercile (a few bp vs a ~30 bp
+  typical move); the LOW−HIGH break-vs-bounce contrast **flips sign across horizons/books** (NIFTY
+  +0.2/+0.4/+0.3; NIFTY_M +1.3/−4.5/−3.2; BankNifty +0.3/+3.9/−1.2) and is not distinguishable from
+  the mid-zone placebo. Walls do NOT call bounce vs break direction.
+- **Containment (cross-rate) is the only real effect — and it's just the vol regime.** LOW-conc
+  crosses the wall more often than HIGH-conc, consistent sign in all books (NIFTY +4.6/+5.5/+6.3pp;
+  NIFTY_M +1.2/+1.8/+1.8; BankNifty +0.4/+1.8/+1.7). High concentration CONTAINS price inside the
+  walls — a restatement of |vanna|→lower vol, not a directional edge (and weaker off-NIFTY).
+
+**Conclusion:** the wall is a CONTAINMENT boundary (calm → fewer crossings, a vol statement), not a
+directional pivot — even at the wall, the break is a coin flip. Direction stays dead; the wall's only
+information is the vol regime we already price. Consistent with A1 (#12), the blast (#6), and the whole
+arc. Recorded DEAD for direction (no dashboard chip beyond the existing vol gauge). Sign-free.

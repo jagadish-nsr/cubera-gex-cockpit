@@ -50,11 +50,15 @@ building over the window, the **TRUE/FAKE grade** with its confirmation-lag note
 
 ## 2026-07-14 IST — [T6] Situational / scenario analysis (spot × levels)  ⏳ IN PROGRESS (spec: docs/scenario-catalog.md)
 
-**Progress:** step 1 (cache enriched with `call_wall/put_wall/magnet/max_pain/gamma_flip` per stamp,
-NIFTY rebuilt 1239 days) ✅. **A1 (magnet lock) ✅ DONE → NEGATIVE** (Study #12): the pin is
-stickiness not attraction — no pull to the pin from a distance (closer 39% < mirror 51%), which also
-undercuts A2. Next: rebuild NIFTY_M/BANKNIFTY caches with levels, then **B1-vs-B2** (wall bounce-vs-
-break — the best remaining directional shot).
+**Progress:** step 1 (cache enriched with `call_wall/put_wall/magnet/max_pain/gamma_flip` per stamp;
+all 3 books rebuilt) ✅. Results so far — direction stays dead, consistent with the arc:
+- **A1 magnet lock** ✅ NEGATIVE (Study #12): pin is stickiness not attraction (closer 39% < mirror 51%); undercuts A2.
+- **B1/B2 wall bounce-vs-break** ✅ NEGATIVE cross-book (Study #14): no directional edge at the wall; only containment (= vol regime).
+- **H blast compression** ✅ REFUTED (Study #13, user hypothesis): tight morning → QUIETER afternoon (ρ +0.45, persistence), not a coil; invert the filter.
+
+Remaining (lower prior): C1 flip regime, D1 magnet-pull sharpen, E1/E2 squeeze (vol), F1 max-pain
+drift, G1 level×footprint. Given A1/B/H all dead for direction, the surviving value is VOL/containment
+(E, and the existing gauge), not direction.
 
 
 **Why:** direction is dead POOLED (research-arc conclusion), so STOP pooling — slice to the narrow

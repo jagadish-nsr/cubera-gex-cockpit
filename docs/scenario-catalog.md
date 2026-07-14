@@ -67,11 +67,11 @@ Each: hypothesis → entry → prediction → metric. Prior = honest guess it su
   *Reframed: measure persistence of the pinned state by clock, not attraction.*
 
 ### B · Wall bounce vs. break — the regime-conditional core
-- **B1 Wall rejection (calm).** Spot approaches call-wall from below in high-concentration regime →
-  mean-reverts down (put wall symmetric). Entry: `dist_to_wall < 0.3σ√T` AND calm. *Prior: med.*
-- **B2 Wall-break continuation (wild).** Same approach, low-concentration → breaks & continues (blast).
-  **The B1-vs-B2 contrast is the real test**: same geometry, opposite regime, opposite outcome. If the
-  split is clean it's a genuine conditional edge. *Prior: med — best directional shot in the set.*
+- **B1/B2** ✅ DONE → **NEGATIVE (direction), cross-book** (Study #14, `analyze_wall_break.py`). Push
+  toward the wall is ~0 in every regime tercile and the LOW−HIGH break-vs-bounce contrast flips sign
+  across horizons/books (noise, placebo-matched). The only real effect is **containment**: LOW-conc
+  crosses walls more (NIFTY +5–6pp, weaker off-NIFTY) — a restatement of |vanna|→lower vol, not
+  direction. The wall is a containment boundary, not a directional pivot; the break is a coin flip.
 
 ### C · Gamma-flip regime (⚠️ sign landmine)
 - **C1 Above/below flip.** Spot above flip = stable/mean-reverting, below = trending. Test BOTH sign
