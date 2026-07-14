@@ -207,7 +207,13 @@ def main():
     # SIDEWAYS/TRENDING banner; net GEX magnitude is what the gauge uses).
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Spot", f"{L.spot:,.2f}")
-    c2.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+    g = float(L.total_net_gex)
+    gv = (f"{g/1e9:+,.1f} B" if abs(g) >= 1e9 else
+          f"{g/1e7:+,.1f} Cr" if abs(g) >= 1e7 else f"{g:+,.0f}")
+    c2.metric("Total net GEX", gv, "call-heavy" if g >= 0 else "put-heavy", delta_color="off",
+              help="Signed net dealer GEX (model A), compact. Sign = call vs put OI dominance "
+                   "near money (call-heavy ≈ low PCR) — for reference. The REGIME above uses the "
+                   "sign-free magnitude, not this sign.")
     ov = data.oi_volume or {}
     pcr = ov.get("pcr_oi")
     if pcr is not None and pcr == pcr:   # not NaN
