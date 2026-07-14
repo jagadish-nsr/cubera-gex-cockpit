@@ -103,7 +103,9 @@ def _partial(x, y, z):
     return float(pd.Series(ex).corr(pd.Series(ey), method="spearman"))
 
 
-def _build(store):
+def _build(store, pin_metric="auto"):
+    """pin_metric: 'auto' = |charm| ≤1.5 DTE else |vanna| (the gauge switch); 'gex' = |net_gex| for
+    all days; or an explicit column name ('vanna'/'charm'/'net_gex')."""
     import numpy as np, pandas as pd
     from data.dhan import available_intraday_days
     from app.intraday_features import load_features
@@ -126,9 +128,12 @@ def _build(store):
                 continue
             r = c.loc[day]
             dte = float(r["dte"])
-            metric = "charm" if dte <= 1.5 else "vanna"
+            if pin_metric == "auto":
+                col = "charm" if dte <= 1.5 else "vanna"
+            else:
+                col = "net_gex" if pin_metric == "gex" else pin_metric
             iv = float(r["atm_iv"]) if r["atm_iv"] == r["atm_iv"] else np.nan
-            rows.append({**o, "W": W, "day": day, "conc": abs(float(r[metric])), "atm_iv": iv,
+            rows.append({**o, "W": W, "day": day, "conc": abs(float(r[col])), "atm_iv": iv,
                          "dte": dte, "expiry": dte <= 1.5})
         p = _orb(mins, val, PLACEBO_START, PLACEBO_W)
         if p is not None and p["day_hl_pct"] <= 12:
@@ -146,12 +151,14 @@ def _pin_bucket(sub, col="conc"):
 def main() -> None:
     import numpy as np, pandas as pd
     store = sys.argv[1] if len(sys.argv) > 1 else "NIFTY"
-    df, plc = _build(store)
+    pin_metric = sys.argv[2] if len(sys.argv) > 2 else "auto"
+    df, plc = _build(store, pin_metric)
     if df is None or df.empty:
         _print("No data / feature cache.")
         return
     ne = df[~df["expiry"]].copy()
-    _print(f"I · ORB × pin · {store} · {df['day'].nunique()} days "
+    pin_lbl = {"auto": "vanna/charm", "gex": "|GEX|"}.get(pin_metric, pin_metric)
+    _print(f"I · ORB × pin[{pin_lbl}] · {store} · {df['day'].nunique()} days "
            f"(non-expiry {ne['day'].nunique()}) · buffer=max(0.10·OR,3bp)\n")
 
     # ---- I1: breakout follow-through by pin tercile × OR window (NON-EXPIRY) -------------------
@@ -242,7 +249,8 @@ def main() -> None:
     ex = df[(df["expiry"]) & (df["W"] == 30)].copy()
     if len(ex) > 60:
         ex["pin"] = _pin_bucket(ex)
-        _print("\n(Expiry ≤1.5 DTE, 30-min, |charm| pin) TRUE-run% of breakout days:")
+        ex_lbl = "|charm|" if pin_metric == "auto" else pin_lbl
+        _print(f"\n(Expiry ≤1.5 DTE, 30-min, {ex_lbl} pin) TRUE-run% of breakout days:")
         for pin in ["HIGH (SIDEWAYS)", "MID", "LOW (TRENDY)"]:
             b = ex[(ex["pin"] == pin) & ex["broke"]]
             _print(f"    {pin:>16}: {100*b['true_run'].mean():>4.0f}%  (n_break={len(b)})")

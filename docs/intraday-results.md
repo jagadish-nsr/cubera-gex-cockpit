@@ -443,3 +443,7 @@ NIFTY 1230 days (775 non-expiry).
 re-expresses the vol regime (bigger on trendy days because the whole day is bigger, per #15), and the
 "tight OR → big trend" folklore is a ratio illusion (absolute moves show persistence, #13). Consistent
 with B1/B2 (#14 — price levels no better than OI walls) and the whole arc. Recorded DEAD. Sign-free.
+**Robust to the concentration metric:** re-run with **|GEX| terciles** (`analyze_orb.py NIFTY gex`) —
+same NEGATIVE (30-min TRUE-run 48/53/51%, vol-partial −0.04, OOS spread flips +4→−11pp); |GEX| separates
+the day-HL slightly less than |vanna| (per #15), otherwise identical. The pin metric is now a CLI arg
+(`auto` = vanna/charm switch, `gex` = |net_gex|).
