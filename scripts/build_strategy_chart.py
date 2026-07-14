@@ -4,8 +4,10 @@ from __future__ import annotations
 import json, sys
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
 SCR = Path(r"C:\Users\navee\AppData\Local\Temp\claude\C--Users-navee-Python-gex-indian-gex"
            r"\eb204e31-8169-4259-8f28-affcbf0aa699\scratchpad")
+REPO = ROOT / "docs" / "strategy-chart.html"        # committed standalone copy
 # (store-label, json path) pairs; default = NIFTY + BANKNIFTY
 BOOKS_IN = [("NIFTY", SCR / "strategy_curves.json"), ("Bank Nifty", SCR / "strategy_curves_bank.json")]
 OUT = SCR / "strategy_chart.html"
@@ -16,24 +18,25 @@ META = {
     "S3 Short straddle (SIDEWAYS regime)": {"code": "S3", "hue": "rose"},
     "S4 ORB breakout (directional)":       {"code": "S4", "hue": "violet"},
     "S5 Buy & hold Nifty":                 {"code": "S5", "hue": "sky"},
+    "S6 Short straddle (high IV, intraday 1-day)": {"code": "S6", "hue": "lime"},
 }
-DISPLAY = {"S1": "Short straddle · every cycle", "S2": "Short straddle · high-IV only",
+DISPLAY = {"S1": "Short straddle · every cycle", "S2": "Short straddle · high-IV, to expiry",
            "S3": "Short straddle · SIDEWAYS regime", "S4": "ORB breakout · directional",
-           "S5": "Buy & hold index"}
+           "S5": "Buy & hold index", "S6": "Short straddle · high-IV, intraday 1-day"}
 
 # book-specific plain-language reads (accurate to each book's result)
 NOTES = {
  "NIFTY": [
-  ["teal","S2 is the only finding-backed edge","Sell the straddle only when implied vol is in its top third: +12% CAGR at half the drawdown of selling blindly — the variance-risk premium, richest exactly when IV is high. This is “sell expensive insurance”, not a GEX signal."],
+  ["lime","S6 is the best of the set — sell rich IV, intraday only","+19% CAGR at just 12% drawdown, the best risk-adjusted curve. Sell the straddle only on high-IV days AND exit by the close: you keep the vol-crush but sidestep the overnight-gap tail that eats the held versions. Exiting flat each night is what tames the risk."],
+  ["teal","S2 — sell rich IV, held to expiry — also works","+12% CAGR, but holding through the week roughly doubles the drawdown of S6 (20% vs 12%). Same edge (the variance-risk premium, richest when IV is high), more tail exposure. The IV filter is the edge; the hold length is the risk dial."],
   ["rose","S3 loses — the regime is not a timing rule","Selling in the SIDEWAYS (high-vanna) regime loses money: high vanna ≈ low IV, so you collect thin premium at the wrong moment. The vanna gauge forecasts realised vol (Study #17), but IV already prices it — you can’t monetise it by selling straddles."],
-  ["amber","S1 barely beats cash, 48% drawdown","Selling every week is real but thin net of costs and brutally tail-risky. Short vol without an IV filter isn’t worth the ride."],
-  ["violet","S4 is market drift, not an ORB edge","The breakout looks profitable only because a rising index breaks up more often — it tracks buy-and-hold. Study #16 removed the drift and the ORB signal was a coin flip. Lower drawdown only because it sits in cash overnight."],
+  ["violet","S4 is market drift, not an ORB edge","The breakout looks profitable only because a rising index breaks up more often — it tracks buy-and-hold. Study #16 removed the drift and the ORB signal was a coin flip. Lower drawdown only because it sits in cash overnight. (S1, selling every week without an IV filter, is thin with a 48% drawdown.)"],
  ],
  "Bank Nifty": [
-  ["amber","Short vol is a LOSER on Bank Nifty","Selling every cycle: −20% CAGR, 77% drawdown — the classic short-gamma blow-up. Bank Nifty is MONTHLY-only (no weeklies since 2024), so the straddle is held ~a month and the fat-tailed index runs it over."],
-  ["teal","The IV filter barely rescues it","Even selling only rich IV (S2) just breaks even (~0% CAGR) at a 44% drawdown, on only 19 trades. The Nifty-weekly “sell rich IV” edge does NOT survive Bank Nifty’s monthly hold + fatter tails — the one edge is horizon/index-specific."],
-  ["rose","S3 loses worst","SIDEWAYS-regime selling is −26% — the same low-IV timing flaw, amplified by Bank Nifty’s tails."],
-  ["violet","S4 is still drift","The ORB curve tracks buy-and-hold (market drift), not an ORB edge — same as Nifty."],
+  ["lime","Intraday-only makes short vol VIABLE on Bank Nifty","+3.3% CAGR at 25% drawdown — modest but positive, and roughly HALF the drawdown of the held versions (S1/S2 at 44–77%). Exiting by the close is what tames Bank Nifty’s fat monthly tails; holding overnight/to expiry is what blows them up."],
+  ["amber","Held short vol is a LOSER on Bank Nifty","Selling every cycle and holding to expiry: −20% CAGR, 77% drawdown — the classic short-gamma blow-up. Bank Nifty is MONTHLY-only (no weeklies since 2024), so the straddle is held ~a month and the fat-tailed index runs it over."],
+  ["teal","The IV filter alone doesn’t rescue the HELD version","Selling only rich IV but still holding to expiry (S2) just breaks even (~0% CAGR, 44% DD, 19 trades). On Bank Nifty the edge needs BOTH the IV filter AND the intraday exit (S6) — the hold length matters more than the index."],
+  ["violet","S4 is still drift","The ORB curve tracks buy-and-hold (market drift), not an ORB edge — same as Nifty. S3 (SIDEWAYS regime) loses worst at −26%."],
  ],
 }
 
@@ -79,22 +82,22 @@ HTML = r"""<title>Nifty & Bank Nifty strategy backtest — equity curves</title>
 :root{
   --bg:#0d1017; --panel:#141a22; --panel2:#1a212b; --ink:#e7edf4; --ink2:#aeb9c6; --mut:#6d7a8a;
   --line:#232c38; --grid:#1c242f; --base:#8a97a6; --sel:#1f6feb22; --selb:#2b3948;
-  --teal:#16c8b0; --amber:#f0a63a; --rose:#f6607f; --violet:#a78bfa; --sky:#38b6f0;
+  --teal:#16c8b0; --amber:#f0a63a; --rose:#f6607f; --violet:#a78bfa; --sky:#38b6f0; --lime:#8fd130;
 }
 @media (prefers-color-scheme: light){:root{
   --bg:#eef2f6; --panel:#ffffff; --panel2:#f4f7fa; --ink:#141b24; --ink2:#3f4c5a; --mut:#75828f;
   --line:#e2e8ef; --grid:#eceff3; --base:#9aa6b3; --sel:#dcebff; --selb:#c7d6e6;
-  --teal:#0c9a86; --amber:#c07d16; --rose:#e0335a; --violet:#7c5cf0; --sky:#0f86c4;
+  --teal:#0c9a86; --amber:#c07d16; --rose:#e0335a; --violet:#7c5cf0; --sky:#0f86c4; --lime:#5ba30f;
 }}
 :root[data-theme="dark"]{
   --bg:#0d1017; --panel:#141a22; --panel2:#1a212b; --ink:#e7edf4; --ink2:#aeb9c6; --mut:#6d7a8a;
   --line:#232c38; --grid:#1c242f; --base:#8a97a6; --sel:#1f6feb22; --selb:#2b3948;
-  --teal:#16c8b0; --amber:#f0a63a; --rose:#f6607f; --violet:#a78bfa; --sky:#38b6f0;
+  --teal:#16c8b0; --amber:#f0a63a; --rose:#f6607f; --violet:#a78bfa; --sky:#38b6f0; --lime:#8fd130;
 }
 :root[data-theme="light"]{
   --bg:#eef2f6; --panel:#ffffff; --panel2:#f4f7fa; --ink:#141b24; --ink2:#3f4c5a; --mut:#75828f;
   --line:#e2e8ef; --grid:#eceff3; --base:#9aa6b3; --sel:#dcebff; --selb:#c7d6e6;
-  --teal:#0c9a86; --amber:#c07d16; --rose:#e0335a; --violet:#7c5cf0; --sky:#0f86c4;
+  --teal:#0c9a86; --amber:#c07d16; --rose:#e0335a; --violet:#7c5cf0; --sky:#0f86c4; --lime:#5ba30f;
 }
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
@@ -175,7 +178,7 @@ svg{display:block;width:100%;height:auto;touch-action:none}
 </div>
 
 <script>
-const HUE={amber:'--amber',teal:'--teal',rose:'--rose',violet:'--violet',sky:'--sky'};
+const HUE={amber:'--amber',teal:'--teal',rose:'--rose',violet:'--violet',sky:'--sky',lime:'--lime'};
 const CV=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const D=__DATA__;
 const inr=n=>'₹'+Math.round(n).toLocaleString('en-IN');
@@ -233,10 +236,10 @@ function render(){
     const tx=el('text',{class:'axl',x:x,y:H-Bm+16,'text-anchor':'middle'});tx.textContent=yr;svg.appendChild(tx);}
   S.forEach(s=>{const c=CV(HUE[s.hue]);
     const dp=s.pts.map((p,i)=>(i?'L':'M')+X(ts(p[0])).toFixed(1)+' '+Y(p[1]).toFixed(1)).join(' ');
-    svg.appendChild(el('path',{class:'ser'+(s.code==='S2'?' hi':''),d:dp,stroke:c,
+    svg.appendChild(el('path',{class:'ser'+(s.code==='S6'?' hi':''),d:dp,stroke:c,
       opacity:(s.code==='S4'||s.code==='S5')?0.85:1}));
     const last=s.pts[s.pts.length-1];
-    svg.appendChild(el('circle',{cx:X(ts(last[0])),cy:Y(last[1]),r:s.code==='S2'?3.6:2.8,fill:c}));
+    svg.appendChild(el('circle',{cx:X(ts(last[0])),cy:Y(last[1]),r:s.code==='S6'?3.6:2.8,fill:c}));
     const lt=el('text',{class:'endlab',x:X(ts(last[0]))+6,y:Y(last[1])+3.6,fill:c});lt.textContent=s.code;svg.appendChild(lt);});
 
   const cross=el('line',{class:'cross',y1:T,y2:H-Bm});svg.appendChild(cross);
@@ -257,5 +260,14 @@ render();
 </script>
 """
 
-OUT.write_text(HTML.replace("__DATA__", payload), encoding="utf-8")
-print("wrote", OUT, "bytes:", OUT.stat().st_size, "books:", [b["store"] for b in books])
+data_html = HTML.replace("__DATA__", payload)
+OUT.write_text(data_html, encoding="utf-8")                 # scratchpad (Artifact source, body-only)
+
+# committed standalone document: title/style in <head>, content in <body>
+head_part, body_rest = data_html.split('<div class="wrap">', 1)
+full = ('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        + head_part + '</head>\n<body>\n<div class="wrap">' + body_rest + '\n</body>\n</html>\n')
+REPO.parent.mkdir(parents=True, exist_ok=True)
+REPO.write_text(full, encoding="utf-8")
+print("wrote", OUT, "and", REPO, "books:", [b["store"] for b in books])

@@ -156,17 +156,19 @@ def main() -> None:
     d2, s2 = _equity(lambda t: t["iv"] >= iv_hi)
     d3, s3 = _equity(lambda t: t["vanna"] >= van_hi)
 
-    # --- S4 ORB daily + S5 buy-hold (daily grid) ----------------------------------------------
+    # --- S4 ORB + S5 buy-hold + S6 intraday short straddle (daily grid) ------------------------
     orb_d, orb_e, cur = [], [], 10000.0
     bh_d, bh_e = [], []
+    intraday = []                                   # S6: sell ATM straddle 09:20 → same-day close
     sp0 = None
     for day in days:
         s = load_intraday_day(store, day)
         if s is None:
             continue
         sp = s.groupby("time_ist")["spot"].first()
-        mins = np.array([int(t[:2]) * 60 + int(t[3:]) for t in sp.index]); val = sp.to_numpy()
-        o = np.argsort(mins); mins, val = mins[o], val[o]
+        times = sp.index.to_numpy()
+        mins = np.array([int(t[:2]) * 60 + int(t[3:]) for t in times]); val = sp.to_numpy()
+        o = np.argsort(mins); mins, val, times = mins[o], val[o], times[o]
         if (val.max() - val.min()) / val[0] * 100 > 12:
             continue
         r = _orb_daytrade(mins, val)
@@ -176,6 +178,22 @@ def main() -> None:
         if sp0 is None:
             sp0 = float(val[0])
         bh_d.append(day); bh_e.append(round(10000.0 * float(val[-1]) / sp0, 2))
+        # S6: intraday short straddle, held 1 day (entry 09:20 → last stamp), same strike
+        en = _straddle(s, ENTRY)
+        ex = _straddle(s, str(times[-1]), K=en[0]) if en and en[1] > 0 else None
+        if en and ex and en[1] > 0 and day in fe.index:
+            pnl = (en[1] - ex[1]) / en[1] * 100.0 - STRAD_COST
+            iv = fe.loc[day, "atm_iv"]
+            if iv == iv:
+                r6 = pnl / 100.0 * (en[1] / en[2]) / MARGIN_RATE       # return on margin, 1-day hold
+                intraday.append({"day": day, "r": float(r6), "iv": float(iv)})
+    it = pd.DataFrame(intraday)
+    iv_hi6 = it["iv"].quantile(2 / 3) if len(it) else 0.0
+    s6_d, s6_e, cur6 = [], [], 10000.0
+    for _, t in it.sort_values("day").iterrows():
+        if t["iv"] >= iv_hi6:
+            cur6 *= (1 + F_OPT * t["r"])
+        s6_d.append(t["day"]); s6_e.append(round(cur6, 2))
 
     curves = {
         "S1 Short straddle (every cycle)": {"dates": d1, "equity": s1},
@@ -183,6 +201,7 @@ def main() -> None:
         "S3 Short straddle (SIDEWAYS regime)": {"dates": d3, "equity": s3},
         "S4 ORB breakout (directional)": {"dates": orb_d, "equity": orb_e},
         "S5 Buy & hold Nifty": {"dates": bh_d, "equity": bh_e},
+        "S6 Short straddle (high IV, intraday 1-day)": {"dates": s6_d, "equity": s6_e},
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps({"store": store, "curves": curves}), encoding="utf-8")
@@ -191,6 +210,7 @@ def main() -> None:
     _print(f"  {'strategy':<38} {'final Rs':>12} {'CAGR%':>7} {'maxDD%':>7} {'trades':>7}")
     n_by = {"S1 Short straddle (every cycle)": len(tr),
             "S2 Short straddle (high IV only)": int((tr['iv'] >= iv_hi).sum()),
+            "S6 Short straddle (high IV, intraday 1-day)": int((it['iv'] >= iv_hi6).sum()) if len(it) else 0,
             "S3 Short straddle (SIDEWAYS regime)": int((tr['vanna'] >= van_hi).sum()),
             "S4 ORB breakout (directional)": len(orb_e),
             "S5 Buy & hold Nifty": len(bh_e)}
