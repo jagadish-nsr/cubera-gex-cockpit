@@ -104,14 +104,63 @@ Each: hypothesis → entry → prediction → metric. Prior = honest guess it su
   (`../memory/positioning-footprint-suite.md`)): call-wall + FII-short-build → firmer resistance.
   *Prior: unknown; second-stage.*
 
+### I · Opening-Range Breakout (ORB) × pin regime — user scenario
+The intraday-price analogue of B1/B2: the **Opening Range** (OR) high/low form price-based support/
+resistance; test whether a breakout **runs** (trends) or **fails** (reverts back into the range), and
+whether the **pin/concentration tercile** flips the outcome — then size the run against the Study #15
+per-bucket day range. Sign-free (tested in the breakout's own direction; the dealer-sign landmine is
+untouched). Uses raw 1-min spot (OR + breakout timing) + the 5-min feature cache (concentration at the
+OR close). **All data on hand — no download.**
+
+**Definitions (loose ends rounded off):**
+- **OR window:** first **15 / 30 / 60 min** from 09:15 → `OR_high`, `OR_low`, `OR_range = high−low`
+  (from 1-min spot). Three windows tested; **30-min is the pre-registered primary**.
+- **Breakout:** the first 1-min spot to *close* beyond a boundary by ≥ a **buffer =
+  max(0.10·OR_range, 3 bp of spot)** (kills marginal touches). Record direction (up/down) + time. The
+  test is on the break's **own** direction (sign-free) — we do NOT predict which way it breaks.
+- **Pin tercile (the conditioner):** dealer-gamma **concentration at the OR-window close**
+  (point-in-time — known when you'd trade the break), DTE-switched |vanna| (off-expiry) / |charm|
+  (≤1.5 DTE) like the gauge → **HIGH pin = SIDEWAYS/calm**, MID, **LOW pin = TRENDY/wild**. Terciles
+  within the sample; non-expiry primary, expiry (charm) reported separately.
+- **Run / follow-through (point-in-time, breakout→close):** MFE (favorable extension beyond the
+  boundary) and MAE (adverse, back into the OR). **TRUE run** = MFE reaches **1×OR_range** beyond the
+  boundary (classic 1:1 ORB target) *before* price returns fully inside the OR; **FAKE** = returns
+  inside the OR (or hits the opposite boundary) first. Also report **close-beyond-boundary** rate.
+
+**Sub-tests:**
+- **I1 Breakout follow-through by pin tercile × OR window.** Incidence (does it break at all?) and
+  TRUE-run rate. Prediction: LOW-pin (trendy) → more breaks *and* truer runs; HIGH-pin (calm) → fewer
+  breaks, more fakes (OR range holds). This is the B1/B2 contrast on price levels.
+- **I2 OR high/low as S/R.** Touch→bounce vs break rate at the OR boundaries, and the **range-hold**
+  share (day never breaks OR by the buffer), by pin tercile. HIGH-pin should hold the range more.
+- **I3 Run vs day-range (Study #15 linkage).** Normalize MFE and the full-day HL by `OR_range` and by
+  the bucket's Study-#15 typical day range; does an ORB "fill" the expected range, and does LOW-pin
+  fill more? **Range-exhaustion check:** wide `OR_range / expected_day_range` → less room left to run
+  (a breakout late in a used-up range under-runs).
+
+**Controls / nulls (so it isn't mined):**
+- **Placebo band:** breakout of a *random* same-width band (not the OR) → OR must beat it, else the OR
+  level carries nothing beyond "a move of that size happened."
+- **Vol confound (the key one):** does pin add *beyond* realized vol? Partial the run on the OR-window
+  realized range / `atm_iv` — i.e. is LOW-pin's bigger run just "it's a high-vol day" (Study #15 / B1-
+  B2), or does pin add on top? Honest prior: **mostly a vol restatement**; the discriminating value is
+  any residual after controlling vol, and whether OR beats the placebo band.
+- **Momentum benchmark:** ORB run vs trailing-momentum-at-breakout (is ORB more than "buy strength"?).
+- **Multiple testing:** primary = 30-min OR TRUE-run rate by pin tercile; everything else secondary;
+  **last-30% walk-forward holdout** before anything graduates.
+
+*Prior: modest — likely a vol/persistence story (LOW-pin = trendy = bigger runs), but ORB is a real
+traded strategy and the price-based OR may beat the OI walls B1/B2 found null; worth the clean test.*
+
 ---
 
 ## Execution order (cheapest / highest-prior first)
-1. **Cache extension** (walls/magnet/max-pain/flip per stamp) — unblocks everything.
-2. **A1 → A3 → A2** (pinning family — highest prior, dashboard-relevant).
-3. **B1 vs B2** (the bounce-vs-break contrast — best directional shot).
-4. **D1, E1/E2** (sharpen signals we trust).
-5. **C1, F1, G1** (lower prior / gated).
+1. **Cache extension** ✅ + **A1** ✅ (NEGATIVE), **B1/B2** ✅ (NEGATIVE), **H** ✅ (REFUTED),
+   **daily-move per bucket** ✅ (Study #15, wired to dashboard).
+2. **I · ORB × pin** — next up (user scenario): I1 follow-through → I2 OR-as-S/R → I3 run vs day-range.
+   Pre-registered primary: 30-min OR TRUE-run rate by pin tercile; vol-partial + placebo band + OOS.
+3. **D1, E1/E2** (sharpen the vol signals we trust).
+4. **C1, F1, G1** (lower prior / gated).
 
 Each is one small script (like `analyze_intraday_pinning.py`) writing a compact table to
 `docs/intraday-results.md`; **no raw data hits the conversation**. Survivors of the OOS holdout
