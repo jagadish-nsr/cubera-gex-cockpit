@@ -88,6 +88,13 @@ Each: hypothesis → entry → prediction → metric. Prior = honest guess it su
 - **E2 Between-walls-midpoint → coiled.** Spot far from every wall/pin → higher forward vol/expansion.
   *Prior: med; feeds the vol gauge, not direction.*
 
+### H · Gamma-blast compression precondition (expiry) — user hypothesis
+- **H1 Coiled morning.** ✅ DONE → **REFUTED** (Study #13, `analyze_blast_compression.py`). Tight
+  morning HL-range (<1%) does NOT precede an afternoon blast — ρ(morning, afternoon range) = **+0.45**
+  (persistence: quiet→quiet), LOW-morning has the *smallest* afternoon, and high-GEX pinning doesn't
+  flip it. Actionable inversion: a blast is likelier when the morning is ALREADY wide (≥1%), not tight.
+  Uses raw 1-min spot (no OHLC download needed).
+
 ### F · Max-pain drift (weekly)
 - **F1** Does spot drift toward max-pain over the last 1–2 days of a weekly? Metric: multi-day
   `converged` to max-pain. *Prior: low-med; classic but usually priced.*

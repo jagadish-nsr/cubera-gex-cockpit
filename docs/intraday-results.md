@@ -355,3 +355,25 @@ open/SMA anchors, and it isolates the *actionable* large-gap/to-close case. ⚠�
 selects the trending stamps, so "continuation away" is partly mechanical — the tradeable takeaway is
 the negative one: you cannot fade a gap toward the pin. Sign-free. Recorded DEAD (no dashboard chip).
 Lowers the prior on A2 (blast-target drift, which is exactly this pull-from-distance bet).
+
+## Study #13 (H) — GAMMA-BLAST COMPRESSION precondition: tight morning → blast?  → REFUTED
+`scripts/analyze_blast_compression.py` (scenario catalog H; user hypothesis). Does a small spot
+high-low range from the open to 13:45 (< ~1%) prime an afternoon BLAST (expansion)? Uses the RAW
+1-minute spot (271 bars 09:15→13:45; accurate HL proxy, no OHLC download needed). EXPIRY days only
+(458), non-expiry (775) as contrast. Point-in-time (morning range known at 13:45). Sign-free.
+
+- **The opposite of the folklore — it's vol PERSISTENCE, not a coil.** ρ(morning-range, afternoon-
+  range) = **+0.453** on expiry (+0.495 non-expiry): a tight morning predicts a *quieter* afternoon.
+- Tercile monotone the "wrong" way: LOW-morning tercile → afternoon range **0.31%** (P(aft>morning)
+  27%); HIGH-morning → **0.55%**. The coiled-morning has the SMALLEST afternoon, not the biggest.
+- **User's explicit 1% cut:** morning <1% → afternoon range 0.36%, only **2%** of days exceed 1% in
+  the afternoon; morning ≥1% → 0.59%, **14%** exceed 1%. A WIDE morning is ~7× more likely to blast.
+- **High-GEX-pinning doesn't rescue it:** within the top-|charm| (most-pinned) expiry tercile the
+  autocorr is still +0.394 and LOW-morning still smaller (0.26% vs 0.50%). Refuted in every slice.
+
+**Conclusion:** the "<1% morning compression → gamma blast" precondition is REFUTED — intraday realized
+vol clusters, so a quiet morning begets a quiet afternoon (even under max pinning). The *actionable
+flip*: an afternoon blast is more likely when the morning is ALREADY wide (≥1%), not tight — realized-
+vol persistence/momentum, the tell is a morning that's already moving. Consistent with the arc (vol is
+a REGIME/persistence read; the blast is confirmation-not-prediction, #6). Recorded DEAD as a filter;
+if anything, invert it (don't expect a blast off an ultra-quiet morning). Sign-free; 1-min range.
