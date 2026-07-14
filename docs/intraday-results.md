@@ -473,3 +473,23 @@ own move. Still VOL, not direction (consistent with the arc), but it means the g
 expected-move badge earn their keep as a **next-day prior**, not only an intraday read. Mechanistic
 (positioning stickiness), cross-book. **Dashboard implication:** the regime read can be carried into the
 next session with a "~50% likely to persist" note / a next-day expected-move. Sign-free.
+
+## Study #18 (T4b close) — vanna-VRP hold-to-EXPIRY: is it TRADEABLE?  → NO (closes T4b)
+`scripts/backtest_vanna_toexpiry.py`. The one untested horizon from #11b — sell the ATM straddle 09:20
+and hold to EXPIRY settle (deterministic payoff |spot_expiry−K|, so no intermediate strike prices
+needed), conditioned on entry |vanna|, IV+DTE controls, cost 2%, walk-forward OOS. NIFTY 725 holds.
+
+- **Unconditional:** mean net **+2.87%**, median +19.2%, win 59% — the classic short-vol profile (keeps
+  premium most days, rare big tail loss drags the mean; crash-risk compensation, not alpha).
+- **The vanna residual does NOT survive to P&L:** Spearman(|vanna|, seller P&L) = −0.05, **partial|IV =
+  +0.03, partial|IV+DTE = +0.017 ≈ 0** (cf. #11's +0.11 spot-RV partial — same fate as #11b intraday).
+- HIGH−LOW vanna P&L is *negative* (−4/−17/−16% by DTE band), but that's the IV confound: LOW-vanna =
+  HIGH-IV (23→12), i.e. it just re-expresses "sell high IV" (the dominant VRP driver, #11). Vanna adds 0.
+- **OOS:** selected +8.6% vs unconditional +7.2%, but it sells 78% of test days (barely selective) —
+  +1.4pp is noise given partial ≈ 0.
+
+**Conclusion:** the #11 vanna-VRP residual is real *statistically* (spot-RV) but dies in tradeable
+straddle P&L at BOTH horizons — intraday (#11b) and now hold-to-expiry (#18). The only thing that pays
+is selling high IV generally (raw VRP = crash-risk compensation, priced), and |vanna| adds nothing
+beyond IV. **T4b is closed: no tradeable vanna vol-alpha.** Vol stays a REGIME read (now with a
+confirmed next-day persistence edge, #17), not a straddle-timing signal. Sign-free.

@@ -95,7 +95,7 @@ edge could hide. Effort: med.
 
 ---
 
-## 2026-07-13 IST — [T4b] Vanna-VRP follow-up — is the residual TRADEABLE?  ✅ MOSTLY DONE (2026-07-13 — intraday NO, docs #11b; only the to-EXPIRY hold remains, low prior)
+## 2026-07-13 IST — [T4b] Vanna-VRP follow-up — is the residual TRADEABLE?  ✅ DONE (2026-07-14 — NO at BOTH horizons: intraday #11b + hold-to-expiry #18; partial|IV+DTE ≈ 0. Closed.)
 
 **Why:** Study #11 (T4) found the FIRST vol result to survive IV+DTE controls in the right direction
 AND replicate cross-book: partial(|vanna|, VRP | IV+DTE) = +0.11 NIFTY / +0.24 BankNifty (higher vanna
