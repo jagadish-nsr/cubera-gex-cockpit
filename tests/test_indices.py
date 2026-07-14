@@ -2,7 +2,7 @@
 monthly-only fetch resolution, and per-symbol journal separation.
 
 Hand-checkable facts (verify-live landmines, CLAUDE.md):
-  - NIFTY: lot 75, WEEKLY + monthly.
+  - NIFTY: lot 65 (SEBI revision Jan-2026, was 75), WEEKLY + monthly.
   - BANKNIFTY: lot 30, MONTHLY-ONLY (no weeklies since Nov-2024), last Tuesday.
 """
 
@@ -24,7 +24,7 @@ from data.nse import _resolve_expiries
 def test_index_registry_values():
     nifty = config.get_index("NIFTY")
     bank = config.get_index("BANKNIFTY")
-    assert nifty.lot_size == 75 and nifty.has_weekly is True
+    assert nifty.lot_size == 65 and nifty.has_weekly is True
     assert bank.lot_size == 30 and bank.has_weekly is False        # monthly-only
     assert bank.band_pts > nifty.band_pts                          # bigger index, wider band
 

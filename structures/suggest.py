@@ -35,7 +35,7 @@ def _round_strike(x: float, step: int = 50) -> int:
 def suggest_structure(
     levels,
     vol_regime,
-    lot_size: int = 75,
+    lot_size: int = 65,
     spread_width: int = 100,
     nearest_expiry=None,
     is_expiry_day: bool = False,
@@ -65,7 +65,7 @@ def _expiry_note(vol_regime) -> str:
 def _base_structure(
     levels,
     vol_regime,
-    lot_size: int = 75,
+    lot_size: int = 65,
     spread_width: int = 100,
     nearest_expiry=None,
 ) -> CandidateStructure:

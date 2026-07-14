@@ -29,15 +29,16 @@ class Index:
     band_pts: float    # per-strike OI band: keep strikes within ± this of spot
 
 
-# VERIFIED 2026-06 (confirm against your broker before trusting):
-#  - NIFTY: lot 75; WEEKLY + monthly, expiry Tuesday.
+# CONFIRMED 2026-07 (user-verified against broker):
+#  - NIFTY: lot 65 (SEBI revision effective Jan-2026 onward, was 75); WEEKLY +
+#    monthly, expiry Tuesday.
 #  - BANKNIFTY: lot 30 (NSE circular NSE/FAOP/70616, eff. Jan-2026 cycle, was 35);
 #    MONTHLY ONLY (last Tuesday) — NSE discontinued Bank Nifty weeklies on
 #    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
 #    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
 INDICES: dict[str, Index] = {
-    "NIFTY":     Index("NIFTY", "Nifty 50", 75, True, 2000),       # VERIFY lot size
-    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30, False, 4000),  # VERIFY lot + monthly-only
+    "NIFTY":     Index("NIFTY", "Nifty 50", 65, True, 2000),       # lot 65 (Jan-2026, was 75)
+    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30, False, 4000),  # lot 30, monthly-only
 }
 DEFAULT_INDEX = "NIFTY"
 
