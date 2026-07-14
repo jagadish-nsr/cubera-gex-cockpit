@@ -48,6 +48,32 @@ building over the window, the **TRUE/FAKE grade** with its confirmation-lag note
 
 ---
 
+## 2026-07-14 IST — [T6] Situational / scenario analysis (spot × levels)  ⏳ IN PROGRESS (spec: docs/scenario-catalog.md)
+
+**Progress:** step 1 (cache enriched with `call_wall/put_wall/magnet/max_pain/gamma_flip` per stamp,
+NIFTY rebuilt 1239 days) ✅. **A1 (magnet lock) ✅ DONE → NEGATIVE** (Study #12): the pin is
+stickiness not attraction — no pull to the pin from a distance (closer 39% < mirror 51%), which also
+undercuts A2. Next: rebuild NIFTY_M/BANKNIFTY caches with levels, then **B1-vs-B2** (wall bounce-vs-
+break — the best remaining directional shot).
+
+
+**Why:** direction is dead POOLED (research-arc conclusion), so STOP pooling — slice to the narrow
+geometry+regime cells (spot vs wall / magnet / max-pain / pin / flip at a given stamp) where a
+conditional edge might survive. Turns the user's expiry-pin/blast-target intuition into pre-registered,
+holdout-guarded tests. Sign-free (geometry supplies direction, not the dealer-sign landmine).
+
+**Build (full spec + scenario catalog A–G in `docs/scenario-catalog.md`):**
+1. Enrich the 5-min feature cache with per-stamp `call_wall/put_wall/magnet/max_pain/gamma_flip`
+   (one extra pass in `day_features`; `peak_oi_strike` stays). Rebuild caches.
+2. Shared protocol: point-in-time, terminal `converged`-to-target at **15:15 spot**, distance
+   normalized by `σ√T`, day-detrend, race the neutral anchors, DTE+time-of-day controls, last-30%
+   walk-forward holdout, dead scenarios recorded.
+3. Order: A1→A3→A2 (pinning, highest prior) → B1-vs-B2 (wall bounce-vs-break, best directional shot)
+   → D1/E (sharpen) → C1/F1/G1 (gated). One small script each → `docs/intraday-results.md`.
+   Survivors graduate to a dashboard "situation" chip. Effort: med (cache rebuild + per-scenario scripts).
+
+---
+
 ## 2026-07-13 IST — [T4] Vol-risk-premium study — IV vs vanna-predicted RV (daily/overnight)  ⏳ TODO (PRIORITY — the one vol-alpha shot)
 
 **Why:** the INTRADAY straddle was priced-in (#6b/#7), but the **daily/overnight variance-risk-

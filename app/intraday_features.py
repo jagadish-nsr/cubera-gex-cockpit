@@ -44,6 +44,38 @@ def _implied_T(price, S, K, iv, lo=1e-5, hi=1.0):
     return 0.5 * (lo + hi)
 
 
+def _max_pain(strikes, coi, poi):
+    """Strike that minimizes total option-holder ITM payout at expiry (sign-free). O(n^2), n~21."""
+    best_k, best_pain = None, None
+    for kexp in strikes:
+        pain = 0.0
+        for k in strikes:
+            if k < kexp:
+                pain += coi.get(k, 0.0) * (kexp - k)      # calls ITM if settle above them
+            elif k > kexp:
+                pain += poi.get(k, 0.0) * (k - kexp)      # puts ITM if settle below them
+        if best_pain is None or pain < best_pain:
+            best_pain, best_k = pain, kexp
+    return best_k
+
+
+def _gamma_flip(strikes, gex_k):
+    """Strike where cumulative net-GEX (low→high) crosses zero, linearly interpolated. Location is
+    INVARIANT to a global dealer-sign flip (the landmine) — a ±1 on every term moves the crossing
+    nowhere. None if the profile never changes sign."""
+    ks = sorted(strikes)
+    cum = 0.0
+    prev_cum = prev_k = None
+    for k in ks:
+        cum += gex_k.get(k, 0.0)
+        if prev_cum is not None and (prev_cum < 0 <= cum or prev_cum > 0 >= cum):
+            if cum != prev_cum:
+                return prev_k + (-prev_cum / (cum - prev_cum)) * (k - prev_k)
+            return k
+        prev_cum, prev_k = cum, k
+    return None
+
+
 def _grid_stamps(df):
     """The 5-min grid times present in the day (09:15, 09:20, …), in order."""
     def mins(t):
@@ -104,9 +136,11 @@ def day_features(store: str, day: str):
         atm_k = min(strikes, key=lambda kk: abs(kk - spot))
         atm_iv = None
         sq = T ** 0.5
+        coi_by_k, poi_by_k, gex_by_k = {}, {}, {}     # per-strike accumulators for the LEVELS
         for k in strikes:
             coi = float(ce_oi.get(k, 0.0))
             poi = float(pe_oi.get(k, 0.0))
+            coi_by_k[k], poi_by_k[k] = coi, poi
             tot_c += coi
             tot_p += poi
             if coi + poi > peak_oi:
@@ -115,7 +149,9 @@ def day_features(store: str, day: str):
             if k == atm_k and iv == iv and iv > 0:
                 atm_iv = iv
             if iv == iv and iv > 0:                                    # all offsets are near-money
-                gex += bs_gamma(spot, k, T, iv) * (coi - poi)
+                gk = bs_gamma(spot, k, T, iv) * (coi - poi)            # per-strike net dealer GEX
+                gex_by_k[k] = gk
+                gex += gk
                 d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)   # vanna: sharper vol-regime
                 d2 = d1 - iv * sq                                        # metric than GEX (Study #8);
                 phi = norm.pdf(d1)                                       # charm: best @0-DTE (T1b blend)
@@ -125,9 +161,22 @@ def day_features(store: str, day: str):
         tot = tot_c + tot_p
         d_oi = (tot - prev_tot) if prev_tot is not None else 0.0
         prev_tot = tot
+
+        # --- per-stamp GEX LEVELS (sign-free geometry for the situational studies) ------------
+        calls_above = [(k, coi_by_k[k]) for k in strikes if k >= spot]
+        puts_below = [(k, poi_by_k[k]) for k in strikes if k <= spot]
+        call_wall = max(calls_above, key=lambda x: x[1])[0] if calls_above else None
+        put_wall = max(puts_below, key=lambda x: x[1])[0] if puts_below else None
+        wsum = sum(abs(v) for v in gex_by_k.values())                  # gamma-weighted magnet
+        magnet = (sum(k * abs(v) for k, v in gex_by_k.items()) / wsum) if wsum > 0 else None
+        max_pain = _max_pain(strikes, coi_by_k, poi_by_k)
+        gamma_flip = _gamma_flip(strikes, gex_by_k)                     # sign-flip-invariant location
+
         rows.append({"day": day, "time_ist": st, "spot": spot, "net_gex": gex, "vanna": vanna_ex,
                      "charm": charm_ex, "atm_iv": atm_iv, "dte": T * 365.0, "peak_oi_strike": peak_k,
-                     "tot_call_oi": tot_c, "tot_put_oi": tot_p, "d_tot_oi": d_oi})
+                     "tot_call_oi": tot_c, "tot_put_oi": tot_p, "d_tot_oi": d_oi,
+                     "call_wall": call_wall, "put_wall": put_wall, "magnet": magnet,
+                     "max_pain": max_pain, "gamma_flip": gamma_flip})
     return pd.DataFrame(rows)
 
 

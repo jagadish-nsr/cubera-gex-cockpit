@@ -329,3 +329,29 @@ spot bad-ticks), cost 2%, walk-forward OOS. NIFTY 1229 days.
 vanna signal; intraday theta/tail noise swamps a +0.11 stat edge. Efficient, same as #6b/#7. Caveat:
 this is entry→CLOSE (1-day) straddle — a poor VRP vehicle; the proper **to-EXPIRY** hold is the one
 untested horizon (low prior). Vol stays a REGIME read, not alpha — now with an OOS backtest behind it.
+
+## Study #12 (A1) — MAGNET LOCK: does spot get PULLED to the pin from a distance?  → NEGATIVE
+`scripts/analyze_magnet_lock.py` (scenario catalog A1). Needs the levels-enriched feature cache
+(`call_wall/put_wall/magnet/max_pain/gamma_flip` per 5-min stamp). Terminal, point-in-time test:
+`closer` = does the **15:15 spot** land nearer a target (magnet / peak-OI / max-pain) than spot did at
+time *t*? Measured ONLY when the starting gap is meaningful (≥ 0.25 × σ√τ expected-move-to-close), vs a
+**MIRROR placebo** (same gap, opposite side) — a real pull must beat its mirror. NIFTY 1234 days.
+
+- **Expiry day, gapped stamps: closer-rate to peak-OI 39%, BELOW its mirror 51%** (magnet 38 [43],
+  max-pain 39 [46]). Holds at every decision stamp (11:15 / 13:45 / 14:45) and every DTE bucket. The
+  σ-shrink is **negative** (median −0.11 to −0.14): the gap *grows* to close. Spot mildly *continues
+  away* from the pin, it is not sucked in.
+- **Concentration doesn't rescue it:** peak-OI closer-rate by |charm|×gap grid — no cell reaches 50%;
+  HIGH-charm + small-gap is the *worst* (34%). The "high pin → stronger pull" prediction FAILS.
+- **45% of expiry stamps are ALREADY pinned** (spot within 0.25 exp-move of peak-OI, no gap to close).
+
+**Conclusion:** the pin is **stickiness, not attraction** — when spot already sits at the peak-OI
+strike it tends to stay (that IS the pin), but once a real gap opens there is **no pull back toward
+the pin**; if anything, mild continuation away (mirror beats target by ~11 pts). Directly kills the
+popular expiry pin-convergence trade (e.g. "spot 20020, pin 20100 at 13:45 → buy the 20050 CALL
+expecting drift up"): the gap does **not** systematically close toward the pin. Consistent with #2
+(no OI-specific pinning edge) and sharper — the same-distance mirror is a stronger control than #2's
+open/SMA anchors, and it isolates the *actionable* large-gap/to-close case. ⚠️ conditioning on a gap
+selects the trending stamps, so "continuation away" is partly mechanical — the tradeable takeaway is
+the negative one: you cannot fade a gap toward the pin. Sign-free. Recorded DEAD (no dashboard chip).
+Lowers the prior on A2 (blast-target drift, which is exactly this pull-from-distance bet).
