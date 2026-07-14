@@ -318,3 +318,67 @@ def intraday_vol_regime(store: str, value_now: float | None,
     return {"tag": tag, "read": read, "exp_rv": exp_rv, "lo_rv": lo_rv, "mid_rv": mid_rv,
             "hi_rv": hi_rv, "pct": pct, "n": n, "absgex": float(value_now),
             "horizon_min": horizon_min, "metric": metric}
+
+
+_MAX_DAY_HL_PCT = 12.0           # a >12% intraday high-low is a corrupt Dhan spot tick, not a real day
+
+
+@functools.lru_cache(maxsize=32)
+def _daymove_stats(store: str, mtime: float, metric: str = REGIME_METRIC,
+                   dte_max: float | None = None):
+    """Cached (sorted |metric|, tercile cuts, median daily HL-range % per tercile) from the feature
+    cache. The concrete per-DAY move behind the regime label: daily HL range = (max−min)/open of the
+    5-min spot, INTRADAY from today's open (overnight gap excluded — the regime metric is intraday).
+    ``mtime`` invalidates on cache rebuild; ``dte_max`` restricts to the DTE band (for 0-DTE charm).
+    Robust: bad-tick days (HL > 12%) dropped, medians. |vanna| separates daily move best (~1.9x),
+    |charm| barely (~1.05x on expiry) — so this is most informative off-expiry."""
+    import numpy as np
+    f = load_features(store)
+    if f is None or len(f) < 1000:
+        return None
+    col = metric if metric in f.columns else "net_gex"
+    if dte_max is not None and "dte" in f.columns:
+        f = f[f["dte"] <= dte_max]
+    if len(f) < 500:
+        return None
+    f = f.sort_values(["day", "time_ist"]).reset_index(drop=True)
+    hl = f.groupby("day")["spot"].agg(lambda s: (s.max() - s.min()) / s.iloc[0] * 100.0)
+    hl = hl.where(hl <= _MAX_DAY_HL_PCT)                    # drop corrupt-tick days
+    a = f[col].abs().to_numpy()
+    d = f["day"].map(hl).to_numpy()
+    ok = np.isfinite(d) & np.isfinite(a)
+    a, d = a[ok], d[ok]
+    if len(a) < 300:
+        return None
+    q1, q2 = np.percentile(a, [33, 66])
+    lo = float(np.median(d[a <= q1]))
+    hi = float(np.median(d[a >= q2]))
+    mid = float(np.median(d[(a > q1) & (a < q2)]))
+    return np.sort(a), float(q1), float(q2), lo, mid, hi
+
+
+def regime_daily_move(store: str, value_now: float | None, metric: str = REGIME_METRIC,
+                      dte_max: float | None = None) -> dict | None:
+    """Median historical DAILY high-low range (%, intraday from open) for the tercile the current
+    |metric| falls into — the concrete 'how much does the market move today' behind the regime label.
+    Same tercile cuts as ``intraday_vol_regime`` so the bucket matches the shown SIDEWAYS/TRENDY tag."""
+    import numpy as np
+    p = _cache_path(store)
+    if not p.exists() or value_now is None or not np.isfinite(value_now):
+        return None
+    value_now = abs(value_now)
+    stats = _daymove_stats(store, p.stat().st_mtime, metric, dte_max)
+    if stats is None:
+        return None
+    _srt, q1, q2, lo, mid, hi = stats
+    hl_pct = hi if value_now >= q2 else lo if value_now <= q1 else mid
+    tag = "calm" if value_now >= q2 else "wild" if value_now <= q1 else "mid"
+    return {"hl_pct": hl_pct, "tag": tag, "lo_hl": lo, "hi_hl": hi, "metric": metric}
+
+
+def regime_daily_move_now(store: str, vanna_now: float | None, charm_now: float | None,
+                          dte_now: float | None) -> dict | None:
+    """Live entry point mirroring ``regime_now``'s DTE-switch (charm ≤1.5 DTE, vanna else)."""
+    if dte_now is not None and dte_now <= DTE_CHARM_MAX and charm_now is not None:
+        return regime_daily_move(store, charm_now, metric="charm", dte_max=DTE_CHARM_MAX)
+    return regime_daily_move(store, vanna_now, metric="vanna")

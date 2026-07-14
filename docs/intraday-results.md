@@ -397,3 +397,22 @@ through)? Signed "push toward the wall" over 15/30/60m (day-detrended, ±8% clip
 directional pivot — even at the wall, the break is a coin flip. Direction stays dead; the wall's only
 information is the vol regime we already price. Consistent with A1 (#12), the blast (#6), and the whole
 arc. Recorded DEAD for direction (no dashboard chip beyond the existing vol gauge). Sign-free.
+
+## Study #15 — concrete DAILY MOVE per regime bucket (|vanna| vs |charm| vs |GEX|)  → descriptive
+`scripts/analyze_vanna_daily_move.py`. Translates the SIDEWAYS/TRENDY gauge label into the actual
+per-day move: daily high-low range (and open→close), INTRADAY from today's open (overnight gap
+excluded — the regime metric is intraday), robust stats (median ± MAD, IQR), 1-min spot, bad-tick
+days (HL>12%) dropped. Bucketed by daily-median |metric| terciles. NIFTY.
+
+- **NIFTY non-expiry — daily HL range by bucket:** |vanna| SIDEWAYS **0.61% (~140 pt)** → TRENDY
+  **1.14% (~222 pt)**, a **1.86×** separation (best). |GEX| 0.66%→0.96% (**1.46×**). |charm|
+  0.70%→0.86% (**1.24×**). Close-to-close move tracks it (vanna 0.30%→0.51%).
+- **Expiry (≤1.5 DTE):** |vanna| 1.43×, |GEX| 1.16×, |charm| ~1.05× (≈flat). NB charm barely
+  separates the FULL-DAY range — its validated edge (T1b) is the next-30-min forward RV near expiry
+  (intraday timing), a different horizon; a daily-median bucketing washes it out.
+- **BankNifty non-expiry:** |vanna| SIDEWAYS ~432 pt → TRENDY ~561 pt (same direction, bigger points).
+
+**Use:** wired as the dashboard "expected daily move ≈ ±X pt" badge (`regime_daily_move_now` →
+`_gex_regime_banner`), mirroring the gauge's tercile so the badge's bucket matches the shown label.
+|vanna| is the daily-move discriminator; the badge reads from the 5-min cache spot (marginally
+conservative vs 1-min). Descriptive (not a forecast test), sign-free.

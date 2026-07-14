@@ -1431,7 +1431,7 @@ def _gex_regime_banner(data):
     no clean regime/direction info, but the |GEX| BUCKET robustly gauges TRENDING (low |GEX|) vs
     SIDEWAYS (high |GEX|). Live-intraday: current |GEX| placed in the 5yr Dhan distribution, with
     the historical expected forward realized vol for that bucket."""
-    from app.intraday_features import intraday_vol_regime, regime_now
+    from app.intraday_features import intraday_vol_regime, regime_now, regime_daily_move_now
 
     # DTE-switched dealer greek: |charm| ≤1.5 DTE (sharper near expiry), |vanna| else (Study #8/
     # T1b). Fall back to the |GEX| scale-bridge if the live greeks aren't available (demo/pre-cache).
@@ -1439,8 +1439,9 @@ def _gex_regime_banner(data):
         vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
         if vr is None and data.vanna_now is None:
             vr = intraday_vol_regime(data.symbol, _current_absgex_cache_units(data), metric="net_gex")
+        dm = regime_daily_move_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
     except Exception:  # noqa: BLE001 - non-essential overlay
-        vr = None
+        vr = dm = None
     if not vr:
         st.info(f"### Market regime: building…\n\nNeeds the intraday vol-regime (dealer-vanna) "
                 f"feature cache for **{data.symbol}** (`python -c \"from app.intraday_features "
@@ -1453,11 +1454,21 @@ def _gex_regime_banner(data):
     mname = {"vanna": "dealer-vanna", "charm": "dealer-charm (0-DTE)"}.get(
         vr.get("metric"), "dealer-gamma (|GEX|)")
     tail = vr["read"].split("→")[-1].strip()
+    move_line = ""
+    if dm and dm.get("hl_pct") == dm.get("hl_pct"):        # concrete daily move behind the label
+        try:
+            pts = dm["hl_pct"] / 100.0 * data.levels.spot
+            move_line = (f"\n\nTypically this bucket moves **≈ {dm['hl_pct']:.1f}% (~{pts:,.0f} pt) "
+                         f"high-low per day** (intraday from the open; vs ~{dm['hi_hl']:.1f}% "
+                         f"high-concentration / ~{dm['lo_hl']:.1f}% low-concentration).")
+        except (TypeError, AttributeError):
+            move_line = ""
     box(f"### Market regime: {label}  ·  {gword} concentration\n\n"
         f"{mname.capitalize()} **concentration** sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
         f"5yr → {tail}. Historically ≈ **{vr['exp_rv']:.1f}% realized vol (annualized)** over the "
         f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-concentration / "
-        f"~{vr['lo_rv']:.1f}% low-concentration).")
+        f"~{vr['lo_rv']:.1f}% low-concentration)."
+        f"{move_line}")
 
 
 _POSTURE = {
