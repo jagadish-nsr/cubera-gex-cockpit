@@ -202,34 +202,36 @@ def main():
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
     # --- Key metrics -------------------------------------------------------
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    # Regime is expressed by the sign-free vanna/charm banner above — the raw dealer-gamma SIGN
+    # (POSITIVE/NEGATIVE) is intentionally NOT shown here (it read as contradictory next to the
+    # SIDEWAYS/TRENDING banner; net GEX magnitude is what the gauge uses).
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Spot", f"{L.spot:,.2f}")
-    c2.metric("Regime", L.regime)
-    c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+    c2.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
     ov = data.oi_volume or {}
     pcr = ov.get("pcr_oi")
     if pcr is not None and pcr == pcr:   # not NaN
         # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory.
-        c4.metric("PCR (OI)", f"{pcr:.2f}",
+        c3.metric("PCR (OI)", f"{pcr:.2f}",
                   help="Put/Call open interest across the returned expiries. "
                        ">1 put-heavy, <1 call-heavy. Exploratory.")
     else:
-        c4.metric("PCR (OI)", "—", help="Put/Call OI; live NSE only.")
+        c3.metric("PCR (OI)", "—", help="Put/Call OI; live NSE only.")
     vix = data.india_vix
     if vix:
         chg = vix.get("pct_change")
-        c5.metric("India VIX", f"{vix['last']:.2f}",
+        c4.metric("India VIX", f"{vix['last']:.2f}",
                   f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
     else:
-        c5.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
+        c4.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
     usdinr = data.usdinr
     if usdinr:
         uchg = usdinr.get("pct_change")
-        c6.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
+        c5.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
                   f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
                   help="NSE near-month USD/INR future — the rupee level; live NSE, best-effort.")
     else:
-        c6.metric("USD/INR (NSE fut)", "—",
+        c5.metric("USD/INR (NSE fut)", "—",
                   help="NSE near-month USD/INR future; live NSE only, best-effort.")
 
     # --- Simple levels (position-aware: a wall above price isn't "support") --
