@@ -57,10 +57,11 @@ all 3 books rebuilt) ✅. Results so far — direction stays dead, consistent wi
 - **H blast compression** ✅ REFUTED (Study #13, user hypothesis): tight morning → QUIETER afternoon (ρ +0.45, persistence), not a coil; invert the filter.
 - **Study #15 daily-move per bucket** ✅ wired to dashboard (expected-move badge, |vanna|-based).
 - **I ORB × pin** ✅ NEGATIVE (Study #16, user scenario): pin doesn't flip ORB run; OR always breaks; "smaller OR → trendy" is a normalization illusion (absolute ρ(OR%,day-HL%)=+0.59, persistence); OR not special vs mid-day placebo.
+- **Regime persistence** ✅ **POSITIVE cross-book** (Study #17): vol regime clusters (autocorr +0.26–0.36, ~1.9d runs); today's |vanna| forecasts tomorrow's move BEYOND realized vol (partial −0.15/−0.22/−0.18, survives DTE); label sticky 56–62% DTE-stripped. The gauge/badge earn their keep as a NEXT-DAY prior. → dashboard: carry regime into next session.
 
 Remaining (lower prior): C1 flip regime, D1 magnet-pull sharpen, E1/E2 squeeze (vol), F1 max-pain
-drift, G1 level×footprint. Given A1/B/H/I all dead for direction, the surviving value is VOL/containment
-(E, and the existing gauge), not direction.
+drift, G1 level×footprint. Direction stays dead (A1/B/H/I); the surviving value is VOL — now with a
+confirmed NEXT-DAY persistence edge (#17). Next: to-expiry vanna-VRP (T4b remainder).
 
 
 **Why:** direction is dead POOLED (research-arc conclusion), so STOP pooling — slice to the narrow

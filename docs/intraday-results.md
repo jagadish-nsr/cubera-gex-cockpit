@@ -447,3 +447,29 @@ with B1/B2 (#14 — price levels no better than OI walls) and the whole arc. Rec
 same NEGATIVE (30-min TRUE-run 48/53/51%, vol-partial −0.04, OOS spread flips +4→−11pp); |GEX| separates
 the day-HL slightly less than |vanna| (per #15), otherwise identical. The pin metric is now a CLI arg
 (`auto` = vanna/charm switch, `gex` = |net_gex|).
+
+## Study #17 — REGIME PERSISTENCE: is the vol-regime label sticky into tomorrow?  → POSITIVE (cross-book)
+`scripts/analyze_regime_persistence.py`. The arc's FIRST controls-surviving positive. Point-in-time
+(today known at close; tomorrow = next session, pairs only across gaps ≤4d). Day-HL from 5-min cache
+spot; |vanna|(eod) = last-stamp |vanna| (the value you have at the close). Sign-free. NIFTY 1236 pairs,
+BankNifty 973, NIFTY_M 1027.
+
+- **(A) Realized-vol regime CLUSTERS** — Spearman(today-HL, tomorrow-HL) = **+0.34 / +0.36 / +0.26**
+  (NIFTY/BN/NIFTY_M). Transition matrix strongly diagonal: SIDEWAYS→SIDEWAYS ~50%, TRENDY→TRENDY ~48%
+  (vs 33% chance), ~1.9-day runs. Quiet begets quiet, wild begets wild.
+- **(B) Today's |vanna| gauge ADDS a next-day forecast beyond realized vol** — median tomorrow-HL is
+  monotone by today's |vanna| tercile (NIFTY SIDEWAYS 0.63% → TRENDY 0.94%), and the partial SURVIVES:
+  ρ(today-vanna, tomorrow-HL) −0.30/−0.21/−0.24, **partial|today-HL = −0.22/−0.15/−0.18**, partial
+  |today-HL+DTE = −0.20/−0.27/−0.26. So the label is NOT just a same-day vol read — today's positioning
+  forecasts tomorrow's vol regime incrementally (option OI is sticky day-to-day, and positioning drives
+  vol). All three books, both controls.
+- **(C) The label is STICKY and real** — P(tomorrow same |vanna| tercile) = 57/73/73% raw, **56/59/62%
+  DTE-stripped** (rank within DTE bin) vs 33% chance. The DTE control matters for the monthly/BankNifty
+  books (bigger weekly cycle inflates the raw number) but genuine positioning persistence remains.
+
+**Conclusion:** the SIDEWAYS/TRENDY vol-regime label has real **next-session predictive value** — it
+persists (~56–62% same tomorrow, DTE-controlled) and forecasts tomorrow's realized range beyond today's
+own move. Still VOL, not direction (consistent with the arc), but it means the gauge and the Study-#15
+expected-move badge earn their keep as a **next-day prior**, not only an intraday read. Mechanistic
+(positioning stickiness), cross-book. **Dashboard implication:** the regime read can be carried into the
+next session with a "~50% likely to persist" note / a next-day expected-move. Sign-free.
