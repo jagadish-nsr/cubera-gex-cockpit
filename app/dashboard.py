@@ -189,16 +189,15 @@ def main():
     _magnet_pull_note(data, L)
     # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
     _pin_strength_tag(pin_stats)
-    st.caption(f"Technical read: {V.headline}")
 
     # Expiry-day flag — gamma effects (pin / blast) are strongest today.
     nearest = data.expiries[0] if data.expiries else None
     today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
     is_expiry = (nearest == today_ist) if nearest else False
     if is_expiry:
-        st.warning("⚡ **EXPIRY DAY** — gamma is at its strongest. Positive gamma → "
-                   "strong pin toward the magnet/max pain; a break of a wall can trigger "
-                   "a **gamma blast**. See 'What trade fits this regime?' below.")
+        st.warning("⚡ **EXPIRY DAY** — gamma is at its strongest: both the **pin** (toward the "
+                   "magnet / max pain) and the **gamma-blast** tail (on a decisive wall break) "
+                   "intensify. Read the regime above and 'What trade fits this regime?' below.")
     if data.source == "DEMO-SYNTHETIC":
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
