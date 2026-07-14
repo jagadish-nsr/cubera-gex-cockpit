@@ -152,6 +152,12 @@ OR close). **All data on hand — no download.**
 *Prior: modest — likely a vol/persistence story (LOW-pin = trendy = bigger runs), but ORB is a real
 traded strategy and the price-based OR may beat the OI walls B1/B2 found null; worth the clean test.*
 
+**✅ DONE → NEGATIVE (Study #16).** Pin tercile doesn't flip ORB follow-through (TRUE-run flat 48/54/50%
+at 30-min; vol-partial −0.07; OOS spread flips sign). OR almost always breaks (~99%). The user's
+"smaller OR → more ORB / trendier" is a normalization illusion — true in OR-multiples (mechanical),
+FALSE absolutely: ρ(OR%, day-HL%) = +0.59 → tight OR → *smaller* day (persistence, cf. H). Opening range
+isn't even special (mid-day placebo runs more). ORB just re-expresses the vol regime; no edge.
+
 ---
 
 ## Execution order (cheapest / highest-prior first)

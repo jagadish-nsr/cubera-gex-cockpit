@@ -416,3 +416,30 @@ days (HL>12%) dropped. Bucketed by daily-median |metric| terciles. NIFTY.
 `_gex_regime_banner`), mirroring the gauge's tercile so the badge's bucket matches the shown label.
 |vanna| is the daily-move discriminator; the badge reads from the 5-min cache spot (marginally
 conservative vs 1-min). Descriptive (not a forecast test), sign-free.
+
+## Study #16 (I) — Opening-Range Breakout (ORB) × pin regime + OR-width  → NEGATIVE
+`scripts/analyze_orb.py` (scenario catalog I; user scenario). OR 15/30/60-min high/low as price S/R;
+breakout = 1-min close beyond a boundary by ≥ max(0.10·OR,3bp); TRUE run = MFE ≥ 1×OR_range before
+close; pin = concentration at OR-close (|vanna| off-expiry / |charm| ≤1.5 DTE). Sign-free, 1-min spot.
+NIFTY 1230 days (775 non-expiry).
+
+- **Pin tercile does NOT flip ORB follow-through.** TRUE-run rate flat across HIGH/MID/LOW pin
+  (30-min 48/54/50%; 15-min 67/69/64%; 60-min 36/37/36%). Vol-partial ρ(pin, mfe_r|atm_iv) = **−0.07**
+  (adds nothing beyond vol); OOS HIGH−LOW spread flips **+4pp → −8pp**. No B1/B2 flip.
+- **The OR is almost always broken** (~99%, range-hold ~1%), so breakout *incidence* is non-
+  discriminating — "smaller OR → more ORB" is **false**: every width breaks.
+- **"Smaller OR → trendy" is a NORMALIZATION ARTIFACT.** In OR-multiples SMALL-OR looks trendier
+  (true-run 58% vs WIDE 41%, mfe_r 1.26 vs 0.81) — but that's mechanical (÷ smaller OR). In ABSOLUTE
+  terms it reverses: SMALL-OR mfe **0.25%** & day-HL **0.59%** vs WIDE-OR mfe **0.46%** & day-HL
+  **1.17%**; **ρ(OR_range%, day-HL%) = +0.59** → a tight opening range predicts a *smaller* day
+  (persistence, NOT a coiled spring) — consistent with Study #13/H.
+- **The opening range isn't special:** a random mid-day 30-min range runs MORE (placebo TRUE-run 72%
+  vs opening 50%) — the opening window is just the day's widest/most-volatile, so its OR-normalized run
+  is the lowest; no special S/R power.
+- The one real pattern is old news: day-HL by pin ≈ Study #15 baselines (0.62/0.80/1.17 vs
+  0.61/0.81/1.14) — LOW-pin days simply have bigger ranges, but the ORB *run* is a ~50% coin flip.
+
+**Conclusion:** ORB carries no directional/timing edge on Nifty and no pin interaction — the run just
+re-expresses the vol regime (bigger on trendy days because the whole day is bigger, per #15), and the
+"tight OR → big trend" folklore is a ratio illusion (absolute moves show persistence, #13). Consistent
+with B1/B2 (#14 — price levels no better than OI walls) and the whole arc. Recorded DEAD. Sign-free.

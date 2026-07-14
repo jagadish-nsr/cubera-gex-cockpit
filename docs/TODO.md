@@ -55,9 +55,11 @@ all 3 books rebuilt) ✅. Results so far — direction stays dead, consistent wi
 - **A1 magnet lock** ✅ NEGATIVE (Study #12): pin is stickiness not attraction (closer 39% < mirror 51%); undercuts A2.
 - **B1/B2 wall bounce-vs-break** ✅ NEGATIVE cross-book (Study #14): no directional edge at the wall; only containment (= vol regime).
 - **H blast compression** ✅ REFUTED (Study #13, user hypothesis): tight morning → QUIETER afternoon (ρ +0.45, persistence), not a coil; invert the filter.
+- **Study #15 daily-move per bucket** ✅ wired to dashboard (expected-move badge, |vanna|-based).
+- **I ORB × pin** ✅ NEGATIVE (Study #16, user scenario): pin doesn't flip ORB run; OR always breaks; "smaller OR → trendy" is a normalization illusion (absolute ρ(OR%,day-HL%)=+0.59, persistence); OR not special vs mid-day placebo.
 
 Remaining (lower prior): C1 flip regime, D1 magnet-pull sharpen, E1/E2 squeeze (vol), F1 max-pain
-drift, G1 level×footprint. Given A1/B/H all dead for direction, the surviving value is VOL/containment
+drift, G1 level×footprint. Given A1/B/H/I all dead for direction, the surviving value is VOL/containment
 (E, and the existing gauge), not direction.
 
 
