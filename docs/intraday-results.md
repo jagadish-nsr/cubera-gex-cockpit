@@ -574,3 +574,52 @@ and come back **NULL**: dealer-gamma pins (#12/#14/#16), participant/OI flow, fu
 (#17). Direction is dead on Nifty at every horizon we can measure; the tool is decision-support, and
 the one thing that pays is being the vol seller, sized for the tail. This closes the directional
 re-examination prompted by the Claude-Web literature review.
+
+## Study #22 — futures BUILD-UP × VOLUME conviction (daily) → does volume sharpen direction?  → NO
+`scripts/analyze_futures_buildup_volume.py`. Daily raw F&O bhavcopy (instr IDF, **NIFTY 543 days**;
+BankNifty not backfilled → single-book). Per day: front-contract Δprice, aggregate ΔOI (rollover-netted)
+→ price×OI build-up label; turnover = agg_vol/agg_oi as conviction. Target = next-day spot return,
+day-detrended. Directly tests "wire volume into the dashboard build-up tag as conviction".
+
+- **Volume as naive conviction HURTS:** plain build-up direction IC +0.039 → **×volume (amplify) +0.024**
+  (worse) → ÷volume (fade) +0.053 (marginally better). The "high volume = trust it more" form is the
+  worst of the three, echoing the §4a options-streak finding (high turnover ≈ exhaustion, not conviction).
+- **Conviction split is not a clean confirm:** high-vol amplifies the ΔOI direction, not the price×OI
+  label — `long build-up` high-vol +0.22% (confirms) but `short build-up` high-vol +0.09% (a bearish
+  label going UP → reverses). Mixed by quadrant.
+- **Multi-factor leave-one-day-out OOS:** build-up-alone has **no OOS signal** (LOO IC −0.24, in-sample
+  +0.04 collapses). Adding momentum (prior 1-/5-day return), turnover, or ΔOI-intensity — every combo is
+  "base has no signal — moot"; none yields a stable positive OOS IC.
+
+**Conclusion:** volume does **not** sharpen the futures build-up direction — the naive-conviction form
+measurably degrades it, and there's no directional signal in the daily build-up for any factor to improve.
+**Dashboard call: keep volume as a displayed intensity gauge, do NOT fold it into the direction tag.**
+Sign-free of the GEX landmine.
+
+## Study #23 — intraday BUILD-UP × MOMENTUM (5-yr proxy) → does momentum improve the direction?  → NO (it's reversion, and it subsumes the build-up)
+`scripts/analyze_intraday_buildup_momentum.py`. The multi-year stand-in for the intraday futures
+build-up (intraday futures OI caps at ~90 days). On the 5-min options cache (**NIFTY 1239 / BankNifty
+1222 days, ~88k stamps each**): build-up = classify(sign Δspot(15m) × sign ΣΔOI(15m)); momentum =
+trailing 30-/60-min return; target = forward 30-/60-min return, **per-day demeaned** (strip the day's
+drift). Honest metrics: per-day-averaged IC (day = independent unit) + day-block 70/30 OOS.
+
+- **Everything is intraday MEAN-REVERSION, cross-book:** all univariate per-day ICs NEGATIVE — mom60→fwd60
+  **−0.247 (NIFTY) / −0.267 (BN)** (±0.008 over ~1215 days), build→fwd60 −0.084 / −0.104. Recent move
+  fades; the OLS combos' *positive* OOS IC is just the model **fading** momentum (fitted weight sign −).
+- **Momentum is ~3× stronger than the build-up, and SUBSUMES it:** OOS build+mom60→fwd60 = **+0.191 =
+  mom60 alone** (NIFTY, build adds nothing); BankNifty build+mom60 **+0.104 < mom60-alone +0.176** (adding
+  the build-up *hurts*). The build-up is the weak link; momentum replaces it, doesn't complement it.
+
+**Conclusion:** adding intraday momentum raises the fitted IC, but only because momentum-**fade** (generic
+mean-reversion, §5) is a much stronger signal than the build-up — which it *subsumes* (build adds ~0 on
+NIFTY, negative on BankNifty). So this is not "momentum sharpening the build-up"; it's "replace the weak
+build-up with a reversion signal." And that reversion is the known generic intraday mean-reversion, whose
+tradeability net of 5-min bid-ask/costs is doubtful (§5 thrust work: reverts but doesn't pay after costs).
+No positioning edge; sign-free of the GEX landmine.
+
+---
+
+**Scoreboard update (as of #23):** the directional nulls now also cover *combining* factors — volume
+conviction (#22) and intraday momentum (#23) neither rescue nor complement the price+OI build-up. The
+only non-noise intraday effect remains generic mean-reversion (fade recent move), already known (§5) and
+not cleanly tradeable after costs. Vol/short-premium stays the one edge.
