@@ -72,8 +72,12 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .rangebar{padding:13px 16px;display:flex;flex-direction:column;gap:8px}
 .simp .rb-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
 .simp .rb-vals{font-size:.86rem;color:var(--ink-2)}.simp .rb-vals b{color:var(--ink);font-weight:700}
+.simp .rb-scale{position:relative}
 .simp .rb-track{height:8px;border-radius:999px;background:var(--inset);overflow:hidden}
-.simp .rb-fill{height:100%;border-radius:999px;background:var(--spark)}
+.simp .rb-fill{height:100%;border-radius:999px;background:var(--spark);opacity:.5}
+.simp .rb-mark{position:absolute;top:6px;transform:translateX(-50%);font-size:.66rem;line-height:1;color:var(--spark)}
+.simp .rb-ends{display:flex;justify-content:space-between;font-size:.66rem;color:var(--ink-mute);margin-top:9px}
+.simp .rb-ends .lo{color:var(--go)}.simp .rb-ends .hi{color:var(--stop)}
 .simp .rb-note{font-size:.78rem;color:var(--go);font-weight:600}
 .simp .rb-cav{font-size:.72rem;color:var(--ink-mute)}
 .simp .news{display:flex;gap:11px;align-items:flex-start;padding:12px 15px;border-radius:12px;background:var(--warn-bg);border:1px solid var(--warn);margin-top:14px}
@@ -313,6 +317,12 @@ def main():
     if anchor_now:
         st.session_state["simp_force_anchor"] = True
 
+    # Self-sufficient capture: persist this pull (timeseries + per-strike OI) BEFORE the
+    # range seed / OI windows read the day, so this app feeds its own history without the
+    # logger. min_gap dedups rapid refreshes and any co-running writer (shared day file).
+    save_gap = max(1.0, auto_mins - 1.0) if auto else 2.0
+    _persist_snapshot(data, symbol, save_gap)
+
     # regime mood + expected day range (points)
     from app.intraday_features import regime_now, regime_daily_move_now
     try:
@@ -334,7 +344,8 @@ def main():
         st.session_state["simp_hl"] = hl
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
     span = hl["hi"] - hl["lo"]
-    used = (span / exp_pts * 100.0) if exp_pts else 0.0
+    # where spot sits within today's low→high band (for the ▲ marker); 50% before any range
+    pos = max(0.0, min(100.0, (L.spot - hl["lo"]) / span * 100.0)) if span > 0 else 50.0
 
     vix = data.india_vix or {}
     vtxt = (f"VIX {vix['last']:.1f}" + (f" · {vix['pct_change']:+.1f}%" if vix.get('pct_change') is not None else "")
@@ -364,7 +375,9 @@ def main():
                 if pct < 1.0 else f'<span class="rb-cav">Range already {pct:.1f}% — less blast-friendly.</span>')
     H.append(f'''<div class="rangebar card"><div class="rb-top"><span class="eyebrow">Today's range so far</span>
       <span class="rb-vals mono">{f(hl["lo"])} – {f(hl["hi"])} · <b>{f(span)} pts</b>{f" of ~{f(exp_pts)}" if exp_pts else ""}</span></div>
-      <div class="rb-track"><div class="rb-fill" style="width:{min(used,100):.0f}%"></div></div>
+      <div class="rb-scale"><div class="rb-track"><div class="rb-fill" style="width:{pos:.1f}%"></div></div>
+        <div class="rb-mark" style="left:{pos:.1f}%" title="spot {f(L.spot)}">▲</div></div>
+      <div class="rb-ends"><span class="lo">low {f(hl["lo"])}</span><span class="hi">high {f(hl["hi"])}</span></div>
       {note}<span class="rb-cav">≈ from today's saved snapshots — can miss fast spikes (true range may be wider).</span></div>''')
 
     # news override
@@ -507,6 +520,28 @@ def _blast_hero(data, L, ist):
       </div>{chart}</div>'''
 
 
+def _persist_snapshot(data, symbol, min_gap):
+    """Self-sufficient capture: on each in-session live pull, append the timeseries row
+    and (lock-step) the per-strike OI rows — so the range seed AND the options OI windows
+    are fed by THIS app's own refreshes, with no separate logger required. Mirrors the main
+    dashboard's discipline: in-session only (a frozen post-close chain must never poison the
+    day's file), and ``append_if_due`` dedups rapid refreshes / a co-running logger (shared
+    file). Returns True if a row was written. Best-effort — never blocks the page."""
+    if data.source != "nse":
+        return False
+    try:
+        from app.timeseries import (append_if_due, append_strike_rows, build_row,
+                                    build_strike_rows, in_nse_session)
+        if not in_nse_session(data.fetched_at):
+            return False
+        _, written = append_if_due(build_row(data), min_gap_minutes=min_gap, symbol=symbol)
+        if written:
+            append_strike_rows(build_strike_rows(data), symbol=symbol)   # same fetch, lock-step
+        return written
+    except Exception:  # noqa: BLE001 - capture is best-effort, never blocks the page
+        return False
+
+
 def _seed_hl(symbol, date_ist, spot_now):
     """Seed today's low/high/open from the day's SAVED snapshots (timeseries + oi_strikes
     `spot` columns), so opening/restarting mid-day recovers the whole session instead of
@@ -599,8 +634,10 @@ def _futures_html(data, symbol, ist, is_expiry):
     if data.source != "nse":
         return ''
     date_ist = ist.strftime("%Y-%m-%d")
-    try:                                  # best-effort live snapshot, then read the day
-        capture_futures_snapshot(symbol, min_gap_minutes=1.0)
+    try:                                  # best-effort live snapshot (in-session only), then read the day
+        from app.timeseries import in_nse_session
+        if in_nse_session(data.fetched_at):   # don't write a frozen post-close row
+            capture_futures_snapshot(symbol, min_gap_minutes=3.0)
     except Exception:  # noqa: BLE001
         pass
     day_df = load_futures_intraday_day(date_ist, symbol)

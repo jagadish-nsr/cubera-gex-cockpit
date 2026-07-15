@@ -16,9 +16,11 @@ Design mockup (static, real 15-Jul numbers): the published Artifact `simple_dash
 - **Market gauge** — spot, a calm/normal/wild mood chip, and the **expected day range in points**,
   tiered by the |vanna|/charm bucket (`regime_daily_move_now`) — e.g. *"Calm → ≈180 pts, likely
   24,000–24,180"*. This replaces the percentile wording with a concrete number.
-- **Today's range so far** — day low–high vs the expected range (a used/expected bar), plus the
-  expiry-day **blast-compression flag** (`H–L before 1:45 < 1%` → "blast-friendly"). ⚠️ see the
-  granularity caveat below.
+- **Today's range so far** — a low→high position bar with a **▲ marker at the current spot**, the
+  low/high endpoints, and the expiry-day **blast-compression flag** (`H–L before 1:45 < 1%` →
+  "blast-friendly"). The low/high are **seeded from today's saved snapshots** (union of the
+  `timeseries` + `oi_strikes` `spot` columns), so opening/restarting mid-day recovers the whole
+  session, then extended with the live spot. ⚠️ see the granularity caveat below.
 - **News override** — a prominent banner when the day is headline-driven (the GEX read is confounded).
 - **Gamma-blast verdict** (expiry days) — one plain verdict (RUN / FAKE), the **True-run score**
   (0–100), **OI change** (call-writer ΔOI) + wall-ahead, a call-vs-put crossover chart, and the
@@ -51,6 +53,15 @@ Design mockup (static, real 15-Jul numbers): the published Artifact `simple_dash
 
 Everything is framed **context, not a prediction** — consistent with what the research validated
 (vol-regime is real; direction is dead). Paper only; the human confirms every trade.
+
+## Self-sufficient capture (no separate logger required)
+On every **in-session** live pull the dashboard persists its own history: `append_if_due` writes the
+timeseries row and, lock-step, `append_strike_rows` writes the per-strike OI — the same day files the
+range seed and the options OI windows read back. Futures snapshots are captured the same way
+(`capture_futures_snapshot`, in-session only). So the range + windows fill from the dashboard's own
+refreshes; a co-running `scripts/log_timeseries.py` still shares the files (a `min_gap` dedup guard
+prevents double-writes), it's just no longer required. Post-close pulls are **not** written (a frozen
+end-of-day chain must not poison the day's file) — matching the main dashboard's discipline.
 
 ## ⚠️ Known limitation — day high/low granularity (range + blast-compression)
 The **day high/low** — and therefore the *"range so far"* bar and the expiry-day
