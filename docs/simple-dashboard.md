@@ -25,9 +25,29 @@ Design mockup (static, real 15-Jul numbers): the published Artifact `simple_dash
   two watch strikes. Fade logic is direction-correct: a FAKE reverts toward the **crossover strike**,
   not the (above-spot) magnet.
 - **What fits this regime** — the illustrative vol-regime structure suggestion (paper only).
-- **Positioning** — a simplified footprint (support/resistance forming + net call/put writing) and the
-  **futures OI build-up in two windows: since-open AND a rolling last-30-min** (session vs recent —
-  e.g. fresh shorts all day but a short-covering bounce in the last half-hour).
+- **Positioning ("Where the money is building")** — two cards:
+  - **Options footprint** — the support/resistance forming + net call/put-writing summary, PLUS a
+    **trailing-window strip (60 / 30 / 15 / 5-min)** showing *fresh writing* near spot for the
+    **current expiry only**: 🟢 Puts→support / 🔴 Calls→resistance / balanced / thin, with the net add.
+  - **Futures OI build-up** — since-open PLUS the same **60 / 30 / 15 / 5-min** trailing windows
+    (price × ΔOI: long build-up / short build-up / covering / unwinding), aggregate (rollover-netted) OI.
+
+### The rolling windows — how they're computed and the expiry-noise handling
+- **Current expiry only (options).** Each window's OI change is the nearest-expiry `*_doi_near`
+  (ΔOI vs prev close) differenced between the latest snapshot and the snapshot ~N min earlier; the
+  constant prev-close cancels, leaving the window's **current-expiry** OI change. (Falls back to
+  differencing all-expiry OI *levels* on pre-upgrade CSVs.)
+- **Adds only.** Per strike only OI *additions* count (unwinds clipped to 0). This is the key
+  expiry-day guard: late on expiry the current weekly's OI **decays/churns** (settlement,
+  pin-hedging, gamma-blast crossings), and adds-only stops that decay from masquerading as
+  directional flow — a purely-unwinding window correctly reads **"thin"**. The dominant side must
+  hold ≥ ~60 % of adds, else **"balanced."**
+- **Short windows are noisy on expiry — and shown as such.** At the ~3-min live cadence a "5-min"
+  window is often 1–2 snapshots, so partial windows are flagged (`≤`) and on **expiry day** the
+  5/15-min rows are dimmed with a caption steering to the **30/60-min** reads. All four stay
+  visible so the churn is *seen*, not hidden.
+- Directional options-OI edge is ~zero at scale (research arc), so this is framed **context, not a
+  prediction** — same as everything else here.
 
 Everything is framed **context, not a prediction** — consistent with what the research validated
 (vol-regime is real; direction is dead). Paper only; the human confirms every trade.

@@ -142,6 +142,20 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .fw-sub{font-size:.76rem;color:var(--ink-mute)}
 .simp .fut-desc{font-size:.9rem;color:var(--ink-2);margin:10px 0 12px;max-width:52ch}.simp .fut-desc b{color:var(--ink)}
 .simp .fut-formula{font-size:.78rem;color:var(--ink-mute)}
+.simp .winstrip{margin-top:10px;border-top:1px solid var(--line)}
+.simp .win-hd{font-size:.68rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-mute);padding:9px 15px 3px}
+.simp .winrow{display:grid;grid-template-columns:44px 1fr auto;gap:10px;align-items:center;padding:6px 15px;border-bottom:1px solid var(--line)}
+.simp .winrow:last-child{border-bottom:0}
+.simp .winrow .wl{font-size:.76rem;color:var(--ink-2);font-weight:700;font-family:var(--mono)}
+.simp .winrow.dim{opacity:.55}
+.simp .winrow .wd{font-size:.76rem;color:var(--ink-mute);font-family:var(--mono);text-align:right;white-space:nowrap}
+.simp .wbadge{font-size:.76rem;font-weight:700;padding:3px 10px;border-radius:999px;width:max-content}
+.simp .wbadge.bull{background:var(--go-bg);color:var(--go)}
+.simp .wbadge.bear{background:var(--stop-bg);color:var(--stop)}
+.simp .wbadge.cover{background:var(--warn-bg);color:var(--warn)}
+.simp .wbadge.flat{background:var(--surface-2);color:var(--ink-2)}
+.simp .win-cap{font-size:.72rem;color:var(--ink-mute);padding:8px 15px 4px}
+.simp .win-cap.warn{color:var(--warn)}
 .simp .foot{margin-top:22px;font-size:.76rem;color:var(--ink-mute);text-align:center;line-height:1.6}
 @media (max-width:430px){.simp .gauge{grid-template-columns:1fr}.simp .mood{border-left:0;padding-left:0}.simp .strikes,.simp .fut-windows{grid-template-columns:1fr}}
 </style>
@@ -161,6 +175,9 @@ _PLAY = {
             "Neutral, unclear regime — no clear edge either way. De-size and wait for the market to "
             "pick a side before selling or buying premium."),
 }
+
+
+_WINDOWS = [("60m", 60), ("30m", 30), ("15m", 15), ("5m", 5)]   # trailing rolling windows
 
 
 def f(x, nd=0):
@@ -380,8 +397,8 @@ def main():
     # right column: positioning (footprint + futures two-window)
     H.append('</div><div class="col">')
     H.append('<h2 class="lbl">Where the money is building</h2>')
-    H.append(_footprint_html(data, L, idx))
-    H.append(_futures_html(data, symbol, ist))
+    H.append(_footprint_html(data, L, idx, ist, is_expiry))
+    H.append(_futures_html(data, symbol, ist, is_expiry))
     H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
@@ -484,8 +501,27 @@ def _blast_hero(data, L, ist):
       </div>{chart}</div>'''
 
 
-def _footprint_html(data, L, idx):
-    from app.oi_footprint import build_footprint
+def _opt_window_row(lbl, minutes, w, is_expiry):
+    """One row of the options rolling-window strip (60/30/15/5-min current-expiry build)."""
+    if w is None:
+        return (f'<div class="winrow dim"><span class="wl">{lbl}</span>'
+                '<span class="wbadge flat">— building…</span><span class="wd"></span></div>')
+    cls, txt = {"put-writing": ("bull", "🟢 Puts → support"),
+                "call-writing": ("bear", "🔴 Calls → resistance"),
+                "balanced": ("flat", "· Balanced"),
+                "thin": ("flat", "· Thin build")}.get(w["label"], ("flat", "· —"))
+    net = w.get("net") or 0.0
+    dtxt = (f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
+            if w["label"] in ("put-writing", "call-writing") else "")
+    dim = " dim" if (is_expiry and minutes <= 15) else ""     # short windows churn on expiry
+    shown = ("≤" + lbl) if w.get("partial") else lbl
+    return (f'<div class="winrow{dim}"><span class="wl">{shown}</span>'
+            f'<span class="wbadge {cls}">{txt}</span><span class="wd">{dtxt}</span></div>')
+
+
+def _footprint_html(data, L, idx, ist, is_expiry):
+    from app.oi_footprint import build_footprint, window_footprint
+    from app.timeseries import load_strikes_day
     if data.source != "nse" or not data.oi_strikes:
         return ''
     band = getattr(idx, "band_pts", None)
@@ -495,13 +531,39 @@ def _footprint_html(data, L, idx):
     skew = fp.get("net_skew", 0.0)
     who = "call-writing" if skew < 0 else "put-writing"
     sub = ("big players capping the upside" if skew < 0 else "big players supporting the downside")
+
+    # rolling-window strip (current expiry only, from today's per-strike captures)
+    day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol)
+    now_hm = ist.hour * 60 + ist.minute
+    rows = "".join(_opt_window_row(lbl, m,
+                   window_footprint(day_df, m, L.spot, band, now_hm=now_hm), is_expiry)
+                   for lbl, m in _WINDOWS)
+    cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min.'
+           if is_expiry else 'Fresh writing near spot; adds only, current expiry. Context, not a prediction.')
+    strip = (f'<div class="winstrip"><div class="win-hd">Fresh writing — trailing windows</div>'
+             f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
+
     return f'''<div class="card"><div class="levels">
       <div class="fp-row floor"><span>🟢 Support forming</span><b class="mono">{f(fp.get("support_build"))}</b><small>put writers</small></div>
       <div class="fp-row ceil"><span>🔴 Resistance forming</span><b class="mono">{f(fp.get("resistance_build"))}</b><small>call writers</small></div>
-      <div class="fp-sum">Net <b>{who} near spot</b> — {sub}. Context, not a prediction.</div></div></div>'''
+      <div class="fp-sum">Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
 
 
-def _futures_html(data, symbol, ist):
+def _fut_window_row(lbl, minutes, win, is_expiry):
+    """One row of the futures rolling-window strip (price×ΔOI over the trailing window)."""
+    if win is None:
+        return (f'<div class="winrow dim"><span class="wl">{lbl}</span>'
+                '<span class="wbadge flat">— building…</span><span class="wd"></span></div>')
+    label, dp, doi = win
+    cls, icn, lab = _fut_badge(label)
+    dtxt = (f'P {"▲" if (dp or 0) >= 0 else "▼"}{f(abs(dp)) if dp is not None else "—"} · '
+            f'OI {"▲" if (doi or 0) >= 0 else "▼"}{f(abs(doi)) if doi is not None else "—"}')
+    dim = " dim" if (is_expiry and minutes <= 15) else ""
+    return (f'<div class="winrow{dim}"><span class="wl">{lbl}</span>'
+            f'<span class="wbadge {cls}">{icn} {lab}</span><span class="wd">{dtxt}</span></div>')
+
+
+def _futures_html(data, symbol, ist, is_expiry):
     from app.futures_buildup import (capture_futures_snapshot, intraday_futures_buildup,
                                     load_futures_intraday_day)
     if data.source != "nse":
@@ -513,29 +575,25 @@ def _futures_html(data, symbol, ist):
         pass
     day_df = load_futures_intraday_day(date_ist, symbol)
     since = intraday_futures_buildup(day_df)
-    win = _futures_window(day_df, 30)
-    if not since and not win:
+    wins = {m: _futures_window(day_df, m) for _, m in _WINDOWS}
+    if not since and not any(wins.values()):
         return ('<div class="card fut"><span class="eyebrow">Nifty futures OI build-up</span>'
                 '<p class="fut-desc">Waiting for 2+ futures snapshots this session…</p></div>')
-    cells = []
+    since_cell = ''
     if since:
         cls, icn, lab = _fut_badge(since.get("buildup"))
         dp = since.get("dprice"); doi_pct = since.get("doi_pct")
-        cells.append(f'<div class="fw"><span class="fw-lbl">Since open</span>'
-                     f'<span class="fut-badge {cls}">{icn} {lab}</span>'
-                     f'<span class="fw-sub mono">Price {"▲" if (dp or 0)>=0 else "▼"}{f(abs(dp)) if dp is not None else "—"} · '
-                     f'OI {f(doi_pct,1)+"%" if doi_pct is not None else "—"}</span></div>')
-    if win:
-        lab_w, dp_w, doi_w = win
-        cls, icn, lab = _fut_badge(lab_w)
-        cells.append(f'<div class="fw"><span class="fw-lbl">Last 30 min</span>'
-                     f'<span class="fut-badge {cls}">{icn} {lab}</span>'
-                     f'<span class="fw-sub mono">Price {"▲" if (dp_w or 0)>=0 else "▼"}{f(abs(dp_w)) if dp_w is not None else "—"} · '
-                     f'OI {"▲" if (doi_w or 0)>=0 else "▼"}{f(abs(doi_w)) if doi_w is not None else "—"}</span></div>')
+        since_cell = (f'<div class="fw" style="margin-top:8px"><span class="fw-lbl">Since open</span>'
+                      f'<span class="fut-badge {cls}">{icn} {lab}</span>'
+                      f'<span class="fw-sub mono">Price {"▲" if (dp or 0)>=0 else "▼"}{f(abs(dp)) if dp is not None else "—"} · '
+                      f'OI {f(doi_pct,1)+"%" if doi_pct is not None else "—"}</span></div>')
+    rows = "".join(_fut_window_row(lbl, m, wins[m], is_expiry) for lbl, m in _WINDOWS)
+    cap = ('⚠ Around monthly expiry the short windows churn (rollover) — lean on 30/60-min.'
+           if is_expiry else 'Aggregate OI (rollover-netted); volume = intensity, not direction.')
     return f'''<div class="card fut"><span class="eyebrow">Nifty futures OI build-up</span>
-      <div class="fut-windows">{"".join(cells)}</div>
-      <div class="fut-formula" style="margin-top:11px">Price+OI: down+up = fresh shorts · up+down = covering ·
-        volume = intensity, not direction. Context, not a prediction.</div></div>'''
+      {since_cell}
+      <div class="winstrip"><div class="win-hd">Trailing windows · price × ΔOI</div>{rows}
+        <div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div></div>'''
 
 
 if __name__ == "__main__":
