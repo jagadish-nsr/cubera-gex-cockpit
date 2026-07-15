@@ -71,9 +71,15 @@ def fut_map(store, day, stamps):
     return out or None
 
 
+K_MAX_TRIG = 6                    # search first-TRUE within 6×5min = 30 min of the cross
+FWD_AFTER = 4                     # measure outcome over a FIXED 4×5min = 20 min AFTER the trigger
+
+
 def _day_rows(store, day, dte, gex_map, futm=None):
     import numpy as np
     from scipy.stats import norm
+
+    from app.gammablast import grade_blast
     from data.dhan import load_intraday_day
 
     T = (dte / 365.0) if (dte and dte > 0) else None
@@ -213,6 +219,33 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                                    if (have_entry and len(win_leg)) else np.nan)
                 charm = charm_ex(io, spot[io])                              # signed dealer-charm
                 charm_flow = (charm - charm_ex(i, spot[i])) if T else np.nan
+                # --- grade TRAJECTORY from the cross: first step the EXPANDING-window grade
+                # reaches TRUE (score≥60), then the outcome over a FIXED window AFTER that trigger
+                # (fast-vs-slow apples-to-apples, no lookahead). aoi_up = wall-ahead OI series.
+                aoi_t = (dah["co"] if up else dah["po"]) if dah is not None else None
+                k_true = np.nan
+                for kk in range(1, K_MAX_TRIG + 1):
+                    j = i + kk
+                    if j >= n or itm_o[j] != itm_o[j] or itm_l[j] != itm_l[j]:
+                        continue
+                    cov_k = _frac(itm_o[i], itm_o[j])
+                    thr_k = _frac(itm_l[i], itm_l[j])
+                    wr_k = (aoi_t[j] / itm_o[j]) if (aoi_t is not None and itm_o[j]
+                            and aoi_t[j] == aoi_t[j]) else 0.0
+                    we_k = _frac(aoi_t[i], aoi_t[j]) if aoi_t is not None else 0.0
+                    if grade_blast(cov_k, thr_k, wr_k, we_k)["score"] >= 60:
+                        k_true = kk                                         # first TRUE (5·kk min)
+                        break
+                cont_after = mult_after_peak = np.nan
+                if k_true == k_true:                                        # reached TRUE in-window
+                    trig = i + int(k_true)
+                    end = trig + FWD_AFTER
+                    if end < n and spot[trig] == spot[trig] and spot[end] == spot[end] and spot[trig] > 0:
+                        cont_after = dirs * (spot[end] - spot[trig]) / spot[trig] * 100
+                        tp = itm_l[trig]
+                        seg = itm_l[trig:end + 1]
+                        if tp and tp == tp and tp > 0 and len(seg):
+                            mult_after_peak = float(np.nanmax(seg)) / tp
                 rows.append({
                     "day": day, "K": K, "dir": 1 if up else 0, "dte": dte,
                     "tod": (_OPEN + i * GRID_MIN),
@@ -230,6 +263,9 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                     # winning-leg premium multiple (retail 2–3× claim): entry premium + exit/peak ×
                     "blast_entry_prem": entry_prem, "blast_mult_exit": blast_mult_exit,
                     "blast_mult_peak": blast_mult_peak,
+                    # grade trajectory: steps-to-first-TRUE (NaN=never within 30m) + outcome over a
+                    # fixed 20-min window AFTER the trigger (speed-of-ignition study)
+                    "k_true": k_true, "cont_after": cont_after, "mult_after_peak": mult_after_peak,
                     # intraday futures (NaN where no futures data for the day)
                     "fut_doi": fut_doi, "fut_mom": fut_mom, "fut_to": fut_to,
                 })

@@ -224,6 +224,38 @@ that the grade can't forecast, essentially absent in the current market structur
 predictor. This is exactly why the [B1] backtest (docs/TODO.md) must score the **full lottery
 distribution** with real expiry-afternoon fills, never the mean or a mid-price peak.
 
+## 7c. Grade TRAJECTORY, speed-of-ignition & WEAK→TRUE upgrades (2026-07-15)
+
+The grade above is a single fixed-window (10-min) snapshot — it discards the fact that a crossing's
+grade **evolves** (FAKE→WEAK→TRUE, sometimes TRUE→decay). We added the trajectory to
+`build_blast_dataset.py`: per crossing, the static 10-min grade, the first 5-min step the
+*expanding-window* grade reaches TRUE (`k_true`, ≤30 min else "never"), and the winning-leg outcome
+over a **fixed 20-min window AFTER that trigger** (`cont_after`, `mult_after_peak`) — fast-vs-slow
+apples-to-apples, strictly point-in-time. `scripts/analyze_blast_speed.py`. Evaluated at a **≥1.5×**
+"good blast" bar (a TRUE call that runs 1.5× is a win; ≥3× is a ~1% lottery — see §7b):
+
+- **Most crossings never ignite.** Only **24%** ever reach TRUE within 30 min (35% in the 0-DTE
+  afternoon); **76% never confirm** → the grade is first a **no-go filter**.
+- **Speed genuinely matters at 1.5×.** Post-trigger P(≥1.5×) is **monotone in speed** — 0-DTE
+  afternoon: **FAST (≤10 min) 21% · MID 14% · SLOW 11%** (all crossings 12/8/6%); the tail too
+  (FAST p95 2.41× vs SLOW 1.59×). Continuation medians are still ~0, so this is a **premium-payoff /
+  confirmation-quality** effect, not a spot-direction edge.
+- **And it SURVIVES the current regime** (unlike ≥3×, which was 0%). FAST ≥1.5% by era: pre-Nov24
+  **23%** · Nov24-Aug25 21% · **Sep25+ (current Tuesday) 15%**.
+- **Value of waiting (transition table).** Of crossings graded **WEAK at 10 min, 57% later upgrade
+  to TRUE**, and 13% of those deliver ≥1.5× — worth watching, but below a **static-TRUE (22% ≥1.5×)**.
+  FAKE-pin rarely upgrades (18%). So: a fast/early TRUE is best; a WEAK is worth waiting on (upgrades
+  more often than not) but pays less; a FAKE-pin is mostly a pass.
+
+**Answering the two questions this raised:** (1) yes — the old design graded each crossing *once* at
+a fixed 10-min window, mislabelling a FAKE→WEAK→TRUE path by its early snapshot; the trajectory fixes
+that. (2) time-to-TRUE **does add signal at the ≥1.5× bar** — fast ignition ~doubles the good-blast
+rate vs slow and survives into the current regime — but it is a **confirmation-quality conditioner,
+still sign-free and directionless**, and the multiples are **MID peaks** (real expiry-afternoon fills
+are worse, so treat the rates as optimistic). This is the most promising blast refinement so far and
+the concrete hypothesis for the [B1] backtest: *enter on a FAST/early TRUE, size by ignition speed,
+model the fills honestly.* The `k_true` / static-grade / post-trigger fields now live in the dataset.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):
