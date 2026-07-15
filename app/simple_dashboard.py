@@ -324,8 +324,14 @@ def main():
     exp_pts = (dm["hl_pct"] / 100.0 * L.spot) if (dm and dm.get("hl_pct") == dm.get("hl_pct")) else None
     tier = {"calm": "Calm (mid)", "wild": "Wild", "mid": "Normal"}.get(vr["tag"], "—") if vr else "—"
 
-    # today's range so far (snapshot-derived — see caveat)
-    hl = st.session_state.setdefault("simp_hl", {"lo": L.spot, "hi": L.spot, "open": L.spot})
+    # today's range so far — SEED from today's saved snapshots (so a mid-day open or a
+    # restart recovers the whole session, not just spots seen since this process started),
+    # then keep extending with the live spot. Still snapshot-cadence — see caveat.
+    date_ist = ist.strftime("%Y-%m-%d")
+    hl = st.session_state.get("simp_hl")
+    if hl is None or hl.get("day") != date_ist:
+        hl = _seed_hl(symbol, date_ist, L.spot)
+        st.session_state["simp_hl"] = hl
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
     span = hl["hi"] - hl["lo"]
     used = (span / exp_pts * 100.0) if exp_pts else 0.0
@@ -359,7 +365,7 @@ def main():
     H.append(f'''<div class="rangebar card"><div class="rb-top"><span class="eyebrow">Today's range so far</span>
       <span class="rb-vals mono">{f(hl["lo"])} – {f(hl["hi"])} · <b>{f(span)} pts</b>{f" of ~{f(exp_pts)}" if exp_pts else ""}</span></div>
       <div class="rb-track"><div class="rb-fill" style="width:{min(used,100):.0f}%"></div></div>
-      {note}<span class="rb-cav">≈ from {ist:%H:%M} snapshots — can miss fast spikes (true range may be wider).</span></div>''')
+      {note}<span class="rb-cav">≈ from today's saved snapshots — can miss fast spikes (true range may be wider).</span></div>''')
 
     # news override
     news = data.news or {}
@@ -499,6 +505,30 @@ def _blast_hero(data, L, ist):
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
         <div><small>Wall ahead</small><b class="down mono">{f(wr,1)+"×" if wr is not None else "—"}</b><em>cap overhead</em></div>
       </div>{chart}</div>'''
+
+
+def _seed_hl(symbol, date_ist, spot_now):
+    """Seed today's low/high/open from the day's SAVED snapshots (timeseries + oi_strikes
+    `spot` columns), so opening/restarting mid-day recovers the whole session instead of
+    starting from the current spot. Unions both streams with the live spot; open = the
+    earliest saved spot. Snapshot-cadence (~3 min) — still misses sub-cadence ticks."""
+    lo = hi = op = float(spot_now)
+    spots = []
+    try:
+        from app.timeseries import load_day, load_strikes_day
+        for loader in (load_day, load_strikes_day):
+            df = loader(date_ist, symbol)
+            if df is not None and not getattr(df, "empty", True) and "spot" in df.columns:
+                s = pd.to_numeric(df["spot"], errors="coerce").dropna()
+                if len(s):
+                    spots.append(s)
+    except Exception:  # noqa: BLE001 - range seed is best-effort, never blocks the page
+        pass
+    if spots:
+        alls = pd.concat(spots)
+        lo = min(lo, float(alls.min())); hi = max(hi, float(alls.max()))
+        op = float(spots[0].iloc[0])          # earliest snapshot of the timeseries stream
+    return {"day": date_ist, "lo": lo, "hi": hi, "open": op}
 
 
 def _opt_window_row(lbl, minutes, w, is_expiry):
