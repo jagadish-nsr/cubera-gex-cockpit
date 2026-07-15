@@ -5,6 +5,32 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ⬜ TODO
+
+**Why:** we have detectors, IC studies, and a sign-free staying-power grade (`analyze_blast`,
+Spearman +0.70, n=57, all in the current Sep25+ Tuesday era), but **no first-class backtest** of the
+blast as a *tradeable* event with honest cost modelling. The payoff is lottery-shaped, so mean return
+is meaningless — the skill must evaluate the full distribution.
+
+**Build:** a reusable backtest skill/harness specialised for expiry-day gamma blast that models the
+things that kill naive blast backtests:
+- **Full payoff distribution**, not the mean: hit rate, win/loss payoff ratio, max adverse excursion,
+  and how often the needed move actually arrived inside the stop (lottery accounting).
+- **IV crush** — afternoon IV deflation that offsets gamma gains even when directionally right.
+- **Fill realism** — expiry-afternoon spreads/depth blow out exactly when premiums explode; model
+  explicit spread + slippage, not mid-price. Be suspicious of any edge living only in the last 15 min.
+- **Expiry-structure era split baked in** (`app/expiry_regime.py`) — never pool across the 20-Nov-24
+  and 1-Sep-25 breaks; treat Nifty-Tuesday (Sep25+) as the only live weekly venue.
+- Two-model framing: a **vol-expansion regime detector** (directionless — straddle / staying-power)
+  vs a **direction trigger** (futures OFI/ΔOI, VWAP break, zero-gamma cross — all found weak so far).
+- Straddle-breakout proxy (compression → breakout of the ATM straddle's OWN intraday range) as the
+  cleanest directionless tradable, sidestepping CE-vs-PE.
+
+Effort: med–high. ⚠️ Direction is dead (research arc); the defensible version studies the hedging-flow
+/ vol-expansion phenomenon with honest costs, NOT "buy cheap options and hope." Decision-support only.
+
+---
+
 ## 2026-07-13 IST — [T1a] Regime → risk-posture overlay  ✅ DONE (2026-07-13 — `_regime_posture_note` card under the regime banner)
 
 **Why:** the vanna gauge tells you the REGIME but not what to DO. Turn the one confirmed edge

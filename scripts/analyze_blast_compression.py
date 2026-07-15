@@ -137,6 +137,31 @@ def main() -> None:
            "bigger afternoons — the coil is real and expiry-specific. If ρ is POSITIVE, it's ordinary "
            "vol persistence and the '<1% morning → blast' rule is folklore. ⚠️ sign-free; 1-min range.")
 
+    # (4) THE POOLING FIX — split expiry days by expiry-STRUCTURE era, and show the blast TAIL
+    # (the lottery outcome P(afternoon move > 1.5%)), overall and within the <1%/≥1% morning cut.
+    from app.expiry_regime import ERA_LABELS, era_order, expiry_era
+    exp = exp.assign(era=exp["day"].map(expiry_era))
+    _print("\n(4) EXPIRY DAYS by expiry-STRUCTURE era (the pooling fix) — autocorr + the blast TAIL")
+    _print("    (blast tail = afternoon directional move; p90 = the ~1-in-10 'blast', "
+           "tight/wide→ = P(aft_move>0.75%) after a <1% vs ≥1% morning):")
+    _print(f"    {'era':<42} {'ρ(mrn,aRng)':>11} {'p90 aMv':>8} {'tight→':>7} {'wide→':>6}  {'n':>3}")
+    for e in era_order(exp["era"].unique()):
+        g = exp[exp["era"] == e]
+        if len(g) < 8:
+            _print(f"    {ERA_LABELS[e]:<42} (n={len(g)} — too thin to split)")
+            continue
+        r1 = g["morning_range"].corr(g["aft_range"], method="spearman")
+        q90 = g["aft_move"].quantile(0.9)
+        tight, wide = g[g["morning_range"] < 1.0], g[g["morning_range"] >= 1.0]
+        pt = f"{100.0*(tight['aft_move']>0.75).mean():.0f}%" if len(tight) else "  —"
+        pw = f"{100.0*(wide['aft_move']>0.75).mean():.0f}%" if len(wide) else "  —"
+        _print(f"    {ERA_LABELS[e]:<42} {r1:>+11.3f} {q90:>7.2f}% {pt:>7} {pw:>6}  {len(g):>3}")
+    _print("\n  Read (4): the coil hypothesis needs, WITHIN an era, ρ NEGATIVE and the blast tail bigger "
+           "after TIGHT mornings than WIDE ('tight→' > 'wide→'). If ρ is POSITIVE and tight→ ≤ wide→ in "
+           "every era, a quiet morning does NOT raise the blast odds — it's vol persistence, not a coil. "
+           "Sep25+ is the only live Nifty-weekly era (Tuesday); pre-Nov24 pooled a different multi-weekly "
+           "structure — so a pooled read is not the current market.")
+
 
 if __name__ == "__main__":
     main()

@@ -100,8 +100,26 @@ def main() -> None:
             cells.append(f"{h}m {d[col].corr(d[f'fwd_{h}_dt'], method='spearman'):+.3f}")
         _print(f"  {label:>28}: " + "   ".join(cells))
 
+    # Regime split: pinning on EXPIRY days (≤1.5d) by expiry-STRUCTURE era (the pooling fix).
+    from app.expiry_regime import ERA_LABELS, era_order, expiry_era
+    f["era"] = f["day"].map(expiry_era)
+    exp = f[f["dte"] <= 1.5]
+    _print("\nEXPIRY-day pinning (≤1.5d) IC by expiry-STRUCTURE era — is the pin era-dependent?")
+    _print(f"  {'era':<42} | " + "  ".join(f"{h}m" for h in HORIZONS_MIN) + "     days")
+    for e in era_order(exp["era"].unique()):
+        sub = exp[exp["era"] == e]
+        nd = sub["day"].nunique()
+        cells = []
+        for h in HORIZONS_MIN:
+            d = sub[["pin_gap", f"fwd_{h}_dt"]].dropna()
+            ic = d["pin_gap"].corr(d[f"fwd_{h}_dt"], method="spearman") if len(d) >= 200 else float("nan")
+            cells.append(f"{ic:+.3f}")
+        _print(f"  {ERA_LABELS[e]:<42} | " + "  ".join(cells) + f"   {nd}")
+
     _print("\n  Prediction: pin_gap IC should be POSITIVE and LARGEST in the ≤1.5d expiry bucket, "
-           "fading with DTE. ⚠️ Overlapping windows autocorrelate; sign-free.")
+           "fading with DTE — and (era split) POSITIVE within each era, not an artefact of pooling a "
+           "pre-Nov24 multi-weekly structure with the current single-Tuesday-weekly one. "
+           "⚠️ Overlapping windows autocorrelate; sign-free.")
 
 
 if __name__ == "__main__":

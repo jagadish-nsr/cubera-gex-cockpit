@@ -162,6 +162,17 @@ def main() -> None:
         ic = df["score"].corr(df["end_cont"], method="spearman")
         _print(f"\nSpearman(score, end continuation) = {ic:+.2f}  (n={len(df)}) — "
                "positive ⇒ higher score tracks a move that held past K.")
+
+        # Regime split by expiry-STRUCTURE era. This live-capture sample is TINY, so a split is
+        # mostly a robustness/where-are-the-days check, not a per-era statistic to trust.
+        from app.expiry_regime import ERA_LABELS, era_order, expiry_era
+        df["era"] = df["date"].map(expiry_era)
+        _print("  by expiry-structure era (thin — read counts, not decimals):")
+        for e in era_order(df["era"].unique()):
+            g = df[df["era"] == e]
+            eic = (f"{g['score'].corr(g['end_cont'], method='spearman'):+.2f}"
+                   if len(g) >= 8 else "n/a")
+            _print(f"    {ERA_LABELS[e]:<42} n={len(g):>3} ({g['date'].nunique()} days)  IC={eic}")
     _print("\n⚠️ Tiny sample, calibration only. Read the SIGN, not the decimals. "
            "Sign-free staying-power grade; direction is NOT claimed. Re-run as expiry "
            "days accrue (the 1-min gamma_blast capture will add real blast days).")

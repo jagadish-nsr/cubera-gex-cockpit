@@ -84,8 +84,23 @@ def main() -> None:
         _print(f"   {lbl:<6}: charm-sign aligns {align:.0f}% · charm-flow aligns {flow_align:.0f}%  "
                f"(50% = no info, n={len(sub):,})")
 
+    # Regime split: charm→continuation on 0-DTE crossings by expiry-STRUCTURE era (pooling fix).
+    from app.expiry_regime import ERA_LABELS, era_order, expiry_era
+    df["era"] = df["day"].map(expiry_era)
+    exp = df[df["dte"] <= 1.5]
+    _print("\n4) 0-DTE charm·dir → continuation by expiry-STRUCTURE era (is any edge era-specific?)")
+    _print(f"   {'era':<42} {'IC charm·dir→cont':>18} {'partial|mom':>12} {'align%':>7}   n")
+    for e in era_order(exp["era"].unique()):
+        sub = exp[exp["era"] == e]
+        cp = ic("charm_proj", "cont", sub)
+        pp = partial("charm_proj", "cont", "raw_mom", sub)
+        big = sub[sub["big"]]
+        align = (np.sign(big["charm"]) == big["dirs"]).mean() * 100 if len(big) else float("nan")
+        _print(f"   {ERA_LABELS[e]:<42} {cp:>+18.3f} {pp:>+12.3f} {align:>6.0f}%   {len(sub):>5,}")
+
     _print("\n  A real edge = charm·dir→cont clearly > +0.05 (esp 0-DTE) AND survives the momentum "
-           "partial AND true-blast alignment > ~55%. Otherwise charm doesn't call blast direction.")
+           "partial AND true-blast alignment > ~55% — and (era split) doesn't only appear in the "
+           "pre-Nov24 multi-weekly era. Otherwise charm doesn't call blast direction.")
     _print("  ⚠️ Sign-dependent; overlapping windows; exploratory.")
 
 

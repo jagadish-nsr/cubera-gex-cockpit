@@ -166,6 +166,33 @@ accumulate; then a dedicated analysis mode can measure it.
 
 ---
 
+## 7a. Regime-split re-examination (2026-07-15) — the expiry-structure eras
+
+A Claude-Web review flagged a real methodological gap: our blast studies **pooled ~5 years
+across two SEBI/NSE structural breaks**, and pooling contaminates any expiry-day backtest
+(the live weekly venues AND the weekend-theta profile both shift mid-sample):
+
+- **2024-11-20** — SEBI single-weekly-per-exchange: NSE kept the **Nifty** weekly; Bank Nifty,
+  FinNifty, Midcap weeklies were discontinued (monthly-only after).
+- **2025-09-01** — NSE moved the **Nifty** weekly **Thursday → Tuesday**.
+
+We added a single source of truth (`app/expiry_regime.py`, `expiry_era()`) and re-sliced the
+four blast studies by era (`pre-Nov24` / `Nov24-Aug25` / `Sep25+`). NIFTY results:
+
+| Study | Pooled read | Per-era (the fix) |
+|-------|-------------|-------------------|
+| **Compression / retail coil** (`analyze_blast_compression`) | ρ(morning,aft)=+0.45 (persistence) | ρ **POSITIVE in all 3 eras** (+0.46 / +0.39 / **+0.57** current); tight-morning blast tail ≤ wide-morning **in every era** → "<1% morning ⇒ blast" is folklore in **every** regime, not a pooling artefact. **Null hardened.** |
+| **Intraday pinning** (`analyze_intraday_pinning`) | +0.06→+0.12 by horizon | pin_gap→fwd **POSITIVE and era-robust** (+0.06→+0.17), largest at 60 min, and the **current Sep25+ era has the LARGEST 60-min IC (+0.166)** → a small but real, sign-free, era-robust effect. |
+| **Charm → direction** (`analyze_charm_blast`) | ~0 | **no edge in any era** (pre +0.009, Nov24 −0.055, Sep25 +0.038 < the +0.05 bar; true-blast sign-alignment ~50%). Charm does not call blast direction in any regime. |
+| **Staying-power grade** (`analyze_blast`) | Spearman +0.70 (n=57) | the **entire** live-captured sample (57 crossings, 11 days) is in **Sep25+** → the +0.70 is **not** a pooled artefact; it reflects the *current* market structure. |
+
+**Verdict:** the regime split **hardens** the direction nulls (compression, charm) rather than
+revealing a hidden edge, and **confirms** the two survivors are current-era-valid — pinning is
+era-robust (and strongest now), and the staying-power grade is entirely from the live Tuesday
+era. The §6 bottom line stands: sign-free detectors + the staying-power grade are worth keeping;
+**direction remains dead**. Next step (`docs/TODO.md` [B1]): a first-class blast **backtest**
+with honest IV-crush + fill-realism + era-split cost modelling.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):
