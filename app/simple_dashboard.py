@@ -31,7 +31,7 @@ if str(ROOT) not in sys.path:
 import config  # noqa: E402
 from app.data_access import load_dashboard  # noqa: E402
 
-st.set_page_config(page_title="Simple GEX", page_icon="⚡", layout="centered")
+st.set_page_config(page_title="Simple GEX", page_icon="⚡", layout="wide")
 
 # ── design tokens + layout (ported from the approved mockup) ────────────────────────────────
 CSS = """
@@ -50,7 +50,10 @@ CSS = """
   --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);}}
 .stApp{background:var(--ground)}
 header[data-testid="stHeader"]{background:transparent}
-.simp{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);max-width:600px;margin:0 auto}
+.simp{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);max-width:980px;margin:0 auto}
+.simp .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.simp .grid2 .col{min-width:0}
+@media(max-width:760px){.simp .grid2{grid-template-columns:1fr}}
 .simp .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
 .simp .eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.11em;text-transform:uppercase;color:var(--ink-mute)}
 .simp .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-top:14px}
@@ -249,6 +252,13 @@ def main():
         auto = st.checkbox("⏱️ Auto-refresh", value=False)
         auto_mins = st.selectbox("Interval", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
                                  disabled=not auto)
+        st.divider()
+        st.caption("⚡ Gamma-blast")
+        preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
+                                     help="Force the gamma-blast view on a non-expiry day, to eyeball it.")
+        anchor_now = st.button("📍 Anchor blast now", width="stretch",
+                               help="Freeze the blast strikes at the current moment instead of "
+                                    "waiting for the 13:45 IST auto-anchor.")
         st.caption("A simple, paper-only face of the GEX engine. See docs/simple-dashboard.md.")
 
     if auto:
@@ -282,6 +292,9 @@ def main():
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     nearest = data.expiries[0] if data.expiries else None
     is_expiry = (nearest == ist.date()) if nearest else False
+    show_blast = is_expiry or preview_expiry          # preview forces the blast view (dev)
+    if anchor_now:
+        st.session_state["simp_force_anchor"] = True
 
     # regime mood + expected day range (points)
     from app.intraday_features import regime_now, regime_daily_move_now
@@ -309,7 +322,7 @@ def main():
     H.append('<div class="eyebrow" style="color:var(--spark)">'
              f'{idx.label} · Gamma-Blast</div>'
              f'<div class="mono" style="font-size:.8rem;color:var(--ink-mute)">{ist:%a %d %b · %H:%M IST}'
-             f'{" · ⚡ EXPIRY DAY" if is_expiry else ""}</div>')
+             f'{" · ⚡ EXPIRY DAY" if is_expiry else (" · 👁️ preview" if preview_expiry else "")}</div>')
 
     # gauge
     rng_line = (f'<span class="tier">Vanna tier: {tier}</span><br>Expected day range '
@@ -339,8 +352,9 @@ def main():
                  f'A headline is driving the market — trust the news over these levels today.'
                  f'{" <i>“"+top[:90]+"”</i>" if top else ""}</div></div>')
 
-    # ── expiry-day blast hero, else quiet play ──
-    if is_expiry:
+    # ── 2-column deck: LEFT = decision (blast/play) + levels, RIGHT = positioning ──
+    H.append('<div class="grid2"><div class="col">')
+    if show_blast:
         H.append(_blast_hero(data, L, ist))
     else:
         head, body = _PLAY.get(vr["tag"] if vr else "mid", _PLAY["mid"])
@@ -363,10 +377,12 @@ def main():
     H.append(f'<div class="foot-note">Likely to stay inside <b class="mono">{band}</b>. '
              'Put stops <i>just beyond</i> the ceiling or floor — never at the magnet.</div></div>')
 
-    # positioning: footprint + futures two-window
+    # right column: positioning (footprint + futures two-window)
+    H.append('</div><div class="col">')
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx))
     H.append(_futures_html(data, symbol, ist))
+    H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
              f'you confirm every trade.<br><span class="mono" style="opacity:.7">lot {idx.lot_size} · '
@@ -393,7 +409,11 @@ def _blast_hero(data, L, ist):
     if not bl or bl.get("date") != ist_today:
         bl = {"date": ist_today, "anchors": None, "points": {}}
         st.session_state["simp_blast"] = bl
-    if bl["anchors"] is None and ist_min >= anchor_min:
+    force = st.session_state.pop("simp_force_anchor", False)   # manual "Anchor blast now" button
+    if force:
+        bl["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet), "at": ist.strftime("%H:%M")}
+        bl["points"] = {}                                       # strikes changed → reset the series
+    elif bl["anchors"] is None and ist_min >= anchor_min:
         bl["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet), "at": ist.strftime("%H:%M")}
     if bl["anchors"] is None:
         return ('<div class="card hero"><span class="eyebrow">Gamma-blast · watching</span>'
