@@ -25,6 +25,14 @@ Design mockup (static, real 15-Jul numbers): the published Artifact `simple_dash
   `spot` columns), so opening/restarting mid-day recovers the whole session, then extended with the
   live spot. ⚠️ see the granularity caveat below.
 - **News override** — a prominent banner when the day is headline-driven (the GEX read is confounded).
+- **Ignition timing + alert** (expiry days) — once a crossover fires, the hero shows the **score
+  trajectory since the cross** (e.g. `38 → 55 → 62`), the **time-to-first-TRUE**, and a classification
+  from the 1-min study (§7d of gamma-blast-research): **⚡ Fast TRUE** (≤5 min — best), **Slow TRUE**
+  (late/weaker), **Watching** (needs score ≥45 by ~3 min), or **No ignition** (>5 min → usually
+  fizzles, fade). A **🔔 sound + toast alert** (sidebar toggle) fires once when the score first hits
+  **45 within ~5 min** of a cross (the "likely TRUE" cutoff) and again on a Fast TRUE. Sound is
+  best-effort (browser autoplay may need a click first); the toast is the reliable channel. This is a
+  **confirmation-quality** read only — the [B1] backtest showed the edge doesn't survive spread.
 - **Gamma-blast verdict** (expiry days) — one plain verdict (RUN / FAKE), the **True-run score**
   (0–100), **OI change** (call-writer ΔOI) + wall-ahead, a call-vs-put crossover chart, and the
   two watch strikes. Fade logic is direction-correct: a FAKE reverts toward the **crossover strike**,

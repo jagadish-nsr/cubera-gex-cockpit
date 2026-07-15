@@ -283,6 +283,10 @@ def main():
         anchor_now = st.button("📍 Anchor blast now", width="stretch",
                                help="Freeze the blast strikes at the current moment instead of "
                                     "waiting for the 13:45 IST auto-anchor.")
+        st.checkbox("🔔 Sound alert on ignition", value=True, key="simp_sound",
+                    help="Beep + toast the moment the score first hits 45 within ~5 min of a cross "
+                         "(likely to reach TRUE) and again on a Fast TRUE. Sound is best-effort — "
+                         "the browser may need a click first, and auto-refresh keeps it checking.")
         st.caption("A simple, paper-only face of the GEX engine. See docs/simple-dashboard.md.")
 
     if auto:
@@ -530,6 +534,34 @@ def _blast_hero(data, L, ist):
                    f'<span class="wl">Timing</span><span class="wbadge {tcls}">{tlab}</span>'
                    f'<span class="wd">{traj_txt}</span></div>'
                    f'<div class="win-cap">{tnote}</div></div>')
+
+    # ── ALERT: bell + toast the moment the §7d cutoff (score ≥45 within ~5m) or a Fast
+    # TRUE first fires — once per crossover per tier (dedup'd), escalating early→fast. ──
+    try:
+        early = [s for j, s in enumerate(traj) if t0 is not None and (_m(times[j]) - t0) <= 5]
+        early45 = bool(early) and max(early) >= 45
+        fast_true = k_true_min is not None and k_true_min <= 5
+        akey = f"{ist:%Y-%m-%d}|{last['time_ist']}|{K:.0f}"
+        A = st.session_state.setdefault("simp_alerts", {"key": None, "fired": set()})
+        if A["key"] != akey:
+            A["key"], A["fired"] = akey, set()
+
+        def _alert(tier, msg, icon, sound):
+            if tier in A["fired"]:
+                return
+            A["fired"].add(tier)
+            try:
+                st.toast(msg, icon=icon)
+            except Exception:  # noqa: BLE001
+                pass
+            if st.session_state.get("simp_sound", True):
+                _beep(sound)
+        if fast_true:
+            _alert("fast", f"⚡ FAST TRUE at {K:,.0f} (+{k_true_min}m) — best blast setup", "⚡", "fast")
+        elif early45:
+            _alert("early", f"👀 Igniting at {K:,.0f}: score 45+ within 5 min — likely TRUE", "👀", "early")
+    except Exception:  # noqa: BLE001 - alerts must never break the render
+        pass
     chart = _svg_crossover(series, K)
     return f'''<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">
       <span class="eyebrow">Gamma-blast verdict · {K:,.0f}</span>
@@ -636,6 +668,37 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
     shown = ("≤" + lbl) if w.get("partial") else lbl
     return (f'<div class="winrow{dim}"><span class="wl">{shown}</span>'
             f'<span class="wbadge {cls}">{txt}</span><span class="wd">{dtxt}</span></div>')
+
+
+def _beep(kind):
+    """Best-effort browser bell via a WebAudio tone. 'fast' = a higher double-beep; 'early' =
+    a single tone. Runs in the main page (st.html + unsafe_allow_javascript) so it shares the
+    page's gesture context — but browser autoplay policy can still mute it until the tab has
+    had a click; the st.toast is the always-on channel. Also fires a desktop Notification if
+    permission was granted."""
+    freq, reps = (880, 2) if kind == "fast" else (660, 1)
+    js = """<script>(function(){try{
+      var C=window.AudioContext||window.webkitAudioContext; if(!C)return;
+      var ctx=new C(); if(ctx.state==='suspended'){ctx.resume();}
+      var t=ctx.currentTime;
+      for(var i=0;i<REPS;i++){var o=ctx.createOscillator(),g=ctx.createGain();
+        o.type='sine';o.frequency.value=FREQ;o.connect(g);g.connect(ctx.destination);
+        g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.3,t+0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001,t+0.35);o.start(t);o.stop(t+0.37);t+=0.45;}
+      if('Notification'in window){if(Notification.permission==='granted'){
+        try{new Notification('Gamma-blast ignition');}catch(e){}}
+        else if(Notification.permission!=='denied'){try{Notification.requestPermission();}catch(e){}}}
+    }catch(e){}})();</script>""".replace("REPS", str(reps)).replace("FREQ", str(freq))
+    try:
+        st.html(js, unsafe_allow_javascript=True)          # main-page, non-deprecated
+    except TypeError:
+        try:
+            import streamlit.components.v1 as components    # older Streamlit fallback (iframe)
+            components.html(js, height=0)
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001 - a bell must never break the render
+        pass
 
 
 def _footprint_html(data, L, idx, ist, is_expiry):
