@@ -193,6 +193,37 @@ era. The §6 bottom line stands: sign-free detectors + the staying-power grade a
 **direction remains dead**. Next step (`docs/TODO.md` [B1]): a first-class blast **backtest**
 with honest IV-crush + fill-realism + era-split cost modelling.
 
+## 7b. Does the GRADE deliver the retail "2–3× premium jump"? (2026-07-15)
+
+We tied the sign-free blast **grade** (TRUE / WEAK / FAKE) to the retail "2–3× in minutes"
+folklore on the 8,142-crossing leak-free dataset (`build_blast_dataset.py`, now storing the
+winning-leg premium multiple; graded offline via the shared `app.gammablast.grade_blast`, so the
+grader can never drift from the live one). The multiple = *winning (ITM-going) leg premium at peak
+/ at entry* over the 40-min payoff window. `scripts/analyze_blast_premium.py`:
+
+| Window | TRUE peak≥3× | WEAK peak≥3× | FAKE peak≥3× |
+|--------|:---:|:---:|:---:|
+| All crossings (DTE≤2.5) | 1% | 1% | 1–2% |
+| 0-DTE | 1% | 1% | 1–2% |
+| **0-DTE afternoon (≥13:45)** | **2%** | **3%** | 2–**8%** |
+
+Findings (NIFTY):
+1. **A ≥3× jump is rare** — ~1% of crossings, and only ~2–3% even in the 0-DTE *afternoon* blast
+   window. (≥2× is ~3–5%, ~8–14% in the afternoon.)
+2. **The grade does NOT pick the 3× winners.** The TRUE bucket is *not* higher than WEAK/FAKE; the
+   cheapest bucket (FAKE "writers defending", median entry ~24 pts) has the *highest* ≥3× rate (8%)
+   — a low-denominator artefact (a small move triples a penny option). The grade measures the
+   staying-power of the **spot move**, not the **premium payoff**.
+3. **In the current Sep25+ (Tuesday-weekly) regime, ZERO afternoon 0-DTE crossings hit ≥3×**
+   (TRUE 0/37, WEAK 0/30). The handful of 3× events are almost all pre-Nov24 (multi-weekly,
+   Thursday) — and even there only ~1–3%.
+
+**Bottom line:** the "2–3× gamma-blast" is a **selection-biased highlight reel** — a ~1–2% tail
+that the grade can't forecast, essentially absent in the current market structure. Consistent with
+§6 / §7a: the grade is honest *confirmation of a break's staying power*, **not** a premium-jump
+predictor. This is exactly why the [B1] backtest (docs/TODO.md) must score the **full lottery
+distribution** with real expiry-afternoon fills, never the mean or a mid-price peak.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):

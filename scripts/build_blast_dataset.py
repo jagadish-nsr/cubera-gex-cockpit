@@ -203,6 +203,14 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                 exc = dirs * (fut - spot[io]) / spot[io] * 100
                 mfe = float(np.nanmax(exc)) if len(exc) else 0.0
                 mae = float(np.nanmin(exc)) if len(exc) else 0.0
+                # winning (ITM-going) leg premium MULTIPLE over the payoff window [io, i+HORIZON]
+                # — the retail "2–3× in minutes" claim. entry = at io (point-in-time entry).
+                entry_prem = itm_l[io]
+                win_leg = itm_l[io:i + HORIZON + 1]
+                have_entry = entry_prem == entry_prem and entry_prem > 0
+                blast_mult_exit = (itm_l[i + HORIZON] / entry_prem) if have_entry else np.nan
+                blast_mult_peak = (float(np.nanmax(win_leg)) / entry_prem
+                                   if (have_entry and len(win_leg)) else np.nan)
                 charm = charm_ex(io, spot[io])                              # signed dealer-charm
                 charm_flow = (charm - charm_ex(i, spot[i])) if T else np.nan
                 rows.append({
@@ -219,6 +227,9 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                     # straddle at the crossed strike K: entry (at io) & exit (at i+HORIZON) premiums
                     "strad_entry": (d["cl"][io] + d["pl"][io]),
                     "strad_exit": (d["cl"][i + HORIZON] + d["pl"][i + HORIZON]),
+                    # winning-leg premium multiple (retail 2–3× claim): entry premium + exit/peak ×
+                    "blast_entry_prem": entry_prem, "blast_mult_exit": blast_mult_exit,
+                    "blast_mult_peak": blast_mult_peak,
                     # intraday futures (NaN where no futures data for the day)
                     "fut_doi": fut_doi, "fut_mom": fut_mom, "fut_to": fut_to,
                 })

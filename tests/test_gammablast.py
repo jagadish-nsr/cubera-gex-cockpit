@@ -1,8 +1,8 @@
 """Gamma-blast crossover logic — pure, hand-checkable (parity-based, sign-free)."""
 
 from app.gammablast import (atm_strike, blast_score, crossover_state,
-                            detect_crossovers, gamma_concentration, next_strike,
-                            pick_anchors, strike_oi, strike_premiums)
+                            detect_crossovers, gamma_concentration, grade_blast,
+                            next_strike, pick_anchors, strike_oi, strike_premiums)
 
 
 def _strikes(spot=24000):
@@ -98,6 +98,26 @@ def test_blast_score_fake_when_writers_defend():
                {"call_oi": 118000, "call_ltp": 95.0, "put_oi": 0, "put_ltp": 0}]
     sc = blast_score("up", crossed)
     assert sc["cover_frac"] > 0 and "FAKE" in sc["grade"] and "defending" in sc["grade"]
+
+
+def test_grade_blast_components_reproduce_the_buckets():
+    # clear path, strong cover + thrust => TRUE
+    assert grade_blast(-0.2, 0.1)["grade"].startswith("TRUE")
+    # same ignition/thrust but a BIG non-eroding wall ahead caps it => WEAK
+    assert "WEAK" in grade_blast(-0.2, 0.1, wall_ratio=9.0, wall_frac=0.0)["grade"]
+    # mild cover, no thrust => WEAK; barely any cover => FAKE (pin/cap)
+    assert "WEAK" in grade_blast(-0.05, 0.0)["grade"]
+    assert grade_blast(-0.01, 0.0)["grade"] == "FAKE-leaning (pin/cap)"
+    # writers ADDING OI (cover>+0.05) => forced FAKE (defending) regardless of score
+    assert "defending" in grade_blast(0.1, -0.1)["grade"]
+
+
+def test_grade_blast_matches_blast_score():
+    # the live blast_score must delegate to grade_blast → identical score/grade
+    crossed = [{"call_oi": 189000, "call_ltp": 109.0}, {"call_oi": 121000, "call_ltp": 129.0}]
+    sc = blast_score("up", crossed)                      # no wall ahead
+    g = grade_blast(sc["cover_frac"], sc["prem_exp"])
+    assert g["score"] == sc["score"] and g["grade"] == sc["grade"]
 
 
 def test_blast_score_defensive_none():
