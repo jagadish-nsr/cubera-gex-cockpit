@@ -524,3 +524,53 @@ tail integral BKM most needs is clipped, and the NIFTY↔BN sign flip may be a t
 different strike grids), and these papers are cross-sectional (rank many names) whereas we have one
 index time series. A full-wing chain (deep OTM) could revisit it, but the prior is now firmly negative.
 Sign-free target; not a trade rule.
+
+## Study #20 — signed INTRADAY momentum (Gao-Han-Li-Zhou): first 30m → last 30m?  → NO
+`scripts/analyze_intraday_tsm.py`. The cheap spot-only directional baseline: does the first 30-min
+return (09:15→09:45) predict the last 30-min return (14:45→15:15)? Point-in-time clean (non-overlapping
+windows), both day-detrended, cost 3bps, high-IV split + Gao "prior-day-last" combo + OOS. Distinct
+from #13 (which found morning *range* predicts afternoon *range* — vol persistence, not signed return).
+
+- **Null both books on robust stats:** Spearman(r_first, r_last) = **+0.040 / −0.047** (NIFTY/BN —
+  sign even flips), sign-agreement **52.8% / 49.3%** (≈ 50% chance). Tercile NOT monotone (NIFTY's
+  FLAT-morning bucket has the *highest* last-half mean; BN inverted).
+- **Not tradeable:** enter-14:45-in-morning's-direction nets +0.07% NIFTY (win 45%) but **OOS −0.024%**;
+  BankNifty −1.49% (outlier-inflated means — lead on the rank IC, which is null). Gao combo negative.
+  High-IV subsample net +0.17% NIFTY (in-sample only, unconfirmed).
+
+**Conclusion:** signed intraday momentum is **dead** on Nifty — IC ≈ 0, sign-agreement at chance,
+non-monotone, OOS negative, cross-book sign-flip. Only the VOL persistence (#13, morning range →
+afternoon range) survives; the signed-return version does not. Directional bet, day-detrended, sign-free
+of the GEX landmine.
+
+## Study #21 — IV SKEW (Xing-Zhang-Zhao) level & change → direction?  → NO
+`scripts/analyze_iv_skew_change.py`. The two-point IV-smirk workhorse: `skew_xing = IV(2%OTM put) −
+IV(ATM)` and the risk-reversal `rr = IV(2%OTM put) − IV(2%OTM call)`, from the real per-strike Dhan IV
+smile at 09:20. Three predictors — LEVEL, DAILY Δskew, and the intraday-Δskew MOMENTUM (09:15→09:45 →
+return 09:45→15:15, point-in-time) — vs day-detrended forward returns, IV+DTE vol-partial, tercile, OOS.
+
+- **Measurement is CLEAN (a strong null):** skew_xing median **+4.58** vol-pts (NIFTY) / **+2.86** (BN),
+  rr +3.10 / +2.90 — correctly positive, put IV richer than ATM (downside fear priced), and *stable
+  across both books* (unlike the truncated BKM moment #19, which flipped sign). So the signal is
+  genuinely absent, not obscured by measurement.
+- **No predictor clears noise:** every IC (level, Δskew, momentum) sits in **±0.01…±0.07** raw and
+  after partial|IV+DTE. The largest cross-book-consistent one is intraday-Δskew momentum (−0.027 /
+  −0.058) but it's tiny, vol-fragile, and unconfirmed by tercile/OOS.
+- **Tercile & OOS inconsistent:** NIFTY intraday HIGH−LOW +0.26% but next1 −0.08% (flips); BankNifty
+  the opposite pattern (+0.06% / +0.64%). OOS next1 spread −0.002% (NIFTY) / +0.089% (BN) ≈ noise.
+
+**Conclusion:** IV skew — level or change — carries **no stable directional edge** for either index.
+Because the level sign is economically correct and cross-book-stable, this is a *strong* null: the
+best-documented two-point option-skew signal in the literature simply doesn't predict Nifty direction.
+Joins RN-skew (#19), momentum (#20), pins (#12/#14/#16), participant-OI, and futures. Sign-free.
+
+---
+
+### Direction-family scoreboard (as of Study #21)
+Every option-implied *directional* signal the literature pull flagged has now been tested on both books
+and come back **NULL**: dealer-gamma pins (#12/#14/#16), participant/OI flow, futures, RN skewness
+(#19, BKM), signed intraday momentum (#20), IV-skew level & change (#21). The single surviving edge is
+**vol/short-premium** — sell rich IV (S6/S11) plus the confirmed next-day *vol*-regime persistence
+(#17). Direction is dead on Nifty at every horizon we can measure; the tool is decision-support, and
+the one thing that pays is being the vol seller, sized for the tail. This closes the directional
+re-examination prompted by the Claude-Web literature review.
