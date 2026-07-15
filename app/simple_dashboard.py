@@ -503,6 +503,33 @@ def _blast_hero(data, L, ist):
     cover = sc.get("cover_frac")
     wr = sc.get("wall_ratio")
     fillc = "var(--go)" if run else "var(--warn)"
+
+    # ── ignition TIMING (§7d): how fast did the score reach TRUE from the cross? ──
+    def _m(t):
+        try:
+            h, mm = str(t).split(":"); return int(h) * 60 + int(mm)
+        except (ValueError, AttributeError):
+            return None
+    times = [t for t, _ in win]
+    traj = [(blast_score(direction, crossed[: j + 1], ahead) or {}).get("score", 0)
+            for j in range(len(crossed))]
+    t0 = _m(times[0]) if times else None
+    since = max(0, (ist.hour * 60 + ist.minute) - t0) if t0 is not None else None
+    k_true_min = next((_m(times[j]) - t0 for j, s in enumerate(traj)
+                       if s >= 60 and t0 is not None), None)
+    if k_true_min is not None and k_true_min <= 5:
+        tcls, tlab, tnote = "bull", f"⚡ Fast TRUE (+{k_true_min}m)", "Best setup — ignited within 5 min of the cross."
+    elif k_true_min is not None:
+        tcls, tlab, tnote = "cover", f"Slow TRUE (+{k_true_min}m)", "Confirmed but late — weaker than a fast ignition."
+    elif since is not None and since <= 5:
+        tcls, tlab, tnote = "flat", f"Watching (+{since}m)", "Needs score ≥45 by ~3 min to likely reach TRUE."
+    else:
+        tcls, tlab, tnote = "bear", f"No ignition (+{since}m)", "No TRUE within 5 min — usually fizzles; lean fade."
+    traj_txt = " → ".join(f"{s:.0f}" for s in traj[-5:])
+    timing_html = (f'<div class="winstrip" style="margin-top:12px"><div class="winrow">'
+                   f'<span class="wl">Timing</span><span class="wbadge {tcls}">{tlab}</span>'
+                   f'<span class="wd">{traj_txt}</span></div>'
+                   f'<div class="win-cap">{tnote}</div></div>')
     chart = _svg_crossover(series, K)
     return f'''<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">
       <span class="eyebrow">Gamma-blast verdict · {K:,.0f}</span>
@@ -513,6 +540,7 @@ def _blast_hero(data, L, ist):
         <span><b class="mono">{score}</b> / 100 · {grade}</span></div>
         <div class="track"><div class="fill" style="width:{max(3,min(score,100))}%;background:{fillc}"></div></div>
         <div class="ticks"><span>Fake / pin</span><span>Toss-up</span><span>Real run</span></div></div>
+      {timing_html}
       <div class="blast-stats">
         <div><small>{sc.get("itm_side","")}-writer OI change</small>
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
