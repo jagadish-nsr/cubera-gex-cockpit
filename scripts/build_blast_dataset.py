@@ -224,6 +224,7 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                 # (fast-vs-slow apples-to-apples, no lookahead). aoi_up = wall-ahead OI series.
                 aoi_t = (dah["co"] if up else dah["po"]) if dah is not None else None
                 k_true = np.nan
+                score5 = np.nan                                            # score at the FIRST 5-min step
                 for kk in range(1, K_MAX_TRIG + 1):
                     j = i + kk
                     if j >= n or itm_o[j] != itm_o[j] or itm_l[j] != itm_l[j]:
@@ -233,7 +234,10 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                     wr_k = (aoi_t[j] / itm_o[j]) if (aoi_t is not None and itm_o[j]
                             and aoi_t[j] == aoi_t[j]) else 0.0
                     we_k = _frac(aoi_t[i], aoi_t[j]) if aoi_t is not None else 0.0
-                    if grade_blast(cov_k, thr_k, wr_k, we_k)["score"] >= 60:
+                    sc_k = grade_blast(cov_k, thr_k, wr_k, we_k)["score"]
+                    if kk == 1:
+                        score5 = sc_k                                       # early read (5 min in)
+                    if sc_k >= 60:
                         k_true = kk                                         # first TRUE (5·kk min)
                         break
                 cont_after = mult_after_peak = np.nan
@@ -265,7 +269,8 @@ def _day_rows(store, day, dte, gex_map, futm=None):
                     "blast_mult_peak": blast_mult_peak,
                     # grade trajectory: steps-to-first-TRUE (NaN=never within 30m) + outcome over a
                     # fixed 20-min window AFTER the trigger (speed-of-ignition study)
-                    "k_true": k_true, "cont_after": cont_after, "mult_after_peak": mult_after_peak,
+                    "k_true": k_true, "score5": score5,
+                    "cont_after": cont_after, "mult_after_peak": mult_after_peak,
                     # intraday futures (NaN where no futures data for the day)
                     "fut_doi": fut_doi, "fut_mom": fut_mom, "fut_to": fut_to,
                 })

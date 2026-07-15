@@ -256,6 +256,42 @@ are worse, so treat the rates as optimistic). This is the most promising blast r
 the concrete hypothesis for the [B1] backtest: *enter on a FAST/early TRUE, size by ignition speed,
 model the fills honestly.* The `k_true` / static-grade / post-trigger fields now live in the dataset.
 
+## 7d. 1-MINUTE ignition timing & the WEAK cutoff (2026-07-15)
+
+The Dhan store is genuinely **1-minute** (premium AND OI both update every minute) — the 5-min
+dataset just downsampled it. `scripts/analyze_blast_timing.py` reads the raw store at 1-min, detects
+each first near-money crossing, and builds the blast-score trajectory **minute-by-minute** from the
+cross (0-DTE only; 3,108 crossings / 458 days). Direction isn't the question — the rising leg *is*
+the direction — so this purely times the winning-leg premium.
+
+- **Sub-5-min ignition is real and is the best signal.** 83% never ignite; of the 17% that do,
+  **43% reach TRUE within 5 min** (median time-to-TRUE 6 min). Post-trigger, **≤5-min-TRUE** dominates:
+  0-DTE afternoon **P(≥1.5×) = 36%** (median 1.27×, ≥2× 11%) vs 6-10 min 15% and 11-15 min 19%.
+- **There IS a WEAK cutoff — and it's early.** Bucketing by the **score at 3 min** (0-DTE afternoon),
+  P(reach TRUE ≤15 min) rises monotonically:
+
+  | score@3min | reach TRUE | of which ≤5 min | good ≥1.5× |
+  |---|---:|---:|---:|
+  | <25 (dead) | 7% | 0% | — |
+  | 25-34 | 13% | 8% | 8% |
+  | **35-44** (WEAK-lo) | 37% | 19% | 23% |
+  | **45-54** (WEAK-hi) | **54%** | 29% | 14% |
+  | **55-59** (near-TRUE) | **90%** | 67% | 33% |
+  | ≥60 (TRUE@3m) | 100% | 100% | 35% |
+
+  So a WEAK is **not one thing**: a **score@3min ≥ 45** upgrades to TRUE more than half the time (≥55
+  → 90%, two-thirds of them within 5 min), while a WEAK-lo (<45) mostly fizzles. The early score is a
+  strong, actionable read of whether waiting on a WEAK will pay.
+- **Holds in the current regime** (small n): 0-DTE-afternoon ≤5-min-TRUE good-blast rate — pre-Nov24
+  33%, Nov24-Aug25 50%, **Sep25+ 27%** (n≈11).
+
+**Takeaways** (answering the asks): (1) **time-from-cross is a real factor** — ignition speed and the
+early-score slope should feed the score/entry, not just the static grade; the concrete rule is *act on
+a fast rise to score ≥45 within ~3 min; a ≤5-min TRUE is the premium sweet spot*. (2) The WEAK band
+splits cleanly at **~45-55 @3min**. Caveats stay: 83% never ignite (no-go filter first), high-score
+bands are small-n, and multiples are **MID peaks** (real expiry-afternoon fills are worse). This is the
+1-min entry model for the [B1] backtest.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):
