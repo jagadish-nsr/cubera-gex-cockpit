@@ -5,7 +5,16 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ⬜ TODO
+## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ✅ DONE (2026-07-15 — `scripts/backtest_gamma_blast.py` on the 1-min entry model; verdict: real selector, NOT tradeable after spread — see gamma-blast-research.md §7e)
+
+**Result:** built the 1-min crossing/trajectory primitives (`scripts/_blast1min.py`), the 1-min timing
+study (§7d) and the backtest (§7e). The fast-TRUE entry model beats a naive baseline and is +3.2%/trade
+at mid, but breakeven is ~2-3% half-spread and it's negative (−11.4% in the current Sep25+ regime) after
+realistic expiry-afternoon fills. Honest use = a live confirmation-quality readout, not automation.
+Follow-on left open: a straddle (directionless) variant, and a real bid/ask fill model if book data
+appears.
+
+## 2026-07-15 IST — [B1-orig] Gamma-blast BACKTEST skill (original spec)  ⬜ superseded by the DONE entry above
 
 **Why:** we have detectors, IC studies, and a sign-free staying-power grade (`analyze_blast`,
 Spearman +0.70, n=57, all in the current Sep25+ Tuesday era), but **no first-class backtest** of the

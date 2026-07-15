@@ -45,85 +45,30 @@ def _mins(t: str) -> int:
 
 def _day_rows(store, day, dte):
     import numpy as np
-    from data.dhan import load_intraday_day
-    from app.gammablast import grade_blast
-
-    df = load_intraday_day(store, day)
-    if df is None or df.empty:
+    from _blast1min import (crossings, first_true, load_day, trajectory_scores,
+                            winning_leg)
+    d = load_day(store, day)
+    if d is None or d["n"] < SEARCH + FWD + 5:
         return []
-    stamps = sorted(df["time_ist"].unique(), key=_mins)
-    idx = {t: i for i, t in enumerate(stamps)}
-    n = len(stamps)
-    if n < SEARCH + FWD + 5:
-        return []
-    spot = np.full(n, np.nan)
-    for t, v in df.groupby("time_ist")["spot"].first().items():
-        spot[idx[t]] = v
-    CL, PL, CO, PO = {}, {}, {}, {}
-
-    def _ser(g, col):
-        a = np.full(n, np.nan)
-        for t, v in g.set_index("time_ist")[col].items():
-            if t in idx:
-                a[idx[t]] = v
-        return a
-    for (K, sd), g in df.groupby(["strike", "side"]):
-        g = g.drop_duplicates("time_ist")
-        if sd == "CE":
-            CL[K], CO[K] = _ser(g, "close"), _ser(g, "oi")
-        else:
-            PL[K], PO[K] = _ser(g, "close"), _ser(g, "oi")
-    strikes = sorted(K for K in CL if K in PL)
-    if len(strikes) < 5:
-        return []
-    step = min((b - a) for a, b in zip(strikes, strikes[1:]))
-
-    def _frac(a, b):
-        return (b - a) / a if (a and a == a and b == b) else 0.0
-
+    spot, n = d["spot"], d["n"]
     rows = []
-    for K in strikes:
-        cl, pl = CL[K], PL[K]
-        diff = np.where((cl == cl) & (pl == pl), cl - pl, np.nan)
-        seen = set()
-        for i in range(1, n):
-            a, b = diff[i - 1], diff[i]
-            if not (a == a and b == b):
-                continue
-            up = a < 0 <= b
-            dn = a > 0 >= b
-            if not (up or dn) or (K, up) in seen:
-                continue
-            if abs(K - spot[i]) > NEAR * step or i + SEARCH + FWD >= n:
-                continue
-            seen.add((K, up))
-            dirs = 1.0 if up else -1.0
-            itm_l = cl if up else pl
-            itm_o = CO[K] if up else PO[K]
-            Kah = K + step if up else K - step
-            aoi = (CO.get(Kah) if up else PO.get(Kah))
-            scores = {}
-            for m in range(1, SEARCH + 1):
-                j = i + m
-                if itm_o[j] != itm_o[j] or itm_l[j] != itm_l[j]:
-                    continue
-                wr = (aoi[j] / itm_o[j]) if (aoi is not None and itm_o[j] and aoi[j] == aoi[j]) else 0.0
-                we = _frac(aoi[i], aoi[j]) if aoi is not None else 0.0
-                scores[m] = grade_blast(_frac(itm_o[i], itm_o[j]), _frac(itm_l[i], itm_l[j]), wr, we)["score"]
-            k_true = next((m for m in range(1, SEARCH + 1) if scores.get(m, -1) >= 60), np.nan)
-            cont_after = mult_after = np.nan
-            if k_true == k_true:
-                trig = i + int(k_true)
-                end = trig + FWD
-                tp = itm_l[trig]
-                if end < n and spot[trig] == spot[trig] and spot[end] == spot[end] and tp and tp == tp and tp >= PREM_FLOOR:
-                    cont_after = dirs * (spot[end] - spot[trig]) / spot[trig] * 100
-                    seg = itm_l[trig:end + 1]
-                    mult_after = float(np.nanmax(seg)) / tp
-            rows.append({"day": day, "dte": dte, "tod": _mins(stamps[i]),
-                         "k_true": k_true, "score1": scores.get(1, np.nan),
-                         "score3": scores.get(3, np.nan), "score5": scores.get(5, np.nan),
-                         "cont_after": cont_after, "mult_after": mult_after})
+    for cr in crossings(d, SEARCH + FWD):
+        i, dirs = cr["i"], cr["dirs"]
+        itm_l = winning_leg(d, cr)
+        scores = trajectory_scores(d, cr, SEARCH)
+        k_true = first_true(scores, SEARCH)
+        cont_after = mult_after = np.nan
+        if k_true is not None:
+            trig, end = i + k_true, i + k_true + FWD
+            tp = itm_l[trig]
+            if end < n and spot[trig] == spot[trig] and spot[end] == spot[end] and tp and tp == tp and tp >= PREM_FLOOR:
+                cont_after = dirs * (spot[end] - spot[trig]) / spot[trig] * 100
+                mult_after = float(np.nanmax(itm_l[trig:end + 1])) / tp
+        rows.append({"day": day, "dte": dte, "tod": cr["tod"],
+                     "k_true": float(k_true) if k_true is not None else np.nan,
+                     "score1": scores.get(1, np.nan), "score3": scores.get(3, np.nan),
+                     "score5": scores.get(5, np.nan),
+                     "cont_after": cont_after, "mult_after": mult_after})
     return rows
 
 

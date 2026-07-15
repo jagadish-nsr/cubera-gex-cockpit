@@ -292,6 +292,33 @@ splits cleanly at **~45-55 @3min**. Caveats stay: 83% never ignite (no-go filter
 bands are small-n, and multiples are **MID peaks** (real expiry-afternoon fills are worse). This is the
 1-min entry model for the [B1] backtest.
 
+## 7e. [B1] Backtest of the 1-min entry model (2026-07-15)
+
+`scripts/backtest_gamma_blast.py` trades the §7d model directly: at each 0-DTE crossing, enter the
+**rising (winning) leg** the moment the score first hits TRUE within ≤5 min ("fast TRUE"); exit +50%
+target / −30% stop / 15-min time. IV crush needs no model (real 1-min premium path); a spread cost is
+swept; compared to a naive "enter every crossing" baseline; era-split. 246 model trades / 458 0-DTE
+days (~0.5/day).
+
+| rule / half-spread | win% | expectancy/trade | payoff | target-hit |
+|---|---:|---:|---:|---:|
+| **MODEL @0% (mid)** | 52% | **+3.2%** | 1.13× | 21% |
+| MODEL @3% | 46% | **−2.8%** | 0.94× | 21% |
+| MODEL @6% | 42% | −8.5% | 0.71× | 21% |
+| BASELINE @0% | 42% | −1.7% | 1.16× | 10% |
+| BASELINE @3% | 33% | −7.5% | 0.97× | 10% |
+
+**Verdict — a real signal, not a tradeable edge.** The model has a genuine *structural* edge at
+mid-price (+3.2%/trade, target-hit 2× the baseline) and **decisively beats indiscriminate entry** — so
+the fast-TRUE trigger is a real selector, confirming §7d. But it **does not survive transaction costs**:
+breakeven is ~2-3% half-spread, and it goes negative there — worst in the **current regime** (era split
+@3%: pre-Nov24 +0.8%, Nov24-Aug25 −3.8%, **Sep25+ −11.4%**; afternoon-only −4.1%). This is exactly the
+IV-crush + fill-realism story the literature warns about, quantified: the edge is real but **thinner
+than the spread you actually pay on expiry-afternoon options.** Consistent with the whole arc —
+decision-support, not alpha. Caveats: mid-close fills (real book worse), close-to-close exits, first-TRUE
+trigger, sign-free. **[B1] is answered:** the honest use is a live *confirmation-quality* readout (see
+the dashboard timing panel), not an automated trade.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):
