@@ -85,6 +85,33 @@ not prediction.** (Turnover-ignition and two-sided-parity add-ons were tested an
 The FII signal's **monotonic decay** (−0.74 → −0.21 → −0.10 as n went 11 → 154 → 352) is the
 textbook signature of a small-sample mirage.
 
+### 4c. Direction-family re-examination — full sample (~5 yrs, both books), all NULL
+After a literature review (Pan-Poteshman flow, Xing-Zhang-Zhao skew, Bakshi-Kapadia-Madan risk-
+neutral moments, Gao-Han-Li-Zhou intraday momentum, Barbon-Buraschi dealer-gamma) we re-tested every
+option-implied **directional** family it flagged — this time on the **Dhan 1-min store (~5 yrs, ATM±10
+options + IV, NIFTY *and* BankNifty, n≈1200 days each)**, with day-detrended forward returns, IV+DTE
+vol-partials, tercile spreads, and walk-forward OOS. Every one came back null:
+
+| Family (study) | NIFTY | BankNifty | Verdict |
+|---|---|---|---|
+| Dealer-gamma **pins** — magnet-lock / wall-break / ORB (#12/#14/#16) | ~0 | ~0 | NULL (generic mean-reversion, not OI pinning) |
+| **Participant / OI** flow (#4/#5, §4b) | −0.02 | — | NULL (decayed from small-n) |
+| **Futures OI** build-up (§4a/4b) | ~0 | — | NULL |
+| **RN skewness** — BKM whole-chain (#19) | IC −0.05, tercile −0.33% | +0.06, +0.46% | NULL — *and sign flips across books* (weak null: ±2.3% wing truncation clips the tail integral) |
+| Signed **intraday momentum** — first 30m→last 30m (#20) | Spearman +0.040, agree 52.8% | −0.047, 49.3% | NULL (OOS negative, non-monotone, sign-flip) |
+| **IV-skew** level & change — Xing-Zhang-Zhao (#21) | every IC ≤ \|0.05\| | ≤ \|0.07\| | **STRONG NULL** — skew level economically correct & cross-book-stable (+4.58/+2.86 vol-pts), signal still absent |
+
+The IV-skew result (#21) is the cleanest: the two-point smirk is *measured correctly* (put IV richer
+than ATM, downside fear priced, stable both books) yet predicts nothing — the best-documented option-
+skew signal in the literature does not call Nifty direction. The literature was right about **where the
+alpha lives** (variance/skew *risk premium* — the sell side) and right that the flow signals need
+**trade-initiation signing we cannot replicate** from chain data.
+
+**The one surviving edge is VOL / short-premium:** selling rich IV (backtest S6 → S11, leak-free
+IV-rank + intraday stop) plus the confirmed **next-day vol-regime persistence** (#17 — today's |vanna|
+forecasts tomorrow's realized range beyond today's move; regime sticky ~56–62% DTE-stripped). Both are
+*volatility* reads, not direction. See `docs/intraday-results.md` (#12–#21) and `docs/strategy-chart.html`.
+
 ## 5. What holds up (it isn't nothing)
 0. **Dealer-gamma concentration → forward realized VOLATILITY** (the strongest, most
    theory-consistent result). On 2 yrs of raw bhavcopy, **|GEX| → forward RV is inversely
@@ -114,15 +141,18 @@ regime, participant flows, gamma state, and the validated blast staying-power gr
 useful, and matches what the data can actually support.
 
 ## 7. Honest caveats
-- **One market regime.** Most captured data spans a few months of 2026 (intraday) / ~2 years
-  (daily EOD) — largely one macro backdrop. A different regime could differ.
+- **Regime coverage — now broad.** The Dhan 1-min backfill (§4c) extends the intraday studies to
+  **~5 years (2021–2026), both books**, spanning multiple macro regimes — the direction nulls are no
+  longer resting on a few months. (Daily EOD studies remain ~2 yrs.)
 - **Sign-of-signal open.** The dealer-sign landmine is *leaning* toward inversion, not resolved;
   we deliberately never traded a flipped sign.
 - **Approximate flow.** The strongest US results use *signed* option flow (buyer/seller-
   initiated); we only *approximate* signing (build-up matrix / OI-change), a known weakness.
-- **Intraday history is not free.** We could not backfill intraday OI (NSE publishes it live
-  only); the intraday nulls rest on the months we captured, not years. A broker/vendor feed
-  could extend them — but given the consistent nulls, that spend is not currently justified.
+- **Intraday history — now backfilled.** The Dhan `rollingoption` feed (~5 yrs of 1-min ATM±10
+  options with OI + IV, both books) closed the gap the live-only NSE OI left; the §4c direction nulls
+  now rest on years, not months. Two doors stay open but low-prior: a **full-wing (deep-OTM) chain**
+  could revisit BKM #19 (our ATM±10 store truncates at ±2.3%), and the source papers are
+  **cross-sectional** (rank many names) whereas we test a single index time series.
 
 ## 8. Where this leaves the project
 Reposition from **"find a signal"** to **"maintain a best-in-class decision-support dashboard +
