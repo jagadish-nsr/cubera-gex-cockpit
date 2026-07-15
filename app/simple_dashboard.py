@@ -73,9 +73,12 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .rb-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
 .simp .rb-vals{font-size:.86rem;color:var(--ink-2)}.simp .rb-vals b{color:var(--ink);font-weight:700}
 .simp .rb-scale{position:relative}
-.simp .rb-track{height:8px;border-radius:999px;background:var(--inset);overflow:hidden}
+.simp .rb-track{height:8px;border-radius:999px;background:var(--inset);overflow:hidden;position:relative}
 .simp .rb-fill{height:100%;border-radius:999px;background:var(--spark);opacity:.5}
-.simp .rb-mark{position:absolute;top:6px;transform:translateX(-50%);font-size:.66rem;line-height:1;color:var(--spark)}
+.simp .rb-band{position:absolute;top:0;bottom:0;background:var(--ink-mute);opacity:.28;border-radius:999px}
+.simp .rb-tick{position:absolute;top:-2px;height:12px;width:2px;border-radius:2px;transform:translateX(-50%)}
+.simp .rb-tick.put{background:var(--go)}.simp .rb-tick.call{background:var(--stop)}.simp .rb-tick.mag{background:var(--spark)}
+.simp .rb-mark{position:absolute;top:6px;transform:translateX(-50%);font-size:.66rem;line-height:1;color:var(--ink)}
 .simp .rb-ends{display:flex;justify-content:space-between;font-size:.66rem;color:var(--ink-mute);margin-top:9px}
 .simp .rb-ends .lo{color:var(--go)}.simp .rb-ends .hi{color:var(--stop)}
 .simp .rb-note{font-size:.78rem;color:var(--go);font-weight:600}
@@ -344,8 +347,6 @@ def main():
         st.session_state["simp_hl"] = hl
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
     span = hl["hi"] - hl["lo"]
-    # where spot sits within today's low→high band (for the ▲ marker); 50% before any range
-    pos = max(0.0, min(100.0, (L.spot - hl["lo"]) / span * 100.0)) if span > 0 else 50.0
 
     vix = data.india_vix or {}
     vtxt = (f"VIX {vix['last']:.1f}" + (f" · {vix['pct_change']:+.1f}%" if vix.get('pct_change') is not None else "")
@@ -373,11 +374,10 @@ def main():
         pct = span / L.spot * 100.0
         note = (f'<span class="rb-note">🎯 Still tight ({pct:.1f}% so far) — blast-friendly if a cross fires.</span>'
                 if pct < 1.0 else f'<span class="rb-cav">Range already {pct:.1f}% — less blast-friendly.</span>')
+    scale = _range_scale(hl, L, span)
     H.append(f'''<div class="rangebar card"><div class="rb-top"><span class="eyebrow">Today's range so far</span>
       <span class="rb-vals mono">{f(hl["lo"])} – {f(hl["hi"])} · <b>{f(span)} pts</b>{f" of ~{f(exp_pts)}" if exp_pts else ""}</span></div>
-      <div class="rb-scale"><div class="rb-track"><div class="rb-fill" style="width:{pos:.1f}%"></div></div>
-        <div class="rb-mark" style="left:{pos:.1f}%" title="spot {f(L.spot)}">▲</div></div>
-      <div class="rb-ends"><span class="lo">low {f(hl["lo"])}</span><span class="hi">high {f(hl["hi"])}</span></div>
+      {scale}
       {note}<span class="rb-cav">≈ from today's saved snapshots — can miss fast spikes (true range may be wider).</span></div>''')
 
     # news override
@@ -518,6 +518,32 @@ def _blast_hero(data, L, ist):
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
         <div><small>Wall ahead</small><b class="down mono">{f(wr,1)+"×" if wr is not None else "—"}</b><em>cap overhead</em></div>
       </div>{chart}</div>'''
+
+
+def _range_scale(hl, L, span):
+    """The range-bar scale. When the put/call walls are present it plots on the WALL BAND
+    axis (put wall → call wall): today's low→high is a highlighted segment, thin colour
+    ticks mark put wall (🟢 left), magnet (indigo), call wall (🔴 right), and ▲ is spot —
+    so walls are actually visible (they sit outside the day's realised range). Falls back
+    to a plain low→high axis (spot ▲ + low/high labels) if the walls are missing."""
+    cw, pw, mg = L.call_wall, L.put_wall, L.magnet
+    if cw is not None and pw is not None and cw > pw:
+        def _px(v):
+            return None if v is None else max(0.0, min(100.0, (v - pw) / (cw - pw) * 100.0))
+        a, b, sp, mgp = _px(hl["lo"]), _px(hl["hi"]), _px(L.spot), _px(mg)
+        ticks = ('<span class="rb-tick put" style="left:0%"></span>'
+                 '<span class="rb-tick call" style="left:100%"></span>')
+        if mgp is not None:
+            ticks += f'<span class="rb-tick mag" style="left:{mgp:.1f}%" title="magnet {f(mg)}"></span>'
+        return (f'<div class="rb-scale"><div class="rb-track">'
+                f'<div class="rb-band" style="left:{a:.1f}%;width:{max(0.0, b - a):.1f}%"></div></div>'
+                f'{ticks}<div class="rb-mark" style="left:{sp:.1f}%" title="spot {f(L.spot)}">▲</div></div>')
+    # fallback: no walls → plain low→high axis with the spot marker
+    pos = max(0.0, min(100.0, (L.spot - hl["lo"]) / span * 100.0)) if span > 0 else 50.0
+    return (f'<div class="rb-scale"><div class="rb-track"><div class="rb-fill" style="width:{pos:.1f}%"></div></div>'
+            f'<div class="rb-mark" style="left:{pos:.1f}%" title="spot {f(L.spot)}">▲</div></div>'
+            f'<div class="rb-ends"><span class="lo">low {f(hl["lo"])}</span>'
+            f'<span class="hi">high {f(hl["hi"])}</span></div>')
 
 
 def _persist_snapshot(data, symbol, min_gap):

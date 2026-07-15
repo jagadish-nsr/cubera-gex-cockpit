@@ -16,11 +16,14 @@ Design mockup (static, real 15-Jul numbers): the published Artifact `simple_dash
 - **Market gauge** — spot, a calm/normal/wild mood chip, and the **expected day range in points**,
   tiered by the |vanna|/charm bucket (`regime_daily_move_now`) — e.g. *"Calm → ≈180 pts, likely
   24,000–24,180"*. This replaces the percentile wording with a concrete number.
-- **Today's range so far** — a low→high position bar with a **▲ marker at the current spot**, the
-  low/high endpoints, and the expiry-day **blast-compression flag** (`H–L before 1:45 < 1%` →
-  "blast-friendly"). The low/high are **seeded from today's saved snapshots** (union of the
-  `timeseries` + `oi_strikes` `spot` columns), so opening/restarting mid-day recovers the whole
-  session, then extended with the live spot. ⚠️ see the granularity caveat below.
+- **Today's range so far** — plotted on the **wall-band axis** (put wall → call wall): today's
+  low→high is a highlighted segment, thin colour ticks mark **put wall** (🟢 left), **magnet**
+  (indigo), **call wall** (🔴 right), and **▲ is the current spot** — so the walls are visible even
+  though they sit outside the realised range (a plain low→high axis is the fallback when walls are
+  missing). Plus the expiry-day **blast-compression flag** (`H–L before 1:45 < 1%` → "blast-friendly").
+  The low/high are **seeded from today's saved snapshots** (union of the `timeseries` + `oi_strikes`
+  `spot` columns), so opening/restarting mid-day recovers the whole session, then extended with the
+  live spot. ⚠️ see the granularity caveat below.
 - **News override** — a prominent banner when the day is headline-driven (the GEX read is confounded).
 - **Gamma-blast verdict** (expiry days) — one plain verdict (RUN / FAKE), the **True-run score**
   (0–100), **OI change** (call-writer ΔOI) + wall-ahead, a call-vs-put crossover chart, and the
