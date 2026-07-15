@@ -493,3 +493,34 @@ straddle P&L at BOTH horizons — intraday (#11b) and now hold-to-expiry (#18). 
 is selling high IV generally (raw VRP = crash-risk compensation, priced), and |vanna| adds nothing
 beyond IV. **T4b is closed: no tradeable vanna vol-alpha.** Vol stays a REGIME read (now with a
 confirmed next-day persistence edge, #17), not a straddle-timing signal. Sign-free.
+
+## Study #19 — model-free risk-neutral SKEWNESS (Bakshi-Kapadia-Madan) → direction?  → NO
+`scripts/analyze_rn_skew.py`. The whole-chain successor to `analyze_skew.py` (a crude 3%-OTM
+premium-ratio proxy). BKM recovers RN skewness by integrating OTM option **prices** across the full
+09:20 cross-section — `V,W,X = ∫ g·M dK`, `M = call if K>S else put`; with the engine's `r=q=0` the
+call/put kernels collapse to one continuous function of `x=ln(K/S)` and **RN skewness is T-free** (no
+expiry-landmine dependence). Tested vs day-detrended forward return (intraday 09:20→15:15, next1/next2
+15:15→15:15), IV+DTE vol-partial, tercile spread, walk-forward OOS. NIFTY 1233 days, BankNifty 1187.
+Literature (Xing-Zhang-Zhao; Bali-Murray; Guo et al. SSE50-ETF): steeper/more-negative RN skew tends
+to precede HIGHER returns cross-sectionally (skewness preference) — sign reported, not assumed.
+
+- **Level sanity:** NIFTY median RN skew **−0.179** (correctly negative — equity index left tail is
+  priced). BankNifty median **+0.060** (positive) — already a red flag that the truncated-±2.3% wing
+  is not measuring a stable economic quantity across the two strike grids (NIFTY step 50, BN step 100).
+- **IC is null and vol-fragile:** raw Spearman(RN skew, fwd) ranges −0.01…−0.07 both books; **partial
+  |IV+DTE ≈ −0.005…−0.065** — no horizon clears noise.
+- **Tercile spread FLIPS sign across books:** NIFTY intraday HIGH−LOW **−0.33%** but next1/next2
+  **+0.08/+0.28%** (not monotone); BankNifty all-positive (+0.46/+0.99/+0.46%) — i.e. the *opposite*
+  cross-book sign. The one eye-catching number (BN next1 HIGH-skew +1.07%) is contradicted by NIFTY.
+- **OOS confirms nothing:** frozen-edge long-low/short-high spread +0.09% (BN) / −0.11% (NIFTY), both
+  ≈ noise and neither agreeing with its own in-sample tercile direction (the skew *level* drifts across
+  the 5-yr window, so frozen edges barely populate the test-set "low" bucket — 30–67 days).
+
+**Conclusion:** RN skewness carries **no stable directional edge** for either index — null IC,
+sign-flips across books, no OOS confirmation. Extends the direction-is-dead arc (#12/#14/#16 pins,
+participant-OI, futures) to the option-implied-asymmetry family the literature is strongest on. Two
+honest caveats keep it from being a *strong* null: the ATM±10 store truncates the wings at ~±2.3% (the
+tail integral BKM most needs is clipped, and the NIFTY↔BN sign flip may be a truncation artifact of the
+different strike grids), and these papers are cross-sectional (rank many names) whereas we have one
+index time series. A full-wing chain (deep OTM) could revisit it, but the prior is now firmly negative.
+Sign-free target; not a trade rule.
