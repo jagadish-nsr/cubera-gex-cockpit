@@ -671,19 +671,16 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
     if w is None:
         return (f'<div class="winrow dim"><span class="wl">{lbl}</span>'
                 '<span class="wbadge flat">— building…</span><span class="wd"></span></div>')
-    cls, txt = {"put-writing": ("bull", "🟢 Puts → support"),
-                "call-writing": ("bear", "🔴 Calls → resistance"),
+    cls, txt = {"put-writing": ("bull", "🟢 Puts written → support"),
+                "put-buying": ("bear", "🔴 Puts bought → bearish"),
+                "call-writing": ("bear", "🔴 Calls written → resistance"),
+                "call-buying": ("bull", "🟢 Calls bought → bullish"),
                 "balanced": ("flat", "· Balanced"),
                 "thin": ("flat", "· Thin build")}.get(w["label"], ("flat", "· —"))
-    net = w.get("net") or 0.0
-    if w["label"] in ("put-writing", "call-writing"):
-        if w.get("unit") == "inr":                       # ₹ turnover = ΔOI × premium × lot
-            money = f'{"+" if net >= 0 else "−"}{_money(abs(net))}'
-        else:
-            money = f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
-    else:
-        money = ""
-    peak = f'@{f(w["peak_strike"])}' if w.get("peak_strike") else ""   # max-turnover strike this window
+    directional = w["label"] in ("put-writing", "put-buying", "call-writing", "call-buying")
+    val = w.get("flow_val") or 0.0                        # dominant flow magnitude (unsigned)
+    money = (_money(val) if w.get("unit") == "inr" else f"{f(val)}") if directional else ""
+    peak = f'@{f(w["peak_strike"])}' if w.get("peak_strike") else ""   # top strike this window
     dtxt = " · ".join(x for x in (money, peak) if x)
     dim = " dim" if (is_expiry and minutes <= 15) else ""     # short windows churn on expiry
     shown = ("≤" + lbl) if w.get("partial") else lbl
@@ -832,7 +829,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min. @ = top strike.'
            if is_expiry else '₹ turnover (ΔOI×premium×lot), current expiry · @ = strike taking the '
                              'most money that window. Context, not a prediction.')
-    strip = (f'<div class="winstrip"><div class="win-hd">Fresh writing — trailing windows</div>'
+    strip = (f'<div class="winstrip"><div class="win-hd">Fresh positioning — trailing windows</div>'
              f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
 
     # where the biggest ₹ of FRESH writing is landing today (single strike, since open) — user ask

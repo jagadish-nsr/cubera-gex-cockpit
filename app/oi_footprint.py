@@ -190,14 +190,16 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     the *money* is building (10k lots of a 5-pt option ≪ 5k lots of a 100-pt option). ``unit``
     is then "inr" (net is ₹), else "lots".
 
-    Also reports the single strike with the biggest build (``peak_strike``/``peak_side``/``peak_val``)
-    and — from that strike's premium DIRECTION over the window — whether it is ``peak_kind`` "write"
-    (OI↑ & premium↓ = writing) or "long" (OI↑ & premium↑ = buying), so "puts building" isn't blindly
-    read as support: put-writing = support, but long puts = bearish (needs the ``*_ltp`` columns).
+    Each strike's build is split by the premium's DIRECTION (price+OI matrix) into four flows —
+    call-writing / call-buying / put-writing / put-buying — so "calls building" isn't blindly read as
+    resistance: **put-writing = support, put-buying = bearish; call-writing = resistance, call-buying =
+    bullish** (writing vs buying needs the ``*_ltp`` columns; flat/unknown premium defaults to writing).
+    ``label`` names the DOMINANT of the four; ``net`` = bullish − bearish flow. Also the single strike
+    with the biggest build (``peak_strike``/``peak_side``/``peak_val``) + its ``peak_kind`` (write/long).
 
-    Returns {put_add, call_add, net, frac, unit, label ('put-writing'|'call-writing'|'balanced'|
-    'thin'), near, partial (window not fully filled yet), span_min, n_strikes, peak_strike, peak_side,
-    peak_val, peak_kind ('write'|'long'|None)}.
+    Returns {put_add, call_add, buckets (cw/cl/pw/pl), net, frac, flow_val (dominant flow), unit,
+    label ('put-writing'|'put-buying'|'call-writing'|'call-buying'|'balanced'|'thin'), near, partial,
+    span_min, n_strikes, peak_strike, peak_side, peak_val, peak_kind ('write'|'long')}.
     """
     if day_df is None or getattr(day_df, "empty", True) or "time_ist" not in day_df.columns:
         return None
@@ -236,7 +238,13 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     # TURNOVER weighting (₹ notional = ΔOI × premium × lot) when a lot size + premiums are given
     turn = bool(lot_size) and {"call_ltp", "put_ltp"} <= set(day_df.columns)
     has_prem = {"call_ltp", "put_ltp"} <= set(day_df.columns)
-    put_add = call_add = 0.0
+
+    def _kind(now, ref):
+        # OI up + premium UP = long (buying); else = writing. Flat/unknown -> writing (India norm).
+        return "long" if (now is not None and ref is not None and (now - ref) > 0) else "write"
+
+    # four price+OI-matrix buckets: call-writing / call-buying / put-writing / put-buying (turnover)
+    buckets = {"cw": 0.0, "cl": 0.0, "pw": 0.0, "pl": 0.0}
     peak_val, peak_strike, peak_side, peak_kind = 0.0, None, None, None  # biggest single-strike build
     n_k = 0
     for k in b.index:
@@ -252,40 +260,39 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         pb, pa = _num(b, k, pcol), _num(a, k, pcol)
         cltp_n, cltp_r = (_num(b, k, "call_ltp"), _num(a, k, "call_ltp")) if has_prem else (None, None)
         pltp_n, pltp_r = (_num(b, k, "put_ltp"), _num(a, k, "put_ltp")) if has_prem else (None, None)
-        # writing vs long from the premium's direction over the window (price+OI matrix):
-        # OI up + premium DOWN = writing (short build) ; OI up + premium UP = long (buying)
-        def _kind(now, ref):
-            if now is None or ref is None:
-                return None
-            return "write" if (now - ref) < 0 else "long"
         if cb is not None and ca is not None:
             dc = cb - ca
             if dc > 0:
                 contrib = dc * ((cltp_n or 0.0) * lot_size) if turn else dc
-                call_add += contrib
+                ck = _kind(cltp_n, cltp_r)
+                buckets["cw" if ck == "write" else "cl"] += contrib
                 if contrib > peak_val:
-                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "call", _kind(cltp_n, cltp_r)
+                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "call", ck
         if pb is not None and pa is not None:
             dp = pb - pa
             if dp > 0:
                 contrib = dp * ((pltp_n or 0.0) * lot_size) if turn else dp
-                put_add += contrib
+                pk = _kind(pltp_n, pltp_r)
+                buckets["pw" if pk == "write" else "pl"] += contrib
                 if contrib > peak_val:
-                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "put", _kind(pltp_n, pltp_r)
+                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "put", pk
         n_k += 1
-    total = put_add + call_add
-    net = put_add - call_add
-    frac = (net / total) if total > 0 else 0.0
+    call_add = buckets["cw"] + buckets["cl"]
+    put_add = buckets["pw"] + buckets["pl"]
+    total = call_add + put_add
+    _LBL = {"cw": "call-writing", "cl": "call-buying", "pw": "put-writing", "pl": "put-buying"}
+    dom = max(buckets, key=buckets.get)               # dominant of the four flows
+    flow_val = buckets[dom]
+    frac = (flow_val / total) if total > 0 else 0.0
     if total <= 0:
         label = "thin"
     elif frac >= min_frac:
-        label = "put-writing"
-    elif frac <= -min_frac:
-        label = "call-writing"
+        label = _LBL[dom]
     else:
         label = "balanced"
-    return {"put_add": put_add, "call_add": call_add, "net": net, "frac": frac,
-            "unit": "inr" if turn else "lots", "label": label, "near": near,
+    net = (buckets["pw"] + buckets["cl"]) - (buckets["cw"] + buckets["pl"])   # bullish − bearish flow
+    return {"put_add": put_add, "call_add": call_add, "buckets": buckets, "net": net, "frac": frac,
+            "flow_val": flow_val, "unit": "inr" if turn else "lots", "label": label, "near": near,
             "partial": partial, "span_min": span_min, "n_strikes": n_k,
             "peak_strike": peak_strike, "peak_side": peak_side, "peak_val": peak_val,
             "peak_kind": peak_kind}

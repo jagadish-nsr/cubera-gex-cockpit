@@ -257,6 +257,21 @@ def test_window_footprint_turnover_weighting():
     assert tv["peak_kind"] == "write"
 
 
+def test_window_footprint_buying_vs_writing_labels():
+    t = ["09:30", "09:30", "09:45", "09:45"]
+    base = {"time_ist": t, "spot": [24050] * 4, "strike": [24000, 24100] * 2}
+    # call OI up + premium UP (40->80) = LONG calls -> bullish, not resistance
+    buy = pd.DataFrame({**base, "put_doi_near": [0, 0, 0, 0], "call_doi_near": [0, 0, 0, 8000],
+                        "put_ltp": [5, 5, 5, 5], "call_ltp": [5, 40, 5, 80]})
+    wb = window_footprint(buy, 15, 24050, 500, now_hm=9 * 60 + 45, lot_size=75)
+    assert wb["label"] == "call-buying" and wb["buckets"]["cl"] > 0 and wb["buckets"]["cw"] == 0
+    # put OI up + premium DOWN (80->60) = WRITING -> support
+    wr = pd.DataFrame({**base, "put_doi_near": [0, 0, 9000, 0], "call_doi_near": [0, 0, 0, 0],
+                       "put_ltp": [60, 80, 60, 60], "call_ltp": [5, 5, 5, 5]})
+    ww = window_footprint(wr, 15, 24050, 500, now_hm=9 * 60 + 45, lot_size=75)
+    assert ww["label"] == "put-writing" and ww["buckets"]["pw"] > 0
+
+
 def test_window_footprint_too_few_snapshots():
     df = _win_df()
     df = df[df["time_ist"] == "09:00"]
