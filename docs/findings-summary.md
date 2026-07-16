@@ -165,6 +165,19 @@ peak-turnover) as a *where-the-money-is-committing* read, explicitly not an S/R 
    *lean*, not a verdict; `DEALER_SIGN_MODEL` stays on the US default.
 5. **India microstructure is writer-dominated** — OTM-call OI building reads as *writing/
    resistance* (contrarian), not the US buyer-driven bullishness.
+6. **CALM-regime short strangle at the walls — the vol edge, made tradeable (2026-07-16).**
+   `scripts/backtest_wall_strangle.py` backtests the dashboard's *"sell premium near the walls"*
+   play directly: at 09:20, in the CALM (|GEX| top-tercile) regime, sell the call@call-wall +
+   put@put-wall, stop on a wall breach, exit at close. **Positive expectancy that beats the
+   no-filter baseline and survives spread** — CALM @2% half-spread: **+11.0%/trade** (58% win,
+   payoff 1.55×, 49% stopped) vs ALL-days baseline +5.3%; still **+7.3%** at a 4% spread. It is the
+   short-premium signature (win often, occasional stop-out, net positive) — and it's the **vol
+   edge (§5.0 / S11)**, *not* the walls containing price (§4d): the walls only set the strikes and
+   the stop. **Honest caveat — it's thinning in the current regime:** era-split (calm @2%) pre-Nov24
+   **+12.2%**, Nov24-Aug25 **+17.7%**, **Sep25+ (current Tuesday) only +4.1% with a 61% stop-rate**
+   (up from ~44%) — the Tuesday-weekly regime breaches the walls more, so the edge is real but
+   fragile now. Returns are % of the *credit* (small vs SPAN margin); mid-close fills + modelled
+   spread. This is the first *dashboard-play* backtest that comes out positive.
 
 ## 6. What the tool is for
 Not a directional-alpha engine. A **structure / positioning / expected-volatility
