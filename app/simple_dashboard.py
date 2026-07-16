@@ -124,6 +124,15 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .play .verdict-sm{font-size:1.4rem;font-weight:800;margin:7px 0 5px}
 .simp .play p{font-size:.92rem;color:var(--ink-2);margin:0 0 10px;max-width:52ch}
 .simp .play .play-exit{font-size:.8rem;color:var(--ink-mute);border-top:1px solid var(--line);padding-top:9px}
+.simp .pnl{border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
+.simp .pnl-hd{font-size:.66rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-mute)}
+.simp .pnl-legs{font-size:.82rem;color:var(--ink);margin:6px 0 9px;font-family:var(--mono)}
+.simp .pnl-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.simp .pnl-grid>div{background:var(--surface-2);border-radius:9px;padding:8px 11px}
+.simp .pnl-grid small{font-size:.64rem;color:var(--ink-mute);text-transform:uppercase;letter-spacing:.03em}
+.simp .pnl-grid b{display:block;font-size:.92rem;font-weight:700;margin-top:2px}
+.simp .pnl-grid b.go{color:var(--go)}.simp .pnl-grid b.stop{color:var(--stop)}
+.simp .pnl-payoff{margin-top:9px}
 .simp .levels{padding:2px 0}
 .simp .lvl{display:grid;grid-template-columns:26px 1fr auto;gap:10px;align-items:center;padding:9px 15px;border-bottom:1px solid var(--line)}
 .simp .lvl:last-child{border-bottom:0}.simp .lvl .ic{text-align:center}
@@ -405,10 +414,7 @@ def main():
     if show_blast:
         H.append(_blast_hero(data, L, ist))
     else:
-        head, body = _PLAY.get(vr["tag"] if vr else "mid", _PLAY["mid"])
-        H.append(f'''<div class="card play"><span class="eyebrow">Suggested play · paper only</span>
-          <div class="verdict-sm">{head}</div><p>{body}</p>
-          <div class="play-exit">Illustrative — you decide. Regime is validated; the specific trade is textbook, not advice.</div></div>''')
+        H.append(_play_card(vr, data, L, idx))
 
     # levels ladder
     H.append('<h2 class="lbl">The map — key levels</h2><div class="levels card">')
@@ -712,6 +718,53 @@ def _beep(kind):
             pass
     except Exception:  # noqa: BLE001 - a bell must never break the render
         pass
+
+
+def _play_card(vr, data, L, idx):
+    """Suggested-play card. For the CALM (pinning) regime it shows a concrete illustrative
+    short-strangle at the walls: sell the call at the call-wall + put at the put-wall, with the
+    P/L structure — max profit (net credit), the break-even band, the stop-loss (just beyond the
+    walls) and the max-loss note. Live premiums; paper only. The vol edge is validated (S11); the
+    walls are a map, not a fence (docs §4d)."""
+    tag = vr["tag"] if vr else "mid"
+    head, body = _PLAY.get(tag, _PLAY["mid"])
+    pnl = ""
+    if (tag == "calm" and data.source == "nse" and data.oi_strikes
+            and L.call_wall and L.put_wall):
+        cc = pp = None
+        try:
+            from app.gammablast import strike_premiums
+            cc = strike_premiums(data.oi_strikes, L.call_wall)[0]   # call premium @ call wall
+            pp = strike_premiums(data.oi_strikes, L.put_wall)[1]    # put premium  @ put wall
+        except Exception:  # noqa: BLE001
+            pass
+        lot = getattr(idx, "lot_size", None)
+        if cc and pp and lot:
+            credit_pts = cc + pp
+            credit = credit_pts * lot
+            be_lo, be_hi = L.put_wall - credit_pts, L.call_wall + credit_pts
+            # payoff bar: green profit zone (walls), amber cushion out to break-evens, red beyond
+            lo, hi = be_lo - credit_pts, be_hi + credit_pts
+            span = (hi - lo) or 1.0
+            def pct(x): return max(0.0, min(100.0, (x - lo) / span * 100.0))
+            pw, cw, spx = pct(L.put_wall), pct(L.call_wall), pct(L.spot)
+            payoff = (f'<div class="pnl-payoff"><div class="rb-track" style="height:9px">'
+                      f'<div style="position:absolute;left:{pct(be_lo):.1f}%;width:{pct(be_hi)-pct(be_lo):.1f}%;top:0;bottom:0;background:var(--warn);opacity:.35"></div>'
+                      f'<div style="position:absolute;left:{pw:.1f}%;width:{cw-pw:.1f}%;top:0;bottom:0;background:var(--go);opacity:.55"></div>'
+                      f'</div><div class="rb-mark" style="left:{spx:.1f}%">▲</div></div>')
+            pnl = f'''<div class="pnl"><div class="pnl-hd">Illustrative structure · short strangle · paper</div>
+              <div class="pnl-legs">SELL {f(L.call_wall)} CE @ {f(cc,1)} &nbsp;·&nbsp; SELL {f(L.put_wall)} PE @ {f(pp,1)}</div>
+              <div class="rb-scale">{payoff}</div>
+              <div class="pnl-grid" style="margin-top:10px">
+                <div><small>Max profit (credit)</small><b class="go">{_money(credit)} · {f(credit_pts,0)} pt</b></div>
+                <div><small>Break-even band</small><b class="mono">{f(be_lo)} – {f(be_hi)}</b></div>
+                <div><small>Stop-loss · beyond walls</small><b class="stop mono">{f(L.put_wall)} / {f(L.call_wall)}</b></div>
+                <div><small>Max loss</small><b class="stop">large — SL-capped near a wall (a gap can exceed)</b></div>
+              </div></div>'''
+    return f'''<div class="card play"><span class="eyebrow">Suggested play · paper only</span>
+      <div class="verdict-sm">{head}</div><p>{body}</p>{pnl}
+      <div class="play-exit">Illustrative — you decide. The VOL edge (sell rich premium when calm) is
+      validated (S11); the walls are a map, <b>not</b> a guaranteed fence (§4d). Not advice.</div></div>'''
 
 
 def _footprint_html(data, L, idx, ist, is_expiry):
