@@ -678,11 +678,13 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
     net = w.get("net") or 0.0
     if w["label"] in ("put-writing", "call-writing"):
         if w.get("unit") == "inr":                       # ₹ turnover = ΔOI × premium × lot
-            dtxt = f'{"+" if net >= 0 else "−"}{_money(abs(net))}'
+            money = f'{"+" if net >= 0 else "−"}{_money(abs(net))}'
         else:
-            dtxt = f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
+            money = f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
     else:
-        dtxt = ""
+        money = ""
+    peak = f'@{f(w["peak_strike"])}' if w.get("peak_strike") else ""   # max-turnover strike this window
+    dtxt = " · ".join(x for x in (money, peak) if x)
     dim = " dim" if (is_expiry and minutes <= 15) else ""     # short windows churn on expiry
     shown = ("≤" + lbl) if w.get("partial") else lbl
     return (f'<div class="winrow{dim}"><span class="wl">{shown}</span>'
@@ -778,7 +780,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
         return ''
     skew = fp.get("net_skew", 0.0)
     who = "call-writing" if skew < 0 else "put-writing"
-    sub = ("big players capping the upside" if skew < 0 else "big players supporting the downside")
+    sub = ("big players forming resistance" if skew < 0 else "big players forming support")
     lv = oi_weighted_levels(data.oi_strikes, L.spot, band) or {}   # validated S/R (standing OI)
 
     # rolling-window strip (current expiry only, from today's per-strike captures)
@@ -788,9 +790,9 @@ def _footprint_html(data, L, idx, ist, is_expiry):
                    window_footprint(day_df, m, L.spot, band, now_hm=now_hm,
                                     lot_size=getattr(idx, "lot_size", None)), is_expiry)
                    for lbl, m in _WINDOWS)
-    cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min.'
-           if is_expiry else 'Fresh writing near spot in ₹ turnover (ΔOI×premium×lot), current expiry. '
-                             'Context, not a prediction.')
+    cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min. @ = top strike.'
+           if is_expiry else '₹ turnover (ΔOI×premium×lot), current expiry · @ = strike taking the '
+                             'most money that window. Context, not a prediction.')
     strip = (f'<div class="winstrip"><div class="win-hd">Fresh writing — trailing windows</div>'
              f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
 
