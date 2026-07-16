@@ -840,17 +840,22 @@ def _footprint_html(data, L, idx, ist, is_expiry):
                            lot_size=getattr(idx, "lot_size", None))
     peak_row = ""
     if sow and sow.get("peak_strike") and sow.get("unit") == "inr":
-        pside = sow["peak_side"]
-        role, pcls = ("resistance", "ceil") if pside == "call" else ("support", "floor")
+        # writing vs buying (premium direction) changes the meaning entirely:
+        desc, pcls = {
+            ("call", "write"): ("calls written → resistance", "ceil"),
+            ("call", "long"): ("calls bought → bullish", "floor"),
+            ("put", "write"): ("puts written → support", "floor"),
+            ("put", "long"): ("puts bought → bearish", "ceil"),
+        }.get((sow["peak_side"], sow.get("peak_kind")), (f'{sow["peak_side"]}s building', ""))
         peak_row = (f'<div class="fp-row {pcls}"><span>💰 Most money building '
-                    f'<small>{pside}s → {role}</small></span><b class="mono">{f(sow["peak_strike"])}</b>'
+                    f'<small>{desc}</small></span><b class="mono">{f(sow["peak_strike"])}</b>'
                     f'<small>{_money(sow["peak_val"])}</small></div>')
 
     return f'''<div class="card"><div class="levels">
       <div class="fp-row floor"><span>🟢 Support <small>put OI</small></span><b class="mono">{f(lv.get("support_w"))}</b><small>top {f(lv.get("support_top"))}</small></div>
       <div class="fp-row ceil"><span>🔴 Resistance <small>call OI</small></span><b class="mono">{f(lv.get("resistance_w"))}</b><small>top {f(lv.get("resistance_top"))}</small></div>
       {peak_row}
-      <div class="fp-sum">Support/Resistance = OI-weighted centre (validated to hold best) + <b>top</b> single strike. 💰 = strike taking the most fresh-writing money today. Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
+      <div class="fp-sum">Support/Resistance = OI-weighted centre (validated to hold best) + <b>top</b> single strike. 💰 = strike taking the most fresh money today (writing vs buying read from the premium's direction). Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
 
 
 def _fut_window_row(lbl, minutes, win, is_expiry):

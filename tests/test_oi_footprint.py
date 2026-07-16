@@ -243,7 +243,7 @@ def test_window_footprint_turnover_weighting():
     t = ["09:30", "09:30", "09:45", "09:45"]
     df = pd.DataFrame({"time_ist": t, "spot": [24050] * 4, "strike": [24000, 24100] * 2,
                        "put_doi_near": [0, 0, 10000, 0], "call_doi_near": [0, 0, 0, 2000],
-                       "put_ltp": [5, 5, 5, 5], "call_ltp": [200, 200, 200, 200]})
+                       "put_ltp": [5, 5, 5, 5], "call_ltp": [200, 220, 200, 200]})   # 24100 call prem 220->200
     oi = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45)  # raw OI
     assert oi["label"] == "put-writing" and oi["unit"] == "lots"          # 10000 puts > 2000 calls
     tv = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45, lot_size=75)
@@ -253,6 +253,8 @@ def test_window_footprint_turnover_weighting():
     # the biggest single-strike ₹ build is the 24100 call (30M > the 3.75M put)
     assert tv["peak_strike"] == 24100.0 and tv["peak_side"] == "call"
     assert tv["peak_val"] == 2000 * 200 * 75
+    # 24100 call premium fell 220->200 with OI rising => WRITING (not long buying)
+    assert tv["peak_kind"] == "write"
 
 
 def test_window_footprint_too_few_snapshots():

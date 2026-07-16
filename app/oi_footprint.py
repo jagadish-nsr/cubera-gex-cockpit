@@ -190,8 +190,14 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     the *money* is building (10k lots of a 5-pt option ≪ 5k lots of a 100-pt option). ``unit``
     is then "inr" (net is ₹), else "lots".
 
+    Also reports the single strike with the biggest build (``peak_strike``/``peak_side``/``peak_val``)
+    and — from that strike's premium DIRECTION over the window — whether it is ``peak_kind`` "write"
+    (OI↑ & premium↓ = writing) or "long" (OI↑ & premium↑ = buying), so "puts building" isn't blindly
+    read as support: put-writing = support, but long puts = bearish (needs the ``*_ltp`` columns).
+
     Returns {put_add, call_add, net, frac, unit, label ('put-writing'|'call-writing'|'balanced'|
-    'thin'), near, partial (window not fully filled yet), span_min, n_strikes}.
+    'thin'), near, partial (window not fully filled yet), span_min, n_strikes, peak_strike, peak_side,
+    peak_val, peak_kind ('write'|'long'|None)}.
     """
     if day_df is None or getattr(day_df, "empty", True) or "time_ist" not in day_df.columns:
         return None
@@ -229,8 +235,9 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
 
     # TURNOVER weighting (₹ notional = ΔOI × premium × lot) when a lot size + premiums are given
     turn = bool(lot_size) and {"call_ltp", "put_ltp"} <= set(day_df.columns)
+    has_prem = {"call_ltp", "put_ltp"} <= set(day_df.columns)
     put_add = call_add = 0.0
-    peak_val, peak_strike, peak_side = 0.0, None, None       # biggest single-strike build
+    peak_val, peak_strike, peak_side, peak_kind = 0.0, None, None, None  # biggest single-strike build
     n_k = 0
     for k in b.index:
         if k not in a.index:
@@ -243,22 +250,28 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
             continue
         cb, ca = _num(b, k, ccol), _num(a, k, ccol)
         pb, pa = _num(b, k, pcol), _num(a, k, pcol)
+        cltp_n, cltp_r = (_num(b, k, "call_ltp"), _num(a, k, "call_ltp")) if has_prem else (None, None)
+        pltp_n, pltp_r = (_num(b, k, "put_ltp"), _num(a, k, "put_ltp")) if has_prem else (None, None)
+        # writing vs long from the premium's direction over the window (price+OI matrix):
+        # OI up + premium DOWN = writing (short build) ; OI up + premium UP = long (buying)
+        def _kind(now, ref):
+            if now is None or ref is None:
+                return None
+            return "write" if (now - ref) < 0 else "long"
         if cb is not None and ca is not None:
             dc = cb - ca
             if dc > 0:
-                cw = (_num(b, k, "call_ltp") or 0.0) * lot_size if turn else 1.0
-                contrib = dc * cw
+                contrib = dc * ((cltp_n or 0.0) * lot_size) if turn else dc
                 call_add += contrib
                 if contrib > peak_val:
-                    peak_val, peak_strike, peak_side = contrib, kf, "call"
+                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "call", _kind(cltp_n, cltp_r)
         if pb is not None and pa is not None:
             dp = pb - pa
             if dp > 0:
-                pw = (_num(b, k, "put_ltp") or 0.0) * lot_size if turn else 1.0
-                contrib = dp * pw
+                contrib = dp * ((pltp_n or 0.0) * lot_size) if turn else dp
                 put_add += contrib
                 if contrib > peak_val:
-                    peak_val, peak_strike, peak_side = contrib, kf, "put"
+                    peak_val, peak_strike, peak_side, peak_kind = contrib, kf, "put", _kind(pltp_n, pltp_r)
         n_k += 1
     total = put_add + call_add
     net = put_add - call_add
@@ -274,7 +287,8 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     return {"put_add": put_add, "call_add": call_add, "net": net, "frac": frac,
             "unit": "inr" if turn else "lots", "label": label, "near": near,
             "partial": partial, "span_min": span_min, "n_strikes": n_k,
-            "peak_strike": peak_strike, "peak_side": peak_side, "peak_val": peak_val}
+            "peak_strike": peak_strike, "peak_side": peak_side, "peak_val": peak_val,
+            "peak_kind": peak_kind}
 
 
 def _longest_run(kinds: list) -> tuple[int, int, str | None]:
