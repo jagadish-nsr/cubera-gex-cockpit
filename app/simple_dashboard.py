@@ -722,6 +722,51 @@ def _beep(kind):
         pass
 
 
+def _strangle_payoff_svg(kp, kc, credit, spot, lot):
+    """Expiry P/L diagram for a short strangle (sell put@kp + call@kc, net ``credit`` pts): a green
+    max-profit plateau between the sold strikes, sloping to the break-evens (strike ± credit) and
+    into red loss wings beyond. Amber dashes = the walls/sold strikes; grey dashes = break-evens;
+    the solid vertical = current spot."""
+    be_lo, be_hi = kp - credit, kc + credit
+    xlo, xhi = kp - 2 * credit, kc + 2 * credit
+    W, H, x0, x1, pad = 520, 150, 40, 502, 20
+    ymax = credit or 1.0
+
+    def X(px):
+        return x0 + (x1 - x0) * ((px - xlo) / (xhi - xlo))
+
+    def Y(pl):
+        return H / 2 - (H / 2 - pad) * (pl / ymax)
+    verts = [(xlo, -credit), (be_lo, 0.0), (kp, credit), (kc, credit), (be_hi, 0.0), (xhi, -credit)]
+    payoff = " ".join(f"{X(px):.0f},{Y(pl):.0f}" for px, pl in verts)
+    prof = (f"{X(be_lo):.0f},{Y(0):.0f} {X(kp):.0f},{Y(credit):.0f} {X(kc):.0f},{Y(credit):.0f} "
+            f"{X(be_hi):.0f},{Y(0):.0f}")
+    lossl = f"{X(xlo):.0f},{Y(0):.0f} {X(be_lo):.0f},{Y(0):.0f} {X(xlo):.0f},{Y(-credit):.0f}"
+    lossr = f"{X(be_hi):.0f},{Y(0):.0f} {X(xhi):.0f},{Y(0):.0f} {X(xhi):.0f},{Y(-credit):.0f}"
+    sx = X(min(max(spot, xlo), xhi))
+
+    def vg(px, col, dash):
+        return (f'<line x1="{X(px):.0f}" y1="{pad}" x2="{X(px):.0f}" y2="{H-pad}" '
+                f'stroke="{col}" stroke-width="1" stroke-dasharray="{dash}"/>')
+
+    def lbl(px, txt, col):
+        return (f'<text x="{X(px):.0f}" y="{H-4}" font-size="9" fill="{col}" '
+                f'text-anchor="middle" class="mono">{txt}</text>')
+    return f'''<figure><svg viewBox="0 0 {W} {H}" role="img" aria-label="Short-strangle expiry profit and loss.">
+      <polygon points="{lossl}" fill="var(--stop)" opacity=".16"/><polygon points="{lossr}" fill="var(--stop)" opacity=".16"/>
+      <polygon points="{prof}" fill="var(--go)" opacity=".22"/>
+      <line x1="{x0}" y1="{Y(0):.0f}" x2="{x1}" y2="{Y(0):.0f}" stroke="var(--line)"/>
+      {vg(kp,"var(--warn)","3 3")}{vg(kc,"var(--warn)","3 3")}
+      {vg(be_lo,"var(--ink-mute)","1 3")}{vg(be_hi,"var(--ink-mute)","1 3")}
+      <polyline points="{payoff}" fill="none" stroke="var(--spark)" stroke-width="2.3" stroke-linejoin="round"/>
+      <line x1="{sx:.0f}" y1="{pad}" x2="{sx:.0f}" y2="{H-pad}" stroke="var(--ink)" stroke-width="1.5"/>
+      <text x="{(X(kp)+X(kc))/2:.0f}" y="{Y(credit)+12:.0f}" font-size="9.5" fill="var(--go)" text-anchor="middle" font-weight="700" class="mono">+{_money(credit*lot)}</text>
+      <text x="{sx:.0f}" y="{pad-6:.0f}" font-size="8.5" fill="var(--ink)" text-anchor="middle">spot</text>
+      {lbl(be_lo, f"{be_lo:,.0f}", "var(--ink-mute)")}{lbl(kp, f"{kp:,.0f}", "var(--warn)")}
+      {lbl(kc, f"{kc:,.0f}", "var(--warn)")}{lbl(be_hi, f"{be_hi:,.0f}", "var(--ink-mute)")}
+    </svg></figure>'''
+
+
 def _play_card(vr, data, L, idx):
     """Suggested-play card. For the CALM (pinning) regime it shows a concrete illustrative
     short-strangle at the walls: sell the call at the call-wall + put at the put-wall, with the
@@ -745,28 +790,22 @@ def _play_card(vr, data, L, idx):
             credit_pts = cc + pp
             credit = credit_pts * lot
             be_lo, be_hi = L.put_wall - credit_pts, L.call_wall + credit_pts
-            # payoff bar: green profit zone (walls), amber cushion out to break-evens, red beyond
-            lo, hi = be_lo - credit_pts, be_hi + credit_pts
-            span = (hi - lo) or 1.0
-            def pct(x): return max(0.0, min(100.0, (x - lo) / span * 100.0))
-            pw, cw, spx = pct(L.put_wall), pct(L.call_wall), pct(L.spot)
-            payoff = (f'<div class="pnl-payoff"><div class="rb-track" style="height:9px">'
-                      f'<div style="position:absolute;left:{pct(be_lo):.1f}%;width:{pct(be_hi)-pct(be_lo):.1f}%;top:0;bottom:0;background:var(--warn);opacity:.35"></div>'
-                      f'<div style="position:absolute;left:{pw:.1f}%;width:{cw-pw:.1f}%;top:0;bottom:0;background:var(--go);opacity:.55"></div>'
-                      f'</div><div class="rb-mark" style="left:{spx:.1f}%">▲</div></div>')
+            graph = _strangle_payoff_svg(L.put_wall, L.call_wall, credit_pts, L.spot, lot)
             pnl = f'''<div class="pnl"><div class="pnl-hd">Illustrative structure · short strangle · paper</div>
               <div class="pnl-legs">SELL {f(L.call_wall)} CE @ {f(cc,1)} &nbsp;·&nbsp; SELL {f(L.put_wall)} PE @ {f(pp,1)}</div>
-              <div class="rb-scale">{payoff}</div>
-              <div class="pnl-grid" style="margin-top:10px">
-                <div><small>Max profit (credit)</small><b class="go">{_money(credit)} · {f(credit_pts,0)} pt</b></div>
-                <div><small>Break-even band</small><b class="mono">{f(be_lo)} – {f(be_hi)}</b></div>
-                <div><small>Stop-loss · beyond walls</small><b class="stop mono">{f(L.put_wall)} / {f(L.call_wall)}</b></div>
-                <div><small>Max loss</small><b class="stop">large — SL-capped near a wall (a gap can exceed)</b></div>
+              {graph}
+              <div class="pnl-grid" style="margin-top:8px">
+                <div><small>Max profit · credit</small><b class="go">{_money(credit)} · {f(credit_pts,0)} pt</b></div>
+                <div><small>Keep full credit between</small><b class="mono">{f(L.put_wall)} – {f(L.call_wall)}</b></div>
+                <div><small>Break-even (expiry)</small><b class="mono">{f(be_lo)} – {f(be_hi)}</b></div>
+                <div><small>Stop · break of a wall</small><b class="stop">a conservative cut — inside the break-evens (a breach runs fast near expiry)</b></div>
               </div></div>'''
     return f'''<div class="card play"><span class="eyebrow">Suggested play · paper only</span>
       <div class="verdict-sm">{head}</div><p>{body}</p>{pnl}
-      <div class="play-exit">Illustrative — you decide. The VOL edge (sell rich premium when calm) is
-      validated (S11); the walls are a map, <b>not</b> a guaranteed fence (§4d). Not advice.</div></div>'''
+      <div class="play-exit">Illustrative — you decide. The walls (sold strikes) sit <i>inside</i> the
+      break-evens; you keep the full credit between them and only turn net-negative past a break-even.
+      The VOL edge is backtested +11%/trade in calm (thinning to +4% now); the walls are a map, <b>not</b>
+      a fence (§4d). Not advice.</div></div>'''
 
 
 def _footprint_html(data, L, idx, ist, is_expiry):
