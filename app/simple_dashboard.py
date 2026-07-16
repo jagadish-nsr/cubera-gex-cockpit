@@ -191,6 +191,14 @@ def f(x, nd=0):
     return f"{x:,.{nd}f}" if x is not None and x == x else "—"
 
 
+def _money(x):
+    """₹ magnitude, compact: crore / lakh / rupees."""
+    if x is None or x != x:
+        return "—"
+    ax = abs(x)
+    return (f"₹{x/1e7:.1f}cr" if ax >= 1e7 else f"₹{x/1e5:.1f}L" if ax >= 1e5 else f"₹{x:,.0f}")
+
+
 def _svg_crossover(series, strike):
     """Small call-vs-put premium crossover chart from the accumulated anchored-strike series."""
     pts = [(s["call"], s["put"]) for s in series if s.get("call") == s.get("call")
@@ -664,10 +672,7 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
     net = w.get("net") or 0.0
     if w["label"] in ("put-writing", "call-writing"):
         if w.get("unit") == "inr":                       # ₹ turnover = ΔOI × premium × lot
-            mag = abs(net)
-            money = (f"₹{mag/1e7:.1f}cr" if mag >= 1e7 else
-                     f"₹{mag/1e5:.1f}L" if mag >= 1e5 else f"₹{mag:,.0f}")
-            dtxt = f'{"+" if net >= 0 else "−"}{money}'
+            dtxt = f'{"+" if net >= 0 else "−"}{_money(abs(net))}'
         else:
             dtxt = f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
     else:
@@ -736,10 +741,22 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     strip = (f'<div class="winstrip"><div class="win-hd">Fresh writing — trailing windows</div>'
              f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
 
+    # where the biggest ₹ of FRESH writing is landing today (single strike, since open) — user ask
+    sow = window_footprint(day_df, 600, L.spot, band, now_hm=now_hm,
+                           lot_size=getattr(idx, "lot_size", None))
+    peak_row = ""
+    if sow and sow.get("peak_strike") and sow.get("unit") == "inr":
+        pside = sow["peak_side"]
+        role, pcls = ("resistance", "ceil") if pside == "call" else ("support", "floor")
+        peak_row = (f'<div class="fp-row {pcls}"><span>💰 Most money building '
+                    f'<small>{pside}s → {role}</small></span><b class="mono">{f(sow["peak_strike"])}</b>'
+                    f'<small>{_money(sow["peak_val"])}</small></div>')
+
     return f'''<div class="card"><div class="levels">
       <div class="fp-row floor"><span>🟢 Support <small>put OI</small></span><b class="mono">{f(lv.get("support_w"))}</b><small>top {f(lv.get("support_top"))}</small></div>
       <div class="fp-row ceil"><span>🔴 Resistance <small>call OI</small></span><b class="mono">{f(lv.get("resistance_w"))}</b><small>top {f(lv.get("resistance_top"))}</small></div>
-      <div class="fp-sum">Bold = OI-weighted centre (the level that holds best); <b>top</b> = biggest single strike. Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
+      {peak_row}
+      <div class="fp-sum">Support/Resistance = OI-weighted centre (validated to hold best) + <b>top</b> single strike. 💰 = strike taking the most fresh-writing money today. Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
 
 
 def _fut_window_row(lbl, minutes, win, is_expiry):

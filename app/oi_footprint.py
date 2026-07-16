@@ -230,6 +230,7 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     # TURNOVER weighting (₹ notional = ΔOI × premium × lot) when a lot size + premiums are given
     turn = bool(lot_size) and {"call_ltp", "put_ltp"} <= set(day_df.columns)
     put_add = call_add = 0.0
+    peak_val, peak_strike, peak_side = 0.0, None, None       # biggest single-strike build
     n_k = 0
     for k in b.index:
         if k not in a.index:
@@ -246,12 +247,18 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
             dc = cb - ca
             if dc > 0:
                 cw = (_num(b, k, "call_ltp") or 0.0) * lot_size if turn else 1.0
-                call_add += dc * cw
+                contrib = dc * cw
+                call_add += contrib
+                if contrib > peak_val:
+                    peak_val, peak_strike, peak_side = contrib, kf, "call"
         if pb is not None and pa is not None:
             dp = pb - pa
             if dp > 0:
                 pw = (_num(b, k, "put_ltp") or 0.0) * lot_size if turn else 1.0
-                put_add += dp * pw
+                contrib = dp * pw
+                put_add += contrib
+                if contrib > peak_val:
+                    peak_val, peak_strike, peak_side = contrib, kf, "put"
         n_k += 1
     total = put_add + call_add
     net = put_add - call_add
@@ -266,7 +273,8 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         label = "balanced"
     return {"put_add": put_add, "call_add": call_add, "net": net, "frac": frac,
             "unit": "inr" if turn else "lots", "label": label, "near": near,
-            "partial": partial, "span_min": span_min, "n_strikes": n_k}
+            "partial": partial, "span_min": span_min, "n_strikes": n_k,
+            "peak_strike": peak_strike, "peak_side": peak_side, "peak_val": peak_val}
 
 
 def _longest_run(kinds: list) -> tuple[int, int, str | None]:

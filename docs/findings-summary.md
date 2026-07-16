@@ -136,6 +136,15 @@ mechanical fence** — but it says the dashboard should draw S/R from the **stan
 not the fresh-ΔOI build (which belongs to the *"where money is building"* flow, a different question).
 Consistent with §4a–4c; the fix is wired into the dashboard (weighted + top shown, standing-OI based).
 
+**Turnover-weighting doesn't help the LEVEL (2026-07-16 follow-up).** We also tested S/R weighted by
+**turnover** (ΔOI or OI × premium), both fresh and standing: every turnover variant is *worse* — edge
++1.2 (standing) / ambiguous −1.7 (fresh, near-level ~0 with a spot-hugging placebo). The reason is
+structural: **premium peaks at-the-money**, so premium-weighting collapses the "level" onto spot,
+turning it into a price-tracker rather than a level that holds. So for **levels**, use contract
+concentration (total-OI-weighted); **turnover belongs to the *flow*** — the dashboard now surfaces the
+single strike taking the most **fresh-writing ₹** ("💰 most money building", `window_footprint`
+peak-turnover) as a *where-the-money-is-committing* read, explicitly not an S/R level.
+
 ## 5. What holds up (it isn't nothing)
 0. **Dealer-gamma concentration → forward realized VOLATILITY** (the strongest, most
    theory-consistent result). On 2 yrs of raw bhavcopy, **|GEX| → forward RV is inversely

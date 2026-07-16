@@ -250,6 +250,9 @@ def test_window_footprint_turnover_weighting():
     # put turnover = 10000·5·75 = 3.75M ; call turnover = 2000·200·75 = 30M -> calls dominate
     assert tv["unit"] == "inr" and tv["label"] == "call-writing"
     assert tv["call_add"] == 2000 * 200 * 75 and tv["put_add"] == 10000 * 5 * 75
+    # the biggest single-strike ₹ build is the 24100 call (30M > the 3.75M put)
+    assert tv["peak_strike"] == 24100.0 and tv["peak_side"] == "call"
+    assert tv["peak_val"] == 2000 * 200 * 75
 
 
 def test_window_footprint_too_few_snapshots():

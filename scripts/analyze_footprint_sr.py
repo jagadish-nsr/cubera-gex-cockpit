@@ -50,7 +50,9 @@ def _mins(t: str) -> int:
 
 
 # the support/resistance flavours we compute per stamp (column suffixes)
-_FLAVOURS = ["dw", "dt", "ow", "ot"]   # ΔOI-weighted, ΔOI-top, OI-weighted, OI-top
+#   dw/dt = ΔOI-weighted/-top · ow/ot = total-OI-weighted/-top
+#   fw/ft = FRESH-turnover (ΔOI×prem) weighted/-top · tw/tt = standing-turnover (OI×prem) weighted/-top
+_FLAVOURS = ["dw", "dt", "ow", "ot", "fw", "ft", "tw", "tt"]
 
 
 def _day_footprint(store, day, band_frac):
@@ -68,8 +70,14 @@ def _day_footprint(store, day, band_frac):
         index="time_ist", columns="strike", values="oi")
     pe = df[df["side"] == "PE"].drop_duplicates(["time_ist", "strike"]).pivot(
         index="time_ist", columns="strike", values="oi")
+    cc = df[df["side"] == "CE"].drop_duplicates(["time_ist", "strike"]).pivot(   # call premiums
+        index="time_ist", columns="strike", values="close")
+    pc = df[df["side"] == "PE"].drop_duplicates(["time_ist", "strike"]).pivot(   # put premiums
+        index="time_ist", columns="strike", values="close")
     spot = df.groupby("time_ist")["spot"].first()
     pe = pe.reindex(columns=ce.columns)               # align put strikes to the call grid
+    cc = cc.reindex(columns=ce.columns)
+    pc = pc.reindex(columns=ce.columns)
     times = sorted(set(ce.index) & set(pe.index), key=_mins)   # only stamps present on BOTH sides
     if not times:
         return {}
@@ -85,6 +93,8 @@ def _day_footprint(store, day, band_frac):
             continue
         cur_c = np.nan_to_num(ce.loc[t].to_numpy(float))
         cur_p = np.nan_to_num(pe.loc[t].to_numpy(float))
+        cpr = np.nan_to_num(cc.loc[t].to_numpy(float)) if t in cc.index else np.zeros_like(cur_c)
+        ppr = np.nan_to_num(pc.loc[t].to_numpy(float)) if t in pc.index else np.zeros_like(cur_p)
         band = np.abs(ks - float(s)) <= float(s) * band_frac
         if not band.any():
             continue
@@ -93,14 +103,20 @@ def _day_footprint(store, day, band_frac):
         pa = np.clip(cur_p[band] - pe0[band], 0, None)   # put ADDS  (support, ΔOI)
         coi = cur_c[band]                                # total call OI (standing resistance)
         poi = cur_p[band]                                # total put OI  (standing support)
+        ctv = coi * cpr[band]                            # call TURNOVER weight (OI × premium)
+        ptv = poi * ppr[band]                            # put  TURNOVER weight
 
         def _w(w):
             return float((kk * w).sum() / w.sum()) if w.sum() > 0 else np.nan
 
         def _top(w):
             return float(kk[int(np.argmax(w))]) if (w > 0).any() else np.nan
+        fca = ca * cpr[band]                            # FRESH call turnover (ΔOI × premium)
+        fpa = pa * ppr[band]                            # FRESH put turnover
         out[t] = {"sup_dw": _w(pa), "res_dw": _w(ca), "sup_dt": _top(pa), "res_dt": _top(ca),
-                  "sup_ow": _w(poi), "res_ow": _w(coi), "sup_ot": _top(poi), "res_ot": _top(coi)}
+                  "sup_ow": _w(poi), "res_ow": _w(coi), "sup_ot": _top(poi), "res_ot": _top(coi),
+                  "sup_fw": _w(fpa), "res_fw": _w(fca), "sup_ft": _top(fpa), "res_ft": _top(fca),
+                  "sup_tw": _w(ptv), "res_tw": _w(ctv), "sup_tt": _top(ptv), "res_tt": _top(ctv)}
     return out
 
 
@@ -176,6 +192,16 @@ def _report(f, scol, rcol, label):
     push, near, crossed, mid = _levelset(f, scol, rcol)
     d = pd.DataFrame({"push": push, "cross": crossed, "era": f["era"].to_numpy(),
                       "mid_push": np.where(mid, f["fwd"], np.nan)})
+    def _bp(x):
+        return f"{x:>+9.1f}" if x == x else f"{'—':>9}"
+
+    def _row(lbl, w, mid):
+        nl = w["push"].mean() * 1e4
+        pl = mid.mean() * 1e4 if mid.notna().any() else float("nan")
+        edge = (nl - pl) if pl == pl else float("nan")
+        cr = 100.0 * np.nanmean(w["cross"]) if len(w) else float("nan")
+        _print(f"  {lbl:<42} {_bp(nl)} {_bp(pl)[2:]} {_bp(edge)[3:]} {cr:>6.1f}% {len(w):>6,}")
+
     _print(f"\n{label} — PUSH toward the level @{HORIZ}m (bp; <0 = REJECTS/holds, >0 = breaks) + cross-rate:")
     _print(f"  {'era':<42} {'near-level':>10} {'placebo':>9} {'edge':>7} {'cross%':>7} {'n':>6}")
     for e in era_order(d["era"].unique()):
@@ -183,13 +209,8 @@ def _report(f, scol, rcol, label):
         w = g[np.isfinite(g["push"])]
         if len(w) < 200:
             _print(f"  {ERA_LABELS[e]:<42} (n={len(w)} thin)"); continue
-        nl = w["push"].mean() * 1e4
-        pl = g["mid_push"].mean() * 1e4
-        cr = 100.0 * np.nanmean(w["cross"])
-        _print(f"  {ERA_LABELS[e]:<42} {nl:>+9.1f} {pl:>+8.1f} {nl-pl:>+6.1f} {cr:>6.1f}% {len(w):>6,}")
-    w = d[np.isfinite(d["push"])]
-    _print(f"  {'ALL eras':<42} {w['push'].mean()*1e4:>+9.1f} {d['mid_push'].mean()*1e4:>+8.1f} "
-           f"{(w['push'].mean()-d['mid_push'].mean())*1e4:>+6.1f} {100*np.nanmean(w['cross']):>6.1f}% {len(w):>6,}")
+        _row(ERA_LABELS[e], w, g["mid_push"])
+    _row("ALL eras", d[np.isfinite(d["push"])], d["mid_push"])
 
 
 def main() -> None:
@@ -201,11 +222,13 @@ def main() -> None:
         return
     _print(f"\nSupport/Resistance revalidation · {store} · {f['day'].nunique()} days · "
            f"band ±{band_frac*100:.0f}% · horizon {HORIZ}m · WEIGHTED (centre-of-mass) vs TOP (peak strike)")
-    _report(f, "sup_dw", "res_dw", "(A) Footprint ΔOI-WEIGHTED  (fresh build · centre-of-mass · sign-free)")
-    _report(f, "sup_dt", "res_dt", "(B) Footprint ΔOI-TOP       (fresh build · single peak strike · sign-free)")
-    _report(f, "sup_ow", "res_ow", "(C) Total-OI-WEIGHTED       (standing book · centre-of-mass · sign-free)")
-    _report(f, "sup_ot", "res_ot", "(D) Total-OI-TOP            (standing book · single peak strike · sign-free)")
-    _report(f, "put_wall", "call_wall", "(E) GEX walls             (gamma/OI peak · engine · dealer-sign)")
+    _report(f, "sup_dw", "res_dw", "(A) Footprint ΔOI-WEIGHTED    (fresh build · counts · centre-of-mass)")
+    _report(f, "sup_fw", "res_fw", "(B) FRESH-TURNOVER-WEIGHTED   (ΔOI×premium · centre-of-mass)")
+    _report(f, "sup_ft", "res_ft", "(C) FRESH-TURNOVER-TOP        (ΔOI×premium · single peak strike)")
+    _report(f, "sup_ow", "res_ow", "(D) Total-OI-WEIGHTED         (standing · counts · centre-of-mass)  ← winner")
+    _report(f, "sup_ot", "res_ot", "(E) Total-OI-TOP              (standing · counts · single peak strike)")
+    _report(f, "sup_tw", "res_tw", "(F) Standing-TURNOVER-WEIGHTED(OI×premium · centre-of-mass)")
+    _report(f, "put_wall", "call_wall", "(G) GEX walls               (gamma/OI peak · engine · dealer-sign)")
     _print("\n  Read: a level that WORKS shows near-level push clearly NEGATIVE and BELOW the placebo "
            "(negative 'edge') — price rejects there more than at a random spot. Compare WEIGHTED (A/C) vs "
            "TOP (B/D) and fresh-ΔOI (A/B) vs standing-OI (C/D) vs gamma (E): a TOP single strike may hold "
