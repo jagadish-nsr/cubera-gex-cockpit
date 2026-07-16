@@ -7,7 +7,7 @@ import pandas as pd
 
 from app.oi_footprint import (build_footprint, classify_buildup, footprint_series,
                               intraday_buildup_streaks, intraday_premium_change,
-                              top_builds, window_footprint)
+                              oi_weighted_levels, top_builds, window_footprint)
 from data.nse import per_strike_nearest_changes
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "data" / "fixtures" / "nse_v3_sample.json"
@@ -43,6 +43,23 @@ def test_empty_and_no_adds():
     assert build_footprint([]) is None
     fp = build_footprint([{"strike": 100, "put_doi": 0, "call_doi": 0}])
     assert fp["support_build"] is None and fp["resistance_build"] is None
+
+
+def test_oi_weighted_levels_weighted_and_top():
+    rows = [
+        {"strike": 23900, "put_oi": 300, "call_oi": 10},
+        {"strike": 24000, "put_oi": 100, "call_oi": 100},
+        {"strike": 24100, "put_oi": 0, "call_oi": 500},
+        {"strike": 25000, "put_oi": 9999, "call_oi": 0},   # far OTM -> banded out
+    ]
+    lv = oi_weighted_levels(rows, spot=24000, band_pts=200)   # keep 23900/24000/24100
+    # support (put OI) weighted = (23900*300 + 24000*100)/(400) = 9,570,000/400 = 23925
+    assert lv["support_w"] == 23925.0
+    assert lv["support_top"] == 23900.0                       # max put OI in band
+    # resistance (call OI) weighted = (23900*10 + 24000*100 + 24100*500)/610 = 14,689,000/610 ≈ 24080.33
+    assert abs(lv["resistance_w"] - 24080.328) < 0.01
+    assert lv["resistance_top"] == 24100.0                     # max call OI in band
+    assert oi_weighted_levels([]) is None
 
 
 def test_classify_buildup_matrix():

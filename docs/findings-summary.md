@@ -112,24 +112,29 @@ IV-rank + intraday stop) plus the confirmed **next-day vol-regime persistence** 
 forecasts tomorrow's realized range beyond today's move; regime sticky ~56–62% DTE-stripped). Both are
 *volatility* reads, not direction. See `docs/intraday-results.md` (#12–#21) and `docs/strategy-chart.html`.
 
-### 4d. Support / resistance revalidation — neither level contains price (2026-07-16)
-Do the dashboard's support/resistance levels actually hold? We tested both reads price-respect on the
-Dhan 1-min store (700 days, all three expiry eras), sign-free: at each stamp, when spot is within the
-30-min expected move of a level, the day-detrended **push toward the level** (push<0 = rejects/holds,
->0 = breaks) vs a mid-zone placebo. `scripts/analyze_footprint_sr.py`:
+### 4d. Support / resistance revalidation — the STANDING-OI centre is the one that holds (2026-07-16)
+Do the dashboard's support/resistance levels actually hold? We tested five S/R definitions for
+price-respect on the Dhan 1-min store (700 days, all three eras), sign-free: at each stamp, when spot
+is within the 30-min expected move of a level, the day-detrended **push toward the level** (push<0 =
+rejects/holds, >0 = breaks) vs a mid-zone placebo. `scripts/analyze_footprint_sr.py`:
 
-| Level (30-min horizon) | near-level push | placebo | edge | verdict |
-|---|---:|---:|---:|---|
-| **Footprint OI-build** (put-build=support / call-build=resistance; **sign-free**) | +1.5 bp | −0.0 | **+1.6 bp** | NULL — *wrong sign* (weak break-toward, not reject); +1.1/+3.0/+0.3 bp across eras |
-| **GEX walls** (call/put wall; dealer-sign) | −0.2 bp | +0.2 | **−0.5 bp** | NULL — correct (reject) sign, consistent all eras (−0.6/−0.5/−0.4), but ~0 |
+| S/R definition (30-min) | edge vs placebo | across eras | verdict |
+|---|---:|---|---|
+| Footprint **ΔOI-weighted** (fresh build, centre-of-mass — *what the panel shows today*) | **+1.6 bp** | +1.1 / +3.0 / +0.3 | NULL, **wrong sign** (breaks toward, not rejects) |
+| Footprint **ΔOI-top** (fresh build, single peak strike) | +0.8 bp | consistent wrong | NULL |
+| **Total-OI-weighted** (standing book, centre-of-mass) | **−2.6 bp** | **−2.2 / −3.4 / −2.1** | **HOLDS — right sign, robust all eras** |
+| Total-OI-**top** (standing book, single peak strike) | −0.2 bp | mixed | NULL |
+| **GEX walls** (gamma/OI peak, engine, dealer-sign) | −0.5 bp | −0.6 / −0.5 / −0.4 | ~NULL (right sign, ~0) |
 
-Both edges are **sub-2 bp** — economically zero; neither level is one price bounces off at 30 min, in
-any era. Two honest notes: (1) the sign-free **footprint is *not* the better S/R** — its edge has the
-*wrong* sign (price near the fresh-OI "support/resistance" slightly *continues* toward/through it),
-while the dealer-sign **GEX walls at least reject in the right direction** (−0.5 bp, stable across all
-three eras). (2) So the levels are a **map, not a fence**: keep showing them as context (where OI /
-gamma concentrates), never as "price will bounce here." Consistent with §4a–4c and the regime-split
-wall/pin nulls (`analyze_wall_break`, gamma-blast-research §7a).
+Three clean takeaways: (1) **weighted beats top** — the *centre of mass* of standing OI rejects price;
+the single peak strike does not. (2) **Standing total-OI beats fresh ΔOI** — the fresh-build footprint
+we currently display has the *wrong* sign (price drifts through it), while the standing-OI centre
+rejects. (3) It also beats the dealer-sign **GEX walls** — a **sign-free** level does best. The winner,
+**total-OI-weighted S/R (−2.6 bp, stable across all three eras)**, is the first S/R read that isn't a
+wrong-signed null. The magnitude is still small (~0.03%), so it's a **trustworthy map, not a
+mechanical fence** — but it says the dashboard should draw S/R from the **standing-OI centre-of-mass**,
+not the fresh-ΔOI build (which belongs to the *"where money is building"* flow, a different question).
+Consistent with §4a–4c; the fix is wired into the dashboard (weighted + top shown, standing-OI based).
 
 ## 5. What holds up (it isn't nothing)
 0. **Dealer-gamma concentration → forward realized VOLATILITY** (the strongest, most

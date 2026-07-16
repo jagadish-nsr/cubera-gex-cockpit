@@ -702,7 +702,7 @@ def _beep(kind):
 
 
 def _footprint_html(data, L, idx, ist, is_expiry):
-    from app.oi_footprint import build_footprint, window_footprint
+    from app.oi_footprint import build_footprint, oi_weighted_levels, window_footprint
     from app.timeseries import load_strikes_day
     if data.source != "nse" or not data.oi_strikes:
         return ''
@@ -713,6 +713,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     skew = fp.get("net_skew", 0.0)
     who = "call-writing" if skew < 0 else "put-writing"
     sub = ("big players capping the upside" if skew < 0 else "big players supporting the downside")
+    lv = oi_weighted_levels(data.oi_strikes, L.spot, band) or {}   # validated S/R (standing OI)
 
     # rolling-window strip (current expiry only, from today's per-strike captures)
     day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol)
@@ -726,9 +727,9 @@ def _footprint_html(data, L, idx, ist, is_expiry):
              f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
 
     return f'''<div class="card"><div class="levels">
-      <div class="fp-row floor"><span>🟢 Support forming</span><b class="mono">{f(fp.get("support_build"))}</b><small>put writers</small></div>
-      <div class="fp-row ceil"><span>🔴 Resistance forming</span><b class="mono">{f(fp.get("resistance_build"))}</b><small>call writers</small></div>
-      <div class="fp-sum">Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
+      <div class="fp-row floor"><span>🟢 Support <small>put OI</small></span><b class="mono">{f(lv.get("support_w"))}</b><small>top {f(lv.get("support_top"))}</small></div>
+      <div class="fp-row ceil"><span>🔴 Resistance <small>call OI</small></span><b class="mono">{f(lv.get("resistance_w"))}</b><small>top {f(lv.get("resistance_top"))}</small></div>
+      <div class="fp-sum">Bold = OI-weighted centre (the level that holds best); <b>top</b> = biggest single strike. Net <b>{who} near spot</b> — {sub}.</div></div>{strip}</div>'''
 
 
 def _fut_window_row(lbl, minutes, win, is_expiry):

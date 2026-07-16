@@ -58,6 +58,41 @@ def build_footprint(rows, spot: float | None = None, band_pts: float | None = No
     }
 
 
+def oi_weighted_levels(rows, spot: float | None = None,
+                       band_pts: float | None = None) -> dict | None:
+    """Standing-OI support/resistance near spot — the S/R that empirically HOLDS (docs §4d:
+    total-OI-weighted centre rejects price −2.6 bp, robust across all three expiry eras, and
+    beats fresh-ΔOI *and* the GEX walls). Support = PUT-OI side, resistance = CALL-OI side,
+    within ±``band_pts`` of spot. Returns BOTH the OI-WEIGHTED centre-of-mass (``*_w`` — the
+    validated read) AND the single TOP-OI strike (``*_top`` — the dominant wall, for reference;
+    'top' did NOT validate but is shown as context). Uses total OI (call_oi/put_oi), not ΔOI.
+    None if there are no usable strikes."""
+    ks, coi, poi = [], [], []
+    for r in rows:
+        k = r.get("strike")
+        if k is None:
+            continue
+        k = float(k)
+        if spot is not None and band_pts is not None and abs(k - spot) > band_pts:
+            continue
+        ks.append(k)
+        coi.append(float(r.get("call_oi") or 0.0))
+        poi.append(float(r.get("put_oi") or 0.0))
+    if not ks:
+        return None
+    ks, coi, poi = np.array(ks), np.array(coi), np.array(poi)
+
+    def _w(w):
+        s = w.sum()
+        return float((ks * w).sum() / s) if s > 0 else None
+
+    def _top(w):
+        return float(ks[int(np.argmax(w))]) if (w > 0).any() else None
+
+    return {"support_w": _w(poi), "support_top": _top(poi),
+            "resistance_w": _w(coi), "resistance_top": _top(coi)}
+
+
 # Build-up type from (ΔOI direction, premium direction) — the standard price+OI matrix.
 _BUILDUP = {
     ("up", "down"): "writing (short build-up)",   # OI up, premium down

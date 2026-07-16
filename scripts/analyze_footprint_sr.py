@@ -49,10 +49,16 @@ def _mins(t: str) -> int:
     return int(h) * 60 + int(m)
 
 
+# the support/resistance flavours we compute per stamp (column suffixes)
+_FLAVOURS = ["dw", "dt", "ow", "ot"]   # ΔOI-weighted, ΔOI-top, OI-weighted, OI-top
+
+
 def _day_footprint(store, day, band_frac):
-    """{time_ist: (support_build, resistance_build)} at 5-min stamps from the raw 1-min store.
-    Footprint = ADDS-only, banded, ΔOI-weighted strike (ΔOI since open) — mirrors build_footprint,
-    current expiry (the Dhan rollingoption feed is the near expiry)."""
+    """{time_ist: {sup_<f>, res_<f>}} at 5-min stamps from the raw 1-min store, for four S/R
+    flavours near spot (±band): ΔOI-WEIGHTED centre-of-mass, ΔOI-TOP single peak strike, total-
+    OI-WEIGHTED, total-OI-TOP. Support = put side, resistance = call side. ΔOI = OI since open;
+    current expiry (Dhan rollingoption is the near expiry). Mirrors build_footprint (adds-only,
+    banded) for the weighted centre; 'top' is the single most-built / most-held strike."""
     import numpy as np
     from data.dhan import load_intraday_day
     df = load_intraday_day(store, day)
@@ -77,17 +83,24 @@ def _day_footprint(store, day, band_frac):
         s = spot.get(t)
         if s is None or s != s:
             continue
-        dce = np.nan_to_num(ce.loc[t].to_numpy(float)) - ce0
-        dpe = np.nan_to_num(pe.loc[t].to_numpy(float)) - pe0
+        cur_c = np.nan_to_num(ce.loc[t].to_numpy(float))
+        cur_p = np.nan_to_num(pe.loc[t].to_numpy(float))
         band = np.abs(ks - float(s)) <= float(s) * band_frac
         if not band.any():
             continue
         kk = ks[band]
-        ca = np.clip(dce[band], 0, None)          # call adds (resistance)
-        pa = np.clip(dpe[band], 0, None)          # put adds  (support)
-        sup = float((kk * pa).sum() / pa.sum()) if pa.sum() > 0 else np.nan
-        res = float((kk * ca).sum() / ca.sum()) if ca.sum() > 0 else np.nan
-        out[t] = (sup, res)
+        ca = np.clip(cur_c[band] - ce0[band], 0, None)   # call ADDS (resistance, ΔOI)
+        pa = np.clip(cur_p[band] - pe0[band], 0, None)   # put ADDS  (support, ΔOI)
+        coi = cur_c[band]                                # total call OI (standing resistance)
+        poi = cur_p[band]                                # total put OI  (standing support)
+
+        def _w(w):
+            return float((kk * w).sum() / w.sum()) if w.sum() > 0 else np.nan
+
+        def _top(w):
+            return float(kk[int(np.argmax(w))]) if (w > 0).any() else np.nan
+        out[t] = {"sup_dw": _w(pa), "res_dw": _w(ca), "sup_dt": _top(pa), "res_dt": _top(ca),
+                  "sup_ow": _w(poi), "res_ow": _w(coi), "sup_ot": _top(poi), "res_ot": _top(coi)}
     return out
 
 
@@ -106,18 +119,17 @@ def _prep(store, max_days, band_frac):
         days = days[-max_days:]                    # most-recent N (keeps the current regime)
         f = f[f["day"].isin(days)].reset_index(drop=True)
 
-    # footprint S/R per (day, time_ist) from the raw store
-    sup_map, res_map = {}, {}
+    # footprint S/R (4 flavours) per (day, time_ist) from the raw store
+    fp_map = {}
     for di, d in enumerate(days, 1):
-        fp = _day_footprint(store, d, band_frac)
-        for t, (sup, res) in fp.items():
-            sup_map[(d, t)] = sup
-            res_map[(d, t)] = res
+        for t, vals in _day_footprint(store, d, band_frac).items():
+            fp_map[(d, t)] = vals
         if di % 100 == 0:
             _print(f"  …footprint {di}/{len(days)} days")
     key = list(zip(f["day"], f["time_ist"]))
-    f["sup_fp"] = [sup_map.get(k, np.nan) for k in key]
-    f["res_fp"] = [res_map.get(k, np.nan) for k in key]
+    for fl in _FLAVOURS:
+        f[f"sup_{fl}"] = [fp_map.get(k, {}).get(f"sup_{fl}", np.nan) for k in key]
+        f[f"res_{fl}"] = [fp_map.get(k, {}).get(f"res_{fl}", np.nan) for k in key]
 
     # day-detrended forward return at HORIZ, and expected-move unit
     m = HORIZ // GRID
@@ -188,14 +200,17 @@ def main() -> None:
     if f is None:
         return
     _print(f"\nSupport/Resistance revalidation · {store} · {f['day'].nunique()} days · "
-           f"band ±{band_frac*100:.0f}% · horizon {HORIZ}m")
-    _report(f, "sup_fp", "res_fp", "(A) FOOTPRINT OI-build S/R  (sign-free)")
-    _report(f, "put_wall", "call_wall", "(B) GEX walls  (dealer-sign dependent)")
+           f"band ±{band_frac*100:.0f}% · horizon {HORIZ}m · WEIGHTED (centre-of-mass) vs TOP (peak strike)")
+    _report(f, "sup_dw", "res_dw", "(A) Footprint ΔOI-WEIGHTED  (fresh build · centre-of-mass · sign-free)")
+    _report(f, "sup_dt", "res_dt", "(B) Footprint ΔOI-TOP       (fresh build · single peak strike · sign-free)")
+    _report(f, "sup_ow", "res_ow", "(C) Total-OI-WEIGHTED       (standing book · centre-of-mass · sign-free)")
+    _report(f, "sup_ot", "res_ot", "(D) Total-OI-TOP            (standing book · single peak strike · sign-free)")
+    _report(f, "put_wall", "call_wall", "(E) GEX walls             (gamma/OI peak · engine · dealer-sign)")
     _print("\n  Read: a level that WORKS shows near-level push clearly NEGATIVE and BELOW the placebo "
-           "(negative 'edge') — price rejects there more than at a random spot. Compare (A) vs (B): if "
-           "the sign-free FOOTPRINT rejects (edge<0) while the GEX walls don't (edge≈0 or >0), the "
-           "OI-build S/R is the trustworthy read and the dealer-sign walls are landmine-suspect. If "
-           "both ≈ placebo, neither contains price at this horizon. ⚠️ sign-free; overlapping; era-split.")
+           "(negative 'edge') — price rejects there more than at a random spot. Compare WEIGHTED (A/C) vs "
+           "TOP (B/D) and fresh-ΔOI (A/B) vs standing-OI (C/D) vs gamma (E): a TOP single strike may hold "
+           "where a blended centre-of-mass doesn't. If every edge ≈ 0 / placebo, none contains price at "
+           "this horizon. ⚠️ sign-free; overlapping windows; era-split.")
 
 
 if __name__ == "__main__":
