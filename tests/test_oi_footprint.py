@@ -237,6 +237,21 @@ def test_window_footprint_band_and_fallback_to_all_expiry():
     assert w["near"] is False and w["label"] == "put-writing"
 
 
+def test_window_footprint_turnover_weighting():
+    # Two strikes: puts build MORE contracts but on a CHEAP option; calls build fewer
+    # contracts on an EXPENSIVE option. Raw-OI says put-writing; TURNOVER flips to calls.
+    t = ["09:30", "09:30", "09:45", "09:45"]
+    df = pd.DataFrame({"time_ist": t, "spot": [24050] * 4, "strike": [24000, 24100] * 2,
+                       "put_doi_near": [0, 0, 10000, 0], "call_doi_near": [0, 0, 0, 2000],
+                       "put_ltp": [5, 5, 5, 5], "call_ltp": [200, 200, 200, 200]})
+    oi = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45)  # raw OI
+    assert oi["label"] == "put-writing" and oi["unit"] == "lots"          # 10000 puts > 2000 calls
+    tv = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45, lot_size=75)
+    # put turnover = 10000·5·75 = 3.75M ; call turnover = 2000·200·75 = 30M -> calls dominate
+    assert tv["unit"] == "inr" and tv["label"] == "call-writing"
+    assert tv["call_add"] == 2000 * 200 * 75 and tv["put_add"] == 10000 * 5 * 75
+
+
 def test_window_footprint_too_few_snapshots():
     df = _win_df()
     df = df[df["time_ist"] == "09:00"]

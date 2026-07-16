@@ -662,8 +662,16 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
                 "balanced": ("flat", "· Balanced"),
                 "thin": ("flat", "· Thin build")}.get(w["label"], ("flat", "· —"))
     net = w.get("net") or 0.0
-    dtxt = (f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
-            if w["label"] in ("put-writing", "call-writing") else "")
+    if w["label"] in ("put-writing", "call-writing"):
+        if w.get("unit") == "inr":                       # ₹ turnover = ΔOI × premium × lot
+            mag = abs(net)
+            money = (f"₹{mag/1e7:.1f}cr" if mag >= 1e7 else
+                     f"₹{mag/1e5:.1f}L" if mag >= 1e5 else f"₹{mag:,.0f}")
+            dtxt = f'{"+" if net >= 0 else "−"}{money}'
+        else:
+            dtxt = f'net {"+" if net >= 0 else "−"}{f(abs(net))}'
+    else:
+        dtxt = ""
     dim = " dim" if (is_expiry and minutes <= 15) else ""     # short windows churn on expiry
     shown = ("≤" + lbl) if w.get("partial") else lbl
     return (f'<div class="winrow{dim}"><span class="wl">{shown}</span>'
@@ -719,10 +727,12 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol)
     now_hm = ist.hour * 60 + ist.minute
     rows = "".join(_opt_window_row(lbl, m,
-                   window_footprint(day_df, m, L.spot, band, now_hm=now_hm), is_expiry)
+                   window_footprint(day_df, m, L.spot, band, now_hm=now_hm,
+                                    lot_size=getattr(idx, "lot_size", None)), is_expiry)
                    for lbl, m in _WINDOWS)
     cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min.'
-           if is_expiry else 'Fresh writing near spot; adds only, current expiry. Context, not a prediction.')
+           if is_expiry else 'Fresh writing near spot in ₹ turnover (ΔOI×premium×lot), current expiry. '
+                             'Context, not a prediction.')
     strip = (f'<div class="winstrip"><div class="win-hd">Fresh writing — trailing windows</div>'
              f'{rows}<div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div>')
 

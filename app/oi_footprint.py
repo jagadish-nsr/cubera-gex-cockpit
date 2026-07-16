@@ -169,7 +169,7 @@ def intraday_premium_change(day_df: pd.DataFrame) -> dict:
 
 def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = None,
                      band_pts: float | None = None, now_hm: int | None = None,
-                     min_frac: float = 0.20) -> dict | None:
+                     min_frac: float = 0.20, lot_size: float | None = None) -> dict | None:
     """Net **current-expiry** OI build over the TRAILING ``minutes`` window, near spot.
 
     For each strike, the window's OI change is ``doi_near(latest) − doi_near(ref)`` where
@@ -184,7 +184,13 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     reads "thin". Direction: ``net = put_add − call_add``; the dominant side must hold
     ``≥ min_frac`` of total adds else the label is "balanced". Returns None if < 2 snapshots.
 
-    Returns {put_add, call_add, net, frac, label ('put-writing'|'call-writing'|'balanced'|
+    If ``lot_size`` is given AND the ``call_ltp``/``put_ltp`` columns are present, each strike's
+    add is weighted by its **TURNOVER** = ΔOI × premium × lot (the ₹ notional of the fresh
+    writing, using the latest premium) instead of raw contract counts — a truer read of where
+    the *money* is building (10k lots of a 5-pt option ≪ 5k lots of a 100-pt option). ``unit``
+    is then "inr" (net is ₹), else "lots".
+
+    Returns {put_add, call_add, net, frac, unit, label ('put-writing'|'call-writing'|'balanced'|
     'thin'), near, partial (window not fully filled yet), span_min, n_strikes}.
     """
     if day_df is None or getattr(day_df, "empty", True) or "time_ist" not in day_df.columns:
@@ -221,6 +227,8 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         except (KeyError, TypeError, ValueError):
             return None
 
+    # TURNOVER weighting (₹ notional = ΔOI × premium × lot) when a lot size + premiums are given
+    turn = bool(lot_size) and {"call_ltp", "put_ltp"} <= set(day_df.columns)
     put_add = call_add = 0.0
     n_k = 0
     for k in b.index:
@@ -237,11 +245,13 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         if cb is not None and ca is not None:
             dc = cb - ca
             if dc > 0:
-                call_add += dc
+                cw = (_num(b, k, "call_ltp") or 0.0) * lot_size if turn else 1.0
+                call_add += dc * cw
         if pb is not None and pa is not None:
             dp = pb - pa
             if dp > 0:
-                put_add += dp
+                pw = (_num(b, k, "put_ltp") or 0.0) * lot_size if turn else 1.0
+                put_add += dp * pw
         n_k += 1
     total = put_add + call_add
     net = put_add - call_add
@@ -255,8 +265,8 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     else:
         label = "balanced"
     return {"put_add": put_add, "call_add": call_add, "net": net, "frac": frac,
-            "label": label, "near": near, "partial": partial, "span_min": span_min,
-            "n_strikes": n_k}
+            "unit": "inr" if turn else "lots", "label": label, "near": near,
+            "partial": partial, "span_min": span_min, "n_strikes": n_k}
 
 
 def _longest_run(kinds: list) -> tuple[int, int, str | None]:
