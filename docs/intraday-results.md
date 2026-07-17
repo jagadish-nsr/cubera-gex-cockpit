@@ -617,9 +617,54 @@ build-up with a reversion signal." And that reversion is the known generic intra
 tradeability net of 5-min bid-ask/costs is doubtful (§5 thrust work: reverts but doesn't pay after costs).
 No positioning edge; sign-free of the GEX landmine.
 
+## Study #24 — does the intraday MEAN-REVERSION MONETIZE on the near-month FUTURE, and is it high-|vanna|?  → NO (dead after cost; the mechanism is refuted)
+`scripts/backtest_futures_reversion.py`. The cost-and-regime test of the ONE non-noise intraday effect
+(#23's mom→fwd IC ≈ −0.25): does fading the trailing move PAY when executed on the near-month **future**
+(~3-5 bps round-trip) instead of 5-min **option** round-trips (~3%, which killed it in #3/#6b), and does
+the net edge concentrate in the high-|vanna| (SIDEWAYS) regime the dealer-dampening mechanism (#1/#8)
+predicts? Signal = `pos = −sign(trailing Δ-min return)`, fill t+1min, exit t+h; **Δ,h ∈ {15,30,60}**;
+cost swept **{0..8} bps**. Price path = the raw **1-min spot** (5-yr proxy for the future), costed as the
+future; regime = book-wide |vanna| tercile at t. Point-in-time (signal ≤t, fill t+1), sign-free of GEX.
+Pre-registered PASS = ALL of: net>0 after ≥4 bps · monotone LOW→HIGH |vanna| · OOS survives · beats the
+direction-shuffle + random-window placebos · spot tracks the actual future.
+
+- **DEAD on the clean feed (NIFTY, 1235 days, ~600k trades):** the raw fade **loses at ZERO cost** — gross
+  −0.001 to −0.006%/trade, **breakeven −0.1 to −0.6 bps** across the whole Δ×h grid; the direction-shuffle
+  placebo confirms it is significantly *negative* (real −0.0028% vs shuffled 0.000, **z=−4.2**). At 15-60m
+  the raw path carries enough persistent drift that fading it bleeds. Reversion only appears AFTER
+  **day-detrending** (+0.008%/trade ≈ **0.8 bp**) — a look-ahead diagnostic (needs the day's full drift,
+  unknowable live) and still far **below a 4 bp cost**. NIFTY_M (monthly book, same index) = **identical**.
+- **Mechanism REFUTED — not high-|vanna|:** the |vanna| tercile split is **non-monotone** (LOW −0.008 / MID
+  +0.004 / HIGH −0.003 @30×30), HIGH−LOW +0.005% but noise; **partial(fade P&L, |vanna| | IV, DTE) = +0.008
+  ≈ 0**. Fading does NOT pay more when dealer-gamma is high — the dealer-dampening story does not monetize.
+  OOS (day-block 70/30) gross decays to **+0.0002%** (net@4 −0.040%). Every criterion fails except one.
+- **Spot IS a sound path proxy (the one PASS):** on the ~50-day intraday-futures overlap the strategy on the
+  **actual future** vs the spot proxy has per-trade P&L **corr +0.959 (NIFTY) / +0.966 (BankNifty)**, mean
+  |basis drift| 8 / 26 pts over a 30m hold — so the 5-yr spot-proxy backtest is trustworthy. (But a valid
+  proxy is not an edge.)
+- **⚠ Landmine caught in the act — phantom reversion from corrupt spot:** the raw **NIFTY_M / BANKNIFTY**
+  spot feeds manufactured a spectacular FAKE edge (+0.36% / +0.99%/trade) that a naive run would have
+  reported as a win. Diagnosis: the same-underlying cross-check — **NIFTY_M shares NIFTY's index, yet read
+  +0.36% while NIFTY read −0.003%**; swapping NIFTY_M onto the clean NIFTY feed collapsed it to −0.003%
+  (identical to NIFTY). Root cause = **sustained ~2.2× scale corruption** in those stores' `spot` column
+  (e.g. 47,672 printed for a true 21,646, for *runs* of bars) — a snap-back cleaner alone misses it; it
+  took a long-window (±30-bar) robust median guard **plus** routing NIFTY_M through the clean feed. The
+  residual BankNifty positive is **entirely pre-2025** (era: pre-Nov24 +0.11%, Nov24-Aug25 +0.0002%, Sep25+
+  −0.002%) and its **OOS = +0.0006%** — dead once the contaminated era is excluded.
+
+**Conclusion:** the known intraday mean-reversion does **not** monetize on the future — it loses at zero
+cost raw, its detrended (look-ahead) residual is ~0.8 bp << realistic 3-5 bp futures cost, it is **not**
+concentrated in high-|vanna| (mechanism refuted), and it dies OOS. Confirms the arc: the fade is real as a
+rank-IC but not a tradeable edge net of cost, at any Δ×h, cross-book. **Data-quality flag for all future
+work: the NIFTY_M and BANKNIFTY `spot` columns carry sustained pre-2025 corruption — cross-check against
+the clean NIFTY feed or restrict to Sep25+/OOS.** Sign-free of the GEX landmine.
+
 ---
 
-**Scoreboard update (as of #23):** the directional nulls now also cover *combining* factors — volume
-conviction (#22) and intraday momentum (#23) neither rescue nor complement the price+OI build-up. The
-only non-noise intraday effect remains generic mean-reversion (fade recent move), already known (§5) and
-not cleanly tradeable after costs. Vol/short-premium stays the one edge.
+**Scoreboard update (as of #24):** the directional nulls now also cover *combining* factors — volume
+conviction (#22) and intraday momentum (#23) neither rescue nor complement the price+OI build-up — and the
+one non-noise effect, generic mean-reversion, is now shown **not tradeable even on the cheap futures leg**
+(#24: loses at zero cost, mechanism refuted, dead OOS). The only surviving edge remains **vol/short-premium**
+(sell rich IV S6/S11 + next-day vol-regime persistence #17). Direction is dead on Nifty at every horizon and
+every execution venue we can measure; the tool is decision-support, and the one thing that pays is being the
+vol seller, sized for the tail.
