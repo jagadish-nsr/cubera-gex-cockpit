@@ -53,6 +53,72 @@ def test_parse_index_futures_absent_symbol():
     assert parse_index_futures("", "NIFTY") is None
 
 
+# Minimal IDO (index-option) bhavcopy: 2 strikes × CE/PE across 2 expiries + a stock opt.
+_OHEADER = ("TckrSymb,FinInstrmTp,XpryDt,StrkPric,OptnTp,OpnIntrst,ChngInOpnIntrst,"
+            "TtlTradgVol,UndrlygPric")
+_OBHAV = "\n".join([
+    _OHEADER,
+    "NIFTY,IDO,2026-07-14,24500,CE,100,10,5,24400",   # OTM call (>spot) wk1
+    "NIFTY,IDO,2026-07-21,24500,CE,50,20,3,24400",     # same strike, wk2 -> aggregates
+    "NIFTY,IDO,2026-07-14,24300,PE,200,30,7,24400",    # OTM put (<spot)
+    "NIFTY,IDO,2026-07-14,24400,CE,80,-5,2,24400",     # ATM (not OTM)
+    "RELIANCE,STO,2026-07-14,3000,CE,9,9,9,3000",       # stock option -> ignored
+])
+
+
+def test_parse_index_options_aggregates_and_bands():
+    from data.nse import parse_index_options
+    rec = parse_index_options(_OBHAV, "NIFTY")
+    assert rec["spot"] == 24400.0
+    assert rec["strikes"][24500.0]["ce_oi"] == 150.0 and rec["strikes"][24500.0]["ce_doi"] == 30.0
+    assert rec["strikes"][24300.0]["pe_doi"] == 30.0
+    assert parse_index_options(_OBHAV, "BANKNIFTY") is None
+    assert parse_index_options("", "NIFTY") is None
+
+
+_RAW_HEADER = ("TradDt,TckrSymb,FinInstrmTp,XpryDt,StrkPric,OptnTp,OpnPric,HghPric,LwPric,"
+               "ClsPric,PrvsClsgPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,UndrlygPric")
+_RAW = "\n".join([
+    _RAW_HEADER,
+    "2026-07-11,NIFTY,IDF,2026-07-28,0,-,24450,24560,24400,24500,24540,24500,163107,-3192,45637,24480",
+    "2026-07-11,NIFTY,IDO,2026-07-14,24500,CE,120,140,110,130,150,130,100,10,5,24480",
+    "2026-07-11,NIFTY,IDO,2026-07-14,24300,PE,90,100,80,95,88,95,200,30,7,24480",
+    "2026-07-11,RELIANCE,STF,2026-07-28,0,-,3000,3010,2990,3005,2995,3005,5000,100,200,3000",  # ignore
+])
+
+
+def test_bhavcopy_raw_roundtrip(tmp_path, monkeypatch):
+    import app.bhavcopy_raw as br
+    monkeypatch.setattr(br, "RAW_FO_DIR", tmp_path)
+    br.save_raw_fo_day("2026-07-11", _RAW, "NIFTY")
+    br.save_raw_fo_day("2026-07-11", _RAW, "NIFTY")           # idempotent
+    df = br.load_raw_fo_day("2026-07-11", "NIFTY")
+    assert len(df) == 3 and set(df["instr"]) == {"IDF", "IDO"}   # RELIANCE filtered out
+    opt = df[df["instr"] == "IDO"]
+    assert set(opt["opt"]) == {"CE", "PE"}
+    ce = opt[opt["strike"] == 24500].iloc[0]
+    assert ce["close"] == 130.0 and ce["oi"] == 100 and ce["doi"] == 10   # premium + OI kept
+    assert df["spot"].iloc[0] == 24480.0
+    assert br.available_days("NIFTY") == ["2026-07-11"]
+    assert br.save_raw_fo_day("2026-07-11", "", "NIFTY") is None
+
+
+def test_options_eod_roundtrip_and_otm_signal(tmp_path, monkeypatch):
+    import app.options_eod as oe
+    from data.nse import parse_index_options
+    monkeypatch.setattr(oe, "OPTIONS_EOD_DIR", tmp_path)
+    rec = parse_index_options(_OBHAV, "NIFTY")
+    oe.save_options_day("2026-07-11", rec)
+    oe.save_options_day("2026-07-11", rec)               # idempotent
+    loaded = oe.load_options_day("2026-07-11", "NIFTY")
+    assert loaded["spot"] == 24400.0
+    sig = oe.otm_oi_signal(loaded, band_frac=0.03)       # ±732 pts around 24400
+    # OTM call ΔOI (24500) = 30, OTM put ΔOI (24300) = 30 -> net 0; ATM 24400 excluded
+    assert sig["otm_call_growth"] == 30.0 and sig["otm_put_growth"] == 30.0
+    assert sig["net_otm"] == 0.0
+    assert oe.daily_spot("NIFTY") == {"2026-07-11": 24400.0}
+
+
 def test_save_load_roundtrip_and_series(tmp_path, monkeypatch):
     monkeypatch.setattr(fb, "FUTURES_DIR", tmp_path)
     rec = parse_index_futures(_BHAV, "NIFTY")

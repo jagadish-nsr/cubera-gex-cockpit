@@ -41,16 +41,20 @@ def _print(s: str = "") -> None:
 
 
 def nifty_daily_close(symbol: str = "NIFTY") -> dict[str, float]:
-    """{date_ist: close} from the time-series journal — the last clean in-session
-    spot each day (frozen/partial days with < _MIN_ROWS snapshots are dropped)."""
+    """{date_ist: close}. Prefers the DEEP options_eod journal (bhavcopy UndrlygPric = the
+    official NIFTY close, months–years back); falls back to the time-series last-clean spot
+    for very recent days the bhavcopy hasn't published yet. The deep source is what lets the
+    FII IC run at full sample."""
+    from app.options_eod import daily_spot
     out: dict[str, float] = {}
-    for d in ts_days(symbol):
+    for d in ts_days(symbol):                     # recent, from timeseries (fallback)
         clean = _clean_day(load_day(d, symbol))
         if clean is None or clean.empty or len(clean) < _MIN_ROWS:
             continue
         sp = pd.to_numeric(clean["spot"], errors="coerce").dropna()
         if len(sp):
             out[d] = float(sp.iloc[-1])
+    out.update(daily_spot(symbol))                # authoritative EOD close overrides
     return out
 
 
@@ -65,12 +69,27 @@ def fii_net_fut() -> dict[str, float]:
     return out
 
 
+def fii_hedging_pressure() -> dict[str, float]:
+    """{date_ist: FII HEDGING PRESSURE = (long − short)/(long + short)} — the normalized
+    net-positioning measure from the futures hedging-pressure literature (Hong-Yogo;
+    Fernández-Pérez). Comparable across days regardless of total OI; in [−1, +1]."""
+    out: dict[str, float] = {}
+    for d in poi_days():
+        f = (load_participant_day(d) or {}).get("FII")
+        if f and f.get("fut_long") is not None and f.get("fut_short") is not None:
+            tot = float(f["fut_long"] + f["fut_short"])
+            if tot:
+                out[d] = float(f["fut_long"] - f["fut_short"]) / tot
+    return out
+
+
 def build_pairs() -> pd.DataFrame:
     """One row per FII day that has both a same-day close and a next-trading-day close:
     date, fii_level, fii_drift (vs prior FII day), fwd_ret (close_t -> close_next), and
     the calendar gap to that next close (1 = a true next-day; >1 spans a data gap)."""
     closes = nifty_daily_close()
     fii = fii_net_fut()
+    hp = fii_hedging_pressure()
     close_days = sorted(closes)
     fii_dates = sorted(fii)
 
@@ -83,9 +102,11 @@ def build_pairs() -> pd.DataFrame:
             continue
         nd = nexts[0]
         drift = fii[d] - fii[fii_dates[i - 1]] if i > 0 else None
+        hp_drift = (hp[d] - hp[fii_dates[i - 1]]) if (i > 0 and d in hp and fii_dates[i - 1] in hp) else None
         gap = (pd.Timestamp(nd) - pd.Timestamp(d)).days
         rows.append({"date": d, "next": nd, "gap_days": gap,
                      "fii_level": fii[d], "fii_drift": drift,
+                     "fii_hp": hp.get(d), "fii_hp_drift": hp_drift,
                      "fwd_ret_pct": (closes[nd] / closes[d] - 1.0) * 100.0})
     return pd.DataFrame(rows)
 
@@ -115,6 +136,8 @@ def main() -> None:
 
     _ic("fii_level", "FII net-futures LEVEL vs next-day return")
     _ic("fii_drift", "FII net-futures DRIFT (Δ vs prior day) vs next-day return")
+    _ic("fii_hp", "FII HEDGING PRESSURE (long−short)/(long+short) vs next-day return")
+    _ic("fii_hp_drift", "FII hedging-pressure DRIFT vs next-day return")
 
     ngap = int((df["gap_days"] > 1).sum())
     _print(f"\n⚠️ EXPLORATORY — n is tiny; read sign/shape only, not magnitude. "

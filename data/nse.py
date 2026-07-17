@@ -746,6 +746,46 @@ def parse_futures_live(payload: dict, symbol: str = "NIFTY") -> dict | None:
     }
 
 
+def parse_index_options(text: str, symbol: str = "NIFTY") -> dict | None:
+    """Parse index-OPTION rows (``FinInstrmTp == 'IDO'``) for ``symbol`` from the F&O
+    bhavcopy into per-strike EOD OI/ΔOI/volume, aggregated across expiries per (strike,
+    CE/PE). The free historical source for daily per-strike option OI (study #4). Returns
+    ``{symbol, spot (UndrlygPric), strikes: {k: {ce_oi, ce_doi, ce_vol, pe_oi, pe_doi,
+    pe_vol}}}`` or None. ΔOI (``ChngInOpnIntrst``) is vs prev day. Volume/OI in LOTS."""
+    if not text:
+        return None
+    import csv as _csv
+    import io
+
+    rows = [r for r in _csv.DictReader(io.StringIO(text))
+            if r.get("TckrSymb") == symbol and r.get("FinInstrmTp") == "IDO"]
+    if not rows:
+        return None
+
+    def _num(r, k):
+        try:
+            return float(r.get(k))
+        except (TypeError, ValueError):
+            return None
+
+    spot = next((_num(r, "UndrlygPric") for r in rows if _num(r, "UndrlygPric")), None)
+    strikes: dict[float, dict] = {}
+    for r in rows:
+        k = _num(r, "StrkPric")
+        ot = (r.get("OptnTp") or "").strip().upper()
+        if k is None or ot not in ("CE", "PE"):
+            continue
+        pre = "ce" if ot == "CE" else "pe"
+        s = strikes.setdefault(k, {"ce_oi": 0.0, "ce_doi": 0.0, "ce_vol": 0.0,
+                                   "pe_oi": 0.0, "pe_doi": 0.0, "pe_vol": 0.0})
+        for fld, col in ((f"{pre}_oi", "OpnIntrst"), (f"{pre}_doi", "ChngInOpnIntrst"),
+                         (f"{pre}_vol", "TtlTradgVol")):
+            v = _num(r, col)
+            if v is not None:
+                s[fld] += v
+    return {"symbol": symbol, "spot": spot, "strikes": strikes} if strikes else None
+
+
 def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[str]:
     """Expiry strings to fetch. If not provided, generate weekly (Tuesday)
     expiries from today through the next monthly, using the NSE calendar.

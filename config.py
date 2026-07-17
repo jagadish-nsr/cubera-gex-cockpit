@@ -41,16 +41,19 @@ class Index:
     exchange: str = "NSE"   # "NSE" (NFO) or "BSE" (BFO) — for Breeze API routing
 
 
-# VERIFIED / LAST CHECKED (confirm against your broker before trusting):
-#  - NIFTY:     lot 75; WEEKLY + monthly; expiry Tuesday (NSE).
-#  - BANKNIFTY: lot 35; MONTHLY ONLY (last Tuesday) — NSE discontinued weeklies Nov-2024.
-#  - SENSEX:    lot 20 (BSE F&O); WEEKLY + monthly; expiry THURSDAY (BSE/BFO).
-#               SENSEX is only available via DATA_SOURCE="icici_breeze" — the NSE
-#               scraper cannot reach BSE.  ⚠️ VERIFY lot size + expiry day live.
+# CONFIRMED 2026-07 (user-verified against broker):
+#  - NIFTY: lot 65 (SEBI revision effective Jan-2026 onward, was 75); WEEKLY +
+#    monthly, expiry Tuesday.
+#  - BANKNIFTY: lot 30 (NSE circular NSE/FAOP/70616, eff. Jan-2026 cycle, was 35);
+#    MONTHLY ONLY (last Tuesday) — NSE discontinued Bank Nifty weeklies on
+#    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
+#    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
+#  - SENSEX: lot 20 (BSE F&O); WEEKLY + monthly; expiry THURSDAY (BSE/BFO).
+#    SENSEX is only available via DATA_SOURCE="icici_breeze".
 INDICES: dict[str, Index] = {
-    "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE"),  # VERIFY lot
-    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 35,  False, 4000, "NSE"),  # VERIFY lot + monthly-only
-    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  3000, "BSE"),  # VERIFY lot + expiry day
+    "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE"),
+    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30,  False, 4000, "NSE"),
+    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  3000, "BSE"),
 }
 DEFAULT_INDEX = "NIFTY"
 

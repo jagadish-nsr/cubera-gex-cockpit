@@ -130,6 +130,33 @@ def _clip(x, lo=0.0, hi=1.0):
     return lo if x < lo else hi if x > hi else x
 
 
+def grade_blast(cover_frac: float, prem_exp: float | None,
+                wall_ratio: float | None = None, wall_frac: float | None = None,
+                full_cover: float = _FULL_COVER, full_thrust: float = _FULL_THRUST) -> dict:
+    """Score + grade a crossing from its COMPONENT values (the single grading source,
+    shared by the live ``blast_score`` and offline dataset analysis so they can never
+    drift). ``cover_frac`` <0 = ITM-side writers covering (fuel), >+0.05 = defending;
+    ``prem_exp`` = ITM-side premium expansion; ``wall_ratio``/``wall_frac`` describe the
+    wall one strike ahead (None ⇒ clear path). Returns {score, grade, ignition, thrust,
+    path} — same 0.5/0.2/0.3 weighting and TRUE/WEAK/FAKE thresholds as before."""
+    ignition = _clip(-cover_frac / full_cover)
+    thrust = _clip((prem_exp or 0.0) / full_thrust)
+    path = 1.0                                    # clear path unless a wall says otherwise
+    if wall_ratio is not None:
+        intact = _clip(wall_ratio / 3.0) * (1.0 if (wall_frac or 0.0) > -0.15 else 0.3)
+        path = 1.0 - intact
+    score = round(100 * (0.5 * ignition + 0.2 * thrust + 0.3 * path))
+    if cover_frac > 0.05:
+        grade = "FAKE-leaning (writers defending K)"
+    elif score >= 60:
+        grade = "TRUE-leaning (break sustaining)"
+    elif score >= 35:
+        grade = "WEAK / unconfirmed"
+    else:
+        grade = "FAKE-leaning (pin/cap)"
+    return {"score": score, "grade": grade, "ignition": ignition, "thrust": thrust, "path": path}
+
+
 def _seq_ends(seq, key):
     """First and last non-null value of ``key`` across a time-ordered list of dicts."""
     vals = [s.get(key) for s in seq
@@ -167,34 +194,17 @@ def blast_score(direction: str, crossed: list[dict], ahead: list[dict] | None = 
     cover_frac = (oi1 - oi0) / oi0                # <0 = covering (fuel); >0 = defending
     prem_exp = (p1 / p0 - 1.0) if (p0 and p1) else None
 
-    ignition = _clip(-cover_frac / full_cover)
-    thrust = _clip((prem_exp or 0.0) / full_thrust)
-
     wall_ratio = wall_frac = None
-    path = 1.0                                    # clear path unless a wall says otherwise
     if ahead:
         aoi0, aoi1 = _seq_ends(ahead, f"{side}_oi")
         if aoi1 and oi1:
             wall_ratio = aoi1 / oi1               # wall size relative to the crossed strike
             wall_frac = (aoi1 - aoi0) / aoi0 if aoi0 else 0.0
-            # intact if the wall ahead is BIG and NOT eroding; an eroding wall (< −15%)
-            # is itself breaking → discount its capping power.
-            intact = _clip(wall_ratio / 3.0) * (1.0 if wall_frac > -0.15 else 0.3)
-            path = 1.0 - intact
 
-    score = round(100 * (0.5 * ignition + 0.2 * thrust + 0.3 * path))
-    if cover_frac > 0.05:
-        grade = "FAKE-leaning (writers defending K)"
-    elif score >= 60:
-        grade = "TRUE-leaning (break sustaining)"
-    elif score >= 35:
-        grade = "WEAK / unconfirmed"
-    else:
-        grade = "FAKE-leaning (pin/cap)"
-    return {"direction": direction, "itm_side": side, "score": score, "grade": grade,
+    g = grade_blast(cover_frac, prem_exp, wall_ratio, wall_frac, full_cover, full_thrust)
+    return {"direction": direction, "itm_side": side, **g,
             "cover_frac": cover_frac, "prem_exp": prem_exp,
-            "wall_ratio": wall_ratio, "wall_frac": wall_frac,
-            "ignition": ignition, "thrust": thrust, "path": path}
+            "wall_ratio": wall_ratio, "wall_frac": wall_frac}
 
 
 def gamma_concentration(oi_strikes, spot: float, n: int = 6,

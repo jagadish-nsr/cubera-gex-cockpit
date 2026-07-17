@@ -1,13 +1,15 @@
-"""Map regime + walls -> an ILLUSTRATIVE option structure (options-structures skill).
+"""Map the VOL-REGIME + walls -> an ILLUSTRATIVE option structure.
 
-One-line principle: SELL premium in positive gamma, BUY premium in negative gamma;
-walls pick the strikes, the flip picks the side. Every suggestion carries a
-forced exit-by (no hold-to-expiry) and a defined-risk note.
+Driven by the sign-free VOL-REGIME (the |vanna|/|charm| gauge — HIGH dealer-gamma concentration =
+calm/pinning, LOW = wild/trending; validated |GEX|/vanna -> forward realized vol), NOT the
+unvalidated dealer-sign. Walls pick the strikes. Every suggestion carries a forced exit-by (no
+hold-to-expiry) and a defined-risk note.
 
-IMPORTANT: this is illustrative/textbook only. The Nifty dealer-sign model is
-UNVALIDATED, so these are NOT validated recommendations — paper/learning only.
-We deliberately do NOT fabricate premiums; risk is stated as the spread's defined
-width (the broker shows the actual credit/debit).
+Principle: SELL premium in a CALM (high-concentration) regime, BUY convexity in a WILD (low-
+concentration) regime; direction is NOT forecastable so the wild structure is non-directional.
+The REGIME read is validated; the structure MAPPING is illustrative textbook only — paper/learning
+only. We deliberately do NOT fabricate premiums; risk is the spread's defined width (the broker
+shows the actual credit/debit).
 """
 
 from __future__ import annotations
@@ -32,36 +34,38 @@ def _round_strike(x: float, step: int = 50) -> int:
 
 def suggest_structure(
     levels,
-    view,
-    lot_size: int = 75,
+    vol_regime,
+    lot_size: int = 65,
     spread_width: int = 100,
     nearest_expiry=None,
     is_expiry_day: bool = False,
 ) -> CandidateStructure:
-    cs = _base_structure(levels, view, lot_size, spread_width, nearest_expiry)
+    """``vol_regime`` is the sign-free gauge tag: 'calm' (HIGH concentration / pinning),
+    'wild' (LOW / trending), or 'mid'/None (neutral / unclear -> wait)."""
+    cs = _base_structure(levels, vol_regime, lot_size, spread_width, nearest_expiry)
     if is_expiry_day:
-        cs.expiry_note = _expiry_note(levels, view)
+        cs.expiry_note = _expiry_note(vol_regime)
     return cs
 
 
-def _expiry_note(levels, view) -> str:
+def _expiry_note(vol_regime) -> str:
     """Expiry-day reading: gamma is huge, so the pin (and the blast tail) intensify."""
-    if view.conflict or levels.regime == "FLAT" or levels.flip is None:
-        return ("EXPIRY DAY: mixed signals + huge gamma — both a pin and a blast are "
-                "possible and it's very hard to trade. Best to wait.")
-    if levels.regime == "POSITIVE":
-        return ("EXPIRY DAY: gamma is huge → strong PIN toward the magnet / max pain "
-                "(a premium-sellers' day). A late, decisive break of a wall can flip it "
+    if vol_regime == "calm":
+        return ("EXPIRY DAY: HIGH dealer-gamma concentration -> strong PIN toward the magnet / "
+                "max pain (a premium-sellers' day). A late, decisive break of a wall can flip it "
                 "into a GAMMA BLAST (sharp move) — that's the tail risk, not the base case.")
-    return ("EXPIRY DAY + below the flip: GAMMA-BLAST risk — moves can explode in the "
-            "last hour. Buying OTM beyond the wall is a low-probability lottery (theta "
-            "crush is brutal) — tiny size only, if at all.")
+    if vol_regime == "wild":
+        return ("EXPIRY DAY + LOW gamma concentration -> GAMMA-BLAST risk: moves can explode in "
+                "the last hour. Buying OTM beyond the wall is a low-probability lottery (theta "
+                "crush is brutal) — tiny size only, if at all.")
+    return ("EXPIRY DAY: mixed / neutral gamma — both a pin and a blast are possible and it's very "
+            "hard to trade. Best to wait.")
 
 
 def _base_structure(
     levels,
-    view,
-    lot_size: int = 75,
+    vol_regime,
+    lot_size: int = 65,
     spread_width: int = 100,
     nearest_expiry=None,
 ) -> CandidateStructure:
@@ -73,20 +77,19 @@ def _base_structure(
     spot = levels.spot
     risk_def = f"{spread_width} x {lot_size} = Rs {spread_width * lot_size:,}"
 
-    # --- No clean edge: conflict / no flip / flat -> wait -------------------
-    if view.conflict or levels.flip is None or levels.regime == "FLAT":
+    # --- MID / unclear regime -> wait --------------------------------------
+    if vol_regime not in ("calm", "wild"):
         return CandidateStructure(
             name="No trade — wait",
-            rationale="Signals are mixed or the calm/wild switch is unclear. "
-            "De-size and wait for confirmation rather than force a trade.",
+            rationale="Neutral / unclear vol regime (MID concentration). De-size and wait for the "
+            "regime to pick a side before committing to a premium-selling or -buying structure.",
             risk_note="—",
             exit_by=exit_by,
         )
 
-    # --- POSITIVE gamma (calm) -> SELL premium, defined risk ----------------
-    if levels.regime == "POSITIVE":
+    # --- CALM (high concentration / pinning) -> SELL premium, defined risk --
+    if vol_regime == "calm":
         if pw <= spot <= cw:
-            # Iron condor: short call ABOVE the call wall, short put BELOW the put wall.
             legs = [
                 ("SELL", "C", cw), ("BUY", "C", cw + spread_width),
                 ("SELL", "P", pw), ("BUY", "P", pw - spread_width),
@@ -94,32 +97,30 @@ def _base_structure(
             return CandidateStructure(
                 name="Iron condor (sell premium)",
                 legs=legs,
-                rationale=f"Calm / range-bound between {pw:,} and {cw:,}. Sell premium "
-                "with the short strikes just outside the walls; profit if Nifty stays "
-                "in the range. (Sell premium in positive gamma; walls pick the strikes.)",
+                rationale=f"HIGH gamma concentration -> calm / range-bound between {pw:,} and "
+                f"{cw:,}. Sell premium with the short strikes just outside the walls; profit if "
+                "Nifty stays in the range (pinning favours premium sellers).",
                 risk_note=f"Defined risk per side ~ {risk_def} minus the credit you collect.",
                 exit_by=exit_by,
             )
-        # Calm but price is outside the wall band -> no clean condor.
         return CandidateStructure(
             name="Wait — no clean range setup",
-            rationale=f"Calm regime, but price is OUTSIDE the wall band ({pw:,}–{cw:,}). "
-            "The textbook condor isn't cleanly set up — wait for price to return into "
-            "the range before selling premium.",
+            rationale=f"Calm regime, but price is OUTSIDE the wall band ({pw:,}-{cw:,}). The "
+            "textbook condor isn't cleanly set up — wait for price to return into the range "
+            "before selling premium.",
             risk_note="—",
             exit_by=exit_by,
         )
 
-    # --- NEGATIVE gamma (wild, spot below flip) -> BUY premium with the break
-    upper = _round_strike(spot)
-    lower = upper - spread_width
+    # --- WILD (low concentration / trending) -> BUY convexity (direction not forecastable) --
     return CandidateStructure(
-        name="Put debit spread (buy premium, downside)",
-        legs=[("BUY", "P", upper), ("SELL", "P", lower)],
-        rationale=f"Wild regime below the flip {levels.flip:,.0f}: trade WITH the "
-        "down-move and BUY premium (a debit spread). Requires a CONFIRMED hold below "
-        "the flip, not an intraday wick. (Buy premium in negative gamma; flip picks the side.)",
-        risk_note=f"Defined risk = the debit paid (up to ~ {risk_def}). REDUCE size — "
-        "moves run 1.5–2x normal. Never SELL premium here.",
+        name="Long strangle (buy premium, either way)",
+        legs=[("BUY", "C", cw), ("BUY", "P", pw)],
+        rationale=f"LOW gamma concentration -> wild / trending: a big move is likely but the "
+        f"DIRECTION isn't forecastable. Buy a strangle at the walls ({pw:,} put / {cw:,} call) for "
+        "convexity — profit if Nifty breaks hard EITHER way; or wait for a CONFIRMED wall break "
+        "and buy a debit spread in that direction. Never SELL premium here.",
+        risk_note="Defined risk = the debit paid. Theta bleeds if it stays quiet — size SMALL; "
+        "exit on a clear break or by the cutoff.",
         exit_by=exit_by,
     )

@@ -5,6 +5,202 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ✅ DONE (2026-07-15 — `scripts/backtest_gamma_blast.py` on the 1-min entry model; verdict: real selector, NOT tradeable after spread — see gamma-blast-research.md §7e)
+
+**Result:** built the 1-min crossing/trajectory primitives (`scripts/_blast1min.py`), the 1-min timing
+study (§7d) and the backtest (§7e). The fast-TRUE entry model beats a naive baseline and is +3.2%/trade
+at mid, but breakeven is ~2-3% half-spread and it's negative (−11.4% in the current Sep25+ regime) after
+realistic expiry-afternoon fills. Honest use = a live confirmation-quality readout, not automation.
+Follow-on left open: a straddle (directionless) variant, and a real bid/ask fill model if book data
+appears.
+
+## 2026-07-15 IST — [B1-orig] Gamma-blast BACKTEST skill (original spec)  ⬜ superseded by the DONE entry above
+
+**Why:** we have detectors, IC studies, and a sign-free staying-power grade (`analyze_blast`,
+Spearman +0.70, n=57, all in the current Sep25+ Tuesday era), but **no first-class backtest** of the
+blast as a *tradeable* event with honest cost modelling. The payoff is lottery-shaped, so mean return
+is meaningless — the skill must evaluate the full distribution.
+
+**Build:** a reusable backtest skill/harness specialised for expiry-day gamma blast that models the
+things that kill naive blast backtests:
+- **Full payoff distribution**, not the mean: hit rate, win/loss payoff ratio, max adverse excursion,
+  and how often the needed move actually arrived inside the stop (lottery accounting).
+- **IV crush** — afternoon IV deflation that offsets gamma gains even when directionally right.
+- **Fill realism** — expiry-afternoon spreads/depth blow out exactly when premiums explode; model
+  explicit spread + slippage, not mid-price. Be suspicious of any edge living only in the last 15 min.
+- **Expiry-structure era split baked in** (`app/expiry_regime.py`) — never pool across the 20-Nov-24
+  and 1-Sep-25 breaks; treat Nifty-Tuesday (Sep25+) as the only live weekly venue.
+- Two-model framing: a **vol-expansion regime detector** (directionless — straddle / staying-power)
+  vs a **direction trigger** (futures OFI/ΔOI, VWAP break, zero-gamma cross — all found weak so far).
+- Straddle-breakout proxy (compression → breakout of the ATM straddle's OWN intraday range) as the
+  cleanest directionless tradable, sidestepping CE-vs-PE.
+
+Effort: med–high. ⚠️ Direction is dead (research arc); the defensible version studies the hedging-flow
+/ vol-expansion phenomenon with honest costs, NOT "buy cheap options and hope." Decision-support only.
+
+---
+
+## 2026-07-13 IST — [T1a] Regime → risk-posture overlay  ✅ DONE (2026-07-13 — `_regime_posture_note` card under the regime banner)
+
+**Why:** the vanna gauge tells you the REGIME but not what to DO. Turn the one confirmed edge
+(|vanna|→forward vol) into a decision. The dashboard currently stops at "SIDEWAYS/TRENDING".
+
+**Build:** a `_regime_posture_section` (dashboard) keyed to `intraday_vol_regime` tag + exp_rv:
+- **HIGH concentration (calm/pinning)** → mean-revert: fade extremes toward the magnet, sell
+  premium near the walls, tighter stops, size UP.
+- **LOW concentration (trending/wild)** → respect the break: momentum/breakout, buy premium,
+  stops BEYOND the walls, size DOWN.
+- **MID** → neutral / mixed, no vol-regime tilt.
+Feed both the live-intraday vanna regime AND the EOD `gex_history` regime (daily posture). Compact
+"how to trade this regime" card; sign-free; decision-support ("you confirm"). Effort: low–med.
+
+---
+
+## 2026-07-13 IST — [T1b] DTE-aware regime metric (vanna + charm blend)  ✅ DONE (2026-07-13 — charm@≤1.5DTE / vanna else via `regime_now`; validated cross-book)
+
+**Why:** Study #8 — **charm** is the best vol metric at **0-DTE** (IV-partial −0.20) while **vanna**
+wins otherwise. A DTE-switched/blended gauge should beat either alone. Builds directly on done work.
+
+**Build:** add a `charm` column to the feature cache (like `vanna`, in `day_features`); in
+`_regime_stats`/`intraday_vol_regime` pick the metric by DTE (charm ≤1.5d, vanna else) OR blend the
+two percentiles. Add `data_access._live_charm` (mirror `_live_vanna`) for the live value. VALIDATE
+the blend's IV-partial beats vanna-alone cross-book (`greek_exposure_screen`) before wiring. Effort:
+med (cache rebuild + live charm). ⚠️ still a vol-regime read, not alpha.
+
+---
+
+## 2026-07-13 IST — [T2] Live gamma-blast confirmation panel (wife's strategy)  ✅ DONE (2026-07-13 — live-confirmation readout: actionable bias + confirmation-lag state + fuel gauge)
+
+**Why:** the blast score is **confirmation, not prediction** (#6) — so its value is a clean
+real-time "is this break SUSTAINING?" readout as the 40-min unfolds. This is the wife's actual
+trade; the live-confirmation UX *is* the product.
+
+**Build:** enhance the dashboard gamma-blast section for LIVE use: the writer-covering **fuel gauge**
+building over the window, the **TRUE/FAKE grade** with its confirmation-lag note (~5min violent →
+~15–30min ordinary; early readings bias FAKE — NOT a pivot-entry trigger), the wall-ahead read, and
+"what to watch next". Point-in-time, decision-support. Ties to `app/gammablast.py::blast_score`,
+`docs/gamma-blast-score.md`. Effort: med.
+
+---
+
+## 2026-07-14 IST — [T6] Situational / scenario analysis (spot × levels)  ⏳ IN PROGRESS (spec: docs/scenario-catalog.md)
+
+**Progress:** step 1 (cache enriched with `call_wall/put_wall/magnet/max_pain/gamma_flip` per stamp;
+all 3 books rebuilt) ✅. Results so far — direction stays dead, consistent with the arc:
+- **A1 magnet lock** ✅ NEGATIVE (Study #12): pin is stickiness not attraction (closer 39% < mirror 51%); undercuts A2.
+- **B1/B2 wall bounce-vs-break** ✅ NEGATIVE cross-book (Study #14): no directional edge at the wall; only containment (= vol regime).
+- **H blast compression** ✅ REFUTED (Study #13, user hypothesis): tight morning → QUIETER afternoon (ρ +0.45, persistence), not a coil; invert the filter.
+- **Study #15 daily-move per bucket** ✅ wired to dashboard (expected-move badge, |vanna|-based).
+- **I ORB × pin** ✅ NEGATIVE (Study #16, user scenario): pin doesn't flip ORB run; OR always breaks; "smaller OR → trendy" is a normalization illusion (absolute ρ(OR%,day-HL%)=+0.59, persistence); OR not special vs mid-day placebo.
+- **Regime persistence** ✅ **POSITIVE cross-book** (Study #17): vol regime clusters (autocorr +0.26–0.36, ~1.9d runs); today's |vanna| forecasts tomorrow's move BEYOND realized vol (partial −0.15/−0.22/−0.18, survives DTE); label sticky 56–62% DTE-stripped. The gauge/badge earn their keep as a NEXT-DAY prior. → dashboard: carry regime into next session.
+
+Remaining (lower prior): C1 flip regime, D1 magnet-pull sharpen, E1/E2 squeeze (vol), F1 max-pain
+drift, G1 level×footprint. Direction stays dead (A1/B/H/I); the surviving value is VOL — now with a
+confirmed NEXT-DAY persistence edge (#17). Next: to-expiry vanna-VRP (T4b remainder).
+
+
+**Why:** direction is dead POOLED (research-arc conclusion), so STOP pooling — slice to the narrow
+geometry+regime cells (spot vs wall / magnet / max-pain / pin / flip at a given stamp) where a
+conditional edge might survive. Turns the user's expiry-pin/blast-target intuition into pre-registered,
+holdout-guarded tests. Sign-free (geometry supplies direction, not the dealer-sign landmine).
+
+**Build (full spec + scenario catalog A–G in `docs/scenario-catalog.md`):**
+1. Enrich the 5-min feature cache with per-stamp `call_wall/put_wall/magnet/max_pain/gamma_flip`
+   (one extra pass in `day_features`; `peak_oi_strike` stays). Rebuild caches.
+2. Shared protocol: point-in-time, terminal `converged`-to-target at **15:15 spot**, distance
+   normalized by `σ√T`, day-detrend, race the neutral anchors, DTE+time-of-day controls, last-30%
+   walk-forward holdout, dead scenarios recorded.
+3. Order: A1→A3→A2 (pinning, highest prior) → B1-vs-B2 (wall bounce-vs-break, best directional shot)
+   → D1/E (sharpen) → C1/F1/G1 (gated). One small script each → `docs/intraday-results.md`.
+   Survivors graduate to a dashboard "situation" chip. Effort: med (cache rebuild + per-scenario scripts).
+
+---
+
+## 2026-07-13 IST — [T4] Vol-risk-premium study — IV vs vanna-predicted RV (daily/overnight)  ⏳ TODO (PRIORITY — the one vol-alpha shot)
+
+**Why:** the INTRADAY straddle was priced-in (#6b/#7), but the **daily/overnight variance-risk-
+premium conditioned on the opening vanna regime** is UNtested. If IV systematically over/under-
+prices the vanna-predicted realized vol, that's a genuine vol trade (unlike the intraday version).
+
+**Build:** per day, opening ATM IV vs the subsequent realized vol (to next day / to expiry), bucketed
+by opening **vanna** regime tercile; the systematic **IV − RV gap by regime**, net of a straddle-cost
+proxy. **MUST control DTE** (the #7 confound: vanna∝1/σ, |GEX|∝1/√T ≈ near-expiry — hold DTE fixed).
+Point-in-time. Honest prior: could well be null (efficient), but it's the one place a tradeable vol
+edge could hide. Effort: med.
+
+---
+
+## 2026-07-13 IST — [T4b] Vanna-VRP follow-up — is the residual TRADEABLE?  ✅ DONE (2026-07-14 — NO at BOTH horizons: intraday #11b + hold-to-expiry #18; partial|IV+DTE ≈ 0. Closed.)
+
+**Why:** Study #11 (T4) found the FIRST vol result to survive IV+DTE controls in the right direction
+AND replicate cross-book: partial(|vanna|, VRP | IV+DTE) = +0.11 NIFTY / +0.24 BankNifty (higher vanna
+→ IV under-prices the calm → larger VRP → short-vol tilt). Modest but real — the only tradeable-vol
+candidate left.
+
+**What to do:** (1) ROBUST realized vol (BankNifty mean RV is bad-tick-corrupted — median/winsorized,
+or drop the ~1.8% corrupt-spot days) so the P&L magnitude is trustworthy; (2) a proper regime-timed
+**short-vol backtest** — sell the ATM straddle on high-vanna days (matched IV+DTE bucket), hold to
+close/expiry, **net of a realistic cost + slippage**; (3) OUT-OF-SAMPLE / walk-forward split;
+(4) also a daily/overnight horizon (not just entry→close). If the cost-adjusted, OOS edge holds, this
+is the first genuinely tradeable thing in the project. Honest prior: modest, may not clear costs.
+
+---
+
+## 2026-07-13 IST — [T3] Self-healing capture via nightly Dhan backfill  📋 BACKLOG
+
+**Why:** we keep LOSING live sessions (S0-machine sleep, no wake-timer) — but it's now RECOVERABLE
+since Dhan has the full 1-min history. Stop losing data.
+
+**Build:** a nightly job — detect missing intraday days in the journal, backfill them from Dhan
+(`scripts/dhan_backfill.py` incremental) + append to the feature caches (`intraday_features.build`
+appends; vanna/charm columns). Windows scheduled task / cron. Self-heals gaps so the gauge + studies
+never have holes. Also a lightweight nightly `intraday_features.build(store)` to keep caches current.
+Effort: med. (Deprioritized vs T1/T2/T4 per user, but high value — chronic pain, now cheap.)
+
+---
+
+## 2026-07-13 IST — [T5] Order-flow / tick-data direction spike (Dhan websocket)  📋 BACKLOG (future)
+
+**Why:** every OI/options/futures/greek angle is EXHAUSTED for direction (#1–#10). The ONLY data
+class with a fresh, unpriced directional prior is **trade-level order flow** (aggressor side, sweep
+detection, depth imbalance) — which we don't have yet.
+
+**Route (user-confirmed):** Dhan API offers a **WEBSOCKET** market-data feed → the path to tick/depth.
+Scoped feasibility spike: connect the Dhan websocket, capture ticks/depth for Nifty futures + ATM
+options, and test whether order-flow imbalance / sweep detection shows directional IC beyond price
+momentum. Big lift, uncertain payoff — a spike, not a commitment. **Future** (after T1/T2/T4).
+Effort: high.
+
+---
+
+## 2026-07-13 IST — Charm vs Gamma-blast analysis  ✅ DONE (2026-07-13 — NULL: charm doesn't call blast direction; docs/intraday-results.md #10)
+
+**Why:** **charm** (∂delta/∂time) is the dealer greek that drives **expiry-day directional drift**
+(forced one-way re-hedging as deltas decay — "charm flow"), and it's a near-expiry-dominated signal
+(∝ 1/T). The **gamma blast** is an expiry-day strike-crossing phenomenon. So charm is the most
+theory-plausible thing to connect to blast *direction/continuation* — the one dimension the blast
+score can't predict (Study #6: direction is a coin flip). In the greek screen charm was also the
+strongest vol metric on NIFTY (IV-partial −0.228) but inconsistent on BankNifty. See
+`docs/vanna-charm.md`, `docs/intraday-results.md` #5/#6/#8.
+
+**What to test (point-in-time, leak-free — reuse `scripts/analyze_dhan_blast.py` /
+`build_blast_dataset.py` crossing machinery):**
+1. Charm EXPOSURE (signed, model-A) and its 15-min change at/just-after a crossing → does it
+   predict the *direction* of continuation (up vs down) or the true-vs-fake blast, beyond momentum?
+   (The signed test the blast score fails — charm is the candidate because it's directional flow.)
+2. Charm at KEY LEVELS (the crossed strike / wall ahead) vs aggregate charm.
+3. Does charm-flow SIGN align with the blast direction on true blasts specifically (near expiry)?
+4. Add `CHARM` (and its Δ) as a feature to the blast ML dataset and re-check the walk-forward AUC /
+   EV — does the one greek with a directional mechanism move the needle?
+
+**Honest prior:** low (direction has been null everywhere, incl. charm's signed→ret ~0 in the
+pooled screen) — BUT charm × expiry-day × blast is the one untested *interaction*, and charm's
+1/T concentration means a pooled test dilutes it. Condition on DTE≤1.5 (0-DTE). Sign-dependent
+(dealer-sign landmine) → report |IC| + both signs. Exploratory; confirmation-not-alpha unless it
+clearly beats momentum.
+
+---
+
 ## 2026-07-03 03:33 IST — Intraday mini-buildup streak detector (5/15-min) + dashboard list  ✅ DONE (2026-07-03)
 
 **Built:** `app/oi_footprint.py::intraday_buildup_streaks` — per-strike consecutive-snapshot

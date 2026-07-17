@@ -5,6 +5,10 @@ computes dealer gamma-exposure levels (call/put walls, gamma flip, magnet, max
 pain), classifies the regime, and emits a one-sentence playbook for Nifty index
 options. Decision-support only — **not financial advice, no order execution.**
 
+> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)** — a plain-language
+> setup guide: double-click `run_simple.bat` for the dashboard, and one admin command
+> (`setup_data_collection.ps1`) to turn on automatic background data collection.
+
 > Read `CLAUDE.md` first, especially the **dealer-sign landmine**: the US
 > long-call / short-put-gamma convention may NOT hold for India's retail-selling
 > microstructure and must be re-validated empirically before any wall/flip output

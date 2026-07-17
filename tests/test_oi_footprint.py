@@ -7,7 +7,7 @@ import pandas as pd
 
 from app.oi_footprint import (build_footprint, classify_buildup, footprint_series,
                               intraday_buildup_streaks, intraday_premium_change,
-                              top_builds)
+                              oi_weighted_levels, top_builds, window_footprint)
 from data.nse import per_strike_nearest_changes
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "data" / "fixtures" / "nse_v3_sample.json"
@@ -43,6 +43,23 @@ def test_empty_and_no_adds():
     assert build_footprint([]) is None
     fp = build_footprint([{"strike": 100, "put_doi": 0, "call_doi": 0}])
     assert fp["support_build"] is None and fp["resistance_build"] is None
+
+
+def test_oi_weighted_levels_weighted_and_top():
+    rows = [
+        {"strike": 23900, "put_oi": 300, "call_oi": 10},
+        {"strike": 24000, "put_oi": 100, "call_oi": 100},
+        {"strike": 24100, "put_oi": 0, "call_oi": 500},
+        {"strike": 25000, "put_oi": 9999, "call_oi": 0},   # far OTM -> banded out
+    ]
+    lv = oi_weighted_levels(rows, spot=24000, band_pts=200)   # keep 23900/24000/24100
+    # support (put OI) weighted = (23900*300 + 24000*100)/(400) = 9,570,000/400 = 23925
+    assert lv["support_w"] == 23925.0
+    assert lv["support_top"] == 23900.0                       # max put OI in band
+    # resistance (call OI) weighted = (23900*10 + 24000*100 + 24100*500)/610 = 14,689,000/610 ≈ 24080.33
+    assert abs(lv["resistance_w"] - 24080.328) < 0.01
+    assert lv["resistance_top"] == 24100.0                     # max call OI in band
+    assert oi_weighted_levels([]) is None
 
 
 def test_classify_buildup_matrix():
@@ -181,6 +198,84 @@ def test_intraday_streaks_turnover_from_volume():
     # No volume column -> turnover is None (back-compat with old CSVs).
     df2 = _streak_df([100000, 105000, 110000, 116000], [200.0, 190.0, 180.0, 170.0])
     assert intraday_buildup_streaks(df2, "call", run=3, min_cum_doi=1000)[0]["turnover"] is None
+
+
+def _win_df():
+    """Two-strike day frame across four snapshots (09:00..09:45), with nearest-expiry
+    ΔOI (vs prev close) rising for puts and roughly flat for calls near spot."""
+    t = ["09:00", "09:00", "09:15", "09:15", "09:30", "09:30", "09:45", "09:45"]
+    strike = [24000, 24100] * 4
+    # cumulative ΔOI-vs-prevclose per snapshot: puts build, calls barely move
+    put_near = [1000, 500, 3000, 1200, 6000, 2000, 9000, 2500]
+    call_near = [800, 900, 900, 1100, 1100, 1300, 1200, 1600]
+    return pd.DataFrame({"time_ist": t, "spot": [24050] * 8, "strike": strike,
+                         "put_doi_near": put_near, "call_doi_near": call_near,
+                         "put_oi": put_near, "call_oi": call_near})
+
+
+def test_window_footprint_60min_put_writing():
+    # 60-min trailing window at 09:45 has no snapshot ≤ 08:45, so it uses the earliest
+    # (09:00) as ref -> partial. Put adds dominate -> put-writing (support building).
+    w = window_footprint(_win_df(), 60, spot=24050, band_pts=500, now_hm=9 * 60 + 45)
+    assert w["label"] == "put-writing" and w["near"] is True and w["partial"] is True
+    # put adds: (9000-1000)+(2500-500)=10000 ; call adds: (1200-800)+(1600-900)=1100
+    assert w["put_add"] == 10000.0 and w["call_add"] == 1100.0
+    assert w["net"] == 8900.0 and w["frac"] > 0.2
+
+
+def test_window_footprint_15min_ref_selection():
+    # 15-min window at 09:45 -> ref is the 09:30 snapshot (last ≤ 09:30), not partial.
+    w = window_footprint(_win_df(), 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45)
+    assert w["partial"] is False and w["span_min"] == 15
+    # put adds over 09:30->09:45: (9000-6000)+(2500-2000)=3500 ; calls: (1200-1100)+(1600-1300)=400
+    assert w["put_add"] == 3500.0 and w["call_add"] == 400.0 and w["label"] == "put-writing"
+
+
+def test_window_footprint_band_and_fallback_to_all_expiry():
+    df = _win_df().drop(columns=["put_doi_near", "call_doi_near"])   # force the level fallback
+    w = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45)
+    assert w["near"] is False and w["label"] == "put-writing"
+
+
+def test_window_footprint_turnover_weighting():
+    # Two strikes: puts build MORE contracts but on a CHEAP option; calls build fewer
+    # contracts on an EXPENSIVE option. Raw-OI says put-writing; TURNOVER flips to calls.
+    t = ["09:30", "09:30", "09:45", "09:45"]
+    df = pd.DataFrame({"time_ist": t, "spot": [24050] * 4, "strike": [24000, 24100] * 2,
+                       "put_doi_near": [0, 0, 10000, 0], "call_doi_near": [0, 0, 0, 2000],
+                       "put_ltp": [5, 5, 5, 5], "call_ltp": [200, 220, 200, 200]})   # 24100 call prem 220->200
+    oi = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45)  # raw OI
+    assert oi["label"] == "put-writing" and oi["unit"] == "lots"          # 10000 puts > 2000 calls
+    tv = window_footprint(df, 15, spot=24050, band_pts=500, now_hm=9 * 60 + 45, lot_size=75)
+    # put turnover = 10000·5·75 = 3.75M ; call turnover = 2000·200·75 = 30M -> calls dominate
+    assert tv["unit"] == "inr" and tv["label"] == "call-writing"
+    assert tv["call_add"] == 2000 * 200 * 75 and tv["put_add"] == 10000 * 5 * 75
+    # the biggest single-strike ₹ build is the 24100 call (30M > the 3.75M put)
+    assert tv["peak_strike"] == 24100.0 and tv["peak_side"] == "call"
+    assert tv["peak_val"] == 2000 * 200 * 75
+    # 24100 call premium fell 220->200 with OI rising => WRITING (not long buying)
+    assert tv["peak_kind"] == "write"
+
+
+def test_window_footprint_buying_vs_writing_labels():
+    t = ["09:30", "09:30", "09:45", "09:45"]
+    base = {"time_ist": t, "spot": [24050] * 4, "strike": [24000, 24100] * 2}
+    # call OI up + premium UP (40->80) = LONG calls -> bullish, not resistance
+    buy = pd.DataFrame({**base, "put_doi_near": [0, 0, 0, 0], "call_doi_near": [0, 0, 0, 8000],
+                        "put_ltp": [5, 5, 5, 5], "call_ltp": [5, 40, 5, 80]})
+    wb = window_footprint(buy, 15, 24050, 500, now_hm=9 * 60 + 45, lot_size=75)
+    assert wb["label"] == "call-buying" and wb["buckets"]["cl"] > 0 and wb["buckets"]["cw"] == 0
+    # put OI up + premium DOWN (80->60) = WRITING -> support
+    wr = pd.DataFrame({**base, "put_doi_near": [0, 0, 9000, 0], "call_doi_near": [0, 0, 0, 0],
+                       "put_ltp": [60, 80, 60, 60], "call_ltp": [5, 5, 5, 5]})
+    ww = window_footprint(wr, 15, 24050, 500, now_hm=9 * 60 + 45, lot_size=75)
+    assert ww["label"] == "put-writing" and ww["buckets"]["pw"] > 0
+
+
+def test_window_footprint_too_few_snapshots():
+    df = _win_df()
+    df = df[df["time_ist"] == "09:00"]
+    assert window_footprint(df, 15, spot=24050, band_pts=500) is None
 
 
 def test_footprint_series_over_snapshots():

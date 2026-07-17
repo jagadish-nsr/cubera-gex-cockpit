@@ -11,3 +11,8 @@ data/fixtures/nse_nifty_*.json
 
 # session logs (personal data)
 data/journal/
+
+# Dhan API credentials (never commit)
+data/.dhan_token
+data/.dhan_client_id
+.dhan_token
