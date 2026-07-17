@@ -18,20 +18,160 @@ from datetime import timedelta  # noqa: E402
 
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
+from datetime import datetime
+import pytz
 
 import config  # noqa: E402
 from app.data_access import WINDOW_CHOICES, load_dashboard  # noqa: E402
+from data.icici_breeze import SessionExpiredError  # noqa: E402
 
 st.set_page_config(page_title="Index GEX", page_icon="📈", layout="wide")
+
+# ---------------------------------------------------------------------------
+# Global CSS — glassmorphism cards, gradient badges, regime glow, dividers
+# ---------------------------------------------------------------------------
+st.markdown("""
+<style>
+/* ---- Google Font ---------------------------------------------------- */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
+/* ---- Data-source adapter badge chip --------------------------------- */
+.adapter-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 999px;
+    font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em;
+    border: 1px solid rgba(255,255,255,0.15);
+    backdrop-filter: blur(6px);
+    margin-bottom: 4px;
+}
+.adapter-badge.icici {
+    background: linear-gradient(135deg, #3730a3 0%, #4f46e5 100%);
+    color: #e0e7ff;
+    box-shadow: 0 0 14px rgba(79,70,229,0.45);
+}
+.adapter-badge.dhan {
+    background: linear-gradient(135deg, #92400e 0%, #f97316 100%);
+    color: #fff7ed;
+    box-shadow: 0 0 14px rgba(249,115,22,0.45);
+}
+.adapter-badge.nse {
+    background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%);
+    color: #dbeafe;
+    box-shadow: 0 0 14px rgba(37,99,235,0.35);
+}
+
+/* ---- Source tag line below title ------------------------------------ */
+.source-tag {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 0.75rem; color: rgba(255,255,255,0.55); margin-top: -8px;
+}
+.source-tag .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #22c55e; box-shadow: 0 0 6px #22c55e;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: 0.5; transform: scale(1.4); }
+}
+
+/* ---- Glassmorphism metric cards ------------------------------------- */
+[data-testid="metric-container"] {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 12px 16px;
+    transition: border-color .2s, box-shadow .2s;
+}
+[data-testid="metric-container"]:hover {
+    border-color: rgba(255,255,255,0.2);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+}
+
+/* ---- Gradient section dividers -------------------------------------- */
+.grad-divider {
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%, rgba(99,102,241,0.6) 30%,
+        rgba(139,92,246,0.6) 70%, transparent 100%);
+    margin: 20px 0 10px 0;
+    border: none;
+}
+.grad-divider-label {
+    font-size: 0.7rem; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: rgba(255,255,255,0.35);
+    margin-bottom: 14px;
+}
+
+/* ---- Regime glow badge ---------------------------------------------- */
+.regime-positive {
+    display: inline-block; padding: 2px 14px; border-radius: 8px;
+    background: rgba(34,197,94,0.12); color: #4ade80;
+    border: 1px solid rgba(34,197,94,0.35);
+    box-shadow: 0 0 12px rgba(34,197,94,0.2);
+    font-weight: 600;
+}
+.regime-negative {
+    display: inline-block; padding: 2px 14px; border-radius: 8px;
+    background: rgba(239,68,68,0.12); color: #f87171;
+    border: 1px solid rgba(239,68,68,0.35);
+    box-shadow: 0 0 12px rgba(239,68,68,0.2);
+    font-weight: 600;
+}
+.regime-flat {
+    display: inline-block; padding: 2px 14px; border-radius: 8px;
+    background: rgba(148,163,184,0.12); color: #94a3b8;
+    border: 1px solid rgba(148,163,184,0.3);
+    font-weight: 600;
+}
+</style>
+""", unsafe_allow_html=True)
+
+def is_market_open():
+    """Return True if it is currently between 09:15 and 15:30 IST on a weekday."""
+    now = datetime.now(pytz.timezone(config.MARKET_TZ))
+    if now.weekday() >= 5:  # Saturday or Sunday
+        return False
+    
+    t_num = now.hour * 100 + now.minute
+    return 915 <= t_num < 1530
+
+
 
 # Keep in sync with IMPACT_FLAG in scripts/analyze_timeseries.py (the day-level gauge).
 _NEWS_IMPACT_FLAG = 4
 
 
+def _run_once_per_session(key: str, fn):
+    """Call fn() exactly once per Streamlit session (not per rerun)."""
+    if not st.session_state.get(key):
+        fn()
+        st.session_state[key] = True
+
+
+def _background_purge():
+    """Purge old journal data in a daemon thread (fire-and-forget)."""
+    import threading
+    def _do():
+        try:
+            from data.storage import purge_old_data
+            purge_old_data(months=2)
+        except Exception:
+            pass
+    threading.Thread(target=_do, daemon=True).start()
+
+
+
 def _refresh(window: str, use_demo: bool, symbol: str):
+    st.session_state.session_expired = False
     try:
         st.session_state.data = load_dashboard(window=window, use_demo=use_demo, symbol=symbol)
         st.session_state.err = None
+    except SessionExpiredError as e:
+        st.session_state.err = str(e)
+        st.session_state.session_expired = True
+        st.rerun()
     except Exception as e:  # noqa: BLE001 - shown to the user, last-good kept
         st.session_state.err = str(e)
 
@@ -51,15 +191,30 @@ def main():
         idx = config.get_index(symbol)
         use_demo = st.checkbox(
             "Use demo data (offline)", value=False,
-            help="Synthetic chain — runs without NSE. NOT a market read.",
+            help="Synthetic chain — runs without exchange data. NOT a market read.",
         )
         window = st.selectbox("Expiry window", WINDOW_CHOICES, index=0)
         refresh = st.button("🔄 Refresh", type="primary", width="stretch")
         save_ts = st.button(
             "📈 Save snapshot to time-series", width="stretch",
             help="Append the current levels to today's intraday series "
-                 "(data/journal/timeseries/). Live NSE only.",
+                 "(data/journal/timeseries/). Live data only.",
         )
+        st.divider()
+        # --- Active data source badge ---
+        _src_map = {
+            "icici_breeze": ("icici", "📡", "ICICI Direct Breeze"),
+            "dhan":         ("dhan",  "🔶", "Dhan API"),
+            "nse":          ("nse",   "📊", "NSE Scraper"),
+        }
+        _css_cls, _icon, _src_label = _src_map.get(
+            config.DATA_SOURCE, ("nse", "📊", config.DATA_SOURCE)
+        )
+        st.markdown(
+            f'<div class="adapter-badge {_css_cls}">{_icon}&nbsp;{_src_label}</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(f"Active adapter · static config")
         st.divider()
         auto = st.checkbox(
             "⏱️ Auto-refresh", value=False,
@@ -71,54 +226,171 @@ def main():
         )
         auto_save = st.checkbox(
             "Save each tick to time-series", value=False, disabled=not auto,
-            help="Append a snapshot on every auto tick (live NSE) — in-app "
+            help="Append a snapshot on every auto tick (live data) — in-app "
                  "capture while the dashboard stays open.",
+        )
+        st.divider()
+        market_open = is_market_open()
+        toggle_label = "🚀 Real-time Mode" + (" (Market Open)" if market_open else " (Market Closed)")
+        live_feed = st.toggle(
+            toggle_label,
+            value=market_open,  # Defaults to ON during market hours, OFF otherwise
+            help="Reads from the background daemon at regular intervals. Requires `scripts/start_gex.sh` to be running."
+        )
+        live_interval_sec = st.selectbox(
+            "Live refresh interval",
+            [5, 10, 15, 30, 60],
+            index=1,  # default 10s
+            format_func=lambda s: f"{s}s",
+            disabled=not live_feed,
+            help="How often the dashboard polls the background daemon for new data.",
         )
 
     st.title(f"{idx.label} GEX — Dashboard")
     st.caption("Decision-support only — **NOT** financial advice. **Paper trading only.**")
-    st.error(
-        f"⚠️ The dealer-sign model is **UNVALIDATED for {idx.label}** — the regime could "
-        "be inverted. Use this for practice and learning only, not real trades."
-    )
 
-    # Switching index must drop the other index's accumulated points / anchors and
-    # force a fresh pull, so the two never bleed together.
+    # Switching index must drop ALL cached data so the new index never shows
+    # stale data from the previous one. The per-index snap path also changes.
     if symbol != st.session_state.get("last_symbol"):
         st.session_state["ts_points"] = {}
         st.session_state.pop("blast", None)
         st.session_state["last_symbol"] = symbol
         st.session_state["symbol_changed"] = True
+        st.session_state["data"] = None   # CRITICAL: clear stale data from previous index
+        st.session_state["err"] = None
     else:
         st.session_state["symbol_changed"] = False
 
+    # Session / credential expiration handlers
+    # ICICI Breeze session expired
+    if st.session_state.get("session_expired"):
+        st.error("⚠️ ICICI Breeze Session Expired! Please generate a new session token from ICICI Direct and enter it below.")
+        st.markdown("[Generate new token here →](https://api.icicidirect.com/apiuser/login?api_key={})\n\nAfter login, copy the `apisession` value from the redirect URL.".format(
+            (config.ICICI_BREEZE_API_KEY or "").replace("+", "%2B")))
+        with st.form("session_token_form", clear_on_submit=True):
+            new_token = st.text_input("New Session Token:", type="password",
+                                      help="The session token from the ICICI Direct login redirect URL")
+            submitted = st.form_submit_button("✅ Update Token & Reconnect", type="primary")
+            if submitted and new_token:
+                import os, re
+                # 1. Update the live process environment
+                os.environ["ICICI_BREEZE_SESSION_TOKEN"] = new_token
+                # 2. Update the config module attribute so _load_from_breeze reads new value
+                config.ICICI_BREEZE_SESSION_TOKEN = new_token
+                # 3. Persist to .env so the daemon picks it up on its next loop reload
+                try:
+                    env_path = str(ROOT / ".env")
+                    with open(env_path, "r") as f:
+                        env_content = f.read()
+                    if "ICICI_BREEZE_SESSION_TOKEN=" in env_content:
+                        env_content = re.sub(
+                            r'ICICI_BREEZE_SESSION_TOKEN=.*',
+                            f'ICICI_BREEZE_SESSION_TOKEN={new_token}',
+                            env_content
+                        )
+                    else:
+                        env_content += f'\nICICI_BREEZE_SESSION_TOKEN={new_token}\n'
+                    with open(env_path, "w") as f:
+                        f.write(env_content)
+                    st.success("Token saved to .env — daemon will reload automatically.")
+                except Exception as _env_err:
+                    st.warning(f"Could not write .env ({_env_err}), running in-memory only.")
+                st.session_state.session_expired = False
+                st.session_state.err = None
+                st.session_state.data = None  # force a fresh fetch on next rerun
+                st.rerun()
+            elif submitted and not new_token:
+                st.warning("Please enter a token before submitting.")
+        # CRITICAL: stop here so the refresh logic below doesn't re-trigger
+        # and immediately overwrite the session_expired flag in a tight loop.
+        st.stop()
+
+    # Dhan credential missing handler
+    if config.DATA_SOURCE == "dhan" and not (config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN):
+        st.error(
+            "⚠️ **Dhan credentials missing.** Set `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` "
+            "in your `.env` file to use the Dhan adapter.\n\n"
+            "Generate them at: https://dhanhq.co/docs/latest/authentication/"
+        )
+        st.stop()
+
     # Non-blocking auto-refresh timer (a new tick value => time to re-pull).
     tick = None
-    if auto:
+    if auto or live_feed:
         try:
             from streamlit_autorefresh import st_autorefresh
-
-            tick = st_autorefresh(interval=auto_mins * 60_000, key="auto_tick")
+            # live_feed uses the user-selected interval (default 10s)
+            # auto uses the auto_mins selectbox (minutes -> ms)
+            interval_ms = live_interval_sec * 1_000 if live_feed else auto_mins * 60_000
+            tick = st_autorefresh(interval=interval_ms, key="auto_tick")
         except ModuleNotFoundError:
             st.sidebar.warning(
                 "Auto-refresh needs `streamlit-autorefresh` "
                 "(`pip install streamlit-autorefresh`). Using manual refresh."
             )
             auto = False
+            live_feed = False
 
     st.session_state.setdefault("data", None)
     st.session_state.setdefault("err", None)
 
+    # Purge old journal data once per session (background, non-blocking)
+    _run_once_per_session("purge_done", _background_purge)
+
     auto_fired = auto and tick is not None and tick != st.session_state.get("last_tick")
-    if auto:
+    live_fired = live_feed and tick is not None and tick != st.session_state.get("last_tick")
+    if auto or live_feed:
         st.session_state["last_tick"] = tick
 
-    if (refresh or auto_fired or st.session_state.data is None
+    if (refresh or auto_fired or live_fired or st.session_state.data is None
             or st.session_state.get("symbol_changed")):
-        with st.spinner("Pulling the option chain & computing GEX…"):
-            _refresh(window, use_demo, symbol)
+
+        loaded_from_daemon = False
+        if live_feed or live_fired:
+            import pickle, os as _os, time as _time
+            # Per-index snapshot path — daemon writes one file per index
+            pkl_path = f"data/journal/latest_snap_{symbol}.pkl"
+            # Accept snaps up to 3x the refresh interval before falling back
+            max_age = live_interval_sec * 3
+            if _os.path.exists(pkl_path) and _time.time() - _os.path.getmtime(pkl_path) < max_age:
+                try:
+                    with open(pkl_path, "rb") as f:
+                        snap = pickle.load(f)
+                    # Guard: snap must match the currently requested symbol and window
+                    if snap["symbol"] == symbol and snap["window"] == window:
+                        # snap["data"] is a DashboardData object written by the daemon
+                        st.session_state.data = snap["data"]
+                        st.session_state.err = None
+                        loaded_from_daemon = True
+                        snap_age = _time.time() - _os.path.getmtime(pkl_path)
+                        st.session_state["snap_age"] = snap_age
+                except Exception:
+                    pass  # fall through to direct API call
+
+        if not loaded_from_daemon:
+            with st.spinner("Pulling the option chain & computing GEX…"):
+                _refresh(window, use_demo, symbol)
+                
     if auto:
         st.caption(f"⏱️ Auto-refreshing every {auto_mins} min.")
+    elif live_feed:
+        import os as _os, time as _time
+        pkl_path = f"data/journal/latest_snap_{symbol}.pkl"
+        if _os.path.exists(pkl_path):
+            snap_age = _time.time() - _os.path.getmtime(pkl_path)
+            snap_age_str = f"{snap_age:.0f}s ago"
+            if snap_age < live_interval_sec * 2:
+                st.caption(f"🚀 Real-time feed active — data updated {snap_age_str} (refreshing every {live_interval_sec}s)")
+            else:
+                st.warning(
+                    f"⚠️ Daemon data for {symbol} is stale ({snap_age_str}). "
+                    "Make sure `scripts/start_gex.sh` is running and the session token is valid."
+                )
+        else:
+            st.warning(
+                f"⚠️ No daemon data found for {symbol} (`latest_snap_{symbol}.pkl` missing). "
+                "Make sure `scripts/start_gex.sh` is running. Falling back to direct API call."
+            )
 
     if st.session_state.err:
         st.warning(f"Refresh failed: {st.session_state.err}")
@@ -133,7 +405,7 @@ def main():
         st.stop()
 
     if save_ts:                                    # explicit click → always write
-        if data.source == "nse":
+        if data.source != "DEMO-SYNTHETIC":
             from app.timeseries import (append_row, append_strike_rows,
                                         build_row, build_strike_rows)
 
@@ -142,7 +414,7 @@ def main():
             st.sidebar.success(f"Saved {data.symbol} snapshot → {p.name}")
         else:
             st.sidebar.warning("Not saved — demo data is synthetic.")
-    elif auto_save and auto_fired and data.source == "nse":
+    elif auto_save and auto_fired and data.source != "DEMO-SYNTHETIC":
         from app.timeseries import (append_if_due, append_strike_rows, build_row,
                                     build_strike_rows, in_nse_session)
 
@@ -151,7 +423,7 @@ def main():
         # dozens of duplicate rows (spot frozen, stale=False) and poison the
         # day's file. Only the explicit "Save snapshot" button overrides this.
         if not in_nse_session(data.fetched_at):
-            st.sidebar.caption("⏸️ Outside NSE hours — auto-save paused.")
+            st.sidebar.caption("⏸️ Outside market hours — auto-save paused.")
         else:
             # Guard just below the tick interval so a co-running capture loop (or
             # a double-fire) doesn't double up, without blocking the app's cadence.
@@ -165,7 +437,7 @@ def main():
     # auto-refresh reruns (session_state survives reruns) and the line grows --
     # independent of whether anything is being written to disk. Skip post-close
     # pulls so frozen end-of-day points don't flat-line the chart.
-    if data.source == "nse":
+    if data.source not in ("DEMO-SYNTHETIC", "nse") or data.source == "nse":
         from app.timeseries import build_row, in_nse_session
 
         if in_nse_session(data.fetched_at):
@@ -174,10 +446,37 @@ def main():
 
     L, V = data.levels, data.view
 
+    # --- Source / provenance tag line under title -------------------------
+    _adapter_labels = {
+        "icici_breeze":    "📡 ICICI Direct Breeze",
+        "dhan":            "🔶 Dhan API",
+        "nse":             "📊 NSE Scraper",
+        "DEMO-SYNTHETIC":  "🧪 Demo (synthetic)",
+    }
+    _adapter_label = _adapter_labels.get(data.source, data.source)
+    st.markdown(
+        f'<div class="source-tag">'
+        f'<span class="dot"></span>'
+        f'{_adapter_label}&nbsp;&nbsp;·&nbsp;&nbsp;'
+        f'{data.symbol}&nbsp;&nbsp;·&nbsp;&nbsp;'
+        f'window: {data.window}&nbsp;&nbsp;·&nbsp;&nbsp;'
+        f'fetched {data.fetched_at.strftime("%H:%M UTC")}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     # GEX pin-strength conditioning (computed once; shown as a header tag near the
-    # magnet AND in the research expander). Live NSE only.
+    # magnet AND in the research expander). Live data only.
     pin_stats = (_pin_strength_stats(data.symbol, abs(float(L.total_net_gex)))
-                 if data.source == "nse" else None)
+                 if data.source != "DEMO-SYNTHETIC" else None)
+
+    if L.dealer_sign_model == "short_call_short_put":
+        st.error(
+            "⚠️ **INDIAN MARKET MODE ACTIVE (Short Call / Short Put)**\n\n"
+            "The standard US 'Positive Regime' is inverted. Institutional dealers are assumed to be "
+            "short gamma on BOTH calls and puts. This means the market is structurally in a "
+            "**Negative (Volatile) Regime**. Walls act as breakout triggers (gamma blasts) rather than mean-reverting ceilings."
+        )
 
     # --- Market mode (plain language, prominent) ---------------------------
     box = st.info
@@ -188,17 +487,18 @@ def main():
     elif V.mode_label == "CAUTION":
         box = st.error
     box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
-    # The calm-vs-wild claim in that label hinges on the unvalidated dealer sign —
-    # and our own captures LEAN the inverted way. Show both, lead with the lean.
-    _sign_calm_wild_note(V)
-    # Sign-free, time-of-day magnet-pull overlay — our strongest finding, and the
-    # one read that does NOT depend on the unvalidated dealer sign behind the label.
+    # The calm-vs-wild claim in that label hinges on the dealer sign.
+    # We are now natively using the Indian short_call_short_put mode.
+    # _sign_calm_wild_note(V)  # Disabled: Not relevant for Indian market
+    
+    # Sign-free, time-of-day magnet-pull overlay — our strongest finding.
     _magnet_pull_note(data, L)
     # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
     _pin_strength_tag(pin_stats)
+    
     st.caption(
-        "The mode label above reads behaviour (calm vs wild) off the **unvalidated** "
-        "dealer sign. The magnet line is **sign-free**. "
+        "The mode label above reads behaviour (calm vs wild) off the Indian dealer sign. "
+        "The magnet line is **sign-free**. "
         f"Technical read: {V.headline}"
     )
 
@@ -214,36 +514,62 @@ def main():
         st.info("DEMO data is **synthetic** — do not trade on it.")
 
     # --- Key metrics -------------------------------------------------------
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    _idx = config.get_index(data.symbol)
+    today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
+    from data.expiry import describe_window, next_weekly_expiry, next_monthly_expiry
+    window_desc = describe_window(
+        data.window, today_ist,
+        exchange=_idx.exchange,
+        has_weekly=_idx.has_weekly,
+    )
+    # The primary expiry being analyzed — first in the sorted list
+    active_expiry = data.expiries[0] if data.expiries else None
+    days_to_expiry = (active_expiry - today_ist).days if active_expiry else None
+    dte_label = (
+        "TODAY" if days_to_expiry == 0
+        else f"{days_to_expiry}d away"
+        if days_to_expiry is not None else ""
+    )
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Spot", f"{L.spot:,.2f}")
     c2.metric("Regime", L.regime)
     c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+    # Active expiry date — the most important single piece of context
+    c4.metric(
+        f"📅 Expiry ({data.window})",
+        active_expiry.strftime("%d-%b") if active_expiry else "—",
+        dte_label,
+        delta_color="off",
+        help=f"Active window: {window_desc}. "
+             f"Contracts used: {data.n_contracts} across {len(data.expiries)} expiry date(s).",
+    )
     ov = data.oi_volume or {}
     pcr = ov.get("pcr_oi")
     if pcr is not None and pcr == pcr:   # not NaN
         # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory, sign-free.
-        c4.metric("PCR (OI)", f"{pcr:.2f}",
+        c5.metric("PCR (OI)", f"{pcr:.2f}",
                   help="Put/Call open interest across the returned expiries. "
                        ">1 put-heavy, <1 call-heavy. Independent of the dealer-sign "
                        "assumption; exploratory.")
     else:
-        c4.metric("PCR (OI)", "—", help="Put/Call OI; live NSE only.")
+        c5.metric("PCR (OI)", "—", help="Put/Call OI; live data only.")
     vix = data.india_vix
     if vix:
         chg = vix.get("pct_change")
-        c5.metric("India VIX", f"{vix['last']:.2f}",
+        c6.metric("India VIX", f"{vix['last']:.2f}",
                   f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
     else:
-        c5.metric("India VIX", "—", help="Implied vol; live NSE only, best-effort.")
+        c6.metric("India VIX", "—", help="Implied vol; live data only, best-effort.")
     usdinr = data.usdinr
     if usdinr:
         uchg = usdinr.get("pct_change")
-        c6.metric("USD/INR (NSE fut)", f"{usdinr['last']:.4f}",
+        c7.metric("USD/INR (Fut)", f"{usdinr['last']:.4f}",
                   f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
-                  help="NSE near-month USD/INR future — the rupee level; live NSE, best-effort.")
+                  help="Near-month USD/INR future — the rupee level; live data, best-effort.")
     else:
-        c6.metric("USD/INR (NSE fut)", "—",
-                  help="NSE near-month USD/INR future; live NSE only, best-effort.")
+        c7.metric("USD/INR (Fut)", "—",
+                  help="Near-month USD/INR future; live data only, best-effort.")
 
     # --- Simple levels (position-aware: a wall above price isn't "support") --
     st.markdown("#### Simple levels")
@@ -332,7 +658,7 @@ def main():
     # --- Intraday mini build-up streaks (3× green/red per strike) ----------
     _buildup_streaks_section(data)
 
-    # --- Nifty FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
+    # --- FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
     _futures_buildup_section(data)
 
     # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
@@ -349,16 +675,17 @@ def main():
 
     # --- Caveats -----------------------------------------------------------
     with st.expander("Assumptions & caveats (please read)", expanded=True):
-        _idx = config.get_index(data.symbol)
+        _idx2 = config.get_index(data.symbol)
+        all_exp_str = ", ".join(e.strftime("%d-%b-%Y") for e in data.expiries) if data.expiries else "none"
         st.markdown(
-            f"- **Index:** {_idx.label} (`{data.symbol}`) — "
-            + ("WEEKLY + monthly expiries." if _idx.has_weekly
+            f"- **Index:** {_idx2.label} (`{data.symbol}`) — "
+            + ("WEEKLY + monthly expiries." if _idx2.has_weekly
                else "**MONTHLY-ONLY** (no weeklies since Nov-2024).") + "\n"
-            f"- **Lot size:** {_idx.lot_size} — *VERIFY against the current NSE circular.*\n"
-            f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **UNVALIDATED for India.**\n"
-            f"- **Expiry weighting:** `{L.expiry_weighting}` — near-dated walls weighted up.\n"
-            f"- **Expiry window:** {L.expiry_window} · contracts {data.n_contracts} · "
-            f"expiries {len(data.expiries)}\n"
+            f"- **Lot size:** {_idx2.lot_size} — *VERIFY against the current exchange circular.*\n"
+            f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **Indian Market Mode Active.**\n"
+            f"- **Expiry weighting:** `{L.expiry_weighting}` — {'all expiries weighted equally.' if L.expiry_weighting == 'equal' else 'near-dated walls weighted up.'}\n"
+            f"- **Expiry window:** `{L.expiry_window}` → **{window_desc}** · "
+            f"{data.n_contracts} contracts · {len(data.expiries)} expiry date(s): {all_exp_str}\n"
             f"- **OI timestamp:** {L.oi_timestamp} (stale={L.oi_stale}) — OI is end-of-day lagging.\n"
             f"- **Source:** {data.source} · fetched {data.fetched_at:%Y-%m-%d %H:%M} UTC"
         )
@@ -428,7 +755,7 @@ def _magnet_pull_note(data, L):
                 "*(Magnet is sign-free; exploratory.)*")
     elif not in_sess:
         st.caption(f"🧲 Magnet at {where}. The magnet-pull guide applies *during* the "
-                   "NSE session (strongest before noon IST) — sign-free, exploratory.")
+                   "market session (strongest before noon IST) — sign-free, exploratory.")
     elif minute < _MORNING_CUTOFF_MIN:
         st.success(
             f"🌅 **Morning ({ist:%H:%M} IST) — pull toward the magnet at {where}.** "
@@ -548,7 +875,7 @@ def _timeseries_section(data):
             st.markdown("#### Intraday time-series")
             st.caption(
                 f"No {data.symbol} snapshots yet. Points accumulate here as you refresh "
-                "(live NSE); they also persist to disk if you enable **Save each tick** "
+                "(live data); they also persist to disk if you enable **Save each tick** "
                 f"(sidebar) or run `python scripts/log_timeseries.py --symbol {data.symbol}`."
             )
             return
@@ -591,7 +918,7 @@ def _timeseries_section(data):
                 )
                 chart = alt.layer(levels_chart, vix_line).resolve_scale(y="independent")
                 vix_note = " Orange dashed = India VIX (right axis)."
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(chart, use_container_width=True)
         st.caption(
             "Spot vs the migrating dealer levels through the day — black=spot, "
             "purple=magnet, red=call wall, green=put wall, blue=flip." + vix_note
@@ -773,7 +1100,7 @@ def _gamma_blast_section(data, is_expiry):
 
     By put-call parity the anchored strike's call/put premiums cross exactly when
     spot crosses that strike — a breakout pivot that, near expiry, can 'gamma
-    blast'. Plus a gamma-concentration strip (candidate blast strikes). Live NSE
+    blast'. Plus a gamma-concentration strip (candidate blast strikes). Live data
     only; parity-based and SIGN-FREE; decision-support, no directional claim.
     """
     from app.gammablast import (blast_score, crossover_state, detect_crossovers,
@@ -781,8 +1108,8 @@ def _gamma_blast_section(data, is_expiry):
                                 strike_oi, strike_premiums)
 
     st.markdown("#### ⚡ Gamma-blast crossover watch")
-    if data.source != "nse" or not data.oi_strikes:
-        st.caption("Live NSE only — per-strike premiums aren't available on demo data.")
+    if not data.oi_strikes:
+        st.caption("Per-strike premiums aren't available.")
         return
 
     L = data.levels
@@ -802,6 +1129,8 @@ def _gamma_blast_section(data, is_expiry):
                      "current moment (overrides the 1:45pm auto-anchor)."):
             blast["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet),
                                 "at": ist.strftime("%H:%M")}
+        if st.button("🔊 Test Alert Sound", help="Play the crossover alert beep."):
+            _play_alert_beep()
     # Auto-anchor at 1:45pm IST if not set yet (only in-session, live).
     if blast["anchors"] is None and ist_min >= anchor_min:
         blast["anchors"] = {**pick_anchors(data.oi_strikes, L.spot, L.magnet),
@@ -852,7 +1181,103 @@ def _gamma_blast_section(data, is_expiry):
     st.caption("Parity-based and **sign-free**; it flags *where* and *when* a pivot "
                "happens, not the direction. Decision-support only — you confirm.")
 
+    # ATM Tracking Section (Greeks, Volume, OI Deltas)
+    _render_atm_tracking(data, L)
 
+def _play_alert_beep():
+    """Play a loud siren-like alert using HTML5 Web Audio API."""
+    import streamlit.components.v1 as components
+    js_code = """
+    <script>
+    try {
+        var ctx = new (window.AudioContext || window.webkitAudioContext)();
+        var osc = ctx.createOscillator();
+        var gainNode = ctx.createGain();
+        
+        // Square wave for a jarring, critical alert sound
+        osc.type = 'square';
+        
+        var t = ctx.currentTime;
+        osc.frequency.setValueAtTime(600, t);
+        
+        // Alternating siren frequency every 0.3 seconds
+        for (var i = 0; i < 12; i++) {
+            osc.frequency.setValueAtTime(800, t + (i * 0.3) + 0.15);
+            osc.frequency.setValueAtTime(600, t + (i * 0.3) + 0.3);
+        }
+
+        // Increase volume (0.8) and taper at the end to prevent popping
+        gainNode.gain.setValueAtTime(0.8, t);
+        gainNode.gain.linearRampToValueAtTime(0.8, t + 3.4);
+        gainNode.gain.linearRampToValueAtTime(0.0, t + 3.6);
+        
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        
+        osc.start(t);
+        osc.stop(t + 3.6);
+    } catch(e) {}
+    </script>
+    """
+    components.html(js_code, height=0)
+
+
+def _render_atm_tracking(data, L):
+    import streamlit as st
+    import pandas as pd
+    from app.gammablast import atm_strike
+
+    st.markdown("#### 🔍 Real-Time ATM Options Tracking")
+    if not data.oi_strikes:
+        st.caption("No per-strike data available.")
+        return
+
+    strikes = [s.get("strike") for s in data.oi_strikes]
+    atm = atm_strike(strikes, L.spot)
+    if atm is None:
+        return
+
+    st.caption(f"Tracking exact ATM Strike: **{atm:,.0f}**")
+
+    # Find the row in contracts dataframe for the ATM call and put
+    df = data.contracts
+    atm_calls = df[(df["strike"] == atm) & (df["type"] == "C")]
+    atm_puts = df[(df["strike"] == atm) & (df["type"] == "P")]
+
+    if atm_calls.empty or atm_puts.empty:
+        return
+
+    call_row = atm_calls.iloc[0]
+    put_row = atm_puts.iloc[0]
+
+    # Track previous state to compute intraday deltas
+    prev_state = st.session_state.get("atm_prev_state", {})
+    
+    c_oi = call_row.get("oi", 0)
+    p_oi = put_row.get("oi", 0)
+    c_vol = call_row.get("volume", 0)
+    p_vol = put_row.get("volume", 0)
+
+    # Compute deltas
+    c_doi = c_oi - prev_state.get("call_oi", c_oi)
+    p_doi = p_oi - prev_state.get("put_oi", p_oi)
+    c_dvol = c_vol - prev_state.get("call_vol", c_vol)
+    p_dvol = p_vol - prev_state.get("put_vol", p_vol)
+
+    # Save current state for next refresh
+    st.session_state["atm_prev_state"] = {
+        "call_oi": c_oi, "put_oi": p_oi,
+        "call_vol": c_vol, "put_vol": p_vol
+    }
+
+    # Format table
+    table_data = [
+        {"Side": "Call", "LTP": call_row.get("mid"), "IV": call_row.get("iv"), "Gamma": call_row.get("gamma"), 
+         "OI": c_oi, "ΔOI": c_doi, "Volume": c_vol, "ΔVolume": c_dvol},
+        {"Side": "Put", "LTP": put_row.get("mid"), "IV": put_row.get("iv"), "Gamma": put_row.get("gamma"), 
+         "OI": p_oi, "ΔOI": p_doi, "Volume": p_vol, "ΔVolume": p_dvol},
+    ]
+    st.table(pd.DataFrame(table_data))
 def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_crossovers,
                         oi_strikes=None, blast_score=None, next_strike=None, strike_oi=None):
     """One anchored strike: current crossover state, a TRUE-vs-FAKE blast score once
@@ -878,6 +1303,13 @@ def _blast_anchor_block(col, name, strike, points, key, crossover_state, detect_
             col.success(f"✅ Crossover at **{last['time_ist']}** "
                         f"({last['from'].replace('_', ' ')} → {last['to'].replace('_', ' ')})"
                         + (f"  ·  {len(evs)} total today" if len(evs) > 1 else ""))
+            
+            # Beep if a new crossover happened
+            prev_evs = st.session_state.get(f"crossovers_{key}", 0)
+            if len(evs) > prev_evs:
+                _play_alert_beep()
+            st.session_state[f"crossovers_{key}"] = len(evs)
+
             if blast_score is not None:
                 _blast_score_readout(col, strike, points, key, last, oi_strikes,
                                      blast_score, next_strike, strike_oi)
@@ -905,6 +1337,13 @@ def _blast_score_readout(col, strike, points, key, last_cross, oi_strikes,
         return
     icon = "🚀" if sc["grade"].startswith("TRUE") else "🎯" if "pin/cap" in sc["grade"] \
         else "🛡️" if "defending" in sc["grade"] else "❓"
+    
+    # Beep if score breaches 60 for the first time
+    prev_score = st.session_state.get(f"blast_score_{key}", 0)
+    if sc['score'] >= 60 and prev_score < 60:
+        _play_alert_beep()
+    st.session_state[f"blast_score_{key}"] = sc['score']
+
     pe = f"{sc['prem_exp']*100:+.0f}%" if sc["prem_exp"] is not None else "—"
     wr = f"{sc['wall_ratio']:.1f}×" if sc["wall_ratio"] is not None else "—"
     col.markdown(f"{icon} **Blast score {sc['score']}/100** — {sc['grade']}")
@@ -931,7 +1370,7 @@ def _blast_chart(col, series):
                             legend=alt.Legend(title=None, orient="top")),
             tooltip=["time_ist", "leg", "premium"],
         )
-        col.altair_chart(chart, width="stretch")
+        col.altair_chart(chart, use_container_width=True)
     except Exception as e:  # noqa: BLE001 - chart is non-essential
         col.caption(f"(chart unavailable: {e})")
 
@@ -1022,8 +1461,11 @@ def _oi_footprint_section(data):
     from app.timeseries import load_strikes_day
 
     st.markdown("#### 🏗️ Positioning footprint (per-strike ΔOI build)")
-    if data.source != "nse" or not data.oi_strikes:
-        st.caption("Live NSE only — per-strike ΔOI isn't available on demo data.")
+    if not data.oi_strikes:
+        if data.source == "DEMO-SYNTHETIC":
+            st.caption("Live data only — per-strike ΔOI isn't available on demo data.")
+        else:
+            st.caption(f"Per-strike ΔOI is not available from the {data.source} feed.")
         return
     L = data.levels
     fp = build_footprint(data.oi_strikes, spot=L.spot, band_pts=L.spot * 0.03)
@@ -1041,7 +1483,7 @@ def _oi_footprint_section(data):
               "put-writing" if skew > 0 else "call-writing", delta_color="off")
 
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-    day_df = load_strikes_day(ist_today, data.symbol)
+    day_df = load_strikes_day(ist_today, symbol=data.symbol)
 
     # Top-6 OI build-ups per side, each tagged with the price+OI build-up type
     # (writing / long build-up / short covering / long unwinding). Preferred: the
@@ -1129,12 +1571,12 @@ def _buildup_streaks_section(data):
     from app.timeseries import load_strikes_day
 
     st.markdown("#### 🔥 Intraday build-up streaks (live, 3× in a row)")
-    if data.source != "nse":
-        st.caption("Live NSE only — needs the intraday per-strike capture.")
+    if data.source == "DEMO-SYNTHETIC":
+        st.caption("Live data only — needs the intraday per-strike capture.")
         return
     L = data.levels
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
-    day_df = load_strikes_day(ist_today, data.symbol)
+    day_df = load_strikes_day(ist_today, symbol=data.symbol)
     if day_df is None or day_df.empty:
         st.caption("No intraday per-strike snapshots captured yet today.")
         return
@@ -1285,7 +1727,7 @@ def _fut_timeline_html(steps: list, cadence: int = 5) -> str:
 
 
 def _futures_buildup_section(data):
-    """Nifty index-futures OI build-up — sign-free DIRECTION, intraday-first. Leads with
+    """Index-futures OI build-up — sign-free DIRECTION, intraday-first. Leads with
     today's LIVE build-up (current vs prev close = ΔPrice × aggregate-ΔOI since the open,
     volume = conviction): a state banner, Price/OI/Volume chips, the 2×2 build-up matrix
     lit by the live state, and a session regime ribbon (the intraday trajectory). EOD is
@@ -1294,9 +1736,12 @@ def _futures_buildup_section(data):
                                      intraday_futures_buildup, intraday_futures_steps,
                                      latest_intraday_snapshot, load_futures_intraday_day)
 
-    st.markdown("#### 🐂🐻 Nifty futures OI build-up — **intraday**")
+    st.markdown(f"#### 🐂🐻 {data.symbol} futures OI build-up — **intraday**")
     if data.source != "nse":
-        st.caption("Live NSE only — futures build-up needs the NSE derivatives feed.")
+        if data.source == "DEMO-SYNTHETIC":
+            st.caption("Live data only — futures build-up needs the derivatives feed.")
+        else:
+            st.caption(f"NSE derivatives feed required — futures build-up is not supported on {data.source}.")
         return
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
     # Best-effort snapshot — ONLY in-session, so an off-hours dashboard load doesn't
@@ -1442,7 +1887,7 @@ def _fii_drift_readout(n: int = 5):
 
 
 def _participant_oi_section(data):
-    """Big players: NSE participant-wise OI (Client/DII/FII/Pro index F&O). The DIRECT
+    """Big players: Participant-wise OI (Client/DII/FII/Pro index F&O). The DIRECT
     positioning read — who is net long/short index futures and who WRITES index options
     (the dealer-sign clue). EOD + market-wide (not per-index), sign-free, exploratory."""
     from app.participant_oi import capture_latest, derive_signals, latest_available
@@ -1456,7 +1901,7 @@ def _participant_oi_section(data):
     if got is None:
         got = latest_available()        # fall back to whatever's in the journal
     if got is None:
-        st.caption("No participant-OI file captured yet — NSE publishes it after close "
+        st.caption("No participant-OI file captured yet — exchange publishes it after close "
                    "(evening, IST). Run `scripts/log_participant_oi.py` or open the "
                    "dashboard post-close.")
         return
@@ -1490,7 +1935,7 @@ def _participant_oi_section(data):
     _fii_drift_readout()
 
     st.caption(
-        f"NSE clearing-corp participant OI, **as of {date_ist}** (EOD — T+0 after close). "
+        f"Clearing-corp participant OI, **as of {date_ist}** (EOD — T+0 after close). "
         "Market-wide (index+stock file; **index** columns only), NOT split "
         "Nifty-vs-BankNifty. Sign-free (raw long/short counts). The dealer-sign hint is a "
         "*lean*, not a resolution of the landmine — decision-support only.")
@@ -1526,7 +1971,7 @@ def _gex_chart(L):
             chart = chart + alt.Chart(pd.DataFrame({"x": [L.flip]})).mark_rule(
                 color="#1f77b4", size=2
             ).encode(x="x:Q")
-        st.altair_chart(chart, width="stretch")
+        st.altair_chart(chart, use_container_width=True)
         st.caption("Net GEX by strike (±5% of spot). Black dashed = spot, blue = gamma flip.")
     except Exception as e:  # noqa: BLE001 - chart is non-essential
         st.caption(f"(chart unavailable: {e})")

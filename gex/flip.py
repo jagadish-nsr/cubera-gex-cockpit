@@ -45,7 +45,8 @@ def gamma_flip_profile(
     iv = per-contract implied vol, T = years to expiry, r/q = parity-implied
     rate/div for that contract's expiry.
     """
-    if dealer_sign_model != "long_call_short_put":
+    # Support long_call_short_put (US) and short_call_short_put (India)
+    if dealer_sign_model not in {"long_call_short_put", "short_call_short_put"}:
         raise ValueError(f"Unsupported sign model {dealer_sign_model!r}")
     required = {"strike", "type", "oi", "iv", "T", "r", "q"}
     missing = required - set(contracts.columns)
@@ -54,7 +55,7 @@ def gamma_flip_profile(
 
     df = contracts.copy()
     df["type"] = df["type"].str.upper()
-    sign = np.where(df["type"].to_numpy() == "C", 1.0, -1.0)  # short put gamma
+    t = df["type"].to_numpy()
 
     K = df["strike"].to_numpy(dtype=float)
     T = df["T"].to_numpy(dtype=float)
@@ -71,6 +72,12 @@ def gamma_flip_profile(
     totals = np.empty(n_steps)
     for i, s_hyp in enumerate(grid):
         g = bs_gamma(s_hyp, K, T, iv, r, q)
+        if dealer_sign_model == "long_call_short_put":
+            # long call (+1), short put (-1)
+            sign = np.where(df["type"].to_numpy() == "C", 1.0, -1.0)
+        else: # short_call_short_put
+            # short call (-1), short put (-1)
+            sign = -1.0
         gex = sign * g * oi * weight * contract_size * s_hyp * s_hyp * 0.01
         totals[i] = gex.sum()
 

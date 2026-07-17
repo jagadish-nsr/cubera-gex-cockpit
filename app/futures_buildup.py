@@ -102,6 +102,31 @@ def load_futures_day(date_ist: str, symbol: str) -> dict | None:
     """Load one day's futures record back into the parse_index_futures shape, or None."""
     path = _path_for(date_ist, symbol)
     if not path.exists():
+        # Fallback to local EOD storage from data.storage
+        try:
+            from datetime import date
+            from data.storage import load_futures_eod
+            d = date.fromisoformat(date_ist)
+            rows = load_futures_eod(symbol, d)
+            if rows:
+                r = rows[0]
+                return {
+                    "symbol": symbol,
+                    "expiry": r.get("expiry"),
+                    "close": r.get("close"),
+                    "prev_close": r.get("prev_close"),
+                    "dprice": r.get("dprice"),
+                    "near_oi": r.get("oi"),
+                    "near_doi": r.get("doi"),
+                    "near_vol": r.get("volume"),
+                    "agg_oi": r.get("oi"),
+                    "agg_doi": r.get("doi"),
+                    "agg_vol": r.get("volume"),
+                    "spot": r.get("close"),  # close price is a proxy for spot if spot not fetched
+                    "n_contracts": 1
+                }
+        except Exception:
+            pass
         return None
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
@@ -123,7 +148,15 @@ def load_futures_day(date_ist: str, symbol: str) -> dict | None:
 def available_days(symbol: str) -> list[str]:
     """Sorted IST dates (YYYY-MM-DD) with a captured futures file for ``symbol``."""
     d = FUTURES_DIR / symbol
-    return sorted(p.stem for p in d.glob("*.csv")) if d.exists() else []
+    days = set(p.stem for p in d.glob("*.csv")) if d.exists() else set()
+    # Unify with EOD store
+    try:
+        from data.storage import available_eod_dates
+        for dt in available_eod_dates(symbol):
+            days.add(dt.isoformat())
+    except Exception:
+        pass
+    return sorted(days)
 
 
 def futures_series(symbol: str = "NIFTY", n: int = 10, days: list[str] | None = None) -> list[dict]:

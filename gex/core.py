@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-_SUPPORTED_SIGN_MODELS = {"long_call_short_put"}
+_SUPPORTED_SIGN_MODELS = {"long_call_short_put", "short_call_short_put"}
 
 
 def _scale(spot: float, contract_size: int) -> float:
@@ -64,6 +64,11 @@ def per_strike_gex(
     )
     # dealers SHORT put gamma -> negate
     grouped["put_gex"] = -grouped["put_gex"]
+
+    # For Indian markets where dealers are also short calls
+    if dealer_sign_model == "short_call_short_put":
+        grouped["call_gex"] = -grouped["call_gex"]
+
     grouped["net_gex"] = grouped["call_gex"] + grouped["put_gex"]
     return grouped.sort_values("strike").reset_index(drop=True)
 

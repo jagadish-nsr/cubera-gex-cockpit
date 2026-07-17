@@ -20,17 +20,13 @@ rem Remove with:  schtasks /Delete /TN "NiftyGEX-TimeSeries" /F
 setlocal
 set "DIR=%~dp0"
 
-rem One task per index — each passes its symbol to the launcher, which writes to
-rem the per-index journal subfolder (data\journal\timeseries\<SYMBOL>\...).
-schtasks /Create /TN "NiftyGEX-TimeSeries" /TR "\"%DIR%run_timeseries.bat\" NIFTY" /SC DAILY /ST 04:45 /RI 15 /DU 0006:15 /F
-schtasks /Create /TN "BankNiftyGEX-TimeSeries" /TR "\"%DIR%run_timeseries.bat\" BANKNIFTY" /SC DAILY /ST 04:45 /RI 15 /DU 0006:15 /F
+schtasks /Create /TN "NiftyGEX-TimeSeries" /TR "\"%DIR%run_timeseries.bat\"" /SC DAILY /ST 04:45 /RI 15 /DU 0006:15 /F
 
 echo.
-echo Created tasks NiftyGEX-TimeSeries + BankNiftyGEX-TimeSeries (LOCAL/BST):
-echo   every 15 min from 04:45 for 6h15m = 09:15-15:30 IST.
-echo   Snapshots     -> data\journal\timeseries\<SYMBOL>\YYYY-MM-DD.csv
-echo   Per-strike    -> data\journal\oi_strikes\<SYMBOL>\YYYY-MM-DD.csv
-echo   Run logs      -> data\journal\timeseries_run_<SYMBOL>.log
-echo Winter (GMT): re-run this file after editing both /ST to 03:45.
-echo Test now:  schtasks /Run /TN "NiftyGEX-TimeSeries"   (or BankNiftyGEX-TimeSeries)
+echo Created task NiftyGEX-TimeSeries (LOCAL/BST): every 15 min from 04:45 for 6h15m
+echo   = 09:15-15:30 IST. Snapshots -> data\journal\timeseries\YYYY-MM-DD.csv
+echo   Per-strike OI/dOI -> data\journal\oi_strikes\YYYY-MM-DD.csv
+echo   Run log -> data\journal\timeseries_run.log
+echo Winter (GMT): re-run this file after editing /ST to 03:45.
+echo Test now:  schtasks /Run /TN "NiftyGEX-TimeSeries"
 pause

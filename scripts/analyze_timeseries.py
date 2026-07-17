@@ -30,7 +30,6 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import config  # noqa: E402
 from app.timeseries import TS_DIR, in_nse_session  # noqa: E402
 
 # News-dominated-day gauge (transparent heuristic; errs toward flagging). A day is
@@ -39,6 +38,7 @@ from app.timeseries import TS_DIR, in_nse_session  # noqa: E402
 IMPACT_FLAG = 4
 COUNT_FLAG = 6.0
 EVENT_DAYS_PATH = TS_DIR.parent / "event_days.txt"   # manual override (the human veto)
+MORNING_CUTOFF_MIN = 12 * 60      # IST minute that splits morning / afternoon
 
 
 def _parse_utc(ts: str):
@@ -47,6 +47,28 @@ def _parse_utc(ts: str):
         return datetime.strptime(str(ts), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         return None
+
+
+def _ist_minute(utc) -> int:
+    from datetime import timedelta
+    ist = utc + timedelta(hours=5, minutes=30)
+    return ist.hour * 60 + ist.minute
+
+
+def forward_index(times: list, i: int, horizon_min: float, tol_min: float = 8.0):
+    """Index of the row nearest to times[i] + horizon, within tol; else None.
+    Pure + hand-checkable: the point-in-time forward-return matcher."""
+    from datetime import timedelta
+    target = times[i] + timedelta(minutes=horizon_min)
+    best, best_d = None, float("inf")
+    for j in range(i + 1, len(times)):
+        d = abs((times[j] - target).total_seconds()) / 60.0
+        if d < best_d:
+            best_d, best = d, j
+        if times[j] > target:
+            break
+    return best if (best is not None and best_d <= tol_min) else None
+
 
 
 def load_clean_day(path: str | Path) -> pd.DataFrame:
@@ -64,15 +86,10 @@ def load_clean_day(path: str | Path) -> pd.DataFrame:
     return df[~frozen].reset_index(drop=True)
 
 
-def load_all(symbol: str | None = None, last_n: int | None = None,
-             ts_dir: Path | None = None) -> dict[str, pd.DataFrame]:
-    """day (YYYY-MM-DD) -> cleaned DataFrame, only days with >= 2 usable rows.
-
-    Reads the per-index capture subfolder TS_DIR/SYMBOL (symbol=None -> the default
-    index). ``ts_dir`` overrides the folder outright (tests / ad-hoc dirs)."""
-    base = ts_dir or (TS_DIR / (symbol or config.DEFAULT_INDEX).upper())
+def load_all(ts_dir: Path = TS_DIR, last_n: int | None = None) -> dict[str, pd.DataFrame]:
+    """day (YYYY-MM-DD) -> cleaned DataFrame, only days with >= 2 usable rows."""
     days: dict[str, pd.DataFrame] = {}
-    for p in sorted(glob.glob(str(base / "*.csv"))):
+    for p in sorted(glob.glob(str(ts_dir / "*.csv"))):
         name = os.path.basename(p)[:-4]
         if name == "YYYY-MM-DD":            # stray placeholder file, ignore
             continue
@@ -427,13 +444,12 @@ def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     return "\n".join(L)
 
 
-def analyze(symbol: str | None = None, last_n: int | None = None) -> str:
-    idx = config.get_index(symbol)
-    days = load_all(symbol, last_n)
+def analyze(ts_dir: Path = TS_DIR, last_n: int | None = None) -> str:
+    days = load_all(ts_dir, last_n)
     L = []
     add = L.append
     add("=" * 76)
-    add(f"INTRADAY TIME-SERIES ANALYSIS — {idx.label} ({idx.symbol})  (Phase B, offline)")
+    add("INTRADAY TIME-SERIES ANALYSIS  (Phase B, offline)")
     add("=" * 76)
     if not days:
         add("No usable days (need >= 2 in-session rows per day). Capture more, then re-run.")
@@ -516,8 +532,6 @@ def _render_block(add, rv: dict, ac: dict, label: str) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Analyse the Phase A intraday time-series.")
     ap.add_argument("--days", type=int, default=None, help="only the last N captured days")
-    ap.add_argument("--symbol", default=config.DEFAULT_INDEX,
-                    help=f"index to analyse ({'/'.join(config.INDICES)}); default {config.DEFAULT_INDEX}")
     ap.add_argument("--both-signs", action="store_true",
                     help="run the dealer-sign convention comparison (quarantine OFF)")
     args = ap.parse_args()
@@ -526,9 +540,9 @@ def main() -> None:
     except (AttributeError, ValueError):
         pass
     if args.both_signs:
-        print(both_signs_report(load_all(args.symbol, args.days)))
+        print(both_signs_report(load_all(TS_DIR, args.days)))
     else:
-        print(analyze(symbol=args.symbol, last_n=args.days))
+        print(analyze(last_n=args.days))
 
 
 if __name__ == "__main__":

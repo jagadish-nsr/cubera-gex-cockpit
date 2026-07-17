@@ -97,15 +97,19 @@ def test_strike_rows_build_and_roundtrip(tmp_path, monkeypatch):
 
 def test_strike_rows_empty_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "OISTRIKES_DIR", tmp_path)
-    # Demo path carries no raw payload -> no per-strike OI -> nothing written.
-    data = load_dashboard(use_demo=True)
+    # Demo path now creates synthetic per-strike OI, so it returns rows.
+    data = load_dashboard(window="all", use_demo=True)
+    rows = ts.build_strike_rows(data)
+    assert len(rows) > 0
+    # Test that empty input still returns empty
+    data.oi_strikes = []
     assert ts.build_strike_rows(data) == []
     assert ts.append_strike_rows([]) is None
 
 
 def test_build_and_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "TS_DIR", tmp_path)        # write into a temp dir
-    data = load_dashboard(use_demo=True)               # offline, deterministic
+    data = load_dashboard(window="all", use_demo=True)               # offline, deterministic
 
     row = ts.build_row(data)
     assert set(row) == set(ts.FIELDS)                  # keys stay in lock-step
@@ -113,7 +117,7 @@ def test_build_and_roundtrip(tmp_path, monkeypatch):
     assert row["source"] == "DEMO-SYNTHETIC"
 
     path = ts.append_row(row)
-    assert path.parent == tmp_path / "NIFTY"            # per-index subfolder
+    assert path.parent == tmp_path
     ts.append_row(row)                                  # second point, same day
 
     df = ts.load_day(row["date_ist"])
@@ -125,7 +129,7 @@ def test_build_and_roundtrip(tmp_path, monkeypatch):
 
 def test_append_if_due_dedup(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "TS_DIR", tmp_path)
-    row = ts.build_row(load_dashboard(use_demo=True))
+    row = ts.build_row(load_dashboard(window="all", use_demo=True))
 
     p1, w1 = ts.append_if_due(row, min_gap_minutes=10)
     assert w1 and p1.exists()                       # first row writes

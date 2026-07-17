@@ -78,3 +78,51 @@ def implied_vol_call(price, S, K, T, r=0.0, q=0.0, lo=1e-4, hi=5.0, tol=1e-6, it
         else:
             lo, flo = mid, fmid
     return 0.5 * (lo + hi)
+
+
+def implied_vol_call_vec(price, S, K, T, r=0.0, q=0.0, lo=1e-4, hi=5.0, tol=1e-6, iters=50):
+    """Vectorised IV bisection for an array of calls. Returns nan where no bracket exists."""
+    price = np.asarray(price, dtype=float)
+    S = np.asarray(S, dtype=float)
+    K = np.asarray(K, dtype=float)
+    T = np.asarray(T, dtype=float)
+    r = np.asarray(r, dtype=float)
+    q = np.asarray(q, dtype=float)
+
+    # Initial valid mask
+    valid = (price > 0) & (S > 0) & (K > 0) & (T > 0)
+
+    # Initialize bounds
+    lo_arr = np.full_like(price, lo)
+    hi_arr = np.full_like(price, hi)
+
+    # Check brackets
+    flo = bs_call_price(S, K, T, lo_arr, r, q) - price
+    fhi = bs_call_price(S, K, T, hi_arr, r, q) - price
+    
+    valid &= (flo * fhi <= 0)
+    
+    mid_arr = np.where(valid, 0.5 * (lo_arr + hi_arr), np.nan)
+    
+    for _ in range(iters):
+        if not np.any(valid):
+            break
+            
+        fmid = bs_call_price(S, K, T, mid_arr, r, q) - price
+        
+        # If flo * fmid < 0, roots are in lower half -> hi_arr = mid_arr
+        mask = (flo * fmid < 0) & valid
+        hi_arr = np.where(mask, mid_arr, hi_arr)
+        fhi = np.where(mask, fmid, fhi)
+        
+        # Else roots are in upper half -> lo_arr = mid_arr
+        mask_upper = (~mask) & valid
+        lo_arr = np.where(mask_upper, mid_arr, lo_arr)
+        flo = np.where(mask_upper, fmid, flo)
+        
+        mid_arr = np.where(valid, 0.5 * (lo_arr + hi_arr), np.nan)
+        
+        # Check tolerance (early exit not strictly necessary but good if fully converged)
+        valid &= (np.abs(fmid) >= tol)
+
+    return np.where((price > 0) & (S > 0) & (K > 0) & (T > 0) & (flo * fhi <= 0), mid_arr, np.nan)

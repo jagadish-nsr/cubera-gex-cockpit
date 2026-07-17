@@ -36,9 +36,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
-from scripts.analyze_ic import (MORNING_CUTOFF_MIN, _ist_minute, _parse_utc,  # noqa: E402
-                                forward_index)
-from scripts.analyze_timeseries import load_all  # noqa: E402
+from scripts.analyze_timeseries import (MORNING_CUTOFF_MIN, _ist_minute, _parse_utc,  # noqa: E402
+                                forward_index, load_all)
 
 FACTORS_ALL = ["gex", "pcr", "vix", "vix_chg"]
 
@@ -160,6 +159,40 @@ def day_gamma_magnitude(days):
     return _day_open(days, "net_gex", abs)
 
 
+def spearman_ic(df: pd.DataFrame, signal: str):
+    """(IC, p_value, n) — Spearman rank corr of signal vs fwd, NaN-safe."""
+    from scipy import stats
+    if df.empty or signal not in df.columns:
+        return (float("nan"), float("nan"), 0)
+    x = df[signal].to_numpy(float)
+    y = df["fwd"].to_numpy(float)
+    m = np.isfinite(x) & np.isfinite(y)
+    if m.sum() < 5 or np.unique(x[m]).size < 2:
+        return (float("nan"), float("nan"), int(m.sum()))
+    r, p = stats.spearmanr(x[m], y[m])
+    return (float(r), float(p), int(m.sum()))
+
+
+def bootstrap_ic_ci(samples: pd.DataFrame, signal: str, n_boot: int = 2000,
+                    seed: int = 0):
+    """Day-block bootstrap 95% CI for IC: resample WHOLE days."""
+    groups = [g for _, g in samples.groupby("day") if len(g) >= 3]
+    if len(groups) < 3:
+        return (float("nan"), float("nan"), float("nan"))
+    rng = np.random.default_rng(seed)
+    vals = []
+    k = len(groups)
+    for _ in range(n_boot):
+        pick = pd.concat([groups[i] for i in rng.integers(0, k, k)], ignore_index=True)
+        r, _, _ = spearman_ic(pick, signal)
+        if np.isfinite(r):
+            vals.append(r)
+    if not vals:
+        return (float("nan"), float("nan"), float("nan"))
+    lo, hi = np.percentile(vals, [2.5, 97.5])
+    return (float(lo), float(np.median(vals)), float(hi))
+
+
 def _conditioner_report(days, horizon_min, symbol, *, title, metric_name, day_metric,
                         low_label, high_label, hypothesis, threshold=None,
                         valfmt="{:.2f}") -> str:
@@ -167,7 +200,6 @@ def _conditioner_report(days, horizon_min, symbol, *, title, metric_name, day_me
     compare the sign-free magnet_gap IC in the low vs high bucket, morning /
     afternoon / all, with day-block bootstrap CIs. A confound table prints the
     metric beside VIX, |net GEX| and the news flag so overlaps are visible."""
-    from scripts.analyze_ic import bootstrap_ic_ci, spearman_ic
     from scripts.analyze_timeseries import news_day_flag
 
     samples = build_mf_samples(days, horizon_min)

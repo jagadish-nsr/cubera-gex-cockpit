@@ -90,10 +90,25 @@ def compute_levels(
         )
 
     # Drop rows whose expiry parity failed (no forward) so we never compute on a
-    # bad fit. Fail loud if that leaves nothing.
+    # bad fit. Fall back gracefully (r=0, forward≈spot) when ALL fits fail — this
+    # happens post-close on expiry day (T≤0) or when prices are all stale/zero.
+    # A loud flag is added so the user knows not to trade on this.
     usable = contracts[contracts["r"].notna()].copy()
     if usable.empty:
-        raise ValueError("no expiry produced a usable parity forward — cannot compute GEX")
+        flags.append(
+            "ALL parity fits failed (T≤0 or stale prices) — using r=0/F=spot fallback. "
+            "This is expected post-close on expiry day. Reload during market hours for live GEX."
+        )
+        # Fall back: assign r=0 for all contracts so downstream code can proceed.
+        # gamma is computed from IV only (rate barely matters for short-dated options).
+        usable = contracts.copy()
+        usable["r"] = 0.0
+        usable["q"] = 0.0
+        if usable.empty:
+            raise ValueError(
+                "no expiry produced a usable parity forward — cannot compute GEX. "
+                "Data is likely entirely empty. Try switching to 'weekly' or 'all' window."
+            )
 
     # 2. Back out IV from mid price where the vendor omitted it (flag the count).
     n_missing_iv = int(usable["iv"].isna().sum())
@@ -190,21 +205,29 @@ def _fill_missing_iv(contracts: pd.DataFrame, spot: float) -> pd.DataFrame:
     Uses put-call parity's r/q. For puts we convert to the synthetic call price
     via parity (C = P + DF*(F - K)) and invert that, since bs invert is on calls.
     """
-    from gex.bs import implied_vol_call
+    from gex.bs import implied_vol_call_vec
 
     df = contracts.copy()
-    for idx in df.index[df["iv"].isna()]:
-        row = df.loc[idx]
-        if not np.isfinite(row.get("mid", np.nan)):
-            continue
-        r, q, T, K = row["r"], row["q"], row["T"], row["strike"]
-        DF = np.exp(-r * T)
-        F = spot * np.exp((r - q) * T)
-        if row["type"].upper() == "C":
-            call_price = row["mid"]
-        else:
-            call_price = row["mid"] + DF * (F - K)  # put -> synthetic call
-        iv = implied_vol_call(call_price, spot, K, T, r, q)
-        if np.isfinite(iv):
-            df.at[idx, "iv"] = iv
+    mask = df["iv"].isna() & df["mid"].notna()
+    if not mask.any():
+        return df
+
+    # Extract arrays for the missing subset
+    r = df.loc[mask, "r"].to_numpy(dtype=float)
+    q = df.loc[mask, "q"].to_numpy(dtype=float)
+    T = df.loc[mask, "T"].to_numpy(dtype=float)
+    K = df.loc[mask, "strike"].to_numpy(dtype=float)
+    mid = df.loc[mask, "mid"].to_numpy(dtype=float)
+    is_call = (df.loc[mask, "type"].str.upper() == "C").to_numpy()
+
+    DF = np.exp(-r * T)
+    F = spot * np.exp((r - q) * T)
+
+    # Convert put mid prices to synthetic call prices using put-call parity
+    call_prices = np.where(is_call, mid, mid + DF * (F - K))
+
+    # Compute vectorized IV
+    iv_arr = implied_vol_call_vec(call_prices, np.full_like(K, spot), K, T, r, q)
+    df.loc[mask, "iv"] = iv_arr
+
     return df

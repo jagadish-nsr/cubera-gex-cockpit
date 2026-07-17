@@ -12,32 +12,65 @@ options. Decision-support only — **not financial advice, no order execution.**
 
 ## Status
 - ✅ Engine inherited from `../GEX` (market-agnostic) + India data layer.
-- ✅ Live NSE option-chain pull (`data/nse.py: fetch_chain` / `fetch_chain_v3`).
+- ✅ Live option-chain pull via **three configurable adapters**: ICICI Direct Breeze (default), Dhan, NSE scraper.
 - ✅ CLI table + playbook (`cli.py`) and a local Streamlit dashboard (`app/`).
 - ✅ Intraday time-series logging + Windows Task Scheduler setup; captures India
   VIX, USD/INR, and a news-intensity gauge alongside the GEX levels.
 - ✅ **Sign-free positioning suite** (all immune to the dealer-sign landmine):
-  magnet drift, per-strike ΔOI footprint, participant-wise OI (FII/Client/DII/Pro),
+  magnet drift, per-strike δOI footprint, participant-wise OI (FII/Client/DII/Pro),
   intraday build-up streaks, a true-vs-fake **gamma-blast score**, and **Nifty
   futures OI build-up** (daily bhavcopy + live intraday). See **Research & findings**.
-- ✅ **133 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
-  adapter/parse, expiry calendar, regime, parity, positioning, and scoring.
-- ⏳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
+- ✅ **180 tests pass** (`python3 -m pytest -q`) — hand-checkable fixtures, NSE
+  adapter/parse, ICICI Breeze adapter, Dhan adapter, expiry calendar, regime, parity,
+  positioning, and scoring.
+- ⛳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
 
-## Install
+## Data Sources
+
+The adapter is configured via `DATA_SOURCE` in your `.env` file:
+
+| `DATA_SOURCE`   | Provider                  | Indices supported          | Credentials needed |
+|----------------|---------------------------|----------------------------|--------------------|
+| `icici_breeze` | **ICICI Direct** (default)| NIFTY, BANKNIFTY, SENSEX   | API key + secret + **daily** session token |
+| `dhan`         | Dhan broker               | NIFTY, BANKNIFTY           | Client ID + access token (static) |
+| `nse`          | NSE scraper (legacy)      | NIFTY, BANKNIFTY only      | None (run from home/Indian IP) |
+
+### ICICI Direct Breeze (default)
+Copy `.env.example` → `.env` and fill in:
 ```
-pip install -r requirements.txt
+DATA_SOURCE=icici_breeze
+ICICI_BREEZE_API_KEY=...
+ICICI_BREEZE_API_SECRET=...
+ICICI_BREEZE_SESSION_TOKEN=...   # refresh daily
 ```
+Generate your session token at:
+`https://api.icicidirect.com/apiuser/login?api_key=<url-encoded-api-key>`
+
+### Dhan
+```
+DATA_SOURCE=dhan
+DHAN_CLIENT_ID=...
+DHAN_ACCESS_TOKEN=...  # static, no daily refresh
+```
+Generate credentials at: https://dhanhq.co/docs/latest/authentication/
+
+### NSE Scraper (legacy)
+```
+DATA_SOURCE=nse
+```
+No credentials needed. Runs from a home/Indian IP connection (NSE blocks datacenter IPs).
+Supports NIFTY and BANKNIFTY only — not SENSEX.
 
 ## Run
 ```
-python cli.py --demo            # offline SYNTHETIC chain (no network) — sanity check
-python cli.py --live            # live NSE Nifty option chain (run locally)
-python cli.py --live --window 0dte
+python3 cli.py --demo            # offline SYNTHETIC chain (no network) — sanity check
+python3 cli.py --live            # live chain via DATA_SOURCE adapter in .env
+python3 cli.py --live --symbol SENSEX     # SENSEX (requires DATA_SOURCE=icici_breeze)
+python3 cli.py --live --window 0dte
 ```
-Local dashboard (one-click on Windows: double-click `run_app.bat`):
+Local dashboard:
 ```
-python -m streamlit run app\dashboard.py
+python3 -m streamlit run app/dashboard.py
 ```
 Every output logs its assumptions: lot size (VERIFY), dealer-sign model
 (UNVERIFIED for India), expiry window, OI timestamp, and the parity-implied
@@ -52,11 +85,13 @@ python -m pytest -q
 - `gex/` — pure GEX math: BS gamma, core exposure, flip, walls, max pain (unchanged).
 - `regime/` — regime classification + playbook (unchanged).
 - `data/schema.py`, `data/parity.py` — common schema + parity r/q + spot (unchanged).
-- `data/nse.py` — **NSE adapter**: live Nifty option-chain fetch + parse.
+- `data/nse.py` — **NSE adapter**: live Nifty option-chain fetch + parse (legacy).
+- `data/icici_breeze.py` — **ICICI Direct Breeze adapter**: full GEX + OI + VIX (default).
+- `data/dhan.py` — **Dhan adapter**: option chain + OI aggregation (static token).
 - `data/expiry.py` — **NSE expiry calendar** (VERIFY current weekly/monthly rules).
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).
-- `config.py` — India config: `NIFTY_LOT_SIZE` (VERIFY), expiry window, dealer
-  model (UNVERIFIED for India), flip grid, OI staleness.
+- `config.py` — India config: `INDICES` registry, `DATA_SOURCE` flag, adapter
+  credentials, dealer sign model, flip grid, OI staleness.
 - `app/` — Streamlit dashboard, data access, intraday time-series capture, and the
   sign-free positioning modules (`oi_footprint`, `gammablast`, `participant_oi`,
   `futures_buildup`, `magnet_trend`).

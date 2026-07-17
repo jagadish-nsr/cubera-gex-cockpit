@@ -5,6 +5,9 @@
 #   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
 #   streamlit-autorefresh - non-blocking timer for the dashboard auto-refresh.
 #   pytest      - test runner for the hand-checkable fixtures.
+#   python-dotenv - load .env credentials (DATA_SOURCE, ICICI_BREEZE_* keys).
+#   breeze-connect - ICICI Direct Breeze API SDK (optional: only needed when
+#                    DATA_SOURCE=icici_breeze in .env).
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
@@ -12,3 +15,5 @@ requests>=2.31
 streamlit>=1.40
 streamlit-autorefresh>=1.0
 pytest>=8.0
+python-dotenv>=1.0
+breeze-connect>=1.0.69

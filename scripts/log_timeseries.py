@@ -80,7 +80,7 @@ def _save_blast(data) -> int:
         return 0
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                       symbol=data.symbol, directory=GAMMA_BLAST_DIR)
+                       directory=GAMMA_BLAST_DIR)
     return len(rows)
 
 
@@ -107,7 +107,7 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
     # row so the two captures never drift (skip writes nothing on either side).
     strike_rows = build_strike_rows(data)
-    append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol)
+    append_strike_rows(strike_rows, date_ist=row["date_ist"])
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
     # Index-futures intraday snapshot (SEPARATE live call; best-effort, never fatal).
     fut_tag = ""
