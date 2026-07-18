@@ -134,6 +134,16 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None) -> float | None:
         return None
 
 
+def _prefer_dhan(live_source) -> bool:
+    """True when the live feed will be Dhan (token present + not forced to NSE) — in which case
+    India VIX rides the bundled index-OHLC quote and no separate NSE VIX call is needed."""
+    pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+    if pref == "nse":
+        return False
+    from data.dhan import token_status
+    return bool(token_status().get("present"))
+
+
 def load_dashboard(window: str | None = None, use_demo: bool = False,
                    symbol: str | None = None, live_source: str | None = None) -> DashboardData:
     window = window or config.EXPIRY_WINDOW_DEFAULT
@@ -141,6 +151,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
     fetched_at = datetime.now(timezone.utc)
     day_ohlc = None
     source_note = None
+    proxy_vanna = None
 
     if use_demo:
         from data.demo import build_demo_rows
@@ -152,17 +163,31 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         usdinr = None
         news = None
     else:
+        import concurrent.futures as _cf
         from data.news import fetch_news
-        from data.nse import (aggregate_oi_volume, fetch_india_vix,
-                              fetch_usdinr, nearest_expiry_premiums,
+        from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
                               parse_nse_option_chain, per_strike_nearest_changes,
                               per_strike_oi)
 
-        payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
-        rows, spot = parse_nse_option_chain(payload)
-        india_vix = fetch_india_vix()              # secondary call, fail-soft
-        usdinr = fetch_usdinr()                    # USD/INR future, fail-soft
-        news = fetch_news()                        # free RSS, fail-soft
+        usdinr = None          # USD/INR retired — Dhan has no live contract and it's unresearched
+        # Run news, the proxy pull, and (NSE-only) VIX CONCURRENTLY with the main chain so they hide
+        # under its ~10-15s instead of adding serially. On Dhan, VIX rides the index-OHLC quote
+        # (day_ohlc["vix"]) — no separate call. All fail-soft.
+        _dhan = _prefer_dhan(live_source)
+        _nse_vix = None
+        with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
+            _fx = {"news": _ex.submit(fetch_news)}
+            if idx.regime_proxy:
+                _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source)
+            if not _dhan:
+                from data.nse import fetch_india_vix as _nvx
+                _fx["vix"] = _ex.submit(_nvx)
+            payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
+            rows, spot = parse_nse_option_chain(payload)
+            news = _fx["news"].result()
+            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
+            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
+        india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
 
     snap = from_nse_results(
         rows, spot=spot, expiry_window=window,
@@ -206,8 +231,6 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
     gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
-    proxy_vanna = (_proxy_vanna(idx.regime_proxy, live_source)
-                   if (not use_demo and idx.regime_proxy) else None)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,

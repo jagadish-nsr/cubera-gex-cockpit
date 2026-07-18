@@ -292,30 +292,21 @@ def _fut_badge(label):
     return cls, ic, (label or "—").title()
 
 
-_POLL_S = 10            # fragment repaint poll while auto (cheap; the fetch is gated to the grid)
-_FETCH_LEAD_S = 15      # start the (throttled, multi-expiry) pull this many s BEFORE each clock
-                        # boundary so the assembled snapshot is ready AT the boundary (~12s to build)
+_POLL_S = 3             # fragment repaint poll while auto — a pure in-memory read of the last
+                        # published snapshot (NO network here), so repaints are instant / no dim.
+_FETCH_LEAD_S = 15      # background fetcher starts the pull this many s BEFORE each clock boundary
+                        # so the assembled snapshot is ready AT the boundary (~12s to build).
 
 
-def _fetch_gate(refresh, auto, auto_mins, use_demo):
-    """Clock-aligned fetch gate with a pre-fetch lead. With auto on, the network pull fires ONCE
-    per wall-clock boundary on the auto_mins grid (…:00 IST), started _FETCH_LEAD_S early so it is
-    ready AT the boundary; between boundaries the fragment repaints from the cached snapshot (no
-    network). Off/demo just fetch on a manual Refresh or first load. Returns (should_fetch, as_of).
-
-    Boundary math is on the raw epoch: IST is UTC+5:30 and 19800s is divisible by 60/180/300, so
-    epoch-grid boundaries land exactly on …:00 IST for the 1/3/5-min intervals we offer."""
-    import time
-    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
-    if not auto or use_demo:
-        return (bool(refresh) or st.session_state.get("simp_data") is None), now_ist.replace(tzinfo=None)
-    grid = max(1, int(auto_mins)) * 60
-    bucket = int((time.time() + _FETCH_LEAD_S) // grid)          # the boundary we're pre-fetching for
-    should = bool(refresh) or bucket != st.session_state.get("simp_bucket")
-    if should:
-        st.session_state["simp_bucket"] = bucket
-    as_of = datetime.fromtimestamp(bucket * grid, tz=timezone.utc) + timedelta(hours=5, minutes=30)
-    return should, as_of.replace(tzinfo=None)
+def _sync_fetch(symbol, use_demo):
+    """One blocking pull straight into session_state — used only for the FIRST paint and manual
+    Refresh (auto mode fetches in the background thread, off the render path)."""
+    try:
+        st.session_state["simp_data"] = load_dashboard(None, use_demo, symbol)
+        st.session_state["simp_asof"] = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+        st.session_state["simp_err"] = None
+    except Exception as e:  # noqa: BLE001
+        st.session_state["simp_err"] = str(e)
 
 
 def _dhan_feed_controls(symbol: str) -> None:
@@ -414,14 +405,21 @@ def main():
 
 
 def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anchor_now, idx):
-    do_fetch, as_of = _fetch_gate(refresh, auto, auto_mins, use_demo)
-    if do_fetch or st.session_state.get("simp_data") is None:
-        try:
-            st.session_state["simp_data"] = load_dashboard(None, use_demo, symbol)
-            st.session_state["simp_asof"] = as_of
-            st.session_state["simp_err"] = None
-        except Exception as e:  # noqa: BLE001
-            st.session_state["simp_err"] = str(e)
+    if auto and not use_demo:
+        # AUTO: a background thread does the ~12s pull off the render path; here we only READ the
+        # latest published snapshot (instant, no network → no page dim). First paint (nothing
+        # published yet AND no prior data) falls back to one blocking fetch so the page isn't empty.
+        from app import live_fetcher
+        live_fetcher.ensure(symbol, use_demo, None, int(auto_mins * 60), _FETCH_LEAD_S)
+        pub = live_fetcher.latest(symbol)
+        if pub and pub.get("data") is not None:
+            st.session_state["simp_data"] = pub["data"]
+            st.session_state["simp_asof"] = pub["as_of"]
+            st.session_state["simp_err"] = pub.get("err")
+        elif refresh or st.session_state.get("simp_data") is None:
+            _sync_fetch(symbol, use_demo)
+    elif refresh or st.session_state.get("simp_data") is None:
+        _sync_fetch(symbol, use_demo)
     data = st.session_state.get("simp_data")
     if data is None:
         st.error(f"Could not load data. {st.session_state.get('simp_err','')}")
@@ -483,8 +481,14 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
 
     vix = data.india_vix or {}
-    vtxt = (f"VIX {vix['last']:.1f}" + (f" · {vix['pct_change']:+.1f}%" if vix.get('pct_change') is not None else "")
-            ) if vix else ""
+    if vix.get("last") is not None:
+        _vp = vix.get("pct_change")
+        # VIX up = fear (red), down = calm (green)
+        _vc = ("" if _vp is None else
+               f' <span style="color:{"var(--stop)" if _vp >= 0 else "var(--go)"}">{_vp:+.1f}%</span>')
+        vtxt = f'India VIX <b>{vix["last"]:.2f}</b>{_vc}'
+    else:
+        vtxt = ""
 
     # ── render ──
     H = ['<div class="simp">']

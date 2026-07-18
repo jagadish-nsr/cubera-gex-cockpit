@@ -86,9 +86,10 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
     """True day OHLC (+ ltp) for the index spot via ``/marketfeed/quote`` — the accurate basis for
     the daily-candle range bar (the snapshot-reconstructed high/low understates the true range).
     Returns {open,high,low,close,ltp} or None. Best-effort: never raises."""
-    seg, scrip = _seg_scrip(symbol)
+    seg, scrip = _seg_scrip(symbol)          # seg is always IDX_I for the supported indices
     try:
-        r = _post("/marketfeed/quote", {seg: [scrip]}, timeout)
+        ids = [scrip] + ([DHAN_VIX_ID] if scrip != DHAN_VIX_ID else [])   # bundle VIX into one call
+        r = _post("/marketfeed/quote", {seg: ids}, timeout)
         if not r.ok:
             return None
         seg_d = (r.json() or {}).get("data", {}).get(seg, {})
@@ -98,7 +99,39 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
         ohlc = next((cell[k] for k in _OHLC_KEYS if k in cell), {}) or {}
         out = {k: _num(ohlc.get(k)) for k in ("open", "high", "low", "close")}
         out["ltp"] = _num(cell.get("last_price") or cell.get("ltp"))
+        out["vix"] = _vix_from_cell(seg_d.get(str(DHAN_VIX_ID)))          # India VIX, same quote
         return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
+DHAN_VIX_ID = 21                              # INDIA VIX index on the IDX_I segment (scrip master)
+
+
+def _vix_from_cell(cell) -> dict | None:
+    """{last, change, pct_change} (parse_india_vix shape) from a marketfeed quote cell for VIX.
+    VIX ``net_change`` is often 0 in the feed, so change falls back to the intraday move (last-open)."""
+    if not cell:
+        return None
+    last = _num(cell.get("last_price"))
+    if last is None:
+        return None
+    chg = _num(cell.get("net_change")) or None
+    if not chg:
+        o = _num((cell.get("ohlc") or {}).get("open"))
+        chg = (last - o) if o else None
+    pct = (chg / (last - chg) * 100.0) if (chg and last and (last - chg)) else None
+    return {"last": last, "change": chg, "pct_change": pct}
+
+
+def fetch_india_vix(timeout: int = 15) -> dict | None:
+    """Standalone live India VIX (IDX_I:21) via the marketfeed quote. Prefer the VIX that
+    ``fetch_index_ohlc`` bundles into ITS quote (one call) — this is the fallback."""
+    try:
+        r = _post("/marketfeed/quote", {IDX_SEG: [DHAN_VIX_ID]}, timeout)
+        if not r.ok:
+            return None
+        return _vix_from_cell((r.json() or {}).get("data", {}).get(IDX_SEG, {}).get(str(DHAN_VIX_ID)))
     except Exception:  # noqa: BLE001
         return None
 
