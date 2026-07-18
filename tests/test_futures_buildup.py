@@ -244,3 +244,27 @@ def test_capture_latest_walks_back(tmp_path, monkeypatch):
     got = capture_latest("NIFTY", today_ist="2026-07-08",
                          fetch_fn=fake_fetch, parse_fn=parse_index_futures, max_back=4)
     assert got and got[0] == "2026-07-06"
+
+
+def test_futures_intraday_dir_source_routing(tmp_path, monkeypatch):
+    """Dhan futures snapshots go to a SEPARATE journal from NSE (never mixed), and read back from
+    the same routed directory."""
+    import app.futures_buildup as fb
+    from app.futures_buildup import (append_futures_snapshot, futures_intraday_dir_for,
+                                     load_futures_intraday_day)
+    dhan_dir = tmp_path / "dhan"
+    nse_dir = tmp_path / "nse"
+    monkeypatch.setattr(fb, "FUTURES_INTRADAY_DHAN_DIR", dhan_dir)
+    monkeypatch.setattr(fb, "FUTURES_INTRADAY_DIR", nse_dir)
+    assert futures_intraday_dir_for("dhan") == dhan_dir
+    assert futures_intraday_dir_for("nse") == nse_dir
+    assert futures_intraday_dir_for("nse (Dhan fallback)") == nse_dir   # fallback = NSE
+    rec = {"symbol": "NIFTY", "expiry": "2026-07-28", "price": 24000.0, "change": 10.0,
+           "oi": 1e7, "volume": 5e6, "agg_oi": 1.2e7, "agg_vol": 6e6, "spot": None}
+    p, w = append_futures_snapshot(rec, "2026-07-17T09:20:00Z", "09:20", "2026-07-17",
+                                   "NIFTY", directory=futures_intraday_dir_for("dhan"))
+    assert w and "dhan" in str(p) and "nse" not in str(p)
+    # readable back from the Dhan dir; the NSE dir stays empty
+    df = load_futures_intraday_day("2026-07-17", "NIFTY", directory=dhan_dir)
+    assert df is not None and len(df) == 1 and float(df.iloc[0]["agg_oi"]) == 1.2e7
+    assert load_futures_intraday_day("2026-07-17", "NIFTY", directory=nse_dir) is None

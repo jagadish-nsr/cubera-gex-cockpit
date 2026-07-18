@@ -143,6 +143,79 @@ def _num(x):
         return None
 
 
+# --- live index FUTURES (near-month levels + aggregate across serial months) ----------
+_FUT_CACHE: dict = {}       # symbol -> {day, seg, ids (near->far), near_expiry}
+
+
+def _future_contracts(symbol: str = "NIFTY") -> dict:
+    """Serial-month index-futures securityIds + the F&O segment for ``symbol`` (NSE_FNO for
+    NIFTY/BankNifty, BSE_FNO for SENSEX), resolved from the Dhan scrip master and CACHED per day
+    (the master is a ~30MB download). Returns {seg, ids (near→far, ≤3), near_expiry}; empty ids
+    if none are current. Best-effort — never raises."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    c = _FUT_CACHE.get(symbol)
+    if c and c.get("day") == today:
+        return c
+    out = {"day": today, "seg": None, "ids": [], "near_expiry": None}
+    try:
+        import io
+        import pandas as pd
+        import requests
+        from data.dhan import _SCRIP_MASTER
+        df = pd.read_csv(io.BytesIO(requests.get(_SCRIP_MASTER, timeout=90).content), low_memory=False)
+        f = df[(df["SEM_INSTRUMENT_NAME"] == "FUTIDX")
+               & (df["SEM_TRADING_SYMBOL"].astype(str).str.upper().str.startswith(symbol.upper() + "-"))].copy()
+        f["exp"] = pd.to_datetime(f["SEM_EXPIRY_DATE"], errors="coerce")
+        f = f[f["exp"].dt.date >= _dt.date.today()].sort_values("exp")
+        if not f.empty:
+            out["seg"] = f"{str(f.iloc[0]['SEM_EXM_EXCH_ID']).upper()}_FNO"
+            out["ids"] = [int(x) for x in f["SEM_SMST_SECURITY_ID"].tolist()][:3]
+            out["near_expiry"] = f.iloc[0]["exp"].date().isoformat()
+    except Exception:  # noqa: BLE001
+        pass
+    _FUT_CACHE[symbol] = out
+    return out
+
+
+def fetch_futures_dhan(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
+    """Live index-futures record from Dhan — near-month levels + AGGREGATE across serial months
+    (rollover-netted), in the SAME shape as ``data.nse.parse_futures_live`` so it drops straight
+    into ``capture_futures_snapshot``: {symbol, expiry, price, change, oi, volume, agg_oi, agg_vol,
+    spot}. Best-effort None on any failure (incl. a transient 429)."""
+    c = _future_contracts(symbol)
+    if not c["ids"] or not c["seg"]:
+        return None
+    try:
+        r = _post("/marketfeed/quote", {c["seg"]: c["ids"]}, timeout)
+        if r.status_code == 429:                 # quote rate-limit — brief backoff, one retry
+            import time as _t
+            _t.sleep(1.1)
+            r = _post("/marketfeed/quote", {c["seg"]: c["ids"]}, timeout)
+        if not r.ok:
+            return None
+        d = (r.json() or {}).get("data", {}).get(c["seg"], {})
+        cells = [d.get(str(i)) for i in c["ids"] if d.get(str(i))]
+        near = d.get(str(c["ids"][0]))
+        if not near or not cells:
+            return None
+        price = _num(near.get("last_price"))
+        chg = _num(near.get("net_change")) or None
+        if not chg and price is not None:                      # VIX-style fallback: vs day open
+            o = _num((near.get("ohlc") or {}).get("open"))
+            chg = (price - o) if o else None
+
+        def _sum(k):
+            vals = [v for v in (_num(x.get(k)) for x in cells) if v is not None]
+            return sum(vals) if vals else None
+
+        return {"symbol": symbol, "expiry": c["near_expiry"], "price": price, "change": chg,
+                "oi": _num(near.get("oi")), "volume": _num(near.get("volume")),
+                "agg_oi": _sum("oi"), "agg_vol": _sum("volume"), "spot": None}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _ddmmyyyy(iso: str) -> str:
     """Dhan expiry 'YYYY-MM-DD' -> 'DD-MM-YYYY' (a format data.nse._parse_nse_date accepts)."""
     y, m, d = iso.split("-")

@@ -1049,25 +1049,30 @@ def _fut_window_row(lbl, minutes, win, is_expiry):
 
 
 def _futures_html(data, symbol, ist, is_expiry):
-    from app.futures_buildup import (capture_futures_snapshot, intraday_futures_buildup,
-                                    load_futures_intraday_day)
-    # Futures build-up still sources NSE LIVE futures (fetch_futures_live). Dhan-native futures
-    # (scrip-master near-month id + quote OI) is a follow-up; until then this card is NSE-only and
-    # simply hides on the Dhan feed rather than showing an empty card.
-    if data.source != "nse":
+    from app.futures_buildup import (capture_futures_snapshot, futures_intraday_dir_for,
+                                    intraday_futures_buildup, load_futures_intraday_day)
+    if not _is_live(data):
         return ''
     date_ist = ist.strftime("%Y-%m-%d")
+    flab = config.get_index(symbol).label                 # "Nifty 50" / "Bank Nifty" / "Sensex"
+    fdir = futures_intraday_dir_for(data.source)          # source-separated journal
+    dhan_feed = str(data.source or "").lower().startswith("dhan")
     try:                                  # best-effort live snapshot (in-session only), then read the day
         from app.timeseries import in_nse_session
         if in_nse_session(data.fetched_at):   # don't write a frozen post-close row
-            capture_futures_snapshot(symbol, min_gap_minutes=3.0)
+            if dhan_feed:                     # Dhan-native: near-month + serial-month aggregate quote
+                from data.dhan_live import fetch_futures_dhan
+                capture_futures_snapshot(symbol, fetch_fn=fetch_futures_dhan,
+                                         parse_fn=lambda p, s: p, min_gap_minutes=3.0, directory=fdir)
+            else:
+                capture_futures_snapshot(symbol, min_gap_minutes=3.0, directory=fdir)
     except Exception:  # noqa: BLE001
         pass
-    day_df = load_futures_intraday_day(date_ist, symbol)
+    day_df = load_futures_intraday_day(date_ist, symbol, directory=fdir)
     since = intraday_futures_buildup(day_df)
     wins = {m: _futures_window(day_df, m) for _, m in _WINDOWS}
     if not since and not any(wins.values()):
-        return ('<div class="card fut"><span class="eyebrow">Nifty futures OI build-up</span>'
+        return (f'<div class="card fut"><span class="eyebrow">{flab} futures OI build-up</span>'
                 '<p class="fut-desc">Waiting for 2+ futures snapshots this session…</p></div>')
     since_cell = ''
     if since:
@@ -1080,7 +1085,7 @@ def _futures_html(data, symbol, ist, is_expiry):
     rows = "".join(_fut_window_row(lbl, m, wins[m], is_expiry) for lbl, m in _WINDOWS)
     cap = ('⚠ Around monthly expiry the short windows churn (rollover) — lean on 30/60-min.'
            if is_expiry else 'Aggregate OI (rollover-netted); volume = intensity, not direction.')
-    return f'''<div class="card fut"><span class="eyebrow">Nifty futures OI build-up</span>
+    return f'''<div class="card fut"><span class="eyebrow">{flab} futures OI build-up</span>
       {since_cell}
       <div class="winstrip"><div class="win-hd">Trailing windows · price × ΔOI</div>{rows}
         <div class="win-cap{" warn" if is_expiry else ""}">{cap}</div></div></div>'''
