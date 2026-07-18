@@ -553,9 +553,9 @@ def _blast_hero(data, L, ist):
                                     next_strike, pick_anchors, strike_oi, strike_premiums)
     except Exception:  # noqa: BLE001
         return '<div class="card hero"><div class="eyebrow">Gamma-blast</div><p class="instruct">Blast engine unavailable.</p></div>'
-    if data.source != "nse" or not data.oi_strikes:
+    if not _is_live(data) or not data.oi_strikes:
         return ('<div class="card hero"><span class="eyebrow">Gamma-blast</span>'
-                '<p class="instruct">Live NSE only — per-strike premiums aren\'t on demo data.</p></div>')
+                '<p class="instruct">Live feed only — per-strike premiums aren\'t on demo data.</p></div>')
 
     ist_today = ist.strftime("%Y-%m-%d")
     anchor_min = 13 * 60 + 45
@@ -766,6 +766,14 @@ def _range_candle(L, ohlc):
     return f'<figure class="vc">{"".join(p)}</figure>'
 
 
+def _is_live(data):
+    """A real live feed (Dhan or NSE, incl. the Dhan→NSE fallback) — not demo. The per-strike OI,
+    footprint, gamma-blast and self-capture all work on ANY live feed (the Dhan adapter produces
+    the same NSE-shaped per-strike OI/ΔOI/premium fields), so these must not be gated to NSE only."""
+    s = (data.source or "")
+    return bool(s) and "DEMO" not in s.upper()
+
+
 def _persist_snapshot(data, symbol, min_gap):
     """Self-sufficient capture: on each in-session live pull, append the timeseries row
     and (lock-step) the per-strike OI rows — so the range seed AND the options OI windows
@@ -773,7 +781,7 @@ def _persist_snapshot(data, symbol, min_gap):
     dashboard's discipline: in-session only (a frozen post-close chain must never poison the
     day's file), and ``append_if_due`` dedups rapid refreshes / a co-running logger (shared
     file). Returns True if a row was written. Best-effort — never blocks the page."""
-    if data.source != "nse":
+    if not _is_live(data):
         return False
     try:
         from app.timeseries import (append_if_due, append_strike_rows, build_row,
@@ -965,7 +973,7 @@ def _play_card(vr, data, L, idx):
 def _footprint_html(data, L, idx, ist, is_expiry):
     from app.oi_footprint import build_footprint, oi_weighted_levels, window_footprint
     from app.timeseries import load_strikes_day
-    if data.source != "nse" or not data.oi_strikes:
+    if not _is_live(data) or not data.oi_strikes:
         return ''
     band = getattr(idx, "band_pts", None)
     fp = build_footprint(data.oi_strikes, L.spot, band)
@@ -1029,6 +1037,9 @@ def _fut_window_row(lbl, minutes, win, is_expiry):
 def _futures_html(data, symbol, ist, is_expiry):
     from app.futures_buildup import (capture_futures_snapshot, intraday_futures_buildup,
                                     load_futures_intraday_day)
+    # Futures build-up still sources NSE LIVE futures (fetch_futures_live). Dhan-native futures
+    # (scrip-master near-month id + quote OI) is a follow-up; until then this card is NSE-only and
+    # simply hides on the Dhan feed rather than showing an empty card.
     if data.source != "nse":
         return ''
     date_ist = ist.strftime("%Y-%m-%d")
