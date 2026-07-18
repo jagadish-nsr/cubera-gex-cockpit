@@ -454,16 +454,25 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     save_gap = max(1.0, auto_mins - 1.0) if auto else 2.0
     _persist_snapshot(data, symbol, save_gap)
 
-    # regime mood + expected day range (points)
-    from app.intraday_features import regime_now, regime_daily_move_now
+    # regime mood + expected day range (points). SENSEX borrows NIFTY's |vanna| regime (its own
+    # doesn't grade its move — verified; NIFTY's does at 1.73x, corr 0.988); other indices use own.
+    from app.intraday_features import (intraday_vol_regime, regime_daily_move_now,
+                                       regime_daily_move_proxy, regime_now)
+    proxy = getattr(data, "proxy_symbol", None)
     try:
-        vr = regime_now(symbol, data.vanna_now, data.charm_now, data.dte_now)
-        dm = regime_daily_move_now(symbol, data.vanna_now, data.charm_now, data.dte_now)
+        if proxy and data.proxy_vanna is not None:
+            vr = intraday_vol_regime(proxy, data.proxy_vanna, metric="vanna")
+            dm = regime_daily_move_proxy(symbol, proxy, data.proxy_vanna)
+        else:
+            vr = regime_now(symbol, data.vanna_now, data.charm_now, data.dte_now)
+            dm = regime_daily_move_now(symbol, data.vanna_now, data.charm_now, data.dte_now)
     except Exception:  # noqa: BLE001
         vr = dm = None
     mood_cls, mood_txt = _MOOD.get(vr["tag"] if vr else "mid", _MOOD["mid"])
     exp_pts = (dm["hl_pct"] / 100.0 * L.spot) if (dm and dm.get("hl_pct") == dm.get("hl_pct")) else None
     tier = {"calm": "Calm (mid)", "wild": "Wild", "mid": "Normal"}.get(vr["tag"], "—") if vr else "—"
+    if proxy and data.proxy_vanna is not None:            # transparency: borrowed regime
+        tier += f" · via {config.INDICES[proxy].label}"
 
     # today's range so far — SEED from today's saved snapshots (so a mid-day open or a
     # restart recovers the whole session, not just spots seen since this process started),

@@ -39,6 +39,8 @@ class DashboardData:
     dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
     day_ohlc: dict | None = None    # true index day OHLC {open,high,low,close,ltp} (Dhan feed only)
     source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
+    proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
+    proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
 
 
 def _live_greeks(contracts, spot: float, lot: float) -> dict:
@@ -104,6 +106,32 @@ def _fetch_live_chain(idx, live_source: str | None):
     payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
     source = "nse (Dhan fallback)" if note and "using NSE" in note and pref != "nse" else "nse"
     return payload, source, None, note
+
+
+def _proxy_vanna(proxy_symbol: str, live_source: str | None) -> float | None:
+    """Live dealer-|vanna| of a correlated proxy index (e.g. NIFTY for SENSEX), for a BORROWED
+    regime read. One nearest-expiry chain (Dhan if a token is present, else NSE), snapshot ->
+    _live_greeks. Best-effort: None on ANY failure, so the regime just falls back to the index's
+    own vanna. See the SENSEX-vanna study (NIFTY vanna grades SENSEX's move; SENSEX's own does not)."""
+    try:
+        from data.nse import parse_nse_option_chain
+        pidx = config.get_index(proxy_symbol)
+        pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+        from data.dhan import token_status
+        if pref in ("dhan", "auto") and token_status().get("present"):
+            from data import dhan_live
+            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)  # nearest expiry is enough
+        else:
+            from data.nse import fetch_chain as nse_fetch
+            payload = nse_fetch(pidx.symbol, has_weekly=pidx.has_weekly)
+        rows, spot = parse_nse_option_chain(payload)
+        snap = from_nse_results(
+            rows, spot=spot, expiry_window="all", dealer_sign_model=config.DEALER_SIGN_MODEL,
+            fetched_at=datetime.now(timezone.utc), underlying=pidx.symbol,
+        )
+        return _live_greeks(snap.contracts, float(spot), pidx.lot_size).get("vanna")
+    except Exception:  # noqa: BLE001 - borrowed regime is best-effort context
+        return None
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
@@ -178,6 +206,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
     gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
+    proxy_vanna = (_proxy_vanna(idx.regime_proxy, live_source)
+                   if (not use_demo and idx.regime_proxy) else None)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
@@ -185,4 +215,5 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
         usdinr=usdinr, news=news, vanna_now=gk["vanna"], charm_now=gk["charm"], dte_now=gk["dte"],
         day_ohlc=day_ohlc, source_note=source_note,
+        proxy_vanna=proxy_vanna, proxy_symbol=(idx.regime_proxy if proxy_vanna is not None else None),
     )

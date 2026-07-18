@@ -27,6 +27,10 @@ class Index:
     lot_size: int      # contract multiplier — VERIFY against the current NSE circular
     has_weekly: bool   # are weekly expiries served? (drives the expiry window/fetch)
     band_pts: float    # per-strike OI band: keep strikes within ± this of spot
+    regime_proxy: str | None = None  # borrow this index's |vanna| regime (a correlated, deeper
+    #                    options book). SENSEX->NIFTY: SENSEX's own vanna doesn't grade its move
+    #                    (expiry-cadence churn), but NIFTY's does (1.73-1.87x, corr 0.988) —
+    #                    verified 2026-07-18. None = use the index's own vanna.
 
 
 # CONFIRMED 2026-07 (user-verified against broker):
@@ -43,7 +47,8 @@ class Index:
 INDICES: dict[str, Index] = {
     "NIFTY":     Index("NIFTY", "Nifty 50", 65, True, 2000),       # lot 65 (Jan-2026, was 75)
     "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30, False, 4000),  # lot 30, monthly-only
-    "SENSEX":    Index("SENSEX", "Sensex", 20, True, 6000),        # BSE, lot 20, weekly (Thu); Dhan-only
+    "SENSEX":    Index("SENSEX", "Sensex", 20, True, 6000,          # BSE, lot 20, weekly (Thu); Dhan-only
+                       regime_proxy="NIFTY"),                        # borrow NIFTY's vanna regime
 }
 DEFAULT_INDEX = "NIFTY"
 

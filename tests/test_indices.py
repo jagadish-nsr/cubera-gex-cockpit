@@ -27,6 +27,10 @@ def test_index_registry_values():
     assert nifty.lot_size == 65 and nifty.has_weekly is True
     assert bank.lot_size == 30 and bank.has_weekly is False        # monthly-only
     assert bank.band_pts > nifty.band_pts                          # bigger index, wider band
+    sensex = config.get_index("SENSEX")
+    assert sensex.lot_size == 20 and sensex.has_weekly is True      # BSE, weekly (Thu)
+    assert sensex.regime_proxy == "NIFTY"                          # borrows NIFTY's vanna regime
+    assert nifty.regime_proxy is None and bank.regime_proxy is None  # own regime
 
 
 def test_get_index_default_and_unknown():
