@@ -37,6 +37,8 @@ class DashboardData:
     vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
     charm_now: float | None = None  # live dealer-charm exposure (better vol metric at 0-DTE)
     dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
+    day_ohlc: dict | None = None    # true index day OHLC {open,high,low,close,ltp} (Dhan feed only)
+    source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
 
 
 def _live_greeks(contracts, spot: float, lot: float) -> dict:
@@ -78,11 +80,39 @@ def _live_greeks(contracts, spot: float, lot: float) -> dict:
         return out
 
 
+def _fetch_live_chain(idx, live_source: str | None):
+    """Pull the LIVE chain as an NSE-shaped payload, honouring the Dhan-primary / NSE-backup
+    policy (config.LIVE_SOURCE). Returns (payload, source, day_ohlc, note). Dhan failures (expired
+    24h token, un-subscribed Data API, network, or a shape mismatch that makes the adapter raise)
+    fall back to the NSE scrape — a stale token degrades the feed, never breaks the dashboard."""
+    from data.nse import fetch_chain as nse_fetch
+    pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+    note = None
+    if pref in ("dhan", "auto"):
+        from data.dhan import token_status
+        st = token_status()
+        if pref == "dhan" or st.get("present"):
+            try:
+                from data import dhan_live
+                payload = dhan_live.fetch_chain(idx.symbol)     # throttled, ≥3s/expiry
+                ohlc = dhan_live.fetch_index_ohlc(idx.symbol)   # true day OHLC, best-effort
+                return payload, "dhan", ohlc, None
+            except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
+                note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
+        elif pref == "auto":
+            note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
+    payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
+    source = "nse (Dhan fallback)" if note and "using NSE" in note and pref != "nse" else "nse"
+    return payload, source, None, note
+
+
 def load_dashboard(window: str | None = None, use_demo: bool = False,
-                   symbol: str | None = None) -> DashboardData:
+                   symbol: str | None = None, live_source: str | None = None) -> DashboardData:
     window = window or config.EXPIRY_WINDOW_DEFAULT
     idx = config.get_index(symbol)             # resolves symbol -> lot size, weekly, band
     fetched_at = datetime.now(timezone.utc)
+    day_ohlc = None
+    source_note = None
 
     if use_demo:
         from data.demo import build_demo_rows
@@ -95,17 +125,16 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         news = None
     else:
         from data.news import fetch_news
-        from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
+        from data.nse import (aggregate_oi_volume, fetch_india_vix,
                               fetch_usdinr, nearest_expiry_premiums,
                               parse_nse_option_chain, per_strike_nearest_changes,
                               per_strike_oi)
 
-        payload = fetch_chain(idx.symbol, has_weekly=idx.has_weekly)  # single live pull
+        payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
         rows, spot = parse_nse_option_chain(payload)
         india_vix = fetch_india_vix()              # secondary call, fail-soft
         usdinr = fetch_usdinr()                    # USD/INR future, fail-soft
         news = fetch_news()                        # free RSS, fail-soft
-        source = "nse"
 
     snap = from_nse_results(
         rows, spot=spot, expiry_window=window,
@@ -155,4 +184,5 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         symbol=idx.symbol, index_label=idx.label,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
         usdinr=usdinr, news=news, vanna_now=gk["vanna"], charm_now=gk["charm"], dte_now=gk["dte"],
+        day_ohlc=day_ohlc, source_note=source_note,
     )

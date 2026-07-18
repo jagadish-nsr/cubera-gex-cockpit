@@ -32,8 +32,9 @@ def test_index_registry_values():
 def test_get_index_default_and_unknown():
     assert config.get_index(None).symbol == config.DEFAULT_INDEX   # None -> default
     assert config.get_index("banknifty").symbol == "BANKNIFTY"     # case-insensitive
+    assert config.get_index("sensex").symbol == "SENSEX"           # BSE index, now supported
     with pytest.raises(ValueError):                                 # fail loud, not silent
-        config.get_index("SENSEX")
+        config.get_index("FINNIFTY")
 
 
 def test_legacy_aliases_track_default_index():

@@ -18,7 +18,7 @@ Dhan websocket feed closes this. Decision-support only — the human confirms ev
 from __future__ import annotations
 
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -83,6 +83,17 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .rb-ends .lo{color:var(--go)}.simp .rb-ends .hi{color:var(--stop)}
 .simp .rb-note{font-size:.78rem;color:var(--go);font-weight:600}
 .simp .rb-cav{font-size:.72rem;color:var(--ink-mute)}
+.simp .candlecard{padding:14px 16px}
+.simp .vc{margin:8px 0 0}
+.simp .vc .vc-line{transition:stroke-width .12s}
+.simp .vc-lvl{cursor:default}
+.simp .vc-lvl:hover .vc-line{stroke-width:2.6}
+.simp .vc-lvl:hover .vc-lbl{font-weight:700}
+.simp .vc-lbl{font-size:12px;fill:var(--ink-2)}
+.simp .vc-val{font-weight:700}
+.simp .vc-exp{fill:var(--ink-mute);opacity:.12}
+.simp .vc-exp-t{font-size:9px;fill:var(--ink-mute);letter-spacing:.07em}
+.simp .cc-read{font-size:.9rem;color:var(--ink);font-weight:600;margin:9px 0 2px}
 .simp .news{display:flex;gap:11px;align-items:flex-start;padding:12px 15px;border-radius:12px;background:var(--warn-bg);border:1px solid var(--warn);margin-top:14px}
 .simp .news .txt{font-size:.86rem}.simp .news .txt b{color:var(--warn)}
 .simp .hero{padding:18px}
@@ -127,6 +138,7 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .pnl{border-top:1px solid var(--line);margin-top:10px;padding-top:10px}
 .simp .pnl-hd{font-size:.66rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-mute)}
 .simp .pnl-legs{font-size:.82rem;color:var(--ink);margin:6px 0 9px;font-family:var(--mono)}
+.simp .pnl-note{font-size:.72rem;color:var(--warn);margin:2px 0 8px;line-height:1.35}
 .simp .pnl-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .simp .pnl-grid>div{background:var(--surface-2);border-radius:9px;padding:8px 11px}
 .simp .pnl-grid small{font-size:.64rem;color:var(--ink-mute);text-transform:uppercase;letter-spacing:.03em}
@@ -282,6 +294,72 @@ def _fut_badge(label):
     return cls, ic, (label or "—").title()
 
 
+_POLL_S = 10            # fragment repaint poll while auto (cheap; the fetch is gated to the grid)
+_FETCH_LEAD_S = 15      # start the (throttled, multi-expiry) pull this many s BEFORE each clock
+                        # boundary so the assembled snapshot is ready AT the boundary (~12s to build)
+
+
+def _fetch_gate(refresh, auto, auto_mins, use_demo):
+    """Clock-aligned fetch gate with a pre-fetch lead. With auto on, the network pull fires ONCE
+    per wall-clock boundary on the auto_mins grid (…:00 IST), started _FETCH_LEAD_S early so it is
+    ready AT the boundary; between boundaries the fragment repaints from the cached snapshot (no
+    network). Off/demo just fetch on a manual Refresh or first load. Returns (should_fetch, as_of).
+
+    Boundary math is on the raw epoch: IST is UTC+5:30 and 19800s is divisible by 60/180/300, so
+    epoch-grid boundaries land exactly on …:00 IST for the 1/3/5-min intervals we offer."""
+    import time
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if not auto or use_demo:
+        return (bool(refresh) or st.session_state.get("simp_data") is None), now_ist.replace(tzinfo=None)
+    grid = max(1, int(auto_mins)) * 60
+    bucket = int((time.time() + _FETCH_LEAD_S) // grid)          # the boundary we're pre-fetching for
+    should = bool(refresh) or bucket != st.session_state.get("simp_bucket")
+    if should:
+        st.session_state["simp_bucket"] = bucket
+    as_of = datetime.fromtimestamp(bucket * grid, tz=timezone.utc) + timedelta(hours=5, minutes=30)
+    return should, as_of.replace(tzinfo=None)
+
+
+def _dhan_feed_controls(symbol: str) -> None:
+    """Sidebar: paste/refresh the Dhan access token (SEBI-capped at 24h) and see its status.
+    The token is a SECRET — stored gitignored in data/.dhan_token, never shown or logged. A stale
+    token just falls the feed back to NSE, so this is convenience, not a hard dependency."""
+    from data.dhan import token_status, write_token
+
+    st.divider()
+    stt = token_status()
+    if not stt["present"]:
+        head, exp0 = "🔌 Dhan feed — not set (using NSE)", True
+    elif stt["expired"]:
+        head, exp0 = "🔴 Dhan token expired — re-paste", True
+    elif stt["hours_left"] is not None:
+        head, exp0 = f"🟢 Dhan token · ~{stt['hours_left']:.1f}h left", False
+    else:
+        head, exp0 = "🟢 Dhan token set", False
+
+    with st.expander(head, expanded=exp0):
+        st.caption("web.dhan.co → Profile → **DhanHQ Trading APIs** → generate Access Token. "
+                   "Needs the **Data APIs** subscription. SEBI caps the token at 24h — re-paste daily.")
+        tok = st.text_input("Access token", type="password", key="dhan_tok_in",
+                            help="Stored in data/.dhan_token (gitignored); never logged or committed.")
+        c1, c2 = st.columns(2)
+        if c1.button("💾 Save", width="stretch"):
+            if tok.strip():
+                write_token(tok.strip())
+                st.session_state.pop("simp_data", None)   # force a reload on the new feed
+                st.success("Saved — switching to Dhan.")
+                st.rerun()
+            else:
+                st.warning("Paste a token first.")
+        if c2.button("🔍 Test", width="stretch"):
+            with st.spinner("Pinging Dhan…"):
+                from data import dhan_live
+                p = dhan_live.ping(symbol)
+            (st.success if p["ok"] else st.error)(
+                f"OK · {p['expiries']} expiries · spot {p['spot']}" if p["ok"]
+                else f"Failed: {p['error']}")
+
+
 def main():
     with st.sidebar:
         st.header("Simple view")
@@ -293,6 +371,7 @@ def main():
         auto = st.checkbox("⏱️ Auto-refresh", value=False)
         auto_mins = st.selectbox("Interval", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
                                  disabled=not auto)
+        _dhan_feed_controls(symbol)
         st.divider()
         st.caption("⚡ Gamma-blast")
         preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
@@ -306,13 +385,6 @@ def main():
                          "the browser may need a click first, and auto-refresh keeps it checking.")
         st.caption("A simple, paper-only face of the GEX engine. See docs/simple-dashboard.md.")
 
-    if auto:
-        try:
-            from streamlit_autorefresh import st_autorefresh
-            st_autorefresh(interval=auto_mins * 60_000, key="simp_tick")
-        except ModuleNotFoundError:
-            st.sidebar.warning("Install streamlit-autorefresh for auto mode.")
-
     st.markdown(CSS, unsafe_allow_html=True)
     idx = config.get_index(symbol)
 
@@ -322,9 +394,33 @@ def main():
         st.session_state.pop("simp_hl", None)
         st.session_state.pop("simp_blast", None)
 
-    if refresh or st.session_state.get("simp_data") is None or auto:
+    # The live view runs inside st.fragment so it self-updates IN PLACE on its own timer
+    # (run_every) — only this block reruns, no full-page reload/flicker (replaces
+    # streamlit-autorefresh). The sidebar/CSS above stay put. Manual Refresh (a full rerun)
+    # still works; older Streamlit without fragments falls back to the whole-page autorefresh.
+    # POLL every _POLL_S while auto: the fragment wakes often enough to catch each wall-clock
+    # boundary and pre-fetch it, but the actual network pull is gated (see _fetch_gate) to fire
+    # ONCE per aligned boundary — so cheap repaints are frequent, expensive fetches are on-grid.
+    _ivl = _POLL_S if auto else None
+    args = (symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anchor_now, idx)
+    if hasattr(st, "fragment"):
+        st.fragment(run_every=_ivl)(_render_live)(*args)
+        return
+    if auto:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=auto_mins * 60_000, key="simp_tick")
+        except ModuleNotFoundError:
+            st.sidebar.warning("Install streamlit-autorefresh for auto mode.")
+    _render_live(*args)
+
+
+def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anchor_now, idx):
+    do_fetch, as_of = _fetch_gate(refresh, auto, auto_mins, use_demo)
+    if do_fetch or st.session_state.get("simp_data") is None:
         try:
             st.session_state["simp_data"] = load_dashboard(None, use_demo, symbol)
+            st.session_state["simp_asof"] = as_of
             st.session_state["simp_err"] = None
         except Exception as e:  # noqa: BLE001
             st.session_state["simp_err"] = str(e)
@@ -335,6 +431,17 @@ def main():
 
     L = data.levels
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
+    asof = st.session_state.get("simp_asof") or ist
+    # feed transparency — which live source produced this snapshot (CLAUDE.md: make state visible)
+    _src = data.source or "?"
+    _feed = ("🟢 Dhan (live)" if _src == "dhan"
+             else "🟡 NSE (Dhan fallback)" if _src.startswith("nse (Dhan")
+             else "🔵 NSE" if _src == "nse" else _src)
+    _sched = (f"aligned to the {auto_mins:g}-min grid · as of {asof:%H:%M} IST" if auto
+              else "manual refresh")
+    st.caption(f"Feed: {_feed} · {_sched} · fetched {ist:%H:%M:%S}")
+    if getattr(data, "source_note", None):
+        st.caption(f"⚠ {data.source_note}")
     nearest = data.expiries[0] if data.expiries else None
     is_expiry = (nearest == ist.date()) if nearest else False
     show_blast = is_expiry or preview_expiry          # preview forces the blast view (dev)
@@ -367,7 +474,6 @@ def main():
         hl = _seed_hl(symbol, date_ist, L.spot)
         st.session_state["simp_hl"] = hl
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
-    span = hl["hi"] - hl["lo"]
 
     vix = data.india_vix or {}
     vtxt = (f"VIX {vix['last']:.1f}" + (f" · {vix['pct_change']:+.1f}%" if vix.get('pct_change') is not None else "")
@@ -389,17 +495,21 @@ def main():
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
-    # today's range so far
-    note = ""
-    if is_expiry and exp_pts and L.spot:
-        pct = span / L.spot * 100.0
-        note = (f'<span class="rb-note">🎯 Still tight ({pct:.1f}% so far) — blast-friendly if a cross fires.</span>'
-                if pct < 1.0 else f'<span class="rb-cav">Range already {pct:.1f}% — less blast-friendly.</span>')
-    scale = _range_scale(hl, L, span)
-    H.append(f'''<div class="rangebar card"><div class="rb-top"><span class="eyebrow">Today's range so far</span>
-      <span class="rb-vals mono">{f(hl["lo"])} – {f(hl["hi"])} · <b>{f(span)} pts</b>{f" of ~{f(exp_pts)}" if exp_pts else ""}</span></div>
-      {scale}
-      {note}<span class="rb-cav">≈ from today's saved snapshots — can miss fast spikes (true range may be wider).</span></div>''')
+    # today's range so far — vertical LIVE candle + level ladder on one price axis
+    oh = _resolve_ohlc(data, hl, L.spot)
+    actual = oh["h"] - oh["l"]
+    pct_exp = (actual / exp_pts * 100.0) if exp_pts else None
+    spot_pos = ((L.spot - oh["l"]) / actual * 100.0) if actual > 0 else 50.0
+    candle = _range_candle(L, oh, exp_pts)
+    read = (f'{f(actual)} pts'
+            + (f' · {pct_exp:.0f}% of expected' if pct_exp is not None else '')
+            + f' · spot {spot_pos:.0f}% up range')
+    tight = ""
+    if is_expiry and pct_exp is not None:
+        tight = (f'<span class="rb-note">🎯 Only {pct_exp:.0f}% of expected — still tight, blast-friendly if a cross fires.</span>'
+                 if pct_exp < 55 else f'<span class="rb-cav">Range already {pct_exp:.0f}% of expected — less blast-friendly.</span>')
+    src_note = ("true day OHLC (Dhan)" if data.day_ohlc
+                else "≈ from snapshots — can miss fast spikes")
 
     # news override
     news = data.news or {}
@@ -409,33 +519,20 @@ def main():
                  f'A headline is driving the market — trust the news over these levels today.'
                  f'{" <i>“"+top[:90]+"”</i>" if top else ""}</div></div>')
 
-    # ── 2-column deck: LEFT = decision (blast/play) + levels, RIGHT = positioning ──
+    # ── 2-column deck: LEFT = the tall live candle vs levels, RIGHT = positioning + the play ──
     H.append('<div class="grid2"><div class="col">')
-    if show_blast:
-        H.append(_blast_hero(data, L, ist))
-    else:
-        H.append(_play_card(vr, data, L, idx))
+    H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Today — live candle vs levels</span>
+      <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}
+      <div class="cc-read">{read}</div>
+      {tight}<span class="rb-cav">{src_note}. Hover a level for its value. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
-    # levels ladder
-    H.append('<h2 class="lbl">The map — key levels</h2><div class="levels card">')
-    rows = [("ceil", "🔴", "Ceiling", "resistance · call wall", L.call_wall),
-            ("", "🧲", "Magnet", "where it's pulled", L.magnet),
-            ("", "🎯", "Expiry pin", "max pain", L.max_pain),
-            ("now", "▶", "Now", "", L.spot),
-            ("floor", "🟢", "Floor", "support · put wall", L.put_wall)]
-    for cls, ic, name, sub, px in rows:
-        H.append(f'<div class="lvl {cls}"><span class="ic">{ic}</span>'
-                 f'<span class="name">{name}{f" <small>{sub}</small>" if sub else ""}</span>'
-                 f'<span class="px mono">{f(px)}</span></div>')
-    band = f'{f(min(L.put_wall,L.call_wall))} – {f(max(L.put_wall,L.call_wall))}'
-    H.append(f'<div class="foot-note">Likely to stay inside <b class="mono">{band}</b>. '
-             'Put stops <i>just beyond</i> the ceiling or floor — never at the magnet.</div></div>')
-
-    # right column: positioning (footprint + futures two-window)
+    # right column: positioning first, then the suggested play beneath it
     H.append('</div><div class="col">')
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
+    H.append('<h2 class="lbl">Suggested play</h2>')
+    H.append(_blast_hero(data, L, ist) if show_blast else _play_card(vr, data, L, idx))
     H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
@@ -594,30 +691,83 @@ def _blast_hero(data, L, ist):
       </div>{chart}</div>'''
 
 
-def _range_scale(hl, L, span):
-    """The range-bar scale. When the put/call walls are present it plots on the WALL BAND
-    axis (put wall → call wall): today's low→high is a highlighted segment, thin colour
-    ticks mark put wall (🟢 left), magnet (indigo), call wall (🔴 right), and ▲ is spot —
-    so walls are actually visible (they sit outside the day's realised range). Falls back
-    to a plain low→high axis (spot ▲ + low/high labels) if the walls are missing."""
-    cw, pw, mg = L.call_wall, L.put_wall, L.magnet
-    if cw is not None and pw is not None and cw > pw:
-        def _px(v):
-            return None if v is None else max(0.0, min(100.0, (v - pw) / (cw - pw) * 100.0))
-        a, b, sp, mgp = _px(hl["lo"]), _px(hl["hi"]), _px(L.spot), _px(mg)
-        ticks = ('<span class="rb-tick put" style="left:0%"></span>'
-                 '<span class="rb-tick call" style="left:100%"></span>')
-        if mgp is not None:
-            ticks += f'<span class="rb-tick mag" style="left:{mgp:.1f}%" title="magnet {f(mg)}"></span>'
-        return (f'<div class="rb-scale"><div class="rb-track">'
-                f'<div class="rb-band" style="left:{a:.1f}%;width:{max(0.0, b - a):.1f}%"></div></div>'
-                f'{ticks}<div class="rb-mark" style="left:{sp:.1f}%" title="spot {f(L.spot)}">▲</div></div>')
-    # fallback: no walls → plain low→high axis with the spot marker
-    pos = max(0.0, min(100.0, (L.spot - hl["lo"]) / span * 100.0)) if span > 0 else 50.0
-    return (f'<div class="rb-scale"><div class="rb-track"><div class="rb-fill" style="width:{pos:.1f}%"></div></div>'
-            f'<div class="rb-mark" style="left:{pos:.1f}%" title="spot {f(L.spot)}">▲</div></div>'
-            f'<div class="rb-ends"><span class="lo">low {f(hl["lo"])}</span>'
-            f'<span class="hi">high {f(hl["hi"])}</span></div>')
+def _resolve_ohlc(data, hl, spot):
+    """Today's candle OHLC. Prefers Dhan's TRUE day OHLC (accurate high/low); falls back to the
+    snapshot-seeded low/high + open with the live spot as the running close. Unions the live spot
+    so an in-progress candle never clips it."""
+    d = data.day_ohlc or {}
+    o, h, lo, c = d.get("open"), d.get("high"), d.get("low"), d.get("close")
+    o = o if o is not None else hl.get("open", spot)
+    h = h if h is not None else hl["hi"]
+    lo = lo if lo is not None else hl["lo"]
+    c = c if c is not None else spot
+    h = max(h, o, c, spot)
+    lo = min(lo, o, c, spot)
+    return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c)}
+
+
+def _range_candle(L, ohlc, exp_pts):
+    """A TALL vertical LIVE daily candle (left) + a right-hand level ladder (call/put wall, magnet,
+    gamma flip, expiry pin, spot) sharing ONE price axis — so a level's height lines up with where
+    price sits on the candle. Faint band = expected day range (centred on the open). Hover a level
+    to emphasise its line (pure CSS, no JS). Labels dodge so clustered levels stay legible."""
+    o, h, lo, c = ohlc["o"], ohlc["h"], ohlc["l"], ohlc["c"]
+    W, HT, top, plot_h = 330, 520, 30, 458
+    cx, bw, line_x0, ladder_x, label_x = 76, 34, 46, 152, 158
+    lv_specs = [
+        ("Call wall", L.call_wall, "var(--stop)", False, "resistance"),
+        ("Expiry pin", L.max_pain, "var(--warn)", True, "max pain"),
+        ("Magnet", L.magnet, "var(--spark)", False, "pull"),
+        ("Gamma flip", L.flip, "var(--ink-mute)", False, "γ sign flip"),
+        ("Put wall", L.put_wall, "var(--go)", False, "support"),
+    ]
+    prices = [h, lo, o, c] + [p for _, p, *_ in lv_specs if p is not None]
+    env = (o - exp_pts / 2.0, o + exp_pts / 2.0) if (exp_pts and exp_pts > 0) else None
+    if env:
+        prices += list(env)
+    pmin, pmax = min(prices), max(prices)
+    pad = (pmax - pmin) * 0.07 or 1.0
+    pmin -= pad
+    pmax += pad
+
+    def Y(v):
+        return top + (pmax - v) / (pmax - pmin) * plot_h
+
+    p = [f'<svg viewBox="0 0 {W} {HT}" role="img" aria-label="daily candle with GEX levels">']
+    if env:                                             # expected-range band, behind everything
+        yhi, ylo = Y(env[1]), Y(env[0])
+        p.append(f'<rect class="vc-exp" x="{cx-24}" y="{yhi:.1f}" width="48" '
+                 f'height="{max(0.0, ylo-yhi):.1f}" rx="6"></rect>'
+                 f'<text class="vc-exp-t" x="{cx}" y="{yhi-6:.1f}" text-anchor="middle">EXPECTED</text>')
+    # level lines + dodged labels FIRST, so the candle draws cleanly on top of them
+    lv = [{"name": n, "px": pr, "col": cc, "dash": dd, "sub": ss}
+          for n, pr, cc, dd, ss in lv_specs if pr is not None]
+    lv.append({"name": "Spot", "px": L.spot, "col": "var(--ink)", "dash": False, "sub": "now"})
+    lv.sort(key=lambda d: -d["px"])
+    prev = -1e9
+    for d in lv:
+        d["yv"] = Y(d["px"])
+        d["ly"] = max(d["yv"], prev + 17.0)     # dodge labels down so clustered levels stay legible
+        prev = d["ly"]
+    for d in lv:
+        dash = ' stroke-dasharray="4 3"' if d["dash"] else ''
+        p.append(f'<g class="vc-lvl"><title>{d["name"]} {f(d["px"])} · {d["sub"]}</title>'
+                 f'<line class="vc-line" x1="{line_x0}" y1="{d["yv"]:.1f}" x2="{ladder_x}" '
+                 f'y2="{d["yv"]:.1f}" style="stroke:{d["col"]}" stroke-width="1.2"{dash}></line>'
+                 f'<line class="vc-line" x1="{ladder_x}" y1="{d["yv"]:.1f}" x2="{label_x}" '
+                 f'y2="{d["ly"]:.1f}" style="stroke:{d["col"]}" stroke-width="1.2"></line>'
+                 f'<text class="vc-lbl" x="{label_x+6}" y="{d["ly"]+4:.1f}">'
+                 f'<tspan class="vc-val" style="fill:{d["col"]}">{f(d["px"])}</tspan> '
+                 f'<tspan>{d["name"]}</tspan></text></g>')
+    col = "var(--go)" if c >= o else "var(--stop)"
+    yb0, yb1 = Y(max(o, c)), Y(min(o, c))
+    p.append(f'<line x1="{cx}" y1="{Y(h):.1f}" x2="{cx}" y2="{Y(lo):.1f}" style="stroke:{col}" '
+             f'stroke-width="2.4"></line><rect x="{cx-bw/2}" y="{yb0:.1f}" width="{bw}" '
+             f'height="{max(2.0, yb1-yb0):.1f}" rx="3" style="fill:{col};opacity:.9;stroke:{col};stroke-width:1"></rect>')
+    ys = Y(L.spot)
+    p.append(f'<polygon points="{cx-bw/2-11},{ys:.1f} {cx-bw/2-3},{ys-5:.1f} {cx-bw/2-3},{ys+5:.1f}" '
+             f'style="fill:var(--ink)"></polygon></svg>')
+    return f'<figure class="vc">{"".join(p)}</figure>'
 
 
 def _persist_snapshot(data, symbol, min_gap):
@@ -775,25 +925,36 @@ def _play_card(vr, data, L, idx):
     pnl = ""
     if (tag == "calm" and data.source == "nse" and data.oi_strikes
             and L.call_wall and L.put_wall):
+        from app.gammablast import next_strike, strike_premiums
+        kc, kp, stepped = L.call_wall, L.put_wall, False
+        if kc == kp:            # walls COINCIDE → a straddle (a degenerate strangle: zero-width band,
+                                # and every move breaches a wall). Step ±1 listed strike out each side
+                                # to restore a real full-credit band and separated wall-stops.
+            kp = next_strike(data.oi_strikes, kc, "down") or kp
+            kc = next_strike(data.oi_strikes, L.call_wall, "up") or kc
+            stepped = kc != kp
         cc = pp = None
         try:
-            from app.gammablast import strike_premiums
-            cc = strike_premiums(data.oi_strikes, L.call_wall)[0]   # call premium @ call wall
-            pp = strike_premiums(data.oi_strikes, L.put_wall)[1]    # put premium  @ put wall
+            cc = strike_premiums(data.oi_strikes, kc)[0]   # call premium @ call strike
+            pp = strike_premiums(data.oi_strikes, kp)[1]   # put premium  @ put strike
         except Exception:  # noqa: BLE001
             pass
         lot = getattr(idx, "lot_size", None)
-        if cc and pp and lot:
+        if cc and pp and lot and kc != kp:
             credit_pts = cc + pp
             credit = credit_pts * lot
-            be_lo, be_hi = L.put_wall - credit_pts, L.call_wall + credit_pts
-            graph = _strangle_payoff_svg(L.put_wall, L.call_wall, credit_pts, L.spot, lot)
+            be_lo, be_hi = kp - credit_pts, kc + credit_pts
+            graph = _strangle_payoff_svg(kp, kc, credit_pts, L.spot, lot)
+            note = (f'<div class="pnl-note">⚠ Call &amp; put walls coincide at {f(L.call_wall)} '
+                    f'(a strong single-strike pin) — a straddle there has a zero-width credit band and '
+                    f'no valid wall-stop, so this steps ±1 strike out to {f(kp)}/{f(kc)}.</div>'
+                    if stepped else '')
             pnl = f'''<div class="pnl"><div class="pnl-hd">Illustrative structure · short strangle · paper</div>
-              <div class="pnl-legs">SELL {f(L.call_wall)} CE @ {f(cc,1)} &nbsp;·&nbsp; SELL {f(L.put_wall)} PE @ {f(pp,1)}</div>
+              <div class="pnl-legs">SELL {f(kc)} CE @ {f(cc,1)} &nbsp;·&nbsp; SELL {f(kp)} PE @ {f(pp,1)}</div>{note}
               {graph}
               <div class="pnl-grid" style="margin-top:8px">
                 <div><small>Max profit · credit</small><b class="go">{_money(credit)} · {f(credit_pts,0)} pt</b></div>
-                <div><small>Keep full credit between</small><b class="mono">{f(L.put_wall)} – {f(L.call_wall)}</b></div>
+                <div><small>Keep full credit between</small><b class="mono">{f(kp)} – {f(kc)}</b></div>
                 <div><small>Break-even (expiry)</small><b class="mono">{f(be_lo)} – {f(be_hi)}</b></div>
                 <div><small>Stop · break of a wall</small><b class="stop">a conservative cut — inside the break-evens (a breach runs fast near expiry)</b></div>
               </div></div>'''

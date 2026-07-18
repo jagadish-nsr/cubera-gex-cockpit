@@ -36,9 +36,14 @@ class Index:
 #    MONTHLY ONLY (last Tuesday) — NSE discontinued Bank Nifty weeklies on
 #    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
 #    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
+# SENSEX is a BSE index (Dhan id 51), served on the same option-chain segment. Lot 20 + weekly
+# (Thursday) confirmed live 2026-07-18 (scripts/dhan_index_probe.py). ⚠️ NO NSE backup feed exists
+# for SENSEX (it's BSE) — it is DHAN-ONLY; a Dhan outage leaves it without live data. Its expiry
+# calendar is BSE (Thursday weeklies), NOT the NSE Tuesday rule — see data/expiry.py VERIFY.
 INDICES: dict[str, Index] = {
     "NIFTY":     Index("NIFTY", "Nifty 50", 65, True, 2000),       # lot 65 (Jan-2026, was 75)
     "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30, False, 4000),  # lot 30, monthly-only
+    "SENSEX":    Index("SENSEX", "Sensex", 20, True, 6000),        # BSE, lot 20, weekly (Thu); Dhan-only
 }
 DEFAULT_INDEX = "NIFTY"
 
@@ -54,6 +59,16 @@ def get_index(symbol: str | None) -> Index:
             f"unknown index {sym!r}; known: {sorted(INDICES)}"
         ) from None
 
+
+# --- Live data source -------------------------------------------------------
+# Which feed backs the LIVE dashboard/logger. Dhan REST (authenticated, no Akamai
+# bot-gate) is the robust primary; NSE scraping is the always-available backup.
+#   "auto" : use Dhan when a token is present, else NSE; fall back to NSE on any
+#            Dhan failure (expired 24h token, un-subscribed Data API, network).
+#   "dhan" : force Dhan (still falls back to NSE, but flagged).
+#   "nse"  : force the legacy NSE scrape.
+# The Dhan access token is SEBI-capped at 24h — re-pasted daily via the dashboard.
+LIVE_SOURCE = "auto"   # auto | dhan | nse
 
 # --- Dealer gamma sign convention -------------------------------------------
 # ⚠️ UNVERIFIED FOR INDIA. The long-call/short-put-gamma convention is the US

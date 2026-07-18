@@ -23,8 +23,10 @@ _REQUIRED = ("open", "high", "low", "close", "volume", "oi", "iv", "spot", "stri
 
 # Index-underlying securityIds (from the Dhan scrip master) + the expiry interval that actually
 # has options: NIFTY still lists weeklies; BANKNIFTY is monthly-only since Nov-2024.
-DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25}
-DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH"}
+# Confirmed live 2026-07-18 via scripts/dhan_index_probe.py (scrip master + live chain).
+# SENSEX is a BSE index (id 51) but its option chain is served on the same IDX_I segment.
+DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25, "SENSEX": 51}
+DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH", "SENSEX": "WEEK"}
 _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 
@@ -51,6 +53,56 @@ def _headers() -> dict:
     if cid:
         h["client-id"] = cid
     return h
+
+
+# --- token store (SEBI caps the access token at 24h; user re-pastes daily) -----------
+TOKEN_FILE = ROOT / "data" / ".dhan_token"          # gitignored secret; never commit / log
+
+
+def write_token(token: str) -> None:
+    """Persist a pasted Dhan access token to the gitignored ``data/.dhan_token``. The token is
+    a SECRET — this never logs it. Strips whitespace; refuses an empty string."""
+    tok = (token or "").strip()
+    if not tok:
+        raise ValueError("empty token")
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(tok, encoding="utf-8")
+
+
+def _jwt_exp(token: str):
+    """Best-effort: read the unverified ``exp`` (unix seconds) from a Dhan JWT access token.
+    We do NOT verify the signature — this is only to show the user how long the token is still
+    valid. Returns an aware UTC datetime or None if the token isn't a decodable JWT."""
+    import base64
+    import json as _json
+    from datetime import datetime, timezone
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)                      # pad base64url
+        claims = _json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp")
+        return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
+    except Exception:  # noqa: BLE001 - malformed / non-JWT token
+        return None
+
+
+def token_status() -> dict:
+    """Non-secret status of the current Dhan token for the UI: whether one is present, where it
+    came from (env/file), and — decoded from the JWT ``exp`` claim — whether it is still valid and
+    for how long. NEVER returns the token itself. ``expired`` is None when expiry is unknowable."""
+    from datetime import datetime, timezone
+    env = bool(os.environ.get("DHAN_ACCESS_TOKEN"))
+    token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
+    if not token:
+        return {"present": False, "source": None, "exp": None, "hours_left": None, "expired": None}
+    exp = _jwt_exp(token)
+    hours_left = expired = None
+    if exp is not None:
+        hours_left = (exp - datetime.now(timezone.utc)).total_seconds() / 3600.0
+        expired = hours_left <= 0
+    return {"present": True, "source": "env" if env else "file",
+            "exp": exp.isoformat() if exp else None,
+            "hours_left": hours_left, "expired": expired}
 
 
 def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
