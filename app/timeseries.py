@@ -27,7 +27,15 @@ ROOT = Path(__file__).resolve().parents[1]
 # indices never mix in one file. ``symbol=None`` resolves to config.DEFAULT_INDEX.
 TS_DIR = ROOT / "data" / "journal" / "timeseries"
 # Per-strike OI/ΔOI capture (long format: one row per strike per snapshot).
-OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"
+OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"          # NSE (+ legacy) feed
+OISTRIKES_DHAN_DIR = ROOT / "data" / "journal" / "oi_strikes_dhan"  # Dhan feed — kept SEPARATE
+
+
+def oistrikes_dir_for(source: str | None) -> Path:
+    """The per-strike journal root for a feed source. Dhan is kept in its OWN tree so the two
+    feeds never mix and can be compared later. 'dhan' -> oi_strikes_dhan; NSE / Dhan-NSE-fallback /
+    None / demo -> oi_strikes."""
+    return OISTRIKES_DHAN_DIR if (source or "").lower().startswith("dhan") else OISTRIKES_DIR
 # Expiry-day 1-min capture for the gamma-blast study (same per-strike schema,
 # finer cadence, bounded window) — kept separate so it doesn't mix cadences.
 GAMMA_BLAST_DIR = ROOT / "data" / "journal" / "gamma_blast"
@@ -52,6 +60,9 @@ STRIKE_FIELDS = [
     # Nearest-expiry OI-change + premium-change, both vs prev close (for the EXACT
     # build-up tag). Appended last so old CSVs stay readable (missing => optional).
     "call_doi_near", "put_doi_near", "call_dprem", "put_dprem",
+    # Nearest-expiry ABSOLUTE OI — a source-consistent series (live + Dhan backfill) that the
+    # trailing windows difference (baseline cancels → the window's nearest-expiry OI change).
+    "call_oi_near", "put_oi_near",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -199,6 +210,8 @@ def build_strike_rows(data) -> list[dict]:
             "put_doi_near": _f(s.get("put_doi_near")),
             "call_dprem": _f(s.get("call_dprem"), 2),
             "put_dprem": _f(s.get("put_dprem"), 2),
+            "call_oi_near": _f(s.get("call_oi_near")),
+            "put_oi_near": _f(s.get("put_oi_near")),
         })
     return rows
 

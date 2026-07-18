@@ -203,10 +203,19 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     """
     if day_df is None or getattr(day_df, "empty", True) or "time_ist" not in day_df.columns:
         return None
-    near = {"call_doi_near", "put_doi_near"} <= set(day_df.columns)
-    ccol, pcol = ("call_doi_near", "put_doi_near") if near else ("call_oi", "put_oi")
-    if ccol not in day_df.columns or pcol not in day_df.columns:
-        return None
+
+    def _has(cols):
+        return cols <= set(day_df.columns) and day_df[next(iter(cols))].notna().any()
+
+    # Difference a SOURCE-CONSISTENT nearest-expiry series: prefer nearest ABSOLUTE OI (call_oi_near,
+    # written by BOTH the live capture and the Dhan backfill — so live+backfilled rows difference
+    # cleanly), then the nearest ΔOI-vs-prev-close (live-only; baseline cancels), else all-expiry OI.
+    if _has({"call_oi_near", "put_oi_near"}):
+        ccol, pcol, near = "call_oi_near", "put_oi_near", True
+    elif _has({"call_doi_near", "put_doi_near"}):
+        ccol, pcol, near = "call_doi_near", "put_doi_near", True
+    else:
+        ccol, pcol, near = "call_oi", "put_oi", False
     times = sorted(str(t) for t in day_df["time_ist"].dropna().unique())
     if len(times) < 2:
         return None

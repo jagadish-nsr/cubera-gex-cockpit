@@ -105,10 +105,24 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     if not written:
         return f"{head}  -> skipped (a row < {min_gap:g} min old exists){blast_tag}", data
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
-    # row so the two captures never drift (skip writes nothing on either side).
+    # row so the two captures never drift (skip writes nothing on either side). Routed to the
+    # feed's own journal (Dhan -> oi_strikes_dhan) so sources never mix.
+    from app.timeseries import oistrikes_dir_for
     strike_rows = build_strike_rows(data)
-    append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol)
+    append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol,
+                       directory=oistrikes_dir_for(data.source))
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
+    # On the Dhan feed, top up any 1-min OI gap (late start / missed stretch) from Dhan history —
+    # a no-op when a 1-min capture is already caught up (see maybe_backfill_oi's gap check).
+    bf_tag = ""
+    if str(data.source or "").lower().startswith("dhan"):
+        try:
+            from app.oi_backfill import maybe_backfill_oi
+            r = maybe_backfill_oi(data.symbol, row["date_ist"], log=lambda *a: None)
+            if r.get("stamps"):
+                bf_tag = f" +bf{r['stamps']}"
+        except Exception:  # noqa: BLE001 - backfill is best-effort context
+            pass
     # Index-futures intraday snapshot (SEPARATE live call; best-effort, never fatal).
     fut_tag = ""
     try:
@@ -118,7 +132,7 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
             fut_tag = " +fut"
     except Exception:  # noqa: BLE001 - futures capture is optional context
         pass
-    return f"{head}  -> {path.name}{extra}{fut_tag}{blast_tag}", data
+    return f"{head}  -> {path.name}{extra}{bf_tag}{fut_tag}{blast_tag}", data
 
 
 def _run_blast_window(symbol: str | None) -> None:

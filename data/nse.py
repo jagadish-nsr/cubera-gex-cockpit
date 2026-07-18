@@ -285,9 +285,11 @@ def per_strike_nearest_changes(payload: dict, spot: float | None = None,
                 continue
             cell = out.setdefault(k, {
                 "call_doi_near": 0.0, "put_doi_near": 0.0,
-                "call_dprem": None, "put_dprem": None})
+                "call_dprem": None, "put_dprem": None,
+                "call_oi_near": None, "put_oi_near": None})
             cell[f"{pfx}_doi_near"] = float(side.get("changeinOpenInterest") or 0.0)
             cell[f"{pfx}_dprem"] = _num(side.get("change"))
+            cell[f"{pfx}_oi_near"] = _num(side.get("openInterest"))   # nearest-expiry ABSOLUTE OI
     return out
 
 

@@ -347,6 +347,16 @@ def _dhan_feed_controls(symbol: str) -> None:
             (st.success if p["ok"] else st.error)(
                 f"OK · {p['expiries']} expiries · spot {p['spot']}" if p["ok"]
                 else f"Failed: {p['error']}")
+        if st.button("⏬ Backfill today's OI", width="stretch",
+                     help="Fill any missing 1-min per-strike OI for today from Dhan history so the "
+                          "trailing windows and 'since open' cover the whole session. Idempotent; "
+                          "writes to the separate Dhan journal."):
+            today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+            with st.spinner(f"Backfilling {symbol} {today} from Dhan…"):
+                from app.oi_backfill import backfill_oi_strikes_dhan
+                r = backfill_oi_strikes_dhan(symbol, today, log=lambda *a: None)
+            st.success(f"Filled {r['stamps']} new 1-min stamps ({r['had']} already present).")
+            st.session_state.pop("simp_hl", None)
 
 
 def main():
@@ -476,7 +486,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     date_ist = ist.strftime("%Y-%m-%d")
     hl = st.session_state.get("simp_hl")
     if hl is None or hl.get("day") != date_ist:
-        hl = _seed_hl(symbol, date_ist, L.spot)
+        from app.timeseries import oistrikes_dir_for
+        hl = _seed_hl(symbol, date_ist, L.spot, oistrikes_dir_for(data.source))
         st.session_state["simp_hl"] = hl
     hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
 
@@ -785,27 +796,29 @@ def _persist_snapshot(data, symbol, min_gap):
         return False
     try:
         from app.timeseries import (append_if_due, append_strike_rows, build_row,
-                                    build_strike_rows, in_nse_session)
+                                    build_strike_rows, in_nse_session, oistrikes_dir_for)
         if not in_nse_session(data.fetched_at):
             return False
         _, written = append_if_due(build_row(data), min_gap_minutes=min_gap, symbol=symbol)
-        if written:
-            append_strike_rows(build_strike_rows(data), symbol=symbol)   # same fetch, lock-step
+        if written:                                          # same fetch, lock-step, source-routed
+            append_strike_rows(build_strike_rows(data), symbol=symbol,
+                               directory=oistrikes_dir_for(data.source))
         return written
     except Exception:  # noqa: BLE001 - capture is best-effort, never blocks the page
         return False
 
 
-def _seed_hl(symbol, date_ist, spot_now):
+def _seed_hl(symbol, date_ist, spot_now, strikes_dir=None):
     """Seed today's low/high/open from the day's SAVED snapshots (timeseries + oi_strikes
     `spot` columns), so opening/restarting mid-day recovers the whole session instead of
     starting from the current spot. Unions both streams with the live spot; open = the
-    earliest saved spot. Snapshot-cadence (~3 min) — still misses sub-cadence ticks."""
+    earliest saved spot. Snapshot-cadence (~3 min) — still misses sub-cadence ticks.
+    ``strikes_dir`` routes the per-strike read to the current feed's journal (Dhan vs NSE)."""
     lo = hi = op = float(spot_now)
     spots = []
     try:
         from app.timeseries import load_day, load_strikes_day
-        for loader in (load_day, load_strikes_day):
+        for loader in (load_day, lambda d, s: load_strikes_day(d, s, directory=strikes_dir)):
             df = loader(date_ist, symbol)
             if df is not None and not getattr(df, "empty", True) and "spot" in df.columns:
                 s = pd.to_numeric(df["spot"], errors="coerce").dropna()
@@ -972,9 +985,10 @@ def _play_card(vr, data, L, idx):
 
 def _footprint_html(data, L, idx, ist, is_expiry):
     from app.oi_footprint import build_footprint, oi_weighted_levels, window_footprint
-    from app.timeseries import load_strikes_day
+    from app.timeseries import load_strikes_day, oistrikes_dir_for
     if not _is_live(data) or not data.oi_strikes:
         return ''
+    _sdir = oistrikes_dir_for(data.source)          # read the trailing windows from the SAME feed's journal
     band = getattr(idx, "band_pts", None)
     fp = build_footprint(data.oi_strikes, L.spot, band)
     if not fp:
@@ -985,7 +999,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     lv = oi_weighted_levels(data.oi_strikes, L.spot, band) or {}   # validated S/R (standing OI)
 
     # rolling-window strip (current expiry only, from today's per-strike captures)
-    day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol)
+    day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol, directory=_sdir)
     now_hm = ist.hour * 60 + ist.minute
     rows = "".join(_opt_window_row(lbl, m,
                    window_footprint(day_df, m, L.spot, band, now_hm=now_hm,

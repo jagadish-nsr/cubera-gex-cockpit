@@ -230,6 +230,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["put_doi_near"] = c.get("put_doi_near")
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
+            s["call_oi_near"] = c.get("call_oi_near")   # nearest-expiry abs OI (trailing windows)
+            s["put_oi_near"] = c.get("put_oi_near")
     gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
