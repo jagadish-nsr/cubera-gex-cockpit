@@ -36,9 +36,16 @@ def oistrikes_dir_for(source: str | None) -> Path:
     feeds never mix and can be compared later. 'dhan' -> oi_strikes_dhan; NSE / Dhan-NSE-fallback /
     None / demo -> oi_strikes."""
     return OISTRIKES_DHAN_DIR if (source or "").lower().startswith("dhan") else OISTRIKES_DIR
+
+
+def gamma_blast_dir_for(source: str | None) -> Path:
+    """The 1-min gamma-blast capture root for a feed source — Dhan kept separate (never mixed).
+    'dhan' -> gamma_blast_dhan; NSE / fallback / None / demo -> gamma_blast."""
+    return GAMMA_BLAST_DHAN_DIR if (source or "").lower().startswith("dhan") else GAMMA_BLAST_DIR
 # Expiry-day 1-min capture for the gamma-blast study (same per-strike schema,
 # finer cadence, bounded window) — kept separate so it doesn't mix cadences.
 GAMMA_BLAST_DIR = ROOT / "data" / "journal" / "gamma_blast"
+GAMMA_BLAST_DHAN_DIR = ROOT / "data" / "journal" / "gamma_blast_dhan"  # Dhan feed, separate
 
 
 def _sym(symbol: str | None) -> str:

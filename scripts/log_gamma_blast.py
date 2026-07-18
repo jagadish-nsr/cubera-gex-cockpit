@@ -57,9 +57,10 @@ def capture_once(force: bool = False, symbol: str | None = None) -> str:
 
     rows = build_strike_rows(data)
     if not rows:
-        return f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  no per-strike data (live NSE only) — skipped"
+        return f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  no per-strike data (live feed only) — skipped"
+    from app.timeseries import gamma_blast_dir_for
     path = append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                              symbol=data.symbol, directory=GAMMA_BLAST_DIR)
+                              symbol=data.symbol, directory=gamma_blast_dir_for(data.source))
     return (f"[{data.symbol}] {ist:%Y-%m-%d} {ist:%H:%M} IST  spot {data.levels.spot:,.1f}  "
             f"magnet {data.levels.magnet:,.0f}  {len(rows)} strikes -> {path.name}")
 

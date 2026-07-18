@@ -73,14 +73,15 @@ def _is_expiry_day(data) -> bool:
 
 
 def _save_blast(data) -> int:
-    """Write this pull's per-strike rows to the 1-min gamma-blast journal
-    (data/journal/gamma_blast/<SYMBOL>/). Returns the strike count (0 on demo)."""
+    """Write this pull's per-strike rows to the 1-min gamma-blast journal, routed to the feed's own
+    tree (Dhan -> gamma_blast_dhan/<SYMBOL>/). Returns the strike count (0 on demo)."""
+    from app.timeseries import gamma_blast_dir_for
     rows = build_strike_rows(data)
     if not rows:
         return 0
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                       symbol=data.symbol, directory=GAMMA_BLAST_DIR)
+                       symbol=data.symbol, directory=gamma_blast_dir_for(getattr(data, "source", None)))
     return len(rows)
 
 
