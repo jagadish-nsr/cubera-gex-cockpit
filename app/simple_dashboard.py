@@ -91,8 +91,6 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .vc-lvl:hover .vc-lbl{font-weight:700}
 .simp .vc-lbl{font-size:12px;fill:var(--ink-2)}
 .simp .vc-val{font-weight:700}
-.simp .vc-exp{fill:var(--ink-mute);opacity:.12}
-.simp .vc-exp-t{font-size:9px;fill:var(--ink-mute);letter-spacing:.07em}
 .simp .cc-read{font-size:.9rem;color:var(--ink);font-weight:600;margin:9px 0 2px}
 .simp .news{display:flex;gap:11px;align-items:flex-start;padding:12px 15px;border-radius:12px;background:var(--warn-bg);border:1px solid var(--warn);margin-top:14px}
 .simp .news .txt{font-size:.86rem}.simp .news .txt b{color:var(--warn)}
@@ -507,16 +505,9 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     # today's range so far — vertical LIVE candle + level ladder on one price axis
     oh = _resolve_ohlc(data, hl, L.spot)
     actual = oh["h"] - oh["l"]
-    pct_exp = (actual / exp_pts * 100.0) if exp_pts else None
     spot_pos = ((L.spot - oh["l"]) / actual * 100.0) if actual > 0 else 50.0
-    candle = _range_candle(L, oh, exp_pts)
-    read = (f'{f(actual)} pts'
-            + (f' · {pct_exp:.0f}% of expected' if pct_exp is not None else '')
-            + f' · spot {spot_pos:.0f}% up range')
-    tight = ""
-    if is_expiry and pct_exp is not None:
-        tight = (f'<span class="rb-note">🎯 Only {pct_exp:.0f}% of expected — still tight, blast-friendly if a cross fires.</span>'
-                 if pct_exp < 55 else f'<span class="rb-cav">Range already {pct_exp:.0f}% of expected — less blast-friendly.</span>')
+    candle = _range_candle(L, oh)
+    read = f'{f(actual)} pts · spot {spot_pos:.0f}% up range'
     src_note = ("true day OHLC (Dhan)" if data.day_ohlc
                 else "≈ from snapshots — can miss fast spikes")
 
@@ -533,7 +524,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Today — live candle vs levels</span>
       <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}
       <div class="cc-read">{read}</div>
-      {tight}<span class="rb-cav">{src_note}. Hover a level for its value. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
+      <span class="rb-cav">{src_note}. Hover a level for its value. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
     # right column: positioning first, then the suggested play beneath it
     H.append('</div><div class="col">')
@@ -715,11 +706,11 @@ def _resolve_ohlc(data, hl, spot):
     return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c)}
 
 
-def _range_candle(L, ohlc, exp_pts):
+def _range_candle(L, ohlc):
     """A TALL vertical LIVE daily candle (left) + a right-hand level ladder (call/put wall, magnet,
     gamma flip, expiry pin, spot) sharing ONE price axis — so a level's height lines up with where
-    price sits on the candle. Faint band = expected day range (centred on the open). Hover a level
-    to emphasise its line (pure CSS, no JS). Labels dodge so clustered levels stay legible."""
+    price sits on the candle. Hover a level to emphasise its line (pure CSS, no JS). Labels dodge
+    so clustered levels stay legible."""
     o, h, lo, c = ohlc["o"], ohlc["h"], ohlc["l"], ohlc["c"]
     W, HT, top, plot_h = 330, 520, 30, 458
     cx, bw, line_x0, ladder_x, label_x = 76, 34, 46, 152, 158
@@ -731,9 +722,6 @@ def _range_candle(L, ohlc, exp_pts):
         ("Put wall", L.put_wall, "var(--go)", False, "support"),
     ]
     prices = [h, lo, o, c] + [p for _, p, *_ in lv_specs if p is not None]
-    env = (o - exp_pts / 2.0, o + exp_pts / 2.0) if (exp_pts and exp_pts > 0) else None
-    if env:
-        prices += list(env)
     pmin, pmax = min(prices), max(prices)
     pad = (pmax - pmin) * 0.07 or 1.0
     pmin -= pad
@@ -743,11 +731,6 @@ def _range_candle(L, ohlc, exp_pts):
         return top + (pmax - v) / (pmax - pmin) * plot_h
 
     p = [f'<svg viewBox="0 0 {W} {HT}" role="img" aria-label="daily candle with GEX levels">']
-    if env:                                             # expected-range band, behind everything
-        yhi, ylo = Y(env[1]), Y(env[0])
-        p.append(f'<rect class="vc-exp" x="{cx-24}" y="{yhi:.1f}" width="48" '
-                 f'height="{max(0.0, ylo-yhi):.1f}" rx="6"></rect>'
-                 f'<text class="vc-exp-t" x="{cx}" y="{yhi-6:.1f}" text-anchor="middle">EXPECTED</text>')
     # level lines + dodged labels FIRST, so the candle draws cleanly on top of them
     lv = [{"name": n, "px": pr, "col": cc, "dash": dd, "sub": ss}
           for n, pr, cc, dd, ss in lv_specs if pr is not None]
