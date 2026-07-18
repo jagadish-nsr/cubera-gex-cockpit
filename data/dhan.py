@@ -27,6 +27,9 @@ _REQUIRED = ("open", "high", "low", "close", "volume", "oi", "iv", "spot", "stri
 # SENSEX is a BSE index (id 51) but its option chain is served on the same IDX_I segment.
 DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25, "SENSEX": 51}
 DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH", "SENSEX": "WEEK"}
+# F&O exchange segment for the historical rollingoption pull: NIFTY/BANKNIFTY are NSE, SENSEX is
+# BSE. Confirmed live 2026-07-18 (BSE_FNO returns SENSEX candles; NSE_FNO returns none).
+DHAN_SEGMENT = {"NIFTY": "NSE_FNO", "BANKNIFTY": "NSE_FNO", "SENSEX": "BSE_FNO"}
 _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 
@@ -108,7 +111,8 @@ def token_status() -> dict:
 def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
                          opt_type: str = "CALL", expiry_flag: str = "WEEK", expiry_code: int = 1,
                          interval: str = "1", security_id: int = NIFTY_SECURITY_ID,
-                         required=_REQUIRED, timeout: int = 40) -> dict | None:
+                         required=_REQUIRED, timeout: int = 40,
+                         segment: str = "NSE_FNO") -> dict | None:
     """POST charts/rollingoption for one relative strike/type over [from_date, to_date)
     (YYYY-MM-DD; toDate non-inclusive). ``strike`` = 'ATM' or 'ATM+1'..'ATM+10'/'ATM-1'..
     'ATM-10'. ``expiry_code`` is 1-based (1 = nearest expiry of the flag, 2 = next …; 0 is
@@ -117,7 +121,7 @@ def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
     import requests
 
     body = {
-        "exchangeSegment": "NSE_FNO", "interval": str(interval),
+        "exchangeSegment": segment, "interval": str(interval),
         "securityId": security_id, "instrument": "OPTIDX",
         "expiryFlag": expiry_flag, "expiryCode": int(expiry_code),
         "strike": strike, "drvOptionType": opt_type,
@@ -147,7 +151,7 @@ def _rel_strike(off: int) -> str:
 def fetch_option_matrix(from_date: str, to_date: str, offsets=_OFFSETS,
                         flag: str = "WEEK", code: int = 1, interval: str = "1",
                         security_id: int = NIFTY_SECURITY_ID, sleep: float = 0.15,
-                        retries: int = 2):
+                        retries: int = 2, segment: str = "NSE_FNO"):
     """One page (≤~45d): fetch every ATM-offset CALL & PUT and return a tidy LONG DataFrame —
     one row per (candle, strike-offset, side) with the actual absolute ``strike``/``spot`` each
     candle carries. None if nothing came back. Polite ``sleep`` between calls; a soft failure
@@ -161,7 +165,7 @@ def fetch_option_matrix(from_date: str, to_date: str, offsets=_OFFSETS,
             df = None
             for attempt in range(retries + 1):
                 resp = fetch_rolling_option(from_date, to_date, _rel_strike(off), opt,
-                                            flag, code, interval, security_id)
+                                            flag, code, interval, security_id, segment=segment)
                 if resp and "_error" in resp:
                     time.sleep(0.4 * (attempt + 1))
                     continue
@@ -215,17 +219,19 @@ def available_intraday_days(store: str = "NIFTY") -> list[str]:
 def backfill_intraday_options(start: str, end: str, symbol: str = "NIFTY",
                               offsets=_OFFSETS, flag: str | None = None, code: int = 1,
                               interval: str = "1", security_id: int | None = None,
-                              store: str | None = None, log=print) -> dict:
+                              store: str | None = None, segment: str | None = None,
+                              log=print) -> dict:
     """Page over [start, end] in ~42-day WEEK-safe windows (newest→oldest), fetch the full
-    ATM±N CE/PE matrix, and write one parquet per trading day. ``flag``/``security_id`` default
-    from the symbol (WEEK+13 for NIFTY, MONTH+25 for BANKNIFTY); ``store`` (the on-disk key)
-    defaults to the symbol — pass e.g. 'NIFTY_M' to keep a non-default expiry book separate.
-    Resumable: a page whose newest trading day is already on disk is skipped without an API
-    call. Returns a small summary."""
+    ATM±N CE/PE matrix, and write one parquet per trading day. ``flag``/``security_id``/``segment``
+    default from the symbol (WEEK+13+NSE_FNO for NIFTY, MONTH+25+NSE_FNO for BANKNIFTY,
+    WEEK+51+BSE_FNO for SENSEX); ``store`` (the on-disk key) defaults to the symbol — pass e.g.
+    'NIFTY_M' to keep a non-default expiry book separate. Resumable: a page whose newest trading
+    day is already on disk is skipped without an API call. Returns a small summary."""
     from datetime import date, timedelta
 
     flag = flag or DHAN_OPT_FLAG.get(symbol, "WEEK")
     security_id = security_id or DHAN_UNDERLYING.get(symbol, NIFTY_SECURITY_ID)
+    segment = segment or DHAN_SEGMENT.get(symbol, "NSE_FNO")
     store = store or symbol
     d0, d1 = date.fromisoformat(start), date.fromisoformat(end)
     have = set(available_intraday_days(store))
@@ -235,7 +241,7 @@ def backfill_intraday_options(start: str, end: str, symbol: str = "NIFTY",
         lo = max(d0, hi - timedelta(days=_PAGE_DAYS - 1))
         pages += 1
         mat, misses = fetch_option_matrix(lo.isoformat(), (hi + timedelta(days=1)).isoformat(),
-                                          offsets, flag, code, interval, security_id)
+                                          offsets, flag, code, interval, security_id, segment=segment)
         all_misses += len(misses)
         if mat is None:
             log(f"  page {lo}..{hi}: no data ({len(misses)} misses)")

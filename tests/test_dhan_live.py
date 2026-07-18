@@ -101,6 +101,25 @@ def test_write_token_writes_secret(monkeypatch, tmp_path):
         write_token("   ")
 
 
+def test_backfill_resolves_bse_segment_for_sensex(monkeypatch):
+    """SENSEX (BSE) historical pull must resolve BSE_FNO + id 51 + WEEK; NIFTY stays NSE_FNO.
+    Verifies the wiring without any network (fetch_option_matrix is stubbed to capture args)."""
+    from data import dhan
+    seen = {}
+
+    def fake_matrix(f, t, offsets, flag, code, interval, security_id, segment="NSE_FNO"):
+        seen.update(segment=segment, sid=security_id, flag=flag)
+        return None, []
+
+    monkeypatch.setattr(dhan, "fetch_option_matrix", fake_matrix)
+    monkeypatch.setattr(dhan, "available_intraday_days", lambda store: [])
+    dhan.backfill_intraday_options("2026-07-01", "2026-07-02", symbol="SENSEX", log=lambda *a: None)
+    assert seen == {"segment": "BSE_FNO", "sid": 51, "flag": "WEEK"}
+    seen.clear()
+    dhan.backfill_intraday_options("2026-07-01", "2026-07-02", symbol="NIFTY", log=lambda *a: None)
+    assert seen["segment"] == "NSE_FNO" and seen["sid"] == 13
+
+
 @pytest.mark.skipif(not FIXTURE.exists(), reason="run scripts/dhan_optionchain_smoke.py first")
 def test_real_fixture_parses():
     """Locks the field map against a REAL captured response once the smoke test has saved one."""
