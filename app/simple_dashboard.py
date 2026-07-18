@@ -940,7 +940,7 @@ def _play_card(vr, data, L, idx):
     tag = vr["tag"] if vr else "mid"
     head, body = _PLAY.get(tag, _PLAY["mid"])
     pnl = ""
-    if (tag == "calm" and data.source == "nse" and data.oi_strikes
+    if (tag == "calm" and _is_live(data) and data.oi_strikes
             and L.call_wall and L.put_wall):
         from app.gammablast import next_strike, strike_premiums
         kc, kp, stepped = L.call_wall, L.put_wall, False
