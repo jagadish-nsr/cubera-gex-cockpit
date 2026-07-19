@@ -651,10 +651,11 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
                 else "≈ from snapshots — can miss fast spikes")
     # regime chip: developing distribution shape × the vanna tier (a map, not a signal)
     mp_chip = _mp_regime_chip(prof, vr)
-    mp_legend = ('<div class="mp-legend"><span><i style="border-color:var(--spark)"></i>developing '
-                 'value (POC + area)</span><span><i style="border-color:var(--ink-mute);border-top-style:dashed"></i>'
-                 'prior day</span>' + ('<span><i style="border-color:var(--warn);border-top-style:dotted"></i>'
-                 '5-day</span>' if show_weekly else '') + '</div>') if (prof and prof.get("today")) else ''
+    mp_legend = ('<div class="mp-legend"><span><i style="border-color:var(--spark)"></i>today '
+                 'VAH/POC/VAL</span><span><i style="border-color:var(--ink-mute);border-top-style:dashed"></i>'
+                 'prior day (p·)</span>' + ('<span><i style="border-color:var(--warn);border-top-style:dotted"></i>'
+                 '5-day (5D·)</span>' if show_weekly else '')
+                 + '<span>▲▼ = outside today’s range</span></div>') if (prof and prof.get("today")) else ''
 
     # news override
     news = data.news or {}
@@ -943,10 +944,12 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
     flip, pin, spot). So 'where price accepted' (left) never collides with 'where dealers are
     positioned' (right). Hover a GEX level to emphasise it. A map, not a signal."""
     o, h, lo, c = ohlc["o"], ohlc["h"], ohlc["l"], ohlc["c"]
-    W, HT, top, plot_h = 460, 560, 28, 496
-    LBLX, PBX0, PBLEN, MPX1 = 66, 74, 62, 172           # left value zone
-    cx, bw = 190, 28                                     # candle
-    GX0, GLADDER, GLABEL = 214, 320, 326                 # right GEX ladder
+    W, HT, top, plot_h = 486, 560, 28, 496
+    # left gutter sized for the widest value label ("5D VAH 24,250" ≈ 78px at 10.5px type) — the
+    # labels are anchored END at LBLX, so a narrow gutter clips them off the viewBox.
+    LBLX, PBX0, PBLEN, MPX1 = 90, 98, 62, 196           # left value zone
+    cx, bw = 214, 28                                     # candle
+    GX0, GLADDER, GLABEL = 238, 344, 350                 # right GEX ladder
     today = (prof or {}).get("today")
     prior = (prof or {}).get("prior")
     weekly = (prof or {}).get("weekly") if show_weekly else None
@@ -1011,31 +1014,41 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
         p.append(f'<line x1="{PBX0}" y1="{yp:.1f}" x2="{MPX1}" y2="{yp:.1f}" '
                  f'style="stroke:var(--spark)" stroke-width="1.6"></line>')
         mp_labels.append((today["poc"], f'POC {f(today["poc"])}', "var(--spark)"))
+        # today's value-area EDGES, with their prices — the band a rotational day trades inside
+        for key, nm in (("vah", "VAH"), ("val", "VAL")):
+            yv = Y(today[key])
+            p.append(f'<line x1="{PBX0}" y1="{yv:.1f}" x2="{MPX1}" y2="{yv:.1f}" '
+                     f'style="stroke:var(--ink-2);opacity:.55" stroke-width="1"></line>')
+            mp_labels.append((today[key], f'{nm} {f(today[key])}', "var(--ink-2)"))
 
-    def _band(pf, dash, col, tag):
-        """Draw a prior/composite value area, CLIPPED to the fixed axis. If the whole band sits
-        outside today's range it is not drawn at all — just noted as 'above/below today's range',
-        so a stale VA can never stretch the scale."""
+    def _band(pf, dash, col, tag, pre):
+        """A prior/composite value area, CLIPPED to the fixed axis. Every level carries its PRICE
+        (a line alone doesn't tell you where it is). A level outside the window is still reported —
+        as a labelled off-scale marker at the edge — so it is never silently dropped, and a stale
+        VA can never stretch the scale."""
         if not pf:
             return
-        if pf["val"] > pmax or pf["vah"] < pmin:
-            arrow = "▲" if pf["val"] > pmax else "▼"
-            side = "above" if pf["val"] > pmax else "below"
-            mp_notes.append((f'{arrow} {tag} {side} range · {f(pf["val"])}–{f(pf["vah"])}', col,
-                             pf["val"] > pmax))
+        if pf["val"] > pmax or pf["vah"] < pmin:           # whole band outside → one compact note
+            up = pf["val"] > pmax
+            mp_notes.append((f'{"▲" if up else "▼"} {tag} {"above" if up else "below"} · '
+                             f'{f(pf["val"])}–{f(pf["poc"])}–{f(pf["vah"])}', col, up))
             return
         yh, yl = _clampy(pf["vah"]), _clampy(pf["val"])
         p.append(f'<rect x="{PBX0-4}" y="{yh:.1f}" width="{MPX1-PBX0+4}" height="{max(0.0, yl-yh):.1f}" '
                  f'style="fill:{col};opacity:.05"></rect>')
-        for lv_, w in ((pf["vah"], 1.0), (pf["val"], 1.0), (pf["poc"], 1.3)):
-            if _off(lv_):
-                continue                                   # a single level outside → skip its line
+        for key, nm, w in (("vah", "VAH", 1.0), ("poc", "POC", 1.3), ("val", "VAL", 1.0)):
+            lv_ = pf[key]
+            side = _off(lv_)
+            if side:                                       # outside the window → label it, no line
+                mp_notes.append((f'{"▲" if side == "up" else "▼"} {pre}{nm} {f(lv_)} '
+                                 f'{"above" if side == "up" else "below"}', col, side == "up"))
+                continue
             yy = Y(lv_)
             p.append(f'<line x1="{PBX0-4}" y1="{yy:.1f}" x2="{MPX1}" y2="{yy:.1f}" '
                      f'style="stroke:{col};opacity:.7" stroke-width="{w}" stroke-dasharray="{dash}"></line>')
-        mp_labels.append((min(pf["vah"], pmax), tag, col))
-    _band(prior, "4 3", "var(--ink-mute)", "prior VA")
-    _band(weekly, "1 3", "var(--warn)", "5D VA")
+            mp_labels.append((lv_, f'{pre}{nm} {f(lv_)}', col))
+    _band(prior, "4 3", "var(--ink-mute)", "prior VA", "p")
+    _band(weekly, "1 3", "var(--warn)", "5D VA", "5D ")
 
     mp_labels.sort(key=lambda t: -t[0])
     prev = -1e9

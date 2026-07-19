@@ -13,7 +13,9 @@ from types import SimpleNamespace as NS
 from app.simple_dashboard import _range_candle
 
 OHLC = {"o": 24180, "h": 24260, "l": 24150, "c": 24200}
-BODY = re.compile(r'<rect x="176.0" y="([\d.]+)" width="28" height="([\d.]+)"')
+# the candle body is the only width-28 rect; matched by shape, not by a pinned x, so tuning the
+# layout coordinates doesn't silently disable these tests
+BODY = re.compile(r'<rect x="[\d.]+" y="([\d.]+)" width="28" height="([\d.]+)"')
 
 
 def _levels(**kw):
@@ -56,4 +58,57 @@ def test_prior_value_area_above_the_day_does_not_stretch_the_axis():
     plain = _range_candle(_levels(), OHLC)
     withva = _range_candle(_levels(), OHLC, prof={"today": None, "prior": prior, "weekly": None})
     assert _body(withva) == _body(plain)
-    assert any("prior VA above range" in t for t in re.findall(r">([^<>]+)<", withva))
+    note = " ".join(t for t in re.findall(r">([^<>]+)<", withva) if "prior VA" in t)
+    assert "prior VA above" in note
+    assert "24,420" in note and "24,480" in note      # reported with its prices, not just a tag
+
+
+# ── value-area PRICE labels ────────────────────────────────────────────────────────────────────
+import numpy as np  # noqa: E402
+
+
+def _today(lo=24150, hi=24260, step=5.0):
+    cen = np.arange(lo, hi + step, step) + step / 2
+    cnt = np.maximum(1.0, 30 - np.abs(np.arange(len(cen)) - 12) * 2)
+    return {"counts": cnt, "centers": cen, "bin_pts": step, "poc_i": 12, "val_i": 8, "vah_i": 16,
+            "hi": hi, "lo": lo, "poc": float(cen[12]), "vah": float(cen[16]), "val": float(cen[8])}
+
+
+def _labels(svg):
+    return [t for _x, _y, t in re.findall(r'class="vc-mp" x="(\d+)" y="([\d.]+)"[^>]*>([^<]+)<', svg)]
+
+
+def test_todays_value_area_edges_are_labelled_with_prices():
+    t = _today()
+    svg = _range_candle(_levels(), OHLC, prof={"today": t, "prior": None, "weekly": None})
+    labs = _labels(svg)
+    assert any(x.startswith("VAH ") and "," in x for x in labs)
+    assert any(x.startswith("VAL ") and "," in x for x in labs)
+    assert any(x.startswith("POC ") for x in labs)
+
+
+def test_prior_value_levels_carry_their_prices():
+    prior = {"hi": 24240, "lo": 24120, "poc": 24190, "vah": 24225, "val": 24160}
+    svg = _range_candle(_levels(), OHLC, prof={"today": _today(), "prior": prior, "weekly": None})
+    labs = _labels(svg)
+    assert "pVAH 24,225" in labs and "pPOC 24,190" in labs and "pVAL 24,160" in labs
+
+
+def test_out_of_window_levels_are_labelled_not_dropped():
+    """A level outside the fixed axis still has to be reported — with its price and a direction."""
+    week = {"hi": 24500, "lo": 24400, "poc": 24450, "vah": 24480, "val": 24420}
+    svg = _range_candle(_levels(), OHLC, prof={"today": _today(), "prior": None, "weekly": week},
+                        show_weekly=True)
+    off = " ".join(t for t in re.findall(r">([^<>]+)<", svg) if t.startswith(("▲", "▼")))
+    assert "5D VA above" in off
+    assert "24,420" in off and "24,450" in off and "24,480" in off   # val-poc-vah all reported
+
+
+def test_labels_fit_inside_the_viewbox():
+    """Left labels are anchored END at the gutter — too narrow a gutter clips them off-canvas."""
+    week = {"hi": 24240, "lo": 24120, "poc": 24200, "vah": 24230, "val": 24170}
+    svg = _range_candle(_levels(), OHLC,
+                        prof={"today": _today(), "prior": week, "weekly": week}, show_weekly=True)
+    gutter = int(re.search(r'class="vc-mp" x="(\d+)"', svg).group(1))
+    widest = max(len(t) for t in _labels(svg))
+    assert gutter >= widest * 6.2, f"gutter {gutter}px too narrow for a {widest}-char label"

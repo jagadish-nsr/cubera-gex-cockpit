@@ -155,10 +155,16 @@ Horizontal bars = **minutes price spent at each price bin** (1-min TPO; 5 pts fo
 BankNifty/Sensex). Built point-in-time from today's captured bars only.
 
 - **Bright bar + line = POC** (point of control) — the single most-accepted price today.
-- **Mid-tone bars = the value area** — the 70% band where most of the day's time was spent.
+- **Mid-tone bars = the value area** — the 70% band where most of the day's time was spent, with
+  its edges drawn and labelled **`VAH 24,232` / `VAL 24,192`**.
 - **Faint bars = the tails** — prices tested and rejected quickly.
-- **Dashed grey band = the PRIOR day's value area** (VAH / POC / VAL).
-- **Dotted amber band = the 5-day composite** (sidebar toggle "📊 5-day value").
+- **Dashed grey = the PRIOR day's value**, labelled **`pVAH` / `pPOC` / `pVAL`** with prices.
+- **Dotted amber = the 5-day composite** (sidebar toggle "📊 5-day value"), labelled `5D VAH` etc.
+
+**Every level carries its price** — a line alone doesn't tell you where it is. A level that falls
+**outside** the fixed axis isn't dropped: it moves to the edge as a labelled marker
+(`▲ pVAH 24,480 above`), and a value area entirely outside collapses to one note with all three
+prices (`▲ prior VA above · 24,420–24,450–24,480`).
 
 **How to read it.** A profile answers *"where has this market agreed on price?"* — a fat middle
 means two-sided agreement (rotation); a thin, stretched profile means one side is in control and
