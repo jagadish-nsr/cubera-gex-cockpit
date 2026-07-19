@@ -76,7 +76,8 @@ BROAD: list[tuple[str, str, int, float | None]] = [
 # pull, which are the load-bearing data. Two guards: a long TTL (15 min), and stale-while-
 # revalidate — the caller ALWAYS gets the cached rows instantly and the refresh happens on a
 # background daemon thread, so no render and no chain fetch ever waits on this.
-_TTL_S = 900.0                     # 15 min
+_TTL_S = 900.0                     # 15 min between successful refreshes
+_FAIL_BACKOFF_S = 120.0            # but retry ~2 min after a failure, not 15
 _cache: dict = {"at": 0.0, "rows": None, "src": None}
 _refreshing = False
 
@@ -87,11 +88,25 @@ def _row(label: str, pct, last, group: str, weight=None) -> dict:
 
 def fetch_sectors_nse(session=None, timeout: int = 10) -> list[dict] | None:
     """All sector + broad rows from NSE ``/api/allIndices`` — ``percentChange`` is the exchange's
-    own vs-previous-close number. Returns None on any failure (never raises)."""
+    own vs-previous-close number. Returns None on any failure (never raises).
+
+    NOTE: this endpoint answers WITHOUT Akamai priming (verified: 200 in ~0.5s from a bare session),
+    so we do NOT pay for ``_primed_session`` here. That matters — its ``/option-chain`` warm-up GET
+    hangs outside market hours (>20s), which used to blow the timeout and silently hide the whole
+    panel pre-market. Priming is kept only as a fallback for when NSE does demand cookies.
+    """
     try:
-        from data.nse import _ALL_INDICES_URL, _primed_session
-        s = session or _primed_session(timeout)
+        import requests
+        from data.nse import _ALL_INDICES_URL, _BROWSER_HEADERS
+        s = session
+        if s is None:
+            s = requests.Session()
+            s.headers.update(_BROWSER_HEADERS)
         r = s.get(_ALL_INDICES_URL, timeout=timeout)
+        if r.status_code != 200 and session is None:      # cookies demanded → prime once and retry
+            from data.nse import _primed_session
+            s = _primed_session(timeout)
+            r = s.get(_ALL_INDICES_URL, timeout=timeout)
         if r.status_code != 200:
             return None
         by = {str(d.get("index", "")).upper(): d for d in (r.json() or {}).get("data", [])}
@@ -161,7 +176,9 @@ def _pull(prefer_dhan: bool = False, session=None) -> bool:
                 src = name
                 break
         if not rows:
-            _cache["at"] = time.time()          # back off on failure too — don't retry every poll
+            # Back off on failure so we don't retry every poll — but far shorter than the success
+            # TTL, so one bad pull (e.g. an NSE hiccup) can't hide the panel for a whole 15 min.
+            _cache["at"] = time.time() - (_TTL_S - _FAIL_BACKOFF_S)
             return False
         rows.sort(key=lambda r: (r["pct"] is None, -(r["pct"] or 0.0)))   # leaders first
         _cache.update(at=time.time(), rows=rows, src=src)

@@ -860,7 +860,17 @@ def _sector_strip(data):
     leaders → laggards, green/red. Broad-market indices (Nifty 50 / Midcap / Smallcap) are outlined
     so breadth is readable at a glance. Pure CONTEXT — sector rotation has never been tested for
     edge here, so nothing on this strip is a signal."""
-    snap = getattr(data, "sectors", None) or {}
+    # Read the snap at RENDER time, not off the fetched snapshot: it is an instant cache read, so
+    # the strip appears as soon as the 15-min background refresh lands, instead of waiting for the
+    # NEXT chain pull to bake it in (which hid it for a whole cycle after a cold start).
+    # Demo/replay are skipped — today's live sector moves beside a replayed 2021 day would be a lie.
+    if not _is_live(data) or "replay" in (data.source or "").lower():
+        return ''
+    try:
+        from data.sectors import fetch_sector_snap
+        snap = fetch_sector_snap() or getattr(data, "sectors", None) or {}
+    except Exception:  # noqa: BLE001 - a context panel never breaks the page
+        snap = getattr(data, "sectors", None) or {}
     rows = snap.get("rows") or []
     if not rows:
         return ''

@@ -95,9 +95,12 @@ sector would be a silent lie).
 
 **Refresh: 15 min, and never on the fetch path.** The option chain and futures pull are the
 load-bearing data; sector rotation is slow-moving context, so it refreshes on its own **15-minute**
-timer on a background thread and the render always reads the cached rows instantly. It cannot delay
-a chain fetch or take a worker from it. Consequence: on a cold start the strip is absent for one
-cycle, then appears — a deliberate trade.
+timer on a background thread (2 min retry after a failure) and the render always reads the cached
+rows instantly. It cannot delay a chain fetch or take a worker from it.
+
+**The strip is hidden on demo and replay** — showing today's live sector moves beside a replayed
+2021 session would be a lie. If it's missing on a live feed, the cache is still cold; it appears on
+the next repaint.
 
 **How to read it.**
 - **Weight is what makes a move matter.** A green sector at ~30% weight (Bank) explains the index;

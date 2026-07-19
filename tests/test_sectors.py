@@ -152,3 +152,42 @@ def test_snap_never_blocks_the_caller(monkeypatch):
 
 def test_refresh_interval_is_slow_enough_to_not_compete():
     assert sec._TTL_S >= 900.0                         # 15 min+; options/futures get the bandwidth
+
+
+def test_nse_fetch_does_not_pay_for_akamai_priming(monkeypatch):
+    """Regression: the panel vanished pre-market because fetch_sectors_nse built a PRIMED session,
+    whose /option-chain warm-up GET hangs outside market hours (>20s) and blew the timeout.
+    /api/allIndices answers from a bare session, so priming must not be on the happy path."""
+    primed = []
+    monkeypatch.setattr("data.nse._primed_session",
+                        lambda *a, **k: primed.append(1) or (_ for _ in ()).throw(AssertionError))
+
+    class _R:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"data": [{"index": "NIFTY BANK", "percentChange": 1.0, "last": 100.0}]}
+
+    class _Sess:
+        headers: dict = {}
+
+        def get(self, *_a, **_k):
+            return _R()
+
+    monkeypatch.setattr("requests.Session", lambda: _Sess())
+    rows = sec.fetch_sectors_nse()
+    assert rows and rows[0]["label"] == "Bank"
+    assert not primed, "priming must not be used when the bare request succeeds"
+
+
+def test_failed_pull_retries_soon_not_after_a_full_ttl(monkeypatch):
+    """One bad pull must not hide the strip for the whole 15-min success TTL."""
+    _reset()
+    monkeypatch.setattr(sec, "fetch_sectors_nse", lambda *a, **k: None)
+    monkeypatch.setattr(sec, "fetch_sectors_dhan", lambda *a, **k: None)
+    sec._pull()
+    import time as _t
+    age = _t.time() - sec._cache["at"]
+    assert sec._TTL_S - age <= sec._FAIL_BACKOFF_S + 1     # next retry within the short backoff
+    _reset()
