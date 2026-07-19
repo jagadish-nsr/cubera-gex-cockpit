@@ -700,6 +700,16 @@ actual straddle P&L**, and it is strictly point-in-time (`r` known at entry, pay
 sign-unstable + OOS-decayed; the arc's rule is that real residuals don't monetize). If it fails any
 criterion it is a **footnote here, not a #26**. Sign-free of the GEX landmine.
 
+> **Follow-up RESULT — ran once, FAILED the bar, MP closed** (`scripts/backtest_mp_straddle.py`,
+> 1156 NIFTY days). r(t−1) → the ATM short-straddle **seller** return(t) (enter t open, exit t close;
+> median seller ret +17.2% of premium): raw IC only **+0.052**, IV-entry partial **+0.049** (→ **+0.019**
+> adding DTE). It fails every criterion — **(4) the prior-VRP partial is +0.009 ≈ 0** (control for
+> yesterday's realized÷implied and it vanishes → r IS the VRP restated, the contemporaneous-VRP leak the
+> bar was built to catch); **(2) sign is unstable** (IV terciles +0.083 → **−0.016** flips; DTE terciles
+> +0.005 → +0.120 swings); **(3) OOS decays** +0.065 → +0.029. So the vol-over-pricing residual does **not**
+> monetize into forward straddle P&L — the first-time-would-have-been-surprising outcome that, per the arc
+> (#11b/#18), did not happen. Market Profile is fully closed: a decision-support map, not an edge.
+
 ---
 
 **Scoreboard update (as of #25):** the directional nulls now also cover *combining* factors — volume
@@ -708,8 +718,9 @@ one non-noise effect, generic mean-reversion, is now shown **not tradeable even 
 (#24: loses at zero cost, mechanism refuted, dead OOS). And **Market Profile** (#25) — realized
 time-at-price levels, a genuinely different data source (where price *accepted*, not where OI is *open*) —
 nulls the same way: direction = its own mirror, and the day-type shape is subsumed by today-HL + |vanna|,
-so it adds nothing incremental (one pre-registered vol-over-pricing follow-up on forward straddle P&L is
-outstanding, prior low). The only surviving edge remains **vol/short-premium**
+so it adds nothing incremental (and the pre-registered vol-over-pricing follow-up on forward straddle P&L
+was run once and FAILED the bar — the ratio is contemporaneous VRP restated, prior-VRP partial +0.009,
+sign-unstable, OOS-decayed — so MP is fully closed). The only surviving edge remains **vol/short-premium**
 (sell rich IV S6/S11 + next-day vol-regime persistence #17). Direction is dead on Nifty at every horizon and
 every execution venue we can measure; the tool is decision-support, and the one thing that pays is being the
 vol seller, sized for the tail.
