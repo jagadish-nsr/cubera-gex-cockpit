@@ -710,6 +710,38 @@ criterion it is a **footnote here, not a #26**. Sign-free of the GEX landmine.
 > monetize into forward straddle P&L — the first-time-would-have-been-surprising outcome that, per the arc
 > (#11b/#18), did not happen. Market Profile is fully closed: a decision-support map, not an edge.
 
+**#25 addenda (two extension tests, both confirming the null from new angles):**
+
+*(a) Do our FORWARD-PRICED option levels predict where price will later ACCEPT?* — the hunch that
+options, being forward-priced, should carry information about tomorrow's POC / VAH / VAL.
+`scripts/analyze_mp_vs_options.py`, 1234 NIFTY days, EOD option levels of day t → the TPO of t+1 …
+t+H (1D/1W/2W/1M composites), everything in **deviations-from-today's-close** to kill the
+trivial-anchor trap (magnet ≈ max-pain ≈ POC ≈ close, all near spot). **NO.** The naive **close is
+the best POC predictor at every horizon** and no option level beats it: at 1D, close error 110 pts,
+**magnet 118, max_pain 125** (both WORSE), and the deviation-corrs are weak and the **wrong sign**
+(magnet −0.06, max_pain −0.10 — a faint *anti*-prediction, the opposite of "price gravitates to the
+level"), partial-beyond-today-POC ≈ −0.04/−0.06. Walls → VAH/VAL: corr ~+0.01–0.04 (no relationship);
+at 2W/1M a wall's error is marginally below a single noisy day's VAH, but that is *lower variance*,
+not prediction (corr ≈ 0.01). So the forward-priced intuition does **not** translate — option
+positioning clusters near spot too, and once the common anchor is removed the residual is ~0 with a
+faint wrong sign. Option levels are a positioning *map*, not a predictor of realized acceptance.
+
+*(b) Does the price DISTRIBUTION (POC momentum / stretch / shape / day-type) predict direction or
+reversals?* — `scripts/analyze_mp_shape_direction.py`, 1234 NIFTY days, all point-in-time (feature at
+t's close → t+1). **NO, on every construction.** POC MOMENTUM (5D %Δ) → next return IC **+0.014**,
+partial | price-momentum **+0.022** (and price-mom itself is +0.007) — POC momentum is price momentum
+restated, and neither predicts. STRETCH from value (close−POC) → next return IC **+0.020** but
+**−0.006** controlling for today's own return — no reversion-from-value. SHAPE → *direction*: all ~0
+(n_modes +0.007, tpoc +0.009, va_width −0.042). SHAPE → next-day *|move|*: `tpoc_ratio −0.146`,
+`n_modes +0.101` are real but **collapse under today-HL** (→ −0.009/−0.050) — vol-clustering restated
+(#25 again). DAY-TYPE BOXES (close vs the value area): next-day win% spans **47–55%** against a **52%
+base**, **non-monotone** (below-VAL 54, lower-VA 53, upper-VA 47, above-VAH 55) — noise. The only
+repeatable thing is that a **single-print day → a calmer next day** (0.52% vs 0.67% next |move|) — a
+legitimate *vol-regime* read (rotational→calm), which is exactly the decision-support use and exactly
+the content already in today-HL + |vanna|; it says nothing about direction. Confirms the arc: the
+distribution is a regime/vol descriptor, never a directional signal — which is why it ships as the
+labelled POC/value overlay beside the walls, not as a trigger.
+
 ---
 
 **Scoreboard update (as of #25):** the directional nulls now also cover *combining* factors — volume
