@@ -17,6 +17,7 @@ Dhan websocket feed closes this. Decision-support only — the human confirms ev
 
 from __future__ import annotations
 
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -91,6 +92,8 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .vc-lvl:hover .vc-lbl{font-weight:700}
 .simp .vc-lbl{font-size:12px;fill:var(--ink-2)}
 .simp .vc-mp{font-size:10.5px;fill:var(--ink-2)}
+.simp .vc-off{font-size:10px;opacity:.72;font-style:italic}
+.simp .vc-lvl.vc-off:hover{opacity:1}
 .simp .vc-val{font-weight:700}
 .simp .mp-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.7rem;color:var(--ink-mute);margin:6px 0 2px}
 .simp .mp-legend span{display:inline-flex;align-items:center;gap:5px}
@@ -842,20 +845,39 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
            ("Magnet", L.magnet, "var(--spark)", False, "pull"),
            ("Gamma flip", L.flip, "var(--ink-mute)", False, "γ sign flip"),
            ("Put wall", L.put_wall, "var(--go)", False, "support")]
-    prices = [h, lo, o, c] + [pr for _, pr, *_ in gex if pr is not None]
-    for pf in (today, prior, weekly):
-        if pf:
-            prices += [pf["hi"], pf["lo"], pf["poc"], pf["vah"], pf["val"]]
-    pmin, pmax = min(prices), max(prices)
-    pad = (pmax - pmin) * 0.06 or 1.0
-    pmin -= pad
-    pmax += pad
+    # ── AXIS: anchored on PRICE ACTION, never on the levels ──────────────────────────────────
+    # A far level (an expiry-day gamma flip can swing the whole FLIP_GRID_RANGE, a prior-day VA can
+    # sit entirely above today) must NOT rescale the axis — that squeezes the candle to a sliver and
+    # makes it jump every tick. So: the core span is today's range + spot + the developing profile;
+    # levels may widen it only up to STRETCH; anything past that is drawn OFF-SCALE at the edge with
+    # an ▲/▼ marker (the value is still readable, the geometry stays put).
+    MIN_SPAN_PCT, STRETCH = 0.004, 2.0         # floor at the open (range≈0); max widening by levels
+    core = [h, lo, o, c, L.spot] + ([today["hi"], today["lo"]] if today else [])
+    cmin, cmax = min(core), max(core)
+    mid = (cmin + cmax) / 2.0
+    half = max((cmax - cmin) / 2.0, L.spot * MIN_SPAN_PCT / 2.0) * 1.12
+    lim = half * STRETCH                                   # how far a level may pull the axis
+    for pr in ([pr for _, pr, *_ in gex if pr is not None]
+               + [v for pf in (prior, weekly) if pf for v in (pf["vah"], pf["val"], pf["poc"])]):
+        if abs(pr - mid) <= lim:
+            half = max(half, abs(pr - mid) * 1.04)
+    step = float(today["bin_pts"]) if today else (5.0 if L.spot < 30000 else 20.0)
+    pmin = math.floor((mid - half) / step) * step          # quantised so small ticks don't jitter it
+    pmax = math.ceil((mid + half) / step) * step
 
     def Y(v):
         return top + (pmax - v) / (pmax - pmin) * plot_h
 
+    def _clampy(v):
+        return min(max(Y(v), top), top + plot_h)
+
+    def _off(v):
+        """None if on-scale, else 'up'/'down' — the level is outside the fixed axis."""
+        return "up" if v > pmax else "down" if v < pmin else None
+
     p = [f'<svg viewBox="0 0 {W} {HT}" role="img" aria-label="market profile, candle and GEX levels">']
     mp_labels = []                                       # left value labels (dodged)
+    mp_notes = []                                        # off-scale value areas (text, no geometry)
 
     # ── LEFT: developing TPO profile bars (time-at-price) ──
     if today:
@@ -880,24 +902,43 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
         mp_labels.append((today["poc"], f'POC {f(today["poc"])}', "var(--spark)"))
 
     def _band(pf, dash, col, tag):
+        """Draw a prior/composite value area, CLIPPED to the fixed axis. If the whole band sits
+        outside today's range it is not drawn at all — just noted as 'above/below today's range',
+        so a stale VA can never stretch the scale."""
         if not pf:
             return
-        yh, yl = Y(pf["vah"]), Y(pf["val"])
+        if pf["val"] > pmax or pf["vah"] < pmin:
+            arrow = "▲" if pf["val"] > pmax else "▼"
+            side = "above" if pf["val"] > pmax else "below"
+            mp_notes.append((f'{arrow} {tag} {side} range · {f(pf["val"])}–{f(pf["vah"])}', col,
+                             pf["val"] > pmax))
+            return
+        yh, yl = _clampy(pf["vah"]), _clampy(pf["val"])
         p.append(f'<rect x="{PBX0-4}" y="{yh:.1f}" width="{MPX1-PBX0+4}" height="{max(0.0, yl-yh):.1f}" '
                  f'style="fill:{col};opacity:.05"></rect>')
         for lv_, w in ((pf["vah"], 1.0), (pf["val"], 1.0), (pf["poc"], 1.3)):
+            if _off(lv_):
+                continue                                   # a single level outside → skip its line
             yy = Y(lv_)
             p.append(f'<line x1="{PBX0-4}" y1="{yy:.1f}" x2="{MPX1}" y2="{yy:.1f}" '
                      f'style="stroke:{col};opacity:.7" stroke-width="{w}" stroke-dasharray="{dash}"></line>')
-        mp_labels.append((pf["vah"], tag, col))
+        mp_labels.append((min(pf["vah"], pmax), tag, col))
     _band(prior, "4 3", "var(--ink-mute)", "prior VA")
     _band(weekly, "1 3", "var(--warn)", "5D VA")
 
     mp_labels.sort(key=lambda t: -t[0])
     prev = -1e9
     for px, txt, col in mp_labels:
-        ly = max(Y(px), prev + 14.0); prev = ly
+        ly = max(_clampy(px), prev + 14.0); prev = ly
         p.append(f'<text class="vc-mp" x="{LBLX}" y="{ly+3.5:.1f}" text-anchor="end" '
+                 f'style="fill:{col}">{txt}</text>')
+    nu = nd = 0                                          # off-scale value areas, pinned to the edge
+    for txt, col, up in mp_notes:
+        if up:
+            ny = top + 10 + nu * 13; nu += 1
+        else:
+            ny = top + plot_h - 4 - nd * 13; nd += 1
+        p.append(f'<text class="vc-mp vc-off" x="{MPX1}" y="{ny:.1f}" text-anchor="end" '
                  f'style="fill:{col}">{txt}</text>')
 
     # ── MIDDLE: the live candle ──
@@ -917,9 +958,21 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
     lv.sort(key=lambda d: -d["px"])
     prev = -1e9
     for d in lv:
-        d["yv"] = Y(d["px"]); d["ly"] = max(d["yv"], prev + 17.0); prev = d["ly"]
+        d["dir"] = _off(d["px"])
+        d["yv"] = _clampy(d["px"])                       # off-scale levels pin to the axis edge
+        d["ly"] = max(d["yv"], prev + 17.0); prev = d["ly"]
     for d in lv:
         dash = ' stroke-dasharray="4 3"' if d["dash"] else ''
+        if d["dir"]:                                     # OFF-SCALE: an arrow chip, no rule drawn —
+            arw = "▲" if d["dir"] == "up" else "▼"       # geometry stays fixed, value stays readable
+            side = "above" if d["dir"] == "up" else "below"
+            p.append(f'<g class="vc-lvl vc-off"><title>{d["name"]} {f(d["px"])} · {d["sub"]} — '
+                     f'{side} today\'s range</title>'
+                     f'<text class="vc-lbl" x="{GX0}" y="{d["ly"]+4:.1f}">'
+                     f'<tspan style="fill:{d["col"]}">{arw}</tspan> '
+                     f'<tspan class="vc-val" style="fill:{d["col"]}">{f(d["px"])}</tspan> '
+                     f'<tspan>{d["name"]} {side}</tspan></text></g>')
+            continue
         p.append(f'<g class="vc-lvl"><title>{d["name"]} {f(d["px"])} · {d["sub"]}</title>'
                  f'<line class="vc-line" x1="{GX0}" y1="{d["yv"]:.1f}" x2="{GLADDER}" '
                  f'y2="{d["yv"]:.1f}" style="stroke:{d["col"]}" stroke-width="1.2"{dash}></line>'
