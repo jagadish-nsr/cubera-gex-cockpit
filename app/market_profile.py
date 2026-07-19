@@ -131,7 +131,8 @@ def _journal_spot(symbol: str, day: str, source: str | None):
 
 def _spot_for(symbol: str, day: str, source: str | None):
     """A day's 1-min spot: live journal first (current feed), else the Dhan intraday store."""
-    return _journal_spot(symbol, day, source) or spot_path(symbol, day)
+    s = _journal_spot(symbol, day, source)
+    return s if s is not None else spot_path(symbol, day)
 
 
 def _recent_days(symbol: str, source: str | None, before: str) -> list[str]:

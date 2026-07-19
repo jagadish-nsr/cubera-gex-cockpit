@@ -392,6 +392,25 @@ def main():
                     help="Beep + toast the moment the score first hits 45 within ~5 min of a cross "
                          "(likely to reach TRUE) and again on a Fast TRUE. Sound is best-effort — "
                          "the browser may need a click first, and auto-refresh keeps it checking.")
+        st.divider()
+        with st.expander("🎬 Replay a stored day (offline)", expanded=False):
+            from data import replay as rp
+            rdays = rp.available_days(symbol)
+            if not rdays:
+                st.caption("No stored intraday days for this index yet (backfill first).")
+            else:
+                st.checkbox("Play replay", value=False, key="simp_replay_on",
+                            help="Step a real stored day through the whole UI so you can watch the "
+                                 "candle, TPO profile, trailing windows and regime develop with the "
+                                 "market closed. Turn ON Auto-refresh to make it advance. Isolated journal.")
+                st.selectbox("Day", rdays[::-1], key="simp_replay_day")
+                st.selectbox("Speed (replay-min per tick)", [1, 5, 10, 20], index=1, key="simp_replay_speed")
+                if st.button("↺ Restart from open", width="stretch"):
+                    rp.reset(symbol)
+                    for k in ("simp_replay_idx", "simp_replay_of", "simp_hl", "simp_data"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                st.caption("Tip: turn on ⏱️ Auto-refresh (top) at 1-min to watch it play.")
         st.caption("A simple, paper-only face of the GEX engine. See docs/simple-dashboard.md.")
 
     st.markdown(CSS, unsafe_allow_html=True)
@@ -424,8 +443,35 @@ def main():
     _render_live(*args)
 
 
+def _replay_step(symbol, auto):
+    """Advance the offline replay clock one step and rebuild the snapshot from a stored day, so the
+    UI develops with time. Writes an isolated replay journal (REPLAY_DATE) the profile/footprint read."""
+    from data import replay as rp
+    rday = st.session_state.get("simp_replay_day")
+    sts = rp.stamps(symbol, rday) if rday else []
+    if not sts:
+        return
+    tag = f"{symbol}:{rday}"
+    if st.session_state.get("simp_replay_of") != tag:          # day/symbol changed -> restart clean
+        rp.reset(symbol)
+        st.session_state["simp_replay_idx"] = min(45, len(sts) - 1)
+        st.session_state["simp_replay_of"] = tag
+        st.session_state.pop("simp_hl", None)
+    idx = int(st.session_state.get("simp_replay_idx", 45))
+    if auto:                                                    # advance while auto-refresh is on
+        idx = min(idx + int(st.session_state.get("simp_replay_speed", 5)), len(sts) - 1)
+    st.session_state["simp_replay_idx"] = idx
+    upto = sts[idx]
+    rp.ensure_journal(symbol, rday, upto)
+    st.session_state["simp_data"] = rp.build_snapshot(symbol, rday, upto)
+    st.session_state["simp_asof"] = None
+
+
 def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anchor_now, idx):
-    if auto and not use_demo:
+    replay_on = bool(st.session_state.get("simp_replay_on") and st.session_state.get("simp_replay_day"))
+    if replay_on:
+        _replay_step(symbol, auto)
+    elif auto and not use_demo:
         # AUTO: a background thread does the ~12s pull off the render path; here we only READ the
         # latest published snapshot (instant, no network → no page dim). First paint (nothing
         # published yet AND no prior data) falls back to one blocking fetch so the page isn't empty.
@@ -450,7 +496,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     asof = st.session_state.get("simp_asof") or ist
     # feed transparency — which live source produced this snapshot (CLAUDE.md: make state visible)
     _src = data.source or "?"
-    _feed = ("🟢 Dhan (live)" if _src == "dhan"
+    _feed = ("🎬 Replay (stored day)" if "replay" in _src
+             else "🟢 Dhan (live)" if _src == "dhan"
              else "🟡 NSE (Dhan fallback)" if _src.startswith("nse (Dhan")
              else "🔵 NSE" if _src == "nse" else _src)
     _sched = (f"aligned to the {auto_mins:g}-min grid · as of {asof:%H:%M} IST" if auto
@@ -468,7 +515,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     # range seed / OI windows read the day, so this app feeds its own history without the
     # logger. min_gap dedups rapid refreshes and any co-running writer (shared day file).
     save_gap = max(1.0, auto_mins - 1.0) if auto else 2.0
-    _persist_snapshot(data, symbol, save_gap)
+    if "replay" not in (data.source or "").lower():           # replay writes its own journal
+        _persist_snapshot(data, symbol, save_gap)
 
     # regime mood + expected day range (points). SENSEX borrows NIFTY's |vanna| regime (its own
     # doesn't grade its move — verified; NIFTY's does at 1.73x, corr 0.988); other indices use own.
