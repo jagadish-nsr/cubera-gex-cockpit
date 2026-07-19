@@ -659,12 +659,57 @@ rank-IC but not a tradeable edge net of cost, at any Δ×h, cross-book. **Data-q
 work: the NIFTY_M and BANKNIFTY `spot` columns carry sustained pre-2025 corruption — cross-check against
 the clean NIFTY feed or restrict to Sep25+/OOS.** Sign-free of the GEX landmine.
 
+## Study #25 — does MARKET PROFILE (TPO on the underlying) add anything — direction or vol-regime — beyond today-HL + |vanna|?  → NO (direction dead under the mirror; vol content subsumed by today-HL)
+`app/market_profile.py` + `scripts/analyze_market_profile.py`. A TPO **time-at-price** profile is a
+*realized-behaviour* level (where price actually spent time), not a positioning level — and #12 found
+pinning is *stickiness, not attraction*, so a profile is plausibly the cleaner encoding of that effect
+than peak-OI. Built at native **1-min** (finer than the traditional 30-min brackets): POC = modal price
+bin, value area = the 70% time band (VAH/VAL), plus the day-type **SHAPE** stats that are the real
+content — value-area width ÷ range, distribution **mode count**, and **time-at-POC ratio** (a
+realized-vol-regime descriptor). NIFTY, **1234 clean-spot days** (2021-07→2026-07); bad-tick days
+(>12% HL) dropped. Point-in-time: today's FULL profile is known at today's close → clean for predicting
+TOMORROW; the same-day POC look-ahead trap (the #5 +0.64→+0.02 shape) is avoided by testing next-day only.
+
+- **DIRECTION — dead under the mirror rig:** prior-day POC as a next-day attractor — price closes TOWARD
+  the POC **50%** vs **50%** toward its same-distance MIRROR (POC ≈ mirror). The same null the
+  mid-zone/mirror placebos delivered in #12/#14/#16; a POC is the same geometry with a different
+  construction, and it fails the same way.
+- **VOL-REGIME (Test A) — shape has raw IC but it is a RESTATEMENT of today-HL:** today's profile shape →
+  tomorrow's realized HL%: **tpoc_ratio IC −0.316**, **n_modes +0.239** (raw, real-looking) — but both
+  **collapse under today-HL** (−0.061 / −0.048) and fully under HL+|vanna| (−0.065 / −0.012);
+  `va_width_pct` is ~0 throughout. The shape is re-encoding today's range (vol clustering, #17), not new
+  information — fails the incremental bar exactly as the build-up did in #23.
+- **VOL-PRICING (Test B) — realized value-area vs implied move, weak + unstable:** `accept_pct` (VA
+  half-width, ~1σ realized) → tomorrow HL IC **+0.309** but **−0.004 under today-HL** (it IS today's
+  range). The ratio **r = accept ÷ implied** (realized acceptance ÷ σ√τ at the open; <1 ⇒ vol
+  over-priced) is only **+0.066** raw and **sign-unstable across controls** (−0.199 | today-HL, +0.187 |
+  ATM-IV) with **OOS decay +0.092 → +0.028** — the classic decays-to-zero shape; its non-zero IV-partial
+  is today-HL's vol-clustering leaking through, not an IV-orthogonal MP signal.
+
+**Conclusion:** Market Profile on Nifty carries **no direction edge** (POC = its mirror) and **no
+vol-regime information beyond today's realized range + |vanna|** (every shape/acceptance IC collapses
+under today-HL) — a clean null, the same "statistically real residual that adds nothing incremental"
+shape as vanna-VRP (#11/#18). The levels remain a legitimate *decision-support map* (where price
+accepted), not a signal. **Pre-registered follow-up (ONE run, bar set here):** Test B measured `r`
+against tomorrow's *range* when the hypothesis was vol *over-pricing*, so the correct target is the
+**forward short-straddle P&L**, not spot-RV (the exact venue where #11's +0.11 residual died in
+#11b/#18). It SURVIVES only if — all four — the partial of `r` against the existing sell-IV/VRP signal
+is non-zero, the sign is stable across the **IV and DTE** controls, it clears **walk-forward OOS on
+actual straddle P&L**, and it is strictly point-in-time (`r` known at entry, payoff measured after) with
+**no contemporaneous-VRP leakage** (r ≈ realized÷implied ≈ the VRP itself). Prior: **low** (r already
+sign-unstable + OOS-decayed; the arc's rule is that real residuals don't monetize). If it fails any
+criterion it is a **footnote here, not a #26**. Sign-free of the GEX landmine.
+
 ---
 
-**Scoreboard update (as of #24):** the directional nulls now also cover *combining* factors — volume
+**Scoreboard update (as of #25):** the directional nulls now also cover *combining* factors — volume
 conviction (#22) and intraday momentum (#23) neither rescue nor complement the price+OI build-up — and the
 one non-noise effect, generic mean-reversion, is now shown **not tradeable even on the cheap futures leg**
-(#24: loses at zero cost, mechanism refuted, dead OOS). The only surviving edge remains **vol/short-premium**
+(#24: loses at zero cost, mechanism refuted, dead OOS). And **Market Profile** (#25) — realized
+time-at-price levels, a genuinely different data source (where price *accepted*, not where OI is *open*) —
+nulls the same way: direction = its own mirror, and the day-type shape is subsumed by today-HL + |vanna|,
+so it adds nothing incremental (one pre-registered vol-over-pricing follow-up on forward straddle P&L is
+outstanding, prior low). The only surviving edge remains **vol/short-premium**
 (sell rich IV S6/S11 + next-day vol-regime persistence #17). Direction is dead on Nifty at every horizon and
 every execution venue we can measure; the tool is decision-support, and the one thing that pays is being the
 vol seller, sized for the tail.
