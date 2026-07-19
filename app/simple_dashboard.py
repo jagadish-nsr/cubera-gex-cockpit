@@ -102,6 +102,7 @@ header[data-testid="stHeader"]{background:transparent}
   background:var(--surface-2);font-size:.74rem;line-height:1.25}
 .simp .sq.up{background:var(--go-bg)}.simp .sq.dn{background:var(--stop-bg)}
 .simp .sq .nm{color:var(--ink-2);font-weight:600}
+.simp .sq .wt{color:var(--ink-mute);font-size:.64rem;font-variant-numeric:tabular-nums}
 .simp .sq .pc{font-weight:700;font-variant-numeric:tabular-nums}
 .simp .sq.up .pc{color:var(--go)}.simp .sq.dn .pc{color:var(--stop)}
 .simp .sq.na .pc{color:var(--ink-mute)}
@@ -865,6 +866,7 @@ def _sector_strip(data):
         return ''
     ups = sum(1 for r in rows if (r.get("pct") or 0) > 0 and r["group"] == "sector")
     tot = sum(1 for r in rows if r["group"] == "sector")
+    asof = snap.get("weights_as_of", "")
     chips = []
     for r in rows:
         pct = r.get("pct")
@@ -872,12 +874,20 @@ def _sector_strip(data):
         if r["group"] == "broad":
             cls += " broad"
         val = "—" if pct is None else f"{pct:+.2f}%"
-        ttl = f'{r["label"]} {f(r.get("last"))}' if r.get("last") else r["label"]
+        wt = r.get("weight")
+        # weight is an approximation (no live feed publishes it) — the "~" is load-bearing
+        wtag = f'<span class="wt">~{wt:g}%</span>' if wt else ''
+        ttl = r["label"]
+        if r.get("last"):
+            ttl += f' {f(r["last"])}'
+        if wt:
+            ttl += f' · ~{wt:g}% of Nifty 50 (approx, {asof})'
         chips.append(f'<span class="sq {cls}" title="{ttl}"><span class="nm">{r["label"]}</span>'
-                     f'<span class="pc">{val}</span></span>')
+                     f'{wtag}<span class="pc">{val}</span></span>')
     src = snap.get("source", "")
     return (f'<div class="card sect"><div class="sect-hd"><span class="eyebrow">Sector snap · '
-            f'vs previous close</span><span class="rb-cav">{ups}/{tot} sectors green · {src}</span></div>'
+            f'vs previous close</span><span class="rb-cav">{ups}/{tot} sectors green · {src} · '
+            f'~% = approx Nifty 50 weight ({asof}), overlapping — don\'t sum</span></div>'
             f'<div class="sect-grid">{"".join(chips)}</div></div>')
 
 

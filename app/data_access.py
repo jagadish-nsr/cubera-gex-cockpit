@@ -178,11 +178,12 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         # (day_ohlc["vix"]) — no separate call. All fail-soft.
         _dhan = _prefer_dhan(live_source)
         _nse_vix = None
-        with _cf.ThreadPoolExecutor(max_workers=4) as _ex:
-            _fx = {"news": _ex.submit(fetch_news),
-                   # sector strip: NSE /allIndices states percentChange outright (one call, own
-                   # host) so it runs concurrently regardless of which feed serves the chain.
-                   "sectors": _ex.submit(fetch_sector_snap)}
+        # Sector strip: NOT on the fetch path. This returns the cached rows instantly and
+        # self-refreshes on its own 15-min background timer, so the slow-moving rotation context
+        # never competes with the chain / futures pull for time or worker threads.
+        sectors = fetch_sector_snap()
+        with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
+            _fx = {"news": _ex.submit(fetch_news)}
             if idx.regime_proxy:
                 _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source)
             if not _dhan:
@@ -191,7 +192,6 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
             rows, spot = parse_nse_option_chain(payload)
             news = _fx["news"].result()
-            sectors = _fx["sectors"].result()
             proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
             _nse_vix = _fx["vix"].result() if "vix" in _fx else None
         india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix

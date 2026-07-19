@@ -69,10 +69,23 @@ the tier reads *"Calm (mid) · via Nifty 50"* — the borrowing is always stated
 
 ### 2.2 Sector snap (the strip under the gauge)
 
-Every NSE **sector index's % change vs the previous day's close**, sorted **leaders → laggards**,
-green up / red down. The three **broad-market** indices (Nifty 50, Midcap 100, Smallcap 100) are
-outlined so you can place the index against its own breadth. The header counts how many sectors are
-green (e.g. `11/15 sectors green`) and names the feed. Hover a chip for its level.
+Each sector index's **% change vs the previous day's close**, sorted **leaders → laggards**,
+green up / red down, with its **approximate Nifty 50 weight** on the chip (`Bank ~30% +1.63%`). The
+three **broad-market** indices (Nifty 50, Midcap 100, Smallcap 100) are outlined so you can place
+the index against its own breadth. The header counts how many sectors are green (e.g. `6/11 sectors
+green`) and names the feed. Hover a chip for its level.
+
+**Only index-heavy sectors are shown.** This is a Nifty options tool, so the strip answers *"what
+is moving the index I'm trading"* — a sector with no Nifty 50 constituents can be green all day and
+change nothing about the tape. Realty, PSU Bank, Media and Infra are therefore excluded (they're
+kept in `data/sectors.EXCLUDED`, so bringing one back is a one-line change).
+
+⚠️ **The weights are approximate and hand-maintained, not a live feed.** No free NSE or Dhan
+endpoint publishes index weights (verified: `allIndices` has none, `equity-stockIndices` 404s,
+`heatmap-index` returns prices only), so they're read off the NSE factsheets — hence the `~` and
+the as-of date in the header. They drift a few points a year with rebalances: good enough for
+*"Bank is the big one"*, **not** for arithmetic. They also **overlap and must never be summed** —
+Pvt Bank ⊂ Bank, Oil & Gas ⊂ Energy, Pharma ⊂ Healthcare.
 
 **Source.** NSE `/api/allIndices` is primary — it states `percentChange` outright, so nothing is
 derived by us. Dhan `/marketfeed/quote` is the fallback, and it deliberately shows **—** rather than
@@ -80,9 +93,21 @@ a number whenever the previous close can't be established unambiguously (Dhan ha
 prev-close field and its `ohlc.close` becomes *today's* close after hours — printing 0.00% for every
 sector would be a silent lie).
 
+**Refresh: 15 min, and never on the fetch path.** The option chain and futures pull are the
+load-bearing data; sector rotation is slow-moving context, so it refreshes on its own **15-minute**
+timer on a background thread and the render always reads the cached rows instantly. It cannot delay
+a chain fetch or take a worker from it. Consequence: on a cold start the strip is absent for one
+cycle, then appears — a deliberate trade.
+
 **How to read it.**
-- **Breadth vs the index.** Nifty up while only 4/15 sectors are green = a narrow, top-heavy move —
-  usually Bank + IT carrying the index. Narrow moves are more fragile than broad ones.
+- **Weight is what makes a move matter.** A green sector at ~30% weight (Bank) explains the index;
+  a green sector at ~2% (Consumer Durables) does not. Read the weight and the % together — that's
+  why both are on the chip.
+- **Breadth vs the index.** Nifty up while only 3/11 sectors are green = a narrow, top-heavy move —
+  usually Bank + IT carrying it alone. Narrow moves are more fragile than broad ones.
+- **The classic divergence:** the heavy sectors green and the light ones red means the *index* is
+  being bought (index futures / passive flow), not the market — which is precisely the flow that
+  options positioning reacts to.
 - **Midcap/Smallcap vs Nifty 50.** Smallcaps leading is risk-on participation; smallcaps red while
   Nifty is green is defensive positioning or index-level flow (which is what options positioning
   reacts to).
