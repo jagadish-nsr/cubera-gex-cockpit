@@ -67,6 +67,33 @@ Sensex's own vanna does **not** grade its own move (0.92× — broken by the BSE
 Nifty's vanna grades Sensex at **1.73–1.87×**, and the two indices correlate **0.988**. So on Sensex
 the tier reads *"Calm (mid) · via Nifty 50"* — the borrowing is always stated, never hidden.
 
+### 2.2 Sector snap (the strip under the gauge)
+
+Every NSE **sector index's % change vs the previous day's close**, sorted **leaders → laggards**,
+green up / red down. The three **broad-market** indices (Nifty 50, Midcap 100, Smallcap 100) are
+outlined so you can place the index against its own breadth. The header counts how many sectors are
+green (e.g. `11/15 sectors green`) and names the feed. Hover a chip for its level.
+
+**Source.** NSE `/api/allIndices` is primary — it states `percentChange` outright, so nothing is
+derived by us. Dhan `/marketfeed/quote` is the fallback, and it deliberately shows **—** rather than
+a number whenever the previous close can't be established unambiguously (Dhan has no explicit
+prev-close field and its `ohlc.close` becomes *today's* close after hours — printing 0.00% for every
+sector would be a silent lie).
+
+**How to read it.**
+- **Breadth vs the index.** Nifty up while only 4/15 sectors are green = a narrow, top-heavy move —
+  usually Bank + IT carrying the index. Narrow moves are more fragile than broad ones.
+- **Midcap/Smallcap vs Nifty 50.** Smallcaps leading is risk-on participation; smallcaps red while
+  Nifty is green is defensive positioning or index-level flow (which is what options positioning
+  reacts to).
+- **Rotation, not direction.** Defensives (FMCG, Pharma, Healthcare) leading while Bank/Metal/Realty
+  lag is a risk-off tilt — a *context* read for how much you trust a continuation, not an entry.
+- **Sanity-check a news day.** If one sector is a huge outlier, the day is likely sector-news-driven
+  and the index-level GEX read is diluted.
+
+⚠️ **Nothing on this strip is a signal.** Sector rotation has never been tested for edge in this
+project — it's here as information, on the same footing as the levels map.
+
 ---
 
 ## 3. News override banner

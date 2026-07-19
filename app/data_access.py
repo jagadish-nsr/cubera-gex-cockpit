@@ -41,6 +41,7 @@ class DashboardData:
     source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
     proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
     proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
+    sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
 
 
 def _live_greeks(contracts, spot: float, lot: float) -> dict:
@@ -162,9 +163,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         india_vix = None
         usdinr = None
         news = None
+        sectors = None
     else:
         import concurrent.futures as _cf
         from data.news import fetch_news
+        from data.sectors import fetch_sector_snap
         from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
                               parse_nse_option_chain, per_strike_nearest_changes,
                               per_strike_oi)
@@ -175,8 +178,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         # (day_ohlc["vix"]) — no separate call. All fail-soft.
         _dhan = _prefer_dhan(live_source)
         _nse_vix = None
-        with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
-            _fx = {"news": _ex.submit(fetch_news)}
+        with _cf.ThreadPoolExecutor(max_workers=4) as _ex:
+            _fx = {"news": _ex.submit(fetch_news),
+                   # sector strip: NSE /allIndices states percentChange outright (one call, own
+                   # host) so it runs concurrently regardless of which feed serves the chain.
+                   "sectors": _ex.submit(fetch_sector_snap)}
             if idx.regime_proxy:
                 _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source)
             if not _dhan:
@@ -185,6 +191,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
             rows, spot = parse_nse_option_chain(payload)
             news = _fx["news"].result()
+            sectors = _fx["sectors"].result()
             proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
             _nse_vix = _fx["vix"].result() if "vix" in _fx else None
         india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
@@ -241,4 +248,5 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         usdinr=usdinr, news=news, vanna_now=gk["vanna"], charm_now=gk["charm"], dte_now=gk["dte"],
         day_ohlc=day_ohlc, source_note=source_note,
         proxy_vanna=proxy_vanna, proxy_symbol=(idx.regime_proxy if proxy_vanna is not None else None),
+        sectors=sectors,
     )

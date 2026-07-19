@@ -95,6 +95,17 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .vc-off{font-size:10px;opacity:.72;font-style:italic}
 .simp .vc-lvl.vc-off:hover{opacity:1}
 .simp .vc-val{font-weight:700}
+.simp .sect{padding:11px 14px;margin-top:10px}
+.simp .sect-hd{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.simp .sect-grid{display:flex;flex-wrap:wrap;gap:6px}
+.simp .sq{display:inline-flex;align-items:baseline;gap:7px;padding:4px 9px;border-radius:7px;
+  background:var(--surface-2);font-size:.74rem;line-height:1.25}
+.simp .sq.up{background:var(--go-bg)}.simp .sq.dn{background:var(--stop-bg)}
+.simp .sq .nm{color:var(--ink-2);font-weight:600}
+.simp .sq .pc{font-weight:700;font-variant-numeric:tabular-nums}
+.simp .sq.up .pc{color:var(--go)}.simp .sq.dn .pc{color:var(--stop)}
+.simp .sq.na .pc{color:var(--ink-mute)}
+.simp .sq.broad{border:1px solid var(--line)}
 .simp .mp-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.7rem;color:var(--ink-mute);margin:6px 0 2px}
 .simp .mp-legend span{display:inline-flex;align-items:center;gap:5px}
 .simp .mp-legend i{width:16px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}
@@ -624,6 +635,9 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
+    # sector rotation snap — what's carrying / dragging the index today (context, not a signal)
+    H.append(_sector_strip(data))
+
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, L.spot)
     actual = oh["h"] - oh["l"]
@@ -671,7 +685,9 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
              f'<br><span class="mono" style="opacity:.7">lot {idx.lot_size} · '
              f'source {data.source} · {ist:%H:%M IST}</span></div>')
     H.append('</div>')
-    st.markdown("\n".join(H), unsafe_allow_html=True)
+    # Drop empty fragments: a blank line between HTML blocks makes Streamlit's markdown treat the
+    # (indented) block that follows as a code fence — the bug that once showed raw footprint HTML.
+    st.markdown("\n".join(x for x in H if x.strip()), unsafe_allow_html=True)
 
 
 def _blast_hero(data, L, ist):
@@ -836,6 +852,33 @@ def _resolve_ohlc(data, hl, spot):
     h = max(h, o, c, spot)
     lo = min(lo, o, c, spot)
     return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c)}
+
+
+def _sector_strip(data):
+    """Sector rotation snap: every NSE sector index's % change vs the PREVIOUS day's close, sorted
+    leaders → laggards, green/red. Broad-market indices (Nifty 50 / Midcap / Smallcap) are outlined
+    so breadth is readable at a glance. Pure CONTEXT — sector rotation has never been tested for
+    edge here, so nothing on this strip is a signal."""
+    snap = getattr(data, "sectors", None) or {}
+    rows = snap.get("rows") or []
+    if not rows:
+        return ''
+    ups = sum(1 for r in rows if (r.get("pct") or 0) > 0 and r["group"] == "sector")
+    tot = sum(1 for r in rows if r["group"] == "sector")
+    chips = []
+    for r in rows:
+        pct = r.get("pct")
+        cls = "na" if pct is None else "up" if pct > 0 else "dn" if pct < 0 else ""
+        if r["group"] == "broad":
+            cls += " broad"
+        val = "—" if pct is None else f"{pct:+.2f}%"
+        ttl = f'{r["label"]} {f(r.get("last"))}' if r.get("last") else r["label"]
+        chips.append(f'<span class="sq {cls}" title="{ttl}"><span class="nm">{r["label"]}</span>'
+                     f'<span class="pc">{val}</span></span>')
+    src = snap.get("source", "")
+    return (f'<div class="card sect"><div class="sect-hd"><span class="eyebrow">Sector snap · '
+            f'vs previous close</span><span class="rb-cav">{ups}/{tot} sectors green · {src}</span></div>'
+            f'<div class="sect-grid">{"".join(chips)}</div></div>')
 
 
 def _profile_overlay(symbol, source, date_ist, live_spot, show_weekly):
