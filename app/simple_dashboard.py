@@ -369,9 +369,51 @@ def _dhan_feed_controls(symbol: str) -> None:
             st.session_state.pop("simp_hl", None)
 
 
+DOC_PATH = ROOT / "docs" / "simple-dashboard.md"
+
+
+@st.cache_data(show_spinner=False)
+def _load_doc(mtime: float) -> str:
+    """The component guide, read from docs/simple-dashboard.md (cached on its mtime, so editing
+    the file refreshes the in-app help without a restart)."""
+    return DOC_PATH.read_text(encoding="utf-8")
+
+
+def _doc_sections(md: str):
+    """Split the guide into ('## heading', body) sections, with the intro under 'Overview'."""
+    out, head, buf = [], "Overview", []
+    for line in md.splitlines():
+        if line.startswith("## "):
+            out.append((head, "\n".join(buf)))
+            head, buf = line[3:].strip(), [line]
+        else:
+            buf.append(line)
+    out.append((head, "\n".join(buf)))
+    return [(h, b) for h, b in out if b.strip()]
+
+
+def _help_page():
+    """In-app help: the full component guide + how to read every level, rendered from the same
+    markdown file that lives in docs/ (single source of truth — the doc can never drift from the
+    in-app help)."""
+    if not DOC_PATH.exists():
+        st.warning(f"Guide not found at `{DOC_PATH}`.")
+        return
+    secs = _doc_sections(_load_doc(DOC_PATH.stat().st_mtime))
+    titles = [h for h, _ in secs]
+    st.caption("📖 How to read this dashboard — untick **Help** in the sidebar to go back.")
+    pick = st.radio("Jump to", ["Everything"] + titles, horizontal=True, label_visibility="collapsed")
+    body = "\n\n".join(b for _, b in secs) if pick == "Everything" else \
+        next(b for h, b in secs if h == pick)
+    st.markdown(body)
+
+
 def main():
     with st.sidebar:
         st.header("Simple view")
+        show_help = st.checkbox("📖 Help — how to read this", value=False, key="simp_help",
+                                help="The full component guide: every panel, and when price tends "
+                                     "to respect a level vs break it (with the measured numbers).")
         symbols = list(config.INDICES)
         symbol = st.selectbox("Index", symbols, index=symbols.index(config.DEFAULT_INDEX),
                               format_func=lambda s: config.INDICES[s].label)
@@ -414,9 +456,13 @@ def main():
                         st.session_state.pop(k, None)
                     st.rerun()
                 st.caption("Tip: turn on ⏱️ Auto-refresh (top) at 1-min to watch it play.")
-        st.caption("A simple, paper-only face of the GEX engine. See docs/simple-dashboard.md.")
+        st.caption("A simple, paper-only face of the GEX engine. Full guide: 📖 Help above "
+                   "(same text as docs/simple-dashboard.md).")
 
     st.markdown(CSS, unsafe_allow_html=True)
+    if show_help:                     # help replaces the live view (no fetching while reading)
+        _help_page()
+        return
     idx = config.get_index(symbol)
 
     if symbol != st.session_state.get("simp_symbol"):
@@ -620,7 +666,9 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
-             f'you confirm every trade.<br><span class="mono" style="opacity:.7">lot {idx.lot_size} · '
+             f'you confirm every trade.<br>New here? Tick <b>📖 Help</b> in the sidebar — it explains '
+             f'every panel and when price tends to respect a level vs break it.'
+             f'<br><span class="mono" style="opacity:.7">lot {idx.lot_size} · '
              f'source {data.source} · {ist:%H:%M IST}</span></div>')
     H.append('</div>')
     st.markdown("\n".join(H), unsafe_allow_html=True)
