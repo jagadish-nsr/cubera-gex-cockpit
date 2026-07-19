@@ -90,7 +90,14 @@ header[data-testid="stHeader"]{background:transparent}
 .simp .vc-lvl:hover .vc-line{stroke-width:2.6}
 .simp .vc-lvl:hover .vc-lbl{font-weight:700}
 .simp .vc-lbl{font-size:12px;fill:var(--ink-2)}
+.simp .vc-mp{font-size:10.5px;fill:var(--ink-2)}
 .simp .vc-val{font-weight:700}
+.simp .mp-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:.7rem;color:var(--ink-mute);margin:6px 0 2px}
+.simp .mp-legend span{display:inline-flex;align-items:center;gap:5px}
+.simp .mp-legend i{width:16px;height:0;border-top-width:2px;border-top-style:solid;display:inline-block}
+.simp .mp-chip{display:inline-flex;align-items:center;gap:6px;font-size:.72rem;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--surface-2);color:var(--ink-2);margin-top:6px}
+.simp .mp-chip.agree{background:var(--go-bg);color:var(--go)}
+.simp .mp-chip.conflict{background:var(--warn-bg);color:var(--warn)}
 .simp .cc-read{font-size:.9rem;color:var(--ink);font-weight:600;margin:9px 0 2px}
 .simp .news{display:flex;gap:11px;align-items:flex-start;padding:12px 15px;border-radius:12px;background:var(--warn-bg);border:1px solid var(--warn);margin-top:14px}
 .simp .news .txt{font-size:.86rem}.simp .news .txt b{color:var(--warn)}
@@ -370,6 +377,9 @@ def main():
         auto = st.checkbox("⏱️ Auto-refresh", value=False)
         auto_mins = st.selectbox("Interval", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
                                  disabled=not auto)
+        st.checkbox("📊 5-day value (composite)", value=False, key="simp_weekly",
+                    help="Overlay the 5-day composite value area / POC (dotted) on the profile, "
+                         "alongside the prior-day value (dashed). A longer-horizon reference map.")
         _dhan_feed_controls(symbol)
         st.divider()
         st.caption("⚡ Gamma-blast")
@@ -517,14 +527,22 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
-    # today's range so far — vertical LIVE candle + level ladder on one price axis
+    # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, L.spot)
     actual = oh["h"] - oh["l"]
     spot_pos = ((L.spot - oh["l"]) / actual * 100.0) if actual > 0 else 50.0
-    candle = _range_candle(L, oh)
+    show_weekly = bool(st.session_state.get("simp_weekly"))
+    prof = _profile_overlay(symbol, data.source, date_ist, L.spot, show_weekly)
+    candle = _range_candle(L, oh, prof, show_weekly)
     read = f'{f(actual)} pts · spot {spot_pos:.0f}% up range'
     src_note = ("true day OHLC (Dhan)" if data.day_ohlc
                 else "≈ from snapshots — can miss fast spikes")
+    # regime chip: developing distribution shape × the vanna tier (a map, not a signal)
+    mp_chip = _mp_regime_chip(prof, vr)
+    mp_legend = ('<div class="mp-legend"><span><i style="border-color:var(--spark)"></i>developing '
+                 'value (POC + area)</span><span><i style="border-color:var(--ink-mute);border-top-style:dashed"></i>'
+                 'prior day</span>' + ('<span><i style="border-color:var(--warn);border-top-style:dotted"></i>'
+                 '5-day</span>' if show_weekly else '') + '</div>') if (prof and prof.get("today")) else ''
 
     # news override
     news = data.news or {}
@@ -536,10 +554,10 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
 
     # ── 2-column deck: LEFT = the tall live candle vs levels, RIGHT = positioning + the play ──
     H.append('<div class="grid2"><div class="col">')
-    H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Today — live candle vs levels</span>
-      <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}
-      <div class="cc-read">{read}</div>
-      <span class="rb-cav">{src_note}. Hover a level for its value. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
+    H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Value profile · candle · levels</span>
+      <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}{mp_legend}
+      <div class="cc-read">{read}</div>{mp_chip}
+      <span class="rb-cav">{src_note}. Left = where price ACCEPTED (a map); right = dealer levels. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
     # right column: positioning first, then the suggested play beneath it
     H.append('</div><div class="col">')
@@ -721,59 +739,148 @@ def _resolve_ohlc(data, hl, spot):
     return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c)}
 
 
-def _range_candle(L, ohlc):
-    """A TALL vertical LIVE daily candle (left) + a right-hand level ladder (call/put wall, magnet,
-    gamma flip, expiry pin, spot) sharing ONE price axis — so a level's height lines up with where
-    price sits on the candle. Hover a level to emphasise its line (pure CSS, no JS). Labels dodge
-    so clustered levels stay legible."""
+def _profile_overlay(symbol, source, date_ist, live_spot, show_weekly):
+    """Best-effort TPO overlay bundle (today developing + prior-day + 5D composite) for the candle.
+    Never raises / blocks the page — returns None if the profile can't be built (e.g. too few
+    captured bars yet)."""
+    try:
+        from app.market_profile import overlay_profiles
+        return overlay_profiles(symbol, source, date_ist, weekly=show_weekly, live_spot=live_spot)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _mp_regime_chip(prof, vr):
+    """A one-line synthesis chip: the developing distribution's shape vs the vanna tier — agree
+    (confidence) or conflict (de-size). Decision-support framing, never a direction."""
+    try:
+        from app.market_profile import profile_regime
+        reg = profile_regime((prof or {}).get("today"))
+    except Exception:  # noqa: BLE001
+        reg = None
+    if not reg:
+        return ''
+    tag = vr["tag"] if vr else "mid"
+    rotational = reg["shape"] == "single-print"
+    calm = tag == "calm"
+    if calm and rotational:
+        cls, txt = "agree", f"🟢 Calm × {reg['shape']} · pin {reg['pin']} — consistent, size the vol-sell"
+    elif calm and not rotational:
+        cls, txt = "conflict", f"🟡 Calm × {reg['shape']} — regime conflict, de-size"
+    elif (not calm) and rotational:
+        cls, txt = "conflict", f"🟡 {tag.title()} × {reg['shape']} — mixed read"
+    else:
+        cls, txt = "", f"{tag.title()} × {reg['shape']} · pin {reg['pin']}"
+    return f'<span class="mp-chip {cls}">{txt}</span>'
+
+
+def _range_candle(L, ohlc, prof=None, show_weekly=False):
+    """One shared price axis, three zones: LEFT = realized VALUE — the developing TPO profile
+    (time-at-price bars, POC + value-area coloured) with prior-day (dashed) and 5-day composite
+    (dotted, toggle) value; MIDDLE = the live candle; RIGHT = the GEX ladder (call/put wall, magnet,
+    flip, pin, spot). So 'where price accepted' (left) never collides with 'where dealers are
+    positioned' (right). Hover a GEX level to emphasise it. A map, not a signal."""
     o, h, lo, c = ohlc["o"], ohlc["h"], ohlc["l"], ohlc["c"]
-    W, HT, top, plot_h = 330, 520, 30, 458
-    cx, bw, line_x0, ladder_x, label_x = 76, 34, 46, 152, 158
-    lv_specs = [
-        ("Call wall", L.call_wall, "var(--stop)", False, "resistance"),
-        ("Expiry pin", L.max_pain, "var(--warn)", True, "max pain"),
-        ("Magnet", L.magnet, "var(--spark)", False, "pull"),
-        ("Gamma flip", L.flip, "var(--ink-mute)", False, "γ sign flip"),
-        ("Put wall", L.put_wall, "var(--go)", False, "support"),
-    ]
-    prices = [h, lo, o, c] + [p for _, p, *_ in lv_specs if p is not None]
+    W, HT, top, plot_h = 460, 560, 28, 496
+    LBLX, PBX0, PBLEN, MPX1 = 66, 74, 62, 172           # left value zone
+    cx, bw = 190, 28                                     # candle
+    GX0, GLADDER, GLABEL = 214, 320, 326                 # right GEX ladder
+    today = (prof or {}).get("today")
+    prior = (prof or {}).get("prior")
+    weekly = (prof or {}).get("weekly") if show_weekly else None
+
+    gex = [("Call wall", L.call_wall, "var(--stop)", False, "resistance"),
+           ("Expiry pin", L.max_pain, "var(--warn)", True, "max pain"),
+           ("Magnet", L.magnet, "var(--spark)", False, "pull"),
+           ("Gamma flip", L.flip, "var(--ink-mute)", False, "γ sign flip"),
+           ("Put wall", L.put_wall, "var(--go)", False, "support")]
+    prices = [h, lo, o, c] + [pr for _, pr, *_ in gex if pr is not None]
+    for pf in (today, prior, weekly):
+        if pf:
+            prices += [pf["hi"], pf["lo"], pf["poc"], pf["vah"], pf["val"]]
     pmin, pmax = min(prices), max(prices)
-    pad = (pmax - pmin) * 0.07 or 1.0
+    pad = (pmax - pmin) * 0.06 or 1.0
     pmin -= pad
     pmax += pad
 
     def Y(v):
         return top + (pmax - v) / (pmax - pmin) * plot_h
 
-    p = [f'<svg viewBox="0 0 {W} {HT}" role="img" aria-label="daily candle with GEX levels">']
-    # level lines + dodged labels FIRST, so the candle draws cleanly on top of them
-    lv = [{"name": n, "px": pr, "col": cc, "dash": dd, "sub": ss}
-          for n, pr, cc, dd, ss in lv_specs if pr is not None]
+    p = [f'<svg viewBox="0 0 {W} {HT}" role="img" aria-label="market profile, candle and GEX levels">']
+    mp_labels = []                                       # left value labels (dodged)
+
+    # ── LEFT: developing TPO profile bars (time-at-price) ──
+    if today:
+        cnt, cen, bp = today["counts"], today["centers"], today["bin_pts"]
+        maxc = float(cnt.max()) or 1.0
+        binh = max(1.0, abs(Y(cen[0] - bp / 2) - Y(cen[0] + bp / 2)))
+        for i in range(len(cnt)):
+            if cnt[i] <= 0:
+                continue
+            yv = Y(cen[i]); wdt = (cnt[i] / maxc) * PBLEN
+            if i == today["poc_i"]:
+                cl, op = "var(--spark)", 0.92
+            elif today["val_i"] <= i <= today["vah_i"]:
+                cl, op = "var(--ink-2)", 0.5
+            else:
+                cl, op = "var(--ink-mute)", 0.28
+            p.append(f'<rect x="{PBX0}" y="{yv-binh/2:.1f}" width="{wdt:.1f}" height="{binh:.1f}" '
+                     f'style="fill:{cl};opacity:{op}"></rect>')
+        yp = Y(today["poc"])
+        p.append(f'<line x1="{PBX0}" y1="{yp:.1f}" x2="{MPX1}" y2="{yp:.1f}" '
+                 f'style="stroke:var(--spark)" stroke-width="1.6"></line>')
+        mp_labels.append((today["poc"], f'POC {f(today["poc"])}', "var(--spark)"))
+
+    def _band(pf, dash, col, tag):
+        if not pf:
+            return
+        yh, yl = Y(pf["vah"]), Y(pf["val"])
+        p.append(f'<rect x="{PBX0-4}" y="{yh:.1f}" width="{MPX1-PBX0+4}" height="{max(0.0, yl-yh):.1f}" '
+                 f'style="fill:{col};opacity:.05"></rect>')
+        for lv_, w in ((pf["vah"], 1.0), (pf["val"], 1.0), (pf["poc"], 1.3)):
+            yy = Y(lv_)
+            p.append(f'<line x1="{PBX0-4}" y1="{yy:.1f}" x2="{MPX1}" y2="{yy:.1f}" '
+                     f'style="stroke:{col};opacity:.7" stroke-width="{w}" stroke-dasharray="{dash}"></line>')
+        mp_labels.append((pf["vah"], tag, col))
+    _band(prior, "4 3", "var(--ink-mute)", "prior VA")
+    _band(weekly, "1 3", "var(--warn)", "5D VA")
+
+    mp_labels.sort(key=lambda t: -t[0])
+    prev = -1e9
+    for px, txt, col in mp_labels:
+        ly = max(Y(px), prev + 14.0); prev = ly
+        p.append(f'<text class="vc-mp" x="{LBLX}" y="{ly+3.5:.1f}" text-anchor="end" '
+                 f'style="fill:{col}">{txt}</text>')
+
+    # ── MIDDLE: the live candle ──
+    cc = "var(--go)" if c >= o else "var(--stop)"
+    yb0, yb1 = Y(max(o, c)), Y(min(o, c))
+    p.append(f'<line x1="{cx}" y1="{Y(h):.1f}" x2="{cx}" y2="{Y(lo):.1f}" style="stroke:{cc}" '
+             f'stroke-width="2.4"></line><rect x="{cx-bw/2}" y="{yb0:.1f}" width="{bw}" '
+             f'height="{max(2.0, yb1-yb0):.1f}" rx="3" style="fill:{cc};opacity:.9;stroke:{cc};stroke-width:1"></rect>')
+    ys = Y(L.spot)
+    p.append(f'<polygon points="{cx-bw/2-11},{ys:.1f} {cx-bw/2-3},{ys-5:.1f} {cx-bw/2-3},{ys+5:.1f}" '
+             f'style="fill:var(--ink)"></polygon>')
+
+    # ── RIGHT: GEX ladder ──
+    lv = [{"name": n, "px": pr, "col": cl, "dash": dd, "sub": ss}
+          for n, pr, cl, dd, ss in gex if pr is not None]
     lv.append({"name": "Spot", "px": L.spot, "col": "var(--ink)", "dash": False, "sub": "now"})
     lv.sort(key=lambda d: -d["px"])
     prev = -1e9
     for d in lv:
-        d["yv"] = Y(d["px"])
-        d["ly"] = max(d["yv"], prev + 17.0)     # dodge labels down so clustered levels stay legible
-        prev = d["ly"]
+        d["yv"] = Y(d["px"]); d["ly"] = max(d["yv"], prev + 17.0); prev = d["ly"]
     for d in lv:
         dash = ' stroke-dasharray="4 3"' if d["dash"] else ''
         p.append(f'<g class="vc-lvl"><title>{d["name"]} {f(d["px"])} · {d["sub"]}</title>'
-                 f'<line class="vc-line" x1="{line_x0}" y1="{d["yv"]:.1f}" x2="{ladder_x}" '
+                 f'<line class="vc-line" x1="{GX0}" y1="{d["yv"]:.1f}" x2="{GLADDER}" '
                  f'y2="{d["yv"]:.1f}" style="stroke:{d["col"]}" stroke-width="1.2"{dash}></line>'
-                 f'<line class="vc-line" x1="{ladder_x}" y1="{d["yv"]:.1f}" x2="{label_x}" '
+                 f'<line class="vc-line" x1="{GLADDER}" y1="{d["yv"]:.1f}" x2="{GLABEL}" '
                  f'y2="{d["ly"]:.1f}" style="stroke:{d["col"]}" stroke-width="1.2"></line>'
-                 f'<text class="vc-lbl" x="{label_x+6}" y="{d["ly"]+4:.1f}">'
+                 f'<text class="vc-lbl" x="{GLABEL+6}" y="{d["ly"]+4:.1f}">'
                  f'<tspan class="vc-val" style="fill:{d["col"]}">{f(d["px"])}</tspan> '
                  f'<tspan>{d["name"]}</tspan></text></g>')
-    col = "var(--go)" if c >= o else "var(--stop)"
-    yb0, yb1 = Y(max(o, c)), Y(min(o, c))
-    p.append(f'<line x1="{cx}" y1="{Y(h):.1f}" x2="{cx}" y2="{Y(lo):.1f}" style="stroke:{col}" '
-             f'stroke-width="2.4"></line><rect x="{cx-bw/2}" y="{yb0:.1f}" width="{bw}" '
-             f'height="{max(2.0, yb1-yb0):.1f}" rx="3" style="fill:{col};opacity:.9;stroke:{col};stroke-width:1"></rect>')
-    ys = Y(L.spot)
-    p.append(f'<polygon points="{cx-bw/2-11},{ys:.1f} {cx-bw/2-3},{ys-5:.1f} {cx-bw/2-3},{ys+5:.1f}" '
-             f'style="fill:var(--ink)"></polygon></svg>')
+    p.append('</svg>')
     return f'<figure class="vc">{"".join(p)}</figure>'
 
 
