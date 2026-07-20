@@ -78,3 +78,21 @@ def test_spot_ticker_drops_a_stale_tick():
     spot_ticker._STORE["NIFTY"] = {"ohlc": {"ltp": 1.0}, "at": time.time(), "err": None}
     assert spot_ticker.latest("NIFTY")["ltp"] == 1.0
     spot_ticker._STORE.clear()
+
+
+# ── the Refresh button must not block the render thread ────────────────────────────────────────
+def test_force_is_non_blocking_and_wakes_the_fetcher():
+    from app import live_fetcher as lf
+    lf._FORCE.clear()
+    t = time.time()
+    lf.force("NIFTY")
+    assert (time.time() - t) < 0.05          # returns immediately — no fetch on this thread
+    assert lf._event("NIFTY").is_set()       # the background loop will wake and pull off-grid
+    lf._event("NIFTY").clear()
+
+
+def test_event_is_stable_per_symbol():
+    from app import live_fetcher as lf
+    lf._FORCE.clear()
+    assert lf._event("NIFTY") is lf._event("NIFTY")
+    assert lf._event("NIFTY") is not lf._event("SENSEX")

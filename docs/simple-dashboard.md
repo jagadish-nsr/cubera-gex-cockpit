@@ -50,6 +50,15 @@ so a repaint costs **~0.26 s** instead of the ~14 s that used to shade the whole
 | Sector snap | 15 min | background thread |
 | Repaint (reads the above) | 3 s | render thread, ~0.26 s |
 
+**The sidebar controls repainting, not fetching.** The background lanes run either way:
+- **🔴 Live updates** (default **on**) — keep the page updating in place. Untick to **freeze** the
+  screen; the feed keeps running behind it, so unfreezing shows current data immediately.
+- **Levels refresh (1/3/5 min)** — how often the *option chain* is pulled (walls, magnet, flip,
+  footprint, greeks). It does **not** affect spot/candle (10 s), futures (3 min) or sectors (15 min).
+- **🔄 Refresh** — a non-blocking *request* for an off-grid chain pull. It adopts the newest
+  published snapshot instantly (~0.3 s) and the fresh one lands within seconds. It used to be a
+  ~14 s blocking fetch that dimmed the page.
+
 The candle therefore moves on a **10-second** beat while the levels stay as of the last chain pull
 (the header timestamp says when). That split is deliberate: the fast lane moves the *price*, not
 the *map* — recomputing walls from a fresh spot against stale positioning would be a silent

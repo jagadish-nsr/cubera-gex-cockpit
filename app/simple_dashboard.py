@@ -431,10 +431,21 @@ def main():
         symbol = st.selectbox("Index", symbols, index=symbols.index(config.DEFAULT_INDEX),
                               format_func=lambda s: config.INDICES[s].label)
         use_demo = st.checkbox("Demo data (offline)", value=False)
-        refresh = st.button("🔄 Refresh", type="primary", width="stretch")
-        auto = st.checkbox("⏱️ Auto-refresh", value=False)
-        auto_mins = st.selectbox("Interval", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
-                                 disabled=not auto)
+        refresh = st.button("🔄 Refresh", type="primary", width="stretch",
+                            help="Request a fresh chain pull now. Non-blocking — the background "
+                                 "fetcher does the work and the page picks it up within seconds.")
+        # Controls REPAINTING, not fetching: the background lanes run either way. Defaults ON now
+        # that a repaint costs ~0.26s (it defaulted off when a refresh dimmed the page for ~14s).
+        auto = st.checkbox("🔴 Live updates", value=True,
+                           help="Keep the page updating in place: spot & candle every 10s, levels "
+                                "on the interval below. Untick to freeze the screen (the feed "
+                                "keeps running in the background).")
+        auto_mins = st.selectbox("Levels refresh", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
+                                 disabled=not auto,
+                                 help="How often the OPTION CHAIN is pulled — walls, magnet, flip, "
+                                      "footprint, greeks. Spot and the day candle update every 10s "
+                                      "regardless of this setting.")
+        st.caption("Spot & candle 10s · levels on the interval · page repaints every 3s")
         st.checkbox("📊 5-day value (composite)", value=False, key="simp_weekly",
                     help="Overlay the 5-day composite value area / POC (dotted) on the profile, "
                          "alongside the prior-day value (dashed). A longer-horizon reference map.")
@@ -533,18 +544,23 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     replay_on = bool(st.session_state.get("simp_replay_on") and st.session_state.get("simp_replay_day"))
     if replay_on:
         _replay_step(symbol, auto)
-    elif auto and not use_demo:
-        # AUTO: a background thread does the ~12s pull off the render path; here we only READ the
-        # latest published snapshot (instant, no network → no page dim). First paint (nothing
-        # published yet AND no prior data) falls back to one blocking fetch so the page isn't empty.
+    elif not use_demo:
+        # The background thread does the ~12s pull off the render path and runs whether or not
+        # live updates are on — so the render only ever READS the latest published snapshot
+        # (instant, no network → no page dim), and 🔄 Refresh is a non-blocking *request* for an
+        # off-grid pull rather than a 14s blocking fetch. The toggle controls REPAINTING, not
+        # fetching. Only a cold start (nothing published AND no prior data) falls back to one
+        # blocking fetch, so the first paint isn't empty.
         from app import live_fetcher
         live_fetcher.ensure(symbol, use_demo, None, int(auto_mins * 60), _FETCH_LEAD_S)
+        if refresh:
+            live_fetcher.force(symbol)
         pub = live_fetcher.latest(symbol)
         if pub and pub.get("data") is not None:
             st.session_state["simp_data"] = pub["data"]
             st.session_state["simp_asof"] = pub["as_of"]
             st.session_state["simp_err"] = pub.get("err")
-        elif refresh or st.session_state.get("simp_data") is None:
+        elif st.session_state.get("simp_data") is None:
             _sync_fetch(symbol, use_demo)
     elif refresh or st.session_state.get("simp_data") is None:
         _sync_fetch(symbol, use_demo)
@@ -562,8 +578,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
              else "🟢 Dhan (live)" if _src == "dhan"
              else "🟡 NSE (Dhan fallback)" if _src.startswith("nse (Dhan")
              else "🔵 NSE" if _src == "nse" else _src)
-    _sched = (f"aligned to the {auto_mins:g}-min grid · as of {asof:%H:%M} IST" if auto
-              else "manual refresh")
+    _sched = (f"levels on the {auto_mins:g}-min grid · as of {asof:%H:%M} IST · spot 10s" if auto
+              else "⏸ frozen (live updates off) · feed still running")
     st.caption(f"Feed: {_feed} · {_sched} · fetched {ist:%H:%M:%S}")
     if getattr(data, "source_note", None):
         st.caption(f"⚠ {data.source_note}")

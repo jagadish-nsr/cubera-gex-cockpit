@@ -17,12 +17,27 @@ from datetime import datetime, timedelta, timezone
 _STORE: dict = {}       # symbol -> {"data", "as_of", "fetched", "err"}
 _THREADS: dict = {}     # symbol -> Thread
 _CFG: dict = {}         # symbol -> {"use_demo", "live_source", "interval", "lead"}
+_FORCE: dict = {}       # symbol -> Event, set to ask for an off-grid pull now
 _LOCK = threading.Lock()
 
 
 def latest(symbol: str):
     """The most recently published snapshot dict for ``symbol`` (or None if none yet)."""
     return _STORE.get(symbol)
+
+
+def _event(symbol: str) -> threading.Event:
+    with _LOCK:
+        ev = _FORCE.get(symbol)
+        if ev is None:
+            ev = _FORCE[symbol] = threading.Event()
+        return ev
+
+
+def force(symbol: str) -> None:
+    """Ask the background thread to pull NOW instead of waiting for the next grid boundary.
+    Returns immediately — the manual Refresh button uses this so it never blocks the render."""
+    _event(symbol).set()
 
 
 def _loop(symbol: str) -> None:
@@ -40,8 +55,11 @@ def _loop(symbol: str) -> None:
             if nb <= served:
                 nb += interval
             stamp, wait = nb, max(0.0, nb - lead - now)
+        ev = _event(symbol)
         if wait:
-            time.sleep(wait)
+            if ev.wait(wait):           # a manual Refresh landed → pull now, off the grid
+                stamp = time.time()
+        ev.clear()
         try:
             data = load_dashboard(None, bool(cfg.get("use_demo")), symbol, cfg.get("live_source"))
             as_of = datetime.fromtimestamp(stamp, tz=timezone.utc) + timedelta(hours=5, minutes=30)
