@@ -385,10 +385,17 @@ call-writer OI change  −12%    Wall ahead  1.4×
   the option chain put the cross anywhere inside a 1–5 min window, up to ~3 min of error in a
   5-minute test. Sub-minute ignitions now read as e.g. `⚡ Fast TRUE (+2.5m)`.
 
-  ⚠️ **The score still moves at the chain cadence** — it needs writer OI and premiums, which only
-  the chain carries. So ignition *timing* is ~10 s accurate while the *fuel* reading is 1–5 min
-  old. Before the spot lane warms up (or on the NSE feed) it falls back to the premium pair and the
-  note reads `timed at chain-cadence`.
+  **The score now moves at ~10 s too.** The blast only ever watches 2–3 strikes (the anchored ATM
+  and its neighbours), and Dhan's `/marketfeed/quote` returns `oi` and `last_price` for *specific
+  option contracts* — so 4–6 contracts come back in **one ~0.5 s call** instead of a ~12 s
+  full-chain pull. Writer covering, premium expansion and the wall-ahead read therefore refresh on
+  the same 10 s beat as the cross. The card states both resolutions: `cross timed 10s ·
+  OI/premium 10s`.
+
+  Falls back to the chain values whenever the lane has nothing fresh (cold start, a 429, the NSE
+  feed, replay) — the note then reads `chain-cadence`, so you always know which you're looking at.
+  Dhan's OI is share-denominated, which is harmless here: the score uses ΔOI/OI **ratios**, so no
+  lot conversion is involved (unlike ₹ turnover, where that assumption caused the 65× bug).
 - **🔔 Alert** — beep + toast once when the score first hits 45 within ~5 min of a cross, and again
   on a Fast TRUE. Sound is best-effort (browser autoplay); the toast is the reliable channel.
 - **FAKE fades toward the crossover strike**, not the magnet — the fade logic is direction-correct.

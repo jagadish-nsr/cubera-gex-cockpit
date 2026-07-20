@@ -778,10 +778,33 @@ def _blast_hero(data, L, ist, spot_live=None):
     mc, mp = strike_premiums(data.oi_strikes, a["magnet"])
     aco, apo = strike_oi(data.oi_strikes, a["atm"])
     mco, mpo = strike_oi(data.oi_strikes, a["magnet"])
-    bl["points"][ist.strftime("%H:%M")] = {"atm_call": ac, "atm_put": ap, "magnet_call": mc,
-                                           "magnet_put": mp, "atm_coi": aco, "atm_poi": apo}
+
+    # ── 10s OPTION lane: OI + premium for just the watched strikes (one ~0.5s quote), so the
+    # score's FUEL reading (writer covering, premium expansion) no longer sits at the chain's
+    # 1-5 min beat. Falls back to the chain values whenever the lane has nothing fresh.
+    tq = None
+    if str(data.source or "").lower().startswith("dhan") and "replay" not in str(data.source).lower():
+        try:
+            from app import blast_ticker
+            watch = [a["atm"], next_strike(data.oi_strikes, a["atm"], "up"),
+                     next_strike(data.oi_strikes, a["atm"], "down")]
+            blast_ticker.ensure(data.symbol, [k for k in watch if k], interval_s=_BLAST_TICK_S)
+            tq = blast_ticker.latest(data.symbol)
+        except Exception:  # noqa: BLE001
+            tq = None
+    fast_fuel = bool(tq and a["atm"] in tq)
+    if fast_fuel:
+        cell = tq[a["atm"]]
+        ac = cell.get("call_ltp", ac); ap = cell.get("put_ltp", ap)
+        aco = cell.get("call_oi", aco); apo = cell.get("put_oi", apo)
+        _pb = (ist.second // _BLAST_TICK_S) * _BLAST_TICK_S
+        _pkey = f"{ist:%H:%M}:{_pb:02d}"          # 10s points → the score moves at 10s
+    else:
+        _pkey = ist.strftime("%H:%M")             # chain cadence
+    bl["points"][_pkey] = {"atm_call": ac, "atm_put": ap, "magnet_call": mc,
+                           "magnet_put": mp, "atm_coi": aco, "atm_poi": apo}
     series = [{"time_ist": t, "call": v.get("atm_call"), "put": v.get("atm_put")}
-              for t, v in sorted(bl["points"].items())]
+              for t, v in sorted(bl["points"].items(), key=lambda kv: _secs(kv[0]) or 0)]
     # 10s spot lane, bucketed so repaints (every 3s) don't bloat the series
     if spot_live:
         _b = (ist.second // _BLAST_TICK_S) * _BLAST_TICK_S
@@ -805,13 +828,17 @@ def _blast_hero(data, L, ist, spot_live=None):
     last = evs[-1]
     direction = "up" if last["to"] == "call_rich" else "down"
     _cut = _secs(last["time_ist"]) or 0
-    win = [(t, v) for t, v in sorted(bl["points"].items()) if (_secs(t) or 0) >= _cut]
+    win = [(t, v) for t, v in sorted(bl["points"].items(), key=lambda kv: _secs(kv[0]) or 0)
+           if (_secs(t) or 0) >= _cut]
     crossed = [{"call_oi": v.get("atm_coi"), "put_oi": v.get("atm_poi"),
                 "call_ltp": v.get("atm_call"), "put_ltp": v.get("atm_put")} for _, v in win]
     ahead = None
     nb = next_strike(data.oi_strikes, K, direction)
     if nb is not None:
-        nco, npo = strike_oi(data.oi_strikes, nb)
+        if fast_fuel and nb in (tq or {}):
+            nco, npo = tq[nb].get("call_oi"), tq[nb].get("put_oi")
+        else:
+            nco, npo = strike_oi(data.oi_strikes, nb)
         ahead = [{"call_oi": nco, "put_oi": npo, "call_ltp": None, "put_ltp": None}]
     sc = blast_score(direction, crossed, ahead) or {}
     score = sc.get("score", 0)
@@ -845,6 +872,7 @@ def _blast_hero(data, L, ist, spot_live=None):
     k_true_min = next((_m(times[j]) - t0 for j, s in enumerate(traj)
                        if s >= 60 and t0 is not None), None)
     _res = "10s" if fine else "chain-cadence"
+    _fuel = "10s" if fast_fuel else "chain-cadence"
     def _mm(x):                      # +2.5m under a minute of resolution, +3m above
         return f"{x:.1f}".rstrip("0").rstrip(".") if x is not None and x < 10 else f"{x:.0f}"
     if k_true_min is not None and k_true_min <= 5:
@@ -899,7 +927,8 @@ def _blast_hero(data, L, ist, spot_live=None):
       <div class="meter"><div class="head"><span>True-run score</span>
         <span><b class="mono">{score}</b> / 100 · {grade}</span></div>
         <div class="track"><div class="fill" style="width:{max(3,min(score,100))}%;background:{fillc}"></div></div>
-        <div class="ticks"><span>Fake / pin</span><span>Toss-up</span><span>Real run</span></div></div>
+        <div class="ticks"><span>Fake / pin</span><span>Toss-up</span><span>Real run</span></div>
+        <div class="win-cap">cross timed {_res} · OI/premium {_fuel}</div></div>
       {timing_html}
       <div class="blast-stats">
         <div><small>{sc.get("itm_side","")}-writer OI change</small>

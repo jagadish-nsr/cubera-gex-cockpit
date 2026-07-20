@@ -175,6 +175,109 @@ def _num(x):
 _FUT_CACHE: dict = {}       # symbol -> {day, seg, ids (near->far), near_expiry}
 
 
+_OPT_CACHE: dict = {}                     # symbol -> {day, seg, expiry, by_strike:{K:{CE:id,PE:id}}}
+
+
+def _option_contracts(symbol: str = "NIFTY", expiry_iso: str | None = None) -> dict:
+    """securityIds for the NEAREST-expiry index options of ``symbol``, indexed by strike, from the
+    Dhan scrip master — CACHED per day (the master is a ~30MB download).
+
+    This is what makes a **targeted** 2-contract quote possible: with the ids in hand, one
+    ``/marketfeed/quote`` returns OI + premium for exactly the strikes being watched, instead of
+    pulling the whole chain (4 throttled calls, ~12s) just to read two rows.
+
+    Returns {day, seg, expiry, by_strike: {strike: {"CE": id, "PE": id}}}; empty on any failure.
+    """
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    c = _OPT_CACHE.get(symbol)
+    if c and c.get("day") == today and (expiry_iso is None or c.get("expiry") == expiry_iso):
+        return c
+    out = {"day": today, "seg": None, "expiry": None, "by_strike": {}}
+    try:
+        import io
+        import pandas as pd
+        import requests
+        from data.dhan import _SCRIP_MASTER
+        df = pd.read_csv(io.BytesIO(requests.get(_SCRIP_MASTER, timeout=90).content), low_memory=False)
+        o = df[df["SEM_INSTRUMENT_NAME"] == "OPTIDX"].copy()
+        # the tradable name lives in SEM_CUSTOM_SYMBOL ("NIFTY 21 JUL 24200 CALL"); SM_SYMBOL_NAME
+        # is blank for index options, so match on the custom symbol's leading token.
+        o["root"] = o["SEM_CUSTOM_SYMBOL"].astype(str).str.split().str[0].str.upper()
+        o = o[o["root"] == symbol.upper()]
+        o["exp"] = pd.to_datetime(o["SEM_EXPIRY_DATE"], errors="coerce")
+        o = o[o["exp"].dt.date >= _dt.date.today()]
+        if o.empty:
+            _OPT_CACHE[symbol] = out
+            return out
+        exp = pd.Timestamp(expiry_iso) if expiry_iso else o["exp"].min()
+        n = o[o["exp"].dt.date == exp.date()]
+        out["seg"] = f"{str(n.iloc[0]['SEM_EXM_EXCH_ID']).upper()}_FNO"
+        out["expiry"] = exp.date().isoformat()
+        by: dict = {}
+        for r in n.itertuples(index=False):
+            try:
+                k = float(r.SEM_STRIKE_PRICE)
+            except (TypeError, ValueError):
+                continue
+            side = str(r.SEM_OPTION_TYPE).upper()
+            if side in ("CE", "PE"):
+                by.setdefault(k, {})[side] = int(r.SEM_SMST_SECURITY_ID)
+        out["by_strike"] = by
+    except Exception:  # noqa: BLE001
+        pass
+    _OPT_CACHE[symbol] = out
+    return out
+
+
+def fetch_option_quotes(symbol: str, strikes, expiry_iso: str | None = None,
+                        timeout: int = 15) -> dict | None:
+    """OI + premium for a FEW specific strikes in ONE ``/marketfeed/quote`` call (~0.5s), instead of
+    the whole option chain (one throttled ``/optionchain`` call per expiry, ~12s total).
+
+    Built for the gamma blast, which only ever watches 2-3 strikes: the anchored ATM plus the wall
+    one strike ahead. That makes a ~10s OI/premium cadence affordable — the score's *fuel* reading
+    (writer covering + premium expansion) no longer has to sit at the chain's 1-5 min beat.
+
+    Verified live (20-Jul-2026): an NSE_FNO quote for two option ids returns ``oi`` (in SHARES, like
+    the rest of the Dhan feed — 7,129,460 = 109,684 lots × 65), ``last_price``, ``volume`` and
+    ``last_trade_time``. Returns {strike: {call_oi, put_oi, call_ltp, put_ltp}} + ``as_of``, or None.
+    """
+    c = _option_contracts(symbol, expiry_iso)
+    if not c.get("seg") or not c.get("by_strike"):
+        return None
+    ids, where = [], {}
+    for k in strikes:
+        pair = c["by_strike"].get(float(k)) or {}
+        for side in ("CE", "PE"):
+            sid = pair.get(side)
+            if sid:
+                ids.append(sid)
+                where[str(sid)] = (float(k), side)
+    if not ids:
+        return None
+    try:
+        r = _post("/marketfeed/quote", {c["seg"]: ids}, timeout)
+        if not r.ok:
+            return None
+        cells = (r.json() or {}).get("data", {}).get(c["seg"], {})
+        out: dict = {"as_of": None, "expiry": c["expiry"]}
+        for sid, cell in cells.items():
+            if sid not in where or not cell:
+                continue
+            k, side = where[sid]
+            row = out.setdefault(k, {})
+            pre = "call" if side == "CE" else "put"
+            row[f"{pre}_oi"] = _num(cell.get("oi"))
+            row[f"{pre}_ltp"] = _num(cell.get("last_price"))
+            ts = _trade_time(cell)
+            if ts:
+                out["as_of"] = ts.strftime("%Y-%m-%d %H:%M:%S")
+        return out if len(out) > 2 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _future_contracts(symbol: str = "NIFTY") -> dict:
     """Serial-month index-futures securityIds + the F&O segment for ``symbol`` (NSE_FNO for
     NIFTY/BankNifty, BSE_FNO for SENSEX), resolved from the Dhan scrip master and CACHED per day
