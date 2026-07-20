@@ -93,7 +93,10 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
         if not r.ok:
             return None
         seg_d = (r.json() or {}).get("data", {}).get(seg, {})
-        cell = seg_d.get(str(scrip)) or (next(iter(seg_d.values())) if seg_d else None)
+        # Only the REQUESTED scrip. This used to fall back to `next(iter(seg_d.values()))`, which on
+        # a partial response silently returned a DIFFERENT index's OHLC (India VIX rides the same
+        # quote) — a wrong day-range for the candle, presented as fact. Fail closed instead.
+        cell = seg_d.get(str(scrip))
         if not cell:
             return None
         ohlc = next((cell[k] for k in _OHLC_KEYS if k in cell), {}) or {}

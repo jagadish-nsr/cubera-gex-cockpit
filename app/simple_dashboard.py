@@ -647,7 +647,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     prof = _profile_overlay(symbol, data.source, date_ist, L.spot, show_weekly)
     candle = _range_candle(L, oh, prof, show_weekly)
     read = f'{f(actual)} pts · spot {spot_pos:.0f}% up range'
-    src_note = ("true day OHLC (Dhan)" if data.day_ohlc
+    # reflects what was actually USED — a stale/unverifiable feed OHLC is rejected in _resolve_ohlc
+    src_note = ("true day OHLC (feed)" if oh.get("true_ohlc")
                 else "≈ from snapshots — can miss fast spikes")
     # regime chip: developing distribution shape × the vanna tier (a map, not a signal)
     mp_chip = _mp_regime_chip(prof, vr)
@@ -841,19 +842,35 @@ def _blast_hero(data, L, ist):
       </div>{chart}</div>'''
 
 
+_OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
+
+
 def _resolve_ohlc(data, hl, spot):
-    """Today's candle OHLC. Prefers Dhan's TRUE day OHLC (accurate high/low); falls back to the
-    snapshot-seeded low/high + open with the live spot as the running close. Unions the live spot
-    so an in-progress candle never clips it."""
+    """Today's candle OHLC. Prefers the feed's TRUE day OHLC (accurate high/low); falls back to the
+    snapshot-seeded low/high + open. Two invariants, both learned from a real glitch where the
+    candle printed green up to ~24,300 while spot was 24,182:
+
+    1. **The close IS the live spot.** A developing candle's close is the current price. The feed's
+       ``close`` field is the *session* close — the PREVIOUS session's until today's ticks land — so
+       using it drew a body up to a price that never traded today (and flipped the candle green).
+    2. **Distrust an unverifiable OHLC block.** The quote can still describe the previous session
+       around the open. Its own ``ltp`` is the tell: if that disagrees with the chain's underlying
+       (or is missing, so we can't check), the whole block is from another session — drop it and use
+       our own captured high/low, which is always today. Unioning with spot cannot save it: a stale
+       HIGH survives the union and is exactly what stretched the candle."""
     d = data.day_ohlc or {}
-    o, h, lo, c = d.get("open"), d.get("high"), d.get("low"), d.get("close")
+    ltp = d.get("ltp")
+    fresh = (ltp is not None and spot and abs(float(ltp) - float(spot)) / float(spot) <= _OHLC_TOL)
+    if not fresh:
+        d = {}                                   # different session / unverifiable → don't trust it
+    o, h, lo = d.get("open"), d.get("high"), d.get("low")
     o = o if o is not None else hl.get("open", spot)
     h = h if h is not None else hl["hi"]
     lo = lo if lo is not None else hl["lo"]
-    c = c if c is not None else spot
+    c = spot                                     # invariant 1: running close == current price
     h = max(h, o, c, spot)
     lo = min(lo, o, c, spot)
-    return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c)}
+    return {"o": float(o), "h": float(h), "l": float(lo), "c": float(c), "true_ohlc": bool(d)}
 
 
 def _sector_strip(data):
@@ -1315,6 +1332,13 @@ def _play_card(vr, data, L, idx):
       a fence (§4d). Not advice.</div></div>'''
 
 
+def _oi_unit(source) -> str:
+    """Which unit this feed counts OI in. NSE publishes CONTRACTS (lots); Dhan publishes SHARES
+    (lots × lot_size — verified: live Dhan NIFTY OI divides exactly by 65, never by 75). The ₹
+    turnover multiplier depends on it, so it is read from the source rather than assumed."""
+    return "shares" if str(source or "").lower().startswith("dhan") else "lots"
+
+
 def _footprint_html(data, L, idx, ist, is_expiry):
     from app.oi_footprint import build_footprint, oi_weighted_levels, window_footprint
     from app.timeseries import load_strikes_day, oistrikes_dir_for
@@ -1333,9 +1357,10 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     # rolling-window strip (current expiry only, from today's per-strike captures)
     day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol, directory=_sdir)
     now_hm = ist.hour * 60 + ist.minute
+    unit = _oi_unit(data.source)          # Dhan OI is in SHARES, NSE in LOTS — the ₹ multiplier differs
     rows = "".join(_opt_window_row(lbl, m,
                    window_footprint(day_df, m, L.spot, band, now_hm=now_hm,
-                                    lot_size=getattr(idx, "lot_size", None)), is_expiry)
+                                    lot_size=getattr(idx, "lot_size", None), oi_unit=unit), is_expiry)
                    for lbl, m in _WINDOWS)
     cap = ('⚠ Near expiry the 5/15-min reads churn (settlement) — lean on 30/60-min. @ = top strike.'
            if is_expiry else '₹ turnover (ΔOI×premium×lot), current expiry · @ = strike taking the '
@@ -1345,7 +1370,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
 
     # where the biggest ₹ of FRESH writing is landing today (single strike, since open) — user ask
     sow = window_footprint(day_df, 600, L.spot, band, now_hm=now_hm,
-                           lot_size=getattr(idx, "lot_size", None))
+                           lot_size=getattr(idx, "lot_size", None), oi_unit=unit)
     peak_row = ""
     if sow and sow.get("peak_strike") and sow.get("unit") == "inr":
         # writing vs buying (premium direction) changes the meaning entirely:

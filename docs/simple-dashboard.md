@@ -183,8 +183,15 @@ price is being **rejected** everywhere it goes.
   hold, yesterday's agreement is void."*
 
 ### 4.2 MIDDLE — the live candle
-Standard OHLC, green if close ≥ open. **▲ = current spot.** On a Dhan feed this is the true day
-OHLC; on NSE it's assembled from snapshots (the caption says which).
+Standard OHLC, green if close ≥ open. **▲ = current spot.** The caption says whether the day's
+high/low came from the feed's true OHLC or was assembled from our snapshots.
+
+**The candle's close is always the live spot**, and a feed OHLC block whose own `ltp` disagrees
+with the chain's underlying is **rejected outright** (it falls back to our captured high/low).
+Both rules exist because of a real glitch: around the open the quote can still describe the
+*previous* session, which once drew a green body up to ~24,300 while spot was 24,182 — a price
+that never traded that day. If you ever see the candle disagree with spot again, that's a bug,
+not a feature; report it.
 
 ### 4.3 RIGHT — the GEX level ladder
 Hover any level for `name · value · what it is`.
@@ -260,6 +267,14 @@ writing → resistance**, not bullish buying. That's why the writing/buying spli
 
 Each row is the **current expiry's** OI change over that trailing window, counting **adds only**
 (unwinds clipped to zero), with the dominant side needing ≥60% of adds or it reads *Balanced*.
+The ₹ figure is **turnover** = ΔOI × premium × contract multiplier.
+
+⚠️ **Feeds count OI differently** — NSE publishes **lots (contracts)**, Dhan publishes **shares**
+(lots × lot size; verified — every live Dhan NIFTY OI divides exactly by 65 and never by 75). The ₹
+multiplier is therefore the lot size on NSE and **1** on Dhan, where the size is already baked in.
+This was wrong until 2026-07-20 and **overstated every ₹ figure on the Dhan feed by 65×**; the two
+feeds now produce identical ₹ from the same book (a test asserts it). Relative comparisons within a
+window were never affected — only the absolute rupee amounts.
 
 **How to read it.**
 - This is **flow**, not level — *"where is money arriving right now"*, a different question from

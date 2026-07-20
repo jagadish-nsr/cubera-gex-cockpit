@@ -169,7 +169,8 @@ def intraday_premium_change(day_df: pd.DataFrame) -> dict:
 
 def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = None,
                      band_pts: float | None = None, now_hm: int | None = None,
-                     min_frac: float = 0.20, lot_size: float | None = None) -> dict | None:
+                     min_frac: float = 0.20, lot_size: float | None = None,
+                     oi_unit: str = "lots") -> dict | None:
     """Net **current-expiry** OI build over the TRAILING ``minutes`` window, near spot.
 
     For each strike, the window's OI change is ``doi_near(latest) − doi_near(ref)`` where
@@ -184,11 +185,17 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
     reads "thin". Direction: ``net = put_add − call_add``; the dominant side must hold
     ``≥ min_frac`` of total adds else the label is "balanced". Returns None if < 2 snapshots.
 
-    If ``lot_size`` is given AND the ``call_ltp``/``put_ltp`` columns are present, each strike's
-    add is weighted by its **TURNOVER** = ΔOI × premium × lot (the ₹ notional of the fresh
-    writing, using the latest premium) instead of raw contract counts — a truer read of where
-    the *money* is building (10k lots of a 5-pt option ≪ 5k lots of a 100-pt option). ``unit``
-    is then "inr" (net is ₹), else "lots".
+    If a lot size / OI unit is known AND the ``call_ltp``/``put_ltp`` columns are present, each
+    strike's add is weighted by its **TURNOVER** = ΔOI × premium × (contract multiplier) — the ₹
+    notional of the fresh writing, using the latest premium — instead of raw contract counts, a
+    truer read of where the *money* is building (10k lots of a 5-pt option ≪ 5k lots of a 100-pt
+    option). ``unit`` is then "inr" (net is ₹), else "lots".
+
+    ⚠ ``oi_unit`` matters and the feeds disagree: **NSE publishes OI in LOTS (contracts)** while
+    **Dhan publishes it in SHARES** (lots × lot_size — verified: every live Dhan NIFTY OI divides
+    exactly by 65 and never by 75). So the ₹ multiplier is ``lot_size`` for "lots" and **1.0** for
+    "shares" — the size is already baked in. Getting this wrong overstates every ₹ figure by a
+    whole lot size (65× on NIFTY), which is what it did on the Dhan feed before this was split.
 
     Each strike's build is split by the premium's DIRECTION (price+OI matrix) into four flows —
     call-writing / call-buying / put-writing / put-buying — so "calls building" isn't blindly read as
@@ -244,9 +251,12 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         except (KeyError, TypeError, ValueError):
             return None
 
-    # TURNOVER weighting (₹ notional = ΔOI × premium × lot) when a lot size + premiums are given
-    turn = bool(lot_size) and {"call_ltp", "put_ltp"} <= set(day_df.columns)
+    # TURNOVER weighting (₹ notional = ΔOI × premium × contract multiplier). The multiplier is the
+    # lot size only when OI is counted in LOTS; Dhan's share-denominated OI already includes it.
     has_prem = {"call_ltp", "put_ltp"} <= set(day_df.columns)
+    shares = str(oi_unit).lower() == "shares"
+    oi_mult = 1.0 if shares else (float(lot_size) if lot_size else None)
+    turn = oi_mult is not None and has_prem
 
     def _kind(now, ref):
         # OI up + premium UP = long (buying); else = writing. Flat/unknown -> writing (India norm).
@@ -272,7 +282,7 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         if cb is not None and ca is not None:
             dc = cb - ca
             if dc > 0:
-                contrib = dc * ((cltp_n or 0.0) * lot_size) if turn else dc
+                contrib = dc * ((cltp_n or 0.0) * oi_mult) if turn else dc
                 ck = _kind(cltp_n, cltp_r)
                 buckets["cw" if ck == "write" else "cl"] += contrib
                 if contrib > peak_val:
@@ -280,7 +290,7 @@ def window_footprint(day_df: pd.DataFrame, minutes: float, spot: float | None = 
         if pb is not None and pa is not None:
             dp = pb - pa
             if dp > 0:
-                contrib = dp * ((pltp_n or 0.0) * lot_size) if turn else dp
+                contrib = dp * ((pltp_n or 0.0) * oi_mult) if turn else dp
                 pk = _kind(pltp_n, pltp_r)
                 buckets["pw" if pk == "write" else "pl"] += contrib
                 if contrib > peak_val:
