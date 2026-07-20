@@ -97,7 +97,9 @@ def main() -> None:
         _print("No crossings."); return
     df["era"] = df["day"].map(expiry_era)
     ever = df["k_true"].notna()
-    aft = df[df["tod"] >= 13 * 60 + 45]
+    from app.gammablast import afternoon_cut
+    cut_m, cut_lbl = afternoon_cut()
+    aft = df[df["tod"] >= cut_m]
 
     _print(f"\ncrossings: {len(df):,} ({df['day'].nunique()} days) · reached TRUE ≤{SEARCH}m: "
            f"{100*ever.mean():.0f}% · median time-to-TRUE: {df.loc[ever,'k_true'].median():.0f} min")
@@ -122,10 +124,10 @@ def main() -> None:
             _print(f"  {lbl:<16} {len(g):>5} | {mp.median():>7.2f}× {100*(mp>=good).mean():>5.0f}% "
                    f"{100*(mp>=2).mean():>4.0f}% {ca.median():>+8.3f}%")
     _bucket(df, "(2) Post-trigger outcome by time-to-TRUE — ALL 0-DTE crossings:")
-    _bucket(aft, "(2b) same — 0-DTE AFTERNOON (≥13:45):")
+    _bucket(aft, f"(2b) same — 0-DTE AFTERNOON (≥{cut_lbl}):")
 
     # (3) EARLY-SCORE cutoff: does the score at 3 min foretell reaching TRUE / a good blast?
-    _print("\n(3) Early read — score at 3 MIN → P(reach TRUE ≤15m) and good-blast rate (0-DTE afternoon):")
+    _print(f"\n(3) Early read — score at 3 MIN → P(reach TRUE ≤15m) and good-blast rate (0-DTE afternoon ≥{cut_lbl}):")
     _print(f"  {'score@3min band':<18} {'n':>5} {'reachTRUE':>10} {'≤5m':>6} | "
            f"{'good≥'+format(good,'g')+'×':>8}  (of reached)")
     bands = [("<25 (dead)", -1, 25), ("25-34", 25, 35), ("35-44 WEAK-lo", 35, 45),
@@ -141,7 +143,7 @@ def main() -> None:
         pg = f"{100*(mp>=good).mean():.0f}%" if len(mp) else "  —"
         _print(f"  {lbl:<18} {len(g):>5} {p_reach:>9.0f}% {p_fast:>5.0f}% | {pg:>8}")
 
-    _print("\n(4) 0-DTE afternoon by expiry-structure era — ≤5-min-TRUE rate & its good-blast:")
+    _print(f"\n(4) 0-DTE afternoon (≥{cut_lbl}) by expiry-structure era — ≤5-min-TRUE rate & its good-blast:")
     _print(f"    {'era':<42} {'n':>5} {'≤5m-TRUE':>9} {'good≥'+format(good,'g')+'×':>9}")
     for e in era_order(aft["era"].unique()):
         sub = aft[aft["era"] == e]

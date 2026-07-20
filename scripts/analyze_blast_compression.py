@@ -31,7 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-CUT = "13:45"
+import os
+CUT = os.environ.get("BLAST_AFT_CUT", "13:45").strip()   # blast-window split; env-overridable (e.g. 14:30)
 
 
 def _print(s: str = "") -> None:

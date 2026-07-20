@@ -14,8 +14,23 @@ direction (that depends on the UNVALIDATED India dealer sign — see CLAUDE.md).
 
 from __future__ import annotations
 
+import os
+
 # |call - put| within this many points counts as "at the crossover" (spot ≈ K).
 CROSS_TOL_PTS = 5.0
+
+# The 0-DTE "blast window" starts here — the afternoon cut the retail gamma-blast play lives in.
+# Studies historically froze it at 13:45 (the 1:45pm ATM anchor). Overridable via the env var
+# BLAST_AFT_CUT='HH:MM' so the whole study suite can be re-run at a different freeze (e.g. 14:30)
+# from one place, without editing each script's default. Returns (minutes_since_midnight, label).
+BLAST_AFT_CUT_DEFAULT = "13:45"
+
+
+def afternoon_cut():
+    """(minutes_since_midnight, 'HH:MM') for the blast-window start; env BLAST_AFT_CUT overrides."""
+    s = os.environ.get("BLAST_AFT_CUT", BLAST_AFT_CUT_DEFAULT).strip()
+    h, m = s.split(":")
+    return int(h) * 60 + int(m), f"{int(h):02d}:{int(m):02d}"
 
 
 def atm_strike(strikes, spot: float):
