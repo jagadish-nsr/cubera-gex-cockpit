@@ -314,6 +314,7 @@ def _fut_badge(label):
     return cls, ic, (label or "—").title()
 
 
+_SPOT_TICK_S = 10.0     # fast SPOT lane: one cheap index quote every 10s, off the render thread
 _POLL_S = 3             # fragment repaint poll while auto — a pure in-memory read of the last
                         # published snapshot (NO network here), so repaints are instant / no dim.
 _FETCH_LEAD_S = 15      # background fetcher starts the pull this many s BEFORE each clock boundary
@@ -603,12 +604,26 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     # restart recovers the whole session, not just spots seen since this process started),
     # then keep extending with the live spot. Still snapshot-cadence — see caveat.
     date_ist = ist.strftime("%Y-%m-%d")
+    # FAST SPOT LANE: the chain costs ~12-15s, but the index quote is one ~0.5s call, so the candle
+    # tracks price on its own ~10s beat. Levels stay as of the chain pull (the header says when) —
+    # this moves the price, not the map.
+    tick = None
+    _src_l = str(data.source or "").lower()          # Dhan-only lane; replay/demo keep chain spot
+    if _is_live(data) and _src_l.startswith("dhan") and "replay" not in _src_l:
+        try:
+            from app import spot_ticker
+            spot_ticker.ensure(symbol, _SPOT_TICK_S)
+            tick = spot_ticker.latest(symbol)
+        except Exception:  # noqa: BLE001
+            tick = None
+    spot_live = float(tick["ltp"]) if (tick and tick.get("ltp")) else float(L.spot)
+    spot_now = spot_live
     hl = st.session_state.get("simp_hl")
     if hl is None or hl.get("day") != date_ist:
         from app.timeseries import oistrikes_dir_for
-        hl = _seed_hl(symbol, date_ist, L.spot, oistrikes_dir_for(data.source))
+        hl = _seed_hl(symbol, date_ist, spot_live, oistrikes_dir_for(data.source))
         st.session_state["simp_hl"] = hl
-    hl["lo"] = min(hl["lo"], L.spot); hl["hi"] = max(hl["hi"], L.spot)
+    hl["lo"] = min(hl["lo"], spot_live); hl["hi"] = max(hl["hi"], spot_live)
 
     vix = data.india_vix or {}
     if vix.get("last") is not None:
@@ -632,7 +647,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
                 f'<b class="mono">≈ {f(exp_pts)} pts</b>' if exp_pts else
                 '<span class="tier">Expected range</span><br>building…')
     H.append(f'''<div class="gauge card"><div class="spot"><div class="eyebrow">Spot</div>
-      <div class="val mono">{f(L.spot)}</div><div class="chg mono">{vtxt}</div></div>
+      <div class="val mono">{f(spot_now)}</div><div class="chg mono">{vtxt}</div></div>
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
@@ -640,12 +655,12 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append(_sector_strip(data))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
-    oh = _resolve_ohlc(data, hl, L.spot)
+    oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
     actual = oh["h"] - oh["l"]
-    spot_pos = ((L.spot - oh["l"]) / actual * 100.0) if actual > 0 else 50.0
+    spot_pos = ((spot_live - oh["l"]) / actual * 100.0) if actual > 0 else 50.0
     show_weekly = bool(st.session_state.get("simp_weekly"))
-    prof = _profile_overlay(symbol, data.source, date_ist, L.spot, show_weekly)
-    candle = _range_candle(L, oh, prof, show_weekly)
+    prof = _profile_overlay(symbol, data.source, date_ist, spot_live, show_weekly)
+    candle = _range_candle(L, oh, prof, show_weekly, spot_live=spot_live)
     read = f'{f(actual)} pts · spot {spot_pos:.0f}% up range'
     # reflects what was actually USED — a stale/unverifiable feed OHLC is rejected in _resolve_ohlc
     src_note = ("true day OHLC (feed)" if oh.get("true_ohlc")
@@ -845,7 +860,7 @@ def _blast_hero(data, L, ist):
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
 
 
-def _resolve_ohlc(data, hl, spot):
+def _resolve_ohlc(data, hl, spot, day_ohlc=None):
     """Today's candle OHLC. Prefers the feed's TRUE day OHLC (accurate high/low); falls back to the
     snapshot-seeded low/high + open. Two invariants, both learned from a real glitch where the
     candle printed green up to ~24,300 while spot was 24,182:
@@ -859,7 +874,7 @@ def _resolve_ohlc(data, hl, spot):
        captured high/low, which is always today. Unioning with spot cannot save a stale HIGH.
        When no timestamp is available (older payloads, replay) fall back to an ``ltp``-vs-spot
        sanity check rather than trusting blindly."""
-    d = data.day_ohlc or {}
+    d = day_ohlc or data.day_ohlc or {}     # prefer the fast spot tick when one is available
     as_of = d.get("as_of")
     if as_of:                                    # authoritative: the feed's own trade timestamp
         today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
@@ -961,13 +976,14 @@ def _mp_regime_chip(prof, vr):
     return f'<span class="mp-chip {cls}">{txt}</span>'
 
 
-def _range_candle(L, ohlc, prof=None, show_weekly=False):
+def _range_candle(L, ohlc, prof=None, show_weekly=False, spot_live=None):
     """One shared price axis, three zones: LEFT = realized VALUE — the developing TPO profile
     (time-at-price bars, POC + value-area coloured) with prior-day (dashed) and 5-day composite
     (dotted, toggle) value; MIDDLE = the live candle; RIGHT = the GEX ladder (call/put wall, magnet,
     flip, pin, spot). So 'where price accepted' (left) never collides with 'where dealers are
     positioned' (right). Hover a GEX level to emphasise it. A map, not a signal."""
     o, h, lo, c = ohlc["o"], ohlc["h"], ohlc["l"], ohlc["c"]
+    spot = float(spot_live) if spot_live else float(L.spot)   # fast lane price for the marker
     W, HT, top, plot_h = 486, 560, 28, 496
     # left gutter sized for the widest value label ("5D VAH 24,250" ≈ 78px at 10.5px type) — the
     # labels are anchored END at LBLX, so a narrow gutter clips them off the viewBox.
@@ -990,16 +1006,16 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
     # levels may widen it only up to STRETCH; anything past that is drawn OFF-SCALE at the edge with
     # an ▲/▼ marker (the value is still readable, the geometry stays put).
     MIN_SPAN_PCT, STRETCH = 0.004, 2.0         # floor at the open (range≈0); max widening by levels
-    core = [h, lo, o, c, L.spot] + ([today["hi"], today["lo"]] if today else [])
+    core = [h, lo, o, c, spot] + ([today["hi"], today["lo"]] if today else [])
     cmin, cmax = min(core), max(core)
     mid = (cmin + cmax) / 2.0
-    half = max((cmax - cmin) / 2.0, L.spot * MIN_SPAN_PCT / 2.0) * 1.12
+    half = max((cmax - cmin) / 2.0, spot * MIN_SPAN_PCT / 2.0) * 1.12
     lim = half * STRETCH                                   # how far a level may pull the axis
     for pr in ([pr for _, pr, *_ in gex if pr is not None]
                + [v for pf in (prior, weekly) if pf for v in (pf["vah"], pf["val"], pf["poc"])]):
         if abs(pr - mid) <= lim:
             half = max(half, abs(pr - mid) * 1.04)
-    step = float(today["bin_pts"]) if today else (5.0 if L.spot < 30000 else 20.0)
+    step = float(today["bin_pts"]) if today else (5.0 if spot < 30000 else 20.0)
     pmin = math.floor((mid - half) / step) * step          # quantised so small ticks don't jitter it
     pmax = math.ceil((mid + half) / step) * step
 
@@ -1095,14 +1111,14 @@ def _range_candle(L, ohlc, prof=None, show_weekly=False):
     p.append(f'<line x1="{cx}" y1="{Y(h):.1f}" x2="{cx}" y2="{Y(lo):.1f}" style="stroke:{cc}" '
              f'stroke-width="2.4"></line><rect x="{cx-bw/2}" y="{yb0:.1f}" width="{bw}" '
              f'height="{max(2.0, yb1-yb0):.1f}" rx="3" style="fill:{cc};opacity:.9;stroke:{cc};stroke-width:1"></rect>')
-    ys = Y(L.spot)
+    ys = Y(spot)
     p.append(f'<polygon points="{cx-bw/2-11},{ys:.1f} {cx-bw/2-3},{ys-5:.1f} {cx-bw/2-3},{ys+5:.1f}" '
              f'style="fill:var(--ink)"></polygon>')
 
     # ── RIGHT: GEX ladder ──
     lv = [{"name": n, "px": pr, "col": cl, "dash": dd, "sub": ss}
           for n, pr, cl, dd, ss in gex if pr is not None]
-    lv.append({"name": "Spot", "px": L.spot, "col": "var(--ink)", "dash": False, "sub": "now"})
+    lv.append({"name": "Spot", "px": spot, "col": "var(--ink)", "dash": False, "sub": "now"})
     lv.sort(key=lambda d: -d["px"])
     prev = -1e9
     for d in lv:
@@ -1339,6 +1355,75 @@ def _play_card(vr, data, L, idx):
       a fence (§4d). Not advice.</div></div>'''
 
 
+_FUT_CAP: dict = {}                 # symbol -> epoch of the last futures capture (claimed, not done)
+_FUT_GAP_S = 180.0                  # 3 min between captures, matching the old min_gap_minutes=3
+_DAY_CACHE: dict = {}               # (kind, key...) -> (epoch, frame)
+_DAY_TTL_S = 20.0                   # day files only change when a capture lands (every 1-3 min)
+
+
+def _cached_day(kind, key, loader, ttl=_DAY_TTL_S):
+    """Micro-cache for the day CSV reads. The fragment repaints every few seconds but these files
+    only change when a capture lands, so re-parsing them on every repaint is pure waste."""
+    import time as _t
+    k = (kind, *key)
+    hit = _DAY_CACHE.get(k)
+    now = _t.time()
+    if hit and (now - hit[0]) < ttl:
+        return hit[1]
+    val = loader()
+    _DAY_CACHE[k] = (now, val)
+    return val
+
+
+def _futures_day_cached(date_ist, symbol, fdir):
+    from app.futures_buildup import load_futures_intraday_day
+    return _cached_day("fut", (date_ist, symbol, str(fdir)),
+                       lambda: load_futures_intraday_day(date_ist, symbol, directory=fdir))
+
+
+def _strikes_day_cached(date_ist, symbol, sdir):
+    from app.timeseries import load_strikes_day
+    return _cached_day("str", (date_ist, symbol, str(sdir)),
+                       lambda: load_strikes_day(date_ist, symbol, directory=sdir))
+
+
+def _capture_futures_bg(symbol, source, fetched_at):
+    """Capture the futures snapshot on a BACKGROUND thread, and only when it is actually due.
+
+    This used to run inline in ``_futures_html``: ``capture_futures_snapshot`` fetches FIRST and
+    lets ``append_futures_snapshot`` apply the min-gap AFTER, so every single repaint paid a live
+    Dhan round-trip (measured 7.1s with the scrip-master load + a 429 backoff) and then usually
+    threw the result away. At a 3s fragment poll that is what shaded the page constantly.
+
+    Now the gap is checked BEFORE any network call, the slot is claimed before the thread starts
+    (so overlapping repaints can't double-fire), and the render only ever READS the day file."""
+    import threading
+    import time as _t
+    now = _t.time()
+    if now - _FUT_CAP.get(symbol, 0.0) < _FUT_GAP_S:
+        return
+    _FUT_CAP[symbol] = now                                   # claim the slot up-front
+    dhan_feed = str(source or "").lower().startswith("dhan")
+
+    def _run():
+        try:
+            from app.futures_buildup import capture_futures_snapshot, futures_intraday_dir_for
+            from app.timeseries import in_nse_session
+            if not in_nse_session(fetched_at):               # never write a frozen post-close row
+                return
+            fdir = futures_intraday_dir_for(source)
+            if dhan_feed:
+                from data.dhan_live import fetch_futures_dhan
+                capture_futures_snapshot(symbol, fetch_fn=fetch_futures_dhan,
+                                         parse_fn=lambda p, s: p, min_gap_minutes=3.0, directory=fdir)
+            else:
+                capture_futures_snapshot(symbol, min_gap_minutes=3.0, directory=fdir)
+        except Exception:  # noqa: BLE001 - capture is best-effort, never surfaces
+            pass
+
+    threading.Thread(target=_run, daemon=True, name=f"fut-capture-{symbol}").start()
+
+
 def _oi_unit(source) -> str:
     """Which unit this feed counts OI in. NSE publishes CONTRACTS (lots); Dhan publishes SHARES
     (lots × lot_size — verified: live Dhan NIFTY OI divides exactly by 65, never by 75). The ₹
@@ -1348,7 +1433,7 @@ def _oi_unit(source) -> str:
 
 def _footprint_html(data, L, idx, ist, is_expiry):
     from app.oi_footprint import build_footprint, oi_weighted_levels, window_footprint
-    from app.timeseries import load_strikes_day, oistrikes_dir_for
+    from app.timeseries import oistrikes_dir_for
     if not _is_live(data) or not data.oi_strikes:
         return ''
     _sdir = oistrikes_dir_for(data.source)          # read the trailing windows from the SAME feed's journal
@@ -1362,7 +1447,7 @@ def _footprint_html(data, L, idx, ist, is_expiry):
     lv = oi_weighted_levels(data.oi_strikes, L.spot, band) or {}   # validated S/R (standing OI)
 
     # rolling-window strip (current expiry only, from today's per-strike captures)
-    day_df = load_strikes_day(ist.strftime("%Y-%m-%d"), idx.symbol, directory=_sdir)
+    day_df = _strikes_day_cached(ist.strftime("%Y-%m-%d"), idx.symbol, _sdir)
     now_hm = ist.hour * 60 + ist.minute
     unit = _oi_unit(data.source)          # Dhan OI is in SHARES, NSE in LOTS — the ₹ multiplier differs
     rows = "".join(_opt_window_row(lbl, m,
@@ -1420,26 +1505,15 @@ def _fut_window_row(lbl, minutes, win, is_expiry):
 
 
 def _futures_html(data, symbol, ist, is_expiry):
-    from app.futures_buildup import (capture_futures_snapshot, futures_intraday_dir_for,
-                                    intraday_futures_buildup, load_futures_intraday_day)
+    from app.futures_buildup import futures_intraday_dir_for, intraday_futures_buildup
     if not _is_live(data):
         return ''
     date_ist = ist.strftime("%Y-%m-%d")
     flab = config.get_index(symbol).label                 # "Nifty 50" / "Bank Nifty" / "Sensex"
     fdir = futures_intraday_dir_for(data.source)          # source-separated journal
-    dhan_feed = str(data.source or "").lower().startswith("dhan")
-    try:                                  # best-effort live snapshot (in-session only), then read the day
-        from app.timeseries import in_nse_session
-        if in_nse_session(data.fetched_at):   # don't write a frozen post-close row
-            if dhan_feed:                     # Dhan-native: near-month + serial-month aggregate quote
-                from data.dhan_live import fetch_futures_dhan
-                capture_futures_snapshot(symbol, fetch_fn=fetch_futures_dhan,
-                                         parse_fn=lambda p, s: p, min_gap_minutes=3.0, directory=fdir)
-            else:
-                capture_futures_snapshot(symbol, min_gap_minutes=3.0, directory=fdir)
-    except Exception:  # noqa: BLE001
-        pass
-    day_df = load_futures_intraday_day(date_ist, symbol, directory=fdir)
+    # Capture runs OFF the render thread and only when due — the render just reads the day file.
+    _capture_futures_bg(symbol, data.source, data.fetched_at)
+    day_df = _futures_day_cached(date_ist, symbol, fdir)
     since = intraday_futures_buildup(day_df)
     wins = {m: _futures_window(day_df, m) for _, m in _WINDOWS}
     if not since and not any(wins.values()):

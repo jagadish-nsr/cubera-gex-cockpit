@@ -37,6 +37,24 @@ can never be mistaken for live.
 - **Aligned to the grid** — auto-refresh fires on wall-clock boundaries (13:45:00, 13:48:00 …), with
   a ~15 s pre-fetch lead so the snapshot *is* the boundary. The pull runs on a background thread, so
   the page never dims while it fetches.
+
+### 1.2 Refresh lanes (why the page no longer dims)
+Nothing on the render path touches the network — the page only ever reads memory or a cached file,
+so a repaint costs **~0.26 s** instead of the ~14 s that used to shade the whole screen.
+
+| Lane | Cadence | Runs on |
+|---|---|---|
+| **Spot / day candle** | **~10 s** — one cheap index quote (~0.5 s) | background thread |
+| Option chain (levels, walls, footprint) | 1 / 3 / 5 min, clock-aligned | background thread |
+| Futures capture | 3 min, **gap checked before fetching** | background thread |
+| Sector snap | 15 min | background thread |
+| Repaint (reads the above) | 3 s | render thread, ~0.26 s |
+
+The candle therefore moves on a **10-second** beat while the levels stay as of the last chain pull
+(the header timestamp says when). That split is deliberate: the fast lane moves the *price*, not
+the *map* — recomputing walls from a fresh spot against stale positioning would be a silent
+inconsistency. ~10 s is comfortably inside Dhan's quote quota; a rate-limited poll simply leaves
+the previous tick in place, and a tick older than 45 s is dropped rather than shown as live.
 - **fetched HH:MM:SS** — the actual chain timestamp. If this stops advancing, the feed is stuck.
 
 ---
