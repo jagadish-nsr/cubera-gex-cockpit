@@ -108,6 +108,36 @@ def detect_crossovers(series: list[dict], tol: float = CROSS_TOL_PTS) -> list[di
     return events
 
 
+def detect_crossovers_spot(series: list[dict], strike: float) -> list[dict]:
+    """The SAME crossover, timed off SPOT instead of the premium pair.
+
+    Put-call parity: ``call − put = S − K·e^(−rT)``, so the sign change of (call − put) *is* spot
+    crossing the (discounted) strike. On expiry day T≈0, so S vs K is exact to within carry — and
+    this is an expiry-day feature. Sign-free, no dealer-sign assumption, same as the premium form.
+
+    Why it exists: the premium series moves at the OPTION-CHAIN cadence (1-5 min), so a cross could
+    only ever be timed to ±one chain pull — which blurs the §7d "Fast TRUE within 5 min of the
+    cross" classification that the whole read hangs on. Spot has its own ~10s lane, so feeding it
+    here times the cross an order of magnitude more precisely for free.
+
+    ``series`` items: {"time_ist": str, "spot": float}. Returns the same shape as
+    ``detect_crossovers`` — [{"time_ist", "from", "to"}] with "call_rich" (spot above K) /
+    "put_rich" (spot below K), so callers are unchanged.
+    """
+    pts = [(p["time_ist"], float(p["spot"]) - float(strike))
+           for p in series if p.get("spot") is not None]
+    events: list[dict] = []
+    prev_side = None
+    for t, diff in pts:
+        side = "call_rich" if diff > 0 else "put_rich" if diff < 0 else None
+        if side is None:
+            continue
+        if prev_side is not None and side != prev_side:
+            events.append({"time_ist": t, "from": prev_side, "to": side})
+        prev_side = side
+    return events
+
+
 # --- True-vs-fake blast scoring -------------------------------------------------
 # As spot crosses a fixed strike K, the option side that goes ITM is the writers'
 # pain side (calls when spot rises through K, puts when spot falls through K). A

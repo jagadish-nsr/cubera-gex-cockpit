@@ -377,6 +377,18 @@ call-writer OI change  −12%    Wall ahead  1.4×
 - **Timing** (from the 1-min study, §7d of gamma-blast-research) — **⚡ Fast TRUE (≤5 min)** is the
   best setup; *Slow TRUE* is confirmed but weaker; *Watching* needs score ≥45 by ~3 min;
   **No ignition (>5 min)** usually fizzles → lean fade.
+
+  **The cross is timed at ~10 s**, and the note says so (`timed at 10s`). Put-call parity means
+  spot crossing the strike *is* the premium crossover (`call − put = S − K·e^(−rT)`, and T≈0 on
+  expiry), so the fast spot lane times it without any extra API call. This matters because the
+  whole §7d read is *"did the score reach TRUE within 5 minutes **of the cross**"* — timing it off
+  the option chain put the cross anywhere inside a 1–5 min window, up to ~3 min of error in a
+  5-minute test. Sub-minute ignitions now read as e.g. `⚡ Fast TRUE (+2.5m)`.
+
+  ⚠️ **The score still moves at the chain cadence** — it needs writer OI and premiums, which only
+  the chain carries. So ignition *timing* is ~10 s accurate while the *fuel* reading is 1–5 min
+  old. Before the spot lane warms up (or on the NSE feed) it falls back to the premium pair and the
+  note reads `timed at chain-cadence`.
 - **🔔 Alert** — beep + toast once when the score first hits 45 within ~5 min of a cross, and again
   on a Fast TRUE. Sound is best-effort (browser autoplay); the toast is the reliable channel.
 - **FAKE fades toward the crossover strike**, not the magnet — the fade logic is direction-correct.

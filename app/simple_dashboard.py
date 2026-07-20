@@ -710,7 +710,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
     H.append('<h2 class="lbl">Suggested play</h2>')
-    H.append(_blast_hero(data, L, ist) if show_blast else _play_card(vr, data, L, idx))
+    H.append(_blast_hero(data, L, ist, spot_live) if show_blast else _play_card(vr, data, L, idx))
     H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
@@ -724,11 +724,31 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     st.markdown("\n".join(x for x in H if x.strip()), unsafe_allow_html=True)
 
 
-def _blast_hero(data, L, ist):
-    """Expiry-day gamma-blast verdict, reusing app.gammablast with session-accumulated series."""
+_BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover
+
+
+def _secs(t):
+    """'HH:MM' or 'HH:MM:SS' -> seconds since midnight (the blast now mixes both resolutions)."""
+    try:
+        parts = [int(x) for x in str(t).split(":")]
+    except (ValueError, AttributeError):
+        return None
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+
+def _blast_hero(data, L, ist, spot_live=None):
+    """Expiry-day gamma-blast verdict, reusing app.gammablast with session-accumulated series.
+
+    Two resolutions, deliberately: the CROSS is timed off the ~10s spot lane (parity says spot
+    crossing K is the same event as the premium crossover), while the SCORE keeps the option-chain
+    cadence because it needs writer OI + premiums. So ignition timing is ~10s-accurate even though
+    the fuel reading is 1-5 min old."""
     try:
         from app.gammablast import (blast_score, crossover_state, detect_crossovers,
-                                    next_strike, pick_anchors, strike_oi, strike_premiums)
+                                    detect_crossovers_spot, next_strike, pick_anchors, strike_oi,
+                                    strike_premiums)
     except Exception:  # noqa: BLE001
         return '<div class="card hero"><div class="eyebrow">Gamma-blast</div><p class="instruct">Blast engine unavailable.</p></div>'
     if not _is_live(data) or not data.oi_strikes:
@@ -762,7 +782,17 @@ def _blast_hero(data, L, ist):
                                            "magnet_put": mp, "atm_coi": aco, "atm_poi": apo}
     series = [{"time_ist": t, "call": v.get("atm_call"), "put": v.get("atm_put")}
               for t, v in sorted(bl["points"].items())]
-    evs = detect_crossovers(series)
+    # 10s spot lane, bucketed so repaints (every 3s) don't bloat the series
+    if spot_live:
+        _b = (ist.second // _BLAST_TICK_S) * _BLAST_TICK_S
+        bl.setdefault("spot", {})[f"{ist:%H:%M}:{_b:02d}"] = float(spot_live)
+    sser = [{"time_ist": t, "spot": v} for t, v in sorted(bl.get("spot", {}).items(),
+                                                          key=lambda kv: _secs(kv[0]) or 0)]
+    # prefer the finely-timed spot cross; fall back to the premium pair before the lane warms up
+    evs = detect_crossovers_spot(sser, a["atm"]) if len(sser) >= 2 else []
+    fine = bool(evs)
+    if not evs:
+        evs = detect_crossovers(series)
 
     K = a["atm"]
     if not evs:
@@ -774,7 +804,8 @@ def _blast_hero(data, L, ist):
 
     last = evs[-1]
     direction = "up" if last["to"] == "call_rich" else "down"
-    win = [(t, v) for t, v in sorted(bl["points"].items()) if t >= last["time_ist"]]
+    _cut = _secs(last["time_ist"]) or 0
+    win = [(t, v) for t, v in sorted(bl["points"].items()) if (_secs(t) or 0) >= _cut]
     crossed = [{"call_oi": v.get("atm_coi"), "put_oi": v.get("atm_poi"),
                 "call_ltp": v.get("atm_call"), "put_ltp": v.get("atm_put")} for _, v in win]
     ahead = None
@@ -802,26 +833,30 @@ def _blast_hero(data, L, ist):
     fillc = "var(--go)" if run else "var(--warn)"
 
     # ── ignition TIMING (§7d): how fast did the score reach TRUE from the cross? ──
-    def _m(t):
-        try:
-            h, mm = str(t).split(":"); return int(h) * 60 + int(mm)
-        except (ValueError, AttributeError):
-            return None
+    def _m(t):                       # minutes (float) — the cross can now be sub-minute
+        sec = _secs(t)
+        return None if sec is None else sec / 60.0
     times = [t for t, _ in win]
     traj = [(blast_score(direction, crossed[: j + 1], ahead) or {}).get("score", 0)
             for j in range(len(crossed))]
-    t0 = _m(times[0]) if times else None
-    since = max(0, (ist.hour * 60 + ist.minute) - t0) if t0 is not None else None
+    t0 = _m(last["time_ist"])        # the CROSS time (10s-accurate), not the first window point
+    now_m = (ist.hour * 3600 + ist.minute * 60 + ist.second) / 60.0
+    since = max(0.0, now_m - t0) if t0 is not None else None
     k_true_min = next((_m(times[j]) - t0 for j, s in enumerate(traj)
                        if s >= 60 and t0 is not None), None)
+    _res = "10s" if fine else "chain-cadence"
+    def _mm(x):                      # +2.5m under a minute of resolution, +3m above
+        return f"{x:.1f}".rstrip("0").rstrip(".") if x is not None and x < 10 else f"{x:.0f}"
     if k_true_min is not None and k_true_min <= 5:
-        tcls, tlab, tnote = "bull", f"⚡ Fast TRUE (+{k_true_min}m)", "Best setup — ignited within 5 min of the cross."
+        tcls, tlab = "bull", f"⚡ Fast TRUE (+{_mm(k_true_min)}m)"
+        tnote = f"Best setup — ignited within 5 min of the cross (timed at {_res})."
     elif k_true_min is not None:
-        tcls, tlab, tnote = "cover", f"Slow TRUE (+{k_true_min}m)", "Confirmed but late — weaker than a fast ignition."
+        tcls, tlab = "cover", f"Slow TRUE (+{_mm(k_true_min)}m)"
+        tnote = f"Confirmed but late — weaker than a fast ignition (timed at {_res})."
     elif since is not None and since <= 5:
-        tcls, tlab, tnote = "flat", f"Watching (+{since}m)", "Needs score ≥45 by ~3 min to likely reach TRUE."
+        tcls, tlab, tnote = "flat", f"Watching (+{_mm(since)}m)", "Needs score ≥45 by ~3 min to likely reach TRUE."
     else:
-        tcls, tlab, tnote = "bear", f"No ignition (+{since}m)", "No TRUE within 5 min — usually fizzles; lean fade."
+        tcls, tlab, tnote = "bear", f"No ignition (+{_mm(since)}m)", "No TRUE within 5 min — usually fizzles; lean fade."
     traj_txt = " → ".join(f"{s:.0f}" for s in traj[-5:])
     timing_html = (f'<div class="winstrip" style="margin-top:12px"><div class="winrow">'
                    f'<span class="wl">Timing</span><span class="wbadge {tcls}">{tlab}</span>'
