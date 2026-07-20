@@ -187,6 +187,37 @@ def profile_regime(prof: dict | None) -> dict | None:
     return {"shape": shape, "pin": pin, "tpoc": t, "n_modes": m}
 
 
+def pin_regime(prof: dict | None, pin: float | None) -> dict | None:
+    """Descriptive expiry-pin / day-type read from the DEVELOPING profile + the max-pain ``pin``
+    (Studies #26/#27, `docs/intraday-results.md`). Point-in-time (the developing profile only).
+
+    The clean, interpretable axis is: **is the max-pain pin INSIDE today's value area?**
+      • pin inside  [VAL, VAH]  → PINNED — value is accepted around the pin; a break is more likely
+        to FADE back toward it. (#26: max-pain is where price already sits, not a magnet that drags
+        the last hour — so treat it as a level, not a target.)
+      • pin outside [VAL, VAH]  → UN-PINNED — value has migrated off the pin; the morning is
+        directional, and #27 finds TRUE afternoon breaks then tend to RUN a little further.
+
+    This is a MILD prior (day-collapsed IC ≈ +0.2, n≈90) and SIGN-FREE — it never states up/down, only
+    run-vs-fade *tendency*. Returns {pinned, lean, kind, gap_pts, gap_vaw, poc, vah, val, pin} or None.
+    """
+    if not prof or pin is None:
+        return None
+    poc, vah, val, vaw = prof.get("poc"), prof.get("vah"), prof.get("val"), prof.get("va_width")
+    if not all(v is not None and v == v for v in (poc, vah, val)):
+        return None
+    pin = float(pin)
+    inside = float(val) <= pin <= float(vah)
+    gap_pts = abs(float(poc) - pin)
+    gap_vaw = (gap_pts / float(vaw)) if (vaw and vaw == vaw and vaw > 0) else None
+    if inside:
+        kind, lean = "pinned", "fade"
+    else:
+        kind, lean = "unpinned", "run"
+    return {"pinned": inside, "lean": lean, "kind": kind, "gap_pts": gap_pts,
+            "gap_vaw": gap_vaw, "poc": float(poc), "vah": float(vah), "val": float(val), "pin": pin}
+
+
 def profiles_frame(store: str = "NIFTY", bin_pts: float | None = None, days: list[str] | None = None):
     """Per-day full-session TPO profile for a store as a DataFrame (index = day), for the studies.
     Each row is ``day_profile`` over the whole session (known at that day's close → point-in-time for

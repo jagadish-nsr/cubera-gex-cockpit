@@ -711,7 +711,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('<div class="grid2"><div class="col">')
     H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Value profile · candle · levels</span>
       <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}{mp_legend}
-      <div class="cc-read">{read}</div>{mp_chip}
+      <div class="cc-read">{read}</div>{mp_chip}{_pin_regime_chip(prof, L)}
       <span class="rb-cav">{src_note}. Left = where price ACCEPTED (a map); right = dealer levels. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
     # Right column. On a BLAST day the verdict sits at the TOP, level with the candle: the cross
@@ -721,7 +721,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('</div><div class="col">')
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
-        H.append(_blast_hero(data, L, ist, spot_live))
+        H.append(_blast_hero(data, L, ist, spot_live, prof))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -755,7 +755,7 @@ def _secs(t):
     return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
 
-def _blast_hero(data, L, ist, spot_live=None):
+def _blast_hero(data, L, ist, spot_live=None, prof=None):
     """Expiry-day gamma-blast verdict, reusing app.gammablast with session-accumulated series.
 
     Two resolutions, deliberately: the CROSS is timed off the ~10s spot lane (parity says spot
@@ -940,7 +940,7 @@ def _blast_hero(data, L, ist, spot_live=None):
       <span class="eyebrow">Gamma-blast verdict · {K:,.0f}</span>
       <span class="subnote mono">cross {last["time_ist"]}</span></div>
       <div class="verdict"><span class="ic">{ic}</span><span class="big">{word}</span></div>
-      <p class="instruct">{instr}</p>
+      <p class="instruct">{instr}</p>{_pin_context_line(prof, L)}
       <div class="meter"><div class="head"><span>True-run score</span>
         <span><b class="mono">{score}</b> / 100 · {grade}</span></div>
         <div class="track"><div class="fill" style="width:{max(3,min(score,100))}%;background:{fillc}"></div></div>
@@ -1071,6 +1071,50 @@ def _mp_regime_chip(prof, vr):
     else:
         cls, txt = "", f"{tag.title()} × {reg['shape']} · pin {reg['pin']}"
     return f'<span class="mp-chip {cls}">{txt}</span>'
+
+
+def _pin_regime_chip(prof, L):
+    """Studies #26/#27 as decision-support: is the max-pain pin INSIDE today's developing value area?
+    A de-hype guardrail (the pin is a MAP, not a magnet — #26) plus a MILD, sign-free run-vs-fade
+    prior (#27). Never a direction; hidden when there's no profile or pin."""
+    try:
+        from app.market_profile import pin_regime
+        pr = pin_regime((prof or {}).get("today"), getattr(L, "max_pain", None))
+    except Exception:  # noqa: BLE001
+        pr = None
+    if not pr:
+        return ''
+    pin = pr["pin"]
+    gap = pr["gap_pts"]
+    if pr["pinned"]:
+        cls, ic = "conflict", "📍"
+        txt = (f'Pin <b class="mono">{pin:,.0f}</b> INSIDE today’s value (POC {gap:.0f} pt away) — '
+               f'a <b>map, not a magnet</b>; a break here more often <b>fades back</b> toward the pin')
+    else:
+        cls, ic = "agree", "🎯"
+        txt = (f'Pin <b class="mono">{pin:,.0f}</b> OUTSIDE today’s value (POC {gap:.0f} pt off) — '
+               f'value has migrated, morning is <b>directional</b>; a TRUE break tends to <b>run</b>')
+    return (f'<span class="mp-chip {cls}">{ic} {txt} '
+            f'<em style="opacity:.7">· mild prior (#26/#27), not a direction</em></span>')
+
+
+def _pin_context_line(prof, L):
+    """One-line pin-regime prior for the blast verdict — the same #26/#27 read, phrased for a cross."""
+    try:
+        from app.market_profile import pin_regime
+        pr = pin_regime((prof or {}).get("today"), getattr(L, "max_pain", None))
+    except Exception:  # noqa: BLE001
+        pr = None
+    if not pr:
+        return ''
+    if pr["pinned"]:
+        msg = ("<b>PINNED</b> — the pin sits inside today’s value area, so the break is more likely to "
+               "<b>fade</b> back toward it than to run (mild prior).")
+    else:
+        msg = ("<b>UN-PINNED</b> — value has migrated off the pin (directional morning), so a TRUE break "
+               "is a little more likely to <b>run</b> (mild prior).")
+    return (f'<div class="win-cap" style="margin-top:8px">Day-type context · {msg} '
+            f'<span style="opacity:.7">#26/#27, sign-free</span></div>')
 
 
 def _range_candle(L, ohlc, prof=None, show_weekly=False, spot_live=None):
