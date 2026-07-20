@@ -851,18 +851,25 @@ def _resolve_ohlc(data, hl, spot):
     candle printed green up to ~24,300 while spot was 24,182:
 
     1. **The close IS the live spot.** A developing candle's close is the current price. The feed's
-       ``close`` field is the *session* close — the PREVIOUS session's until today's ticks land — so
-       using it drew a body up to a price that never traded today (and flipped the candle green).
-    2. **Distrust an unverifiable OHLC block.** The quote can still describe the previous session
-       around the open. Its own ``ltp`` is the tell: if that disagrees with the chain's underlying
-       (or is missing, so we can't check), the whole block is from another session — drop it and use
-       our own captured high/low, which is always today. Unioning with spot cannot save it: a stale
-       HIGH survives the union and is exactly what stretched the candle."""
+       ``ohlc.close`` is the PREVIOUS session's close *by design* (verified live), so it is never a
+       candle close — using it drew a body up to a price that never traded and flipped it green.
+       It is carried as ``prev_close`` and used only for the day's % change.
+    2. **Check the quote's own timestamp.** ``last_trade_time`` says which session the block
+       describes: if it isn't today (IST), the high/low are another day's — drop them for our own
+       captured high/low, which is always today. Unioning with spot cannot save a stale HIGH.
+       When no timestamp is available (older payloads, replay) fall back to an ``ltp``-vs-spot
+       sanity check rather than trusting blindly."""
     d = data.day_ohlc or {}
-    ltp = d.get("ltp")
-    fresh = (ltp is not None and spot and abs(float(ltp) - float(spot)) / float(spot) <= _OHLC_TOL)
+    as_of = d.get("as_of")
+    if as_of:                                    # authoritative: the feed's own trade timestamp
+        today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+        fresh = str(as_of)[:10] == today_ist
+    else:                                        # no stamp → fall back to a consistency check
+        ltp = d.get("ltp")
+        fresh = bool(ltp is not None and spot
+                     and abs(float(ltp) - float(spot)) / float(spot) <= _OHLC_TOL)
     if not fresh:
-        d = {}                                   # different session / unverifiable → don't trust it
+        d = {}                                   # another session / unverifiable → don't trust it
     o, h, lo = d.get("open"), d.get("high"), d.get("low")
     o = o if o is not None else hl.get("open", spot)
     h = h if h is not None else hl["hi"]

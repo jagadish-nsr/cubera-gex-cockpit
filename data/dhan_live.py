@@ -82,10 +82,32 @@ def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20) -> list[str]:
         return []
 
 
+def _trade_time(cell) -> "datetime | None":
+    """``last_trade_time`` ("DD/MM/YYYY HH:MM:SS", IST) as a naive datetime — the feed's own stamp
+    for the quote, so freshness can be CHECKED rather than inferred. None if absent/unparseable."""
+    from datetime import datetime as _dt
+    raw = str((cell or {}).get("last_trade_time") or "").strip()
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+        try:
+            return _dt.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
-    """True day OHLC (+ ltp) for the index spot via ``/marketfeed/quote`` — the accurate basis for
-    the daily-candle range bar (the snapshot-reconstructed high/low understates the true range).
-    Returns {open,high,low,close,ltp} or None. Best-effort: never raises."""
+    """Day OHLC (+ ltp) for the index spot via ``/marketfeed/quote`` — the accurate basis for the
+    daily candle (a snapshot-reconstructed high/low understates the true range).
+
+    Returns ``{open, high, low, prev_close, ltp, as_of, vix}`` or None. Best-effort: never raises.
+
+    ⚠ **``ohlc.close`` is the PREVIOUS session's close, not today's** — VERIFIED on a live tape
+    (20-Jul-2026 13:18 IST: ltp 24218, open/high/low 24190/24262/24136 all today, close 24334.3 =
+    Friday's close). It is therefore returned as ``prev_close``, never ``close``: reading it as a
+    current price drew a candle body up to a price that never traded (the 24,300 glitch). Note it
+    collapses onto the last price AFTER the session, which is why a % change derived from it is
+    only trustworthy while ``as_of`` is today.
+    """
     seg, scrip = _seg_scrip(symbol)          # seg is always IDX_I for the supported indices
     try:
         ids = [scrip] + ([DHAN_VIX_ID] if scrip != DHAN_VIX_ID else [])   # bundle VIX into one call
@@ -100,8 +122,11 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
         if not cell:
             return None
         ohlc = next((cell[k] for k in _OHLC_KEYS if k in cell), {}) or {}
-        out = {k: _num(ohlc.get(k)) for k in ("open", "high", "low", "close")}
+        out = {k: _num(ohlc.get(k)) for k in ("open", "high", "low")}
+        out["prev_close"] = _num(ohlc.get("close"))       # NOT today's close — see the docstring
         out["ltp"] = _num(cell.get("last_price") or cell.get("ltp"))
+        ts = _trade_time(cell)
+        out["as_of"] = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else None
         out["vix"] = _vix_from_cell(seg_d.get(str(DHAN_VIX_ID)))          # India VIX, same quote
         return out
     except Exception:  # noqa: BLE001

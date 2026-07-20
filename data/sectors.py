@@ -11,12 +11,18 @@ Two sources, and the choice is deliberate:
 - **NSE ``/api/allIndices`` (PRIMARY)** — returns ``percentChange`` and ``previousClose`` for all
   ~139 indices in ONE call. The % change is given by the exchange, not derived by us: nothing to
   get wrong.
-- **Dhan ``/marketfeed/quote`` (FALLBACK)** — one call for all sector ids (IDX_I). Dhan gives no
-  explicit prev-close field: ``net_change`` reads 0 on this feed and ``ohlc.close`` is AMBIGUOUS
-  (it is the previous close during the session, but becomes TODAY's close after hours — verified
-  post-close: close == last_price exactly). So the fallback reports a % only when it can be derived
-  unambiguously, and reports None otherwise rather than silently printing a wrong (or 0.00%) move.
-  ⚠ VERIFY-LIVE: the in-session meaning of ``ohlc.close`` has not been confirmed on a live tape.
+- **Dhan ``/marketfeed/quote`` (FALLBACK)** — one call for all sector ids (IDX_I). Dhan has no
+  explicit prev-close field, and its two candidates behave differently by session state — now
+  **VERIFIED on a live tape** (20-Jul-2026 13:18 IST) and post-close (19-Jul-2026):
+
+  | field | during the session | after hours |
+  |---|---|---|
+  | ``net_change`` | populated (e.g. −116.3) ✅ | 0 ❌ |
+  | ``ohlc.close`` | the PREVIOUS close ✅ | collapses onto ``last_price`` ❌ |
+
+  So intraday either one works (we prefer ``net_change``); after hours neither does, and the
+  fallback reports None → "—" rather than silently printing a wrong (or 0.00%) move. The quote
+  also carries ``last_trade_time``, which is what makes the session state checkable at all.
 """
 
 from __future__ import annotations
