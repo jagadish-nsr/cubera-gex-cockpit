@@ -50,6 +50,14 @@ so a repaint costs **~0.26 s** instead of the ~14 s that used to shade the whole
 | Sector snap | 15 min | background thread |
 | Repaint (reads the above) | 3 s | render thread, ~0.26 s |
 
+**One shared rate budget.** All lanes run on background threads against the *same* Dhan quota, so
+they go through a shared gate with two buckets — `/optionchain` (1 req / 3 s) and `/marketfeed`
+(quota-based). The bucket is derived from the request path, so a new call site can't forget it.
+The gamma-blast lane takes **priority**: without it, the window fetcher's 4 back-to-back expiry
+calls (~12.4 s) would starve the blast's 10 s beat to ~20 s on expiry day, exactly when it matters.
+The sidebar shows the live budget — `API last 60s: chain 13/19.4 · quote 3/54.5` — with a ⚠️ when
+headroom drops under 20%. If that warns, raise **Levels refresh** to 3 or 5 min.
+
 **The sidebar controls repainting, not fetching.** The background lanes run either way:
 - **🔴 Live updates** (default **on**) — keep the page updating in place. Untick to **freeze** the
   screen; the feed keeps running behind it, so unfreezing shows current data immediately.

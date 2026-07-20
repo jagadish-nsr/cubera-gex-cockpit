@@ -480,6 +480,16 @@ def main():
                         st.session_state.pop(k, None)
                     st.rerun()
                 st.caption("Tip: turn on ⏱️ Auto-refresh (top) at 1-min to watch it play.")
+        # API budget — several background lanes share one Dhan quota per endpoint; make it VISIBLE
+        # rather than let a silent 429 show up as a stale panel (CLAUDE.md: make state visible).
+        try:
+            from data.dhan_live import rate_report
+            _rr = rate_report(60.0)
+            _bits = " · ".join(f"{k} {v['calls']}/{v['limit_per_min']:g}" for k, v in _rr.items())
+            _tight = any(v["headroom"] < 0.2 for v in _rr.values())
+            st.caption(("⚠️ " if _tight else "") + f"API last 60s: {_bits}")
+        except Exception:  # noqa: BLE001
+            pass
         st.caption("A simple, paper-only face of the GEX engine. Full guide: 📖 Help above "
                    "(same text as docs/simple-dashboard.md).")
 

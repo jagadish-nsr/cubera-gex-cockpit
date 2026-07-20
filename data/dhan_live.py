@@ -53,20 +53,79 @@ _throttle_lock = threading.Lock()
 _last_call = [0.0]
 
 
-def _throttle() -> None:
-    with _throttle_lock:
-        wait = _MIN_INTERVAL - (time.time() - _last_call[0])
-        if wait > 0:
-            time.sleep(wait)
-        _last_call[0] = time.time()
+# ── shared rate gate ───────────────────────────────────────────────────────────────────────────
+# Several INDEPENDENT background lanes now hit Dhan: the window chain fetcher, the 10s gamma-blast
+# lane, the 10s spot lane, futures capture, the sector fallback. They must share one budget per
+# endpoint family or they will 429 each other — and the failure is silent (a dropped tick, a stale
+# panel), which is the worst kind here.
+#
+# Two buckets, because the quotas are separate:
+#   "chain" — /optionchain, documented 1 request / 3s
+#   "quote" — /marketfeed/*, quota-based; measured 429s even at 1-2s spacing, so we keep ~1.1s
+#             spacing and let callers tolerate a 429 (they keep their previous value).
+#
+# PRIORITY matters as much as the interval. The window fetcher issues 4 back-to-back chain calls
+# (~12.4s); without priority that starves the blast lane's 10s beat to ~20s on expiry day, exactly
+# when it is load-bearing. A high-priority caller therefore takes the next slot and low-priority
+# callers yield while one is waiting.
+_LIMITS = {"chain": _MIN_INTERVAL, "quote": 1.1}
+_BUCKETS = {k: {"last": 0.0, "hi": 0, "cv": threading.Condition(), "calls": []}
+            for k in _LIMITS}
+
+
+def _gate(bucket: str = "chain", hi: bool = False) -> None:
+    """Block until this caller may issue a request on ``bucket``. ``hi`` = time-critical lane
+    (the gamma blast): it takes the next slot ahead of any waiting low-priority caller."""
+    st = _BUCKETS.get(bucket)
+    if st is None:
+        return
+    lim = _LIMITS[bucket]
+    with st["cv"]:
+        if hi:
+            st["hi"] += 1
+        try:
+            while True:
+                now = time.time()
+                wait = lim - (now - st["last"])
+                if wait <= 0 and (hi or st["hi"] == 0):
+                    st["last"] = now
+                    st["calls"].append(now)
+                    del st["calls"][:-120]          # keep the recent window only
+                    st["cv"].notify_all()
+                    return
+                st["cv"].wait(timeout=max(0.02, wait if wait > 0 else 0.05))
+        finally:
+            if hi:
+                st["hi"] -= 1
+                st["cv"].notify_all()
+
+
+def rate_report(window_s: float = 60.0) -> dict:
+    """Calls issued per bucket in the last ``window_s`` — so the budget is VISIBLE rather than
+    inferred from mystery 429s. {bucket: {"calls": n, "limit_per_min": n, "headroom": frac}}."""
+    now = time.time()
+    out = {}
+    for k, st in _BUCKETS.items():
+        n = sum(1 for t in st["calls"] if now - t <= window_s)
+        cap = max(1.0, window_s / _LIMITS[k])
+        out[k] = {"calls": n, "limit_per_min": round(cap, 1),
+                  "headroom": round(max(0.0, 1.0 - n / cap), 2)}
+    return out
+
+
+def _throttle() -> None:                            # back-compat shim for existing chain callers
+    _gate("chain")
 
 
 def _seg_scrip(symbol: str) -> tuple[str, int]:
     return IDX_SEG, _SCRIP.get(symbol.upper(), NIFTY_SCRIP)
 
 
-def _post(path: str, body: dict, timeout: int = 30):
+def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
+    """POST through the shared rate gate. The bucket is derived from the path so no call site can
+    forget it — /marketfeed/* was entirely ungated before, which is where the 429s came from."""
     import requests
+    _gate("quote" if path.startswith("/marketfeed") else "chain", hi=hi)
     return requests.post(f"{DHAN_BASE}{path}", json=body, headers=_headers(), timeout=timeout)
 
 
@@ -399,11 +458,15 @@ def _to_nse_rows(dhan_json: dict, expiry_iso: str) -> tuple[list[dict], float | 
 
 
 def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
-                max_expiries: int | None = None, timeout: int = 30) -> dict:
+                max_expiries: int | None = None, timeout: int = 30, hi: bool = False) -> dict:
     """LIVE Dhan pull assembled into ONE NSE-shaped ``{records:{data, underlyingValue}}`` payload
     (drop-in for ``data.nse.fetch_chain``). Fetches each in-window expiry's chain (throttled to
     the 1-req/3s limit) and merges the rows. Bounds the expiry set to the next monthly by default
     (``0dte_to_next_monthly``); pass ``expiries`` (YYYY-MM-DD) or ``max_expiries`` to override.
+
+    ``hi=True`` marks a time-critical caller (the 10s gamma-blast lane): it takes the next slot on
+    the shared rate gate ahead of the window fetcher's back-to-back expiry calls, which would
+    otherwise starve a 10s beat to ~20s.
 
     RAISES on no usable data so ``data_access`` falls back to NSE."""
     seg, scrip = _seg_scrip(symbol)
@@ -415,9 +478,9 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
     spot = None
     errors = []
     for e in exps:
-        _throttle()
         try:
-            r = _post("/optionchain", {"UnderlyingScrip": scrip, "UnderlyingSeg": seg, "Expiry": e}, timeout)
+            r = _post("/optionchain", {"UnderlyingScrip": scrip, "UnderlyingSeg": seg, "Expiry": e},
+                      timeout, hi=hi)
             if not r.ok:
                 errors.append(f"{e}: HTTP {r.status_code}")
                 continue
@@ -452,7 +515,6 @@ def ping(symbol: str = "NIFTY") -> dict:
         if not exps:
             return {"ok": False, "expiries": 0, "spot": None,
                     "error": "no expiries (token expired / Data API not subscribed?)"}
-        _throttle()
         seg, scrip = _seg_scrip(symbol)
         r = _post("/optionchain", {"UnderlyingScrip": scrip, "UnderlyingSeg": seg, "Expiry": exps[0]})
         if not r.ok:

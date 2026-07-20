@@ -60,7 +60,9 @@ def _pull(symbol: str, band_pts):
     """
     from data import dhan_live
     from data.nse import nearest_expiry_premiums, parse_nse_option_chain, per_strike_oi
-    payload = dhan_live.fetch_chain(symbol, max_expiries=1)      # nearest expiry only
+    # hi=True: this lane is the time-critical one on expiry day, so it takes the next gate slot
+    # rather than queueing behind the window fetcher's 4 back-to-back calls (~12.4s).
+    payload = dhan_live.fetch_chain(symbol, max_expiries=1, hi=True)
     rows, spot = parse_nse_option_chain(payload)
     strikes = per_strike_oi(payload, spot=spot, band_pts=band_pts)
     prem = nearest_expiry_premiums(rows)

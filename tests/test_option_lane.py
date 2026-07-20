@@ -106,7 +106,7 @@ def test_lane_maps_a_single_expiry_chain_to_the_ladder(monkeypatch):
     At a 10s beat the whole ladder is affordable, so the wall-ahead read works at ANY strike."""
     from app import blast_ticker as bt
     monkeypatch.setattr("data.dhan_live.fetch_chain",
-                        lambda sym, max_expiries=None: {"_": "payload", "n": max_expiries})
+                        lambda sym, max_expiries=None, hi=False: {"_": "payload", "n": max_expiries})
     monkeypatch.setattr("data.nse.parse_nse_option_chain", lambda p: ([], 24238.5))
     monkeypatch.setattr("data.nse.per_strike_oi",
                         lambda p, spot=None, band_pts=None: [
@@ -127,8 +127,9 @@ def test_lane_asks_for_only_one_expiry(monkeypatch):
     from app import blast_ticker as bt
     seen = {}
 
-    def _chain(sym, max_expiries=None):
+    def _chain(sym, max_expiries=None, hi=False):
         seen["max_expiries"] = max_expiries
+        seen["hi"] = hi
         return {}
 
     monkeypatch.setattr("data.dhan_live.fetch_chain", _chain)
@@ -137,3 +138,4 @@ def test_lane_asks_for_only_one_expiry(monkeypatch):
     monkeypatch.setattr("data.nse.nearest_expiry_premiums", lambda rows: {})
     assert bt._pull("NIFTY", None) is None          # nothing usable → no half-built ladder
     assert seen["max_expiries"] == 1
+    assert seen["hi"] is True, "the blast lane must claim gate priority or it gets starved"
