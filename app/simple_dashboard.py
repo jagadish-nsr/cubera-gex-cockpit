@@ -472,13 +472,33 @@ def main():
                             help="Step a real stored day through the whole UI so you can watch the "
                                  "candle, TPO profile, trailing windows and regime develop with the "
                                  "market closed. Turn ON Auto-refresh to make it advance. Isolated journal.")
-                st.selectbox("Day", rdays[::-1], key="simp_replay_day")
+                # Practice mode: narrow to EXPIRY days and tag each TRUE / Fake gamma-blast (from the
+                # blast_ml study) — pick a known-TRUE day to rehearse the run, a Fake day the pin/cap.
+                gb_only = st.checkbox("🎯 Expiry days only · tag TRUE / Fake gamma-blast", value=False,
+                                      key="simp_replay_gbonly",
+                                      help="Filter the day list to expiries and label each by the "
+                                           "study outcome — TRUE = a sustaining blast fired that "
+                                           "afternoon, Fake = breaks pinned/capped. A reading drill.")
+                opts = rdays[::-1]
+                if gb_only:
+                    opts = [d for d in opts if rp.blast_label(symbol, d)]
+                    if not opts:
+                        st.caption("No labelled expiry days for this index (build the blast_ml dataset).")
+
+                def _dlabel(d):
+                    lab = rp.blast_label(symbol, d)
+                    return f"{d} · 🚀 TRUE GB" if lab == "TRUE" else f"{d} · 🪤 Fake GB" if lab == "FAKE" else d
+                st.selectbox("Day", opts or rdays[::-1], key="simp_replay_day", format_func=_dlabel)
                 st.selectbox("Speed (replay-min per tick)", [1, 5, 10, 20], index=1, key="simp_replay_speed")
                 if st.button("↺ Restart from open", width="stretch"):
                     rp.reset(symbol)
                     for k in ("simp_replay_idx", "simp_replay_of", "simp_hl", "simp_data"):
                         st.session_state.pop(k, None)
                     st.rerun()
+                _rsel = st.session_state.get("simp_replay_day")
+                if _rsel and rp.is_expiry_day(symbol, _rsel):
+                    st.caption("🚀 Expiry day — the **gamma-blast verdict** appears in the right column "
+                               "once the replay clock passes **13:45**. Use a higher speed to fast-forward.")
                 st.caption("Tip: turn on ⏱️ Auto-refresh (top) at 1-min to watch it play.")
         # API budget — several background lanes share one Dhan quota per endpoint; make it VISIBLE
         # rather than let a silent 429 show up as a stale panel (CLAUDE.md: make state visible).
@@ -595,6 +615,12 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
         st.caption(f"⚠ {data.source_note}")
     nearest = data.expiries[0] if data.expiries else None
     is_expiry = (nearest == ist.date()) if nearest else False
+    # Replay dates the snapshot to a synthetic REPLAY_DATE (isolated journal), and its synthetic
+    # near-expiry is +2d — so the live "nearest == today" test never fires. Ask instead whether the
+    # REAL stored day being replayed is an expiry, so a replayed 0-DTE day shows the blast view.
+    if "replay" in (data.source or "").lower():
+        from data import replay as rp
+        is_expiry = rp.is_expiry_day(symbol, st.session_state.get("simp_replay_day"))
     show_blast = is_expiry or preview_expiry          # preview forces the blast view (dev)
     if anchor_now:
         st.session_state["simp_force_anchor"] = True

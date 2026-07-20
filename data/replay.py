@@ -10,6 +10,7 @@ journal the replay writes). Decision-support demo only.
 
 from __future__ import annotations
 
+import functools
 from datetime import datetime, timedelta, timezone
 
 REPLAY_DATE = "2099-07-07"          # isolated journal date for replay (not a real trading day)
@@ -32,6 +33,82 @@ def stamps(symbol: str, day: str) -> list[str]:
     if df is None or getattr(df, "empty", True):
         return []
     return sorted(df["time_ist"].astype(str).unique(), key=_mins)
+
+
+@functools.lru_cache(maxsize=8)
+def _expiry_cache(symbol: str):
+    """(all_days, expiry_days) for a store from the 5-min feature cache — expiry = open dte<0.6, the
+    same 0-DTE definition the studies use (era-independent: it's the BS-implied T, not the calendar).
+    Both frozensets; empty when no cache. Cached per symbol so replay steps don't re-read the parquet."""
+    try:
+        from app.intraday_features import load_features
+        f = load_features(symbol)
+        if f is None or getattr(f, "empty", True):
+            return frozenset(), frozenset()
+        dte0 = f.groupby("day")["dte"].first()
+        alld = frozenset(str(d) for d in dte0.index)
+        expd = frozenset(str(d) for d, v in dte0.items() if float(v) < 0.6)
+        return alld, expd
+    except Exception:  # noqa: BLE001
+        return frozenset(), frozenset()
+
+
+def is_expiry_day(symbol: str, day: str) -> bool:
+    """Is the stored ``day`` an expiry (0-DTE)? Prefers the feature-cache dte<0.6 (accurate across the
+    Thu→Tue era switch); falls back to the weekly-expiry calendar when the cache doesn't cover the day
+    (e.g. a day newer than the last feature build). Drives whether replay shows the gamma-blast view."""
+    if not day:
+        return False
+    alld, expd = _expiry_cache(symbol)
+    if str(day) in alld:                        # cache covers this day → trust its dte flag
+        return str(day) in expd
+    try:                                        # not covered → weekly-calendar fallback
+        from datetime import datetime
+        from data.expiry import next_weekly_expiry
+        dd = datetime.strptime(str(day), "%Y-%m-%d").date()
+        return next_weekly_expiry(dd) == dd
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _label_frame(df) -> dict:
+    """{day: 'TRUE'|'FAKE'} from a blast_ml frame (pure — the testable core of ``_blast_labels``).
+    dte < 0.6 = actual 0-DTE expiry days only, matching ``is_expiry_day`` (so a tagged day is exactly
+    one that shows the blast view, not the day-before that dte<=1.5 would include); afternoon = the
+    ≥13:45 blast window the live view anchors in; TRUE = at least one such crossing reached a
+    sustaining score (``k_true`` set), else FAKE."""
+    aft = df[(df["dte"] < 0.6) & (df["tod"] >= 13 * 60 + 45)]
+    if aft.empty:
+        return {}
+    g = aft.groupby(aft["day"].astype(str))["k_true"]
+    return {d: ("TRUE" if s.notna().any() else "FAKE") for d, s in g}
+
+
+@functools.lru_cache(maxsize=8)
+def _blast_labels(symbol: str):
+    """{day: 'TRUE'|'FAKE'} for expiry days, from the blast_ml dataset — a **practice** tag: on a
+    TRUE day at least one 0-DTE afternoon (≥13:45) strike-crossing reached a sustaining TRUE score,
+    i.e. a real gamma blast fired; a FAKE day had afternoon crossings but every one pinned / capped.
+    Cached per symbol; empty when the dataset is absent.
+
+    Caveat (honest): this scans ALL near-money afternoon crossings, whereas the live dashboard watches
+    the ONE ATM strike anchored at 13:45 — so a TRUE-tagged day means 'a true blast happened somewhere
+    that afternoon', not a guarantee the anchored ATM will be the one that fires. It's a study-derived
+    reading aid, not a label of the live verdict."""
+    from pathlib import Path
+    try:
+        import pandas as pd
+        p = Path(__file__).resolve().parents[1] / "data" / "journal" / "blast_ml" / f"{symbol}.parquet"
+        if not p.exists():
+            return {}
+        return _label_frame(pd.read_parquet(p, columns=["day", "dte", "tod", "k_true"]))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def blast_label(symbol: str, day: str) -> str | None:
+    """'TRUE' / 'FAKE' gamma-blast practice tag for an expiry ``day`` (None if unknown/not expiry)."""
+    return _blast_labels(symbol).get(str(day)) if day else None
 
 
 def reset(symbol: str, replay_date: str = REPLAY_DATE) -> None:

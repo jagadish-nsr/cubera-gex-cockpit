@@ -30,6 +30,18 @@ Pick a Day, set Speed (replay-minutes per tick), turn on **⏱️ Auto-refresh**
 play, "↺ Restart from open" to rewind. The feed badge reads **🎬 Replay (stored day)** so a replay
 can never be mistaken for live.
 
+**Replaying an expiry** develops the full expiry-day picture — candle, TPO/MP overlay, "where the
+money is building", *and* the **gamma-blast verdict** (it appears in the right column once the replay
+clock passes **13:45**, exactly as it would live; raise the Speed to fast-forward there).
+
+**Gamma-blast practice drill.** Tick **🎯 Expiry days only · tag TRUE / Fake gamma-blast** to narrow
+the Day list to expiries, each tagged from the `blast_ml` study: **🚀 TRUE GB** = a sustaining blast
+fired that afternoon, **🪤 Fake GB** = the breaks pinned / capped. Pick a TRUE day to rehearse reading a
+real run, a Fake day to rehearse the pin — then watch whether the live verdict matches the tag. *Caveat:*
+the tag scans every near-money afternoon crossing, while the live view watches the one ATM strike
+anchored at 13:45, so a TRUE tag means "a true blast happened somewhere that afternoon", not a guarantee
+the anchored strike is the one that fires.
+
 ### 1.1 The status line
 `Feed: 🟢 Dhan (live) · aligned to the 3-min grid · as of 13:45 IST · fetched 13:45:07`
 
