@@ -1,18 +1,28 @@
-"""Fast OPTION lane for the gamma blast — OI + premium for the 2-3 WATCHED strikes, every ~10s.
+"""Fast OPTION lane for the gamma blast — the NEAREST-EXPIRY chain, every ~10s.
 
-The blast score reads writer covering (ΔOI on the pain side) and premium expansion. Those came from
-the option chain, so the *fuel* reading sat at the chain's 1-5 min beat even after the cross itself
-was timed to 10s. But the blast only ever watches the anchored ATM strike and its neighbours — and
-Dhan's ``/marketfeed/quote`` returns ``oi`` and ``last_price`` for specific option contracts, so
-2-3 strikes (4-6 contracts) come back in ONE ~0.5s call instead of a ~12s full-chain pull.
+The blast score reads writer covering (ΔOI on the pain side) and premium expansion, which used to
+come from the full-window chain — so the *fuel* reading sat at that 1-5 min beat even after the
+cross itself was timed to 10s.
 
-Verified live (20-Jul-2026): NSE_FNO quote for two option ids →
-``{oi: 7129460, last_price: 104.2, volume: …, last_trade_time: …}``. OI is in SHARES like the rest
-of the Dhan feed, which is harmless here: the score uses ΔOI/OI *ratios*, which are scale-free.
+The cost that forced this was the WINDOW, not the chain: measured 20-Jul-2026,
+
+    4-expiry window chain   12.4s   1814 rows
+    1-expiry chain           1.0s    448 rows   (3.1s when the /optionchain throttle bites)
+    targeted 6-contract quote 0.47s     6 contracts
+
+so one expiry at a 10s beat is cheap, and it returns the WHOLE ladder rather than a few
+pre-chosen strikes: the wall-ahead read works at any strike, anchors can move without
+reconfiguring a watch list, and there is one parsing path instead of two. (The targeted
+``dhan_live.fetch_option_quotes`` remains for cases that genuinely need 2 contracts.)
+
+Rate budget: a 10s poll is 6 /optionchain calls per minute against a 1-per-3s limit (~20/min),
+alongside the main fetcher's 4 calls every 1-5 min.
+
+Dhan's OI is share-denominated; harmless here because the score uses ΔOI/OI *ratios*, which are
+scale-free (unlike ₹ turnover, where that assumption caused a 65× error).
 
 Same discipline as the spot lane: daemon thread, publish to a process-global store, render only
-reads. A tick older than ``STALE_AFTER_S`` is dropped rather than presented as live, and a 429
-leaves the previous tick in place.
+reads. A tick older than ``STALE_AFTER_S`` is dropped rather than presented as live.
 """
 
 from __future__ import annotations
@@ -22,7 +32,7 @@ import time
 
 _STORE: dict = {}                  # symbol -> {"q": dict, "at": epoch}
 _THREADS: dict = {}
-_CFG: dict = {}                    # symbol -> {"strikes": [...], "expiry": str|None, "interval": s}
+_CFG: dict = {}                    # symbol -> {"band_pts": float|None, "interval": s}
 _LOCK = threading.Lock()
 
 DEFAULT_INTERVAL_S = 10.0
@@ -30,7 +40,7 @@ STALE_AFTER_S = 60.0               # the chain fallback is only minutes old, so 
 
 
 def latest(symbol: str) -> dict | None:
-    """Most recent quote bundle {strike: {call_oi, put_oi, call_ltp, put_ltp}, as_of} or None."""
+    """Most recent ladder {strike: {call_oi, put_oi, call_ltp, put_ltp}} (+ spot, as_of) or None."""
     rec = _STORE.get(symbol)
     if not rec or not rec.get("q"):
         return None
@@ -39,31 +49,51 @@ def latest(symbol: str) -> dict | None:
     return rec["q"]
 
 
+def _pull(symbol: str, band_pts):
+    """One NEAREST-EXPIRY chain → {strike: {call_oi, put_oi, call_ltp, put_ltp}} (+ spot, as_of).
+
+    Measured: a 1-expiry chain is **1.0s** (3.1s if the /optionchain throttle bites) for all 448
+    strikes, versus 12.4s for the 4-expiry window and 0.47s for a targeted 6-contract quote. At a
+    10s beat the chain is comfortably affordable and strictly more useful — the WHOLE ladder
+    refreshes, so the wall-ahead read works at any strike, the anchors can move without
+    reconfiguring a watch list, and there is one parsing path instead of two.
+    """
+    from data import dhan_live
+    from data.nse import nearest_expiry_premiums, parse_nse_option_chain, per_strike_oi
+    payload = dhan_live.fetch_chain(symbol, max_expiries=1)      # nearest expiry only
+    rows, spot = parse_nse_option_chain(payload)
+    strikes = per_strike_oi(payload, spot=spot, band_pts=band_pts)
+    prem = nearest_expiry_premiums(rows)
+    q: dict = {"spot": spot, "as_of": None}
+    for s in strikes or []:
+        k = float(s["strike"])
+        p = prem.get(k, {})
+        q[k] = {"call_oi": s.get("call_oi"), "put_oi": s.get("put_oi"),
+                "call_ltp": p.get("call_ltp"), "put_ltp": p.get("put_ltp")}
+    return q if len(q) > 2 else None
+
+
 def _loop(symbol: str) -> None:
-    from data.dhan_live import fetch_option_quotes
     while True:
         cfg = _CFG.get(symbol) or {}
-        strikes = list(cfg.get("strikes") or [])
         interval = float(cfg.get("interval", DEFAULT_INTERVAL_S))
         got = False
-        if strikes:
-            try:
-                q = fetch_option_quotes(symbol, strikes, cfg.get("expiry"))
-                if q:
-                    _STORE[symbol] = {"q": q, "at": time.time()}
-                    got = True
-            except Exception:  # noqa: BLE001 - never die on one bad poll
-                pass
-        time.sleep(interval if (got or _STORE.get(symbol)) else 2.0)
+        try:
+            q = _pull(symbol, cfg.get("band_pts"))
+            if q:
+                _STORE[symbol] = {"q": q, "at": time.time()}
+                got = True
+        except Exception:  # noqa: BLE001 - never die on one bad poll
+            pass
+        time.sleep(interval if (got or _STORE.get(symbol)) else 3.5)
 
 
-def ensure(symbol: str, strikes, expiry_iso: str | None = None,
-           interval_s: float = DEFAULT_INTERVAL_S) -> None:
-    """Track ``strikes`` for ``symbol`` (idempotent — updates the watch list each call, starts the
-    daemon only if it isn't alive). Safe to call on every repaint."""
+def ensure(symbol: str, band_pts=None, interval_s: float = DEFAULT_INTERVAL_S) -> None:
+    """Run the nearest-expiry lane for ``symbol`` (idempotent — refreshes config each call, starts
+    the daemon only if it isn't alive). Safe to call on every repaint. ``band_pts`` just bounds the
+    per-strike slice around spot, as elsewhere."""
     with _LOCK:
-        _CFG[symbol] = {"strikes": [float(k) for k in strikes if k is not None],
-                        "expiry": expiry_iso, "interval": float(interval_s)}
+        _CFG[symbol] = {"band_pts": band_pts, "interval": float(interval_s)}
         t = _THREADS.get(symbol)
         if t is None or not t.is_alive():
             t = threading.Thread(target=_loop, args=(symbol,), daemon=True, name=f"blast-{symbol}")

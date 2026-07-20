@@ -98,3 +98,42 @@ def test_share_denominated_oi_is_fine_for_the_score():
             {"call_oi": 80.0, "put_oi": 50.0, "call_ltp": 14.0, "put_ltp": 5.0}]
     shares = [{k: (v * 65 if k.endswith("_oi") else v) for k, v in row.items()} for row in lots]
     assert blast_score("up", lots)["score"] == blast_score("up", shares)["score"]
+
+
+# ── the lane pulls ONE expiry's chain (cheap) rather than a few contracts ──────────────────────
+def test_lane_maps_a_single_expiry_chain_to_the_ladder(monkeypatch):
+    """Measured 20-Jul-2026: 1-expiry chain 1.0s/448 rows vs 12.4s/1814 for the 4-expiry window.
+    At a 10s beat the whole ladder is affordable, so the wall-ahead read works at ANY strike."""
+    from app import blast_ticker as bt
+    monkeypatch.setattr("data.dhan_live.fetch_chain",
+                        lambda sym, max_expiries=None: {"_": "payload", "n": max_expiries})
+    monkeypatch.setattr("data.nse.parse_nse_option_chain", lambda p: ([], 24238.5))
+    monkeypatch.setattr("data.nse.per_strike_oi",
+                        lambda p, spot=None, band_pts=None: [
+                            {"strike": 24200.0, "call_oi": 7129460.0, "put_oi": 13575380.0},
+                            {"strike": 24250.0, "call_oi": 6682455.0, "put_oi": 5829135.0}])
+    monkeypatch.setattr("data.nse.nearest_expiry_premiums",
+                        lambda rows: {24200.0: {"call_ltp": 104.2, "put_ltp": 45.65},
+                                      24250.0: {"call_ltp": 74.4, "put_ltp": 65.65}})
+    q = bt._pull("NIFTY", band_pts=2000)
+    assert q["spot"] == 24238.5
+    assert q[24200.0] == {"call_oi": 7129460.0, "put_oi": 13575380.0,
+                          "call_ltp": 104.2, "put_ltp": 45.65}
+    assert 24250.0 in q, "the whole ladder must be present, not just the anchored strike"
+
+
+def test_lane_asks_for_only_one_expiry(monkeypatch):
+    """The 12.4s cost was the WINDOW, not the chain — the lane must never widen it."""
+    from app import blast_ticker as bt
+    seen = {}
+
+    def _chain(sym, max_expiries=None):
+        seen["max_expiries"] = max_expiries
+        return {}
+
+    monkeypatch.setattr("data.dhan_live.fetch_chain", _chain)
+    monkeypatch.setattr("data.nse.parse_nse_option_chain", lambda p: ([], None))
+    monkeypatch.setattr("data.nse.per_strike_oi", lambda p, spot=None, band_pts=None: [])
+    monkeypatch.setattr("data.nse.nearest_expiry_premiums", lambda rows: {})
+    assert bt._pull("NIFTY", None) is None          # nothing usable → no half-built ladder
+    assert seen["max_expiries"] == 1

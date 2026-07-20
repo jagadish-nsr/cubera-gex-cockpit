@@ -779,17 +779,17 @@ def _blast_hero(data, L, ist, spot_live=None):
     aco, apo = strike_oi(data.oi_strikes, a["atm"])
     mco, mpo = strike_oi(data.oi_strikes, a["magnet"])
 
-    # ── 10s OPTION lane: OI + premium for just the watched strikes (one ~0.5s quote), so the
-    # score's FUEL reading (writer covering, premium expansion) no longer sits at the chain's
-    # 1-5 min beat. Falls back to the chain values whenever the lane has nothing fresh.
+    # ── 10s OPTION lane: the NEAREST-EXPIRY chain (1.0s for all 448 strikes vs 12.4s for the
+    # 4-expiry window), so the score's FUEL reading (writer covering, premium expansion, wall
+    # ahead) moves at 10s instead of the window chain's 1-5 min beat. Falls back to the window
+    # snapshot whenever the lane has nothing fresh.
     tq = None
     if str(data.source or "").lower().startswith("dhan") and "replay" not in str(data.source).lower():
         try:
             from app import blast_ticker
-            watch = [a["atm"], next_strike(data.oi_strikes, a["atm"], "up"),
-                     next_strike(data.oi_strikes, a["atm"], "down")]
-            blast_ticker.ensure(data.symbol, [k for k in watch if k], interval_s=_BLAST_TICK_S)
-            tq = blast_ticker.latest(data.symbol)
+            blast_ticker.ensure(data.symbol, getattr(config.get_index(data.symbol), "band_pts", None),
+                                interval_s=_BLAST_TICK_S)
+            tq = blast_ticker.latest(data.symbol)          # the WHOLE nearest-expiry ladder
         except Exception:  # noqa: BLE001
             tq = None
     fast_fuel = bool(tq and a["atm"] in tq)

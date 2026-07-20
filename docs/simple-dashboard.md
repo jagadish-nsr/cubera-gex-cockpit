@@ -385,12 +385,19 @@ call-writer OI change  −12%    Wall ahead  1.4×
   the option chain put the cross anywhere inside a 1–5 min window, up to ~3 min of error in a
   5-minute test. Sub-minute ignitions now read as e.g. `⚡ Fast TRUE (+2.5m)`.
 
-  **The score now moves at ~10 s too.** The blast only ever watches 2–3 strikes (the anchored ATM
-  and its neighbours), and Dhan's `/marketfeed/quote` returns `oi` and `last_price` for *specific
-  option contracts* — so 4–6 contracts come back in **one ~0.5 s call** instead of a ~12 s
-  full-chain pull. Writer covering, premium expansion and the wall-ahead read therefore refresh on
-  the same 10 s beat as the cross. The card states both resolutions: `cross timed 10s ·
-  OI/premium 10s`.
+  **The score now moves at ~10 s too**, from a **nearest-expiry chain** poll. The ~12 s cost that
+  made this look expensive was the expiry *window*, not the chain — measured:
+
+  | | time | rows |
+  |---|---:|---:|
+  | 4-expiry window chain | 12.4 s | 1,814 |
+  | **1-expiry chain** | **1.0 s** (3.1 s if the throttle bites) | **448** |
+  | targeted 6-contract quote | 0.47 s | 6 |
+
+  So one expiry every 10 s is cheap *and* returns the whole ladder — the wall-ahead read works at
+  any strike and the anchors can move without reconfiguring anything. Writer covering, premium
+  expansion and wall-ahead therefore refresh on the same 10 s beat as the cross; the card states
+  both resolutions: `cross timed 10s · OI/premium 10s`.
 
   Falls back to the chain values whenever the lane has nothing fresh (cold start, a 429, the NSE
   feed, replay) — the note then reads `chain-cadence`, so you always know which you're looking at.
