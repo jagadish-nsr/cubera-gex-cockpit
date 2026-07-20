@@ -278,24 +278,24 @@ Shape terms: *single-print* = one dominant mode, time concentrated (`tpoc ≥ 0.
 *double-distribution* = ≥2 modes (a trend day that relocated); *spread* = time smeared thinly
 (no acceptance anywhere). Pin: *tight / loose / thin*.
 
-### 4.6 The pin-regime chip (Studies #26/#27)
-A second chip below the regime chip reads the **max-pain pin against today's developing value area**
-— a de-hype guardrail plus a *mild, sign-free* run-vs-fade prior. It never states up/down.
+### 4.6 The pin-regime day-type context (Studies #26/#27)
+On **expiry day only**, a one-line **Day-type context** appears under the gamma-blast verdict, reading
+the **max-pain pin against today's developing value area** — a *mild, sign-free* run-vs-fade prior. It
+never states up/down.
 
-- 📍 **Pin INSIDE value (PINNED)** — the pin sits between today's VAL and VAH. It's a **map, not a
-  magnet**: Study #26 showed spot is already sitting near max-pain by mid-afternoon and the last hour
-  does *not* reliably pull toward it, so treat the pin as a level. A break here more often **fades**
-  back toward the pin.
-- 🎯 **Pin OUTSIDE value (UN-PINNED)** — value has migrated off the pin (a directional morning).
-  Study #27 finds a TRUE afternoon break then tends to **run** a little further.
+- **PINNED** — the pin sits between today's VAL and VAH. It's a **map, not a magnet**: Study #26 showed
+  spot is already sitting near max-pain by mid-afternoon and the last hour does *not* reliably pull
+  toward it, so a break here more often **fades** back toward the pin.
+- **UN-PINNED** — value has migrated off the pin (a directional morning). Study #27 finds a TRUE
+  afternoon break then tends to **run** a little further.
 
 Why "mild": the effect is a day-collapsed IC ≈ +0.2 over ~90 expiries — a real but weak lean, and
-it's really *trend persistence* (a directional morning begets a running afternoon), not a pin/POC
-edge. On expiry day the same read is echoed as a one-line **Day-type context** under the gamma-blast
-verdict, so a cross is judged in context. What this chip explicitly kills: the tempting "buy the pin
-strike toward the pin at mid-day" trade — Study #27 measured it as a systematic loser (median −99.6%,
-worse than betting the wrong side), because price drifts *off* the pin over the afternoon and an option
-struck *at* the pin needs an overshoot to pay. **The pin is decision-support, never a target.**
+it's really *trend persistence* (a directional morning begets a running afternoon), not a pin/POC edge.
+The research it rests on also killed the tempting "buy the pin strike toward the pin at mid-day" trade —
+Study #27 measured it as a systematic loser (median −99.6%, worse than betting the wrong side), because
+price drifts *off* the pin over the afternoon and an option struck *at* the pin needs an overshoot to
+pay. **The pin is decision-support, never a target.** (An earlier always-on candle chip was removed as
+clutter; this read now lives only in the blast verdict where a cross makes it actionable.)
 
 ---
 

@@ -737,7 +737,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('<div class="grid2"><div class="col">')
     H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Value profile · candle · levels</span>
       <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}{mp_legend}
-      <div class="cc-read">{read}</div>{mp_chip}{_pin_regime_chip(prof, L)}
+      <div class="cc-read">{read}</div>{mp_chip}
       <span class="rb-cav">{src_note}. Left = where price ACCEPTED (a map); right = dealer levels. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
     # Right column. On a BLAST day the verdict sits at the TOP, level with the candle: the cross
@@ -1097,31 +1097,6 @@ def _mp_regime_chip(prof, vr):
     else:
         cls, txt = "", f"{tag.title()} × {reg['shape']} · pin {reg['pin']}"
     return f'<span class="mp-chip {cls}">{txt}</span>'
-
-
-def _pin_regime_chip(prof, L):
-    """Studies #26/#27 as decision-support: is the max-pain pin INSIDE today's developing value area?
-    A de-hype guardrail (the pin is a MAP, not a magnet — #26) plus a MILD, sign-free run-vs-fade
-    prior (#27). Never a direction; hidden when there's no profile or pin."""
-    try:
-        from app.market_profile import pin_regime
-        pr = pin_regime((prof or {}).get("today"), getattr(L, "max_pain", None))
-    except Exception:  # noqa: BLE001
-        pr = None
-    if not pr:
-        return ''
-    pin = pr["pin"]
-    gap = pr["gap_pts"]
-    if pr["pinned"]:
-        cls, ic = "conflict", "📍"
-        txt = (f'Pin <b class="mono">{pin:,.0f}</b> INSIDE today’s value (POC {gap:.0f} pt away) — '
-               f'a <b>map, not a magnet</b>; a break here more often <b>fades back</b> toward the pin')
-    else:
-        cls, ic = "agree", "🎯"
-        txt = (f'Pin <b class="mono">{pin:,.0f}</b> OUTSIDE today’s value (POC {gap:.0f} pt off) — '
-               f'value has migrated, morning is <b>directional</b>; a TRUE break tends to <b>run</b>')
-    return (f'<span class="mp-chip {cls}">{ic} {txt} '
-            f'<em style="opacity:.7">· mild prior (#26/#27), not a direction</em></span>')
 
 
 def _pin_context_line(prof, L):
