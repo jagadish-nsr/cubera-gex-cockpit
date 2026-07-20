@@ -714,13 +714,20 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="cc-read">{read}</div>{mp_chip}
       <span class="rb-cav">{src_note}. Left = where price ACCEPTED (a map); right = dealer levels. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
 
-    # right column: positioning first, then the suggested play beneath it
+    # Right column. On a BLAST day the verdict sits at the TOP, level with the candle: the cross
+    # is read against the candle (did it break the level, is it holding?), so the two belong
+    # side by side rather than needing a scroll between them. Positioning follows.
+    # On a quiet day the play card is not time-critical, so positioning leads and it sits beneath.
     H.append('</div><div class="col">')
+    if show_blast:
+        H.append('<h2 class="lbl">Suggested play</h2>')
+        H.append(_blast_hero(data, L, ist, spot_live))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
-    H.append('<h2 class="lbl">Suggested play</h2>')
-    H.append(_blast_hero(data, L, ist, spot_live) if show_blast else _play_card(vr, data, L, idx))
+    if not show_blast:
+        H.append('<h2 class="lbl">Suggested play</h2>')
+        H.append(_play_card(vr, data, L, idx))
     H.append('</div></div>')                          # close right col + grid
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
