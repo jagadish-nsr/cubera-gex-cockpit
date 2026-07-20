@@ -756,3 +756,103 @@ sign-unstable, OOS-decayed — so MP is fully closed). The only surviving edge r
 (sell rich IV S6/S11 + next-day vol-regime persistence #17). Direction is dead on Nifty at every horizon and
 every execution venue we can measure; the tool is decision-support, and the one thing that pays is being the
 vol seller, sized for the tail.
+
+---
+
+## Study #26 — the EXPIRY PIN: does the last hour RUN to the pin, or is the pin just where price already sits?  → DESCRIPTIVE, not a magnet (no last-hour pull; direction a coin flip)
+`scripts/analyze_expiry_pin.py`. The folk "0-DTE pin" claim, tested clean: **LOCK** the pin at T−60
+(the 14:30 snapshot, computed once from that snapshot's OI and frozen — recomputing every minute would
+let the pin chase spot and manufacture a fake pin), then look only at the last 60 min of price. Two pin
+definitions: **max-pain** (holder-payout min) and **peak-OI** (single most-crowded strike). 30 expiries
+(2025-12-16→2026-07-07, all Sep25+ Tuesday-weekly era — no era contamination). Sign-free (OI concentration,
+not the dealer-sign landmine).
+
+- **The close DOES land near max-pain — but it's already there by mid-afternoon.** At the 14:30 lock,
+  spot is already a median **18 pt** from max-pain (< ½ strike). The final hour then *widens* the gap to a
+  median **33 pt**, and distance-to-the-frozen-pin shrank on only **33%** of days — so there is no
+  last-hour "rally into the pin"; if anything price drifts slightly off it. Close within 1 strike 63%,
+  within 0.25% 70% — but that closeness is inherited from 14:30, not produced by the final hour.
+- **The last-30-min direction is a coin flip.** Among the 20/30 days with ≥½-strike of room at 15:00, 13
+  moved toward the pin (65%) — but **two-sided p = 0.26**, not significant, and inflated by dropping the 10
+  days already glued to the pin. Peak-OI: exactly 50% (p = 1.00).
+- **Peak-OI is the wrong pin** — a clean null on every metric (within 1 strike 30%, converged 20%). Only
+  **max-pain** matters, and it beats raw 14:30-spot persistence only modestly (median 33 vs 41 pt).
+- **Freeze-time sweep (13:45 / 14:00 / 14:30 / 15:00) confirms it.** At *every* lock spot is already a
+  median 17–24 pt from the pin. Later locks only *look* better (converged 17%→40%, close 47→35 pt) because
+  the pin is frozen closer to the close it's "predicting" — the pull isn't stronger late, you're just
+  giving it less time to wander (and max-pain keeps re-centering on spot through the afternoon). 14:30 is
+  the best of the bunch: the only lock where the pin clearly beats persistence (60%) while still a genuine
+  1-hour-out forecast.
+
+**Conclusion:** max-pain is a **descriptive map** of where price already sits by early-to-mid afternoon,
+**not a magnet that drags the final hour** — no significant last-hour direction at any freeze. Same shape
+as #12 (pinning is stickiness, not attraction) and #25 (the POC is its own mirror): a legitimate
+decision-support level, never a directional trigger. Sign-free of the landmine.
+
+## Study #27 — MARKET PROFILE × the expiry PIN: is the mid-day "buy the pin strike toward the pin" trade profitable, and does POC↔pin / morning TPO shape inform the TRUE blasts?  → NO trade (worse than its mirror); morning shape = mild persistence only
+`scripts/analyze_pin_poc_trade.py`, 116 NIFTY expiries (2021-07→2026-06). Combines #25 (TPO/POC) with #26
+(the pin). Two questions, both sign-free.
+
+**Q1 — the trade: a systematic loser.** At 12:15, *when spot sits on the developing POC* (within ½ strike,
+50/116 days), buy the NAKED option struck **at** the max-pain pin in the pin's direction (pin above → CALL,
+below → PUT), hold to close, P&L = the real 1-min traded premium of that exact strike.
+
+| | n | win% | mean | median | best |
+|---|---:|---:|---:|---:|---:|
+| **PIN-dir @ POC touch** (the trade) | 38 | **8%** | **−57%** | **−99.6%** | +916% |
+| MIRROR placebo (wrong side, same distance) | 39 | 26% | +2.8% | −99.5% | +1187% |
+| PIN-dir, all days (no POC filter) | 89 | 18% | −25% | −99.6% | +986% |
+
+It fails on **two** independent counts: (1) **price doesn't run to the pin from mid-day — it drifts away**:
+the sign-free check shows spot moving *toward* the pin from 12:15→close only **42%** of the time (net drift
+*away*; the #26 last-30-min lean does not extend to the whole afternoon); (2) **an option struck AT the pin
+pays only on an OVERSHOOT** — if the pin is a magnet and price stops on it, the pin-struck option decays to
+~0 (median −99.6%). The tell that kills it: the **MIRROR placebo (deliberately wrong side) beats the real
+trade** (+2.8% vs −57%), because the net drift is *away* from the pin. Not a setup — a theta donation.
+(Premiums are MID/LTP; real expiry-afternoon fills are worse, so the true P&L is worse still.)
+
+**Q2 — does |POC−pin| or the morning TPO shape inform the TRUE blasts?** Spearman IC of a mid-day structure
+feature vs the post-trigger outcome, within TRUE-graded 0-DTE afternoon crossings (>12:15, point-in-time).
+**Trust the day-collapsed column** (279 crossings cluster into **90 days**; per-crossing double-counts busy
+days):
+
+| feature | per-crossing (cont / mult) | **day-collapsed n=90 (cont / mult)** |
+|---|---:|---:|
+| \|POC − pin\| (pts) | +0.04 / +0.05 | **+0.21 / +0.27** |
+| VA-width / range (shape) | +0.24 / +0.18 | **+0.25 / +0.22** |
+| morning #modes | +0.19 / +0.18 | +0.15 / +0.24 |
+| morning POC concentration | −0.12 / −0.16 | −0.09 / −0.25 |
+
+A **mild, consistent** day-level tilt (all ~+0.2–0.27, ~2 SE at n=90): a **directional / un-pinned morning**
+— wide value area, more modes, low POC concentration, POC sitting *far* from the pin — precedes TRUE
+afternoon blasts that continue further with bigger premium multiples. But *what it is* matters: "the morning
+trended → the afternoon break runs" is **vol/trend persistence** (the #13/#23 finding, positive
+morning→afternoon autocorr), read through a TPO lens — **not** information about the pin or POC specifically.
+At 8 ICs on 90 overlapping days with MID-fill multiples, it is a weak confirming hint, not a rule.
+
+**Quantifying "wide VA" (the normalisation question).** Three sensible normalisations of the morning
+value-area width, each controlling a different thing — and their day-collapsed IC vs the same TRUE-blast
+outcome:
+
+| score | what it controls for | day-collapsed IC (cont / mult) |
+|---|---|---:|
+| **VA-width ÷ POC** (≈ VA/price, the user's "VA/POC") | index *level* (24k vs Sensex 80k) → absolute width comparable across days/indices | +0.15 / +0.27 |
+| **z-score of VA-width÷POC** vs the sample | *regime* ("wider than a typical morning") | +0.15 / +0.27 |
+| **VA-width ÷ day-range** (`va_width_pct`) | level *and* vol → a pure day-*type* score (rotational↔directional, 0–1) | **+0.25 / +0.22** |
+| \|POC−pin\| ÷ VA-width (pin gap in VA-widths) | expresses the pin as "inside/outside value" | +0.15 / +0.07 (weaker than raw pts) |
+
+Two honest takeaways: **(i)** the z-score and VA÷POC give *identical* IC — because **Spearman is
+rank-invariant**, so on a single homogeneous NIFTY sample dividing by price or z-scoring does **not** change
+a rank test. Normalisation earns its keep for *cross-index comparability, fixed thresholds, and any
+linear/ML combination* — not for the rank IC here. **(ii)** For a single "wide-VA" number, **VA-width ÷
+day-range** is the best day-*type* score (it's the strongest and needs no external scale), and **VA-width ÷
+POC (z-scored vs trailing days)** is the right *absolute-width regime* score for pooling across price levels
+/ indices. Normalising the **pin↔POC gap by VA-width did *not* help** (+0.15/+0.07 < raw +0.21/+0.27) — keep
+that gap in points (or % of POC).
+
+**Conclusion:** the combined MP×pin play does not produce an edge — the mid-day pin trade loses (worse than
+its mirror, because price drifts off the pin and a pin-struck option needs an overshoot), and the morning
+distribution's mild link to TRUE-blast follow-through is trend persistence, not a pin/POC signal. Consistent
+with #25/#26: TPO and the pin are decision-support *maps*, not triggers. The normalisation work stands on its
+own as the recommended way to score "wide VA" going forward (VA÷range for day-type; VA÷POC z-scored for
+regime). Sign-free of the landmine.
