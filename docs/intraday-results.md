@@ -856,3 +856,39 @@ distribution's mild link to TRUE-blast follow-through is trend persistence, not 
 with #25/#26: TPO and the pin are decision-support *maps*, not triggers. The normalisation work stands on its
 own as the recommended way to score "wide VA" going forward (VA÷range for day-type; VA÷POC z-scored for
 regime). Sign-free of the landmine.
+
+## Study #28 — the user's replay-observed TRUE-blast SETUP: pin on spot at 13:45 → runs to POC, effective when pin is OUTSIDE value, |pin−POC| large, double-distribution  → SETUP mostly holds (mild); the "runs to POC" DIRECTION inverts
+`scripts/analyze_blast_pin_va.py`, **208 labelled NIFTY expiries** (2021-07→2026-07). From watching TRUE-blast
+replays the user proposed: at the 13:45 lock spot sits on the expiry pin and then runs toward POC, and the blast
+is *effective* when the pin is **outside the value area**, **|pin−POC| is large**, and the morning is a
+**double-distribution**. This is the 13:45-lock, TRUE-vs-FAKE angle on #27's structure features (which measured
+continuation *within* TRUE crossings). Unit = the expiry day, split TRUE-GB vs FAKE-GB by the blast_ml afternoon
+(≥13:45) 0-DTE crossings (TRUE = at least one reached a sustaining score — the same tag the replay practice-drill
+uses); features frozen at 13:45 (developing TPO profile + max-pain pin). Sign-free; the afternoon move is a MID
+underlying magnitude. **Base rate is TRUE-GB 77%** (the label is TRUE-heavy → not very selective, so read lifts,
+not absolute rates).
+
+- **Spot IS on the pin at 13:45 — CONFIRMED (mild):** median |spot−pin| **21 pt** vs |spot−POC| 29 pt (spot sits
+  nearer the pin).
+- **"…then runs to POC" — INVERTED:** spot moves *toward* the 13:45 POC only **44%** of days (p=0.11), and just
+  **35%** when the pin is outside VA — so on the effective days it blasts **further away from POC** (past the pin,
+  out of value), it does not revert to value. TRUE-GB days move toward POC *less* than FAKE (43% vs 47%). Same
+  drift-off-the-pin geometry as #26; the effective blast is a **breakout that continues away from value**, not a
+  pin→POC reversion. (The one piece of the intuition that reverses — trading it as a reversion would be wrong.)
+- **Pin OUTSIDE VA → CONFIRMED (mild):** TRUE-GB **83% vs 75%** (+8 pp), afternoon move 0.22% vs 0.18%.
+- **Larger |pin−POC| → PARTIAL:** non-monotone by tercile (78 / 70 / **84**%) — only the top tercile
+  (38–278 pt) lifts (and has the biggest move, 0.26%); Spearman IC(|pin−POC|, TRUE) = **+0.08** (weak).
+- **Double-distribution morning → CONFIRMED (strongest):** TRUE-GB **80% vs 68%** (+12 pp), move 0.20% vs 0.13%.
+- **Combined setup (pin outside VA · |pin−POC|≥median · double-dist):** the strongest cell — **85%** TRUE-GB and
+  0.24% move vs 77%/0.18% for everything else — but **n=48, p vs base = 0.23** (not significant).
+
+**Conclusion:** the *setup* the user reads off replays is **supported as a mild, consistent tendency** — pin out
+of value + wide pin–POC gap + double-distribution associate with more/bigger blasts, and the continuous
+afternoon-move medians corroborate every cell (effective cells move larger), so it is not noise. But two honest
+limits: the "runs to POC" **direction is reversed** (effective blasts run *away* from value), and the three
+"conditions" **co-move** — a double-distribution day with the pin far outside value *is* one underlying
+directional/trend-day factor, the #13/#27 persistence story seen through the pin/VA lens, not three independent
+edges. Against a 77% base rate the lifts are real in direction but modest and individually non-significant. Fits
+the arc: a legitimate **regime/day-type read** (this day is set up to trend, so a break is likelier to run than
+fade), never a directional trigger. This is exactly the mild prior the dashboard already surfaces as the PINNED /
+UN-PINNED "Day-type context" under the blast verdict (§4.6 of docs/simple-dashboard.md). Sign-free of the landmine.
