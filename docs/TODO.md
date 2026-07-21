@@ -5,6 +5,51 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-21 IST — [W1] Expiry-week value overlay (upgrade the "5-day composite")  ⏳ TODO (visual only; Study #29 `docs/intraday-results.md`)
+
+**Why:** Study #29 computed the value profile at the **option-expiry-weekly** frequency (Wed→Tue for a
+NIFTY Tuesday expiry) and found the useful content is a *map*, not a signal: spot sitting **outside the
+weekly value area** (+9 pp FAST-TRUE) and a wide **|pin − weekly-POC| gap** (monotone, IC +0.15) are a
+mild trend-day tendency — but the combined cell is **n.s. (p=0.43)** and it's the same prior the blast
+verdict already shows as PINNED/UN-PINNED. So the defensible dashboard change is to make the *weekly value
+area itself* a cleaner reference layer, and **NOT** add any new verdict/trigger text. The dashboard already
+has a "📊 5-day value (composite)" toggle (`simp_weekly`), but it's a plain trailing-5-days composite on the
+base 5-pt bin — this task corrects it to the true expiry-week boundary and the session-comparable bin.
+
+**Build (contained, purely visual — do NOT touch the blast verdict / `_pin_context_line`):**
+1. **Factor Study #29's helpers into `app/market_profile.py`** (reuse, single source):
+   - `expiry_week_days(symbol, source, today) -> list[str]` — trading days from **the day after the prior
+     expiry through `today`**, bounded to ≤9 calendar days of `today` (skip feature-cache gaps). Find the
+     prior expiry with `data.replay._expiry_cache(symbol)` (dte<0.6 set) and fall back to
+     `data.expiry.next_weekly_expiry` when the cache doesn't cover recent days — same dual path
+     `data.replay.is_expiry_day` already uses. Port `_week_days`/`WEEK_MAX_GAP=9` from
+     `scripts/analyze_weekly_profile_blast.py`.
+   - `weekly_bin(arr, base_bp, n_target=45)` — port `_weekly_bin`: coarsen to ~week_range/45 (≈10 pt for
+     NIFTY) so `_count_modes`/VA read at session grain, not the 100+-bin jitter of the 5-pt bin.
+2. **Rewire `overlay_profiles(..., weekly=True)`** (lines ~168-172): replace the `recent[-5:]` composite with
+   `expiry_week_days(...)` — each prior week-day's full session (`_spot_for`) **plus today's developing bars
+   ≤ now** (point-in-time; today's series is already fetched as `ts` for `today_prof`, reuse it), concat, and
+   `day_profile(pd.Series(arr), bin_pts=weekly_bin(arr, bp))`. Keep the graceful-None contract (short/empty
+   week → `weekly=None`). Add the week's day-count to the return dict (e.g. `"week_days": n`).
+3. **Relabel the UI "5-day"→"week"** — the toggle text/help (`app/simple_dashboard.py` ~449-451: "📊 Weekly
+   value (expiry week)"), the candle legend "5-day (5D·)" (~723-725), and the label prefixes inside
+   `_range_candle` where the weekly VAH/POC/VAL are drawn dotted (grep "5D" in `_range_candle`, ~1200-1260).
+   Keep the dotted style so week ≠ prior-day (dashed) ≠ today (solid).
+4. **Docs:** `docs/simple-dashboard.md` §4.6 — one line that the composite is now the true expiry-week (Wed→Tue)
+   value map, explicitly a **reference map, not a signal** (cite Study #29's n.s. combined result so nobody
+   reads the overlay as a trigger).
+5. **Tests (`tests/test_market_profile.py` or a new `tests/test_expiry_week.py`):** `expiry_week_days` returns
+   Wed→Tue for a known expiry and drops a >9-day cache gap; `weekly_bin` coarsens a wide-range week and floors
+   at `base_bp` for a narrow one; `overlay_profiles(weekly=True)` on a replay/stored day yields a `weekly` dict
+   whose VAL≤POC≤VAH and `week_days≈5`, and `None` when there's <2 week-days.
+
+**Explicitly out of scope:** any spot-vs-weekly-value or pin↔weekly-POC **distance readout / chip / verdict
+line** — that would dress the n.s. Study #29 tendency as a signal (same reason #26/#28 stayed maps). Revisit
+only if a future study makes the weekly distance significant. Effort: low–med (one overlay path + labels +
+tests; no engine, no new capture). Sign-free; point-in-time; decision-support only.
+
+---
+
 ## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ✅ DONE (2026-07-15 — `scripts/backtest_gamma_blast.py` on the 1-min entry model; verdict: real selector, NOT tradeable after spread — see gamma-blast-research.md §7e)
 
 **Result:** built the 1-min crossing/trajectory primitives (`scripts/_blast1min.py`), the 1-min timing
