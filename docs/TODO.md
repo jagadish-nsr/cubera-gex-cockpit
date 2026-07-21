@@ -5,6 +5,70 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-22 IST — [W2] Big-money FUTURES tape (live websocket)  ⏳ TODO (gate green — feed entitlement CONFIRMED)
+
+**Why:** the live complement to our stored-tick studies — surface **unusually large activity** in the
+index futures in real time. Honest framing (the landmine): retail feeds are **aggregated broadcast**, so
+we CANNOT see orders or participant identity — only large **prints** (single-tick LTQ) and **bursts**
+(volume/OI clustered in seconds). So this is a *large-trade / unusual-activity tape*, an inference of big
+money, NOT literal order tracking. A big print is also **direction-ambiguous** (a ₹cr sell could be a
+hedge); the most we honestly add is **aggressor side** via best bid/ask (Lee-Ready). Report the flow,
+never predict from it — same sign-free discipline as the dealer-sign landmine. Scope decided with the user:
+**NIFTY + BankNifty CURRENT-EXPIRY FUTURES only** — options are deferred because you can't separate a
+directional print from a hedge/spread leg in the chain; futures are one clean directional instrument each.
+
+**Gate — DONE (2026-07-21):** live Market-Feed websocket entitlement CONFIRMED via `scripts/dhan_ws_probe.py`;
+all tiers flow (Ticker/Quote/Full), little-endian, **LTQ (Quote) + 5-level bid/ask (Full) both available**, so
+the ₹ filter AND aggressor-side are buildable. Endpoint/format/ids in the `dhan-live-ws-feed` memory.
+
+**Architecture (decoupled — Streamlit can't hold a long-lived socket; reuse the "collector → file store →
+dashboard reads" shape of the live pipeline):**
+```
+Dhan WS ─► collector (always-on) ─► append-only event store (JSONL/day) + in-mem ring ─► dashboard tape fragment
+           decode → ₹/burst filter → aggressor tag              (tails last N events, auto-refresh, filters)
+```
+
+**Build (smallest-first):**
+1. **`data/dhan_feed.py` — the WS client + decoder** (new; keep raw, no SDK, mirror `data/dhan.py` secret
+   handling). `connect()` builds the v2 URL from `_secret` token + client id (NEVER logged), subscribes to the
+   two futures from `near_month_future_id("NIFTY"/"BANKNIFTY")`. A `decode(frame)` for the binary packets
+   (header @0, LTP float32 @8, little-endian — calibrate LTQ/volume/bid-ask offsets from the probe's raw hex
+   FIRST, verify vs a live Quote/Full packet). Reconnect + daily-token-refresh loop (24h cap, same as REST).
+   ⚠️ non-blocking recv with a drop/coalesce policy — packet rate is highest exactly during the bursts we care
+   about (measure it live first, see VERIFY).
+2. **`app/big_money.py` — the filter (pure, testable)**. `notional = ltp * ltq * lot` (lot from the resolved
+   contract). Two filters: (a) **absolute single-print** ≥ a per-index ₹ floor (named constants, CALIBRATE on
+   day-1 real tape — 1 NIFTY lot ≈ ₹15.7L, 1 BankNifty lot ≈ ₹17.4L, so a "big" print is tens of lots ≈ few
+   ₹cr); (b) **relative burst** — Δvolume over a K-sec window ≥ X× the instrument's rolling-median trade size
+   (catches sliced/iceberg orders). `aggressor(ltp, bid, ask)` → buy/sell-initiated (Lee-Ready; None if
+   inside the spread). Every fired event records the raw fields that tripped it (make-state-visible / fail-loud).
+3. **`scripts/run_big_money_collector.py` — the always-on process**. Wires client→filter→store: append each
+   qualifying event to `data/journal/big_money/<SYMBOL>/<day>.jsonl` (gitignored) with the EXCHANGE tick
+   timestamp (not receipt time; note latency), plus a small in-memory ring for freshness. `--dry-run` prints to
+   console (the day-1 calibration run). Graceful on close/disconnect; logs packet-rate stats on exit.
+4. **`app/simple_dashboard.py` — the tape fragment (read-only)**. A "🐋 Big-money tape" card that tails the
+   event store (last N events), one timestamped row each: `HH:MM:SS · index · ▲buy/▼sell · N lots · ₹X.Xcr ·
+   @price`, colour by side, newest on top. Filters row: index / min-notional / side. Auto-refresh like the
+   other live panels. Purely a readout — **no verdict, no trade call** (decision-support; you confirm).
+5. **Tests** (`tests/test_big_money.py`): `notional`/`aggressor` hand-checks; abs floor fires at threshold and
+   not below; relative burst on a synthetic volume series; a decoder round-trip on a captured sample packet
+   (hex fixture) so the offsets are pinned. Store read/write + graceful-missing-file.
+6. **Docs:** `docs/big-money-tape.md` — the honest-framing preamble (prints not orders; direction-ambiguous),
+   the filter definitions + calibrated floors, the field/format reference (from the probe), and the run recipe.
+
+**VERIFY-live before trusting (never guess):** (a) tick-RATE during 09:15–15:30 IST — re-run
+`dhan_ws_probe.py 30` live to size throughput/backpressure (closed-market probe can't show it); (b) the exact
+Quote/Full field offsets past LTP (LTQ/volume/bid/ask) against a live packet; (c) re-resolve the futures ids
+each session (they roll — the probe already does). Token 24h-capped → collector needs re-paste/reconnect.
+
+**Out of scope (deferred, note so it's not a silent gap):** the options chain (hedge-vs-directional
+unknowable); **next-month roll** — "current expiry only" thins in the last 1–2 days as liquidity rolls, so
+late-cycle big prints migrate to the contract we're not watching (add auto-roll / next-month later); any
+auto-execution (staged, human-confirm only — hard rule). Effort: med (new WS decoder is the real work; filter +
+tape are small). Sign-free; decision-support only. Phasing: 1→2→(3 dry-run, calibrate floors)→4.
+
+---
+
 ## 2026-07-21 IST — [W1] Expiry-week value overlay (upgrade the "5-day composite")  ⏳ TODO (visual only; Study #29 `docs/intraday-results.md`)
 
 **Why:** Study #29 computed the value profile at the **option-expiry-weekly** frequency (Wed→Tue for a
