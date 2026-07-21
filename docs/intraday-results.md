@@ -892,3 +892,39 @@ edges. Against a 77% base rate the lifts are real in direction but modest and in
 the arc: a legitimate **regime/day-type read** (this day is set up to trend, so a break is likelier to run than
 fade), never a directional trigger. This is exactly the mild prior the dashboard already surfaces as the PINNED /
 UN-PINNED "Day-type context" under the blast verdict (§4.6 of docs/simple-dashboard.md). Sign-free of the landmine.
+
+## Study #29 — the value profile at the OPTION-EXPIRY-WEEKLY frequency (Wed→Tue) vs FAST-TRUE blasts  → the #28 geometry re-expressed as a DISTANCE (spot-out-of-weekly-value +9pp, |pin−wPOC| monotone IC+0.15); the binary pin-out-VA / double-dist DIE at weekly frequency; still a mild sign-free tendency, n.s. combined
+`scripts/analyze_weekly_profile_blast.py`, **208 labelled NIFTY expiries** (2021-07→2026-07). Every prior TPO study
+built the profile from a single session (the expiry morning ≤ the lock). Here the **frequency is the expiry week**:
+for a NIFTY Tuesday expiry the week runs **Wednesday → Tuesday** (day after the prior expiry, through this expiry).
+We aggregate all 1-min spot across that week and compute **one POC / value area** for it — a full week of price
+acceptance, a steadier value read than a half-day developing profile. **Point-in-time:** the weekly profile is frozen
+at the expiry-day **13:45 lock** (every prior week-day's full session + the expiry morning ≤13:45); the outcome fires
+strictly after, so features never see it. Target = **FAST-TRUE** (from `analyze_blast_speed.py`): an expiry day where
+at least one 0-DTE afternoon (≥13:45) crossing ignited to a sustaining grade **within ≤10 min** of the cross
+(`k_true∈{1,2}`). **Base rate FAST-TRUE 48%** — far more selective/balanced than plain-TRUE's 77%, so lifts are
+readable (a coin-flip is the right null). Weekly bin coarsened to ~10 pt (~45 bins) so POC/VA/shape read at
+session-comparable grain — the 5-pt session bin over a ~500-pt week makes `_count_modes` see every jitter as a mode.
+
+- **Spot OUTSIDE the weekly value area at 13:45 → CONFIRMED (the cleanest, big n):** FAST-TRUE **52% vs 43%** (+9 pp;
+  n=104/104), any-TRUE 86% vs 69%. Price already carried beyond where the week accepted value ⇒ a faster, sustaining
+  afternoon break is likelier.
+- **Larger |pin − weekly POC| → CONFIRMED, MONOTONE (best):** FAST-TRUE by tercile **39 → 46 → 57%** (low→high),
+  Spearman IC = **+0.15**. The widest pin↔weekly-POC gaps ignite fastest.
+- **Pin OUTSIDE the weekly VA → DEAD:** 47% vs 48% (−1 pp). The weekly VA is wide (median **220 pt ≈ 50%** of the
+  week's range), so "pin outside it" is a blunt, rare condition and carries no signal — unlike the *morning* VA where
+  pin-out-VA was #28's +8 pp winner.
+- **Weekly day-type shape → NULL:** the binary double-distribution **saturates** (99% of weeks have ≥2 modes — over a
+  week almost everything is multi-modal, so it can't discriminate). The meaningful weekly axis, VA-width/week-range
+  (narrow = directional week), is **non-monotone** (38 / 58 / 47%), IC +0.06 — null.
+- **Combined (spot outside weekly VA · |pin−wPOC|≥median):** 52% vs 45% (+7 pp) but **n=80, p vs base = 0.43** — not
+  significant, same as #28's combined cell.
+
+**Conclusion:** the expiry-week lens keeps #28's underlying story — *price displaced from accepted value → likelier a
+fast, sustaining break* — but **re-expresses it as a continuous DISTANCE, not a binary**. What flips vs the morning
+profile is instructive: the wide weekly value area kills the binary "pin outside VA" (blunt at this frequency) and the
+mode-count saturates, while the *continuous* distances (spot out of weekly value +9 pp; |pin ↔ weekly-POC| monotone,
+IC +0.15) survive cleanly and with big n. It's the **same mild, sign-free trend-day tendency at a steadier frequency,
+not a new edge** — the co-moving pieces don't reach significance when combined. Fits the arc: a legitimate
+regime/day-type read (this week is set up to trend, so the expiry break is likelier to run fast), never a directional
+trigger. Sign-free of the landmine; the afternoon move is a MID underlying magnitude (real fills worse).
