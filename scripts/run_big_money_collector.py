@@ -1,123 +1,134 @@
-"""Big-money futures tape — the always-on collector ([W2], docs/big-money-tape.md).
+"""Big-money futures tape — headless collector ([W2], docs/big-money-tape.md).
 
-Wires the live Dhan feed → decoder → filter → event store: subscribes to the CURRENT-EXPIRY NIFTY +
-BankNifty futures at the Full tier, decodes each packet, and appends every qualifying big-money Event
-(single PRINT ≥ ₹floor, or a sliced BURST over the window) to data/journal/big_money/<SYMBOL>/<day>.jsonl
-— which the dashboard tape fragment tails. Prints each event live too.
+A thin CLI over app.big_money_live.Collector (the same engine the dashboard auto-starts): streams the
+current-expiry NIFTY / BankNifty / SENSEX futures, saves EVERY raw Quote/Full tick to
+data/journal/big_money_raw/<SYM>/<day>.csv, and appends big prints/bursts to the JSONL event store.
 
-  python scripts/run_big_money_collector.py                 # run until Ctrl-C, write + print
-  python scripts/run_big_money_collector.py --dry-run       # print only, no store (day-1 calibration)
-  python scripts/run_big_money_collector.py --seconds 120   # stop after N seconds (a bounded test run)
-  python scripts/run_big_money_collector.py --show-all      # also print a compact heartbeat of ALL ticks
+  python scripts/run_big_money_collector.py                 # run until Ctrl-C
+  python scripts/run_big_money_collector.py --market-hours   # wait for 09:15 IST, stop at 15:30 IST (for a scheduled task)
+  python scripts/run_big_money_collector.py --dry-run        # print only — no raw, no events (calibration)
+  python scripts/run_big_money_collector.py --seconds 120    # bounded test run
+  python scripts/run_big_money_collector.py --print-floor 2000000 --burst-floor 5000000   # floor overrides
 
-Reconnects on drop (token is 24h-capped — repaste data/.dhan_token and it resumes on the next retry).
-Exchange tick time stamps each event. Sign-free; decision-support; NEVER auto-executes. Token not logged."""
+Reconnects on drop; token 24h-capped → repaste data/.dhan_token and it resumes on the next retry (so a
+scheduled run that starts before you paste the morning token will connect once it's there). Exchange
+tick time. Sign-free; decision-support; NEVER auto-executes. Token not logged."""
 
 from __future__ import annotations
 
 import argparse
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.big_money import BigMoneyDetector, append_event    # noqa: E402
-from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_futures  # noqa: E402
+try:                                                   # emojis/₹ in help + logs → utf-8 (cp1252 console/redirect)
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
+
+from app.big_money import IST                          # noqa: E402
+from app.big_money_live import Collector               # noqa: E402
+
+OPEN_MIN, CLOSE_MIN = 9 * 60 + 15, 15 * 60 + 30        # NSE/BSE 09:15–15:30 IST
+
+
+_LOGF = None            # optional file handle mirroring _print (for the scheduled task's log)
 
 
 def _print(s: str = "") -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
-        pass
     print(s, flush=True)
+    if _LOGF is not None:
+        try:
+            _LOGF.write(s + "\n")
+            _LOGF.flush()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _fmt(ev) -> str:
     arrow = {"buy": "▲BUY ", "sell": "▼SELL", None: "  •  "}[ev.side]
-    cr = ev.notional / 1e7
     lots = f"{ev.lots:.0f}L" if ev.lots is not None else "?"
     tag = "PRINT" if ev.kind == "print" else "BURST"
-    return (f"  {ev.ts_ist[11:]}  {ev.symbol:<9} {arrow} {tag}  {lots:>5}  ₹{cr:>5.2f}cr  @{ev.price:.1f}")
+    return f"  {ev.ts_ist[11:]}  {ev.symbol:<9} {arrow} {tag}  {lots:>5}  ₹{ev.notional/1e7:>5.2f}cr  @{ev.price:.1f}"
+
+
+def _market_window():
+    """Today's (open_epoch, close_epoch) in true epochs, or None on a weekend."""
+    now = datetime.now(IST)
+    if now.weekday() >= 5:
+        return None
+    o = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    c = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    return o.timestamp(), c.timestamp()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true", help="print only, do not write the store")
+    ap.add_argument("--dry-run", action="store_true", help="print only, no raw/events written")
+    ap.add_argument("--market-hours", action="store_true",
+                    help="wait for 09:15 IST, stop at 15:30 IST (for a scheduled daily task)")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = forever)")
-    ap.add_argument("--show-all", action="store_true", help="also print a heartbeat of all ticks")
     ap.add_argument("--symbols", default="NIFTY,BANKNIFTY,SENSEX")
-    ap.add_argument("--print-floor", type=float, default=None,
-                    help="₹ single-print floor for ALL symbols (calibration override)")
-    ap.add_argument("--burst-floor", type=float, default=None,
-                    help="₹ window-burst floor for ALL symbols (calibration override)")
+    ap.add_argument("--print-floor", type=float, default=None, help="₹ single-print floor (all symbols)")
+    ap.add_argument("--burst-floor", type=float, default=None, help="₹ window-burst floor (all symbols)")
+    ap.add_argument("--log", action="store_true",
+                    help="also append output to data/journal/big_money_logs/ (auto-on for --market-hours)")
     args = ap.parse_args()
 
-    symbols = tuple(s.strip() for s in args.symbols.split(",") if s.strip())
-    contracts = resolve_futures(symbols)
-    if not contracts:
-        _print("✗ No futures resolved from the scrip master. Aborting."); return
-    for c in contracts.values():
-        _print(f"  watching {c['symbol']:<9} id={c['security_id']} lot={c['lot']} exp={c['expiry']}")
-    _print(f"  mode: {'DRY-RUN (no store)' if args.dry_run else 'LIVE → data/journal/big_money/'}"
-           f"{'  · stop in %.0fs' % args.seconds if args.seconds else '  · Ctrl-C to stop'}\n")
+    global _LOGF
+    if args.log or args.market_hours:
+        ld = ROOT / "data" / "journal" / "big_money_logs"
+        ld.mkdir(parents=True, exist_ok=True)
+        _LOGF = open(ld / f"collector-{datetime.now(IST):%Y-%m-%d}.log", "a", encoding="utf-8")
 
+    symbols = tuple(s.strip() for s in args.symbols.split(",") if s.strip())
     pf = {s: args.print_floor for s in symbols} if args.print_floor is not None else None
     bf = {s: args.burst_floor for s in symbols} if args.burst_floor is not None else None
-    detector = BigMoneyDetector(contracts, print_floor=pf, burst_floor=bf)
-    if pf or bf:
-        _print(f"  floors overridden: print={args.print_floor} burst={args.burst_floor}\n")
-    import websocket
 
-    deadline = time.time() + args.seconds if args.seconds else None
-    n_pkt = n_ev = 0
-    while deadline is None or time.time() < deadline:
-        try:
-            ws = connect(contracts, tiers=(SUB_FULL,))
-        except RuntimeError as e:
-            _print(f"✗ {e}"); return
-        except Exception as e:  # noqa: BLE001 - handshake/network → retry
-            _print(f"  connect failed ({type(e).__name__}); retrying in 5s…")
-            time.sleep(5); continue
-        _print("  ✓ connected — streaming.")
-        ws.settimeout(2.0)
-        try:
-            while deadline is None or time.time() < deadline:
-                try:
-                    opcode, frame = ws.recv_data()
-                except websocket.WebSocketTimeoutException:
-                    continue
-                if opcode == websocket.ABNF.OPCODE_CLOSE:
-                    _print("  server closed; reconnecting…"); break
-                if not isinstance(frame, (bytes, bytearray)) or len(frame) < 8:
-                    continue
-                tick = decode_packet(bytes(frame))
-                if tick is None:
-                    continue
-                n_pkt += 1
-                if args.show_all and tick.ltp:
-                    _print(f"    · {tick.name:<9} {tick.security_id} ltp={tick.ltp:.1f} "
-                           f"ltq={tick.ltq} vol={tick.volume}")
-                for ev in detector.on_tick(tick):
-                    n_ev += 1
-                    _print(_fmt(ev))
-                    if not args.dry_run:
-                        append_event(ev)
-        except KeyboardInterrupt:
-            _print("\n  stopped by user."); break
-        except Exception as e:  # noqa: BLE001 - stream error → reconnect
-            _print(f"  stream error ({type(e).__name__}: {str(e)[:120]}); reconnecting…")
-        finally:
-            try:
-                ws.close()
-            except Exception:  # noqa: BLE001
-                pass
-        if deadline is not None and time.time() >= deadline:
-            break
+    stop_at = None
+    if args.market_hours:
+        win = _market_window()
+        if win is None:
+            _print("Weekend — market closed. Nothing to collect."); return
+        open_e, stop_at = win
+        now = time.time()
+        if now >= stop_at:
+            _print("Past 15:30 IST — market closed for today. Nothing to collect."); return
+        if now < open_e:
+            wait = open_e - now
+            _print(f"Waiting {wait/60:.0f} min for 09:15 IST open "
+                   f"(now {datetime.now(IST):%H:%M} IST) …")
+            time.sleep(wait)
+    elif args.seconds:
+        stop_at = time.time() + args.seconds
 
-    _print(f"\n  done — {n_pkt} packets, {n_ev} big-money events.")
+    col = Collector(symbols=symbols, save_raw=not args.dry_run, persist_events=not args.dry_run,
+                    print_floor=pf, burst_floor=bf, on_event=lambda ev: _print(_fmt(ev)))
+    _print(f"  mode: {'DRY-RUN (no writes)' if args.dry_run else 'LIVE → raw + events'}"
+           f"{'  · stop at 15:30 IST' if args.market_hours else ''}"
+           f"{'  · floors print=%s burst=%s' % (args.print_floor, args.burst_floor) if (pf or bf) else ''}")
+    col.start()
+
+    last_beat = 0.0
+    try:
+        while col.status.running and (stop_at is None or time.time() < stop_at):
+            time.sleep(2.0)
+            if time.time() - last_beat >= 60:         # heartbeat so a scheduled log shows liveness
+                s = col.status
+                _print(f"  · {datetime.now(IST):%H:%M} IST · {'live' if s.connected else (s.error or 'connecting')}"
+                       f" · {s.n_raw:,} raw · {s.n_events} events · ticks {s.per_symbol}")
+                last_beat = time.time()
+    except KeyboardInterrupt:
+        _print("\n  stopped by user.")
+    finally:
+        col.stop()
+        time.sleep(1.5)                               # let the final raw flush land
+    s = col.status
+    _print(f"\n  done — {s.n_raw:,} raw ticks, {s.n_events} big-money events. ticks {s.per_symbol}")
 
 
 if __name__ == "__main__":

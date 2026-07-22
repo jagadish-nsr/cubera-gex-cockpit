@@ -80,9 +80,14 @@ class Collector:
     """Streams the futures feed in a background thread: decode → save raw → filter → append Event.
     Reconnects on drop (token is 24h-capped — repaste data/.dhan_token and it resumes)."""
 
-    def __init__(self, symbols=DEFAULT_SYMBOLS, save_raw: bool = True):
+    def __init__(self, symbols=DEFAULT_SYMBOLS, save_raw: bool = True, persist_events: bool = True,
+                 print_floor=None, burst_floor=None, on_event=None):
         self.symbols = tuple(symbols)
         self.save_raw = save_raw
+        self.persist_events = persist_events          # False = don't write the JSONL (dry-run)
+        self.print_floor = print_floor                # None → module defaults (per-symbol)
+        self.burst_floor = burst_floor
+        self.on_event = on_event                      # optional callback(Event) for live printing
         self.status = Status(symbols=self.symbols, save_raw=save_raw)
         self._stop = threading.Event()
         self._raw = _RawWriter()
@@ -105,7 +110,8 @@ class Collector:
             self.status.running = False
             return
         self.status.per_symbol = {c["symbol"]: 0 for c in contracts.values()}
-        detector = BigMoneyDetector(contracts)
+        detector = BigMoneyDetector(contracts, print_floor=self.print_floor,
+                                    burst_floor=self.burst_floor)
         while not self._stop.is_set():
             try:
                 ws = connect(contracts, tiers=(SUB_FULL,))
@@ -151,7 +157,10 @@ class Collector:
                             "tot_buy_qty": tick.tot_buy_qty, "tot_sell_qty": tick.tot_sell_qty})
                         self.status.n_raw += 1
                     for ev in detector.on_tick(tick):
-                        append_event(ev)
+                        if self.on_event:
+                            self.on_event(ev)
+                        if self.persist_events:
+                            append_event(ev)
                         self.status.n_events += 1
                     self._raw.flush()
             except Exception as e:                          # noqa: BLE001 - stream error → reconnect

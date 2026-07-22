@@ -22,6 +22,14 @@ auto-started from the dashboard via `st.cache_resource` (one singleton/server; s
 health strip (connected · last-tick age · events · raw-ticks · per-symbol tick counts). Optimised
 startup: `resolve_futures` now downloads the scrip master ONCE (was 3×). 251 tests green.
 
+**+ Ops (2026-07-22):** `scripts/run_big_money_collector.py --market-hours` (IST-aware: waits 09:15,
+stops 15:30, auto-logs) now runs the shared `Collector` (raw + events); `scripts/install_collector_schedule.ps1`
+registers a Windows weekday task (fires 03:15 local → collector waits for open; DST-robust since it waits
+in IST); `scripts/big_money_summary.py` reports the print/burst notional distributions (→ suggested p99
+floors) + biggest prints + buy-vs-sell signed flow (the directional lean) for calibration. **Storage:**
+raw ticks = append CSV (future: daily Parquet compaction); big-money events (the directional history) =
+JSONL now, **SQLite is the recommended next step** (sparse, queryable across days).
+
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the
 current token (a NIFTY control on the same connection ticks) — BSE live data is a separate Dhan

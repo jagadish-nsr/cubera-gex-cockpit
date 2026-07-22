@@ -108,17 +108,54 @@ never logged). Subscribe JSON: `{"RequestCode": 15|17|21, "InstrumentCount": n, 
 
 Feed codes: 2 Ticker · 4 Quote · 5 OI · 6 PrevClose · 7 MktStatus · 8 Full · 50 Disconnect.
 
-## Run recipe
+## Scheduled auto-collection (headless, every trading day)
+
+`scripts/run_big_money_collector.py --market-hours` is **IST-aware**: it waits for the 09:15 IST open
+and stops at 15:30 IST, so a scheduled trigger only has to fire *before* open. Register the Windows task:
 
 ```
-# verify entitlement / see the tiers (any time; snapshot packets arrive even when closed)
-python scripts/dhan_ws_probe.py 20
+powershell -ExecutionPolicy Bypass -File scripts\install_collector_schedule.ps1     # register (weekdays)
+powershell -File scripts\install_collector_schedule.ps1 -Remove                      # unregister
+```
 
-# run the tape (writes the store the dashboard reads); Ctrl-C to stop
-python scripts/run_big_money_collector.py
+Fires weekdays at **03:15 local**. Note this machine runs on **UK time (BST/GMT)**, which DST-shifts vs
+IST — so we trigger early and let the collector wait out the slack (robust across the DST change); it
+maps to ~07:45–08:45 IST year-round. `--market-hours` also auto-logs to
+`data/journal/big_money_logs/collector-<day>.log`. **Runs only when you are logged on**, and needs a
+**fresh Dhan token** each morning (24h cap) — the collector retries until a token is present, so paste
+it any time before/after open and it connects.
 
-# calibration dry-run (print only)
-python scripts/run_big_money_collector.py --dry-run --seconds 300 --print-floor 2000000
+## Daily summary & floor calibration
+
+```
+python scripts/big_money_summary.py                 # today, all symbols
+python scripts/big_money_summary.py 2026-07-23 NIFTY
+```
+
+Per symbol it reports tick count & span, the **single-print notional distribution** (→ a suggested
+PRINT floor at p99), the **10s-window traded-notional distribution** (→ a suggested BURST floor), the
+biggest prints, and **buy- vs sell-initiated traded notional** (Lee-Ready signed flow — the directional
+lean). Use the p99 suggestions to set `BIG_PRINT_FLOOR` / `BURST_FLOOR` in `app/big_money.py` once you
+have a full, representative session.
+
+## Storage & scale (why not one big database?)
+
+Two very different streams, so two stores:
+
+- **Raw ticks** (~130k rows/symbol/day) live in append-only **CSV** per symbol/day — simple and
+  crash-safe for a live writer. At scale, compact each finished day to **Parquet** (columnar, ~5–10×
+  smaller, fast analytical scans) rather than a row-store DB; per-tick `INSERT` into SQLite is slower
+  than an append and worse for full-column scans. *(Daily Parquet compaction is a clean future add.)*
+- **Big-money events** (sparse — dozens/day) are the **directional history** worth querying across days
+  ("net buy vs sell flow by day", "all bursts > ₹5cr this week"). Those belong in **SQLite** — tiny,
+  indexed, and queryable — a good next step over the JSONL store. The JSONL is fine until then.
+
+## Run recipe (manual)
+
+```
+python scripts/dhan_ws_probe.py 20                                  # verify entitlement / tiers
+python scripts/run_big_money_collector.py                          # run until Ctrl-C (raw + events)
+python scripts/run_big_money_collector.py --dry-run --print-floor 2000000   # calibration, no writes
 ```
 
 The dashboard shows the tape automatically once the collector is writing today's store.
