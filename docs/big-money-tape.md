@@ -1,8 +1,28 @@
 # Big-money futures tape ([W2])
 
-A live **large-trade / unusual-activity tape** for the NIFTY + BankNifty **current-expiry futures**,
-off the Dhan v2 Market-Feed websocket. When a trade (or a short burst of trades) is unusually large,
-it's stamped with the exchange time and shown on the dashboard.
+A live **large-trade / unusual-activity tape** for the NIFTY + BankNifty + SENSEX **current-expiry
+futures**, off the Dhan v2 Market-Feed websocket. When a trade (or a short burst of trades) is
+unusually large, it's stamped with the exchange time and shown on the dashboard.
+
+**Auto-starts with the dashboard.** Ticking *🐋 Big-money tape (live, auto)* in the sidebar (default on)
+launches a single background collector thread (via `st.cache_resource`, one per server) that streams the
+feed, flags big prints/bursts, **and archives every raw tick**. No separate process to run. The tape card
+shows a live health strip (connected · last-tick age · event count · raw-ticks-saved · per-symbol tick
+counts). You can also run it headless with `scripts/run_big_money_collector.py`.
+
+## Why we archive raw ticks — Dhan has no historical tick data
+Verified against Dhan's own docs: the **historical** API bottoms out at **1-minute candles**
+(OHLC + volume + OI) and carries **no tick / trade / bid-ask history**. The live websocket is the ONLY
+source of tick + quote data, so the collector saves every Quote/Full tick to a per-day CSV
+(`data/journal/big_money_raw/<SYMBOL>/<day>.csv`, gitignored) — building the tick+quote archive Dhan
+won't sell you. Load it with `app.big_money_live.load_raw_ticks(symbol, day)`.
+
+## SENSEX needs the BSE live-data entitlement
+SENSEX is wired in (floors, defaults, tape), and its future resolves from the scrip master (BSE_FNO,
+lot 20). But **verify-live shows the websocket returns zero SENSEX packets** on the current token while a
+NIFTY control on the same connection ticks fine — BSE derivatives live data is a separate Dhan
+entitlement from NSE. So SENSEX shows **0 ticks** (flagged ⚠️ in the health strip) until BSE live-data is
+enabled on the plan; it then lights up automatically with no code change.
 
 ## Read this first — what it can and cannot be
 
@@ -59,9 +79,14 @@ Dhan WS ─► collector (always-on) ─► JSONL event store ─► dashboard t
   packets by `tests/test_dhan_feed.py` (hex fixtures). Little-endian.
 - **`app/big_money.py`** — the pure filter (`notional`, `classify_aggressor`, `_BurstTracker`,
   `BigMoneyDetector`) + the `Event` model + the JSONL store (`append_event` / `load_events`).
-- **`scripts/run_big_money_collector.py`** — the always-on process (reconnects; token 24h-capped →
-  repaste `data/.dhan_token` and it resumes). `--dry-run` prints without storing.
-- **`app/simple_dashboard.py::_big_money_tape_html`** — the full-width tape card (reads the store).
+- **`app/big_money_live.py`** — the always-on background SERVICE: `Collector` (daemon thread:
+  decode → save raw → filter → append Event, with reconnect + per-symbol tick counts) and
+  `load_raw_ticks`. Auto-started from the dashboard via `cache_resource`; also usable standalone.
+- **`scripts/run_big_money_collector.py`** — a headless one-shot runner of the same pipeline
+  (reconnects; token 24h-capped → repaste `data/.dhan_token` and it resumes). `--dry-run` prints
+  without storing; `--print-floor`/`--burst-floor` override floors for calibration.
+- **`app/simple_dashboard.py`** — `_get_big_money_collector` (the cache_resource singleton),
+  `_big_money_tape_html` (full-width tape card) + `_bm_status_html` (the live health strip).
 
 ## Feed format reference (v2, verified 2026-07-21/22)
 

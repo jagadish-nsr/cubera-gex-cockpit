@@ -48,7 +48,7 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="print only, do not write the store")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = forever)")
     ap.add_argument("--show-all", action="store_true", help="also print a heartbeat of all ticks")
-    ap.add_argument("--symbols", default="NIFTY,BANKNIFTY")
+    ap.add_argument("--symbols", default="NIFTY,BANKNIFTY,SENSEX")
     ap.add_argument("--print-floor", type=float, default=None,
                     help="₹ single-print floor for ALL symbols (calibration override)")
     ap.add_argument("--burst-floor", type=float, default=None,

@@ -20,7 +20,7 @@ import json
 import struct
 from dataclasses import dataclass
 
-from data.dhan import DHAN_SEGMENT, _secret, near_month_future_id
+from data.dhan import DHAN_SEGMENT, _secret, load_scrip_master, near_month_future_id
 
 FEED_URL = "wss://api-feed.dhan.co"
 # v2 subscribe request codes (what tier to ask for).
@@ -94,10 +94,12 @@ def decode_packet(frame: bytes) -> Tick | None:
 def resolve_futures(symbols=("NIFTY", "BANKNIFTY")) -> dict[int, dict]:
     """Current-expiry future per symbol from the scrip master (`near_month_future_id`), keyed by
     securityId → {symbol, security_id, lot, expiry, segment}. Skips a symbol with no active contract.
-    Re-resolve each session — contracts roll (the ids/lot/expiry change)."""
+    Re-resolve each session — contracts roll (the ids/lot/expiry change). Downloads the scrip master
+    ONCE for all symbols."""
     out = {}
+    master = load_scrip_master()
     for sym in symbols:
-        m = near_month_future_id(sym)
+        m = near_month_future_id(sym, master=master)
         if not m:
             continue
         out[int(m["security_id"])] = {"symbol": sym, "security_id": int(m["security_id"]),

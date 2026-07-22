@@ -266,19 +266,29 @@ DHAN_FUT_DIR = ROOT / "data" / "journal" / "dhan_futures"
 _FUT_MAX_DAYS = 90               # charts/intraday hard cap (both window size and lookback)
 
 
-def near_month_future_id(symbol: str = "NIFTY") -> dict | None:
-    """Look up the CURRENT near-month index-futures securityId (+ expiry, lot) from the Dhan
-    scrip master. The active contract is the only one whose intraday history is fetchable —
-    expired contracts drop out of the master, so futures intraday depth is ~one contract life."""
+def load_scrip_master():
+    """The Dhan scrip master as a DataFrame (or None). Downloaded fresh; pass the result to
+    ``near_month_future_id(..., master=...)`` to resolve several symbols from ONE download."""
     import io
-    from datetime import date
     import requests
     import pandas as pd
-
     r = requests.get(_SCRIP_MASTER, timeout=90)
     if r.status_code != 200:
         return None
-    df = pd.read_csv(io.BytesIO(r.content), low_memory=False)
+    return pd.read_csv(io.BytesIO(r.content), low_memory=False)
+
+
+def near_month_future_id(symbol: str = "NIFTY", master=None) -> dict | None:
+    """Look up the CURRENT near-month index-futures securityId (+ expiry, lot) from the Dhan
+    scrip master. The active contract is the only one whose intraday history is fetchable —
+    expired contracts drop out of the master, so futures intraday depth is ~one contract life.
+    Pass a preloaded ``master`` (from ``load_scrip_master``) to avoid re-downloading per symbol."""
+    from datetime import date
+    import pandas as pd
+
+    df = master if master is not None else load_scrip_master()
+    if df is None:
+        return None
     f = df[(df["SEM_INSTRUMENT_NAME"] == "FUTIDX")
            & (df["SEM_TRADING_SYMBOL"].astype(str).str.startswith(f"{symbol}-"))].copy()
     if f.empty:

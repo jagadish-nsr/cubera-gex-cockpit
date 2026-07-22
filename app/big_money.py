@@ -28,9 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STORE_DIR = ROOT / "data" / "journal" / "big_money"     # gitignored (under data/journal/)
 
 # ₹ floors — PLACEHOLDER defaults, CALIBRATE on real tape. 1 NIFTY lot ≈ ₹15.7L, 1 BankNifty ≈ ₹17L,
-# so ₹1cr single print ≈ 6–7 lots. Burst floor is over a short window, so set it higher.
-BIG_PRINT_FLOOR = {"NIFTY": 1_00_00_000.0, "BANKNIFTY": 1_00_00_000.0}      # ₹1 crore single print
-BURST_FLOOR = {"NIFTY": 3_00_00_000.0, "BANKNIFTY": 3_00_00_000.0}         # ₹3 crore per window
+# 1 SENSEX ≈ ₹16L, so ₹1cr single print ≈ 6–7 lots. Burst floor is over a short window, so set higher.
+BIG_PRINT_FLOOR = {"NIFTY": 1_00_00_000.0, "BANKNIFTY": 1_00_00_000.0, "SENSEX": 1_00_00_000.0}
+BURST_FLOOR = {"NIFTY": 3_00_00_000.0, "BANKNIFTY": 3_00_00_000.0, "SENSEX": 3_00_00_000.0}
 BURST_WINDOW_S = 10.0
 _DEFAULT_FLOOR = 1_00_00_000.0
 IST = timezone(timedelta(hours=5, minutes=30))

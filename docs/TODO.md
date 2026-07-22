@@ -7,17 +7,27 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ## 2026-07-22 IST — [W2] Big-money FUTURES tape (live websocket)  ✅ CORE BUILT (2026-07-22 — decoder+filter+collector+dashboard+tests, proven live; remaining = calibrate floors, next-month roll)
 
-**Built (2026-07-22, proven end-to-end on the live feed during market hours):** `data/dhan_feed.py`
-(v2 WS client + binary decoder, offsets LOCKED by `tests/test_dhan_feed.py` hex fixtures),
-`app/big_money.py` (pure filter: `notional`/`classify_aggressor`/`_BurstTracker`/`BigMoneyDetector` +
-`Event` + JSONL store), `scripts/run_big_money_collector.py` (always-on collector, reconnect,
-`--dry-run`, `--print-floor`/`--burst-floor` calibration overrides), the dashboard tape card
-(`_big_money_tape_html`), and `docs/big-money-tape.md`. 251 tests green. Verified live: prints + bursts
-fire with correct aggressor side (▲BUY/▼SELL/•), notional, lots, and EXCHANGE time (fixed a Dhan-LTT
-IST-wall-as-epoch +5:30 bug). **Calibration insight:** single-print LTQ is almost always 1–2 lots
-(algos slice), so the BURST filter is the workhorse for futures; the ₹ floors are placeholders to
-calibrate on real tape. **Remaining:** calibrate the floors on a full session; **next-month roll**
-(current-expiry thins pre-expiry); then the deferred phases below (constituents, cross-book synthesis).
+**Built (2026-07-22, proven end-to-end on the live feed):** `data/dhan_feed.py` (v2 WS client + binary
+decoder, offsets LOCKED by `tests/test_dhan_feed.py` hex fixtures), `app/big_money.py` (pure filter:
+`notional`/`classify_aggressor`/`_BurstTracker`/`BigMoneyDetector` + `Event` + JSONL store), and
+`scripts/run_big_money_collector.py` (headless runner, `--dry-run`, `--print-floor`/`--burst-floor`).
+Verified live: prints + bursts fire with correct aggressor side (▲BUY/▼SELL/•), notional, lots, and
+EXCHANGE time (fixed a Dhan-LTT IST-wall-as-epoch +5:30 bug).
+
+**+ Automated & integrated (2026-07-22):** `app/big_money_live.py` — a `Collector` daemon thread
+auto-started from the dashboard via `st.cache_resource` (one singleton/server; sidebar toggle
+"🐋 Big-money tape (live, auto)", default on). It also **archives every raw Quote/Full tick** to
+`data/journal/big_money_raw/<SYM>/<day>.csv` — because Dhan's HISTORICAL API has NO tick data (finest =
+1-min candles, verified in docs), the live feed is the only tick source. The tape card shows a live
+health strip (connected · last-tick age · events · raw-ticks · per-symbol tick counts). Optimised
+startup: `resolve_futures` now downloads the scrip master ONCE (was 3×). 251 tests green.
+
+**SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
+scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the
+current token (a NIFTY control on the same connection ticks) — BSE live data is a separate Dhan
+entitlement. Its 0-count is flagged ⚠️ in the health strip; it lights up automatically once BSE is
+enabled. **Remaining:** enable BSE live-data for SENSEX; calibrate ₹ floors on a full session;
+next-month roll (current-expiry thins pre-expiry); deferred phases (constituents, cross-book synthesis).
 
 
 

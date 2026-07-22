@@ -450,6 +450,12 @@ def main():
                     help="Overlay the 5-day composite value area / POC (dotted) on the profile, "
                          "alongside the prior-day value (dashed). A longer-horizon reference map.")
         _dhan_feed_controls(symbol)
+        st.checkbox("🐋 Big-money tape (live, auto)", value=True, key="simp_bigmoney",
+                    help="Auto-run a background collector that streams NIFTY / BankNifty / SENSEX "
+                         "current-expiry FUTURES ticks, flags big prints & bursts on the tape below, "
+                         "and saves the raw tick stream (Dhan has no historical ticks, so this is the "
+                         "only way to archive them). Starts with the dashboard; needs a Dhan token. "
+                         "SENSEX needs the BSE live-data entitlement — it shows 0 ticks without it.")
         st.divider()
         st.caption("⚡ Gamma-blast")
         preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
@@ -518,6 +524,17 @@ def main():
         _help_page()
         return
     idx = config.get_index(symbol)
+
+    # Auto-start the big-money futures collector (a singleton background thread, once per server via
+    # cache_resource). Only when the toggle is on, a live Dhan token is present, and not in demo mode.
+    st.session_state["_bm_status"] = None
+    if st.session_state.get("simp_bigmoney", True) and not use_demo:
+        try:
+            from data.dhan import token_status
+            if token_status().get("present"):
+                st.session_state["_bm_status"] = _get_big_money_collector().status
+        except Exception:  # noqa: BLE001 - the tape is convenience, never break the dashboard
+            pass
 
     if symbol != st.session_state.get("simp_symbol"):
         st.session_state["simp_symbol"] = symbol
@@ -769,20 +786,51 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     st.markdown("\n".join(x for x in H if x.strip()), unsafe_allow_html=True)
 
 
+@st.cache_resource(show_spinner=False)
+def _get_big_money_collector():
+    """The one background big-money collector for this server (started once; shared across reruns and
+    sessions by cache_resource). Streams the futures feed, filters big prints/bursts, saves raw ticks."""
+    from app.big_money_live import Collector
+    return Collector().start()
+
+
+def _bm_status_html(status, day: str) -> str:
+    """One-line collector health strip: connection, freshness, counts, and PER-SYMBOL tick counts so a
+    silent book (e.g. SENSEX without the BSE feed entitlement) is visible, not hidden."""
+    if status is None:
+        return ('<span class="rb-cav">Auto-collector off or no Dhan token — tick the sidebar '
+                '<b>🐋 Big-money tape</b> and set a token to stream + archive ticks.</span>')
+    import time as _t
+    if status.error and not status.connected:
+        dot = f'<span style="color:var(--stop)">● {status.error}</span>'
+    elif status.connected:
+        dot = '<span style="color:var(--go)">● live</span>'
+    else:
+        dot = '<span style="color:var(--warn)">● connecting…</span>'
+    age = ""
+    if status.last_tick_epoch:
+        secs = max(0, int(_t.time()) - int(status.last_tick_epoch))
+        age = f" · last tick {secs}s ago" if secs < 3600 else ""
+    per = "  ".join(
+        f'{s} {"<b>0</b> ⚠️" if n == 0 else n}' for s, n in (status.per_symbol or {}).items())
+    raw = f" · {status.n_raw:,} raw ticks saved" if status.save_raw else ""
+    return (f'<span class="rb-cav">{dot}{age} · {status.n_events} events{raw} · ticks: {per}</span>')
+
+
 def _big_money_tape_html(ist, limit: int = 20) -> str:
-    """Full-width 'big-money tape' card — tails the event store the collector
-    (scripts/run_big_money_collector.py) writes for the NIFTY + BankNifty futures. A SEPARATE live
-    feed (websocket), not the polled snapshot — so this reads the JSONL store, newest first. Honest:
-    these are large PRINTS / BURSTS (an inference of big activity, not orders); direction is only the
-    aggressor side (Lee-Ready). Decision-support; a readout, never a trade call. Empty/absent store →
-    a quiet note (the collector may simply not be running)."""
+    """Full-width 'big-money tape' card — tails the event store the auto-collector writes for the
+    NIFTY / BankNifty / SENSEX futures. A SEPARATE live feed (websocket), not the polled snapshot — so
+    it reads the JSONL store, newest first, and shows the collector's live health strip. Honest: these
+    are large PRINTS / BURSTS (an inference of big activity, not orders); direction is only the
+    aggressor side (Lee-Ready). Decision-support; a readout, never a trade call."""
     try:
         from app.big_money import load_events
     except Exception:  # noqa: BLE001
         return ""
     day = ist.strftime("%Y-%m-%d")
+    status = st.session_state.get("_bm_status")
     rows = []
-    for sym in ("NIFTY", "BANKNIFTY"):
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
         try:
             rows.extend(load_events(sym, day))
         except Exception:  # noqa: BLE001
@@ -792,12 +840,11 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
 
     head = ('<div class="card" style="margin-top:14px"><div class="rb-top">'
             '<span class="eyebrow">🐋 Big-money futures tape</span>'
-            '<span class="rb-vals mono">NIFTY + BankNifty · current expiry · live</span></div>')
+            '<span class="rb-vals mono">NIFTY · BankNifty · SENSEX · current expiry · live</span></div>')
     if not rows:
         return (head + '<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">No '
-                'big-money events yet today. Prints/bursts appear here when the live collector '
-                '(<span class="mono">run_big_money_collector.py</span>) is running during market '
-                'hours.</div></div>')
+                'big-money events yet today — big prints & bursts appear here as they fire during '
+                f'market hours.</div>{_bm_status_html(status, day)}</div>')
 
     side_badge = {"buy": '<span style="color:var(--go);font-weight:700">▲ BUY</span>',
                   "sell": '<span style="color:var(--stop);font-weight:700">▼ SELL</span>',
@@ -821,7 +868,7 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    return head + table + cav + '</div>'
+    return head + table + _bm_status_html(status, day) + cav + '</div>'
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover
