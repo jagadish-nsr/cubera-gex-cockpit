@@ -15,6 +15,7 @@ param(
     [string]$TaskName = "GEX-BigMoneyCollector",
     [string]$TriggerLocal = "03:15",
     [string]$Python = "C:\Python313\python.exe",
+    [switch]$Headless,          # run whether logged on or not (S4U, passwordless); needs admin to register
     [switch]$Remove
 )
 
@@ -33,14 +34,28 @@ if (-not (Test-Path $script)) { throw "Collector not found at $script." }
 
 $action = New-ScheduledTaskAction -Execute $Python -Argument "`"$script`" --market-hours" -WorkingDirectory $repo
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $TriggerLocal
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 9) `
-    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5)
+
+$settingArgs = @{
+    AllowStartIfOnBatteries    = $true
+    DontStopIfGoingOnBatteries = $true
+    StartWhenAvailable         = $true
+    ExecutionTimeLimit         = (New-TimeSpan -Hours 9)
+    RestartCount               = 3
+    RestartInterval            = (New-TimeSpan -Minutes 5)
+}
+if ($Headless) { $settingArgs.WakeToRun = $true }        # wake a sleeping machine to run
+$settings = New-ScheduledTaskSettingsSet @settingArgs
+
+$user = "$env:USERDOMAIN\$env:USERNAME"
+$logon = if ($Headless) { 'S4U' } else { 'Interactive' }
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType $logon -RunLevel Limited
+
 $desc = "Big-money futures tape collector (NIFTY BankNifty SENSEX). Waits for 09:15 IST, stops 15:30 IST. W2"
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
-    -Description $desc -Force | Out-Null
+    -Principal $principal -Description $desc -Force | Out-Null
 
+$mode = if ($Headless) { "whether logged on or not (S4U, passwordless)" } else { "only when you are logged on" }
 Write-Host "Registered $TaskName : weekdays at $TriggerLocal local. Collector waits for 09:15 IST, stops 15:30 IST."
-Write-Host "Runs only when you are logged on. Paste a fresh Dhan token each morning before open."
+Write-Host "Runs $mode. Paste a fresh Dhan token each morning before open."
 Write-Host "Logs under data/journal/big_money_logs/. Remove with the -Remove switch."
