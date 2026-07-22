@@ -5,7 +5,21 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
-## 2026-07-22 IST — [W2] Big-money FUTURES tape (live websocket)  ⏳ TODO (gate green — feed entitlement CONFIRMED)
+## 2026-07-22 IST — [W2] Big-money FUTURES tape (live websocket)  ✅ CORE BUILT (2026-07-22 — decoder+filter+collector+dashboard+tests, proven live; remaining = calibrate floors, next-month roll)
+
+**Built (2026-07-22, proven end-to-end on the live feed during market hours):** `data/dhan_feed.py`
+(v2 WS client + binary decoder, offsets LOCKED by `tests/test_dhan_feed.py` hex fixtures),
+`app/big_money.py` (pure filter: `notional`/`classify_aggressor`/`_BurstTracker`/`BigMoneyDetector` +
+`Event` + JSONL store), `scripts/run_big_money_collector.py` (always-on collector, reconnect,
+`--dry-run`, `--print-floor`/`--burst-floor` calibration overrides), the dashboard tape card
+(`_big_money_tape_html`), and `docs/big-money-tape.md`. 251 tests green. Verified live: prints + bursts
+fire with correct aggressor side (▲BUY/▼SELL/•), notional, lots, and EXCHANGE time (fixed a Dhan-LTT
+IST-wall-as-epoch +5:30 bug). **Calibration insight:** single-print LTQ is almost always 1–2 lots
+(algos slice), so the BURST filter is the workhorse for futures; the ₹ floors are placeholders to
+calibrate on real tape. **Remaining:** calibrate the floors on a full session; **next-month roll**
+(current-expiry thins pre-expiry); then the deferred phases below (constituents, cross-book synthesis).
+
+
 
 **Why:** the live complement to our stored-tick studies — surface **unusually large activity** in the
 index futures in real time. Honest framing (the landmine): retail feeds are **aggregated broadcast**, so

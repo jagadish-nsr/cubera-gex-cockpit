@@ -756,6 +756,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
         H.append(_play_card(vr, data, L, idx))
     H.append('</div></div>')                          # close right col + grid
 
+    H.append(_big_money_tape_html(ist))               # live futures big-money tape (separate feed)
+
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
              f'you confirm every trade.<br>New here? Tick <b>📖 Help</b> in the sidebar — it explains '
              f'every panel and when price tends to respect a level vs break it.'
@@ -765,6 +767,61 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     # Drop empty fragments: a blank line between HTML blocks makes Streamlit's markdown treat the
     # (indented) block that follows as a code fence — the bug that once showed raw footprint HTML.
     st.markdown("\n".join(x for x in H if x.strip()), unsafe_allow_html=True)
+
+
+def _big_money_tape_html(ist, limit: int = 20) -> str:
+    """Full-width 'big-money tape' card — tails the event store the collector
+    (scripts/run_big_money_collector.py) writes for the NIFTY + BankNifty futures. A SEPARATE live
+    feed (websocket), not the polled snapshot — so this reads the JSONL store, newest first. Honest:
+    these are large PRINTS / BURSTS (an inference of big activity, not orders); direction is only the
+    aggressor side (Lee-Ready). Decision-support; a readout, never a trade call. Empty/absent store →
+    a quiet note (the collector may simply not be running)."""
+    try:
+        from app.big_money import load_events
+    except Exception:  # noqa: BLE001
+        return ""
+    day = ist.strftime("%Y-%m-%d")
+    rows = []
+    for sym in ("NIFTY", "BANKNIFTY"):
+        try:
+            rows.extend(load_events(sym, day))
+        except Exception:  # noqa: BLE001
+            pass
+    rows.sort(key=lambda r: r.get("epoch", 0), reverse=True)
+    rows = rows[:limit]
+
+    head = ('<div class="card" style="margin-top:14px"><div class="rb-top">'
+            '<span class="eyebrow">🐋 Big-money futures tape</span>'
+            '<span class="rb-vals mono">NIFTY + BankNifty · current expiry · live</span></div>')
+    if not rows:
+        return (head + '<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">No '
+                'big-money events yet today. Prints/bursts appear here when the live collector '
+                '(<span class="mono">run_big_money_collector.py</span>) is running during market '
+                'hours.</div></div>')
+
+    side_badge = {"buy": '<span style="color:var(--go);font-weight:700">▲ BUY</span>',
+                  "sell": '<span style="color:var(--stop);font-weight:700">▼ SELL</span>',
+                  None: '<span style="color:var(--ink-mute)">•</span>'}
+    tr = []
+    for r in rows:
+        cr = (r.get("notional") or 0) / 1e7
+        lots = r.get("lots")
+        lots_s = f"{lots:.0f}" if lots is not None else "?"
+        kind = (r.get("kind") or "").upper()
+        tr.append(
+            f'<tr><td class="mono" style="color:var(--ink-2)">{r.get("ts_ist","")[11:]}</td>'
+            f'<td style="font-weight:700">{r.get("symbol","")}</td>'
+            f'<td>{side_badge.get(r.get("side"))}</td>'
+            f'<td style="color:var(--ink-mute);font-size:.78rem">{kind}</td>'
+            f'<td class="mono" style="text-align:right">{lots_s}L</td>'
+            f'<td class="mono" style="text-align:right;font-weight:700">₹{cr:.2f}cr</td>'
+            f'<td class="mono" style="text-align:right;color:var(--ink-2)">@{r.get("price",0):.1f}</td></tr>')
+    table = ('<table style="width:100%;border-collapse:collapse;font-size:.9rem;margin-top:6px">'
+             '<tbody>' + "".join(tr) + '</tbody></table>')
+    cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
+           'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
+           'Exchange time. Decision-support.</span>')
+    return head + table + cav + '</div>'
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover
