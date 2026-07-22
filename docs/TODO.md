@@ -34,10 +34,24 @@ SQLite (`data/journal/big_money.db`, WAL, UNIQUE-key dedupe); `append_event`/`lo
 buy vs sell-initiated ₹, net flow, lean, biggest. `scripts/big_money_rollup.py` prints the day-by-day
 directional ledger. The dashboard tape now opens with a **"Big-money flow bias · today"** block (per-symbol
 buy/sell ₹ + net lean) so opening mid-day gives the running read — DESCRIPTIVE order flow, explicitly NOT
-a validated forecast (to be sharpened with data/study). 252 tests green. **Storage:** raw ticks stay
-append-CSV (future: daily Parquet compaction). **Remaining:** enable BSE (SENSEX); calibrate floors on a
-full session; validate/​sharpen the flow-bias directionally; next-month roll; deferred phases (constituents,
-cross-book synthesis).
+a validated forecast (to be sharpened with data/study).
+
+**+ Parquet compaction + flow-IC harness (2026-07-22):** `scripts/compact_raw_ticks.py` compacts finished
+raw-tick CSVs → Parquet (merge+dedupe; `--market-hours` collector auto-compacts today on exit;
+`load_raw_ticks` prefers Parquet). `scripts/big_money_flow_ic.py` = the pre-registered validation of the
+flow-bias (daily net-flow lean → next-session return, Spearman IC vs shuffled mirror, per symbol); reports
+INSUFFICIENT until ~15+ captured sessions — the flow bias stays DESCRIPTIVE until it beats the placebo.
+253 tests green.
+
+**Scheduled tasks (audited 2026-07-22):** the raw-tick collector `GEX-BigMoneyCollector` IS registered
+(Ready). The existing `*GEX-TimeSeries` / `*Log` / `GEX-FuturesBuildup` / `GEX-ParticipantOI` tasks collect
+DIFFERENT data (option-chain OI already Dhan-primary w/ NSE backup; gex_history; NSE bhavcopy;
+**NSE-only participant-wise FII/DII OI**) — big-money (futures ticks) does NOT replace them, so they were
+KEPT. Optional future: flip `log_timeseries` to Dhan-only (drop NSE fallback) but keep the EOD NSE tasks.
+
+**Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
+accrue (then sharpen wording if it survives); intraday (half→half) flow test; next-month roll; deferred
+phases (constituents, cross-book synthesis).
 
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the

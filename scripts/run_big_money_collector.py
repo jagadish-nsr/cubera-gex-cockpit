@@ -130,6 +130,14 @@ def main() -> None:
     s = col.status
     _print(f"\n  done — {s.n_raw:,} raw ticks, {s.n_events} big-money events. ticks {s.per_symbol}")
 
+    if args.market_hours and not args.dry_run:       # session over → compact today's raw CSVs to Parquet
+        from app.big_money_live import compact_raw_day
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        for sym in symbols:
+            rows = compact_raw_day(sym, today)
+            if rows:
+                _print(f"  compacted {sym}/{today}: {rows:,} rows → Parquet")
+
 
 if __name__ == "__main__":
     main()

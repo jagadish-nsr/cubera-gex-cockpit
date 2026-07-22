@@ -176,7 +176,33 @@ class Collector:
 
 
 def load_raw_ticks(symbol: str, day: str):
-    """The saved raw Quote/Full tick stream for a symbol/day (DataFrame), or None."""
+    """The saved raw Quote/Full tick stream for a symbol/day (DataFrame), or None. Prefers the
+    compacted Parquet (see compact_raw_day); falls back to the live append CSV."""
     import pandas as pd
-    p = RAW_DIR / symbol / f"{day}.csv"
-    return pd.read_csv(p) if p.exists() else None
+    base = RAW_DIR / symbol
+    pq, csv = base / f"{day}.parquet", base / f"{day}.csv"
+    if pq.exists():
+        return pd.read_parquet(pq)
+    return pd.read_csv(csv) if csv.exists() else None
+
+
+def compact_raw_day(symbol: str, day: str, keep_csv: bool = False):
+    """Compact a finished day's append CSV into columnar Parquet (~5-10× smaller, faster scans) and
+    remove the CSV. Idempotent + safe: if a Parquet already exists it MERGES (concat + dedupe on
+    epoch/code/symbol) so a re-created CSV can't lose earlier rows. Returns the final row count, or
+    None if there was nothing to compact. Do NOT compact TODAY while the collector is still appending."""
+    import pandas as pd
+    base = RAW_DIR / symbol
+    csv, pq = base / f"{day}.csv", base / f"{day}.parquet"
+    if not csv.exists():
+        return None
+    frames = [pd.read_csv(csv)]
+    if pq.exists():
+        frames.append(pd.read_parquet(pq))
+    df = (pd.concat(frames, ignore_index=True)
+          .drop_duplicates(subset=["epoch", "code", "symbol"])
+          .sort_values("epoch").reset_index(drop=True))
+    df.to_parquet(pq, index=False)
+    if not keep_csv:
+        csv.unlink()
+    return len(df)

@@ -146,9 +146,10 @@ have a full, representative session.
 Two very different streams, so two stores:
 
 - **Raw ticks** (~130k rows/symbol/day) live in append-only **CSV** per symbol/day — simple and
-  crash-safe for a live writer. At scale, compact each finished day to **Parquet** (columnar, ~5–10×
-  smaller, fast analytical scans) rather than a row-store DB; per-tick `INSERT` into SQLite is slower
-  than an append and worse for full-column scans. *(Daily Parquet compaction is a clean future add.)*
+  crash-safe for a live writer — then compact to **Parquet** (columnar, ~5–10× smaller, fast scans).
+  `scripts/compact_raw_ticks.py` compacts every finished day (`--market-hours` collector also compacts
+  today on exit); `load_raw_ticks` prefers the Parquet automatically. Not a row-store DB — per-tick
+  `INSERT` is slower than an append and worse for full-column scans.
 - **Big-money events** (sparse — dozens/day) are the **directional history**, now in **SQLite**
   (`data/journal/big_money.db`, `app/big_money_db.py`) — tiny, indexed, queryable across days. The
   daily rollup is the "which way big money leaned" ledger:
@@ -167,6 +168,11 @@ time and you get the running read of which way big money leaned so far. It is **
 explicitly NOT a validated forecast** — a first cut we'll sharpen as data + study accrue (sign-free;
 de-size on conflict; you confirm). It derives from `big_money_db.daily_rollup`, so it's a cheap indexed
 query even on every repaint.
+
+**Validation harness:** `scripts/big_money_flow_ic.py` pre-registers the test — daily net-flow lean vs
+the next session's return, Spearman IC vs a shuffled-return mirror placebo, per symbol. It reports
+INSUFFICIENT until ~15+ sessions are captured (by design). The flow-bias block stays *descriptive*
+until this shows a real, placebo-beating IC; only then does it earn directional wording.
 
 ## Run recipe (manual)
 

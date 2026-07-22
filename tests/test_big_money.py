@@ -88,6 +88,25 @@ def test_store_round_trip(tmp_path, monkeypatch):
     assert load_events("BANKNIFTY", "2026-07-22") == []
 
 
+def test_compact_raw_day(tmp_path, monkeypatch):
+    import app.big_money_live as bml
+    import pandas as pd
+    monkeypatch.setattr(bml, "RAW_DIR", tmp_path)
+    d = tmp_path / "NIFTY"
+    d.mkdir(parents=True)
+    pd.DataFrame({"epoch": [1, 2, 2], "code": [8, 8, 8], "symbol": ["NIFTY"] * 3,
+                 "ltp": [1.0, 2.0, 2.0]}).to_csv(d / "2026-07-20.csv", index=False)
+    n = bml.compact_raw_day("NIFTY", "2026-07-20")
+    assert n == 2                                              # deduped on epoch/code/symbol
+    assert (d / "2026-07-20.parquet").exists() and not (d / "2026-07-20.csv").exists()
+    got = bml.load_raw_ticks("NIFTY", "2026-07-20")            # reader prefers Parquet
+    assert len(got) == 2
+    # a re-created CSV merges into the existing Parquet, no earlier rows lost
+    pd.DataFrame({"epoch": [3], "code": [8], "symbol": ["NIFTY"], "ltp": [3.0]}).to_csv(
+        d / "2026-07-20.csv", index=False)
+    assert bml.compact_raw_day("NIFTY", "2026-07-20") == 3
+
+
 def test_daily_rollup(tmp_path, monkeypatch):
     import app.big_money_db as db
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "bm.db")
