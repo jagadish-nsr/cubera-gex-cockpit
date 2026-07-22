@@ -91,6 +91,12 @@ Dhan WS ─► collector (always-on) ─► JSONL event store ─► dashboard t
 - **`app/simple_dashboard.py`** — `_get_big_money_collector` (the cache_resource singleton),
   `_big_money_tape_html` (full-width tape card) + `_bm_status_html` (the live health strip).
 
+**Write ownership (avoid double-writing raw).** Two concurrent sockets on one token are fine (verified
+live), but two collectors both saving raw would double-append the same CSV. So the **raw archive is owned
+by the scheduled headless collector** (`run_big_money_collector.py`, `save_raw=True`); the **dashboard's
+auto-collector runs events-only** (`Collector(save_raw=False)`) — it still fills the event DB for the live
+tape, but never touches the raw file. Events are safe either way (SQLite WAL + UNIQUE dedupe).
+
 ## Feed format reference (v2, verified 2026-07-21/22)
 
 Connect: `wss://api-feed.dhan.co?version=2&token=<tok>&clientId=<cid>&authType=2` (both secrets required,

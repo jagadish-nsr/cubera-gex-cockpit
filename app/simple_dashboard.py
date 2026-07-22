@@ -452,10 +452,10 @@ def main():
         _dhan_feed_controls(symbol)
         st.checkbox("🐋 Big-money tape (live, auto)", value=True, key="simp_bigmoney",
                     help="Auto-run a background collector that streams NIFTY / BankNifty / SENSEX "
-                         "current-expiry FUTURES ticks, flags big prints & bursts on the tape below, "
-                         "and saves the raw tick stream (Dhan has no historical ticks, so this is the "
-                         "only way to archive them). Starts with the dashboard; needs a Dhan token. "
-                         "SENSEX needs the BSE live-data entitlement — it shows 0 ticks without it.")
+                         "current-expiry FUTURES ticks and flags big prints & bursts on the tape below. "
+                         "Starts with the dashboard; needs a Dhan token. It does NOT save raw ticks — "
+                         "the raw archive is owned by the scheduled headless collector, so the two never "
+                         "double-write. SENSEX needs the BSE live-data entitlement — 0 ticks without it.")
         st.divider()
         st.caption("⚡ Gamma-blast")
         preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
@@ -789,9 +789,11 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
 @st.cache_resource(show_spinner=False)
 def _get_big_money_collector():
     """The one background big-money collector for this server (started once; shared across reruns and
-    sessions by cache_resource). Streams the futures feed, filters big prints/bursts, saves raw ticks."""
+    sessions by cache_resource). Streams the futures feed and filters big prints/bursts into the event
+    DB for the live tape. It does NOT save raw ticks — the raw archive is OWNED by the scheduled
+    headless collector (run_big_money_collector.py), so the two never double-write the raw CSV."""
     from app.big_money_live import Collector
-    return Collector().start()
+    return Collector(save_raw=False).start()
 
 
 def _bm_status_html(status, day: str) -> str:
