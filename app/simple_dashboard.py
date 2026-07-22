@@ -817,6 +817,40 @@ def _bm_status_html(status, day: str) -> str:
     return (f'<span class="rb-cav">{dot}{age} · {status.n_events} events{raw} · ticks: {per}</span>')
 
 
+def _bm_flow_html(day: str) -> str:
+    """Today's big-money FLOW BIAS — per symbol, buy- vs sell-initiated ₹ (Lee-Ready) across today's big
+    prints/bursts, with a net lean. This is the closest honest thing to a 'which way is big money
+    leaning' read, and it is DESCRIPTIVE order flow, NOT a validated forecast (accuracy improves as we
+    gather data + study it). Empty until events exist. Sign-free; decision-support; you confirm."""
+    try:
+        from app.big_money_db import daily_rollup
+        roll = daily_rollup(days=[day])
+    except Exception:  # noqa: BLE001
+        return ""
+    roll = [r for r in roll if (r["buy_notional"] + r["sell_notional"]) > 0]
+    if not roll:
+        return ""
+    pill = {"BUY": ("var(--go)", "▲ BUY-leaning"), "SELL": ("var(--stop)", "▼ SELL-leaning"),
+            "flat": ("var(--ink-mute)", "• balanced")}
+    lines = []
+    for r in roll:
+        col, lab = pill[r["lean"]]
+        lines.append(
+            f'<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0">'
+            f'<span style="font-weight:700">{r["symbol"]}</span>'
+            f'<span class="mono" style="color:var(--ink-2)">buy ₹{r["buy_notional"]/1e7:.1f}cr · '
+            f'sell ₹{r["sell_notional"]/1e7:.1f}cr</span>'
+            f'<span class="mono">net <b>{r["net_notional"]/1e7:+.1f}cr</b></span>'
+            f'<span style="color:{col};font-weight:700">{lab} ({abs(r["net_pct"]):.0f}%)</span></div>')
+    return (
+        '<div style="margin:2px 0 8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">'
+        '<div class="eyebrow" style="margin-bottom:4px">Big-money flow bias · today</div>'
+        + "".join(lines) +
+        '<span class="rb-cav">Buy- vs sell-initiated ₹ (Lee-Ready) across today\'s big prints/bursts — a '
+        'DESCRIPTIVE order-flow lean, <b>not a validated forecast</b> (we sharpen it as data + study '
+        'accrue). De-size on conflict with your thesis; you confirm.</span></div>')
+
+
 def _big_money_tape_html(ist, limit: int = 20) -> str:
     """Full-width 'big-money tape' card — tails the event store the auto-collector writes for the
     NIFTY / BankNifty / SENSEX futures. A SEPARATE live feed (websocket), not the polled snapshot — so
@@ -868,7 +902,7 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    return head + table + _bm_status_html(status, day) + cav + '</div>'
+    return head + _bm_flow_html(day) + table + _bm_status_html(status, day) + cav + '</div>'
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover

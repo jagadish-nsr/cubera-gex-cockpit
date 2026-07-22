@@ -71,16 +71,37 @@ def test_detector_unknown_instrument():
 
 
 def test_store_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setattr(bm, "STORE_DIR", tmp_path)
+    import app.big_money_db as db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "bm.db")
     ev = Event(epoch=1784600000, ts_ist="2026-07-22 13:30:00", symbol="NIFTY", kind="print",
                side="buy", qty=32500, lots=500.0, notional=780000000.0, price=24000.0,
                bid=23999.0, ask=24000.0)
     append_event(ev)
     append_event(Event(epoch=1784600060, ts_ist="2026-07-22 13:31:00", symbol="NIFTY", kind="burst",
                        side=None, qty=100, lots=1.5, notional=30000000.0, price=24010.0))
+    append_event(ev)                           # exact duplicate → deduped by the UNIQUE key
     rows = load_events("NIFTY", "2026-07-22")
-    assert len(rows) == 2
+    assert len(rows) == 2                       # not 3
     assert rows[0]["kind"] == "burst"          # newest first
     assert rows[1]["side"] == "buy" and rows[1]["notional"] == 780000000.0
     assert load_events("NIFTY", "2026-07-22", limit=1)[0]["kind"] == "burst"
     assert load_events("BANKNIFTY", "2026-07-22") == []
+
+
+def test_daily_rollup(tmp_path, monkeypatch):
+    import app.big_money_db as db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "bm.db")
+    append_event(Event(epoch=1784600000, ts_ist="2026-07-22 13:30:00", symbol="NIFTY", kind="print",
+                       side="buy", qty=32500, lots=500.0, notional=8e7, price=24000.0))
+    append_event(Event(epoch=1784600060, ts_ist="2026-07-22 13:31:00", symbol="NIFTY", kind="print",
+                       side="sell", qty=13000, lots=200.0, notional=3e7, price=23990.0))
+    append_event(Event(epoch=1784600120, ts_ist="2026-07-22 13:32:00", symbol="NIFTY", kind="burst",
+                       side=None, qty=6500, lots=100.0, notional=1.5e7, price=23995.0))
+    roll = db.daily_rollup(days=["2026-07-22"], symbols=["NIFTY"])
+    assert len(roll) == 1
+    r = roll[0]
+    assert r["n"] == 3 and r["n_print"] == 2 and r["n_burst"] == 1
+    assert r["buy_notional"] == 8e7 and r["sell_notional"] == 3e7
+    assert r["net_notional"] == 5e7 and r["lean"] == "BUY"
+    assert abs(r["net_pct"] - (5e7 / 11e7 * 100)) < 1e-6
+    assert r["biggest"] == 8e7

@@ -78,7 +78,10 @@ Dhan WS ─► collector (always-on) ─► JSONL event store ─► dashboard t
 - **`data/dhan_feed.py`** — the v2 websocket client + binary decoder. Offsets are LOCKED against real
   packets by `tests/test_dhan_feed.py` (hex fixtures). Little-endian.
 - **`app/big_money.py`** — the pure filter (`notional`, `classify_aggressor`, `_BurstTracker`,
-  `BigMoneyDetector`) + the `Event` model + the JSONL store (`append_event` / `load_events`).
+  `BigMoneyDetector`) + the `Event` model; `append_event` / `load_events` delegate to the DB.
+- **`app/big_money_db.py`** — the **SQLite event store** (`insert_event`, `load_events`,
+  `daily_rollup`, `migrate_jsonl`). WAL + a UNIQUE key (dedupes snapshot repeats); the queryable
+  directional history.
 - **`app/big_money_live.py`** — the always-on background SERVICE: `Collector` (daemon thread:
   decode → save raw → filter → append Event, with reconnect + per-symbol tick counts) and
   `load_raw_ticks`. Auto-started from the dashboard via `cache_resource`; also usable standalone.
@@ -146,9 +149,24 @@ Two very different streams, so two stores:
   crash-safe for a live writer. At scale, compact each finished day to **Parquet** (columnar, ~5–10×
   smaller, fast analytical scans) rather than a row-store DB; per-tick `INSERT` into SQLite is slower
   than an append and worse for full-column scans. *(Daily Parquet compaction is a clean future add.)*
-- **Big-money events** (sparse — dozens/day) are the **directional history** worth querying across days
-  ("net buy vs sell flow by day", "all bursts > ₹5cr this week"). Those belong in **SQLite** — tiny,
-  indexed, and queryable — a good next step over the JSONL store. The JSONL is fine until then.
+- **Big-money events** (sparse — dozens/day) are the **directional history**, now in **SQLite**
+  (`data/journal/big_money.db`, `app/big_money_db.py`) — tiny, indexed, queryable across days. The
+  daily rollup is the "which way big money leaned" ledger:
+
+```
+python scripts/big_money_rollup.py                 # every day: buy vs sell ₹, net, lean, biggest
+python scripts/big_money_rollup.py 2026-07-23
+python scripts/big_money_rollup.py --migrate         # import any legacy JSONL first
+```
+
+## Mid-day flow-bias on the dashboard
+
+The tape card opens with a **"Big-money flow bias · today"** block: per symbol, buy- vs sell-initiated ₹
+(Lee-Ready) across today's big prints/bursts, with a net lean (▲ BUY / ▼ SELL). Open the dashboard any
+time and you get the running read of which way big money leaned so far. It is **descriptive order flow,
+explicitly NOT a validated forecast** — a first cut we'll sharpen as data + study accrue (sign-free;
+de-size on conflict; you confirm). It derives from `big_money_db.daily_rollup`, so it's a cheap indexed
+query even on every repaint.
 
 ## Run recipe (manual)
 

@@ -26,9 +26,18 @@ startup: `resolve_futures` now downloads the scrip master ONCE (was 3×). 251 te
 stops 15:30, auto-logs) now runs the shared `Collector` (raw + events); `scripts/install_collector_schedule.ps1`
 registers a Windows weekday task (fires 03:15 local → collector waits for open; DST-robust since it waits
 in IST); `scripts/big_money_summary.py` reports the print/burst notional distributions (→ suggested p99
-floors) + biggest prints + buy-vs-sell signed flow (the directional lean) for calibration. **Storage:**
-raw ticks = append CSV (future: daily Parquet compaction); big-money events (the directional history) =
-JSONL now, **SQLite is the recommended next step** (sparse, queryable across days).
+floors) + biggest prints + buy-vs-sell signed flow (the directional lean) for calibration.
+
+**+ Events → SQLite + flow bias (2026-07-22):** `app/big_money_db.py` — the big-money EVENT store is now
+SQLite (`data/journal/big_money.db`, WAL, UNIQUE-key dedupe); `append_event`/`load_events` delegate to it
+(callers unchanged), `migrate_jsonl` imports legacy files, `daily_rollup` aggregates per (day,symbol):
+buy vs sell-initiated ₹, net flow, lean, biggest. `scripts/big_money_rollup.py` prints the day-by-day
+directional ledger. The dashboard tape now opens with a **"Big-money flow bias · today"** block (per-symbol
+buy/sell ₹ + net lean) so opening mid-day gives the running read — DESCRIPTIVE order flow, explicitly NOT
+a validated forecast (to be sharpened with data/study). 252 tests green. **Storage:** raw ticks stay
+append-CSV (future: daily Parquet compaction). **Remaining:** enable BSE (SENSEX); calibrate floors on a
+full session; validate/​sharpen the flow-bias directionally; next-month roll; deferred phases (constituents,
+cross-book synthesis).
 
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the

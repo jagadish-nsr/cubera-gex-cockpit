@@ -161,32 +161,20 @@ class BigMoneyDetector:
         return out
 
 
-# --- event store (append-only JSONL per symbol/day; gitignored under data/journal/) --------------
+# --- event store (SQLite; see app/big_money_db.py) ------------------------------------------------
+# STORE_DIR / event_path name the LEGACY per-day JSONL layout, kept only so big_money_db.migrate_jsonl
+# can import old files. New reads/writes go to the SQLite DB (sparse, queryable directional history).
 
 def event_path(symbol: str, day: str) -> Path:
     return STORE_DIR / symbol / f"{day}.jsonl"
 
 
 def append_event(ev: Event) -> None:
-    p = event_path(ev.symbol, ev.ts_ist[:10])
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(ev.to_json() + "\n")
+    from app import big_money_db
+    big_money_db.insert_event(ev)
 
 
 def load_events(symbol: str, day: str, limit: int | None = None) -> list[dict]:
     """Recent events for a symbol/day, newest first (empty if none). ``limit`` caps the tail."""
-    p = event_path(symbol, day)
-    if not p.exists():
-        return []
-    rows = []
-    with open(p, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    rows.reverse()
-    return rows[:limit] if limit else rows
+    from app import big_money_db
+    return big_money_db.load_events(symbol, day, limit)
