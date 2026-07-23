@@ -128,7 +128,9 @@ def main() -> None:
         col.stop()
         time.sleep(1.5)                               # let the final raw flush land
     s = col.status
-    _print(f"\n  done — {s.n_raw:,} raw ticks, {s.n_events} big-money events. ticks {s.per_symbol}")
+    _print(f"\n  done — {s.n_raw:,} raw ticks, {s.n_events} big-money events. ticks {s.per_symbol}"
+           f"{'  · last error: ' + s.error if s.error else ''}"
+           f"{'  · never connected (network/token at open?)' if s.n_raw == 0 and s.n_events == 0 else ''}")
 
     if args.market_hours and not args.dry_run:       # session over → compact today's raw CSVs to Parquet
         from app.big_money_live import compact_raw_day

@@ -112,8 +112,12 @@ class Collector:
         from app.big_money_db import upsert_futures_state
         self.status.running = True
         contracts = resolve_futures(self.symbols)
+        while not contracts and not self._stop.is_set():    # transient network / scrip-master fail → retry,
+            self.status.error = "no futures resolved (scrip master unreachable?) — retrying in 30s"
+            self.status.connected = False                   # don't give up the whole session on a startup blip
+            self._stop.wait(30)
+            contracts = resolve_futures(self.symbols)
         if not contracts:
-            self.status.error = "no futures resolved from the scrip master"
             self.status.running = False
             return
         detector = self._new_detector(contracts)
