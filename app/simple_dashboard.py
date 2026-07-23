@@ -720,8 +720,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
-    # sector rotation snap — what's carrying / dragging the index today (context, not a signal)
-    H.append(_sector_strip(data))
+    # live futures big-money tape (separate feed) — sits up top now
+    H.append(_big_money_tape_html(ist))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
@@ -773,7 +773,8 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
         H.append(_play_card(vr, data, L, idx))
     H.append('</div></div>')                          # close right col + grid
 
-    H.append(_big_money_tape_html(ist))               # live futures big-money tape (separate feed)
+    # sector rotation snap — what's carrying / dragging the index today (context, not a signal)
+    H.append(_sector_strip(data))
 
     H.append(f'<div class="foot">A map and a logbook, not an oracle. <b>Paper trading only</b> — '
              f'you confirm every trade.<br>New here? Tick <b>📖 Help</b> in the sidebar — it explains '
