@@ -49,9 +49,17 @@ DIFFERENT data (option-chain OI already Dhan-primary w/ NSE backup; gex_history;
 **NSE-only participant-wise FII/DII OI**) — big-money (futures ticks) does NOT replace them, so they were
 KEPT. Optional future: flip `log_timeseries` to Dhan-only (drop NSE fallback) but keep the EOD NSE tasks.
 
+**+ Futures rollover — Option A (2026-07-23):** watch the TWO nearest contracts per symbol
+(`resolve_futures(rolls=2)` → `nearest_futures`, tagged roll=near/next) and aggregate by symbol. Prints
+stay per-contract (tagged `expiry`), bursts aggregate to symbol level (`_SymbolBurstTracker` sums both
+contracts' volume deltas into one window, tagged `AGG`), flow/rollup fold in via `GROUP BY symbol`. New
+`futures_state` table + rollover gauge on the tape (`%rolled = next_OI/(near+next OI)`; verified live
+2026-07-23: NIFTY ~29%, BankNifty ~32% rolled to Aug). Dedupe keys extended with `expiry`; collector
+re-resolves near/next daily. 258 tests green. NOT yet: calendar-spread detection.
+
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
-accrue (then sharpen wording if it survives); intraday (half→half) flow test; next-month roll; deferred
-phases (constituents, cross-book synthesis).
+accrue (then sharpen wording if it survives); intraday (half→half) flow test; calendar-spread detection;
+deferred phases (constituents, cross-book synthesis).
 
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the

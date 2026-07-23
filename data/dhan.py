@@ -278,28 +278,33 @@ def load_scrip_master():
     return pd.read_csv(io.BytesIO(r.content), low_memory=False)
 
 
-def near_month_future_id(symbol: str = "NIFTY", master=None) -> dict | None:
-    """Look up the CURRENT near-month index-futures securityId (+ expiry, lot) from the Dhan
-    scrip master. The active contract is the only one whose intraday history is fetchable —
-    expired contracts drop out of the master, so futures intraday depth is ~one contract life.
-    Pass a preloaded ``master`` (from ``load_scrip_master``) to avoid re-downloading per symbol."""
+def nearest_futures(symbol: str = "NIFTY", n: int = 2, master=None) -> list[dict]:
+    """The ``n`` nearest (non-expired) index-futures contracts for ``symbol``, sorted by expiry —
+    each ``{security_id, symbol(tradingsymbol), expiry, lot}``. Used to watch near + next month for the
+    big-money tape (so the roll doesn't hide the migrating flow). Empty list if none. Pass a preloaded
+    ``master`` (from ``load_scrip_master``) to avoid re-downloading per symbol."""
     from datetime import date
     import pandas as pd
 
     df = master if master is not None else load_scrip_master()
     if df is None:
-        return None
+        return []
     f = df[(df["SEM_INSTRUMENT_NAME"] == "FUTIDX")
            & (df["SEM_TRADING_SYMBOL"].astype(str).str.startswith(f"{symbol}-"))].copy()
     if f.empty:
-        return None
+        return []
     f["exp"] = pd.to_datetime(f["SEM_EXPIRY_DATE"], errors="coerce")
     f = f[f["exp"].dt.date >= date.today()].sort_values("exp")
-    if f.empty:
-        return None
-    row = f.iloc[0]
-    return {"security_id": int(row["SEM_SMST_SECURITY_ID"]), "symbol": row["SEM_TRADING_SYMBOL"],
-            "expiry": row["exp"].date().isoformat(), "lot": int(row["SEM_LOT_UNITS"])}
+    return [{"security_id": int(r["SEM_SMST_SECURITY_ID"]), "symbol": r["SEM_TRADING_SYMBOL"],
+             "expiry": r["exp"].date().isoformat(), "lot": int(r["SEM_LOT_UNITS"])}
+            for _, r in f.head(n).iterrows()]
+
+
+def near_month_future_id(symbol: str = "NIFTY", master=None) -> dict | None:
+    """The CURRENT near-month index-futures contract (securityId + expiry + lot), or None. Thin wrapper
+    over ``nearest_futures`` for the historical-backfill callers that only need the front month."""
+    fs = nearest_futures(symbol, n=1, master=master)
+    return fs[0] if fs else None
 
 
 def fetch_futures_intraday(security_id: int, from_date: str, to_date: str,

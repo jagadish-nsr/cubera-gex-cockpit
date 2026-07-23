@@ -820,6 +820,49 @@ def _bm_status_html(status, day: str) -> str:
     return (f'<span class="rb-cav">{dot}{age} · {status.n_events} events{raw} · ticks: {per}</span>')
 
 
+def _exp_label(expiry) -> str:
+    """Short contract label from an event's expiry: month abbrev ('Jul') for a print, 'agg' for a
+    symbol-aggregate burst, '' if unknown."""
+    if not expiry:
+        return ""
+    if expiry == "AGG":
+        return "agg"
+    try:
+        from datetime import datetime as _dt
+        return _dt.strptime(str(expiry)[:10], "%Y-%m-%d").strftime("%b")
+    except (ValueError, TypeError):
+        return ""
+
+
+def _bm_rollover_html() -> str:
+    """Per-symbol rollover gauge from `futures_state`: next-month OI share (% rolled) + near/next prices.
+    Context on where the roll stands — descriptive, not a signal. Empty until the collector writes state."""
+    try:
+        from app.big_money_db import rollover
+        rows = rollover()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not rows:
+        return ""
+
+    def _px(d):
+        p = (d or {}).get("price")
+        return f"{p:,.0f}" if isinstance(p, (int, float)) else "—"
+    lines = []
+    for r in rows:
+        near, nxt = r["near"], r.get("next")
+        xlab = _exp_label(nxt.get("expiry")) if nxt else "—"
+        lines.append(
+            f'<div style="display:flex;justify-content:space-between;gap:10px;padding:1px 0">'
+            f'<span style="font-weight:700">{r["symbol"]}</span>'
+            f'<span class="mono" style="color:var(--ink-2)">rolled <b>{r["pct_rolled"]:.0f}%</b> → {xlab}</span>'
+            f'<span class="mono" style="color:var(--ink-mute)">near {_exp_label(near.get("expiry"))} '
+            f'{_px(near)} · next {xlab} {_px(nxt)}</span></div>')
+    return ('<div style="margin:2px 0 8px;padding:6px 10px;border:1px dashed var(--line);border-radius:8px">'
+            '<div class="eyebrow" style="margin-bottom:2px">Rollover · next-month OI share</div>'
+            + "".join(lines) + '</div>')
+
+
 def _bm_flow_html(day: str) -> str:
     """Today's big-money FLOW BIAS — per symbol, buy- vs sell-initiated ₹ (Lee-Ready) across today's big
     prints/bursts, with a net lean. This is the closest honest thing to a 'which way is big money
@@ -879,7 +922,8 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
             '<span class="eyebrow">🐋 Big-money futures tape</span>'
             '<span class="rb-vals mono">NIFTY · BankNifty · SENSEX · current expiry · live</span></div>')
     if not rows:
-        return (head + '<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">No '
+        return (head + _bm_rollover_html()
+                + '<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">No '
                 'big-money events yet today — big prints & bursts appear here as they fire during '
                 f'market hours.</div>{_bm_status_html(status, day)}</div>')
 
@@ -894,7 +938,8 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
         kind = (r.get("kind") or "").upper()
         tr.append(
             f'<tr><td class="mono" style="color:var(--ink-2)">{r.get("ts_ist","")[11:]}</td>'
-            f'<td style="font-weight:700">{r.get("symbol","")}</td>'
+            f'<td style="font-weight:700">{r.get("symbol","")} '
+            f'<span class="mono" style="font-size:.68rem;color:var(--ink-mute)">{_exp_label(r.get("expiry"))}</span></td>'
             f'<td>{side_badge.get(r.get("side"))}</td>'
             f'<td style="color:var(--ink-mute);font-size:.78rem">{kind}</td>'
             f'<td class="mono" style="text-align:right">{lots_s}L</td>'
@@ -905,7 +950,8 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    return head + _bm_flow_html(day) + table + _bm_status_html(status, day) + cav + '</div>'
+    return (head + _bm_flow_html(day) + _bm_rollover_html() + table
+            + _bm_status_html(status, day) + cav + '</div>')
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover

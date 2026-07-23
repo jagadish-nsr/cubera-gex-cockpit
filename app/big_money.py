@@ -80,6 +80,7 @@ class Event:
     price: float
     bid: float | None = None
     ask: float | None = None
+    expiry: str | None = None           # contract expiry for a print; 'AGG' for a symbol-level burst
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -89,22 +90,22 @@ def _ts(epoch: int) -> str:
     return datetime.fromtimestamp(epoch, tz=IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
-class _BurstTracker:
-    """Per-instrument trailing-window traded-notional accumulator with rising-edge firing (so a
-    sustained burst fires ONCE, not every packet). Fed the cumulative day ``volume`` per packet;
-    the positive delta between packets is the traded qty in that gap."""
+class _SymbolBurstTracker:
+    """Per-SYMBOL trailing-window traded-notional accumulator with rising-edge firing. Fed each of the
+    symbol's contracts' cumulative ``volume`` (near + next month); it keeps per-contract ``last_vol`` to
+    compute each contract's own delta, then sums both into ONE symbol window — so a burst reflects total
+    futures flow across the roll, not a single contract. Sustained bursts fire ONCE."""
 
     def __init__(self, window_s: float, floor: float):
         self.window_s, self.floor = window_s, floor
-        self.buf: deque[tuple[float, float]] = deque()      # (epoch, dvol*price)
-        self.last_vol: int | None = None
+        self.buf: deque[tuple[float, float]] = deque()      # (epoch, dvol*price), across contracts
+        self.last_vol: dict = {}                            # security_id -> last cumulative volume
         self.active = False
 
-    def update(self, epoch: float, volume: int, price: float) -> tuple[bool, float, int]:
-        dvol = 0
-        if self.last_vol is not None and volume >= self.last_vol:
-            dvol = volume - self.last_vol
-        self.last_vol = volume                              # (volume < last ⇒ day reset/reconnect → dvol 0)
+    def update(self, sec_id, epoch: float, volume: int, price: float) -> tuple[bool, float, int]:
+        prev = self.last_vol.get(sec_id)
+        dvol = (volume - prev) if (prev is not None and volume >= prev) else 0
+        self.last_vol[sec_id] = volume                      # (volume < prev ⇒ day reset/reconnect → 0)
         if dvol > 0 and price:
             self.buf.append((epoch, dvol * price))
         cutoff = epoch - self.window_s
@@ -118,16 +119,19 @@ class _BurstTracker:
 
 
 class BigMoneyDetector:
-    """Stateful detector over a set of contracts (id → {symbol, lot, …} from
-    `data.dhan_feed.resolve_futures`). `on_tick` returns 0+ Events for one decoded Tick."""
+    """Stateful detector over a set of contracts (id → {symbol, roll, lot, expiry, …} from
+    `data.dhan_feed.resolve_futures`; near + next month per symbol). `on_tick` returns 0+ Events for one
+    decoded Tick. PRINTS are per-contract (tagged with the contract expiry); BURSTS aggregate the
+    symbol's contracts into one window (tagged 'AGG')."""
 
     def __init__(self, contracts: dict[int, dict], print_floor=None, burst_floor=None,
                  burst_window_s: float = BURST_WINDOW_S):
         self.contracts = contracts
         self.print_floor = print_floor or BIG_PRINT_FLOOR
         self.burst_floor = burst_floor or BURST_FLOOR
-        self._burst = {sid: _BurstTracker(burst_window_s, self.burst_floor.get(c["symbol"], _DEFAULT_FLOOR))
-                       for sid, c in contracts.items()}
+        syms = {c["symbol"] for c in contracts.values()}
+        self._burst = {sym: _SymbolBurstTracker(burst_window_s, self.burst_floor.get(sym, _DEFAULT_FLOOR))
+                       for sym in syms}
 
     def _floor(self, table, symbol):
         return table.get(symbol, _DEFAULT_FLOOR)
@@ -142,22 +146,22 @@ class BigMoneyDetector:
         epoch = (int(tick.ltt) - _IST_OFFSET_S) if getattr(tick, "ltt", None) else int(_time.time())
         out: list[Event] = []
 
-        # PRINT — a single large trade
+        # PRINT — a single large trade on THIS contract (tagged with its expiry)
         if tick.ltq and tick.ltq > 0:
             nden = notional(price, tick.ltq)
             if nden >= self._floor(self.print_floor, sym):
                 out.append(Event(epoch=epoch, ts_ist=_ts(epoch), symbol=sym, kind="print",
                                  side=classify_aggressor(price, tick.bid, tick.ask),
                                  qty=int(tick.ltq), lots=lots(tick.ltq, lot), notional=nden,
-                                 price=price, bid=tick.bid, ask=tick.ask))
+                                 price=price, bid=tick.bid, ask=tick.ask, expiry=c.get("expiry")))
 
-        # BURST — sliced flow over the trailing window
+        # BURST — sliced flow over the trailing window, aggregated across the symbol's contracts
         if tick.volume is not None:
-            fired, wnot, wqty = self._burst[c["security_id"]].update(epoch, int(tick.volume), price)
+            fired, wnot, wqty = self._burst[sym].update(c["security_id"], epoch, int(tick.volume), price)
             if fired:
                 out.append(Event(epoch=epoch, ts_ist=_ts(epoch), symbol=sym, kind="burst",
                                  side=None, qty=wqty, lots=lots(wqty, lot), notional=wnot,
-                                 price=price, bid=tick.bid, ask=tick.ask))
+                                 price=price, bid=tick.bid, ask=tick.ask, expiry="AGG"))
         return out
 
 

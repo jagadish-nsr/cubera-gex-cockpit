@@ -43,6 +43,29 @@ Retail feeds carry **aggregated exchange broadcast**, so:
 
 Decision-support; **never auto-executes**.
 
+## Futures rollover — watch near + next month (Option A)
+
+Index futures are monthly, and in the last days before expiry OI/volume migrate to next-month — so a
+single-contract tape would stare at a thinning book while the big prints move to the contract it isn't
+watching. So we watch the **two nearest contracts per symbol** (`resolve_futures(rolls=2)` →
+`nearest_futures`), tagged `roll` = near/next, and **aggregate by symbol**:
+
+- **PRINTS** stay per-contract (a trade is on one contract) but are tagged with the contract `expiry`
+  and roll up by symbol. So a big print migrating to next-month during the roll is still caught.
+- **BURSTS** aggregate to symbol level in real time: `_SymbolBurstTracker` keeps each contract's own
+  cumulative-volume delta but sums both into ONE window, so a burst reflects total futures flow across
+  the roll (tagged `expiry='AGG'`).
+- **Flow-bias / rollup** already `GROUP BY symbol`, so both contracts fold in automatically.
+- **Rollover gauge:** the collector upserts each contract's OI/price to a `futures_state` table every
+  ~15s; the tape shows `rolled N% → Aug` where `%rolled = next_OI/(near_OI+next_OI)`, plus near/next
+  prices. Descriptive context, not a signal.
+- The collector **re-resolves near/next daily** (on IST date change), so a long-running dashboard server
+  advances across an expiry without a restart.
+
+Dedupe keys include the contract (`expiry`) so a near+next tick at the same epoch isn't collapsed — raw
+compaction on `(epoch,code,symbol,expiry)`, events `UNIQUE(epoch,symbol,kind,qty,price,expiry)`.
+*Not yet:* explicit calendar-spread detection (simultaneous near-sell + next-buy) — a clean follow-up.
+
 ## The two filters
 
 `notional = price × qty` — `qty` (LTQ / volume) is already shares-equivalent (verified live: LTQ 65 =

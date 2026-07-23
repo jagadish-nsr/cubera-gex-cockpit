@@ -25,8 +25,9 @@ from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_futures
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "journal" / "big_money_raw"           # gitignored (under data/journal/)
 DEFAULT_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
-_RAW_COLS = ["epoch", "time_ist", "symbol", "code", "ltp", "ltq", "atp", "volume", "oi",
-             "bid", "ask", "tot_buy_qty", "tot_sell_qty"]
+_RAW_COLS = ["epoch", "time_ist", "symbol", "roll", "expiry", "code", "ltp", "ltq", "atp", "volume",
+             "oi", "bid", "ask", "tot_buy_qty", "tot_sell_qty"]
+_STATE_EVERY_S = 15.0        # throttle futures_state (OI/price) upserts per contract
 _FLUSH_ROWS = 400            # flush the raw buffer past this many rows …
 _FLUSH_SECS = 15.0           # … or this many seconds, whichever first
 
@@ -101,18 +102,31 @@ class Collector:
     def stop(self) -> None:
         self._stop.set()
 
+    def _new_detector(self, contracts):
+        self.status.per_symbol = {c["symbol"]: self.status.per_symbol.get(c["symbol"], 0)
+                                  for c in contracts.values()}
+        return BigMoneyDetector(contracts, print_floor=self.print_floor, burst_floor=self.burst_floor)
+
     def run(self) -> None:
         import websocket
+        from app.big_money_db import upsert_futures_state
         self.status.running = True
         contracts = resolve_futures(self.symbols)
         if not contracts:
             self.status.error = "no futures resolved from the scrip master"
             self.status.running = False
             return
-        self.status.per_symbol = {c["symbol"]: 0 for c in contracts.values()}
-        detector = BigMoneyDetector(contracts, print_floor=self.print_floor,
-                                    burst_floor=self.burst_floor)
+        detector = self._new_detector(contracts)
+        resolve_day = datetime.now(IST).date()
+        state_ts: dict = {}                                 # security_id -> last futures_state upsert
         while not self._stop.is_set():
+            today = datetime.now(IST).date()                # daily ROLL: re-resolve near/next contracts
+            if today != resolve_day:
+                nc = resolve_futures(self.symbols)
+                if nc:
+                    contracts, detector = nc, self._new_detector(nc)
+                resolve_day = today
+            next_day_check = time.time() + 60
             try:
                 ws = connect(contracts, tiers=(SUB_FULL,))
             except RuntimeError as e:                       # missing token/clientId — wait, don't spin
@@ -130,6 +144,10 @@ class Collector:
             ws.settimeout(2.0)
             try:
                 while not self._stop.is_set():
+                    if time.time() > next_day_check:        # promptly reconnect+re-resolve on a new IST day
+                        next_day_check = time.time() + 60
+                        if datetime.now(IST).date() != resolve_day:
+                            break
                     try:
                         opcode, frame = ws.recv_data()
                     except websocket.WebSocketTimeoutException:
@@ -152,10 +170,21 @@ class Collector:
                         dt = datetime.fromtimestamp(epoch, IST)
                         self._raw.add(c["symbol"], dt.strftime("%Y-%m-%d"), {
                             "epoch": epoch, "time_ist": dt.strftime("%H:%M:%S"), "symbol": c["symbol"],
+                            "roll": c.get("roll"), "expiry": c.get("expiry"),
                             "code": tick.code, "ltp": tick.ltp, "ltq": tick.ltq, "atp": tick.atp,
                             "volume": tick.volume, "oi": tick.oi, "bid": tick.bid, "ask": tick.ask,
                             "tot_buy_qty": tick.tot_buy_qty, "tot_sell_qty": tick.tot_sell_qty})
                         self.status.n_raw += 1
+                    # rollover gauge: throttled per-contract OI/price snapshot → futures_state
+                    if self.persist_events and tick.oi is not None:
+                        sid = tick.security_id
+                        if time.time() - state_ts.get(sid, 0) >= _STATE_EVERY_S:
+                            state_ts[sid] = time.time()
+                            try:
+                                upsert_futures_state(c["symbol"], c.get("roll"), c.get("expiry"),
+                                                     float(tick.oi), float(tick.ltp), epoch)
+                            except Exception:  # noqa: BLE001
+                                pass
                     for ev in detector.on_tick(tick):
                         if self.on_event:
                             self.on_event(ev)
@@ -199,9 +228,9 @@ def compact_raw_day(symbol: str, day: str, keep_csv: bool = False):
     frames = [pd.read_csv(csv)]
     if pq.exists():
         frames.append(pd.read_parquet(pq))
-    df = (pd.concat(frames, ignore_index=True)
-          .drop_duplicates(subset=["epoch", "code", "symbol"])
-          .sort_values("epoch").reset_index(drop=True))
+    df = pd.concat(frames, ignore_index=True)
+    key = [c for c in ("epoch", "code", "symbol", "expiry") if c in df.columns]   # expiry keeps near/next distinct
+    df = df.drop_duplicates(subset=key).sort_values("epoch").reset_index(drop=True)
     df.to_parquet(pq, index=False)
     if not keep_csv:
         csv.unlink()

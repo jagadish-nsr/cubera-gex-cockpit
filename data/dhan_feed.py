@@ -20,7 +20,9 @@ import json
 import struct
 from dataclasses import dataclass
 
-from data.dhan import DHAN_SEGMENT, _secret, load_scrip_master, near_month_future_id
+from data.dhan import DHAN_SEGMENT, _secret, load_scrip_master, nearest_futures
+
+ROLL_NAMES = ("near", "next", "far")
 
 FEED_URL = "wss://api-feed.dhan.co"
 # v2 subscribe request codes (what tier to ask for).
@@ -91,20 +93,19 @@ def decode_packet(frame: bytes) -> Tick | None:
     return t
 
 
-def resolve_futures(symbols=("NIFTY", "BANKNIFTY")) -> dict[int, dict]:
-    """Current-expiry future per symbol from the scrip master (`near_month_future_id`), keyed by
-    securityId → {symbol, security_id, lot, expiry, segment}. Skips a symbol with no active contract.
-    Re-resolve each session — contracts roll (the ids/lot/expiry change). Downloads the scrip master
-    ONCE for all symbols."""
+def resolve_futures(symbols=("NIFTY", "BANKNIFTY", "SENSEX"), rolls: int = 2) -> dict[int, dict]:
+    """The ``rolls`` nearest futures PER symbol from the scrip master (near + next month by default),
+    keyed by securityId → {symbol, roll, security_id, lot, expiry, segment}. ``roll`` is 'near'/'next'.
+    Watching both means the expiry roll doesn't hide the big money migrating to next-month. Skips a
+    symbol with no active contract. Re-resolve each session — contracts roll. One scrip-master download."""
     out = {}
     master = load_scrip_master()
     for sym in symbols:
-        m = near_month_future_id(sym, master=master)
-        if not m:
-            continue
-        out[int(m["security_id"])] = {"symbol": sym, "security_id": int(m["security_id"]),
-                                      "lot": int(m["lot"]), "expiry": m["expiry"],
-                                      "segment": DHAN_SEGMENT.get(sym, "NSE_FNO")}
+        for i, m in enumerate(nearest_futures(sym, n=rolls, master=master)):
+            out[int(m["security_id"])] = {
+                "symbol": sym, "roll": ROLL_NAMES[i] if i < len(ROLL_NAMES) else f"r{i}",
+                "security_id": int(m["security_id"]), "lot": int(m["lot"]),
+                "expiry": m["expiry"], "segment": DHAN_SEGMENT.get(sym, "NSE_FNO")}
     return out
 
 

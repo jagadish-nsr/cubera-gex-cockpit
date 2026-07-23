@@ -3,7 +3,7 @@
 from types import SimpleNamespace as NS
 
 import app.big_money as bm
-from app.big_money import (BigMoneyDetector, Event, _BurstTracker, append_event,
+from app.big_money import (BigMoneyDetector, Event, _SymbolBurstTracker, append_event,
                            classify_aggressor, load_events, lots, notional)
 
 
@@ -24,25 +24,35 @@ def test_classify_aggressor():
 
 def test_burst_tracker_rising_edge():
     """Fires ONCE when trailing-window traded notional crosses the floor, then not again until it
-    drops below and re-crosses."""
-    tr = _BurstTracker(window_s=10.0, floor=1000.0)
-    assert tr.update(0, 100, 10.0) == (False, 0.0, 0)      # first packet: no delta
-    fired, wnot, wqty = tr.update(1, 200, 10.0)            # +100 units × 10 = 1000
+    drops below and re-crosses. First arg is the contract security_id (per-contract volume delta)."""
+    tr = _SymbolBurstTracker(window_s=10.0, floor=1000.0)
+    assert tr.update("A", 0, 100, 10.0) == (False, 0.0, 0)   # first packet for A: no delta
+    fired, wnot, wqty = tr.update("A", 1, 200, 10.0)         # +100 units × 10 = 1000
     assert fired is True and wnot == 1000.0 and wqty == 100
-    assert tr.update(2, 250, 10.0)[0] is False             # still above floor → no re-fire
-    # advance past the window so old deltas expire → back below floor
-    assert tr.update(15, 260, 10.0)[0] is False
+    assert tr.update("A", 2, 250, 10.0)[0] is False          # still above floor → no re-fire
+    assert tr.update("A", 15, 260, 10.0)[0] is False         # window expired → below floor
     assert tr.active is False
 
 
+def test_burst_tracker_aggregates_two_contracts():
+    """Near + next month deltas sum into ONE symbol window (the roll aggregation)."""
+    tr = _SymbolBurstTracker(window_s=10.0, floor=1000.0)
+    tr.update("near", 0, 100, 10.0)                          # prime both contracts
+    tr.update("next", 0, 100, 10.0)
+    assert tr.update("near", 1, 150, 10.0)[0] is False       # +50×10 = 500 (below 1000)
+    fired, wnot, _ = tr.update("next", 1, 150, 10.0)         # +50×10 = 500 → window now 1000
+    assert fired is True and wnot == 1000.0                  # aggregated across the two contracts
+
+
 def test_burst_tracker_ignores_volume_reset():
-    tr = _BurstTracker(window_s=10.0, floor=1.0)
-    tr.update(0, 500, 10.0)
-    fired, wnot, _ = tr.update(1, 100, 10.0)               # volume < last (day reset) → dvol 0
+    tr = _SymbolBurstTracker(window_s=10.0, floor=1.0)
+    tr.update("A", 0, 500, 10.0)
+    fired, wnot, _ = tr.update("A", 1, 100, 10.0)            # volume < last (day reset) → dvol 0
     assert fired is False and wnot == 0.0
 
 
-CONTRACTS = {61093: {"symbol": "NIFTY", "security_id": 61093, "lot": 65, "expiry": "2026-07-28"}}
+CONTRACTS = {61093: {"symbol": "NIFTY", "roll": "near", "security_id": 61093, "lot": 65,
+                     "expiry": "2026-07-28"}}
 
 
 def test_detector_emits_big_print():
@@ -55,6 +65,7 @@ def test_detector_emits_big_print():
     ev = evs[0]
     assert ev.kind == "print" and ev.symbol == "NIFTY" and ev.side == "buy"
     assert ev.lots == 500.0 and ev.notional == 24000.0 * 500 * 65
+    assert ev.expiry == "2026-07-28"                       # tagged with the contract
 
 
 def test_detector_ignores_small_print():
@@ -124,3 +135,70 @@ def test_daily_rollup(tmp_path, monkeypatch):
     assert r["net_notional"] == 5e7 and r["lean"] == "BUY"
     assert abs(r["net_pct"] - (5e7 / 11e7 * 100)) < 1e-6
     assert r["biggest"] == 8e7
+
+
+# --- near + next month aggregation (Option A) --------------------------------------------------
+
+TWO_CONTRACTS = {
+    61093: {"symbol": "NIFTY", "roll": "near", "security_id": 61093, "lot": 65, "expiry": "2026-07-28"},
+    61200: {"symbol": "NIFTY", "roll": "next", "security_id": 61200, "lot": 65, "expiry": "2026-08-25"},
+}
+
+
+def test_prints_tagged_per_contract_and_dedupe_by_expiry(tmp_path, monkeypatch):
+    import app.big_money_db as db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "bm.db")
+    det = BigMoneyDetector(TWO_CONTRACTS, print_floor={"NIFTY": 1_00_00_000.0})
+    near = NS(security_id=61093, ltp=24000.0, ltq=500 * 65, ltt=1784600000, volume=None,
+              bid=None, ask=None)
+    nxt = NS(security_id=61200, ltp=24080.0, ltq=500 * 65, ltt=1784600000, volume=None,
+             bid=None, ask=None)                            # same epoch, DIFFERENT contract
+    evs = []
+    for t in (near, nxt):
+        for ev in det.on_tick(t):
+            append_event(ev)
+            evs.append(ev)
+    day = evs[0].ts_ist[:10]                                 # the day the detector stamped
+    rows = load_events("NIFTY", day)
+    assert len(rows) == 2                                    # both kept — expiry keeps them distinct
+    assert {r["expiry"] for r in rows} == {"2026-07-28", "2026-08-25"}
+    # daily_rollup folds both contracts into ONE symbol row
+    roll = db.daily_rollup(days=[day], symbols=["NIFTY"])
+    assert len(roll) == 1 and roll[0]["n"] == 2
+
+
+def test_burst_tagged_agg():
+    det = BigMoneyDetector(TWO_CONTRACTS, burst_floor={"NIFTY": 1000.0}, burst_window_s=10.0)
+    det.on_tick(NS(security_id=61093, ltp=10.0, ltq=None, ltt=1, volume=100, bid=None, ask=None))
+    evs = det.on_tick(NS(security_id=61093, ltp=10.0, ltq=None, ltt=2, volume=300, bid=None, ask=None))
+    burst = [e for e in evs if e.kind == "burst"]
+    assert burst and burst[0].expiry == "AGG"               # symbol-aggregate burst
+
+
+def test_nearest_futures_two_sorted():
+    import pandas as pd
+    from data.dhan import nearest_futures
+    master = pd.DataFrame({
+        "SEM_INSTRUMENT_NAME": ["FUTIDX", "FUTIDX", "FUTIDX", "OPTIDX"],
+        "SEM_TRADING_SYMBOL": ["NIFTY-Aug2026-FUT", "NIFTY-Jul2026-FUT", "NIFTY-Sep2026-FUT",
+                               "NIFTY-Jul2026-24000-CE"],
+        "SEM_EXPIRY_DATE": ["2026-08-25", "2026-07-28", "2026-09-29", "2026-07-28"],
+        "SEM_SMST_SECURITY_ID": [61200, 61093, 61300, 99999],
+        "SEM_LOT_UNITS": [65, 65, 65, 65],
+    })
+    fs = nearest_futures("NIFTY", n=2, master=master)
+    assert [f["expiry"] for f in fs] == ["2026-07-28", "2026-08-25"]   # sorted, front two, no options
+    assert fs[0]["security_id"] == 61093
+
+
+def test_futures_state_and_rollover(tmp_path, monkeypatch):
+    import app.big_money_db as db
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "bm.db")
+    db.upsert_futures_state("NIFTY", "near", "2026-07-28", oi=1_000_000, price=24000.0, ts=1)
+    db.upsert_futures_state("NIFTY", "next", "2026-08-25", oi=3_000_000, price=24080.0, ts=1)
+    db.upsert_futures_state("NIFTY", "near", "2026-07-28", oi=1_000_000, price=24010.0, ts=2)  # upsert
+    roll = db.rollover(symbols=["NIFTY"])
+    assert len(roll) == 1
+    r = roll[0]
+    assert r["pct_rolled"] == 75.0                          # 3M / (1M + 3M)
+    assert r["near"]["price"] == 24010.0 and r["next"]["expiry"] == "2026-08-25"
