@@ -115,7 +115,7 @@ def main() -> None:
 
     last_beat = 0.0
     try:
-        while col.status.running and (stop_at is None or time.time() < stop_at):
+        while col.alive() and (stop_at is None or time.time() < stop_at):    # alive(), not status.running (GIL race)
             time.sleep(2.0)
             if time.time() - last_beat >= 60:         # heartbeat so a scheduled log shows liveness
                 s = col.status

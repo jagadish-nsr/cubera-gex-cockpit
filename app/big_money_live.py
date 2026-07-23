@@ -102,6 +102,11 @@ class Collector:
     def stop(self) -> None:
         self._stop.set()
 
+    def alive(self) -> bool:
+        """True from the moment the thread is started until run() returns — unlike status.running,
+        which is set inside the thread and races the caller's first check (GIL)."""
+        return self._thread is not None and self._thread.is_alive()
+
     def _new_detector(self, contracts):
         self.status.per_symbol = {c["symbol"]: self.status.per_symbol.get(c["symbol"], 0)
                                   for c in contracts.values()}
