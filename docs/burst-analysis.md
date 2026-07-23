@@ -97,10 +97,17 @@ a far stronger read, and one that connects directly to the existing futures-OI b
 them. `buildup(direction, doi)` gives the four-quadrant tag. In the **analysis** (`big_money_analysis.py`
 §4) this is the day OI trend + per-bucket build-up (Δprice × ΔOI via `oi_footprint.classify_buildup`) +
 a per-print build-up ₹ breakdown; the **tape** shows a compact build-up tag per row (L+ / S+ / S⤴ / L⤵).
+
+**Conviction — `ΔOI / Δvolume` (built):** the single cleanest read on a burst. It is the share of the
+window's traded volume that became **net new positioning** rather than churn: ≈ **+1** heavy building,
+≈ **−1** heavy unwinding, ≈ **0** churn / day-trading. So two ₹10cr bursts are *not* equal — one at
+conviction 0.6 is real positioning, one at 0.02 is just churn. The analysis §4 reports **net conviction**,
+the **|conv| median**, and the **positioning share** (% of burst ₹ with |conv| ≥ 0.25); the tape shows
+each burst's conviction. `app/big_money.py::conviction(doi, qty)`.
+
 **Caveat:** OI is cumulative and per contract, so near expiry the roll inflates ΔOI (near falls, next
 rises) — the near+next aggregation nets most of it, but roll days need care. *Available going forward*
-— it needs a session captured *after* this change (pre-ΔOI events show "no OI" in §4). Still open: a
-**conviction ratio** `ΔOI/Δvolume` and burst-level (not just print) directional tagging.
+— it needs a session captured *after* this change (pre-ΔOI events show "no OI" in §4).
 
 ## Open research questions
 

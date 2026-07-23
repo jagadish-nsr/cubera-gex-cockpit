@@ -72,6 +72,14 @@ def test_buildup_quadrants():
     assert buildup(1, 0) is None                             # flat OI = churn
 
 
+def test_conviction():
+    from app.big_money import conviction
+    assert conviction(500, 1000) == 0.5                      # half the volume was net new OI
+    assert conviction(-800, 1000) == -0.8                    # unwinding
+    assert conviction(10, 1000) == 0.01                      # ~churn
+    assert conviction(500, 0) is None and conviction(None, 1000) is None
+
+
 CONTRACTS = {61093: {"symbol": "NIFTY", "roll": "near", "security_id": 61093, "lot": 65,
                      "expiry": "2026-07-28"}}
 

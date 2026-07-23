@@ -107,6 +107,16 @@ def analyse(day: str, symbol: str) -> dict | None:
             if q:
                 pos[q] = pos.get(q, 0.0) + r["cr"]
         out["positioning"] = {k: round(v, 1) for k, v in sorted(pos.items(), key=lambda x: -x[1])}
+        # conviction = ΔOI / Δvolume over the window — positioning vs churn (bursts, same-scope)
+        bc = bu[(bu["doi"].notna()) & (bu["qty"] > 0)].copy()
+        if len(bc):
+            conv = bc["doi"] / bc["qty"]
+            burst_cr = bc["cr"].sum()
+            out["conviction"] = {
+                "net": round(float(bc["doi"].sum() / bc["qty"].sum()), 3) if bc["qty"].sum() else 0.0,
+                "median_abs": round(float(conv.abs().median()), 3),
+                "posn_share": round(float(bc.loc[conv.abs() >= 0.25, "cr"].sum() / burst_cr * 100), 0)
+                if burst_cr else 0.0}
 
     # (3) value profile — big-money PRINT notional by price level, split buy/sell (volume-at-price)
     if len(pr):
@@ -169,6 +179,12 @@ def report(a: dict) -> None:
         prev_oi, prev_px = t["oi"], t["px"]
     if a.get("positioning"):
         _print("    print build-up ₹cr:  " + "  ·  ".join(f"{k} {v}" for k, v in a["positioning"].items()))
+    c = a.get("conviction")
+    if c:
+        _print(f"    burst conviction (ΔOI/Δvol): net {c['net']:+.2f} "
+               f"({'BUILDING' if c['net'] > 0 else 'UNWINDING' if c['net'] < 0 else 'churn'}) · "
+               f"|conv| med {c['median_abs']:.2f} · positioning share {c['posn_share']:.0f}% of burst ₹ "
+               f"(rest is churn)")
 
 
 def main() -> None:

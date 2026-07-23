@@ -64,9 +64,14 @@ trend + per-bucket build-up + per-print build-up ₹; the tape shows a per-row b
 from *flow* into *positioning* and gives them a direction. `docs/burst-analysis.md` is the research/reading
 guide. 261 tests green. Needs a session captured AFTER this change (pre-ΔOI events show "no OI").
 
+**+ Conviction ΔOI/Δvol (2026-07-24):** `conviction(doi, qty)` = share of window volume that became NET
+positioning vs churn (≈+1 building, ≈−1 unwinding, ≈0 churn). Analysis §4 reports net conviction, |conv|
+median, positioning share (% of burst ₹, |conv|≥0.25); the tape shows per-burst conviction. Verified on
+synthetic bursts (net +0.45, 71% positioning). 262 tests green.
+
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
-accrue; **conviction ratio ΔOI/Δvolume + burst-level directional tag**; intraday (half→half) flow test;
-calendar-spread detection; deferred phases (constituents, cross-book synthesis).
+accrue; burst-level directional tag (long vs short build-up, needs window Δprice); intraday (half→half)
+flow test; calendar-spread detection; deferred phases (constituents, cross-book synthesis).
 
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the

@@ -848,6 +848,12 @@ def _oi_tag(r) -> str:
         if ab:
             return f'<span title="{q}" style="color:{ab[1]};font-weight:700">{ab[0]}</span>'
     a = "▲" if doi > 0 else "▼" if doi < 0 else "·"
+    # burst: show conviction (ΔOI/Δvol) — how much of the flow was positioning vs churn
+    from app.big_money import conviction
+    cv = conviction(doi, r.get("qty"))
+    if cv is not None and r.get("kind") == "burst":
+        col = "var(--go)" if cv > 0.15 else "var(--stop)" if cv < -0.15 else "var(--ink-mute)"
+        return f'<span title="ΔOI {doi:+,.0f} · conviction {cv:+.2f}" style="color:{col}">{a}{abs(cv):.1f}</span>'
     return f'<span title="ΔOI {doi:+,.0f}" style="color:var(--ink-mute)">{a}OI</span>'
 
 

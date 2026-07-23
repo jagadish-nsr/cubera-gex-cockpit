@@ -80,6 +80,16 @@ def buildup(direction, doi, tol: float = 0.0) -> str | None:
     return _QUAD[(doi > 0, direction > 0)]
 
 
+def conviction(doi, qty) -> float | None:
+    """ΔOI / Δvolume over the window — the share of the traded volume that became NET new positioning
+    rather than churn. ≈ +1 = heavy position-building, ≈ −1 = heavy unwinding, ≈ 0 = churn / day-trading
+    (lots traded, no net OI change). None if either input is missing/zero. Most meaningful on BURSTS,
+    where ``qty`` is the window volume and ``doi`` the window ΔOI (same scope)."""
+    if doi is None or not qty:
+        return None
+    return doi / qty
+
+
 @dataclass
 class Event:
     """One qualifying big-money event, ready to store/render."""
