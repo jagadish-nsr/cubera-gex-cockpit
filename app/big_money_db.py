@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS events (
     bid      REAL,
     ask      REAL,
     expiry   TEXT,                      -- print: contract expiry; burst: 'AGG' (symbol-aggregate)
+    oi       REAL,                      -- symbol total OI (near+next) at event time
+    doi      REAL,                      -- ΔOI over the window: new positioning (+) vs unwind (−)
     UNIQUE(epoch, symbol, kind, qty, price, expiry)   -- dedupe repeats; expiry keeps near/next distinct
 );
 CREATE INDEX IF NOT EXISTS ix_events_day     ON events(day);
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS futures_state (
 """
 
 _COLS = ("epoch", "ts_ist", "symbol", "kind", "side", "qty", "lots", "notional", "price", "bid",
-         "ask", "expiry")
+         "ask", "expiry", "oi", "doi")
 
 
 def _connect(path: Path | None = None) -> sqlite3.Connection:
@@ -63,8 +65,9 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     # back-compat: a pre-existing events table may lack the expiry column — add it (the UNIQUE stays
     # the old shape on that legacy table, which only weakens dedupe on already-captured rows).
     have = {r[1] for r in con.execute("PRAGMA table_info(events)")}
-    if "expiry" not in have:
-        con.execute("ALTER TABLE events ADD COLUMN expiry TEXT")
+    for col, typ in (("expiry", "TEXT"), ("oi", "REAL"), ("doi", "REAL")):
+        if col not in have:
+            con.execute(f"ALTER TABLE events ADD COLUMN {col} {typ}")
     return con
 
 
@@ -73,11 +76,12 @@ def insert_event(ev, path: Path | None = None) -> None:
     IGNOREd via the UNIQUE key; near vs next-month prints stay distinct via ``expiry``."""
     row = (int(ev.epoch), ev.ts_ist, ev.ts_ist[:10], ev.symbol, ev.kind, ev.side,
            None if ev.qty is None else int(ev.qty), ev.lots, float(ev.notional), float(ev.price),
-           ev.bid, ev.ask, getattr(ev, "expiry", None) or "")   # '' not NULL so the UNIQUE key dedupes
+           ev.bid, ev.ask, getattr(ev, "expiry", None) or "",   # '' not NULL so the UNIQUE key dedupes
+           getattr(ev, "oi", None), getattr(ev, "doi", None))
     with _connect(path) as con:
         con.execute("INSERT OR IGNORE INTO events"
-                    "(epoch,ts_ist,day,symbol,kind,side,qty,lots,notional,price,bid,ask,expiry) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+                    "(epoch,ts_ist,day,symbol,kind,side,qty,lots,notional,price,bid,ask,expiry,oi,doi) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
 
 def upsert_futures_state(symbol, roll, expiry, oi, price, ts, path: Path | None = None) -> None:

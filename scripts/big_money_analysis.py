@@ -52,7 +52,12 @@ def analyse(day: str, symbol: str) -> dict | None:
     ev = pd.DataFrame(load_events(symbol, day))
     if ev.empty:
         return None
+    ev = ev.sort_values("ts_ist").reset_index(drop=True)        # ascending for OI-trend / buckets
     ev["cr"] = ev["notional"] / 1e7
+    for col in ("oi", "doi"):
+        if col not in ev.columns:
+            ev[col] = None
+        ev[col] = pd.to_numeric(ev[col], errors="coerce")
     pr = ev[ev["kind"] == "print"].copy()
     bu = ev[ev["kind"] == "burst"].copy()
     out: dict = {"symbol": symbol, "day": day, "n_events": len(ev), "n_print": len(pr),
@@ -72,17 +77,36 @@ def analyse(day: str, symbol: str) -> dict | None:
         out["sides"] = {s: int((pr["side"] == s).sum()) for s in ("buy", "sell")}
         out["sides"]["mid"] = int(pr["side"].isna().sum())
 
-    # (2) time profile — per 15-min bucket: prints, bursts, net signed ₹ (prints only, side known)
+    # (2) time profile — per 15-min bucket: prints, bursts, net signed ₹, and OI level (last in bucket)
     tb: dict[int, dict] = {}
     for _, r in ev.iterrows():
         b = ((_mins(r["ts_ist"]) - _OPEN) // BUCKET_MIN) * BUCKET_MIN + _OPEN
-        d = tb.setdefault(b, {"print": 0, "burst": 0, "buy": 0.0, "sell": 0.0})
+        d = tb.setdefault(b, {"print": 0, "burst": 0, "buy": 0.0, "sell": 0.0, "oi": None, "px": None})
         d[r["kind"]] += 1
         if r["kind"] == "print" and r["side"] in ("buy", "sell"):
             d[r["side"]] += r["cr"]
+        if r["oi"] == r["oi"]:
+            d["oi"] = float(r["oi"])                             # last (ascending) → end-of-bucket level
+        d["px"] = float(r["price"])
     out["time"] = [{"t": f"{b // 60:02d}:{b % 60:02d}", "print": v["print"], "burst": v["burst"],
                     "buy": round(v["buy"], 2), "sell": round(v["sell"], 2),
-                    "net": round(v["buy"] - v["sell"], 2)} for b, v in sorted(tb.items())]
+                    "net": round(v["buy"] - v["sell"], 2), "oi": v["oi"], "px": v["px"]}
+                   for b, v in sorted(tb.items())]
+
+    # (4) positioning — ΔOI turns flow into new-money vs churn. Day OI trend + per-print build-up.
+    oi_ser = ev["oi"].dropna()
+    out["has_oi"] = bool(len(oi_ser))
+    if len(oi_ser):
+        out["oi_day"] = {"open": float(oi_ser.iloc[0]), "close": float(oi_ser.iloc[-1]),
+                         "change": float(oi_ser.iloc[-1] - oi_ser.iloc[0])}
+        from app.big_money import buildup
+        pos: dict[str, float] = {}
+        for _, r in pr.iterrows():
+            direction = 1 if r["side"] == "buy" else -1 if r["side"] == "sell" else 0
+            q = buildup(direction, r["doi"] if r["doi"] == r["doi"] else None)
+            if q:
+                pos[q] = pos.get(q, 0.0) + r["cr"]
+        out["positioning"] = {k: round(v, 1) for k, v in sorted(pos.items(), key=lambda x: -x[1])}
 
     # (3) value profile — big-money PRINT notional by price level, split buy/sell (volume-at-price)
     if len(pr):
@@ -126,6 +150,25 @@ def report(a: dict) -> None:
         _print(f"    {v['price']:>9,.0f}  ₹{v['total']:>5.1f}cr  "
                f"{_bar(v['buy'], vmax, 18, '▇')}{_bar(v['sell'], vmax, 18, '▁')}  "
                f"(B{v['buy']:.0f}/S{v['sell']:.0f})")
+
+    if not a.get("has_oi"):
+        _print("\n(4) POSITIONING (ΔOI) — no OI on these events (captured before ΔOI was added).")
+        return
+    from app.oi_footprint import classify_buildup
+    od = a["oi_day"]
+    _print(f"\n(4) POSITIONING (ΔOI) — day OI {od['open']:>12,.0f} → {od['close']:,.0f}  "
+           f"({od['change']:+,.0f} → {'BUILDING' if od['change'] > 0 else 'UNWINDING'})")
+    prev_oi = prev_px = None
+    for t in a["time"]:
+        if t["oi"] is None:
+            continue
+        if prev_oi is not None:
+            doi, dpx = t["oi"] - prev_oi, (t["px"] - prev_px if prev_px else 0.0)
+            q = classify_buildup(doi, dpx) or "no clear build"
+            _print(f"    {t['t']}  ΔOI {doi:>+10,.0f}   px {t['px']:>9,.0f} ({dpx:>+6.0f})   {q}")
+        prev_oi, prev_px = t["oi"], t["px"]
+    if a.get("positioning"):
+        _print("    print build-up ₹cr:  " + "  ·  ".join(f"{k} {v}" for k, v in a["positioning"].items()))
 
 
 def main() -> None:

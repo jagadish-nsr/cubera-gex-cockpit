@@ -57,9 +57,16 @@ contracts' volume deltas into one window, tagged `AGG`), flow/rollup fold in via
 2026-07-23: NIFTY ~29%, BankNifty ~32% rolled to Aug). Dedupe keys extended with `expiry`; collector
 re-resolves near/next daily. 258 tests green. NOT yet: calendar-spread detection.
 
+**+ ΔOI / positioning (2026-07-24):** every event now carries `oi` (symbol total, near+next) + `doi`
+(ΔOI over the burst window) — `_SymbolBurstTracker` tracks per-contract OI. `buildup(direction, doi)` =
+the four-quadrant read (long/short build-up, covering, unwinding). `big_money_analysis.py` §4 = day OI
+trend + per-bucket build-up + per-print build-up ₹; the tape shows a per-row build-up tag. Turns bursts
+from *flow* into *positioning* and gives them a direction. `docs/burst-analysis.md` is the research/reading
+guide. 261 tests green. Needs a session captured AFTER this change (pre-ΔOI events show "no OI").
+
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
-accrue (then sharpen wording if it survives); intraday (half→half) flow test; calendar-spread detection;
-deferred phases (constituents, cross-book synthesis).
+accrue; **conviction ratio ΔOI/Δvolume + burst-level directional tag**; intraday (half→half) flow test;
+calendar-spread detection; deferred phases (constituents, cross-book synthesis).
 
 **SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
 scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the

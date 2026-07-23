@@ -3,7 +3,7 @@
 from types import SimpleNamespace as NS
 
 import app.big_money as bm
-from app.big_money import (BigMoneyDetector, Event, _SymbolBurstTracker, append_event,
+from app.big_money import (BigMoneyDetector, Event, _SymbolBurstTracker, append_event, buildup,
                            classify_aggressor, load_events, lots, notional)
 
 
@@ -26,11 +26,11 @@ def test_burst_tracker_rising_edge():
     """Fires ONCE when trailing-window traded notional crosses the floor, then not again until it
     drops below and re-crosses. First arg is the contract security_id (per-contract volume delta)."""
     tr = _SymbolBurstTracker(window_s=10.0, floor=1000.0)
-    assert tr.update("A", 0, 100, 10.0) == (False, 0.0, 0)   # first packet for A: no delta
-    fired, wnot, wqty = tr.update("A", 1, 200, 10.0)         # +100 units × 10 = 1000
+    assert tr.update("A", 0, 100, 10.0)[:3] == (False, 0.0, 0)   # first packet for A: no delta
+    fired, wnot, wqty, *_ = tr.update("A", 1, 200, 10.0)         # +100 units × 10 = 1000
     assert fired is True and wnot == 1000.0 and wqty == 100
-    assert tr.update("A", 2, 250, 10.0)[0] is False          # still above floor → no re-fire
-    assert tr.update("A", 15, 260, 10.0)[0] is False         # window expired → below floor
+    assert tr.update("A", 2, 250, 10.0)[0] is False              # still above floor → no re-fire
+    assert tr.update("A", 15, 260, 10.0)[0] is False             # window expired → below floor
     assert tr.active is False
 
 
@@ -40,15 +40,36 @@ def test_burst_tracker_aggregates_two_contracts():
     tr.update("near", 0, 100, 10.0)                          # prime both contracts
     tr.update("next", 0, 100, 10.0)
     assert tr.update("near", 1, 150, 10.0)[0] is False       # +50×10 = 500 (below 1000)
-    fired, wnot, _ = tr.update("next", 1, 150, 10.0)         # +50×10 = 500 → window now 1000
+    fired, wnot, *_ = tr.update("next", 1, 150, 10.0)        # +50×10 = 500 → window now 1000
     assert fired is True and wnot == 1000.0                  # aggregated across the two contracts
 
 
 def test_burst_tracker_ignores_volume_reset():
     tr = _SymbolBurstTracker(window_s=10.0, floor=1.0)
     tr.update("A", 0, 500, 10.0)
-    fired, wnot, _ = tr.update("A", 1, 100, 10.0)            # volume < last (day reset) → dvol 0
+    fired, wnot, *_ = tr.update("A", 1, 100, 10.0)           # volume < last (day reset) → dvol 0
     assert fired is False and wnot == 0.0
+
+
+def test_burst_tracker_oi_delta():
+    """total_oi sums the latest OI across contracts; window doi = ΔOI over the window."""
+    tr = _SymbolBurstTracker(window_s=10.0, floor=1e12)      # never fires — just OI bookkeeping
+    _, _, _, oi0, doi0 = tr.update("near", 0, 100, 10.0, oi=1_000_000)
+    assert oi0 == 1_000_000 and doi0 == 0                    # one sample → no window delta yet
+    _, _, _, oi1, doi1 = tr.update("near", 1, 120, 10.0, oi=1_500_000)
+    assert oi1 == 1_500_000 and doi1 == 500_000              # +500k OI over the window
+    _, _, _, oi2, _ = tr.update("next", 1, 50, 10.0, oi=300_000)
+    assert oi2 == 1_800_000                                  # near 1.5M + next 0.3M
+
+
+def test_buildup_quadrants():
+    assert buildup(1, 100) == "long build-up"                # buy/up + OI up
+    assert buildup(1, -100) == "short covering"              # buy/up + OI down
+    assert buildup(-1, 100) == "short build-up"              # sell/down + OI up
+    assert buildup(-1, -100) == "long unwinding"
+    assert buildup(0, 100) is None                           # no direction
+    assert buildup(1, None) is None                          # no ΔOI
+    assert buildup(1, 0) is None                             # flat OI = churn
 
 
 CONTRACTS = {61093: {"symbol": "NIFTY", "roll": "near", "security_id": 61093, "lot": 65,
@@ -66,6 +87,16 @@ def test_detector_emits_big_print():
     assert ev.kind == "print" and ev.symbol == "NIFTY" and ev.side == "buy"
     assert ev.lots == 500.0 and ev.notional == 24000.0 * 500 * 65
     assert ev.expiry == "2026-07-28"                       # tagged with the contract
+
+
+def test_detector_print_carries_oi():
+    """A print carries the symbol total OI + the window ΔOI (new positioning vs churn)."""
+    det = BigMoneyDetector(CONTRACTS, print_floor={"NIFTY": 1_00_00_000.0})
+    det.on_tick(NS(security_id=61093, ltp=24000.0, ltq=None, ltt=1, volume=1000,
+                   bid=None, ask=None, oi=5_000_000))          # prime OI
+    ev = det.on_tick(NS(security_id=61093, ltp=24000.0, ltq=500 * 65, ltt=2, volume=1100,
+                        bid=24000.0, ask=24000.0, oi=5_100_000))[0]
+    assert ev.oi == 5_100_000 and ev.doi == 100_000           # OI level + window ΔOI (+100k = build)
 
 
 def test_detector_ignores_small_print():

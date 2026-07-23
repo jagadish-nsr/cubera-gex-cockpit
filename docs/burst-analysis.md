@@ -92,14 +92,15 @@ So "a ₹15cr burst at 23,900" becomes "**₹15cr of new longs built at 23,900**
 a far stronger read, and one that connects directly to the existing futures-OI build-up work
 ([[futures-oi-buildup]], [[positioning-footprint-suite]]).
 
-**We already have the data**: Full packets carry OI (`tick.oi`), and `futures_state` stores it per
-contract. **What's missing**: events don't yet carry OI/ΔOI. The build is small — annotate each event
-with `doi` (ΔOI over the burst window, or vs a rolling reference), tag the build-up quadrant, and add a
-**conviction ratio** `ΔOI / Δvolume` (what fraction of the flow was net-new positioning). Then the tape
-and analysis split burst notional by build-up type, and the value profile shows *where positions were
-built*, not just where volume printed. **Caveat:** OI is cumulative and per contract, so near expiry the
-roll inflates ΔOI (near falls, next rises) — the near+next aggregation nets most of it, but roll days
-need care. Needs the raw archive live (today's was empty) or the new event field going forward.
+**Built (2026-07-24):** every event now carries **`oi`** (symbol total OI, near+next) and **`doi`**
+(ΔOI over the burst window) — `app/big_money.py::_SymbolBurstTracker` tracks per-contract OI and sums
+them. `buildup(direction, doi)` gives the four-quadrant tag. In the **analysis** (`big_money_analysis.py`
+§4) this is the day OI trend + per-bucket build-up (Δprice × ΔOI via `oi_footprint.classify_buildup`) +
+a per-print build-up ₹ breakdown; the **tape** shows a compact build-up tag per row (L+ / S+ / S⤴ / L⤵).
+**Caveat:** OI is cumulative and per contract, so near expiry the roll inflates ΔOI (near falls, next
+rises) — the near+next aggregation nets most of it, but roll days need care. *Available going forward*
+— it needs a session captured *after* this change (pre-ΔOI events show "no OI" in §4). Still open: a
+**conviction ratio** `ΔOI/Δvolume` and burst-level (not just print) directional tagging.
 
 ## Open research questions
 

@@ -834,6 +834,23 @@ def _exp_label(expiry) -> str:
         return ""
 
 
+def _oi_tag(r) -> str:
+    """A compact ΔOI build-up tag for a tape row: for a print, the four-quadrant read (side + ΔOI);
+    else a plain OI arrow. '' if no ΔOI on the event (pre-ΔOI-capture rows)."""
+    doi = r.get("doi")
+    if doi is None or doi != doi:
+        return ""
+    if r.get("kind") == "print" and r.get("side") in ("buy", "sell"):
+        from app.big_money import buildup
+        q = buildup(1 if r["side"] == "buy" else -1, doi)
+        ab = {"long build-up": ("L+", "var(--go)"), "short build-up": ("S+", "var(--stop)"),
+              "short covering": ("S⤴", "var(--go)"), "long unwinding": ("L⤵", "var(--stop)")}.get(q or "")
+        if ab:
+            return f'<span title="{q}" style="color:{ab[1]};font-weight:700">{ab[0]}</span>'
+    a = "▲" if doi > 0 else "▼" if doi < 0 else "·"
+    return f'<span title="ΔOI {doi:+,.0f}" style="color:var(--ink-mute)">{a}OI</span>'
+
+
 def _bm_rollover_html() -> str:
     """Per-symbol rollover gauge from `futures_state`: next-month OI share (% rolled) + near/next prices.
     Context on where the roll stands — descriptive, not a signal. Empty until the collector writes state."""
@@ -944,7 +961,8 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
             f'<td style="color:var(--ink-mute);font-size:.78rem">{kind}</td>'
             f'<td class="mono" style="text-align:right">{lots_s}L</td>'
             f'<td class="mono" style="text-align:right;font-weight:700">₹{cr:.2f}cr</td>'
-            f'<td class="mono" style="text-align:right;color:var(--ink-2)">@{r.get("price",0):.1f}</td></tr>')
+            f'<td class="mono" style="text-align:right;color:var(--ink-2)">@{r.get("price",0):.1f}</td>'
+            f'<td class="mono" style="text-align:center;font-size:.74rem">{_oi_tag(r)}</td></tr>')
     table = ('<table style="width:100%;border-collapse:collapse;font-size:.9rem;margin-top:6px">'
              '<tbody>' + "".join(tr) + '</tbody></table>')
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
