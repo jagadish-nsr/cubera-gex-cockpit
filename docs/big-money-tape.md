@@ -189,6 +189,20 @@ python scripts/big_money_rollup.py 2026-07-23
 python scripts/big_money_rollup.py --migrate         # import any legacy JSONL first
 ```
 
+## Day readout + replay on the dashboard
+
+The tape card also carries a **"Day so far"** readout for the selected symbol — the same aggregate the
+standalone analysis page shows, folded in: event/print/burst counts, day OI trend (build/unwind),
+**build-up ₹ split**, **net conviction + positioning share**, and the heaviest prices. It's computed by
+`app/big_money_analysis.py::analyse` (shared with `scripts/big_money_analysis.py`).
+
+**Replay (from raw ticks):** the sidebar *🎬 Replay big-money* picks a captured day + a clock (IST
+scrub); the tape then **re-derives that symbol's events tick-by-tick from the raw archive** (the source
+of truth, via `rederive_events(..., upto_epoch=…)`) up to the clock and shows the tape + readout *as of
+that moment*. So you can scrub a captured session and watch big money build — and, because it re-derives
+through the *current* detector, a detector fix (e.g. the conviction window) shows up in the replay of an
+already-captured day.
+
 ## Mid-day flow-bias on the dashboard
 
 The tape card opens with a **"Big-money flow bias · today"** block: per symbol, buy- vs sell-initiated ₹

@@ -24,115 +24,16 @@ try:
 except (AttributeError, ValueError):
     pass
 
-from app.big_money_db import load_events   # noqa: E402
-
-DEFAULT_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
-PRICE_BIN = {"NIFTY": 25.0, "BANKNIFTY": 100.0, "SENSEX": 100.0}
-BUCKET_MIN = 15                            # time profile bucket (minutes)
-_OPEN = 9 * 60 + 15
+from app.big_money_analysis import DEFAULT_SYMBOLS, BUCKET_MIN, analyse   # noqa: E402
 
 
 def _print(s: str = "") -> None:
     print(s, flush=True)
 
 
-def _mins(hhmmss: str) -> int:
-    h, m = hhmmss[11:16].split(":")
-    return int(h) * 60 + int(m)
-
-
 def _bar(x, xmax, width=28, ch="█"):
     n = int(round(width * (x / xmax))) if xmax else 0
     return ch * n
-
-
-def analyse(day: str, symbol: str) -> dict | None:
-    import numpy as np
-    import pandas as pd
-    ev = pd.DataFrame(load_events(symbol, day))
-    if ev.empty:
-        return None
-    ev = ev.sort_values("ts_ist").reset_index(drop=True)        # ascending for OI-trend / buckets
-    ev["cr"] = ev["notional"] / 1e7
-    for col in ("oi", "doi", "conv"):
-        if col not in ev.columns:
-            ev[col] = None
-        ev[col] = pd.to_numeric(ev[col], errors="coerce")
-    pr = ev[ev["kind"] == "print"].copy()
-    bu = ev[ev["kind"] == "burst"].copy()
-    out: dict = {"symbol": symbol, "day": day, "n_events": len(ev), "n_print": len(pr),
-                 "n_burst": len(bu), "span": [ev["ts_ist"].min()[11:], ev["ts_ist"].max()[11:]]}
-
-    # (1) print value distribution — ₹cr histogram + percentiles + lots
-    if len(pr):
-        cr = pr["cr"]
-        edges = list(np.arange(1.0, float(cr.max()) + 0.5, 0.5))
-        hist, _ = np.histogram(cr, bins=edges + [edges[-1] + 0.5])
-        out["dist"] = {"edges": [round(e, 2) for e in edges], "counts": hist.tolist()}
-        out["pctl"] = {k: round(float(cr.quantile(v)), 2)
-                       for k, v in {"p50": .5, "p75": .75, "p90": .9, "p95": .95, "p99": .99}.items()}
-        out["pctl"]["max"] = round(float(cr.max()), 2)
-        out["sum_cr"] = round(float(cr.sum()), 1)
-        out["lots"] = {"p50": float(pr["lots"].median()), "max": float(pr["lots"].max())}
-        out["sides"] = {s: int((pr["side"] == s).sum()) for s in ("buy", "sell")}
-        out["sides"]["mid"] = int(pr["side"].isna().sum())
-
-    # (2) time profile — per 15-min bucket: prints, bursts, net signed ₹, and OI level (last in bucket)
-    tb: dict[int, dict] = {}
-    for _, r in ev.iterrows():
-        b = ((_mins(r["ts_ist"]) - _OPEN) // BUCKET_MIN) * BUCKET_MIN + _OPEN
-        d = tb.setdefault(b, {"print": 0, "burst": 0, "buy": 0.0, "sell": 0.0, "oi": None, "px": None})
-        d[r["kind"]] += 1
-        if r["kind"] == "print" and r["side"] in ("buy", "sell"):
-            d[r["side"]] += r["cr"]
-        if r["oi"] == r["oi"]:
-            d["oi"] = float(r["oi"])                             # last (ascending) → end-of-bucket level
-        d["px"] = float(r["price"])
-    out["time"] = [{"t": f"{b // 60:02d}:{b % 60:02d}", "print": v["print"], "burst": v["burst"],
-                    "buy": round(v["buy"], 2), "sell": round(v["sell"], 2),
-                    "net": round(v["buy"] - v["sell"], 2), "oi": v["oi"], "px": v["px"]}
-                   for b, v in sorted(tb.items())]
-
-    # (4) positioning — ΔOI turns flow into new-money vs churn. Day OI trend + per-print build-up.
-    oi_ser = ev["oi"].dropna()
-    out["has_oi"] = bool(len(oi_ser))
-    if len(oi_ser):
-        out["oi_day"] = {"open": float(oi_ser.iloc[0]), "close": float(oi_ser.iloc[-1]),
-                         "change": float(oi_ser.iloc[-1] - oi_ser.iloc[0])}
-        from app.big_money import buildup
-        pos: dict[str, float] = {}
-        for _, r in pr.iterrows():
-            direction = 1 if r["side"] == "buy" else -1 if r["side"] == "sell" else 0
-            q = buildup(direction, r["doi"] if r["doi"] == r["doi"] else None)
-            if q:
-                pos[q] = pos.get(q, 0.0) + r["cr"]
-        out["positioning"] = {k: round(v, 1) for k, v in sorted(pos.items(), key=lambda x: -x[1])}
-        # conviction = ΔOI / Δvolume over the positioning window (already on the event) — positioning vs churn
-        if "conv" not in bu.columns:
-            bu["conv"] = None
-        bc = bu[pd.to_numeric(bu["conv"], errors="coerce").notna()].copy()
-        bc["conv"] = pd.to_numeric(bc["conv"], errors="coerce")
-        if len(bc):
-            burst_cr = bc["cr"].sum()
-            out["conviction"] = {
-                "net": round(float((bc["conv"] * bc["cr"]).sum() / burst_cr), 3) if burst_cr else 0.0,
-                "median_abs": round(float(bc["conv"].abs().median()), 3),
-                "posn_share": round(float(bc.loc[bc["conv"].abs() >= 0.25, "cr"].sum() / burst_cr * 100), 0)
-                if burst_cr else 0.0}
-
-    # (3) value profile — big-money PRINT notional by price level, split buy/sell (volume-at-price)
-    if len(pr):
-        step = PRICE_BIN.get(symbol, 25.0)
-        pr["pbin"] = (pr["price"] // step * step).astype(float)
-        vp = []
-        for pb, g in pr.groupby("pbin"):
-            buy = g.loc[g["side"] == "buy", "cr"].sum()
-            sell = g.loc[g["side"] == "sell", "cr"].sum()
-            mid = g.loc[g["side"].isna(), "cr"].sum()
-            vp.append({"price": float(pb), "buy": round(buy, 2), "sell": round(sell, 2),
-                       "mid": round(mid, 2), "total": round(buy + sell + mid, 2)})
-        out["value_profile"] = sorted(vp, key=lambda r: r["price"], reverse=True)
-    return out
 
 
 def report(a: dict) -> None:

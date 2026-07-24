@@ -456,6 +456,18 @@ def main():
                          "Starts with the dashboard; needs a Dhan token. It does NOT save raw ticks — "
                          "the raw archive is owned by the scheduled headless collector, so the two never "
                          "double-write. SENSEX needs the BSE live-data entitlement — 0 ticks without it.")
+        with st.expander("🎬 Replay big-money (from raw ticks)", expanded=False):
+            from app.big_money_live import available_raw_days
+            _rd = available_raw_days(symbol)
+            if not _rd:
+                st.caption(f"No captured raw ticks for {symbol} yet — run the collector a full session.")
+            else:
+                st.checkbox(f"Replay {symbol}'s captured tape", value=False, key="bm_replay_on",
+                            help="Scrub through a captured day's big-money tape, re-derived tick-by-tick "
+                                 "from the raw archive (the source of truth) up to the chosen clock.")
+                st.selectbox("Day", _rd[::-1], key="bm_replay_day")
+                _times = [f"{m // 60:02d}:{m % 60:02d}" for m in range(9 * 60 + 15, 15 * 60 + 31, 5)]
+                st.select_slider("Clock (IST)", options=_times, value=_times[-1], key="bm_replay_clock")
         st.divider()
         st.caption("⚡ Gamma-blast")
         preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
@@ -720,8 +732,18 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
-    # live futures big-money tape (separate feed) — sits up top now
-    H.append(_big_money_tape_html(ist))
+    # live futures big-money tape (separate feed) — sits up top now; or scrub a captured day (replay)
+    _bm_replay = None
+    if st.session_state.get("bm_replay_on") and st.session_state.get("bm_replay_day"):
+        from app.big_money import IST as _IST
+        _rday, _clock = st.session_state["bm_replay_day"], st.session_state.get("bm_replay_clock", "15:30")
+        try:
+            _upto = int(datetime.strptime(f"{_rday} {_clock}", "%Y-%m-%d %H:%M")
+                        .replace(tzinfo=_IST).timestamp())
+            _bm_replay = {"day": _rday, "clock": _clock, "upto_epoch": _upto}
+        except (ValueError, TypeError):
+            _bm_replay = None
+    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
@@ -919,35 +941,86 @@ def _bm_flow_html(day: str) -> str:
         'accrue). De-size on conflict with your thesis; you confirm.</span></div>')
 
 
-def _big_money_tape_html(ist, limit: int = 20) -> str:
-    """Full-width 'big-money tape' card — tails the event store the auto-collector writes for the
-    NIFTY / BankNifty / SENSEX futures. A SEPARATE live feed (websocket), not the polled snapshot — so
-    it reads the JSONL store, newest first, and shows the collector's live health strip. Honest: these
-    are large PRINTS / BURSTS (an inference of big activity, not orders); direction is only the
-    aggressor side (Lee-Ready). Decision-support; a readout, never a trade call."""
+def _bm_day_readout_html(a) -> str:
+    """Compact 'day so far' analytics for one symbol from an analyse() dict — the aggregate the standalone
+    analysis page shows, folded into the tape: counts, day OI trend, build-up split, conviction, heaviest
+    prices. Descriptive; a map, not a signal."""
+    if not a:
+        return ""
+    oi, pos, conv = a.get("oi_day"), a.get("positioning") or {}, a.get("conviction")
+    t = [f'events <b>{a["n_events"]}</b> ({a["n_print"]}P/{a["n_burst"]}B)']
+    if a.get("sum_cr") is not None:
+        t.append(f'prints <b>₹{a["sum_cr"]}cr</b>')
+    s = a.get("sides") or {}
+    if s:
+        t.append(f'buy/sell <b>{s.get("buy", 0)}/{s.get("sell", 0)}</b>')
+    if oi:
+        ch = oi["change"]
+        t.append(f'day OI <b style="color:{"var(--go)" if ch > 0 else "var(--stop)"}">'
+                 f'{"▲" if ch > 0 else "▼"}{abs(ch):,.0f}</b>')
+    if conv:
+        t.append(f'conviction <b style="color:{"var(--go)" if conv["net"] > 0 else "var(--stop)"}">'
+                 f'{conv["net"]:+.2f}</b>·{conv["posn_share"]:.0f}% posn')
+    bhtml = ""
+    if pos:
+        segs = [f'<span style="color:{"var(--go)" if ("long build" in k or "covering" in k) else "var(--stop)"}">'
+                f'{k} ₹{v:.0f}cr</span>' for k, v in pos.items()]
+        bhtml = '<div style="margin-top:4px;font-size:.82rem">build-up: ' + ' · '.join(segs) + '</div>'
+    vp = sorted(a.get("value_profile") or [], key=lambda r: -r["total"])[:3]
+    vhtml = ('<div style="margin-top:2px;font-size:.82rem;color:var(--ink-2)">heaviest prices: '
+             + ' · '.join(f'{v["price"]:,.0f} ₹{v["total"]:.0f}cr' for v in vp) + '</div>') if vp else ''
+    return ('<div style="margin:2px 0 8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">'
+            f'<div class="eyebrow" style="margin-bottom:4px">Day so far · {a["symbol"]}</div>'
+            f'<div class="mono" style="font-size:.84rem">{" &nbsp;·&nbsp; ".join(t)}</div>{bhtml}{vhtml}</div>')
+
+
+def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
+    """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
+    plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
+    from its raw archive up to the replay clock (raw = source of truth) and shows the tape + readout as
+    of that moment. Honest: large PRINTS / BURSTS (inference, not orders); direction = aggressor side.
+    Decision-support; a readout, never a trade call."""
     try:
         from app.big_money import load_events
+        from app.big_money_analysis import analyse, analyse_frame
+        import pandas as pd
     except Exception:  # noqa: BLE001
         return ""
-    day = ist.strftime("%Y-%m-%d")
     status = st.session_state.get("_bm_status")
-    rows = []
-    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+    if replay:
+        from dataclasses import asdict
+        from app.big_money_live import rederive_events
+        day = replay["day"]
+        allrows = [asdict(e) for e in rederive_events(symbol, day, upto_epoch=replay["upto_epoch"])]
+        rows = sorted(allrows, key=lambda r: r.get("epoch", 0), reverse=True)[:limit]
+        readout = analyse_frame(pd.DataFrame(allrows), symbol, day) if allrows else None
+        sub = f'🎬 REPLAY {day} @ {replay["clock"]} · {symbol} (from raw)'
+    else:
+        day = ist.strftime("%Y-%m-%d")
+        rows = []
+        for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+            try:
+                rows.extend(load_events(sym, day))
+            except Exception:  # noqa: BLE001
+                pass
+        rows.sort(key=lambda r: r.get("epoch", 0), reverse=True)
+        rows = rows[:limit]
         try:
-            rows.extend(load_events(sym, day))
+            readout = analyse(day, symbol)
         except Exception:  # noqa: BLE001
-            pass
-    rows.sort(key=lambda r: r.get("epoch", 0), reverse=True)
-    rows = rows[:limit]
+            readout = None
+        sub = 'NIFTY · BankNifty · SENSEX · current expiry · live'
 
     head = ('<div class="card" style="margin-top:14px"><div class="rb-top">'
             '<span class="eyebrow">🐋 Big-money futures tape</span>'
-            '<span class="rb-vals mono">NIFTY · BankNifty · SENSEX · current expiry · live</span></div>')
+            f'<span class="rb-vals mono">{sub}</span></div>')
     if not rows:
-        return (head + _bm_rollover_html()
-                + '<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">No '
-                'big-money events yet today — big prints & bursts appear here as they fire during '
-                f'market hours.</div>{_bm_status_html(status, day)}</div>')
+        note = ('No big-money events in this replay window yet — scrub later.' if replay else
+                'No big-money events yet today — big prints & bursts appear here as they fire during '
+                'market hours.')
+        extra = _bm_day_readout_html(readout) if replay else (_bm_rollover_html() + _bm_status_html(status, day))
+        return (head + extra + f'<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">{note}'
+                '</div></div>')
 
     side_badge = {"buy": '<span style="color:var(--go);font-weight:700">▲ BUY</span>',
                   "sell": '<span style="color:var(--stop);font-weight:700">▼ SELL</span>',
@@ -973,7 +1046,9 @@ def _big_money_tape_html(ist, limit: int = 20) -> str:
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    return (head + _bm_flow_html(day) + _bm_rollover_html() + table
+    if replay:
+        return head + _bm_day_readout_html(readout) + table + cav + '</div>'
+    return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout) + table
             + _bm_status_html(status, day) + cav + '</div>')
 
 

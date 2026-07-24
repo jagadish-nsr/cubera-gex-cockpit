@@ -216,10 +216,19 @@ class Collector:
 _LOT_FALLBACK = {"NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20}
 
 
-def rederive_events(symbol: str, day: str, lots: dict | None = None):
+def available_raw_days(symbol: str) -> list[str]:
+    """Sorted days with a captured raw tick archive (CSV or Parquet) for a symbol."""
+    d = RAW_DIR / symbol
+    if not d.exists():
+        return []
+    return sorted({p.stem for p in d.glob("*.csv")} | {p.stem for p in d.glob("*.parquet")})
+
+
+def rederive_events(symbol: str, day: str, lots: dict | None = None, upto_epoch: int | None = None):
     """Replay a captured RAW day through the CURRENT detector to regenerate events — so a detector
-    improvement (e.g. the fixed conviction window) applies to already-captured days. Raw is the source
-    of truth; this recomputes prints/bursts/ΔOI/conviction from it. Returns a list of Events."""
+    improvement (e.g. the fixed conviction window) applies to already-captured days, and so REPLAY can
+    reconstruct the tape as of any clock. Raw is the source of truth; this recomputes prints/bursts/
+    ΔOI/conviction from it. ``upto_epoch`` replays only ticks ≤ that epoch (for replay). Returns Events."""
     import math
     from app.big_money import _IST_OFFSET_S, BigMoneyDetector
     from data.dhan_feed import Tick
@@ -227,6 +236,10 @@ def rederive_events(symbol: str, day: str, lots: dict | None = None):
     if df is None or getattr(df, "empty", True):
         return []
     df = df.sort_values("epoch")
+    if upto_epoch is not None:
+        df = df[df["epoch"] <= upto_epoch]
+    if df.empty:
+        return []
     lot = (lots or {}).get(symbol) or _LOT_FALLBACK.get(symbol, 1)
 
     def _f(x):

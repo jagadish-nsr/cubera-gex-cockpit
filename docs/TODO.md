@@ -72,6 +72,13 @@ NET positioning vs churn. FIXED the window: measured OI updates ~every 60s, so t
 replays the raw archive through the current detector so a fix reaches already-captured days (raw =
 source of truth); `big_money_analysis.py --db`. Flow-IC run: INSUFFICIENT (2 pairs, need ≥15). 262 green.
 
+**+ Dashboard day-readout + tick REPLAY (2026-07-24):** analyse-compute moved to `app/big_money_analysis.py`
+(`analyse` / `analyse_frame`, shared by the script). Tape card now shows a "Day so far" readout for the
+selected symbol (counts, day OI, build-up ₹ split, net conviction + positioning share, heaviest prices).
+Sidebar *🎬 Replay big-money* scrubs a captured day (day + IST clock) — re-derives events tick-by-tick from
+the raw archive up to the clock (`rederive_events(upto_epoch=…)`, `available_raw_days`) and renders the tape
++ readout as of that moment. Live + replay renders verified. 262 green.
+
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
 accrue; burst-level directional tag (long vs short build-up, needs window Δprice); intraday (half→half)
 flow test; calendar-spread detection; deferred phases (constituents, cross-book synthesis).
