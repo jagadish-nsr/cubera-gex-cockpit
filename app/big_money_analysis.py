@@ -19,6 +19,24 @@ def _mins(hhmmss: str) -> int:
     return int(h) * 60 + int(m)
 
 
+def time_buckets(ev, bucket_min: int) -> list[dict]:
+    """Per-bucket rollup at ``bucket_min`` granularity: prints/bursts, net signed ₹, and the OI level +
+    price at the END of the bucket (for the build-up × time heatmap). ``ev`` must have a ``cr`` column."""
+    tb: dict[int, dict] = {}
+    for _, r in ev.iterrows():
+        b = ((_mins(r["ts_ist"]) - _OPEN) // bucket_min) * bucket_min + _OPEN
+        d = tb.setdefault(b, {"print": 0, "burst": 0, "buy": 0.0, "sell": 0.0, "oi": None, "px": None})
+        d[r["kind"]] += 1
+        if r["kind"] == "print" and r["side"] in ("buy", "sell"):
+            d[r["side"]] += r["cr"]
+        if r["oi"] == r["oi"]:
+            d["oi"] = float(r["oi"])
+        d["px"] = float(r["price"])
+    return [{"t": f"{b // 60:02d}:{b % 60:02d}", "print": v["print"], "burst": v["burst"],
+             "buy": round(v["buy"], 2), "sell": round(v["sell"], 2), "net": round(v["buy"] - v["sell"], 2),
+             "oi": v["oi"], "px": v["px"]} for b, v in sorted(tb.items())]
+
+
 def analyse(day: str, symbol: str) -> dict | None:
     """Analyse a symbol/day from the live event DB."""
     import pandas as pd
@@ -58,20 +76,8 @@ def analyse_frame(ev, symbol: str, day: str) -> dict | None:
         out["sides"] = {s: int((pr["side"] == s).sum()) for s in ("buy", "sell")}
         out["sides"]["mid"] = int(pr["side"].isna().sum())
 
-    tb: dict[int, dict] = {}                                        # (2) time profile
-    for _, r in ev.iterrows():
-        b = ((_mins(r["ts_ist"]) - _OPEN) // BUCKET_MIN) * BUCKET_MIN + _OPEN
-        d = tb.setdefault(b, {"print": 0, "burst": 0, "buy": 0.0, "sell": 0.0, "oi": None, "px": None})
-        d[r["kind"]] += 1
-        if r["kind"] == "print" and r["side"] in ("buy", "sell"):
-            d[r["side"]] += r["cr"]
-        if r["oi"] == r["oi"]:
-            d["oi"] = float(r["oi"])
-        d["px"] = float(r["price"])
-    out["time"] = [{"t": f"{b // 60:02d}:{b % 60:02d}", "print": v["print"], "burst": v["burst"],
-                    "buy": round(v["buy"], 2), "sell": round(v["sell"], 2),
-                    "net": round(v["buy"] - v["sell"], 2), "oi": v["oi"], "px": v["px"]}
-                   for b, v in sorted(tb.items())]
+    out["time"] = time_buckets(ev, BUCKET_MIN)                      # (2) time profile — 15-min
+    out["time3"] = time_buckets(ev, 3)                             # + 3-min for the finer heatmap
 
     oi_ser = ev["oi"].dropna()                                     # (4) positioning
     out["has_oi"] = bool(len(oi_ser))

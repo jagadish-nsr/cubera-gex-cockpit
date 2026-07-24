@@ -974,11 +974,11 @@ def _bm_day_readout_html(a) -> str:
             f'<div class="mono" style="font-size:.84rem">{" &nbsp;·&nbsp; ".join(t)}</div>{bhtml}{vhtml}</div>')
 
 
-def _bm_buildup_grid_html(a) -> str:
-    """A 15-min positioning heatmap vs price: one block per bucket (09:15→15:30), coloured by the OI
+def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min") -> str:
+    """A positioning heatmap vs price at ``key`` granularity: one block per bucket, coloured by the OI
     BUILD-UP that window (green = price up, red = down; opacity = size of ΔOI), with the futures price
     line overlaid. Hover a block for the exact build-up quadrant. Descriptive; a map, not a signal."""
-    t = (a or {}).get("time")
+    t = (a or {}).get(key)
     if not t:
         return ""
     from app.oi_footprint import classify_buildup
@@ -1022,16 +1022,17 @@ def _bm_buildup_grid_html(a) -> str:
     s.append(f'<polyline points="{pts}" fill="none" stroke="var(--ink)" stroke-width="1.7" opacity="0.85"/>')
     s.append(f'<text x="3" y="{Y(pmax) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmax:,.0f}</text>')
     s.append(f'<text x="3" y="{Y(pmin):.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmin:,.0f}</text>')
+    lstep = max(1, n // 8)
     for i, x in enumerate(b):
-        if i % 4 == 0:
+        if i % lstep == 0:
             s.append(f'<text x="{i * cw + cw / 2:.1f}" y="169" text-anchor="middle" '
                      f'style="font-size:8.5px;fill:var(--ink-mute)">{x["t"]}</text>')
     s.append("</svg>")
-    legend = ('<span class="rb-cav">15-min OI build-up vs price · block colour = price up (green) / down '
+    legend = (f'<span class="rb-cav">{label} OI build-up vs price · block colour = price up (green) / down '
               '(red), opacity = size of ΔOI (positioning) · line = futures price · hover a block for the '
               'build-up quadrant.</span>')
     return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
-            f'<div class="eyebrow" style="margin-bottom:4px">Build-up × time × price · {a["symbol"]}</div>'
+            f'<div class="eyebrow" style="margin-bottom:4px">Build-up × time × price · {a["symbol"]} · {label}</div>'
             + "".join(s) + legend + '</div>')
 
 
@@ -1107,11 +1108,11 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
+    grids = _bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
     if replay:
-        return (head + _bm_day_readout_html(readout) + _bm_buildup_grid_html(readout) + table
-                + cav + '</div>')
+        return head + _bm_day_readout_html(readout) + grids + table + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
-            + _bm_buildup_grid_html(readout) + table + _bm_status_html(status, day) + cav + '</div>')
+            + grids + table + _bm_status_html(status, day) + cav + '</div>')
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover
