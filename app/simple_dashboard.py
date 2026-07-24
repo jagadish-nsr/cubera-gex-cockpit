@@ -1036,6 +1036,54 @@ def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min") -> str:
             + "".join(s) + legend + '</div>')
 
 
+def _bm_print_scatter_html(a) -> str:
+    """PRINTS-ONLY graph: every big single-trade PRINT as a dot at its (time, price), coloured by
+    aggressor (green buy / red sell / grey mid) and sized by ₹ notional, with the futures price line for
+    context. Bursts are excluded — this is the actual block trades that hit the tape. Map, not a signal."""
+    pr = (a or {}).get("prints")
+    if not pr:
+        return ""
+    import math
+    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    prices = [p["price"] for p in pr]
+    pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
+    pmin, pmax = min(prices + pl), max(prices + pl)
+    span = (pmax - pmin) or 1.0
+    maxcr = max((p["cr"] for p in pr), default=1.0) or 1.0
+    W, L, R, top, plotH = 720, 40, 8, 10, 120
+
+    def X(m):
+        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+
+    def Y(px):
+        return top + (pmax - px) / span * plotH
+
+    col = {"buy": "var(--go)", "sell": "var(--stop)", None: "var(--ink-mute)"}
+    s = [f'<svg viewBox="0 0 {W} {top + plotH + 22}" width="100%" style="display:block" '
+         f'role="img" aria-label="big prints by time and price">']
+    bpts = " ".join(f'{X(_secs(x["t"]) / 60):.1f},{Y(x["px"]):.1f}'
+                    for x in (a.get("time") or []) if x.get("px") is not None)
+    if bpts:
+        s.append(f'<polyline points="{bpts}" fill="none" stroke="var(--ink)" stroke-width="1.2" opacity="0.4"/>')
+    for p in sorted(pr, key=lambda z: -z["cr"]):              # big dots first so small sit on top
+        r = 2.2 + 5.5 * math.sqrt(p["cr"] / maxcr)
+        s.append(f'<circle cx="{X(p["min"]):.1f}" cy="{Y(p["price"]):.1f}" r="{r:.1f}" '
+                 f'style="fill:{col[p["side"]]};opacity:0.6"><title>{p["t"]}  '
+                 f'{(p["side"] or "mid").upper()}  ₹{p["cr"]:.2f}cr  @{p["price"]:,.0f}</title></circle>')
+    for px in (pmax, pmin):
+        s.append(f'<text x="2" y="{Y(px) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{px:,.0f}</text>')
+    for m in range(OPEN, CLOSE + 1, 45):
+        s.append(f'<text x="{X(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    legend = ('<span class="rb-cav">Every big PRINT (single block trade ≥ floor) at its price &amp; time · '
+              '<span style="color:var(--go)">buy</span> / <span style="color:var(--stop)">sell</span> '
+              '(aggressor) · dot size = ₹ · faint line = price. Bursts excluded.</span>')
+    return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
+            f'<div class="eyebrow" style="margin-bottom:4px">Big prints · time × price · {a["symbol"]}</div>'
+            + "".join(s) + legend + '</div>')
+
+
 def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
     """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
     plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
@@ -1108,7 +1156,8 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    grids = _bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
+    grids = (_bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
+             + _bm_print_scatter_html(readout))
     if replay:
         return head + _bm_day_readout_html(readout) + grids + table + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)

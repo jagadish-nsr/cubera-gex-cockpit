@@ -110,4 +110,11 @@ def analyse_frame(ev, symbol: str, day: str) -> dict | None:
             vp.append({"price": float(pb), "buy": round(buy, 2), "sell": round(sell, 2),
                        "mid": round(mid, 2), "total": round(buy + sell + mid, 2)})
         out["value_profile"] = sorted(vp, key=lambda r: r["price"], reverse=True)
+        # individual big PRINTS (single trades) for a prints-only scatter: time · price · side · ₹
+        out["prints"] = [{
+            "t": r["ts_ist"][11:], "min": float(r["ts_ist"][11:13]) * 60 + float(r["ts_ist"][14:16])
+            + float(r["ts_ist"][17:19]) / 60.0, "price": float(r["price"]),
+            "side": r["side"] if r["side"] in ("buy", "sell") else None,
+            "cr": round(float(r["cr"]), 2), "lots": (float(r["lots"]) if r["lots"] == r["lots"] else None),
+        } for _, r in pr.iterrows()]
     return out
