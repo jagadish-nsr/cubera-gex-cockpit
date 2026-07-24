@@ -52,14 +52,19 @@ def test_burst_tracker_ignores_volume_reset():
 
 
 def test_burst_tracker_oi_delta():
-    """total_oi sums the latest OI across contracts; window doi = ΔOI over the window."""
-    tr = _SymbolBurstTracker(window_s=10.0, floor=1e12)      # never fires — just OI bookkeeping
-    _, _, _, oi0, doi0 = tr.update("near", 0, 100, 10.0, oi=1_000_000)
-    assert oi0 == 1_000_000 and doi0 == 0                    # one sample → no window delta yet
-    _, _, _, oi1, doi1 = tr.update("near", 1, 120, 10.0, oi=1_500_000)
-    assert oi1 == 1_500_000 and doi1 == 500_000              # +500k OI over the window
-    _, _, _, oi2, _ = tr.update("next", 1, 50, 10.0, oi=300_000)
-    assert oi2 == 1_800_000                                  # near 1.5M + next 0.3M
+    """total_oi sums the latest OI across contracts; doi = ΔOI over the (longer) positioning window;
+    conv = ΔOI / Δvolume over that window."""
+    tr = _SymbolBurstTracker(window_s=10.0, floor=1e12, pos_window_s=180.0)   # never fires — OI only
+    _, _, _, oi0, doi0, conv0 = tr.update("near", 0, 100, 10.0, oi=1_000_000)
+    assert oi0 == 1_000_000 and doi0 is None and conv0 is None      # one sample → no delta yet
+    _, _, _, oi1, doi1, conv1 = tr.update("near", 60, 200, 10.0, oi=1_500_000)
+    assert oi1 == 1_500_000 and doi1 == 500_000                     # +500k OI over the window
+    assert conv1 == 500_000 / 100                                    # ΔOI / Δvolume (200−100)
+    _, _, _, oi2, _, _ = tr.update("next", 60, 50, 10.0, oi=300_000)
+    assert oi2 == 1_800_000                                          # near 1.5M + next 0.3M
+    # an update far beyond the positioning window drops the old samples → no 2-sample delta
+    _, _, _, _, doi3, _ = tr.update("near", 400, 260, 10.0, oi=1_600_000)
+    assert doi3 is None                                             # only the epoch-400 sample remains
 
 
 def test_buildup_quadrants():

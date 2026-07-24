@@ -64,10 +64,13 @@ trend + per-bucket build-up + per-print build-up ₹; the tape shows a per-row b
 from *flow* into *positioning* and gives them a direction. `docs/burst-analysis.md` is the research/reading
 guide. 261 tests green. Needs a session captured AFTER this change (pre-ΔOI events show "no OI").
 
-**+ Conviction ΔOI/Δvol (2026-07-24):** `conviction(doi, qty)` = share of window volume that became NET
-positioning vs churn (≈+1 building, ≈−1 unwinding, ≈0 churn). Analysis §4 reports net conviction, |conv|
-median, positioning share (% of burst ₹, |conv|≥0.25); the tape shows per-burst conviction. Verified on
-synthetic bursts (net +0.45, 71% positioning). 262 tests green.
+**+ Conviction ΔOI/Δvol + 180s window fix (2026-07-24):** conviction = share of window volume that became
+NET positioning vs churn. FIXED the window: measured OI updates ~every 60s, so the 10s burst window gave
+|conv|≈0 — conviction now uses a decoupled 180s positioning window (`POS_WINDOW_S`); the tracker returns
+`(fired,wnot,wqty,tot_oi,doi,conv)` and events carry `conv`. **Validated on 2026-07-24 raw: |conv| med
+0.34, 65–71% positioning, net +0.2–0.3 BUILDING** (was 0.00/17% at 10s). `scripts/rederive_events.py`
+replays the raw archive through the current detector so a fix reaches already-captured days (raw =
+source of truth); `big_money_analysis.py --db`. Flow-IC run: INSUFFICIENT (2 pairs, need ≥15). 262 green.
 
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
 accrue; burst-level directional tag (long vs short build-up, needs window Δprice); intraday (half→half)

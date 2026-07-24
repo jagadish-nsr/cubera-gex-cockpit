@@ -54,7 +54,7 @@ def analyse(day: str, symbol: str) -> dict | None:
         return None
     ev = ev.sort_values("ts_ist").reset_index(drop=True)        # ascending for OI-trend / buckets
     ev["cr"] = ev["notional"] / 1e7
-    for col in ("oi", "doi"):
+    for col in ("oi", "doi", "conv"):
         if col not in ev.columns:
             ev[col] = None
         ev[col] = pd.to_numeric(ev[col], errors="coerce")
@@ -107,15 +107,17 @@ def analyse(day: str, symbol: str) -> dict | None:
             if q:
                 pos[q] = pos.get(q, 0.0) + r["cr"]
         out["positioning"] = {k: round(v, 1) for k, v in sorted(pos.items(), key=lambda x: -x[1])}
-        # conviction = ΔOI / Δvolume over the window — positioning vs churn (bursts, same-scope)
-        bc = bu[(bu["doi"].notna()) & (bu["qty"] > 0)].copy()
+        # conviction = ΔOI / Δvolume over the positioning window (already on the event) — positioning vs churn
+        if "conv" not in bu.columns:
+            bu["conv"] = None
+        bc = bu[pd.to_numeric(bu["conv"], errors="coerce").notna()].copy()
+        bc["conv"] = pd.to_numeric(bc["conv"], errors="coerce")
         if len(bc):
-            conv = bc["doi"] / bc["qty"]
             burst_cr = bc["cr"].sum()
             out["conviction"] = {
-                "net": round(float(bc["doi"].sum() / bc["qty"].sum()), 3) if bc["qty"].sum() else 0.0,
-                "median_abs": round(float(conv.abs().median()), 3),
-                "posn_share": round(float(bc.loc[conv.abs() >= 0.25, "cr"].sum() / burst_cr * 100), 0)
+                "net": round(float((bc["conv"] * bc["cr"]).sum() / burst_cr), 3) if burst_cr else 0.0,
+                "median_abs": round(float(bc["conv"].abs().median()), 3),
+                "posn_share": round(float(bc.loc[bc["conv"].abs() >= 0.25, "cr"].sum() / burst_cr * 100), 0)
                 if burst_cr else 0.0}
 
     # (3) value profile — big-money PRINT notional by price level, split buy/sell (volume-at-price)
@@ -192,7 +194,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("args", nargs="*")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--db", default=None, help="point at a specific events DB (e.g. a re-derived one)")
     ns = ap.parse_args()
+    if ns.db:
+        import app.big_money_db as _db
+        _db.DB_PATH = Path(ns.db)
     day = next((a for a in ns.args if a.count("-") == 2),
                (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d"))
     syms = [a.upper() for a in ns.args if a.count("-") != 2] or list(DEFAULT_SYMBOLS)

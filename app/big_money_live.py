@@ -213,6 +213,52 @@ class Collector:
         self.status.running = False
 
 
+_LOT_FALLBACK = {"NIFTY": 65, "BANKNIFTY": 30, "SENSEX": 20}
+
+
+def rederive_events(symbol: str, day: str, lots: dict | None = None):
+    """Replay a captured RAW day through the CURRENT detector to regenerate events — so a detector
+    improvement (e.g. the fixed conviction window) applies to already-captured days. Raw is the source
+    of truth; this recomputes prints/bursts/ΔOI/conviction from it. Returns a list of Events."""
+    import math
+    from app.big_money import _IST_OFFSET_S, BigMoneyDetector
+    from data.dhan_feed import Tick
+    df = load_raw_ticks(symbol, day)
+    if df is None or getattr(df, "empty", True):
+        return []
+    df = df.sort_values("epoch")
+    lot = (lots or {}).get(symbol) or _LOT_FALLBACK.get(symbol, 1)
+
+    def _f(x):
+        try:
+            v = float(x)
+            return v if v == v else None
+        except (TypeError, ValueError):
+            return None
+
+    contracts, sidmap = {}, {}
+    for roll, expiry in {(r.roll, r.expiry) for r in df.itertuples(index=False)}:
+        if roll != roll:                                    # skip NaN roll (pre-roll raw)
+            roll = "near"
+        sid = abs(hash((symbol, str(roll), str(expiry)))) & 0x7FFFFFFF
+        contracts[sid] = {"symbol": symbol, "roll": roll, "security_id": sid, "lot": lot,
+                          "expiry": None if (isinstance(expiry, float) and math.isnan(expiry)) else expiry}
+        sidmap[(roll, expiry)] = sid
+    det = BigMoneyDetector(contracts)
+    out = []
+    for r in df.itertuples(index=False):
+        roll = r.roll if r.roll == r.roll else "near"
+        sid = sidmap.get((roll, r.expiry)) or sidmap.get(("near", r.expiry))
+        if sid is None:
+            continue
+        vol = _f(r.volume)
+        tick = Tick(code=int(r.code), name="", security_id=sid, ltp=_f(r.ltp), ltq=_f(r.ltq),
+                    ltt=int(r.epoch) + _IST_OFFSET_S, volume=None if vol is None else int(vol),
+                    oi=_f(r.oi), bid=_f(r.bid), ask=_f(r.ask))
+        out.extend(det.on_tick(tick))
+    return out
+
+
 def load_raw_ticks(symbol: str, day: str):
     """The saved raw Quote/Full tick stream for a symbol/day (DataFrame), or None. Prefers the
     compacted Parquet (see compact_raw_day); falls back to the live append CSV."""

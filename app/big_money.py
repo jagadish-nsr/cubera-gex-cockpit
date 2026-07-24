@@ -32,6 +32,9 @@ STORE_DIR = ROOT / "data" / "journal" / "big_money"     # gitignored (under data
 BIG_PRINT_FLOOR = {"NIFTY": 1_00_00_000.0, "BANKNIFTY": 1_00_00_000.0, "SENSEX": 1_00_00_000.0}
 BURST_FLOOR = {"NIFTY": 3_00_00_000.0, "BANKNIFTY": 3_00_00_000.0, "SENSEX": 3_00_00_000.0}
 BURST_WINDOW_S = 10.0
+# ΔOI / conviction use a LONGER window than the 10s volume burst: futures OI updates only ~every 60s
+# (measured), so a 10s window rarely spans an update → ΔOI≈0. 180s (~3 updates) makes it meaningful.
+POS_WINDOW_S = 180.0
 _DEFAULT_FLOOR = 1_00_00_000.0
 IST = timezone(timedelta(hours=5, minutes=30))
 # Dhan's LTT is IST wall-clock expressed as a unix epoch (i.e. already +5:30), so we subtract the
@@ -106,7 +109,8 @@ class Event:
     ask: float | None = None
     expiry: str | None = None           # contract expiry for a print; 'AGG' for a symbol-level burst
     oi: float | None = None             # symbol total open interest (near+next) at event time
-    doi: float | None = None            # ΔOI over the burst window — new positioning (+) vs unwind (−)
+    doi: float | None = None            # ΔOI over the positioning window — new positioning (+) vs unwind (−)
+    conv: float | None = None           # conviction = ΔOI / Δvolume over the window (positioning vs churn)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -122,19 +126,19 @@ class _SymbolBurstTracker:
     compute each contract's own delta, then sums both into ONE symbol window — so a burst reflects total
     futures flow across the roll, not a single contract. Sustained bursts fire ONCE."""
 
-    def __init__(self, window_s: float, floor: float):
-        self.window_s, self.floor = window_s, floor
-        self.buf: deque[tuple[float, float]] = deque()      # (epoch, dvol*price), across contracts
+    def __init__(self, window_s: float, floor: float, pos_window_s: float = POS_WINDOW_S):
+        self.window_s, self.floor, self.pos_window_s = window_s, floor, pos_window_s
+        self.buf: deque[tuple[float, float]] = deque()      # (epoch, dvol*price) — 10s burst-firing window
         self.last_vol: dict = {}                            # security_id -> last cumulative volume
-        self.last_oi: dict = {}                             # security_id -> latest OI (for the level)
-        self.oi_buf: dict = {}                              # security_id -> deque[(epoch, oi)] for window ΔOI
+        self.pos: dict = {}                                 # security_id -> deque[(epoch, volume, oi)] over pos_window
         self.active = False
 
     def update(self, sec_id, epoch: float, volume: int, price: float,
                oi: float | None = None) -> tuple:
-        """Returns (fired, window_notional, window_qty, total_oi, window_doi). total_oi = sum of the
-        latest OI across the symbol's contracts; window_doi = ΔOI over the trailing window (new
-        positioning vs unwind), summed across contracts. OI is cumulative, so the delta is the change."""
+        """Returns (fired, window_notional, window_qty, total_oi, doi, conv). ``doi`` = ΔOI over the
+        POSITIONING window (pos_window_s, longer than the 10s burst window because OI updates slowly);
+        ``conv`` = ΔOI / Δvolume over that same window (share of volume that became net positioning).
+        total_oi = sum of the latest OI across the symbol's contracts."""
         prev = self.last_vol.get(sec_id)
         dvol = (volume - prev) if (prev is not None and volume >= prev) else 0
         self.last_vol[sec_id] = volume                      # (volume < prev ⇒ day reset/reconnect → 0)
@@ -143,21 +147,29 @@ class _SymbolBurstTracker:
         cutoff = epoch - self.window_s
         while self.buf and self.buf[0][0] < cutoff:
             self.buf.popleft()
-        if oi is not None:
-            self.last_oi[sec_id] = oi
-            ob = self.oi_buf.setdefault(sec_id, deque())
-            ob.append((epoch, oi))
-            while ob and ob[0][0] < cutoff:
-                ob.popleft()
-        tot_oi = sum(self.last_oi.values()) if self.last_oi else None
-        doi = None
-        if self.oi_buf:
-            doi = sum(ob[-1][1] - ob[0][1] for ob in self.oi_buf.values() if len(ob) >= 2)
+        # positioning window: track (volume, oi) per contract over the longer window
+        pb = self.pos.setdefault(sec_id, deque())
+        pb.append((epoch, float(volume), oi))
+        pcut = epoch - self.pos_window_s
+        while pb and pb[0][0] < pcut:
+            pb.popleft()
+        oi_now = [p[-1][2] for p in self.pos.values() if p and p[-1][2] is not None]
+        tot_oi = sum(oi_now) if oi_now else None
+        doi_acc, dvol_acc, have_oi = 0.0, 0.0, False
+        for p in self.pos.values():
+            ois = [o for (_, _, o) in p if o is not None]
+            if len(ois) >= 2:
+                doi_acc += ois[-1] - ois[0]
+                have_oi = True
+            if len(p) >= 2:
+                dvol_acc += p[-1][1] - p[0][1]
+        doi = doi_acc if have_oi else None
+        conv = (doi / dvol_acc) if (doi is not None and dvol_acc) else None
         wnot = sum(v for _, v in self.buf)
         wqty = int(round(wnot / price)) if price else 0
         fired = wnot >= self.floor and not self.active      # rising edge only
         self.active = wnot >= self.floor
-        return fired, wnot, wqty, tot_oi, doi
+        return fired, wnot, wqty, tot_oi, doi, conv
 
 
 class BigMoneyDetector:
@@ -191,10 +203,10 @@ class BigMoneyDetector:
         # update the symbol's window tracker first (volume + OI), so BOTH prints and bursts can carry
         # the current total OI and the window ΔOI (new positioning vs churn/unwind).
         fired = False
-        tot_oi = doi = None
+        tot_oi = doi = conv = None
         wnot = wqty = 0
         if tick.volume is not None:
-            fired, wnot, wqty, tot_oi, doi = self._burst[sym].update(
+            fired, wnot, wqty, tot_oi, doi, conv = self._burst[sym].update(
                 c["security_id"], epoch, int(tick.volume), price, getattr(tick, "oi", None))
 
         # PRINT — a single large trade on THIS contract (tagged with its expiry)
@@ -205,14 +217,14 @@ class BigMoneyDetector:
                                  side=classify_aggressor(price, tick.bid, tick.ask),
                                  qty=int(tick.ltq), lots=lots(tick.ltq, lot), notional=nden,
                                  price=price, bid=tick.bid, ask=tick.ask, expiry=c.get("expiry"),
-                                 oi=tot_oi, doi=doi))
+                                 oi=tot_oi, doi=doi, conv=conv))
 
         # BURST — sliced flow over the trailing window, aggregated across the symbol's contracts
         if fired:
             out.append(Event(epoch=epoch, ts_ist=_ts(epoch), symbol=sym, kind="burst",
                              side=None, qty=wqty, lots=lots(wqty, lot), notional=wnot,
                              price=price, bid=tick.bid, ask=tick.ask, expiry="AGG",
-                             oi=tot_oi, doi=doi))
+                             oi=tot_oi, doi=doi, conv=conv))
         return out
 
 

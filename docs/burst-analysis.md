@@ -98,12 +98,16 @@ them. `buildup(direction, doi)` gives the four-quadrant tag. In the **analysis**
 §4) this is the day OI trend + per-bucket build-up (Δprice × ΔOI via `oi_footprint.classify_buildup`) +
 a per-print build-up ₹ breakdown; the **tape** shows a compact build-up tag per row (L+ / S+ / S⤴ / L⤵).
 
-**Conviction — `ΔOI / Δvolume` (built):** the single cleanest read on a burst. It is the share of the
-window's traded volume that became **net new positioning** rather than churn: ≈ **+1** heavy building,
-≈ **−1** heavy unwinding, ≈ **0** churn / day-trading. So two ₹10cr bursts are *not* equal — one at
-conviction 0.6 is real positioning, one at 0.02 is just churn. The analysis §4 reports **net conviction**,
-the **|conv| median**, and the **positioning share** (% of burst ₹ with |conv| ≥ 0.25); the tape shows
-each burst's conviction. `app/big_money.py::conviction(doi, qty)`.
+**Conviction — `ΔOI / Δvolume` over a 3-min window (built + validated):** the single cleanest read on a
+burst — the share of traded volume that became **net new positioning** rather than churn: ≈ **+1** heavy
+building, ≈ **−1** heavy unwinding, ≈ **0** churn. Two ₹10cr bursts are *not* equal — one at conviction
+0.6 is real positioning, one at 0.02 is churn. **Window matters:** measured, futures OI updates only
+~every **60 s**, so conviction uses a **180 s positioning window**, decoupled from the 10 s burst window
+— a 10 s window gave a useless |conv| ≈ 0. Re-derived from the 2026-07-24 raw: **|conv| median 0.34,
+65–71 % of burst ₹ was positioning (net +0.2–0.3 BUILDING both indices)** — vs 0.00 / 17 % at 10 s. §4
+reports net conviction / |conv| median / positioning share; the tape shows each burst's conviction. A
+detector fix like this reaches already-captured days via `scripts/rederive_events.py` (replays the raw
+archive — the source of truth — through the current detector).
 
 **Caveat:** OI is cumulative and per contract, so near expiry the roll inflates ΔOI (near falls, next
 rises) — the near+next aggregation nets most of it, but roll days need care. *Available going forward*
