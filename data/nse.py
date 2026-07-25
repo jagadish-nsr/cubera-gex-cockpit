@@ -61,7 +61,7 @@ def from_nse_results(
             exp = datetime.strptime(exp, "%Y-%m-%d").date()
         t = r["type"].upper()
         t = "C" if t in ("C", "CE", "CALL") else "P"
-        out.append({
+        row_out: dict = {
             "expiry": exp,
             "strike": float(r["strike"]),
             "type": t,
@@ -70,9 +70,19 @@ def from_nse_results(
             "gamma": float("nan"),               # recomputed from IV by the engine
             "mid": float(r["price"]) if r.get("price") is not None else float("nan"),
             "T": years_to_expiry(exp, fetched_at),
-        })
+        }
+        # Preserve optional vendor-provided columns (e.g. Dhan: delta, theta, vega, doi, vol)
+        for _extra in ("delta", "theta", "vega", "doi", "vol"):
+            if _extra in r and r[_extra] is not None:
+                try:
+                    row_out[_extra] = float(r[_extra])
+                except (TypeError, ValueError):
+                    row_out[_extra] = float("nan")
+        out.append(row_out)
 
-    contracts = pd.DataFrame(out, columns=CONTRACT_COLUMNS)
+    # Use CONTRACT_COLUMNS as the base; append any extra columns present in the rows
+    _extra_cols = [c for c in out[0] if c not in CONTRACT_COLUMNS] if out else []
+    contracts = pd.DataFrame(out, columns=CONTRACT_COLUMNS + _extra_cols)
     if contracts.empty:
         raise ValueError("NSE chain produced no contracts")
 
@@ -558,6 +568,8 @@ def parse_participant_oi(text: str) -> dict | None:
         "opt_put_long": "Option Index Put Long",
         "opt_call_short": "Option Index Call Short",
         "opt_put_short": "Option Index Put Short",
+        "fut_stk_long": "Future Stock Long",
+        "fut_stk_short": "Future Stock Short",
     }
     if not all(c in idx for c in cols.values()):
         return None                  # header not as expected -> fail soft

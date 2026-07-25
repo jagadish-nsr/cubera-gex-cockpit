@@ -123,6 +123,26 @@ def run_daemon():
                 log.warning("All indices failed this round — backing off 10s")
                 time.sleep(10)
 
+            # ── EOD Participant OI auto-fetch (after 16:30 IST) ────────────────
+            # NSE publishes the clearing-corp participant OI file after market close
+            # (typically 4:30–6:00 PM IST). The daemon checks once per round whether
+            # today's file has been cached, and if not (and it's post-16:30 IST),
+            # fetches and saves it. Fail-soft: any error is logged and skipped.
+            try:
+                from datetime import timedelta
+                ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+                if ist_now.hour >= 16 and ist_now.minute >= 30:
+                    today_ist = ist_now.strftime("%Y-%m-%d")
+                    from app.participant_oi import capture_latest, load_participant_day
+                    if load_participant_day(today_ist) is None:
+                        result = capture_latest(today_ist=today_ist, max_back=1)
+                        if result:
+                            log.info("Daemon: participant OI captured for %s", result[0])
+                        else:
+                            log.debug("Daemon: participant OI not yet available for %s", today_ist)
+            except Exception as _poi_err:
+                log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
+
         except SessionExpiredError:
             session_expired = True
             log.error("Session Token Expired (adapter: %s). Please update credentials.",

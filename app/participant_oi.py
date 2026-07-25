@@ -30,6 +30,7 @@ PARTICIPANT_FIELDS = [
     "date_ist", "participant",
     "fut_long", "fut_short",
     "opt_call_long", "opt_put_long", "opt_call_short", "opt_put_short",
+    "fut_stk_long", "fut_stk_short",
 ]
 _NUM_FIELDS = PARTICIPANT_FIELDS[2:]
 

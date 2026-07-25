@@ -23,7 +23,16 @@ import pytz
 
 import config  # noqa: E402
 from app.data_access import WINDOW_CHOICES, load_dashboard  # noqa: E402
-from data.icici_breeze import SessionExpiredError  # noqa: E402
+
+# SessionExpiredError is used by the ICICI Breeze adapter's refresh handler.
+# Import lazily so the dashboard works with Dhan (the new default) even if
+# icici_breeze extras are not installed.
+try:
+    from data.icici_breeze import SessionExpiredError  # noqa: E402
+except ImportError:
+    class SessionExpiredError(Exception):  # type: ignore[no-redef]
+        """Stub — icici_breeze not available (Dhan mode)."""
+
 
 st.set_page_config(page_title="Index GEX", page_icon="📈", layout="wide")
 
@@ -162,9 +171,39 @@ def _background_purge():
     threading.Thread(target=_do, daemon=True).start()
 
 
+def _smart_default_window(idx) -> str:
+    """Return '0dte' if today (IST) is an expiry day for *idx*, else 'weekly'.
+
+    For Bank Nifty (monthly-only since Nov-2024, ``has_weekly=False``), 'weekly'
+    collapses to the next monthly expiry inside ``filter_expiry_window`` — so
+    'weekly' is the correct default for Bank Nifty on non-expiry days too.
+
+    Uses ``next_weekly_expiry`` / ``next_monthly_expiry`` (holiday-adjusted) to
+    compare against today's IST date. Falls back to 'weekly' on any error so a
+    stale holiday calendar never crashes the sidebar.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        from data.expiry import next_weekly_expiry, next_monthly_expiry
+
+        ist_today = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+
+        # Is today an expiry day?
+        if idx.has_weekly:
+            next_exp = next_weekly_expiry(ist_today, idx.exchange)
+        else:
+            next_exp = next_monthly_expiry(ist_today, idx.exchange)
+
+        if next_exp == ist_today:
+            return "0dte"
+        return "weekly"
+    except Exception:  # noqa: BLE001 — holiday calendar miss → safe fallback
+        return "weekly"
+
 
 def _refresh(window: str, use_demo: bool, symbol: str):
     st.session_state.session_expired = False
+    st.session_state.dhan_expired = False
     try:
         st.session_state.data = load_dashboard(window=window, use_demo=use_demo, symbol=symbol)
         st.session_state.err = None
@@ -173,10 +212,353 @@ def _refresh(window: str, use_demo: bool, symbol: str):
         st.session_state.session_expired = True
         st.rerun()
     except Exception as e:  # noqa: BLE001 - shown to the user, last-good kept
-        st.session_state.err = str(e)
+        if type(e).__name__ == "DhanCredentialError" or "401 Unauthorized" in str(e):
+            st.session_state.err = str(e)
+            st.session_state.dhan_expired = True
+            st.rerun()
+        else:
+            st.session_state.err = str(e)
+
+
+
+
+def _positioning_divergence_tab(data):
+    """Render the full Positioning Divergence analysis tab (Tab 2).
+
+    Reuses chain data already loaded in session_state.data (zero extra API calls).
+    Implements all sections from the positioning-divergence spec:
+    §3.1 category biases, §3.2 rolling trend, §3.3 strike layer, §3.4 combined read,
+    §6 non-negotiable caveats.
+    """
+    from analytics.bias import compute_category_biases, divergence_trend, interpret_divergence, rolling_divergence
+    from analytics.strikes import (combine_divergence_with_strikes, max_call_oi_strike,
+                                   max_put_oi_strike, pcr_from_chain, top_oi_change_strikes)
+    from analytics.report import CAVEATS
+    from app.participant_oi import capture_latest, latest_available
+
+    # ── §6 Non-negotiable caveats (always top, never buried) ───────────────
+    with st.expander("⚠️ Important caveats — please read before acting on this data", expanded=False):
+        for caveat in CAVEATS:
+            st.markdown(f"- {caveat}")
+
+    st.markdown("### 📊 Positioning Divergence — Who's Long, Who's Short?")
+
+    # ── Load participant OI ─────────────────────────────────────────────────
+    got = None
+    try:
+        got = capture_latest()
+    except Exception:
+        pass
+    if got is None:
+        got = latest_available()
+
+    if got is None:
+        st.warning(
+            "No Participant OI data found. NSE publishes this file after 4:30 PM IST. "
+            "Run `scripts/log_participant_oi.py` or wait for it to appear in the journal."
+        )
+        return
+
+    date_ist, parsed = got
+    biases = compute_category_biases(parsed)
+    
+    from analytics.stock_futures_gauge import compute_gauge_metrics
+    from app.participant_oi import available_days, load_participant_day
+    
+    days = available_days()
+    today_idx = days.index(date_ist) if date_ist in days else len(days)
+    yesterday_parsed = None
+    if today_idx > 0:
+        yesterday_parsed = load_participant_day(days[today_idx - 1])
+        
+    historical_pcts: dict[str, list[float]] = {"Client": [], "DII": [], "FII": [], "Pro": []}
+    for d in days[:today_idx]:
+        p = load_participant_day(d)
+        if not p: continue
+        tot_oi = sum((p.get(c, {}).get("fut_stk_long") or 0) for c in historical_pcts)
+        if tot_oi > 0:
+            for c in historical_pcts:
+                if c in p:
+                    nl = p[c].get("fut_stk_long") or 0
+                    ns = p[c].get("fut_stk_short") or 0
+                    historical_pcts[c].append((nl - ns) / tot_oi)
+                    
+    gauge_metrics = compute_gauge_metrics(parsed, yesterday_parsed, historical_pcts)
+
+
+    # ── Section 1: Category Biases Scorecard ───────────────────────────────
+    st.markdown(f"#### Category Biases — data as of **{date_ist}**")
+    st.caption(
+        "Bias score = Net Index Futures + Net Index Call − Net Index Put. "
+        "Positive = net bullish positioning; negative = net bearish / hedged."
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    def _bias_delta(v):
+        return "📈 Net bullish" if v > 0 else "📉 Net bearish"
+
+    c1.metric("🧑‍💼 Client (Retail proxy)", f"{biases.get('Client', 0):+,.0f}",
+              _bias_delta(biases.get('Client', 0)), delta_color="off")
+    c2.metric("🏦 FII (Smart money)", f"{biases.get('FII', 0):+,.0f}",
+              _bias_delta(biases.get('FII', 0)), delta_color="off")
+    c3.metric("🏢 DII", f"{biases.get('DII', 0):+,.0f}",
+              _bias_delta(biases.get('DII', 0)), delta_color="off")
+    c4.metric("⚡ Pro (Prop desks)", f"{biases.get('Pro', 0):+,.0f}",
+              _bias_delta(biases.get('Pro', 0)), delta_color="off")
+
+    divergence = biases.get("divergence", 0)
+    div_color  = "🔴" if divergence > 500_000 else "🟢" if divergence < -500_000 else "🟡"
+    div_label  = ("Large positive — retail crowded long vs FII short" if divergence > 500_000
+                  else "Large negative — retail short vs FII long" if divergence < -500_000
+                  else "Neutral — no extreme divergence")
+    st.metric(
+        f"{div_color} Divergence (Client − FII)",
+        f"{divergence:+,.0f}",
+        div_label,
+        delta_color="off",
+        help="retail_bias − institutional_bias. Large positive = retail crowded long vs FII; "
+             "large negative = short-squeeze setup."
+    )
+
+    # ── Section 2: Divergence Trend Chart ──────────────────────────────────
+    series = rolling_divergence(n=20)
+    t5  = divergence_trend(series, 5)
+    t10 = divergence_trend(series, 10)
+    t20 = divergence_trend(series, 20)
+
+    if len(series) >= 2:
+        st.markdown("#### 📈 Divergence Trend (last 20 sessions)")
+
+        _trend_cols = st.columns(3)
+        for col, (label, t) in zip(_trend_cols, [("5-day", t5), ("10-day", t10), ("20-day", t20)]):
+            icon = "↗️" if t.get("trend") == "rising" else "↘️" if t.get("trend") == "falling" else "➡️"
+            col.metric(f"{icon} {label} trend", t.get("trend", "—").capitalize(),
+                       f"{t.get('drift', 0):+,.0f}/session" if t.get("n", 0) >= 2 else "insufficient data",
+                       delta_color="off")
+
+        try:
+            import altair as alt
+            _sdf = pd.DataFrame(series)
+            _sdf["divergence_M"] = _sdf["divergence"] / 1_000_000  # display in millions
+
+            base = alt.Chart(_sdf).encode(
+                x=alt.X("date:O", title="Date", axis=alt.Axis(labelAngle=-45)),
+            )
+            div_line = base.mark_line(color="#f97316", strokeWidth=2.5).encode(
+                y=alt.Y("divergence_M:Q", title="Divergence (millions)"),
+                tooltip=["date", alt.Tooltip("divergence:Q", format=",", title="Divergence")],
+            )
+            div_points = base.mark_circle(color="#f97316", size=60).encode(
+                y="divergence_M:Q",
+            )
+            zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(
+                color="rgba(255,255,255,0.3)", strokeDash=[4, 2]
+            ).encode(y="y:Q")
+            threshold_hi = alt.Chart(pd.DataFrame({"y": [0.5]})).mark_rule(
+                color="rgba(239,68,68,0.4)", strokeDash=[6, 3]
+            ).encode(y="y:Q")
+            threshold_lo = alt.Chart(pd.DataFrame({"y": [-0.5]})).mark_rule(
+                color="rgba(34,197,94,0.4)", strokeDash=[6, 3]
+            ).encode(y="y:Q")
+
+            chart = (div_line + div_points + zero_line + threshold_hi + threshold_lo).properties(
+                height=260
+            )
+            st.altair_chart(chart, use_container_width=True)
+            st.caption(
+                "Orange line = Client−FII divergence. "
+                "Red dashed = +500K threshold (retail crowded long). "
+                "Green dashed = −500K threshold (short-squeeze zone)."
+            )
+        except Exception as _ce:
+            st.caption(f"(chart unavailable: {_ce})")
+    else:
+        st.info(
+            f"Only {len(series)} day(s) of participant OI data available. "
+            "The trend chart needs at least 2 sessions. "
+            "Run `scripts/backfill_daily.py --days 20` to seed history."
+        )
+
+    # ── Section 3: Bias Breakdown Table ────────────────────────────────────
+    with st.expander("🔍 Full bias breakdown (net_fut / net_call / net_put by category)"):
+        breakdown = biases.get("breakdown", {})
+        if breakdown:
+            rows = []
+            for who in ("Client", "FII", "DII", "Pro"):
+                bd = breakdown.get(who, {})
+                rows.append({
+                    "Category":  who,
+                    "Net Fut Index": f"{bd.get('net_fut', 0):+,.0f}",
+                    "Net Call Index": f"{bd.get('net_call', 0):+,.0f}",
+                    "Net Put Index": f"{bd.get('net_put', 0):+,.0f}",
+                    "Bias Score":   f"{bd.get('bias', 0):+,.0f}",
+                })
+            st.table(pd.DataFrame(rows))
+            st.caption(
+                "Bias = Net Fut + Net Call − Net Put. "
+                "Negative net_put means net put-writer (bullish); positive net_put means net put-buyer (bearish)."
+            )
+
+    # ── Section 3.5: Stock Futures Risk-Appetite ───────────────────────────
+    with st.expander("📊 Stock Futures Risk-Appetite (Confidence Filter)"):
+        if gauge_metrics:
+            g_rows = []
+            for g in gauge_metrics:
+                rank_str = str(g['percentile_rank_60d']) if isinstance(g['percentile_rank_60d'], int) else g['percentile_rank_60d']
+                g_rows.append({
+                    "Category": g["category"],
+                    "Net Stock Fut": f"{g['net_fut_stock']:+,.0f}",
+                    "% of Total OI": f"{g['pct_of_total_oi']*100:.1f}%",
+                    "60d Percentile": rank_str,
+                    "DoD Delta": f"{g['day_over_day_delta']:+,.0f}",
+                })
+            st.table(pd.DataFrame(g_rows))
+            st.caption("Percentile rank uses a 60-session trailing window. FII gauge acts as a conviction filter; DII acts as hedging intensity.")
+        else:
+            st.info("No Stock Futures data available.")
+
+
+    # ── Section 4: Strike-Level OI Analysis ────────────────────────────────
+    st.markdown("#### 🎯 Strike-Level OI Analysis (from Dhan live chain)")
+
+    chain_rows = []
+    spot_val   = None
+
+    # Use data.oi_strikes — the fully-enriched per-strike list already computed by
+    # data_access.py (includes call_doi, put_doi, call_oi, put_oi for every strike).
+    # This avoids an extra API call and uses the same data the GEX tab uses.
+    per_strike = []
+    if data is not None:
+        spot_val = data.levels.spot if hasattr(data, "levels") else None
+        if data.oi_strikes:
+            per_strike = data.oi_strikes
+            # Also reconstruct minimal chain_rows so pcr_from_chain works
+            # (it needs type/oi/doi per contract, not per-strike aggregates)
+            if hasattr(data, "contracts") and data.contracts is not None and not data.contracts.empty:
+                try:
+                    for _, row in data.contracts.iterrows():
+                        chain_rows.append({
+                            "type":   row.get("type", "C"),
+                            "strike": float(row.get("strike", 0)),
+                            "oi":     float(row.get("oi", 0) or 0),
+                            "doi":    0.0,  # contracts schema doesn't store doi; pcr uses oi only
+                        })
+                except Exception:
+                    chain_rows = []
+
+
+
+    if per_strike:
+        max_call = max_call_oi_strike(per_strike)
+        max_put  = max_put_oi_strike(per_strike)
+        top_doi  = top_oi_change_strikes(per_strike, n=3)
+        pcr_data = pcr_from_chain(chain_rows) if chain_rows else {"pcr": float("nan")}
+
+        sc1, sc2, sc3 = st.columns(3)
+        if max_call:
+            dist = (max_call["strike"] - spot_val) if spot_val else None
+            sc1.metric(
+                "🔴 Max Call OI (Resistance)",
+                f"{max_call['strike']:,.0f}",
+                f"{dist:+,.0f} pts" if dist is not None else "",
+                delta_color="off",
+                help=f"Strike with highest call OI: {max_call['call_oi']:,.0f} contracts",
+            )
+        if max_put:
+            dist = (max_put["strike"] - spot_val) if spot_val else None
+            sc2.metric(
+                "🟢 Max Put OI (Support)",
+                f"{max_put['strike']:,.0f}",
+                f"{dist:+,.0f} pts" if dist is not None else "",
+                delta_color="off",
+                help=f"Strike with highest put OI: {max_put['put_oi']:,.0f} contracts",
+            )
+        pcr = pcr_data.get("pcr")
+        if pcr is not None and pcr == pcr:  # not nan
+            pcr_label = "put-heavy" if pcr > 1.3 else "call-heavy" if pcr < 0.7 else "neutral"
+            sc3.metric("PCR (OI)", f"{pcr:.2f}", pcr_label, delta_color="off",
+                       help="Put/Call OI ratio. >1.3 = heavy put buying; <0.7 = heavy call buying.")
+
+        if top_doi:
+            st.markdown("**Top 3 strikes by OI change (fresh money today)**")
+            doi_rows = []
+            for s in top_doi:
+                direction_icon = {"call_build": "📈 Call build", "put_build": "📉 Put build",
+                                  "mixed": "🔀 Mixed"}.get(s["direction"], s["direction"])
+                doi_rows.append({
+                    "Strike":     f"{s['strike']:,.0f}",
+                    "Call ΔOI":  f"{s['call_doi']:+,.0f}",
+                    "Put ΔOI":   f"{s['put_doi']:+,.0f}",
+                    "Total |ΔOI|": f"{s['total_abs_doi']:,.0f}",
+                    "Direction":  direction_icon,
+                })
+            st.table(pd.DataFrame(doi_rows))
+            st.caption("ΔOI = today's OI − previous session's OI. Large positive = fresh build-up.")
+    else:
+        st.info(
+            "Refresh the GEX tab first to load the option chain. "
+            "Strike-level analysis reuses that data — no extra API calls needed."
+        )
+        max_call = max_put = pcr_data = None
+        per_strike = []
+
+    # ── Section 5: Narrative — Interpreted read ─────────────────────────────
+    st.markdown("#### 📝 Positioning Read")
+
+    narrative = interpret_divergence(
+        divergence=biases.get("divergence", 0),
+        retail_bias=biases.get("retail_bias", 0),
+        institutional_bias=biases.get("institutional_bias", 0),
+        trend_5d=t5,
+        trend_10d=t10,
+    )
+    st.info(narrative)
+
+    if per_strike and (max_call or max_put):
+        strike_analysis = {
+            "max_call": max_call, "max_put": max_put, "top_doi": top_doi,
+            "pcr": pcr_data,
+        }
+        combined = combine_divergence_with_strikes(biases, strike_analysis, spot_val or 0)
+        
+        gauge_narratives = []
+        for g in gauge_metrics:
+            cat = g["category"]
+            rank = g["percentile_rank_60d"]
+            delta = g["day_over_day_delta"]
+            is_extreme = isinstance(rank, int) and (rank >= 80 or rank <= 20)
+            is_delta_large = abs(delta) > 50000
+            
+            if is_extreme or is_delta_large:
+                if cat == "FII":
+                    bias_word = "long" if g["net_fut_stock"] > 0 else "short"
+                    tag = f"FII stock-futures net-{bias_word} at {rank}th percentile. Genuine risk-appetite proxy adds weight to the index-divergence caution."
+                    gauge_narratives.append(tag)
+                elif cat == "Client":
+                    bias_word = "long" if g["net_fut_stock"] > 0 else "short"
+                    tag = f"Retail stock-futures net-{bias_word} at {rank}th percentile — elevated leverage, adds weight to the index-divergence caution."
+                    gauge_narratives.append(tag)
+                elif cat == "DII" and is_delta_large:
+                    tag = f"DII stock-futures {'unwound' if delta < 0 else 'added'} sharply today (delta: {delta:+,} vs. prior session) — possible hedge adjustment; note as context, not a standalone signal."
+                    gauge_narratives.append(tag)
+                    
+        if gauge_narratives:
+            combined += "\n\n**Stock Futures Risk-Appetite:**\n" + "\n".join(f"- {n}" for n in gauge_narratives)
+
+        st.markdown("#### 🔗 Combined Positioning + Strike Read")
+        st.success(combined)
+
+
+    # ── Section 7: Data Provenance ──────────────────────────────────────────
+    st.caption(
+        f"📋 Participant OI: NSE clearing-corp file, as of **{date_ist}** (EOD, market-wide — not per-index). "
+        f"Option chain: Dhan API, fetched at {data.fetched_at.strftime('%H:%M UTC') if data else '—'}. "
+        "Decision-support only."
+    )
 
 
 def main():
+
     with st.sidebar:
         st.header("Controls")
         # Index picker FIRST — it drives the symbol, lot size, expiry rules and the
@@ -193,7 +575,14 @@ def main():
             "Use demo data (offline)", value=False,
             help="Synthetic chain — runs without exchange data. NOT a market read.",
         )
-        window = st.selectbox("Expiry window", WINDOW_CHOICES, index=0)
+        # Auto-select expiry window: 0dte on expiry day for this index, else weekly.
+        _auto_window = _smart_default_window(idx)
+        _auto_window_idx = WINDOW_CHOICES.index(_auto_window) if _auto_window in WINDOW_CHOICES else 0
+        window = st.selectbox(
+            "Expiry window", WINDOW_CHOICES, index=_auto_window_idx,
+            help="Auto-set: **0dte** when today is an expiry day for this index, "
+                 "**weekly** otherwise. Change manually to override.",
+        )
         refresh = st.button("🔄 Refresh", type="primary", width="stretch")
         save_ts = st.button(
             "📈 Save snapshot to time-series", width="stretch",
@@ -214,7 +603,10 @@ def main():
             f'<div class="adapter-badge {_css_cls}">{_icon}&nbsp;{_src_label}</div>',
             unsafe_allow_html=True,
         )
-        st.caption(f"Active adapter · static config")
+        if config.DATA_SOURCE == "dhan":
+            st.caption("Active adapter · greeks & IV from Dhan API")
+        else:
+            st.caption(f"Active adapter · static config")
         st.divider()
         auto = st.checkbox(
             "⏱️ Auto-refresh", value=False,
@@ -305,14 +697,52 @@ def main():
         # and immediately overwrite the session_expired flag in a tight loop.
         st.stop()
 
-    # Dhan credential missing handler
-    if config.DATA_SOURCE == "dhan" and not (config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN):
-        st.error(
-            "⚠️ **Dhan credentials missing.** Set `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` "
-            "in your `.env` file to use the Dhan adapter.\n\n"
-            "Generate them at: https://dhanhq.co/docs/latest/authentication/"
-        )
-        st.stop()
+    # Dhan credential missing/expired handler
+    if config.DATA_SOURCE == "dhan":
+        is_missing = not (config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+        is_expired = st.session_state.get("dhan_expired", False)
+        
+        if is_missing or is_expired:
+            if is_expired:
+                st.error("⚠️ Dhan Access Token Expired! The JWT token expires exactly 24 hours after generation. Please generate a new one and enter it below.")
+            else:
+                st.error(
+                    "⚠️ **Dhan credentials missing.** Set `DHAN_CLIENT_ID` and `DHAN_ACCESS_TOKEN` "
+                    "in your `.env` file to use the Dhan adapter."
+                )
+            st.markdown("[Generate new token here →](https://dhanhq.co/docs/latest/authentication/)")
+            
+            with st.form("dhan_token_form", clear_on_submit=True):
+                new_token = st.text_input("New Dhan Access Token (JWT):", type="password")
+                submitted = st.form_submit_button("✅ Update Token & Reconnect", type="primary")
+                if submitted and new_token:
+                    import os, re
+                    os.environ["DHAN_ACCESS_TOKEN"] = new_token
+                    config.DHAN_ACCESS_TOKEN = new_token
+                    try:
+                        env_path = str(ROOT / ".env")
+                        with open(env_path, "r") as f:
+                            env_content = f.read()
+                        if "DHAN_ACCESS_TOKEN=" in env_content:
+                            env_content = re.sub(
+                                r'DHAN_ACCESS_TOKEN=.*',
+                                f'DHAN_ACCESS_TOKEN={new_token}',
+                                env_content
+                            )
+                        else:
+                            env_content += f'\nDHAN_ACCESS_TOKEN={new_token}\n'
+                        with open(env_path, "w") as f:
+                            f.write(env_content)
+                        st.success("Dhan Token saved to .env — daemon will reload automatically.")
+                    except Exception as _env_err:
+                        st.warning(f"Could not write .env ({_env_err}), running in-memory only.")
+                    st.session_state.dhan_expired = False
+                    st.session_state.err = None
+                    st.session_state.data = None  # force a fresh fetch on next rerun
+                    st.rerun()
+                elif submitted and not new_token:
+                    st.warning("Please enter a token before submitting.")
+            st.stop()
 
     # Non-blocking auto-refresh timer (a new tick value => time to re-pull).
     tick = None
@@ -446,256 +876,270 @@ def main():
 
     L, V = data.levels, data.view
 
-    # --- Source / provenance tag line under title -------------------------
-    _adapter_labels = {
-        "icici_breeze":    "📡 ICICI Direct Breeze",
-        "dhan":            "🔶 Dhan API",
-        "nse":             "📊 NSE Scraper",
-        "DEMO-SYNTHETIC":  "🧪 Demo (synthetic)",
-    }
-    _adapter_label = _adapter_labels.get(data.source, data.source)
-    st.markdown(
-        f'<div class="source-tag">'
-        f'<span class="dot"></span>'
-        f'{_adapter_label}&nbsp;&nbsp;·&nbsp;&nbsp;'
-        f'{data.symbol}&nbsp;&nbsp;·&nbsp;&nbsp;'
-        f'window: {data.window}&nbsp;&nbsp;·&nbsp;&nbsp;'
-        f'fetched {data.fetched_at.strftime("%H:%M UTC")}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+    # ── Tab layout ─────────────────────────────────────────────────────────
+    tab_gex, tab_div = st.tabs(["📈 GEX & Market Profile", "📊 Positioning Divergence"])
+    with tab_div:
+        _positioning_divergence_tab(data)
+    with tab_gex:
 
-    # GEX pin-strength conditioning (computed once; shown as a header tag near the
-    # magnet AND in the research expander). Live data only.
-    pin_stats = (_pin_strength_stats(data.symbol, abs(float(L.total_net_gex)))
-                 if data.source != "DEMO-SYNTHETIC" else None)
-
-    if L.dealer_sign_model == "short_call_short_put":
-        st.error(
-            "⚠️ **INDIAN MARKET MODE ACTIVE (Short Call / Short Put)**\n\n"
-            "The standard US 'Positive Regime' is inverted. Institutional dealers are assumed to be "
-            "short gamma on BOTH calls and puts. This means the market is structurally in a "
-            "**Negative (Volatile) Regime**. Walls act as breakout triggers (gamma blasts) rather than mean-reverting ceilings."
-        )
-
-    # --- Market mode (plain language, prominent) ---------------------------
-    box = st.info
-    if V.mode_label.startswith("RANGE-BOUND"):
-        box = st.success
-    elif V.mode_label.startswith("TRENDING"):
-        box = st.warning
-    elif V.mode_label == "CAUTION":
-        box = st.error
-    box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
-    # The calm-vs-wild claim in that label hinges on the dealer sign.
-    # We are now natively using the Indian short_call_short_put mode.
-    # _sign_calm_wild_note(V)  # Disabled: Not relevant for Indian market
-    
-    # Sign-free, time-of-day magnet-pull overlay — our strongest finding.
-    _magnet_pull_note(data, L)
-    # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
-    _pin_strength_tag(pin_stats)
-    
-    st.caption(
-        "The mode label above reads behaviour (calm vs wild) off the Indian dealer sign. "
-        "The magnet line is **sign-free**. "
-        f"Technical read: {V.headline}"
-    )
-
-    # Expiry-day flag — gamma effects (pin / blast) are strongest today.
-    nearest = data.expiries[0] if data.expiries else None
-    today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
-    is_expiry = (nearest == today_ist) if nearest else False
-    if is_expiry:
-        st.warning("⚡ **EXPIRY DAY** — gamma is at its strongest. Positive gamma → "
-                   "strong pin toward the magnet/max pain; a break of a wall can trigger "
-                   "a **gamma blast**. See 'What trade fits this mode?' below.")
-    if data.source == "DEMO-SYNTHETIC":
-        st.info("DEMO data is **synthetic** — do not trade on it.")
-
-    # --- Key metrics -------------------------------------------------------
-    _idx = config.get_index(data.symbol)
-    today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
-    from data.expiry import describe_window, next_weekly_expiry, next_monthly_expiry
-    window_desc = describe_window(
-        data.window, today_ist,
-        exchange=_idx.exchange,
-        has_weekly=_idx.has_weekly,
-    )
-    # The primary expiry being analyzed — first in the sorted list
-    active_expiry = data.expiries[0] if data.expiries else None
-    days_to_expiry = (active_expiry - today_ist).days if active_expiry else None
-    dte_label = (
-        "TODAY" if days_to_expiry == 0
-        else f"{days_to_expiry}d away"
-        if days_to_expiry is not None else ""
-    )
-
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
-    c1.metric("Spot", f"{L.spot:,.2f}")
-    c2.metric("Regime", L.regime)
-    c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
-    # Active expiry date — the most important single piece of context
-    c4.metric(
-        f"📅 Expiry ({data.window})",
-        active_expiry.strftime("%d-%b") if active_expiry else "—",
-        dte_label,
-        delta_color="off",
-        help=f"Active window: {window_desc}. "
-             f"Contracts used: {data.n_contracts} across {len(data.expiries)} expiry date(s).",
-    )
-    ov = data.oi_volume or {}
-    pcr = ov.get("pcr_oi")
-    if pcr is not None and pcr == pcr:   # not NaN
-        # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory, sign-free.
-        c5.metric("PCR (OI)", f"{pcr:.2f}",
-                  help="Put/Call open interest across the returned expiries. "
-                       ">1 put-heavy, <1 call-heavy. Independent of the dealer-sign "
-                       "assumption; exploratory.")
-    else:
-        c5.metric("PCR (OI)", "—", help="Put/Call OI; live data only.")
-    vix = data.india_vix
-    if vix:
-        chg = vix.get("pct_change")
-        c6.metric("India VIX", f"{vix['last']:.2f}",
-                  f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
-    else:
-        c6.metric("India VIX", "—", help="Implied vol; live data only, best-effort.")
-    usdinr = data.usdinr
-    if usdinr:
-        uchg = usdinr.get("pct_change")
-        c7.metric("USD/INR (Fut)", f"{usdinr['last']:.4f}",
-                  f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
-                  help="Near-month USD/INR future — the rupee level; live data, best-effort.")
-    else:
-        c7.metric("USD/INR (Fut)", "—",
-                  help="Near-month USD/INR future; live data only, best-effort.")
-
-    # --- Simple levels (position-aware: a wall above price isn't "support") --
-    st.markdown("#### Simple levels")
-
-    def _wall(price, kind):
-        above = price > L.spot
-        if kind == "put":
-            emoji = "🟢" if not above else "🟠"
-            desc = "support (below price)" if not above else "now OVERHEAD — price fell below it"
-        else:
-            emoji = "🔴" if above else "🟠"
-            desc = "resistance (above price)" if above else "BELOW price — broke above it"
-        return emoji, desc
-
-    pe, p_desc = _wall(L.put_wall, "put")
-    ce, c_desc = _wall(L.call_wall, "call")
-    s1, s2, s3 = st.columns(3)
-    s1.metric(f"{pe} Put wall", f"{L.put_wall:,.0f}", f"{L.put_wall - L.spot:+,.0f}", delta_color="off")
-    s1.caption(p_desc)
-    s2.metric(f"{ce} Call wall", f"{L.call_wall:,.0f}", f"{L.call_wall - L.spot:+,.0f}", delta_color="off")
-    s2.caption(c_desc)
-    s3.metric("🧲 Magnet (pull)", f"{L.magnet:,.0f}", f"{L.magnet - L.spot:+,.0f}", delta_color="off")
-
-    lo, hi = min(L.put_wall, L.call_wall), max(L.put_wall, L.call_wall)
-    flip_txt = f"{L.flip:,.0f}" if L.flip else "the flip"
-    if L.spot < lo:
-        st.caption(
-            f"⚠️ Price is **below both walls** — the nearest dealer levels "
-            f"(**{lo:,.0f}, {hi:,.0f}**) are **overhead**. In a calm (positive-gamma) "
-            f"regime price often gets pulled **up** toward them; but a break below the "
-            f"flip (**{flip_txt}**) can turn it into a downside trend."
-        )
-    elif L.spot > hi:
-        st.caption(
-            f"⚠️ Price is **above both walls** (**{lo:,.0f}, {hi:,.0f}**) — extended; "
-            "dealers lean against further upside."
-        )
-    else:
-        st.caption(
-            f"Likely band when range-bound: **{lo:,.0f} – {hi:,.0f}** ({hi - lo:,.0f} pts "
-            "wide). Stops go just **beyond** the walls, never at them."
-        )
-
-    for note in _structure_notes(L):
-        st.warning(note)
-
-    # News-intensity (free RSS, best-effort). A burst of high-impact headlines means
-    # the move is likely exogenous — GEX levels become secondary (headlines override).
-    news = data.news
-    if news and (news.get("count") or news.get("top")):
-        impact, count, top = news.get("impact") or 0, news.get("count") or 0, news.get("top") or ""
-        if impact >= _NEWS_IMPACT_FLAG:
-            st.warning(
-                f"📰 **Elevated news flow** — {count} fresh headline(s), impact {impact}. "
-                "Treat GEX levels as **secondary**; an exogenous catalyst can override the "
-                f"dealer map." + (f"\n\nLatest: _{top}_" if top else "")
-            )
-        elif top:
-            st.caption(f"📰 News: {count} fresh headline(s), impact {impact}. Latest: {top}")
-
-    # --- Levels table ------------------------------------------------------
-    def d(x):
-        return f"{x - L.spot:+,.0f}" if x is not None else "—"
-
-    rows = [
-        ("🧱 Call wall", f"{L.call_wall:,.0f}", d(L.call_wall), V.call_wall_role),
-        ("🧱 Put wall", f"{L.put_wall:,.0f}", d(L.put_wall), V.put_wall_role),
-        ("🔀 Gamma flip", f"{L.flip:,.0f}" if L.flip else "NONE", d(L.flip), "calm⇄wild switch"),
-        ("🧲 Magnet", f"{L.magnet:,.0f}", d(L.magnet), "peak GEX"),
-        ("🎯 Max pain", f"{L.max_pain:,.0f}", d(L.max_pain), "expiry pin"),
-    ]
-    st.table(pd.DataFrame(rows, columns=["Level", "Price", "Δ from spot (pts)", "Role"]))
-
-    # --- What trade fits this mode? (illustrative, unvalidated) -----------
-    _trade_explainer(L, V, data, is_expiry)
-
-    # --- Net-GEX-by-strike chart ------------------------------------------
-    _gex_chart(L)
-
-    # --- Dealer-positioning trend (multi-day magnet drift, sign-free) ------
-    _magnet_drift_section(data, pin_stats)
-
-    # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
-    _oi_footprint_section(data)
-
-    # --- Intraday mini build-up streaks (3× green/red per strike) ----------
-    _buildup_streaks_section(data)
-
-    # --- FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
-    _futures_buildup_section(data)
-
-    # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
-    _participant_oi_section(data)
-
-    # --- Morning magnet-pull IC + live GEX conditioning (research) --------
-    _ic_readout(data, pin_stats)
-
-    # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
-    _gamma_blast_section(data, is_expiry)
-
-    # --- Intraday time-series (Phase A) -----------------------------------
-    _timeseries_section(data)
-
-    # --- Caveats -----------------------------------------------------------
-    with st.expander("Assumptions & caveats (please read)", expanded=True):
-        _idx2 = config.get_index(data.symbol)
-        all_exp_str = ", ".join(e.strftime("%d-%b-%Y") for e in data.expiries) if data.expiries else "none"
+        # --- Source / provenance tag line under title -------------------------
+        _adapter_labels = {
+            "icici_breeze":    "📡 ICICI Direct Breeze",
+            "dhan":            "🔶 Dhan API",
+            "nse":             "📊 NSE Scraper",
+            "DEMO-SYNTHETIC":  "🧪 Demo (synthetic)",
+        }
+        _adapter_label = _adapter_labels.get(data.source, data.source)
         st.markdown(
-            f"- **Index:** {_idx2.label} (`{data.symbol}`) — "
-            + ("WEEKLY + monthly expiries." if _idx2.has_weekly
-               else "**MONTHLY-ONLY** (no weeklies since Nov-2024).") + "\n"
-            f"- **Lot size:** {_idx2.lot_size} — *VERIFY against the current exchange circular.*\n"
-            f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **Indian Market Mode Active.**\n"
-            f"- **Expiry weighting:** `{L.expiry_weighting}` — {'all expiries weighted equally.' if L.expiry_weighting == 'equal' else 'near-dated walls weighted up.'}\n"
-            f"- **Expiry window:** `{L.expiry_window}` → **{window_desc}** · "
-            f"{data.n_contracts} contracts · {len(data.expiries)} expiry date(s): {all_exp_str}\n"
-            f"- **OI timestamp:** {L.oi_timestamp} (stale={L.oi_stale}) — OI is end-of-day lagging.\n"
-            f"- **Source:** {data.source} · fetched {data.fetched_at:%Y-%m-%d %H:%M} UTC"
+            f'<div class="source-tag">'
+            f'<span class="dot"></span>'
+            f'{_adapter_label}&nbsp;&nbsp;·&nbsp;&nbsp;'
+            f'{data.symbol}&nbsp;&nbsp;·&nbsp;&nbsp;'
+            f'window: {data.window}&nbsp;&nbsp;·&nbsp;&nbsp;'
+            f'fetched {data.fetched_at.strftime("%H:%M UTC")}'
+            f'</div>',
+            unsafe_allow_html=True,
         )
-        for f in L.flags:
-            st.markdown(f"- ⚠️ {f}")
 
-    st.divider()
-    st.caption(
-        "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
-    )
+        # GEX pin-strength conditioning (computed once; shown as a header tag near the
+        # magnet AND in the research expander). Live data only.
+        pin_stats = (_pin_strength_stats(data.symbol, abs(float(L.total_net_gex)))
+                     if data.source != "DEMO-SYNTHETIC" else None)
+
+        if L.dealer_sign_model == "short_call_short_put":
+            st.error(
+                "⚠️ **INDIAN MARKET MODE ACTIVE (Short Call / Short Put)**\n\n"
+                "The standard US 'Positive Regime' is inverted. Institutional dealers are assumed to be "
+                "short gamma on BOTH calls and puts. This means the market is structurally in a "
+                "**Negative (Volatile) Regime**. Walls act as breakout triggers (gamma blasts) rather than mean-reverting ceilings."
+            )
+
+        # --- Market mode (plain language, prominent) ---------------------------
+        box = st.info
+        if V.mode_label.startswith("RANGE-BOUND"):
+            box = st.success
+        elif V.mode_label.startswith("TRENDING"):
+            box = st.warning
+        elif V.mode_label == "CAUTION":
+            box = st.error
+        box(f"### Market mode: {V.mode_label}\n\n{V.mode_plain}")
+        # The calm-vs-wild claim in that label hinges on the dealer sign.
+        # We are now natively using the Indian short_call_short_put mode.
+        # _sign_calm_wild_note(V)    # --- Market regime (SIGN-FREE, from dealer-gamma concentration) --------
+        _gex_regime_banner(data)
+        # Turn the regime into a concrete trading POSTURE (mean-revert vs momentum, sizing, stops).
+        _regime_posture_note(data)
+        # Sign-free, time-of-day magnet-pull overlay — our strongest directional-ish read.
+        _magnet_pull_note(data, L)
+        # Live GEX pin-strength tag: is the magnet likely to hold today (high gamma) or not?
+        _pin_strength_tag(pin_stats)
+    
+        st.caption(
+            "The mode label above reads behaviour (calm vs wild) off the Indian dealer sign. "
+            "The magnet line is **sign-free**. "
+            f"Technical read: {V.headline}"
+        )
+
+        # Expiry-day flag — gamma effects (pin / blast) are strongest today.
+        nearest = data.expiries[0] if data.expiries else None
+        today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
+        is_expiry = (nearest == today_ist) if nearest else False
+        if is_expiry:
+            st.warning("⚡ **EXPIRY DAY** — gamma is at its strongest. Positive gamma → "
+                       "strong pin toward the magnet/max pain; a break of a wall can trigger "
+                       "a **gamma blast**. See 'What trade fits this mode?' below.")
+        if data.source == "DEMO-SYNTHETIC":
+            st.info("DEMO data is **synthetic** — do not trade on it.")
+
+        # --- Key metrics -------------------------------------------------------
+        _idx = config.get_index(data.symbol)
+        today_ist = (data.fetched_at + timedelta(hours=5, minutes=30)).date()
+        from data.expiry import describe_window, next_weekly_expiry, next_monthly_expiry
+        window_desc = describe_window(
+            data.window, today_ist,
+            exchange=_idx.exchange,
+            has_weekly=_idx.has_weekly,
+        )
+        # The primary expiry being analyzed — first in the sorted list
+        active_expiry = data.expiries[0] if data.expiries else None
+        days_to_expiry = (active_expiry - today_ist).days if active_expiry else None
+        dte_label = (
+            "TODAY" if days_to_expiry == 0
+            else f"{days_to_expiry}d away"
+            if days_to_expiry is not None else ""
+        )
+
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        c1.metric("Spot", f"{L.spot:,.2f}")
+        c2.metric("Regime", L.regime)
+        c3.metric("Total net GEX", f"{L.total_net_gex:,.0f}")
+        # Active expiry date — the most important single piece of context
+        c4.metric(
+            f"📅 Expiry ({data.window})",
+            active_expiry.strftime("%d-%b") if active_expiry else "—",
+            dte_label,
+            delta_color="off",
+            help=f"Active window: {window_desc}. "
+                 f"Contracts used: {data.n_contracts} across {len(data.expiries)} expiry date(s).",
+        )
+        ov = data.oi_volume or {}
+        pcr = ov.get("pcr_oi")
+        if pcr is not None and pcr == pcr:   # not NaN
+            # >1 = more put OI (put-heavy); <1 = call-heavy. Exploratory, sign-free.
+            c5.metric("PCR (OI)", f"{pcr:.2f}",
+                      help="Put/Call open interest across the returned expiries. "
+                           ">1 put-heavy, <1 call-heavy. Independent of the dealer-sign "
+                           "assumption; exploratory.")
+        else:
+            c5.metric("PCR (OI)", "—", help="Put/Call OI; live data only.")
+        vix = data.india_vix
+        if vix:
+            chg = vix.get("pct_change")
+            c6.metric("India VIX", f"{vix['last']:.2f}",
+                      f"{chg:+.2f}%" if chg is not None else None, delta_color="off")
+        else:
+            c6.metric("India VIX", "—", help="Implied vol; live data only, best-effort.")
+        usdinr = data.usdinr
+        if usdinr:
+            uchg = usdinr.get("pct_change")
+            c7.metric("USD/INR (Fut)", f"{usdinr['last']:.4f}",
+                      f"{uchg:+.2f}%" if uchg is not None else None, delta_color="off",
+                      help="Near-month USD/INR future — the rupee level; live data, best-effort.")
+        else:
+            c7.metric("USD/INR (Fut)", "—",
+                      help="Near-month USD/INR future; live data only, best-effort.")
+
+        # --- Simple levels (position-aware: a wall above price isn't "support") --
+        st.markdown("#### Simple levels")
+
+        def _wall(price, kind):
+            above = price > L.spot
+            if kind == "put":
+                emoji = "🟢" if not above else "🟠"
+                desc = "support (below price)" if not above else "now OVERHEAD — price fell below it"
+            else:
+                emoji = "🔴" if above else "🟠"
+                desc = "resistance (above price)" if above else "BELOW price — broke above it"
+            return emoji, desc
+
+        pe, p_desc = _wall(L.put_wall, "put")
+        ce, c_desc = _wall(L.call_wall, "call")
+        s1, s2, s3 = st.columns(3)
+        s1.metric(f"{pe} Put wall", f"{L.put_wall:,.0f}", f"{L.put_wall - L.spot:+,.0f}", delta_color="off")
+        s1.caption(p_desc)
+        s2.metric(f"{ce} Call wall", f"{L.call_wall:,.0f}", f"{L.call_wall - L.spot:+,.0f}", delta_color="off")
+        s2.caption(c_desc)
+        s3.metric("🧲 Magnet (pull)", f"{L.magnet:,.0f}", f"{L.magnet - L.spot:+,.0f}", delta_color="off")
+
+        lo, hi = min(L.put_wall, L.call_wall), max(L.put_wall, L.call_wall)
+        flip_txt = f"{L.flip:,.0f}" if L.flip else "the flip"
+        if L.spot < lo:
+            st.caption(
+                f"⚠️ Price is **below both walls** — the nearest dealer levels "
+                f"(**{lo:,.0f}, {hi:,.0f}**) are **overhead**. In a calm (positive-gamma) "
+                f"regime price often gets pulled **up** toward them; but a break below the "
+                f"flip (**{flip_txt}**) can turn it into a downside trend."
+            )
+        elif L.spot > hi:
+            st.caption(
+                f"⚠️ Price is **above both walls** (**{lo:,.0f}, {hi:,.0f}**) — extended; "
+                "dealers lean against further upside."
+            )
+        else:
+            st.caption(
+                f"Likely band when range-bound: **{lo:,.0f} – {hi:,.0f}** ({hi - lo:,.0f} pts "
+                "wide). Stops go just **beyond** the walls, never at them."
+            )
+
+        for note in _structure_notes(L):
+            st.warning(note)
+
+        # News-intensity (free RSS, best-effort). A burst of high-impact headlines means
+        # the move is likely exogenous — GEX levels become secondary (headlines override).
+        news = data.news
+        if news and (news.get("count") or news.get("top")):
+            impact, count, top = news.get("impact") or 0, news.get("count") or 0, news.get("top") or ""
+            if impact >= _NEWS_IMPACT_FLAG:
+                st.warning(
+                    f"📰 **Elevated news flow** — {count} fresh headline(s), impact {impact}. "
+                    "Treat GEX levels as **secondary**; an exogenous catalyst can override the "
+                    f"dealer map." + (f"\n\nLatest: _{top}_" if top else "")
+                )
+            elif top:
+                st.caption(f"📰 News: {count} fresh headline(s), impact {impact}. Latest: {top}")
+
+        # --- Levels table ------------------------------------------------------
+        def d(x):
+            return f"{x - L.spot:+,.0f}" if x is not None else "—"
+
+        rows = [
+            ("🧱 Call wall", f"{L.call_wall:,.0f}", d(L.call_wall), V.call_wall_role),
+            ("🧱 Put wall", f"{L.put_wall:,.0f}", d(L.put_wall), V.put_wall_role),
+            ("🔀 Gamma flip", f"{L.flip:,.0f}" if L.flip else "NONE", d(L.flip), "calm⇄wild switch"),
+            ("🧲 Magnet", f"{L.magnet:,.0f}", d(L.magnet), "peak GEX"),
+            ("🎯 Max pain", f"{L.max_pain:,.0f}", d(L.max_pain), "expiry pin"),
+        ]
+        st.table(pd.DataFrame(rows, columns=["Level", "Price", "Δ from spot (pts)", "Role"]))
+
+        # --- What trade fits this mode? (illustrative, unvalidated) -----------
+        _trade_explainer(L, V, data, is_expiry)
+
+        # --- Net-GEX-by-strike chart ------------------------------------------
+        _gex_chart(L)
+
+        # --- Dealer-positioning trend (multi-day magnet drift, sign-free) ------
+        _magnet_drift_section(data, pin_stats)
+
+        # --- Positioning footprint (per-strike ΔOI build, sign-free) ----------
+        _oi_footprint_section(data)
+
+        # --- Dhan greeks panel (delta/gamma/theta/vega/IV from Dhan API) -------
+        _dhan_greeks_section(data)
+
+        # --- Intraday mini build-up streaks (3× green/red per strike) ----------
+        _buildup_streaks_section(data)
+
+        # --- FUTURES OI build-up (daily bhavcopy + intraday, sign-free) --
+        _futures_buildup_section(data)
+
+        # --- Big players: participant-wise OI (EOD, market-wide, sign-free) ----
+        _participant_oi_section(data)
+
+        # --- Morning magnet-pull IC + live GEX conditioning (research) --------
+        _ic_readout(data, pin_stats)
+
+        # --- Gamma-blast crossover watch (expiry-day; parity-based, sign-free) --
+        _gamma_blast_section(data, is_expiry)
+
+        # --- Intraday time-series (Phase A) -----------------------------------
+        _timeseries_section(data)
+
+        # --- PCR Trend Analytics (separate tab) --------------------------------
+        _pcr_trend_section(data)
+
+
+        with st.expander("Assumptions & caveats (please read)", expanded=True):
+            _idx2 = config.get_index(data.symbol)
+            all_exp_str = ", ".join(e.strftime("%d-%b-%Y") for e in data.expiries) if data.expiries else "none"
+            st.markdown(
+                f"- **Index:** {_idx2.label} (`{data.symbol}`) — "
+                + ("WEEKLY + monthly expiries." if _idx2.has_weekly
+                   else "**MONTHLY-ONLY** (no weeklies since Nov-2024).") + "\n"
+                f"- **Lot size:** {_idx2.lot_size} — *VERIFY against the current exchange circular.*\n"
+                f"- **Dealer-sign model:** `{L.dealer_sign_model}` — **Indian Market Mode Active.**\n"
+                f"- **Expiry weighting:** `{L.expiry_weighting}` — {'all expiries weighted equally.' if L.expiry_weighting == 'equal' else 'near-dated walls weighted up.'}\n"
+                f"- **Expiry window:** `{L.expiry_window}` → **{window_desc}** · "
+                f"{data.n_contracts} contracts · {len(data.expiries)} expiry date(s): {all_exp_str}\n"
+                f"- **OI timestamp:** {L.oi_timestamp} (stale={L.oi_stale}) — OI is end-of-day lagging.\n"
+                f"- **Source:** {data.source} · fetched {data.fetched_at:%Y-%m-%d %H:%M} UTC"
+            )
+            for f in L.flags:
+                st.markdown(f"- ⚠️ {f}")
+
+        st.divider()
+        st.caption(
+            "A map and a logbook, not an oracle. You decide and confirm every trade. Paper only."
+        )
 
 
 def _sign_calm_wild_note(V):
@@ -851,8 +1295,185 @@ def _trade_explainer(L, V, data, is_expiry_day=False):
         )
 
 
+
+def _pcr_trend_section(data):
+    """PCR Trend Analytics — today's Put/Call Ratio across multiple time intervals.
+
+    Uses app/pcr_trend.py (no Streamlit import there) for data loading and
+    resampling. Merges on-disk snapshots (written by the scheduler or manual save)
+    with live session_state points so the chart updates on every auto-refresh tick.
+
+    India-specific note: High PCR = heavy put-writing = bullish structural support.
+    This is the OPPOSITE of the US fear-gauge convention.
+    """
+    from app.pcr_trend import (
+        build_pcr_chart,
+        load_pcr_today,
+        pcr_bias_label,
+        pcr_summary,
+    )
+
+    st.markdown("---")
+    st.markdown("### 📈 PCR Trend Analytics — Today")
+
+    # ------------------------------------------------------------------ #
+    # Controls row
+    # ------------------------------------------------------------------ #
+    c1, c2, c3 = st.columns([2, 2, 2])
+    with c1:
+        sel_intervals = st.multiselect(
+            "Intervals",
+            options=[5, 15, 45],
+            default=[5, 15, 45],
+            format_func=lambda m: f"{m} min",
+            help="Resample the raw 5-min captures into these buckets. "
+                 "5-min = raw; 15 / 45-min = smoothed.",
+            key="pcr_intervals",
+        )
+    with c2:
+        show_full = st.checkbox("Full-chain PCR (solid)", value=True,
+                                key="pcr_show_full",
+                                help="PCR across all expiries returned by the feed.")
+        show_near = st.checkbox("Near-ATM proxy PCR (dashed)", value=True,
+                                key="pcr_show_near",
+                                help="PCR from the 20 strikes closest to spot — "
+                                     "front-expiry dominated. Shown only when "
+                                     "oi_strikes data is available.")
+    with c3:
+        show_bands = st.checkbox("Reference bands (0.8 / 1.2)", value=True,
+                                 key="pcr_bands",
+                                 help="Green = put-writing support (PCR ≥ 1.2). "
+                                      "Red = call-writing resistance (PCR ≤ 0.8). "
+                                      "India convention (high PCR = bullish).")
+
+    # ------------------------------------------------------------------ #
+    # Load data: merge disk + live session points + current fetch
+    # ------------------------------------------------------------------ #
+    live_pts = dict(st.session_state.get("ts_points", {}))
+    df = load_pcr_today(data.symbol, live_points=live_pts)
+
+    # If we have no timeseries rows at all but we DO have a live pcr_oi
+    # from the current fetch (e.g. demo mode or first run), inject it as
+    # a single "now" point so the chart and metrics show something useful.
+    if df.empty or df["pcr_oi"].isna().all():
+        _live_pcr = (data.oi_volume or {}).get("pcr_oi")
+        if _live_pcr is not None and _live_pcr == _live_pcr:   # not NaN
+            from datetime import timezone as _tz
+            _fa = data.fetched_at
+            if _fa.tzinfo is None:
+                _fa = _fa.replace(tzinfo=_tz.utc)
+            from datetime import timedelta as _td
+            _ist = _fa + _td(hours=5, minutes=30)
+            _row = {
+                "timestamp_utc": _fa.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "time_ist":      _ist.strftime("%H:%M"),
+                "date_ist":      _ist.strftime("%Y-%m-%d"),
+                "spot":          round(data.levels.spot, 2),
+                "pcr_oi":        round(float(_live_pcr), 4),
+                "pcr_near":      float("nan"),
+            }
+            import pandas as _pd
+            df = _pd.DataFrame([_row])
+
+
+    stats = pcr_summary(df)
+    n_pts = stats["n_points"]
+
+    m1, m2, m3, m4 = st.columns(4)
+    def _fmt(v, nd=3):
+        return f"{v:.{nd}f}" if v is not None else "—"
+
+    delta_v = stats["delta_from_open"]
+    delta_s = f"{delta_v:+.3f}" if delta_v is not None else None
+
+    m1.metric("Current PCR (OI)",
+              _fmt(stats["current_pcr"]),
+              delta=delta_s,
+              help="Latest full-chain PCR vs session open.")
+    m2.metric("Session High", _fmt(stats["session_high"]))
+    m3.metric("Session Low",  _fmt(stats["session_low"]))
+    m4.metric("Session Open", _fmt(stats["session_open"]))
+
+    # Bias label
+    bias_label, bias_colour = pcr_bias_label(stats["current_pcr"])
+    last_t = stats.get("last_time") or "—"
+    st.markdown(
+        f'<div style="border-left:4px solid {bias_colour};'
+        f'background:{bias_colour}18;border-radius:8px;'
+        f'padding:8px 14px;margin:4px 0 8px;font-weight:600;'
+        f'color:{bias_colour};font-size:14px;">'
+        f'🇮🇳&nbsp; {bias_label} &nbsp;·&nbsp; as of {last_t} IST</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ------------------------------------------------------------------ #
+    # Chart
+    # ------------------------------------------------------------------ #
+    if df.empty or n_pts == 0:
+        st.info(
+            f"📊 No PCR snapshots captured for **{data.symbol}** today yet.  \n"
+            "The chart grows as you refresh. Enable **⏱️ Auto-refresh** or run  \n"
+            "`python scripts/log_timeseries.py --symbol " + data.symbol + "` to capture intraday snapshots."
+        )
+
+    else:
+        intervals_to_show = sel_intervals or [5]
+        try:
+            chart = build_pcr_chart(
+                df,
+                intervals=intervals_to_show,
+                show_full_chain=show_full,
+                show_near_atm=show_near,
+                show_bands=show_bands,
+                chart_height=340,
+            )
+            if chart is not None:
+                st.altair_chart(chart, use_container_width=True)
+
+                # Legend note
+                legend_parts = []
+                colour_map = {5: "🔵 5m", 15: "🟣 15m", 45: "🩷 45m"}
+                for iv in intervals_to_show:
+                    legend_parts.append(colour_map.get(iv, f"{iv}m"))
+                st.caption(
+                    f"**{' · '.join(legend_parts)}** — solid = full-chain PCR · "
+                    "dashed = near-ATM proxy  · "
+                    f"🟢 horizontal = put-writing support (PCR {1.2}) · "
+                    f"🔴 horizontal = call-writing resistance (PCR {0.8}).  "
+                    f"*{n_pts} snapshot(s) loaded.*"
+                )
+            else:
+                st.caption("(PCR chart unavailable — no data points in selected intervals)")
+        except Exception as e:  # noqa: BLE001 - chart is non-essential
+            st.caption(f"(PCR chart error: {e})")
+            st.dataframe(df[["time_ist", "pcr_oi", "pcr_near", "spot"]].tail(20),
+                         use_container_width=True)
+
+    # ------------------------------------------------------------------ #
+    # India interpretation note
+    # ------------------------------------------------------------------ #
+    with st.expander("🇮🇳 India PCR interpretation (read before acting)", expanded=False):
+        st.markdown(
+            "**India is a writer-dominated market — the PCR signal is INVERTED vs the US.**\n\n"
+            "| Reading | India convention | US convention (does NOT apply here) |\n"
+            "|---|---|---|\n"
+            "| PCR > 1.2 | Heavy **put-writing** → structural **support** (bullish) | "
+            "Fear / bearish hedging |\n"
+            "| PCR < 0.8 | Heavy **call-writing** → structural **resistance** (bearish) | "
+            "Complacency / bullish |\n"
+            "| PCR ~1.0 | Balanced writing, no directional lean | Same |\n\n"
+            "**Source:** NSE Nifty literature (MDPI Economies, 2001–2013). "
+            "Full-chain PCR covers all expiries served by the feed; near-ATM proxy "
+            "sums OI for the 20 strikes closest to spot (front-expiry dominated). "
+            "Both are sign-free and exploratory. Gaps in the chart mean no snapshot "
+            "was captured in that window — run the scheduler or use auto-save.\n\n"
+            "*Decision-support only. Not a trade rule.*"
+        )
+
+
 def _timeseries_section(data):
     """Phase A: spot vs the migrating levels through the day, + OI/volume build-up."""
+
     from app.timeseries import available_days, load_day
 
     ist_today = (data.fetched_at + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
@@ -1451,6 +2072,171 @@ def _magnet_drift_section(data, stats=None):
                "independent of the dealer-sign landmine. Exploratory, not a live signal.")
 
 
+def _dhan_greeks_section(data):
+    """Display per-strike greeks (delta, gamma, theta, vega) and IV sourced
+    directly from the Dhan API — no local Black-Scholes required.
+
+    Shown only when DATA_SOURCE=dhan and the contracts DataFrame contains the
+    Dhan-provided greek columns. PCR is computed locally from OI data.
+    """
+    if data.source != "dhan":
+        return
+
+    L = data.levels
+    df = data.contracts
+    if df is None or df.empty:
+        return
+
+    # Check if Dhan greeks are present in the contracts DataFrame
+    greek_cols = [c for c in ("delta", "gamma", "theta", "vega") if c in df.columns]
+    has_iv = "iv" in df.columns
+    if not greek_cols and not has_iv:
+        return  # old data without greek columns
+
+    st.markdown("---")
+    st.markdown("### 🔶 Dhan API — Live Greeks & IV")
+    st.caption(
+        "Delta, Gamma, Theta, Vega and IV are fetched **directly from the Dhan v2 option-chain "
+        "API** — no local Black-Scholes computation. Dhan provides these per-strike in real-time. "
+        "IV shown as % (e.g., 9.79 = 9.79% annualised). PCR is computed locally from OI."
+    )
+
+    # Filter to near-ATM strikes (10 closest to spot)
+    try:
+        # Get unique strikes and sort by distance from spot
+        strikes_near = (
+            df[["strike"]].drop_duplicates()
+            .assign(dist=lambda d: (d["strike"] - L.spot).abs())
+            .sort_values("dist")
+            .head(10)["strike"]
+            .sort_values()
+            .tolist()
+        )
+
+        # Get nearest expiry
+        nearest_exp = df["expiry"].min()
+        near_df = df[(df["expiry"] == nearest_exp) & (df["strike"].isin(strikes_near))].copy()
+
+        if near_df.empty:
+            st.caption("No near-ATM contracts found.")
+            return
+
+        # Build a wide table: one row per strike with CE / PE columns
+        def _fv(val, nd=4):
+            """Format a float value, returning '—' for NaN."""
+            try:
+                v = float(val)
+                if v != v:  # NaN check
+                    return "—"
+                return f"{v:.{nd}f}"
+            except (TypeError, ValueError):
+                return "—"
+
+        rows = []
+        for strike in sorted(strikes_near):
+            ce = near_df[(near_df["strike"] == strike) & (near_df["type"] == "C")]
+            pe = near_df[(near_df["strike"] == strike) & (near_df["type"] == "P")]
+            ce_row = ce.iloc[0] if not ce.empty else None
+            pe_row = pe.iloc[0] if not pe.empty else None
+
+            def _g(row, col, nd=4):
+                return _fv(row[col], nd) if row is not None and col in row.index else "—"
+
+            def _iv_pct(row):
+                """Display IV as percentage (Dhan stores as decimal after normalisation)."""
+                if row is None or "iv" not in row.index:
+                    return "—"
+                try:
+                    v = float(row["iv"])
+                    if v != v:  # NaN
+                        return "—"
+                    # Parser normalised Dhan's % value to decimal; convert back for display
+                    return f"{v * 100:.2f}%"
+                except (TypeError, ValueError):
+                    return "—"
+
+            # Mark ATM strike
+            atm_mark = " ➤ ATM" if abs(strike - L.spot) <= (L.spot * 0.003) else ""
+            rows.append({
+                "Strike": f"{strike:,.0f}{atm_mark}",
+                "CE IV%":  _iv_pct(ce_row) if has_iv else "—",
+                "CE Δ":   _g(ce_row, "delta"),
+                "CE Γ":   _g(ce_row, "gamma", 6),
+                "CE Θ":   _g(ce_row, "theta", 2),
+                "CE ν":   _g(ce_row, "vega", 2),
+                "PE IV%":  _iv_pct(pe_row) if has_iv else "—",
+                "PE Δ":   _g(pe_row, "delta"),
+                "PE Γ":   _g(pe_row, "gamma", 6),
+                "PE Θ":   _g(pe_row, "theta", 2),
+                "PE ν":   _g(pe_row, "vega", 2),
+            })
+
+        if rows:
+            import pandas as _pd
+            greek_df = _pd.DataFrame(rows)
+            st.dataframe(
+                greek_df,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(
+                f"Showing 10 nearest-ATM strikes · nearest expiry: {nearest_exp} · "
+                "Spot = **" + f"{L.spot:,.2f}** · "
+                "**IV% = annualised implied vol from Dhan API** (shown as %). "
+                "Delta: CE positive, PE negative. "
+                "Theta: daily time-decay in ₹. Vega: ₹ change per 1% IV move. "
+                "Gamma (Γ) is per-share from Dhan — the GEX engine recomputes gamma "
+                "independently for lot-scaled GEX. Sign-free data, decision-support only."
+            )
+
+        # --- PCR summary (computed locally from OI) ---
+        ov = data.oi_volume or {}
+        pcr = ov.get("pcr_oi")
+        call_oi = ov.get("call_oi", 0)
+        put_oi = ov.get("put_oi", 0)
+        call_doi = ov.get("call_doi", 0)
+        put_doi = ov.get("put_doi", 0)
+        call_vol = ov.get("call_vol", 0)
+        put_vol = ov.get("put_vol", 0)
+
+        st.markdown("##### PCR & Aggregate OI (computed from Dhan chain)")
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric(
+            "PCR (OI)",
+            f"{pcr:.3f}" if pcr is not None and pcr == pcr else "—",
+            help="Put OI / Call OI — India convention: >1 = put-writing (bullish support), "
+                 "<1 = call-writing (resistance). Computed locally from Dhan chain.",
+        )
+        p2.metric("Total Call OI", f"{call_oi:,.0f}",
+                  f"ΔOI {call_doi:+,.0f}" if call_doi else None, delta_color="off")
+        p3.metric("Total Put OI", f"{put_oi:,.0f}",
+                  f"ΔOI {put_doi:+,.0f}" if put_doi else None, delta_color="off")
+        p4.metric("Call Vol / Put Vol",
+                  f"{call_vol:,.0f} / {put_vol:,.0f}",
+                  help="Total volume across all strikes in the fetched expiry window.")
+
+        if pcr is not None and pcr == pcr:
+            if pcr >= 1.2:
+                st.success(
+                    f"🟢 **PCR {pcr:.3f} — PUT-WRITING SUPPORT** (≥1.2). "
+                    "Institutional put-writers are backing the upside. India convention: "
+                    "heavy put OI = structural bullish support below spot."
+                )
+            elif pcr <= 0.8:
+                st.warning(
+                    f"🔴 **PCR {pcr:.3f} — CALL-WRITING RESISTANCE** (≤0.8). "
+                    "Heavy call OI overhead. India convention: "
+                    "low PCR = call-writing capping the upside."
+                )
+            else:
+                st.info(
+                    f"⬜ **PCR {pcr:.3f} — NEUTRAL** (0.8–1.2). No strong put/call bias."
+                )
+
+    except Exception as _e:  # noqa: BLE001 - non-essential panel
+        st.caption(f"Greeks panel unavailable: {_e}")
+
+
 def _oi_footprint_section(data):
     """Per-strike ΔOI footprint: where big players are BUILDING OI (support vs
     resistance) and how it drifts intraday. Raw OI => sign-free; the put-build =
@@ -1977,4 +2763,166 @@ def _gex_chart(L):
         st.caption(f"(chart unavailable: {e})")
 
 
-main()
+
+
+_POSTURE = {
+    "calm": ("🟦 **Range-bound / pinning** — MEAN-REVERSION favoured", [
+        "Fade extremes back toward the **magnet**; breakouts here tend to fail.",
+        "Sell premium near the **walls**; tighter stops; you can size UP.",
+    ]),
+    "wild": ("🟧 **Trending / expansion** — MOMENTUM favoured", [
+        "Respect a **break of a wall**; fading the move is dangerous here.",
+        "Buy premium / trade directional; stops **beyond** the walls; size DOWN (bigger swings).",
+    ]),
+    "mid": ("⬜ **Neutral vol regime** — no strong tilt", [
+        "Trade the levels with modest size; wait for a clearer regime to lean.",
+    ]),
+}
+
+def _regime_posture_note(data):
+    """Turn the sign-free vol-REGIME read into a concrete 'how to trade this regime' posture
+    (mean-revert vs momentum, premium buy/sell, stop placement, sizing). The regime is validated
+    (|vanna|→forward vol); the POSTURE is the standard vol-regime playbook, not a direction call."""
+    from app.intraday_features import regime_now
+
+    try:
+        vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
+    except Exception:  # noqa: BLE001 - non-essential overlay
+        vr = None
+    if not vr:
+        return
+    head, tips = _POSTURE[vr["tag"]]
+    body = "".join(f"<div style='font-size:13px;margin-top:3px'>• {t}</div>" for t in tips)
+    ex = _posture_example(vr["tag"], data.levels)
+    ex_html = (f"<div style='font-size:12.5px;margin-top:6px;padding:6px 10px;background:#00000010;"
+               f"border-radius:6px'>{ex}</div>" if ex else "")
+    st.markdown(
+        f"<div style='border-left:4px solid {_MUTE};background:#00000008;border-radius:8px;"
+        f"padding:8px 14px;margin:2px 0 8px'>"
+        f"<div style='font-size:14px;font-weight:700'>🎯 How to trade this regime: {head}</div>"
+        f"{body}{ex_html}<div style='font-size:12px;color:{_MUTE};margin-top:4px'>Sign-free "
+        f"vol-regime posture (≈{vr['exp_rv']:.0f}% expected vol, next {vr['horizon_min']}min) — "
+        f"<b>not a direction call</b>; illustrative examples, you confirm every trade.</div></div>",
+        unsafe_allow_html=True)
+
+def _posture_example(tag, L):
+    """Concrete illustrative example trades wired to the LIVE levels (walls / magnet / spot).
+    Illustrative only — decision-support, not advice."""
+    def f(x):
+        return f"{x:,.0f}" if x is not None and x == x else "—"
+    cw, pw, mag, sp = L.call_wall, L.put_wall, L.magnet, L.spot
+    if tag == "calm":
+        return (f"<b>Examples:</b> a push up to the call wall <b>{f(cw)}</b> → <b>fade</b> back "
+                f"toward the magnet <b>{f(mag)}</b> (buy put-spread / sell call-spread); or "
+                f"<b>sell a strangle</b> around <b>{f(pw)} / {f(cw)}</b> — pinning favours "
+                f"premium sellers. Stops just <i>outside</i> the walls.")
+    if tag == "wild":
+        return (f"<b>Examples:</b> a clean <b>break above {f(cw)}</b> → go <b>long / buy calls</b> "
+                f"(stop back under {f(cw)}); a <b>break below {f(pw)}</b> → <b>short / buy puts</b>. "
+                f"<b>Buy</b> options for convexity, don't sell premium, don't fade the move.")
+    return (f"<b>Example:</b> wait for spot <b>{f(sp)}</b> to reach a wall (<b>{f(pw)} / {f(cw)}</b>) "
+            f"or the flip; trade the level with small size until the regime picks a side.")
+
+def _gex_vol_regime_section(data):
+    """The one signal the research phase validated: sign-free dealer-gamma CONCENTRATION →
+    forward realized VOLATILITY (SqueezeMetrics; |GEX|→RV IC ≈ −0.17/10d on 2 yrs of raw
+    bhavcopy). An EOD vol-REGIME read — high |GEX| = expect calmer/mean-reverting, low =
+    wilder/trending. Not a direction call (that's the unvalidated dealer-sign landmine)."""
+    from app.gex_history import vol_regime
+
+    st.markdown("#### 🌡️ Volatility regime (dealer gamma · EOD outlook)")
+    try:
+        vr = vol_regime(data.symbol)
+    except Exception:  # noqa: BLE001 - optional/analytical
+        vr = None
+    if not vr:
+        st.caption("Building — needs the raw-bhavcopy GEX history cache "
+                   "(`python -c \"from app.gex_history import gex_series; gex_series()\"`).")
+        return
+    color = {"calm": "#2a78d6", "wild": "#eb6834", "mid": _MUTE}.get(vr["tag"], _MUTE)
+    icon = {"calm": "🟦", "wild": "🟧", "mid": "⬜"}.get(vr["tag"], "")
+    exp = f"{vr['exp_rv']:.0f}%" if vr.get("exp_rv") == vr.get("exp_rv") else "—"
+    lo, hi = vr.get("lo_rv"), vr.get("hi_rv")
+    ctx = (f"(this regime historically → ~{exp} realized vol over the next {vr['horizon']}d; "
+           f"vs ~{hi:.0f}% high-gamma / ~{lo:.0f}% low-gamma)"
+           if lo == lo and hi == hi else "")
+    st.markdown(
+        f'<div style="border-left:6px solid {color};background:{color}14;border-radius:10px;'
+        f'padding:12px 16px;margin:2px 0 6px">'
+        f'<div style="font-size:16px;font-weight:800;color:{color}">{icon} {vr["read"]}</div>'
+        f'<div style="font-size:13px;color:{color};font-weight:700;margin-top:4px">'
+        f'≈ {exp} expected realized vol · next {vr["horizon"]} days</div>'
+        f'<div style="font-size:12px;color:{_MUTE};margin-top:3px">|GEX| in the '
+        f'<b>{vr["pct"]:.0f}ᵗʰ percentile</b> of {vr["n"]} days · as of EOD {vr["day"]} '
+        f'{ctx}</div></div>', unsafe_allow_html=True)
+    st.caption("Gamma **concentration** (|GEX|) → forward realized vol (validated Spearman "
+               "≈ −0.20 at 10d on 2 yrs; SqueezeMetrics pattern). A VOLATILITY-regime read, "
+               "NOT a direction call. EOD (updates after each day's bhavcopy). "
+               "Decision-support — you confirm.")
+
+
+def _current_absgex_cache_units(data):
+    """Current |GEX| on the same scale as the intraday-cache distribution, so it can be placed
+    in the 5yr Dhan |GEX| percentile. Both are already comparable: the engine's per-strike
+    net_gex multiplies NSE OI (contracts) by the lot, while the cache uses Dhan OI which is
+    already in shares (= contracts × lot) — so the lot is baked into both, no rescale needed.
+    We just match the cache's ATM±10 band by summing the ~21 nearest strikes. None if absent."""
+    L = data.levels
+    ps = getattr(L, "per_strike", None)
+    if ps is None or "net_gex" not in getattr(ps, "columns", []):
+        return None
+    df = ps.dropna(subset=["net_gex"])
+    if df.empty:
+        return None
+    near = df.iloc[(df["strike"] - float(L.spot)).abs().argsort()[:21]]
+    return abs(float(near["net_gex"].sum()))
+
+def _gex_regime_banner(data):
+    """SIGN-FREE market-regime headline from dealer-gamma CONCENTRATION (|GEX|), replacing the
+    old sign-based 'Market mode'. Study #1/#4 (docs/intraday-results.md): the dealer SIGN carries
+    no clean regime/direction info, but the |GEX| BUCKET robustly gauges TRENDING (low |GEX|) vs
+    SIDEWAYS (high |GEX|). Live-intraday: current |GEX| placed in the 5yr Dhan distribution, with
+    the historical expected forward realized vol for that bucket."""
+    from app.intraday_features import intraday_vol_regime, regime_now, regime_daily_move_now
+
+    # DTE-switched dealer greek: |charm| ≤1.5 DTE (sharper near expiry), |vanna| else (Study #8/
+    # T1b). Fall back to the |GEX| scale-bridge if the live greeks aren't available (demo/pre-cache).
+    try:
+        vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
+        if vr is None and data.vanna_now is None:
+            vr = intraday_vol_regime(data.symbol, _current_absgex_cache_units(data), metric="net_gex")
+        dm = regime_daily_move_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
+    except Exception:  # noqa: BLE001 - non-essential overlay
+        vr = dm = None
+    if not vr:
+        st.info(f"### Market regime: building…\n\nNeeds the intraday vol-regime (dealer-vanna) "
+                f"feature cache for **{data.symbol}** (`python -c \"from app.intraday_features "
+                f"import build; build('{data.symbol}')\"`).")
+        return
+    label = {"calm": "SIDEWAYS / RANGE-BOUND", "wild": "TRENDING / WIDER SWINGS",
+             "mid": "NEUTRAL / MIXED"}[vr["tag"]]
+    gword = {"calm": "HIGH", "wild": "LOW", "mid": "MID"}[vr["tag"]]
+    box = {"calm": st.success, "wild": st.warning, "mid": st.info}[vr["tag"]]
+    mname = {"vanna": "dealer-vanna", "charm": "dealer-charm (0-DTE)"}.get(
+        vr.get("metric"), "dealer-gamma (|GEX|)")
+    tail = vr["read"].split("→")[-1].strip()
+    move_line = ""
+    if dm and dm.get("hl_pct") == dm.get("hl_pct"):        # concrete daily move behind the label
+        try:
+            pts = dm["hl_pct"] / 100.0 * data.levels.spot
+            move_line = (f"\n\nTypically this bucket moves **≈ {dm['hl_pct']:.1f}% (~{pts:,.0f} pt) "
+                         f"high-low per day** (intraday from the open; vs ~{dm['hi_hl']:.1f}% "
+                         f"high-concentration / ~{dm['lo_hl']:.1f}% low-concentration).")
+        except (TypeError, AttributeError):
+            move_line = ""
+    box(f"### Market regime: {label}  ·  {gword} concentration\n\n"
+        f"{mname.capitalize()} **concentration** sits in the **{vr['pct']:.0f}ᵗʰ percentile** of "
+        f"5yr → {tail}. Historically ≈ **{vr['exp_rv']:.1f}% realized vol (annualized)** over the "
+        f"next {vr['horizon_min']} min (vs ~{vr['hi_rv']:.1f}% high-concentration / "
+        f"~{vr['lo_rv']:.1f}% low-concentration)."
+        f"{move_line}")
+
+if __name__ == '__main__':
+    main()
+else:
+    main()

@@ -74,17 +74,19 @@ def get_index(symbol: str | None) -> Index:
 # DATA SOURCE FEATURE FLAG
 # ---------------------------------------------------------------------------
 # Controls which data provider is used for option-chain fetches.
-#   "icici_breeze" — DEFAULT. ICICI Direct Breeze API (requires API key + secret +
+#   "dhan"         — DEFAULT. Dhan broker API (requires DHAN_CLIENT_ID +
+#                    DHAN_ACCESS_TOKEN; static token, no daily refresh).
+#                    Provides real-time greeks (delta, gamma, theta, vega) and IV
+#                    directly from the API. Supports NIFTY, BANKNIFTY.
+#   "icici_breeze" — ICICI Direct Breeze API (requires API key + secret +
 #                    daily session token; set via .env). Supports NIFTY, BANKNIFTY,
 #                    and SENSEX (BSE/BFO).
-#   "dhan"         — Dhan broker API (requires DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN;
-#                    static token, no daily refresh). Supports NIFTY, BANKNIFTY.
 #   "nse"          — Legacy: scrapes the official NSE endpoint (no credentials
 #                    required, but rate-limited and blocks datacenter IPs).
 #                    Supports NIFTY and BANKNIFTY only. SENSEX is not on NSE.
 #
-# Set DATA_SOURCE in your .env to switch adapters.  Default: icici_breeze.
-DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "icici_breeze").strip().lower()
+# Set DATA_SOURCE in your .env to switch adapters.  Default: dhan.
+DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "dhan").strip().lower()
 
 VALID_DATA_SOURCES = {"nse", "icici_breeze", "dhan"}
 if DATA_SOURCE not in VALID_DATA_SOURCES:
@@ -122,8 +124,10 @@ CONTRACT_SIZE = NIFTY_LOT_SIZE
 
 # --- Expiry window ----------------------------------------------------------
 # The engine will fetch all expiries in this window, aggregate their gamma,
-# and plot a single surface. Default is 0dte for the Indian market to capture Gamma Blasts.
-EXPIRY_WINDOW_DEFAULT = "0dte"
+# and plot a single surface. Default expiry window on startup (see data/expiry.py for logic).
+# For Indian markets, "weekly" is the safest default because options do not expire
+# every day. If "0dte" is used on a non-expiry day, the chain will be empty.
+EXPIRY_WINDOW_DEFAULT = "weekly"
 
 # --- Gamma-flip profile grid ------------------------------------------------
 FLIP_GRID_RANGE = 0.10   # +/- 10% around spot

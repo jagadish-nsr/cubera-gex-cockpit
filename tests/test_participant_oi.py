@@ -32,9 +32,10 @@ def test_parse_maps_index_columns_in_verified_order():
     assert c["fut_long"] == 251066 and c["fut_short"] == 63543
     assert c["opt_call_long"] == 2163161 and c["opt_put_long"] == 1888743
     assert c["opt_call_short"] == 2028147 and c["opt_put_short"] == 2586510
-    # Stock/total columns are ignored (not in the dict).
+    assert c["fut_stk_long"] == 10 and c["fut_stk_short"] == 20
+    # Stock options/total columns are ignored (not in the dict).
     assert set(c) == {"fut_long", "fut_short", "opt_call_long", "opt_put_long",
-                      "opt_call_short", "opt_put_short"}
+                      "opt_call_short", "opt_put_short", "fut_stk_long", "fut_stk_short"}
 
 
 def test_parse_rejects_malformed():

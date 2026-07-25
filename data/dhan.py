@@ -13,10 +13,14 @@ generated from the Dhan web platform. Decision-support/research only.
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 DHAN_BASE = "https://api.dhan.co/v2"
@@ -28,6 +32,23 @@ _REQUIRED = ("open", "high", "low", "close", "volume", "oi", "iv", "spot", "stri
 DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25}
 DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH"}
 _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
+
+# --- Live option-chain adapter constants ------------------------------------
+# Base URL for the live option-chain endpoints (v2 REST)
+_DHAN_BASE_URL = "https://api.dhan.co/v2"
+
+# Security IDs for index underlyings (IDX_I segment)
+# NIFTY = 13, BANKNIFTY = 25 (same as DHAN_UNDERLYING above)
+_DHAN_UNDERLYING_ID: dict[str, int] = {
+    "NIFTY":     13,
+    "BANKNIFTY": 25,
+}
+
+# Exchange segment strings required by the Dhan option-chain endpoint
+_DHAN_EXCHANGE_SEGMENT: dict[str, str] = {
+    "NIFTY":     "IDX_I",   # NSE index segment
+    "BANKNIFTY": "IDX_I",   # NSE index segment
+}
 
 
 def _secret(env: str, fname: str) -> str | None:
@@ -357,15 +378,18 @@ class DhanCredentialError(Exception):
 
 # ---------- Low-level HTTP helpers -------------------------------------------
 
-def _dhan_headers(access_token: str) -> dict:
-    return {
+def _dhan_headers(access_token: str, client_id: str | None = None) -> dict:
+    h = {
         "access-token": access_token,
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
+    if client_id:
+        h["client-id"] = str(client_id)
+    return h
 
 
-def _post(url: str, access_token: str, payload: dict) -> Any:
+def _post(url: str, access_token: str, payload: dict, client_id: str | None = None) -> Any:
     """POST request against Dhan API. Raises DhanAPIError on failure."""
     try:
         import requests
@@ -375,7 +399,7 @@ def _post(url: str, access_token: str, payload: dict) -> Any:
             "Install it with: pip install requests"
         )
     resp = requests.post(
-        url, headers=_dhan_headers(access_token), json=payload, timeout=20
+        url, headers=_dhan_headers(access_token, client_id=client_id), json=payload, timeout=20
     )
     if resp.status_code == 401:
         raise DhanCredentialError(
@@ -423,7 +447,7 @@ def _fetch_option_chain_raw(
         "UnderlyingSeg": _DHAN_EXCHANGE_SEGMENT[symbol],
         "Expiry": expiry.strftime("%Y-%m-%d"),
     }
-    return _post(url, access_token, payload)
+    return _post(url, access_token, payload, client_id=client_id)
 
 
 def _fetch_expiry_list(
@@ -441,9 +465,16 @@ def _fetch_expiry_list(
         "UnderlyingScrip": int(underlying_id),
         "UnderlyingSeg": _DHAN_EXCHANGE_SEGMENT[symbol],
     }
-    data = _post(url, access_token, payload)
-    # Response: {"data": {"expiryList": ["2026-07-10", "2026-07-31", ...]}}
-    expiry_list = (data.get("data") or {}).get("expiryList") or []
+    data = _post(url, access_token, payload, client_id=client_id)
+    # Response: {"data": ["2026-07-21", "2026-07-28", ...], "status": "success"}
+    raw_data = data.get("data")
+    if isinstance(raw_data, list):
+        expiry_list = raw_data
+    elif isinstance(raw_data, dict):
+        expiry_list = raw_data.get("expiryList") or []
+    else:
+        expiry_list = []
+    
     return sorted([_parse_dhan_expiry(e) for e in expiry_list])
 
 
@@ -457,13 +488,24 @@ def parse_dhan_option_chain(
 
     Returns (rows, spot) where each row has the same keys as icici_breeze rows:
     expiry, strike, type, oi, doi, vol, price, iv, T.
+
+    Dhan v2 provides greeks (delta, gamma, theta, vega) and implied_volatility
+    directly in the response — these are extracted and stored so the engine can
+    use them without local Black-Scholes recalculation.
+
+    DOI (change in OI) is computed as oi - previous_oi using the previous_oi
+    field provided by Dhan, which reflects the prior session's OI.
+
+    PCR is NOT a dedicated Dhan endpoint — it is computed locally from the
+    aggregated call/put OI in aggregate_oi_volume_dhan().
+
     spot is None if the underlying price is not available.
     """
     data = raw.get("data") or {}
 
-    # Extract spot
+    # Extract spot — Dhan v2 uses "last_price" at the top level for the underlying
     spot = None
-    raw_spot = data.get("underlying_scrip_price") or data.get("last_price")
+    raw_spot = data.get("last_price") or data.get("underlying_scrip_price")
     if raw_spot is not None:
         try:
             spot = float(raw_spot)
@@ -499,13 +541,19 @@ def parse_dhan_option_chain(
             if leg is None:
                 continue
 
-            oi  = float(leg.get("open_interest") or 0)
-            doi = float(leg.get("change_in_oi") or 0)
+            # OI and DOI — Dhan provides current OI and previous_oi directly
+            oi      = float(leg.get("oi") or leg.get("open_interest") or 0)
+            prev_oi = float(leg.get("previous_oi") or 0)
+            # doi = change in OI from previous session (positive = build-up)
+            doi = oi - prev_oi
+
             vol = float(leg.get("volume") or 0)
 
-            bid = leg.get("bid_price")
-            ask = leg.get("ask_price")
+            # Price: prefer top_bid/top_ask mid, fallback to last_price, then average_price
+            bid = leg.get("top_bid_price")
+            ask = leg.get("top_ask_price")
             ltp = leg.get("last_price")
+            avg = leg.get("average_price")
             if bid is not None and ask is not None:
                 try:
                     price = (float(bid) + float(ask)) / 2.0
@@ -515,9 +563,37 @@ def parse_dhan_option_chain(
                 try:
                     price = float(ltp)
                 except (ValueError, TypeError):
+                    price = float(avg) if avg is not None else float("nan")
+            elif avg is not None:
+                try:
+                    price = float(avg)
+                except (ValueError, TypeError):
                     price = float("nan")
             else:
                 price = float("nan")
+
+            # --- Greeks — Dhan provides delta, gamma, theta, vega directly ---
+            # This avoids local Black-Scholes recalculation for display purposes.
+            # The GEX engine still recomputes gamma internally for its own math.
+            greeks_raw = leg.get("greeks") or {}
+            def _safe_float(v) -> float:
+                try:
+                    return float(v) if v is not None else float("nan")
+                except (ValueError, TypeError):
+                    return float("nan")
+
+            delta = _safe_float(greeks_raw.get("delta"))
+            gamma = _safe_float(greeks_raw.get("gamma"))
+            theta = _safe_float(greeks_raw.get("theta"))
+            vega  = _safe_float(greeks_raw.get("vega"))
+
+            # --- Implied Volatility — available directly from Dhan ---------
+            iv_raw = leg.get("implied_volatility")
+            iv = _safe_float(iv_raw)
+            # Dhan returns IV as a percentage (e.g., 9.79); normalise to decimal
+            # for consistency with the rest of the codebase (0.0979)
+            if not math.isnan(iv) and iv > 1.0:
+                iv = iv / 100.0
 
             rows.append({
                 "expiry": expiry,
@@ -527,8 +603,13 @@ def parse_dhan_option_chain(
                 "doi":    doi,
                 "vol":    vol,
                 "price":  price,
-                "iv":     float("nan"),  # Dhan doesn't provide IV; engine derives it
+                "iv":     iv,      # from Dhan API (normalised to decimal)
                 "T":      T,
+                # Extra greeks from Dhan — stored for display in dashboard
+                "delta":  delta,
+                "gamma":  gamma,   # Dhan's own gamma (per-share, not lot-scaled)
+                "theta":  theta,
+                "vega":   vega,
             })
 
     return rows, spot
@@ -686,7 +767,7 @@ def fetch_india_vix_dhan(client_id: str, access_token: str) -> dict | None:
     try:
         url = f"{_DHAN_BASE_URL}/marketfeed/quote"
         payload = {"NSE_INDEX": [26000]}  # India VIX security ID on NSE
-        data = _post(url, access_token, payload)
+        data = _post(url, access_token, payload, client_id=client_id)
         vix_data = (data.get("data") or {}).get("NSE_INDEX", {}).get("26000", {})
         last = vix_data.get("last_price") or vix_data.get("LTP")
         chg  = vix_data.get("change")
