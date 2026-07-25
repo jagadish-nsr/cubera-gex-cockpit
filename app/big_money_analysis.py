@@ -117,4 +117,10 @@ def analyse_frame(ev, symbol: str, day: str) -> dict | None:
             "side": r["side"] if r["side"] in ("buy", "sell") else None,
             "cr": round(float(r["cr"]), 2), "lots": (float(r["lots"]) if r["lots"] == r["lots"] else None),
         } for _, r in pr.iterrows()]
+    if len(bu):                                                    # individual BURSTS for a burst scatter
+        out["bursts"] = [{
+            "t": r["ts_ist"][11:], "min": float(r["ts_ist"][11:13]) * 60 + float(r["ts_ist"][14:16])
+            + float(r["ts_ist"][17:19]) / 60.0, "price": float(r["price"]),
+            "cr": round(float(r["cr"]), 2), "conv": (float(r["conv"]) if r["conv"] == r["conv"] else None),
+        } for _, r in bu.iterrows()]
     return out

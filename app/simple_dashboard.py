@@ -1084,6 +1084,59 @@ def _bm_print_scatter_html(a) -> str:
             + "".join(s) + legend + '</div>')
 
 
+def _bm_burst_scatter_html(a) -> str:
+    """BURSTS-ONLY graph: every burst as a dot at its (time, price), coloured by CONVICTION (green =
+    positioning-building, red = unwinding, grey = churn — bursts have no aggressor side), sized by ₹
+    notional, with the futures price line for context. Prints excluded. Map, not a signal."""
+    bs = (a or {}).get("bursts")
+    if not bs:
+        return ""
+    import math
+    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    prices = [b["price"] for b in bs]
+    pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
+    pmin, pmax = min(prices + pl), max(prices + pl)
+    span = (pmax - pmin) or 1.0
+    maxcr = max((b["cr"] for b in bs), default=1.0) or 1.0
+    W, L, R, top, plotH = 720, 40, 8, 10, 120
+
+    def X(m):
+        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+
+    def Y(px):
+        return top + (pmax - px) / span * plotH
+
+    def cfill(c):
+        if c is None:
+            return "var(--ink-mute)"
+        return "var(--go)" if c > 0.15 else "var(--stop)" if c < -0.15 else "var(--ink-mute)"
+
+    s = [f'<svg viewBox="0 0 {W} {top + plotH + 22}" width="100%" style="display:block" '
+         f'role="img" aria-label="bursts by time and price">']
+    bpts = " ".join(f'{X(_secs(x["t"]) / 60):.1f},{Y(x["px"]):.1f}'
+                    for x in (a.get("time") or []) if x.get("px") is not None)
+    if bpts:
+        s.append(f'<polyline points="{bpts}" fill="none" stroke="var(--ink)" stroke-width="1.2" opacity="0.4"/>')
+    for b in sorted(bs, key=lambda z: -z["cr"]):
+        r = 2.0 + 5.0 * math.sqrt(b["cr"] / maxcr)
+        cv = f'{b["conv"]:+.2f}' if b["conv"] is not None else '—'
+        s.append(f'<circle cx="{X(b["min"]):.1f}" cy="{Y(b["price"]):.1f}" r="{r:.1f}" '
+                 f'style="fill:{cfill(b["conv"])};opacity:0.5"><title>{b["t"]}  ₹{b["cr"]:.2f}cr  '
+                 f'@{b["price"]:,.0f}  conv {cv}</title></circle>')
+    for px in (pmax, pmin):
+        s.append(f'<text x="2" y="{Y(px) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{px:,.0f}</text>')
+    for m in range(OPEN, CLOSE + 1, 45):
+        s.append(f'<text x="{X(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    legend = ('<span class="rb-cav">Every BURST (sliced flow ≥ floor) at its price &amp; time · '
+              '<span style="color:var(--go)">building</span> / <span style="color:var(--stop)">unwinding</span>'
+              ' / grey = churn (conviction) · dot size = ₹ · faint line = price. Prints excluded.</span>')
+    return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
+            f'<div class="eyebrow" style="margin-bottom:4px">Bursts · time × price · {a["symbol"]}</div>'
+            + "".join(s) + legend + '</div>')
+
+
 def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
     """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
     plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
@@ -1157,7 +1210,7 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
     grids = (_bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
-             + _bm_print_scatter_html(readout))
+             + _bm_burst_scatter_html(readout) + _bm_print_scatter_html(readout))
     if replay:
         return head + _bm_day_readout_html(readout) + grids + table + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
