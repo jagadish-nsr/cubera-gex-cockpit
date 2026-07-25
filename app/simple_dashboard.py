@@ -974,63 +974,107 @@ def _bm_day_readout_html(a) -> str:
             f'<div class="mono" style="font-size:.84rem">{" &nbsp;·&nbsp; ".join(t)}</div>{bhtml}{vhtml}</div>')
 
 
-def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min") -> str:
-    """A positioning heatmap vs price at ``key`` granularity: one block per bucket, coloured by the OI
-    BUILD-UP that window (green = price up, red = down; opacity = size of ΔOI), with the futures price
-    line overlaid. Hover a block for the exact build-up quadrant. Descriptive; a map, not a signal."""
+# Shared horizontal time axis for ALL THREE big-money charts (build-up grid, prints, bursts) so their
+# timelines line up pixel-for-pixel when stacked: same viewBox width + plot margins + minute→x mapping.
+_BM_OPEN, _BM_CLOSE = 9 * 60 + 15, 15 * 60 + 30           # NSE session (minutes of day)
+_BM_W, _BM_L, _BM_R = 720, 40, 10                         # viewBox width; left/right plot margins
+
+
+def _bm_x(m: float) -> float:
+    """Minute-of-day → x on the shared big-money time axis (identical across the 3 charts)."""
+    return _BM_L + (m - _BM_OPEN) / (_BM_CLOSE - _BM_OPEN) * (_BM_W - _BM_L - _BM_R)
+
+
+def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min", step_min: int = 15) -> str:
+    """A positioning heatmap on a FIXED session grid (9:15→15:30, one block per ``step_min``). TWO stacked
+    rows, same colour (green = price up, red = down) and same time axis, differing only in what opacity means:
+    row 1 = OI BUILD-UP (opacity = size of ΔOI — how much positioned); row 2 = CONVICTION (opacity = ΔOI/ΔVol,
+    the ₹-weighted mean of that slot's bursts — how *sticky* the flow was). Dark in both = large & sticky;
+    dark top / faint bottom = churn. Future blocks sit empty and the live block recolours as ticks arrive.
+    Hover a block for detail. No price line — price lives in the hover. Descriptive; a map, not a signal."""
     t = (a or {}).get(key)
     if not t:
         return ""
     from app.oi_footprint import classify_buildup
-    b = []
+
+    def _m(hhmm: str) -> int:
+        h, mm = hhmm[:5].split(":")
+        return int(h) * 60 + int(mm)
+
+    b: dict[int, dict] = {}                                  # bucket keyed by start-minute of the day
     prev_oi = prev_px = None
     for x in t:
         px, oi = x.get("px"), x.get("oi")
         doi = (oi - prev_oi) if (oi is not None and prev_oi is not None) else None
         dpx = (px - prev_px) if (px is not None and prev_px is not None) else None
-        b.append({"t": x["t"], "px": px, "doi": doi, "dpx": dpx,
-                  "q": classify_buildup(doi, dpx) if (doi is not None and dpx is not None) else None})
+        b[_m(x["t"])] = {"t": x["t"][:5], "px": px, "doi": doi, "dpx": dpx,
+                         "q": classify_buildup(doi, dpx) if (doi is not None and dpx is not None) else None}
         if oi is not None:
             prev_oi = oi
         if px is not None:
             prev_px = px
-    pxs = [x["px"] for x in b if x["px"] is not None]
-    if len(pxs) < 2:
+    if not any(v["doi"] is not None for v in b.values()):
         return ""
-    pmin, pmax = min(pxs), max(pxs)
-    span = (pmax - pmin) or 1.0
-    maxdoi = max((abs(x["doi"]) for x in b if x["doi"] is not None), default=1.0) or 1.0
-    n = len(b)
-    W, cw, top, plotH, blkY, blkH = 700, 700 / n, 10, 96, 116, 40
+    maxdoi = max((abs(v["doi"]) for v in b.values() if v["doi"] is not None), default=1.0) or 1.0
+    slots = list(range(_BM_OPEN, _BM_CLOSE, step_min))       # fixed 9:15→15:30 grid on the shared time axis
 
-    def Y(px):
-        return top + (pmax - px) / span * plotH
+    # Row 2 data: per-slot CONVICTION = ₹-weighted mean ΔOI/ΔVol of the bursts that fell in each slot.
+    agg: dict[int, list[float]] = {}
+    for z in ((a or {}).get("bursts") or []):
+        if z.get("conv") is None:
+            continue
+        sl = int((z["min"] - _BM_OPEN) // step_min) * step_min + _BM_OPEN
+        acc = agg.setdefault(sl, [0.0, 0.0])
+        acc[0] += z["conv"] * z["cr"]
+        acc[1] += z["cr"]
+    conv_by_slot = {k: (v[0] / v[1]) for k, v in agg.items() if v[1]}
+    two_row = bool(conv_by_slot)
 
-    s = [f'<svg viewBox="0 0 {W} 172" width="100%" style="display:block" '
-         f'preserveAspectRatio="none" role="img" aria-label="15-min OI build-up vs price">']
-    for i, x in enumerate(b):                                # build-up blocks
-        px0 = i * cw
-        if x["doi"] is not None and x["dpx"] is not None:
-            fill = "var(--go)" if x["dpx"] > 0 else "var(--stop)" if x["dpx"] < 0 else "var(--ink-mute)"
-            op = 0.14 + 0.82 * min(1.0, abs(x["doi"]) / maxdoi)
-            tip = f'{x["t"]}  {x["q"] or "flat"}  ΔOI {x["doi"]:+,.0f}  px {x["px"]:,.0f}'
+    top, h1, gap, h2 = 8, 66, 10, 44                         # build-up band / gap / conviction band
+    y2 = top + h1 + gap
+    labY = (y2 + h2 if two_row else top + h1) + 14
+    H = labY + 4
+
+    s = [f'<svg viewBox="0 0 {_BM_W} {H}" width="100%" style="display:block" preserveAspectRatio="none" '
+         f'role="img" aria-label="{label} OI build-up and conviction on a fixed session grid">']
+    for mm in slots:                                         # ROW 1 — build-up (opacity = |ΔOI|, the size)
+        x0, x1 = _bm_x(mm), _bm_x(mm + step_min)             # edges pinned to the shared time axis
+        v = b.get(mm)
+        lab = f'{mm // 60:02d}:{mm % 60:02d}'
+        if v and v["doi"] is not None and v["dpx"] is not None:
+            fill = "var(--go)" if v["dpx"] > 0 else "var(--stop)" if v["dpx"] < 0 else "var(--ink-mute)"
+            op = 0.16 + 0.80 * min(1.0, abs(v["doi"]) / maxdoi)
+            tip = f'{lab}  {v["q"] or "flat"}  ΔOI {v["doi"]:+,.0f}  px {v["px"]:,.0f}'
         else:
-            fill, op, tip = "var(--ink-mute)", 0.07, x["t"]
-        s.append(f'<rect x="{px0 + 1:.1f}" y="{blkY}" width="{cw - 2:.1f}" height="{blkH}" rx="2" '
+            fill, op, tip = "var(--ink-mute)", 0.05, lab
+        s.append(f'<rect x="{x0 + 0.6:.1f}" y="{top}" width="{x1 - x0 - 1.2:.1f}" height="{h1}" rx="1.5" '
                  f'style="fill:{fill};opacity:{op:.2f}"><title>{tip}</title></rect>')
-    pts = " ".join(f'{i * cw + cw / 2:.1f},{Y(x["px"]):.1f}' for i, x in enumerate(b) if x["px"] is not None)
-    s.append(f'<polyline points="{pts}" fill="none" stroke="var(--ink)" stroke-width="1.7" opacity="0.85"/>')
-    s.append(f'<text x="3" y="{Y(pmax) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmax:,.0f}</text>')
-    s.append(f'<text x="3" y="{Y(pmin):.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmin:,.0f}</text>')
-    lstep = max(1, n // 8)
-    for i, x in enumerate(b):
-        if i % lstep == 0:
-            s.append(f'<text x="{i * cw + cw / 2:.1f}" y="169" text-anchor="middle" '
-                     f'style="font-size:8.5px;fill:var(--ink-mute)">{x["t"]}</text>')
+    if two_row:
+        for mm in slots:                                     # ROW 2 — conviction (opacity = |ΔOI/ΔVol|, sticky)
+            x0, x1 = _bm_x(mm), _bm_x(mm + step_min)
+            v, cv = b.get(mm), conv_by_slot.get(mm)
+            lab = f'{mm // 60:02d}:{mm % 60:02d}'
+            if cv is not None:
+                dpx = (v or {}).get("dpx") or 0
+                fill = "var(--go)" if dpx > 0 else "var(--stop)" if dpx < 0 else "var(--ink-mute)"
+                op = 0.16 + 0.80 * min(1.0, abs(cv))
+                tip = f'{lab}  conviction {cv:+.2f} ({"sticky" if abs(cv) >= 0.25 else "churn"})'
+            else:
+                fill, op, tip = "var(--ink-mute)", 0.05, lab
+            s.append(f'<rect x="{x0 + 0.6:.1f}" y="{y2}" width="{x1 - x0 - 1.2:.1f}" height="{h2}" rx="1.5" '
+                     f'style="fill:{fill};opacity:{op:.2f}"><title>{tip}</title></rect>')
+        s.append(f'<text x="3" y="{top + h1 / 2 + 3:.0f}" style="font-size:8px;fill:var(--ink-mute)">size</text>')
+        s.append(f'<text x="3" y="{y2 + h2 / 2 + 3:.0f}" style="font-size:8px;fill:var(--ink-mute)">grip</text>')
+    for mm in slots:                                         # shared time ticks (45-min → align w/ scatters)
+        if (mm - _BM_OPEN) % 45 == 0:
+            s.append(f'<text x="{_bm_x(mm):.1f}" y="{labY:.0f}" text-anchor="middle" '
+                     f'style="font-size:8.5px;fill:var(--ink-mute)">{mm // 60:02d}:{mm % 60:02d}</text>')
     s.append("</svg>")
-    legend = (f'<span class="rb-cav">{label} OI build-up vs price · block colour = price up (green) / down '
-              '(red), opacity = size of ΔOI (positioning) · line = futures price · hover a block for the '
-              'build-up quadrant.</span>')
+    legend = (f'<span class="rb-cav">{label} grid, fixed 9:15→15:30 · colour = price up (green) / down (red) · '
+              + ('<b>top (size)</b> opacity = ΔOI, how much positioned · <b>bottom (grip)</b> opacity = '
+                 'conviction ΔOI/ΔVol, how sticky · dark in both = large &amp; sticky; dark top / faint bottom '
+                 '= churn · ' if two_row else 'opacity = size of ΔOI (positioning) · ')
+              + 'live block recolours as ticks arrive · hover for detail.</span>')
     return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
             f'<div class="eyebrow" style="margin-bottom:4px">Build-up × time × price · {a["symbol"]} · {label}</div>'
             + "".join(s) + legend + '</div>')
@@ -1044,16 +1088,14 @@ def _bm_print_scatter_html(a) -> str:
     if not pr:
         return ""
     import math
-    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    OPEN, CLOSE = _BM_OPEN, _BM_CLOSE
     prices = [p["price"] for p in pr]
     pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
     pmin, pmax = min(prices + pl), max(prices + pl)
     span = (pmax - pmin) or 1.0
     maxcr = max((p["cr"] for p in pr), default=1.0) or 1.0
-    W, L, R, top, plotH = 720, 40, 8, 10, 120
-
-    def X(m):
-        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+    W, top, plotH = _BM_W, 10, 120
+    X = _bm_x
 
     def Y(px):
         return top + (pmax - px) / span * plotH
@@ -1092,16 +1134,14 @@ def _bm_burst_scatter_html(a) -> str:
     if not bs:
         return ""
     import math
-    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    OPEN, CLOSE = _BM_OPEN, _BM_CLOSE
     prices = [b["price"] for b in bs]
     pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
     pmin, pmax = min(prices + pl), max(prices + pl)
     span = (pmax - pmin) or 1.0
     maxcr = max((b["cr"] for b in bs), default=1.0) or 1.0
-    W, L, R, top, plotH = 720, 40, 8, 10, 120
-
-    def X(m):
-        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+    W, top, plotH = _BM_W, 10, 120
+    X = _bm_x
 
     def Y(px):
         return top + (pmax - px) / span * plotH
@@ -1209,8 +1249,8 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    grids = (_bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
-             + _bm_burst_scatter_html(readout) + _bm_print_scatter_html(readout))
+    grids = (_bm_buildup_grid_html(readout, "time", "15-min")
+             + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout))
     if replay:
         return head + _bm_day_readout_html(readout) + grids + table + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
