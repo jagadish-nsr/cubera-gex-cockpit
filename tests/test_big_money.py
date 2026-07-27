@@ -55,16 +55,18 @@ def test_burst_tracker_oi_delta():
     """total_oi sums the latest OI across contracts; doi = ΔOI over the (longer) positioning window;
     conv = ΔOI / Δvolume over that window."""
     tr = _SymbolBurstTracker(window_s=10.0, floor=1e12, pos_window_s=180.0)   # never fires — OI only
-    _, _, _, oi0, doi0, conv0 = tr.update("near", 0, 100, 10.0, oi=1_000_000)
+    _, _, _, oi0, doi0, conv0, dpx0 = tr.update("near", 0, 100, 10.0, oi=1_000_000)
     assert oi0 == 1_000_000 and doi0 is None and conv0 is None      # one sample → no delta yet
-    _, _, _, oi1, doi1, conv1 = tr.update("near", 60, 200, 10.0, oi=1_500_000)
+    assert dpx0 is None                                             # one price sample → no move yet
+    _, _, _, oi1, doi1, conv1, dpx1 = tr.update("near", 60, 200, 11.5, oi=1_500_000)
     assert oi1 == 1_500_000 and doi1 == 500_000                     # +500k OI over the window
     assert conv1 == 500_000 / 100                                    # ΔOI / Δvolume (200−100)
-    _, _, _, oi2, _, _ = tr.update("next", 60, 50, 10.0, oi=300_000)
+    assert dpx1 == 1.5                                              # price move over the window (11.5−10.0)
+    _, _, _, oi2, _, _, _ = tr.update("next", 60, 50, 10.0, oi=300_000)
     assert oi2 == 1_800_000                                          # near 1.5M + next 0.3M
     # an update far beyond the positioning window drops the old samples → no 2-sample delta
-    _, _, _, _, doi3, _ = tr.update("near", 400, 260, 10.0, oi=1_600_000)
-    assert doi3 is None                                             # only the epoch-400 sample remains
+    _, _, _, _, doi3, _, dpx3 = tr.update("near", 400, 260, 10.0, oi=1_600_000)
+    assert doi3 is None and dpx3 is None                            # only the epoch-400 sample remains
 
 
 def test_buildup_quadrants():
@@ -75,6 +77,39 @@ def test_buildup_quadrants():
     assert buildup(0, 100) is None                           # no direction
     assert buildup(1, None) is None                          # no ΔOI
     assert buildup(1, 0) is None                             # flat OI = churn
+
+
+def test_bm_quad_dot_colour():
+    """The burst-scatter dot colour maps ΔOI sign (via conviction) × price move to the four quadrants,
+    greying out churn and missing/flat inputs. Mirrors buildup()."""
+    from app.simple_dashboard import _bm_quad
+    assert _bm_quad(+0.5, +8) == ("long build-up", "var(--go)")    # OI building, price up
+    assert _bm_quad(+0.5, -8) == ("short build-up", "var(--stop)")  # OI building, price down (writing)
+    assert _bm_quad(-0.5, +8) == ("short covering", "var(--call)")  # OI falling, price up
+    assert _bm_quad(-0.5, -8) == ("long unwinding", "var(--warn)")  # OI falling, price down
+    assert _bm_quad(+0.05, +8) == (None, "var(--ink-mute)")         # |conv|<0.15 → churn (grey)
+    assert _bm_quad(+0.5, 0) == (None, "var(--ink-mute)")           # flat price → grey
+    assert _bm_quad(None, +8) == (None, "var(--ink-mute)")          # no conviction → grey
+    assert _bm_quad(+0.5, None) == (None, "var(--ink-mute)")        # no price move → grey
+
+
+def test_bm_extra_charts_render():
+    """The three descriptive tape charts render valid SVG from an analyse-shaped dict, flag the POC,
+    colour OI/CVD by direction, and no-op on empty input."""
+    from app.simple_dashboard import (_bm_value_profile_html, _bm_oi_trajectory_html, _bm_cvd_html)
+    a = {"symbol": "NIFTY",
+         "value_profile": [{"price": 23800.0, "buy": 24.0, "sell": 25.0, "mid": 29.0, "total": 78.0},
+                           {"price": 23750.0, "buy": 5.0, "sell": 2.0, "mid": 1.0, "total": 8.0}],
+         "time": [{"t": "09:15", "oi": 1.0e7, "net": +3.0}, {"t": "09:30", "oi": 1.2e7, "net": -1.0},
+                  {"t": "09:45", "oi": 1.3e7, "net": +2.0}]}
+    vp = _bm_value_profile_html(a)
+    assert "<svg" in vp and "POC" in vp and "23,800" in vp        # heaviest level flagged
+    oi = _bm_oi_trajectory_html(a)
+    assert "<svg" in oi and "var(--go)" in oi and "+3.00M" in oi  # OI rose 10.0M→13.0M
+    cvd = _bm_cvd_html(a)
+    assert "<svg" in cvd and "+4.0cr (BUY)" in cvd                # net buy-initiated 3−1+2
+    for fn in (_bm_value_profile_html, _bm_oi_trajectory_html, _bm_cvd_html):
+        assert fn({}) == "" and fn(None) == ""                    # empty-input guard
 
 
 def test_conviction():

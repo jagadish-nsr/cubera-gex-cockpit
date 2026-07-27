@@ -1104,9 +1104,25 @@ def _bm_print_scatter_html(a) -> str:
             + "".join(s) + legend + '</div>')
 
 
+_BM_QUAD_COL = {"long build-up": "var(--go)", "short build-up": "var(--stop)",
+                "short covering": "var(--call)", "long unwinding": "var(--warn)"}
+
+
+def _bm_quad(conv, dpx):
+    """Four-quadrant build-up + colour for one burst, from its window ΔOI sign (via conviction) and price
+    move ``dpx`` — mirrors app.big_money.buildup. Churn (|conv|<0.15) or a flat/absent price move → None."""
+    if conv is None or dpx is None or abs(conv) < 0.15 or dpx == 0:
+        return None, "var(--ink-mute)"
+    build, up = conv > 0, dpx > 0                      # OI building(+)/unwinding(−); price up/down
+    q = ("long build-up" if up else "short build-up") if build else \
+        ("short covering" if up else "long unwinding")
+    return q, _BM_QUAD_COL[q]
+
+
 def _bm_burst_scatter_html(a) -> str:
-    """BURSTS-ONLY graph: every burst as a dot at its (time, price), coloured by CONVICTION (green =
-    positioning-building, red = unwinding, grey = churn — bursts have no aggressor side), sized by ₹
+    """BURSTS-ONLY graph: every burst as a dot at its (time, price), coloured by the four-quadrant BUILD-UP
+    (ΔOI sign × price move over the positioning window): green long build-up (px↑OI↑), red short build-up /
+    writing (px↓OI↑), blue short covering (px↑OI↓), amber long unwinding (px↓OI↓); grey = churn. Sized by ₹
     notional, with the futures price line for context. Prints excluded. Map, not a signal."""
     bs = (a or {}).get("bursts")
     if not bs:
@@ -1124,11 +1140,6 @@ def _bm_burst_scatter_html(a) -> str:
     def Y(px):
         return top + (pmax - px) / span * plotH
 
-    def cfill(c):
-        if c is None:
-            return "var(--ink-mute)"
-        return "var(--go)" if c > 0.15 else "var(--stop)" if c < -0.15 else "var(--ink-mute)"
-
     s = [f'<svg viewBox="0 0 {W} {top + plotH + 22}" width="100%" style="display:block" '
          f'role="img" aria-label="bursts by time and price">']
     bpts = " ".join(f'{X(_secs(x["t"]) / 60):.1f},{Y(x["px"]):.1f}'
@@ -1137,22 +1148,157 @@ def _bm_burst_scatter_html(a) -> str:
         s.append(f'<polyline points="{bpts}" fill="none" stroke="var(--ink)" stroke-width="1.2" opacity="0.4"/>')
     for b in sorted(bs, key=lambda z: -z["cr"]):
         r = 2.0 + 5.0 * math.sqrt(b["cr"] / maxcr)
+        q, fill = _bm_quad(b.get("conv"), b.get("dpx"))
         cv = f'{b["conv"]:+.2f}' if b["conv"] is not None else '—'
+        dp = f'{b["dpx"]:+.0f}' if b.get("dpx") is not None else '—'
         s.append(f'<circle cx="{X(b["min"]):.1f}" cy="{Y(b["price"]):.1f}" r="{r:.1f}" '
-                 f'style="fill:{cfill(b["conv"])};opacity:0.5"><title>{b["t"]}  ₹{b["cr"]:.2f}cr  '
-                 f'@{b["price"]:,.0f}  conv {cv}</title></circle>')
+                 f'style="fill:{fill};opacity:0.5"><title>{b["t"]}  ₹{b["cr"]:.2f}cr  '
+                 f'@{b["price"]:,.0f}  {q or "churn"}  (conv {cv}, Δpx {dp})</title></circle>')
     for px in (pmax, pmin):
         s.append(f'<text x="2" y="{Y(px) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{px:,.0f}</text>')
     for m in range(OPEN, CLOSE + 1, 45):
         s.append(f'<text x="{X(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
                  f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
     s.append("</svg>")
-    legend = ('<span class="rb-cav">Every BURST (sliced flow ≥ floor) at its price &amp; time · '
-              '<span style="color:var(--go)">building</span> / <span style="color:var(--stop)">unwinding</span>'
-              ' / grey = churn (conviction) · dot size = ₹ · faint line = price. Prints excluded.</span>')
+    legend = ('<span class="rb-cav">Every BURST (sliced flow ≥ floor) at its price &amp; time · build-up = ΔOI × price: '
+              '<span style="color:var(--go)">long build-up</span> / <span style="color:var(--stop)">short build-up '
+              '(writing)</span> / <span style="color:var(--call)">short covering</span> / '
+              '<span style="color:var(--warn)">long unwinding</span> · grey = churn · dot size = ₹ · '
+              'faint line = price. Prints excluded.</span>')
     return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
             f'<div class="eyebrow" style="margin-bottom:4px">Bursts · time × price · {a["symbol"]}</div>'
             + "".join(s) + legend + '</div>')
+
+
+def _bm_card(title: str, body: str, legend: str) -> str:
+    """Shared framing for the big-money SVG cards (border box + eyebrow + caption)."""
+    return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
+            f'<div class="eyebrow" style="margin-bottom:4px">{title}</div>{body}'
+            f'<span class="rb-cav">{legend}</span></div>')
+
+
+def _bm_value_profile_html(a) -> str:
+    """VALUE PROFILE: big-print ₹ transacted at each price level (buy vs sell vs mid), price descending, with
+    the POC (heaviest level) flagged. Shows WHERE big money did business — support/resistance shelves — not a
+    direction. Prints only (bursts are symbol-aggregates without a level split). Map, not a signal."""
+    vp = [r for r in ((a or {}).get("value_profile") or []) if r.get("total")]
+    if not vp:
+        return ""
+    vp = sorted(vp, key=lambda r: -r["price"])                # high price on top, like the scatters
+    maxtot = max(r["total"] for r in vp) or 1.0
+    poc = max(vp, key=lambda r: r["total"])["price"]
+    W, L, R, rowh, gap = _BM_W, 62, 78, 16, 3                 # L = price label gutter, R = ₹ label
+    H = 6 + len(vp) * (rowh + gap)
+    s = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="display:block" role="img" '
+         f'aria-label="value profile — ₹ by price">']
+    for i, r in enumerate(vp):
+        y = 6 + i * (rowh + gap)
+        full = (W - L - R) * (r["total"] / maxtot)
+        x = L
+        for key, colr in (("buy", "var(--go)"), ("sell", "var(--stop)"), ("mid", "var(--ink-mute)")):
+            w = full * (r.get(key, 0.0) / r["total"]) if r["total"] else 0.0
+            if w > 0.2:
+                s.append(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{rowh}" rx="1.5" '
+                         f'style="fill:{colr};opacity:0.72"><title>{r["price"]:,.0f}  {key} ₹{r.get(key,0):.1f}cr'
+                         f'</title></rect>')
+            x += w
+        poc_lbl = ' ◄POC' if r["price"] == poc else ''
+        wt = '700' if r["price"] == poc else '400'
+        s.append(f'<text x="{L - 4}" y="{y + rowh - 4}" text-anchor="end" style="font-size:9.5px;'
+                 f'font-weight:{wt};fill:var(--ink-2)">{r["price"]:,.0f}</text>')
+        s.append(f'<text x="{L + full + 4:.1f}" y="{y + rowh - 4}" style="font-size:9px;'
+                 f'fill:var(--ink-mute)">₹{r["total"]:.0f}cr{poc_lbl}</text>')
+    s.append("</svg>")
+    return _bm_card(
+        f'Value profile · ₹ by price · {a["symbol"]}', "".join(s),
+        'Big-print ₹ transacted at each price · <span style="color:var(--go)">buy</span> / '
+        '<span style="color:var(--stop)">sell</span> / grey mid · <b>POC</b> = heaviest level. Where big money '
+        'did business (shelves), <b>not</b> a direction. Prints only.')
+
+
+def _bm_oi_trajectory_html(a) -> str:
+    """INTRADAY OI TRAJECTORY: total futures open interest (near+next) through the session on the shared time
+    axis. Rising OI = net new positions being built, falling = unwinding. Descriptive positioning context — a
+    contemporaneous read, not a lead. Aligned with the three time×price charts above."""
+    pts = [(_secs(b["t"]) / 60.0, b["oi"]) for b in ((a or {}).get("time") or [])
+           if b.get("oi") is not None and _secs(b["t"]) is not None]
+    if len(pts) < 2:
+        return ""
+    ois = [o for _, o in pts]
+    omin, omax = min(ois), max(ois)
+    span = (omax - omin) or 1.0
+    top, plotH = 10, 84
+    open_oi, last_oi = ois[0], ois[-1]
+    up = last_oi >= open_oi
+    col = "var(--go)" if up else "var(--stop)"
+
+    def Y(o):
+        return top + (omax - o) / span * plotH
+
+    line = " ".join(f'{_bm_x(m):.1f},{Y(o):.1f}' for m, o in pts)
+    area = (f'{_bm_x(pts[0][0]):.1f},{top + plotH:.1f} ' + line
+            + f' {_bm_x(pts[-1][0]):.1f},{top + plotH:.1f}')
+    s = [f'<svg viewBox="0 0 {_BM_W} {top + plotH + 22}" width="100%" style="display:block" role="img" '
+         f'aria-label="intraday open interest">',
+         f'<polygon points="{area}" style="fill:{col};opacity:0.10"/>',
+         f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.6"/>']
+    for o, tag in ((omax, "hi"), (omin, "lo")):
+        s.append(f'<text x="2" y="{Y(o) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{o/1e6:.2f}M</text>')
+    for m in range(_BM_OPEN, _BM_CLOSE + 1, 45):
+        s.append(f'<text x="{_bm_x(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    d = last_oi - open_oi
+    return _bm_card(
+        f'Open interest · intraday · {a["symbol"]}',
+        f'<div class="mono" style="font-size:.82rem;margin:2px 0 2px">open {open_oi/1e6:.2f}M → now '
+        f'<b style="color:{col}">{last_oi/1e6:.2f}M ({d/1e6:+.2f}M)</b></div>' + "".join(s),
+        'Total futures OI (near+next) through the day · <span style="color:var(--go)">rising</span> = '
+        'positions built, <span style="color:var(--stop)">falling</span> = unwound. Contemporaneous '
+        'positioning context, <b>not</b> a lead.')
+
+
+def _bm_cvd_html(a) -> str:
+    """CUMULATIVE FLOW (CVD-like): running buy − sell ₹ of big PRINTS across the session on the shared time
+    axis — the aggressor tug-of-war. Above zero = net buy-initiated so far, below = net sell. DESCRIPTIVE order
+    flow whose contemporaneous link to price flipped sign day-to-day in the sample — a map, not a forecast."""
+    tb = [b for b in ((a or {}).get("time") or []) if _secs(b.get("t")) is not None]
+    if not tb:
+        return ""
+    cum, run = [], 0.0
+    for b in tb:
+        run += (b.get("net") or 0.0)
+        cum.append((_secs(b["t"]) / 60.0, run))
+    vals = [c for _, c in cum]
+    lo, hi = min(vals + [0.0]), max(vals + [0.0])
+    span = (hi - lo) or 1.0
+    top, plotH = 10, 76
+    net = vals[-1]
+    col = "var(--go)" if net >= 0 else "var(--stop)"
+
+    def Y(v):
+        return top + (hi - v) / span * plotH
+
+    z = Y(0.0)
+    line = " ".join(f'{_bm_x(m):.1f},{Y(v):.1f}' for m, v in cum)
+    area = f'{_bm_x(cum[0][0]):.1f},{z:.1f} ' + line + f' {_bm_x(cum[-1][0]):.1f},{z:.1f}'
+    s = [f'<svg viewBox="0 0 {_BM_W} {top + plotH + 22}" width="100%" style="display:block" role="img" '
+         f'aria-label="cumulative signed flow">',
+         f'<polygon points="{area}" style="fill:{col};opacity:0.12"/>',
+         f'<line x1="{_bm_x(_BM_OPEN):.1f}" y1="{z:.1f}" x2="{_bm_x(_BM_CLOSE):.1f}" y2="{z:.1f}" '
+         f'stroke="var(--ink-mute)" stroke-width="0.8" stroke-dasharray="3 3"/>',
+         f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.6"/>']
+    for m in range(_BM_OPEN, _BM_CLOSE + 1, 45):
+        s.append(f'<text x="{_bm_x(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    lean = "BUY" if net > 0 else "SELL" if net < 0 else "flat"
+    return _bm_card(
+        f'Cumulative flow · buy − sell ₹ · {a["symbol"]}',
+        f'<div class="mono" style="font-size:.82rem;margin:2px 0 2px">net so far '
+        f'<b style="color:{col}">{net:+.1f}cr ({lean})</b></div>' + "".join(s),
+        'Running buy − sell ₹ of big prints (Lee-Ready) · above 0 = net buy-initiated, below = net sell. '
+        'DESCRIPTIVE order flow — its link to price flipped sign day-to-day, so <b>not</b> a forecast.')
 
 
 def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
@@ -1207,7 +1353,9 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
     grids = (_bm_buildup_grid_html(readout, "time", "15-min")
-             + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout))
+             + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout)
+             + _bm_oi_trajectory_html(readout) + _bm_cvd_html(readout)
+             + _bm_value_profile_html(readout))
     if replay:
         return head + _bm_day_readout_html(readout) + grids + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
