@@ -54,7 +54,7 @@ def analyse_frame(ev, symbol: str, day: str) -> dict | None:
     ev = ev.sort_values("ts_ist").reset_index(drop=True)
     ev["cr"] = pd.to_numeric(ev["notional"], errors="coerce") / 1e7
     ev["price"] = pd.to_numeric(ev["price"], errors="coerce")
-    for col in ("oi", "doi", "conv"):
+    for col in ("oi", "doi", "conv", "dpx"):
         if col not in ev.columns:
             ev[col] = None
         ev[col] = pd.to_numeric(ev[col], errors="coerce")
@@ -122,5 +122,6 @@ def analyse_frame(ev, symbol: str, day: str) -> dict | None:
             "t": r["ts_ist"][11:], "min": float(r["ts_ist"][11:13]) * 60 + float(r["ts_ist"][14:16])
             + float(r["ts_ist"][17:19]) / 60.0, "price": float(r["price"]),
             "cr": round(float(r["cr"]), 2), "conv": (float(r["conv"]) if r["conv"] == r["conv"] else None),
+            "dpx": (float(r["dpx"]) if r["dpx"] == r["dpx"] else None),
         } for _, r in bu.iterrows()]
     return out
