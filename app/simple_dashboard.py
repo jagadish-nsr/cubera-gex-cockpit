@@ -743,7 +743,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
             _bm_replay = {"day": _rday, "clock": _clock, "upto_epoch": _upto}
         except (ValueError, TypeError):
             _bm_replay = None
-    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay))
+    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay, spot=spot_live))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
@@ -1177,17 +1177,22 @@ def _bm_card(title: str, body: str, legend: str) -> str:
             f'<span class="rb-cav">{legend}</span></div>')
 
 
-def _bm_value_profile_html(a) -> str:
-    """VALUE PROFILE: big-print ₹ transacted at each price level (buy vs sell vs mid), price descending, with
-    the POC (heaviest level) flagged. Shows WHERE big money did business — support/resistance shelves — not a
-    direction. Prints only (bursts are symbol-aggregates without a level split). Map, not a signal."""
+def _bm_value_profile_html(a, spot=None) -> str:
+    """VALUE PROFILE: big-print ₹ transacted at each FUTURES price level (buy vs sell vs mid), price descending,
+    with the POC (heaviest level) flagged. Shows WHERE big money did business — support/resistance shelves —
+    not a direction. When ``spot`` is given, each level also shows its spot-equivalent (futures − basis, basis =
+    latest futures px − spot), since strikes/levels are quoted on spot. Prints only. Map, not a signal."""
     vp = [r for r in ((a or {}).get("value_profile") or []) if r.get("total")]
     if not vp:
         return ""
     vp = sorted(vp, key=lambda r: -r["price"])                # high price on top, like the scatters
     maxtot = max(r["total"] for r in vp) or 1.0
     poc = max(vp, key=lambda r: r["total"])["price"]
-    W, L, R, rowh, gap = _BM_W, 62, 78, 16, 3                 # L = price label gutter, R = ₹ label
+    # basis (futures − spot) from the latest futures px, so we can label each level in spot terms too
+    fut_now = next((b["px"] for b in reversed((a or {}).get("time") or []) if b.get("px") is not None), None)
+    basis = (fut_now - spot) if (spot and fut_now) else None
+    L = 96 if basis is not None else 62                       # wider gutter when a spot column is shown
+    W, R, rowh, gap = _BM_W, 78, 16, 3                        # L = price-label gutter, R = ₹ label
     H = 6 + len(vp) * (rowh + gap)
     s = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="display:block" role="img" '
          f'aria-label="value profile — ₹ by price">']
@@ -1204,16 +1209,22 @@ def _bm_value_profile_html(a) -> str:
             x += w
         poc_lbl = ' ◄POC' if r["price"] == poc else ''
         wt = '700' if r["price"] == poc else '400'
-        s.append(f'<text x="{L - 4}" y="{y + rowh - 4}" text-anchor="end" style="font-size:9.5px;'
+        futx = (L - 42) if basis is not None else (L - 4)     # futures label; leave room for the spot column
+        s.append(f'<text x="{futx}" y="{y + rowh - 4}" text-anchor="end" style="font-size:9.5px;'
                  f'font-weight:{wt};fill:var(--ink-2)">{r["price"]:,.0f}</text>')
+        if basis is not None:
+            s.append(f'<text x="{L - 4}" y="{y + rowh - 4}" text-anchor="end" style="font-size:8.5px;'
+                     f'fill:var(--ink-mute)">{r["price"] - basis:,.0f}s</text>')
         s.append(f'<text x="{L + full + 4:.1f}" y="{y + rowh - 4}" style="font-size:9px;'
                  f'fill:var(--ink-mute)">₹{r["total"]:.0f}cr{poc_lbl}</text>')
     s.append("</svg>")
+    basis_note = (f' · <b>fut</b> / <b>spot</b> columns (spot = fut − basis {basis:+.0f})' if basis is not None
+                  else '')
     return _bm_card(
         f'Value profile · ₹ by price · {a["symbol"]}', "".join(s),
-        'Big-print ₹ transacted at each price · <span style="color:var(--go)">buy</span> / '
-        '<span style="color:var(--stop)">sell</span> / grey mid · <b>POC</b> = heaviest level. Where big money '
-        'did business (shelves), <b>not</b> a direction. Prints only.')
+        'Big-print ₹ transacted at each futures level · <span style="color:var(--go)">buy</span> / '
+        '<span style="color:var(--stop)">sell</span> / grey mid · <b>POC</b> = heaviest level' + basis_note +
+        '. Where big money did business (shelves), <b>not</b> a direction. Prints only.')
 
 
 def _bm_oi_trajectory_html(a) -> str:
@@ -1301,7 +1312,7 @@ def _bm_cvd_html(a) -> str:
         'DESCRIPTIVE order flow — its link to price flipped sign day-to-day, so <b>not</b> a forecast.')
 
 
-def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
+def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot=None) -> str:
     """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
     plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
     from its raw archive up to the replay clock (raw = source of truth) and shows the tape + readout as
@@ -1355,7 +1366,7 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
     grids = (_bm_buildup_grid_html(readout, "time", "15-min")
              + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout)
              + _bm_oi_trajectory_html(readout) + _bm_cvd_html(readout)
-             + _bm_value_profile_html(readout))
+             + _bm_value_profile_html(readout, spot=(None if replay else spot)))  # live spot ≠ past futures
     if replay:
         return head + _bm_day_readout_html(readout) + grids + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
