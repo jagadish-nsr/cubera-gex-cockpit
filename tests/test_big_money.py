@@ -97,7 +97,7 @@ def test_bm_extra_charts_render():
     """The three descriptive tape charts render valid SVG from an analyse-shaped dict, flag the POC,
     colour OI/CVD by direction, and no-op on empty input."""
     from app.simple_dashboard import (_bm_value_profile_html, _bm_oi_trajectory_html, _bm_cvd_html)
-    a = {"symbol": "NIFTY",
+    a = {"symbol": "NIFTY", "vp_fut_ref": 23790.0,               # the profile's own contract ref px
          "value_profile": [{"price": 23800.0, "buy": 24.0, "sell": 25.0, "mid": 29.0, "total": 78.0},
                            {"price": 23750.0, "buy": 5.0, "sell": 2.0, "mid": 1.0, "total": 8.0}],
          "time": [{"t": "09:15", "oi": 1.0e7, "net": +3.0, "px": 23770.0},
@@ -106,7 +106,7 @@ def test_bm_extra_charts_render():
     vp = _bm_value_profile_html(a)
     assert "<svg" in vp and "POC" in vp and "23,800" in vp        # heaviest level flagged
     assert "basis" not in vp                                      # no spot column without a spot
-    vps = _bm_value_profile_html(a, spot=23740.0)                # basis = last px 23790 − 23740 = +50
+    vps = _bm_value_profile_html(a, spot=23740.0)                # basis = vp_fut_ref 23790 − 23740 = +50
     assert "basis +50" in vps and "23,750s" in vps               # POC spot-equiv 23800 − 50 = 23750
     oi = _bm_oi_trajectory_html(a)
     assert "<svg" in oi and "var(--go)" in oi and "+3.00M" in oi  # OI rose 10.0M→13.0M

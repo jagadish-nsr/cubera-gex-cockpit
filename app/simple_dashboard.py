@@ -1188,8 +1188,9 @@ def _bm_value_profile_html(a, spot=None) -> str:
     vp = sorted(vp, key=lambda r: -r["price"])                # high price on top, like the scatters
     maxtot = max(r["total"] for r in vp) or 1.0
     poc = max(vp, key=lambda r: r["total"])["price"]
-    # basis (futures − spot) from the latest futures px, so we can label each level in spot terms too
-    fut_now = next((b["px"] for b in reversed((a or {}).get("time") or []) if b.get("px") is not None), None)
+    # basis (futures − spot) from the profile's OWN contract ref (vp_fut_ref = the dominant contract's
+    # latest px), so the spot column uses that contract's basis — not a near/next mix.
+    fut_now = (a or {}).get("vp_fut_ref")
     basis = (fut_now - spot) if (spot and fut_now) else None
     L = 96 if basis is not None else 62                       # wider gutter when a spot column is shown
     W, R, rowh, gap = _BM_W, 78, 16, 3                        # L = price-label gutter, R = ₹ label
@@ -1220,10 +1221,15 @@ def _bm_value_profile_html(a, spot=None) -> str:
     s.append("</svg>")
     basis_note = (f' · <b>fut</b> / <b>spot</b> columns (spot = fut − basis {basis:+.0f})' if basis is not None
                   else '')
+    exp = (a or {}).get("vp_expiry")
+    lbl = _exp_label(exp)
+    con = f' · {lbl}' if lbl else ''
+    lead = (f'Big-print ₹ transacted at each futures level ({lbl} contract, the day\'s heaviest) · '
+            if lbl else 'Big-print ₹ transacted at each futures level · ')
     return _bm_card(
-        f'Value profile · ₹ by price · {a["symbol"]}', "".join(s),
-        'Big-print ₹ transacted at each futures level · <span style="color:var(--go)">buy</span> / '
-        '<span style="color:var(--stop)">sell</span> / grey mid · <b>POC</b> = heaviest level' + basis_note +
+        f'Value profile · ₹ by price · {a["symbol"]}{con}', "".join(s),
+        lead + '<span style="color:var(--go)">buy</span> / <span style="color:var(--stop)">sell</span> / '
+        'grey mid · <b>POC</b> = heaviest level' + basis_note +
         '. Where big money did business (shelves), <b>not</b> a direction. Prints only.')
 
 
