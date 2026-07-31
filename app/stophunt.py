@@ -211,14 +211,20 @@ def study(days: list, cfg: Config | None = None, prev_days: dict | None = None) 
     prev_days = prev_days or {}
     allsw: list[Sweep] = []
     plc: list[np.ndarray] = []
+    per_day: list[dict] = []                      # for the day-clustered (honest) test
     for label, df in days:
-        allsw += detect(df, cfg, prev_days.get(label))
+        sw = detect(df, cfg, prev_days.get(label))
         p = _placebo(df, cfg)
+        allsw += sw
         if len(p):
             plc.append(p)
+        if sw and len(p):                         # this day's mean sweep-edge over its own placebo
+            per_day.append({"day": label, "n": len(sw),
+                            "edge": float(np.mean([s.fwd for s in sw]) - p.mean())})
     placebo = np.concatenate(plc) if plc else np.array([])
     return {"cfg": asdict(cfg), "n_days": len(days), "placebo": _stat(placebo),
             "overall": _score(allsw, placebo),
+            "day_clustered": _day_cluster(per_day),
             "by_level": {lt: _score([s for s in allsw if s.level_type == lt], placebo)
                          for lt in cfg.level_types},
             "by_signature": {
@@ -227,6 +233,20 @@ def study(days: list, cfg: Config | None = None, prev_days: dict | None = None) 
                 "absorption": _score([s for s in allsw if _absorb(s)], placebo),
             },
             "sweeps": [asdict(s) for s in allsw]}
+
+
+def _day_cluster(per_day: list[dict]) -> dict:
+    """The HONEST significance test: treat each DAY as one observation (its mean sweep-edge over its own
+    placebo), then t across days. Pooling all sweeps overstates n because same-day sweeps are correlated —
+    this uses n = trading days, the real independent sample. Also reports how many days leaned positive."""
+    if len(per_day) < 2:
+        return {"n_days": len(per_day), "note": "need >=2 days"}
+    edges = np.array([d["edge"] for d in per_day])
+    se = float(edges.std(ddof=1) / np.sqrt(len(edges)))
+    return {"n_days": len(edges), "mean_daily_edge": round(float(edges.mean()), 2),
+            "t_across_days": round(float(edges.mean() / se), 2) if se else None,
+            "days_positive": int((edges > 0).sum()),
+            "per_day": [{"day": d["day"], "n": d["n"], "edge": round(d["edge"], 2)} for d in per_day]}
 
 
 def _absorb(s: Sweep) -> bool:

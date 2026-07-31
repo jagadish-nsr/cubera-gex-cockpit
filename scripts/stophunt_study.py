@@ -82,6 +82,13 @@ def main():
           f"horizon {c['horizon_min']}m · barrier {c['barrier']} · placebo n={out['placebo']['n']} "
           f"(mean {out['placebo']['mean']:+.2f})" if out['placebo']['n'] else "")
     print("\nOVERALL"); print(_fmt("all sweeps", out["overall"]))
+    dc = out.get("day_clustered") or {}
+    if dc.get("n_days", 0) >= 2:
+        print(f"\nDAY-CLUSTERED (the honest test — n = {dc['n_days']} trading days, not sweeps)")
+        print(f"  mean daily edge {dc['mean_daily_edge']:+.2f} pts · t across days {dc['t_across_days']} · "
+              f"days positive {dc['days_positive']}/{dc['n_days']}")
+        for d in dc["per_day"]:
+            print(f"    {d['day']}  n={d['n']:<4} edge {d['edge']:+.2f}")
     print("\nBY LEVEL TYPE")
     for lt, d in out["by_level"].items():
         print(_fmt(lt, d))

@@ -56,6 +56,17 @@ def test_study_pools_and_gates_on_placebo():
     assert out["by_signature"]["oi_build"]["n"] == 0
 
 
+def test_day_clustered_uses_days_not_sweeps():
+    """The honest test treats each DAY as one observation. Two identical synthetic days → each day's
+    edge is the same, all days positive, and n = 2 days (not 2 sweeps)."""
+    out = study([("d1", _synthetic()), ("d2", _synthetic())], CFG)
+    dc = out["day_clustered"]
+    assert dc["n_days"] == 2 and dc["days_positive"] == 2       # both days lean positive
+    assert dc["mean_daily_edge"] == dc["per_day"][0]["edge"]    # identical days → mean = each day's edge
+    assert len(dc["per_day"]) == 2
+    assert out["overall"]["n"] == 2                             # pooled still counts both sweeps
+
+
 def test_empty_and_short_frames_are_safe():
     assert detect(pd.DataFrame([]), CFG) == []
     assert detect(pd.DataFrame([_row(0, 100.0)]), CFG) == []
