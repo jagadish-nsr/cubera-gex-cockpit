@@ -260,17 +260,24 @@ def test_burst_tagged_agg():
 
 def test_nearest_futures_two_sorted():
     import pandas as pd
+    from datetime import date, timedelta
     from data.dhan import nearest_futures
+    # Date-relative so the test doesn't rot when an expiry passes: near = +7d, mid = +35d, far = +65d,
+    # plus one already-EXPIRED future (−5d) that must be filtered out. (nearest_futures keeps exp >= today.)
+    near = (date.today() + timedelta(days=7)).isoformat()
+    mid = (date.today() + timedelta(days=35)).isoformat()
+    far = (date.today() + timedelta(days=65)).isoformat()
+    past = (date.today() - timedelta(days=5)).isoformat()
     master = pd.DataFrame({
-        "SEM_INSTRUMENT_NAME": ["FUTIDX", "FUTIDX", "FUTIDX", "OPTIDX"],
-        "SEM_TRADING_SYMBOL": ["NIFTY-Aug2026-FUT", "NIFTY-Jul2026-FUT", "NIFTY-Sep2026-FUT",
-                               "NIFTY-Jul2026-24000-CE"],
-        "SEM_EXPIRY_DATE": ["2026-08-25", "2026-07-28", "2026-09-29", "2026-07-28"],
-        "SEM_SMST_SECURITY_ID": [61200, 61093, 61300, 99999],
-        "SEM_LOT_UNITS": [65, 65, 65, 65],
+        "SEM_INSTRUMENT_NAME": ["FUTIDX", "FUTIDX", "FUTIDX", "FUTIDX", "OPTIDX"],
+        "SEM_TRADING_SYMBOL": ["NIFTY-mid-FUT", "NIFTY-near-FUT", "NIFTY-far-FUT", "NIFTY-past-FUT",
+                               "NIFTY-near-24000-CE"],
+        "SEM_EXPIRY_DATE": [mid, near, far, past, near],
+        "SEM_SMST_SECURITY_ID": [61200, 61093, 61300, 60000, 99999],
+        "SEM_LOT_UNITS": [65, 65, 65, 65, 65],
     })
     fs = nearest_futures("NIFTY", n=2, master=master)
-    assert [f["expiry"] for f in fs] == ["2026-07-28", "2026-08-25"]   # sorted, front two, no options
+    assert [f["expiry"] for f in fs] == [near, mid]        # sorted, front two, no options, no expired
     assert fs[0]["security_id"] == 61093
 
 
