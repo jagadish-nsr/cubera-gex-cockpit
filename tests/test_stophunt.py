@@ -67,6 +67,34 @@ def test_day_clustered_uses_days_not_sweeps():
     assert out["overall"]["n"] == 2                             # pooled still counts both sweeps
 
 
+def test_scan_live_prior_day_sweep_states():
+    """A synthetic day that: crosses prior-day HIGH (200) with a thrust then FADES back below; never
+    reaches prior-day LOW (150); opens above prior-day CLOSE (190) so it's not an upward crossing."""
+    from app.stophunt import prev_day_levels, scan_live
+    rows = [_row(t, 196.0) for t in range(0, 120, 5)]                 # baseline just under the high
+    rows.append(_row(120, 205.0))                                     # THRUST up through 200 (+9 in one step)
+    rows += [_row(t, 197.0) for t in range(125, 200, 5)]              # fade back below 200
+    df = pd.DataFrame(rows)
+    prev = {"high": 200.0, "low": 150.0, "close": 190.0}
+    r = scan_live(df, prev, CFG)
+    byname = {lv["name"]: lv for lv in r["levels"]}
+    assert byname["high"]["swept"] is True and byname["high"]["state"] == "faded"
+    assert byname["high"]["swept_at"] == "09:17"                      # t=120 → 09:15 + 2min
+    assert byname["low"]["swept"] is False                            # 150 never approached
+    assert round(r["spot"], 0) == 197.0
+
+    # no prior day / empty → safe empty result, no throw
+    assert scan_live(df, None, CFG)["levels"] == []
+    assert scan_live(pd.DataFrame([]), prev, CFG)["levels"] == []
+
+
+def test_prev_day_levels():
+    from app.stophunt import prev_day_levels
+    df = pd.DataFrame([_row(0, 100.0), _row(5, 108.0), _row(10, 95.0), _row(15, 103.0)])
+    assert prev_day_levels(df) == {"high": 108.0, "low": 95.0, "close": 103.0}
+    assert prev_day_levels(pd.DataFrame([])) is None
+
+
 def test_empty_and_short_frames_are_safe():
     assert detect(pd.DataFrame([]), CFG) == []
     assert detect(pd.DataFrame([_row(0, 100.0)]), CFG) == []

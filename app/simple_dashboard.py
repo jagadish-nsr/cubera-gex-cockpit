@@ -1318,6 +1318,56 @@ def _bm_cvd_html(a) -> str:
         'DESCRIPTIVE order flow — its link to price flipped sign day-to-day, so <b>not</b> a forecast.')
 
 
+def _bm_sweepwatch_html(symbol, day, replay=None) -> str:
+    """PRIOR-DAY SWEEP WATCH: the one stop-run signal that cleared the placebo on both NIFTY and BankNifty
+    (day-clustered) — a fast breach of the prior day's high/low/close LEANS to fade back. Shows each level,
+    its distance from the latest futures price, and — if swept today — when + the current state (faded /
+    beyond / pending). Descriptive lean, NOT an auto-signal; you confirm. See docs/tick-data-ic-research.md."""
+    try:
+        from app.big_money_live import available_raw_days, load_raw_ticks
+        from app.stophunt import prev_day_levels, scan_live
+    except Exception:  # noqa: BLE001
+        return ""
+    alld = available_raw_days(symbol)
+    earlier = [d for d in alld if d < day]
+    if not earlier:
+        return ""                                              # need a prior captured day for the levels
+    pv = prev_day_levels(load_raw_ticks(symbol, earlier[-1]))
+    df = load_raw_ticks(symbol, day)
+    if pv is None or df is None or getattr(df, "empty", True):
+        return ""
+    upto = replay["upto_epoch"] if replay else None
+    r = scan_live(df, pv, upto_epoch=upto)
+    if not r.get("levels") or r.get("spot") is None:
+        return ""
+    pill = {"faded": ("var(--go)", "✔ faded back"), "pending": ("var(--warn)", "● just swept — watch"),
+            "beyond": ("var(--ink-mute)", "→ trended through")}
+    nm = {"high": "prior-day HIGH", "low": "prior-day LOW", "close": "prior-day CLOSE"}
+    rows = []
+    for lv in r["levels"]:
+        dist = lv["dist"]
+        dtxt = f'{dist:+.0f} pts' + (' above' if dist > 0 else ' below' if dist < 0 else '')
+        if lv.get("swept"):
+            col, lab = pill.get(lv.get("state"), ("var(--ink-mute)", lv.get("state", "")))
+            right = f'<span style="color:{col};font-weight:700">{lab}</span> · swept {lv.get("swept_at","")}'
+        else:
+            right = '<span style="color:var(--ink-mute)">not swept</span>'
+        rows.append(
+            f'<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0;font-size:.84rem">'
+            f'<span style="font-weight:600">{nm.get(lv["name"], lv["name"])}</span>'
+            f'<span class="mono" style="color:var(--ink-2)">{lv["level"]:,.0f} · {dtxt}</span>'
+            f'<span class="mono">{right}</span></div>')
+    return (
+        '<div style="margin:2px 0 8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">'
+        f'<div class="eyebrow" style="margin-bottom:4px">Prior-day sweep watch · {symbol} '
+        f'(fut {r["spot"]:,.0f})</div>' + "".join(rows) +
+        '<span class="rb-cav">A fast breach of the prior day\'s H/L/C <b>leans to fade back</b> — the one '
+        'stop-run pattern that cleared a placebo on NIFTY+BankNifty (n=6 days, exploratory). '
+        '<span style="color:var(--warn)">just-swept</span> = the live watch; '
+        '<span style="color:var(--go)">faded</span> = pattern played out; grey = trended through. '
+        'Descriptive lean, <b>not</b> a signal; you confirm.</span></div>')
+
+
 def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot=None) -> str:
     """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
     plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
@@ -1373,10 +1423,11 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot
              + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout)
              + _bm_oi_trajectory_html(readout) + _bm_cvd_html(readout)
              + _bm_value_profile_html(readout, spot=(None if replay else spot)))  # live spot ≠ past futures
+    sweepwatch = _bm_sweepwatch_html(symbol, day, replay)
     if replay:
-        return head + _bm_day_readout_html(readout) + grids + cav + '</div>'
+        return head + _bm_day_readout_html(readout) + sweepwatch + grids + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
-            + grids + _bm_status_html(status, day) + cav + '</div>')
+            + sweepwatch + grids + _bm_status_html(status, day) + cav + '</div>')
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover

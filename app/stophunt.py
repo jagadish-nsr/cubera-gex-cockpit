@@ -281,3 +281,78 @@ def _score(sw: list[Sweep], placebo) -> dict:
             se = float(np.sqrt(fwd.var(ddof=1) / len(fwd) + placebo.var(ddof=1) / len(placebo)))
             d["t"] = round(float(edge / se), 2) if se else None
     return d
+
+
+# --- live sweep-watch (for the dashboard strip) --------------------------------------------------
+# The STUDY's detect() only returns sweeps with a completed forward outcome; the live strip also needs
+# the pending latest sweep. scan_live() reports the day's prior-day levels + their current sweep state.
+
+def prev_day_levels(df) -> dict | None:
+    """Prior-day high/low/close from that day's near-month raw ticks (the salient levels the study found
+    survive the placebo). None if the frame is empty / lacks a near contract."""
+    ep, px, *_ = _arrays(df)
+    if len(px) < 3:
+        return None
+    return {"high": float(px.max()), "low": float(px.min()), "close": float(px[-1])}
+
+
+def scan_live(df, prev_day: dict | None, cfg: Config | None = None, upto_epoch: float | None = None) -> dict:
+    """Live prior-day-level sweep watch (the one signal that cleared the placebo on both instruments).
+    Returns each prior-day level with distance from the latest price and, if it was swept today (fast
+    breach), when + the current state: FADED (came back through), BEYOND (still past the level), or
+    PENDING (just swept, not enough time yet). Descriptive; the study says salient-level sweeps LEAN to
+    fade — a watch item, never an auto-signal."""
+    cfg = cfg or Config()
+    ep, px, *_ = _arrays(df)
+    if len(px) < 10 or not prev_day:
+        return {"spot": (float(px[-1]) if len(px) else None), "levels": []}
+    if upto_epoch is not None:
+        m = ep <= upto_epoch
+        ep, px = ep[m], px[m]
+        if len(px) < 10:
+            return {"spot": (float(px[-1]) if len(px) else None), "levels": []}
+    now_px, now_t = float(px[-1]), float(ep[-1])
+    thr, hz = cfg.thrust_s, cfg.horizon_min * 60
+    out = []
+    for name, side in (("high", "up"), ("low", "down"), ("close", "up")):
+        lvl = prev_day.get(name)
+        if lvl is None:
+            continue
+        lvl = float(lvl)
+        up = side == "up"
+        # find the LATEST CROSSING of this level (was on-side the prior bar, breached-with-thrust now) —
+        # the actual sweep moment, not every bar that merely sits beyond after an early break.
+        beyond = (px >= lvl + cfg.margin) if up else (px <= lvl - cfg.margin)
+        swept_i = None
+        for i in range(1, len(ep)):
+            if not beyond[i] or beyond[i - 1]:
+                continue                                          # only fresh crossings into 'beyond'
+            tmask = (ep >= ep[i] - thr) & (ep <= ep[i])
+            thrust = px[i] - px[tmask][0] if tmask.sum() >= 2 else 0.0
+            if (thrust >= cfg.margin) if up else (-thrust >= cfg.margin):
+                swept_i = i
+        rec = {"name": name, "level": lvl, "dist": round(now_px - lvl, 1)}
+        if swept_i is not None:
+            t0 = ep[swept_i]
+            after = px[(ep > t0) & (ep <= now_t)]
+            back = (now_px <= lvl) if up else (now_px >= lvl)          # price returned through the level
+            if back or (len(after) and ((after <= lvl).any() if up else (after >= lvl).any())):
+                state = "faded"
+            elif now_t - t0 >= hz:
+                state = "beyond"                                       # held past the level beyond horizon
+            else:
+                state = "pending"
+            rec.update(swept=True, dir=side, swept_at=_epoch_hhmm(df, t0), state=state)
+        else:
+            rec.update(swept=False)
+        out.append(rec)
+    return {"spot": now_px, "levels": out}
+
+
+def _epoch_hhmm(df, epoch) -> str:
+    """Best-effort HH:MM for an epoch, from the raw frame's own time_ist column (avoids tz guessing)."""
+    n = df[df["roll"] == "near"] if "roll" in df.columns else df
+    hit = n[n["epoch"] == int(epoch)]
+    if len(hit) and "time_ist" in hit.columns:
+        return str(hit.iloc[0]["time_ist"])[:5]
+    return ""
