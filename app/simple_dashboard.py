@@ -314,7 +314,10 @@ def _fut_badge(label):
     return cls, ic, (label or "—").title()
 
 
-_SPOT_TICK_S = 10.0     # fast SPOT lane: one cheap index quote every 10s, off the render thread
+_SPOT_TICK_S = 4.0      # fast SPOT lane: one cheap index quote every ~4s, off the render thread. 4s
+                        # (not 2s) keeps comfortable headroom in the SHARED /marketfeed "quote" rate
+                        # bucket — spot + VIX + the blast fuel two-strike fetch all draw from it, and
+                        # 429s were measured at 1-2s spacing. True ≤2s = the WS lane, not more REST.
 _POLL_S = 3             # fragment repaint poll while auto — a pure in-memory read of the last
                         # published snapshot (NO network here), so repaints are instant / no dim.
 _FETCH_LEAD_S = 15      # background fetcher starts the pull this many s BEFORE each clock boundary
@@ -437,15 +440,15 @@ def main():
         # Controls REPAINTING, not fetching: the background lanes run either way. Defaults ON now
         # that a repaint costs ~0.26s (it defaulted off when a refresh dimmed the page for ~14s).
         auto = st.checkbox("🔴 Live updates", value=True,
-                           help="Keep the page updating in place: spot & candle every 10s, levels "
+                           help="Keep the page updating in place: spot & candle every ~4s, levels "
                                 "on the interval below. Untick to freeze the screen (the feed "
                                 "keeps running in the background).")
         auto_mins = st.selectbox("Levels refresh", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
                                  disabled=not auto,
                                  help="How often the OPTION CHAIN is pulled — walls, magnet, flip, "
-                                      "footprint, greeks. Spot and the day candle update every 10s "
+                                      "footprint, greeks. Spot and the day candle update every ~4s "
                                       "regardless of this setting.")
-        st.caption("Spot & candle 10s · levels on the interval · page repaints every 3s")
+        st.caption("Spot & candle ~4s · levels on the interval · page repaints every 3s")
         st.checkbox("📊 5-day value (composite)", value=False, key="simp_weekly",
                     help="Overlay the 5-day composite value area / POC (dotted) on the profile, "
                          "alongside the prior-day value (dashed). A longer-horizon reference map.")

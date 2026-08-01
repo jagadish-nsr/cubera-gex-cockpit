@@ -109,6 +109,74 @@ def resolve_futures(symbols=("NIFTY", "BANKNIFTY", "SENSEX"), rolls: int = 2) ->
     return out
 
 
+def _option_rows(symbol: str, master=None):
+    """Non-expired OPTIDX rows for ``symbol`` from the scrip master, with a parsed expiry date column."""
+    import pandas as pd
+    from datetime import date
+    df = master if master is not None else load_scrip_master()
+    if df is None:
+        return None
+    o = df[(df["SEM_INSTRUMENT_NAME"] == "OPTIDX")
+           & (df["SEM_TRADING_SYMBOL"].astype(str).str.startswith(f"{symbol}-"))].copy()
+    if o.empty:
+        return o
+    o["exp"] = pd.to_datetime(o["SEM_EXPIRY_DATE"], errors="coerce").dt.date
+    return o[o["exp"] >= date.today()]
+
+
+def resolve_option(symbol: str, strike: float, side: str, expiry: str | None = None, master=None):
+    """One option contract → {symbol, security_id, strike, side, expiry, lot, segment} for the Dhan WS
+    feed, or None. ``side`` is 'CE'/'PE'; ``strike`` is the absolute strike; ``expiry`` (ISO date) defaults
+    to the NEAREST non-expired expiry (the 0-DTE/weekly the gamma-blast watches). Exact strike match."""
+    o = _option_rows(symbol, master)
+    if o is None or o.empty:
+        return None
+    side = side.upper()
+    o = o[o["SEM_OPTION_TYPE"].astype(str).str.upper() == side]
+    if expiry:
+        from datetime import date as _date
+        want = expiry if isinstance(expiry, str) else expiry.isoformat()
+        o = o[o["exp"].astype(str) == want]
+    else:
+        nearest = min(o["exp"]) if len(o) else None            # nearest non-expired expiry
+        o = o[o["exp"] == nearest]
+    o = o[o["SEM_STRIKE_PRICE"].astype(float) == float(strike)]
+    if o.empty:
+        return None
+    r = o.iloc[0]
+    return {"symbol": symbol, "security_id": int(r["SEM_SMST_SECURITY_ID"]),
+            "strike": float(r["SEM_STRIKE_PRICE"]), "side": side,
+            "expiry": r["exp"].isoformat(), "lot": int(r["SEM_LOT_UNITS"]),
+            "segment": DHAN_SEGMENT.get(symbol, "NSE_FNO")}
+
+
+def resolve_blast_pair(symbol: str, spot: float, expiry: str | None = None, master=None) -> dict | None:
+    """The gamma-blast anchor pair: the ATM CALL + PUT at the listed strike NEAREST ``spot`` (the 13:45
+    ATM the blast fixes), for the nearest (or given) expiry. Returns {strike, expiry, call:{…}, put:{…}}
+    (each side the resolve_option dict) so the WS lane can subscribe exactly those two contracts. None if
+    no strikes are listed. Snapping to a real listed strike mirrors app.gammablast.atm_strike."""
+    o = _option_rows(symbol, master)
+    if o is None or o.empty:
+        return None
+    if expiry:
+        want = expiry if isinstance(expiry, str) else expiry.isoformat()
+        o = o[o["exp"].astype(str) == want]
+    else:
+        o = o[o["exp"] == min(o["exp"])]
+    if o.empty:
+        return None
+    strikes = sorted({float(k) for k in o["SEM_STRIKE_PRICE"] if k == k})
+    if not strikes:
+        return None
+    atm = min(strikes, key=lambda k: abs(k - float(spot)))     # nearest listed strike to spot
+    exp = o["exp"].iloc[0].isoformat()
+    call = resolve_option(symbol, atm, "CE", exp, master=o)
+    put = resolve_option(symbol, atm, "PE", exp, master=o)
+    if not (call and put):
+        return None
+    return {"symbol": symbol, "strike": atm, "expiry": exp, "call": call, "put": put}
+
+
 def _instrument_list(contracts: dict[int, dict]) -> list[dict]:
     return [{"ExchangeSegment": c["segment"], "SecurityId": str(c["security_id"])}
             for c in contracts.values()]
