@@ -13,14 +13,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.preempt_study import run, HORIZONS, K_DRIFT, Z_WIN, TRAIL   # noqa: E402
+from app.preempt_study import run, run_tier_b, HORIZONS, K_DRIFT, Z_WIN, TRAIL   # noqa: E402
+
+
+def _tier_b(signal):
+    r = run_tier_b(signal)
+    print(f"\nPASSIVE-preempt study · TIER B (passivity-gated) · signal = {r['signal']}")
+    print(f"  tape/participant overlap days: {r['n_overlap']}  ·  tape |flow| median = {r['tape_median_abs_cr']} cr")
+    print("  overlap-day tape flow (₹cr) & class:")
+    for d, cls in r["classes"].items():
+        print(f"    {d}  net {r['flow'][d]:>7} cr  → {cls}")
+    print("\n  gated full-history IC (≈ tier A — the gate only drops a few recent aggressive days):")
+    print(f"  {'h':>4} {'n':>5} {'partial IC':>11}   passive-tape days with an h-forward return")
+    for h in HORIZONS:
+        g = r["gated_full_history"][h]
+        print(f"  {h:>4} {g['n']:>5} {str(g['partial_ic']):>11}   {r['passive_fwd_available'][h]}")
+    print("\n  VERDICT: NOT ESTIMABLE — the passivity CONTRAST (passive vs aggressive build → forward")
+    print("  return) needs the tape-covered subset to have forward returns at h=5/10; it currently has")
+    print("  ~1/0. Deferred until the big-tape archive accrues, exactly as the pre-registration states.")
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--signal", default="fii_drift_z",
                     choices=["fii_drift_z", "writer_drift_z", "fii_drift", "writer_drift"])
+    ap.add_argument("--tier", default="a", choices=["a", "b"])
     args = ap.parse_args()
+    if args.tier == "b":
+        _tier_b(args.signal)
+        return
     r = run(args.signal)
     m = r["meta"]
     print(f"\nPASSIVE-preempt study (pre-registered, tier A) · signal = {r['signal']}")

@@ -137,5 +137,26 @@ edge at full sample) and closes the loop opened by the conviction-filter finding
 intraday prints (contrarian, decays) nor the *passive* multi-day accumulation (null) give a tradeable
 directional read. The participant-OI suite remains a descriptive "who is positioned" map, not a forecast.
 
-**Not run:** tier B (passivity-gated on the short tape-overlap window) — deferred until the big-tape
-archive accrues enough same-day coverage to make the gate meaningful; tier A already answers the headline.
+## Results — tier B (passivity-gated), run 2026-08-01 → **NOT ESTIMABLE**
+
+`app/preempt_study.py::run_tier_b`, `scripts/preempt_study.py --tier b`. Tape/participant overlap =
+**6 days** (2026-07-23 → 07-31). Same-day NIFTY tape net signed ₹ and the |flow|<median passivity split:
+
+| day | net tape flow (₹cr) | class |
+|---|---|---|
+| 2026-07-23 | +48.9 | passive |
+| 2026-07-24 | +4.9 | passive |
+| 2026-07-27 | −8.5 | passive |
+| 2026-07-29 | +132.8 | aggressive |
+| 2026-07-30 | +183.0 | aggressive |
+| 2026-07-31 | +68.4 | aggressive |
+
+- **Gated full-history IC ≈ tier A** (still null: partial IC −0.05/−0.13/−0.05/−0.13 at h=1/3/5/10) — the
+  gate removes only 3 aggressive days out of 365, so it cannot change the verdict.
+- **The passivity CONTRAST is not estimable.** The tape-covered *passive* subset has an h-forward return
+  on only **3 / 3 / 2 / 0** days at h = 1/3/5/10 — there are **zero close days after the last tape day
+  (07-31)**, so h=10 is empty and h=5 has n=2. An IC needs n≥8.
+
+**Verdict: NOT ESTIMABLE — deferred, exactly as pre-registered.** The passive-vs-aggressive build contrast
+needs the big-tape archive (accruing ~1 day/session via the scheduled collector) to reach ≳25 overlap days
+with full forward-return coverage. Re-run `--tier b` then; tier A already gives the powered headline (NULL).

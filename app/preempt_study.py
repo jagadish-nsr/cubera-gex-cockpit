@@ -207,3 +207,52 @@ def _verdict(hz: dict) -> str:
 
 def _r(x):
     return None if x is None or (isinstance(x, float) and np.isnan(x)) else round(float(x), 3)
+
+
+# --- tier B: passivity gate (short tape-overlap window) ------------------------------------------
+
+def _tape_flow_by_day() -> dict:
+    """Per-day net aggressive tape flow (₹cr): Σ direction × notional over big_money.db events; direction
+    = aggressor (prints, buy +1 / sell −1) / sign(dpx) (bursts). {} if the DB is absent."""
+    import os
+    import sqlite3
+    p = "data/journal/big_money.db"
+    if not os.path.exists(p):
+        return {}
+    ev = pd.read_sql("SELECT day,kind,side,notional,dpx FROM events WHERE symbol='NIFTY'", sqlite3.connect(p))
+    if ev.empty:
+        return {}
+    d = np.where(ev["kind"] == "print",
+                 ev["side"].map({"buy": 1.0, "sell": -1.0}).fillna(0.0),
+                 np.sign(ev["dpx"].fillna(0.0)))
+    ev["signed_cr"] = d * ev["notional"] / 1e7
+    return ev.groupby("day")["signed_cr"].sum().to_dict()
+
+
+def run_tier_b(signal_col: str = "fii_drift_z") -> dict:
+    """Passivity-gated tier B on the tape-overlap window. Reports (1) tape coverage + passive/aggressive
+    classification of overlap days, (2) the gated full-history IC (≈ tier A, since only a few days carry
+    tape), and (3) the forward-return availability that determines whether the passivity CONTRAST is even
+    estimable. Honest about power: at n≈6 overlap days it is NOT, by design (see the pre-registration)."""
+    pf, meta = build_frame()
+    flow = _tape_flow_by_day()
+    overlap = [d for d in pf["date"] if d in flow]
+    absflow = {d: abs(flow[d]) for d in overlap}
+    med = float(np.median(list(absflow.values()))) if absflow else np.nan
+    classes = {d: ("passive" if absflow[d] < med else "aggressive") for d in overlap}
+    # gate mask over the FULL history: keep tape=NA days (no coverage) OR passive tape days
+    pf["kept"] = [(d not in flow) or (abs(flow[d]) < med) for d in pf["date"]]
+    g = pf[pf["kept"]]
+    gated = {}
+    avail = {}
+    for h in HORIZONS:
+        sig, fwd, ctrl = g[signal_col], g[f"fwd{h}"], g["trail5"]
+        pic, n = partial_ic(sig, fwd, ctrl)
+        gated[h] = {"n": n, "partial_ic": _r(pic)}
+        # forward-return availability among the tape-covered PASSIVE days (the actual contrast subset)
+        pas = [d for d in overlap if classes[d] == "passive"]
+        sub = pf[pf["date"].isin(pas)]
+        avail[h] = int(sub[f"fwd{h}"].notna().sum())
+    return {"meta": meta, "signal": signal_col, "n_overlap": len(overlap),
+            "tape_median_abs_cr": _r(med), "flow": {d: _r(flow[d]) for d in overlap},
+            "classes": classes, "gated_full_history": gated, "passive_fwd_available": avail}
