@@ -98,3 +98,44 @@ to-close; day *t* signal → return over (*t*, *t+h*].
 
 ---
 <!-- RESULTS (append-only, added after running; do not edit the pre-registration above) -->
+
+## Results — tier A (ungated), run 2026-08-01
+
+`app/preempt_study.py` + `scripts/preempt_study.py`. Sample: **365 participant-OI days** (2025-02-03 →
+2026-07-31), 558 close days. Dominant option-writer cohort = **Client** (top writer 350/365 days — retail
+writing dominates, consistent with the India landmine). Config as registered (k=3d drift, 60d z-window, 5d
+trailing-return control, block bootstrap n=2000, circular-shift placebo n=2000).
+
+**Primary — FII net-futures drift (`fii_drift_z`):**
+
+| h | n | raw IC | partial IC | boot 95% CI | placebo 95% | CI≠0 | >placebo |
+|---|---|---|---|---|---|---|---|
+| 1 | 331 | −0.064 | −0.042 | [−0.146, 0.063] | [−0.098, 0.101] | no | no |
+| 3 | 329 | −0.119 | −0.129 | [−0.251, 0.005] | [−0.148, 0.147] | no | no |
+| 5 | 328 | −0.068 | −0.053 | [−0.163, 0.101] | [−0.168, 0.170] | no | no |
+| 10 | 325 | −0.168 | −0.125 | [−0.278, 0.029] | [−0.237, 0.174] | no | no |
+
+**Secondary — dominant-writer (Client) net-writing drift (`writer_drift_z`):**
+
+| h | n | raw IC | partial IC | boot 95% CI | placebo 95% | CI≠0 | >placebo |
+|---|---|---|---|---|---|---|---|
+| 1 | 331 | −0.047 | −0.053 | [−0.145, 0.052] | [−0.095, 0.098] | no | no |
+| 3 | 329 | +0.072 | +0.072 | [−0.049, 0.180] | [−0.109, 0.126] | no | no |
+| 5 | 328 | +0.033 | +0.036 | [−0.090, 0.143] | [−0.090, 0.088] | no | no |
+| 10 | 325 | +0.028 | +0.023 | [−0.098, 0.137] | [−0.096, 0.086] | no | no |
+
+### Verdict: **NULL** (both signals, pre-registered rule)
+No horizon has a partial-IC CI that excludes 0 or beats the placebo band; the CONFIRM condition
+(partial IC > 0, CI≠0, beats placebo at **both** h=5 and h=10) is not met, and no KILL (no CI-excluded
+negative at h≥5). The two signals even lean opposite ways (FII drift mildly negative, writer drift mildly
+positive), both inside noise.
+
+**Interpretation.** At full, powered sample the **passive-preempt hypothesis does not hold** for
+participant-OI drift — the days-to-weeks positioning drift carries no forward-return edge once trailing-
+return momentum is removed. This matches the [[research-arc-conclusion]] default (no clean directional
+edge at full sample) and closes the loop opened by the conviction-filter finding: neither the *aggressive*
+intraday prints (contrarian, decays) nor the *passive* multi-day accumulation (null) give a tradeable
+directional read. The participant-OI suite remains a descriptive "who is positioned" map, not a forecast.
+
+**Not run:** tier B (passivity-gated on the short tape-overlap window) — deferred until the big-tape
+archive accrues enough same-day coverage to make the gate meaningful; tier A already answers the headline.
