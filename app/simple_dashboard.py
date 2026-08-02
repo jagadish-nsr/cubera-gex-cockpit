@@ -623,12 +623,22 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
             st.session_state["simp_asof"] = pub["as_of"]
             st.session_state["simp_err"] = pub.get("err")
         elif st.session_state.get("simp_data") is None:
-            _sync_fetch(symbol, use_demo)
+            # cold start: the background lane hasn't published yet → one blocking pull. Show a spinner
+            # so the first paint reads "pulling…" instead of looking blank/broken for ~15s.
+            with st.spinner(f"Pulling the {config.get_index(symbol).label} option chain — "
+                            f"first load takes ~15s…"):
+                _sync_fetch(symbol, use_demo)
     elif refresh or st.session_state.get("simp_data") is None:
-        _sync_fetch(symbol, use_demo)
+        with st.spinner("Loading demo data…" if use_demo else f"Pulling {symbol}…"):
+            _sync_fetch(symbol, use_demo)
     data = st.session_state.get("simp_data")
     if data is None:
-        st.error(f"Could not load data. {st.session_state.get('simp_err','')}")
+        err = st.session_state.get("simp_err", "")
+        st.warning(f"⏳ Waiting for the first {config.get_index(symbol).label} chain pull… "
+                   f"{'(' + str(err) + ')' if err else 'the feed usually lands within ~15s — this page '
+                   'refreshes itself.'}")
+        st.caption("Still blank after ~30s? Check the Dhan token in the sidebar, or tick "
+                   "**Demo data (offline)** to verify the view itself is healthy.")
         st.stop()
 
     L = data.levels
