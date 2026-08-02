@@ -23,22 +23,28 @@ def load_pair(symbol: str, day: str):
     return (call if len(call) else None), (put if len(put) else None)
 
 
+_FFILL = ("call_ltp", "call_bid", "call_ask", "call_oi", "call_vol",
+          "put_ltp", "put_bid", "put_ask", "put_oi", "put_vol")
+
+
 def align(call, put):
     """Merge the two async streams onto ONE timeline (union of tick epochs, each side forward-filled to
     its last known quote). Returns a frame: epoch, time_ist, call_ltp, put_ltp, call_bid/ask, put_bid/ask,
-    call_oi, put_oi, diff (=call_ltp−put_ltp), implied_spot (=strike+diff). None until both sides have a tick."""
+    call_oi, put_oi, call_vol, put_vol, diff (=call_ltp−put_ltp), implied_spot (=strike+diff). None until
+    both sides have a tick."""
     import pandas as pd
     if call is None or put is None or call.empty or put.empty:
         return None
     strike = float(call["strike"].iloc[0])
 
     def _side(df, tag):
-        cols = {"ltp": f"{tag}_ltp", "bid": f"{tag}_bid", "ask": f"{tag}_ask", "oi": f"{tag}_oi"}
+        cols = {"ltp": f"{tag}_ltp", "bid": f"{tag}_bid", "ask": f"{tag}_ask",
+                "oi": f"{tag}_oi", "volume": f"{tag}_vol"}
         return df[["epoch", "time_ist", *cols]].rename(columns=cols)
 
     c, p = _side(call, "call"), _side(put, "put")
     g = pd.merge_ordered(c, p.drop(columns=["time_ist"]), on="epoch", how="outer").sort_values("epoch")
-    for col in ("call_ltp", "call_bid", "call_ask", "call_oi", "put_ltp", "put_bid", "put_ask", "put_oi"):
+    for col in _FFILL:
         g[col] = g[col].ffill()
     g["time_ist"] = g["time_ist"].ffill().bfill()
     g = g.dropna(subset=["call_ltp", "put_ltp"]).reset_index(drop=True)   # both sides seen
@@ -48,6 +54,63 @@ def align(call, put):
     g["diff"] = g["call_ltp"] - g["put_ltp"]               # ≈ spot − K
     g["implied_spot"] = strike + g["diff"]                 # parity-reconstructed spot
     return g
+
+
+def _delta(g, col):
+    """(first, last, Δ) of a forward-filled column over the frame, or (None, None, None)."""
+    s = g[col].dropna()
+    if not len(s):
+        return None, None, None
+    f, l = float(s.iloc[0]), float(s.iloc[-1])
+    return f, l, l - f
+
+
+def deltas(aligned) -> dict:
+    """OI and cumulative-VOLUME change per side over the aligned window (Δvol needs the cumulative day
+    volume the feed carries). {call_oi:[f,l,Δ], put_oi, call_vol, put_vol}. {} if empty."""
+    if aligned is None or aligned.empty:
+        return {}
+    return {k: list(_delta(aligned, k)) for k in ("call_oi", "put_oi", "call_vol", "put_vol")}
+
+
+def _crossed_snapshots(aligned, from_epoch=None):
+    """The aligned rows (optionally from ``from_epoch`` onward) as the {call_oi, put_oi, call_ltp,
+    put_ltp} snapshot list app.gammablast.blast_score consumes — so the TRUE score here is computed by
+    the SAME canonical grader as the live dashboard (never drifts)."""
+    g = aligned if from_epoch is None else aligned[aligned["epoch"] >= from_epoch]
+    return [{"call_oi": r.call_oi, "put_oi": r.put_oi, "call_ltp": r.call_ltp, "put_ltp": r.put_ltp}
+            for r in g.itertuples()]
+
+
+def true_score(aligned, direction: str, from_epoch=None) -> dict | None:
+    """TRUE-vs-Fake blast score over the (post-cross) window, via app.gammablast.blast_score — reuses the
+    exact ITM-side-writers-covering + premium-expansion grading. ``ahead`` is None here (only the anchor
+    strike is captured, not the next wall), so the wall/path component assumes a clear path — the ignition
+    (OI covering) + thrust (premium) components are the real read. Also attaches the ITM-side ΔOI/Δvol."""
+    from app.gammablast import blast_score
+    if aligned is None or aligned.empty or direction not in ("up", "down"):
+        return None
+    sc = blast_score(direction, _crossed_snapshots(aligned, from_epoch))
+    if sc is None:
+        return None
+    win = aligned if from_epoch is None else aligned[aligned["epoch"] >= from_epoch]
+    itm = sc["itm_side"]                                   # 'call' | 'put'
+    sc["itm_doi"] = _delta(win, f"{itm}_oi")[2]            # ITM-side OI change over the window (fuel)
+    sc["itm_dvol"] = _delta(win, f"{itm}_vol")[2]         # ITM-side volume traded over the window
+    return sc
+
+
+def graded_crossovers(aligned) -> list[dict]:
+    """Each reconstructed crossover with its TRUE score, graded over the slice from that cross to the end
+    of capture (staying-power window). Empty if none."""
+    out = []
+    for x in crossovers(aligned):
+        sc = true_score(aligned, x["direction"], from_epoch=x["epoch"])
+        out.append({**x, "score": (sc or {}).get("score"), "grade": (sc or {}).get("grade"),
+                    "itm_side": (sc or {}).get("itm_side"), "cover_frac": (sc or {}).get("cover_frac"),
+                    "prem_exp": (sc or {}).get("prem_exp"), "itm_doi": (sc or {}).get("itm_doi"),
+                    "itm_dvol": (sc or {}).get("itm_dvol")})
+    return out
 
 
 def crossovers(aligned, tol: float = 0.0):
@@ -72,7 +135,8 @@ def crossovers(aligned, tol: float = 0.0):
 
 def summary(symbol: str, day: str) -> dict | None:
     """One-shot read of a captured day: strike/expiry, per-side tick counts, premium ranges, median
-    spread, OI open→close, and the reconstructed crossovers. None if nothing captured."""
+    spread, OI + cumulative-VOLUME deltas per side, the reconstructed crossovers WITH their TRUE score,
+    and — if there's a cross — the day's headline blast grade. None if nothing captured."""
     call, put = load_pair(symbol, day)
     if call is None or put is None:
         return None
@@ -86,19 +150,23 @@ def summary(symbol: str, day: str) -> dict | None:
         s = s[s > 0]
         return round(float(s.median()), 2) if len(s) else None
 
-    def _oi(df):
-        o = df["oi"].dropna()
-        return (float(o.iloc[0]), float(o.iloc[-1])) if len(o) else (None, None)
-
-    xs = crossovers(g)
-    return {
+    dl = deltas(g)
+    gx = graded_crossovers(g)
+    out = {
         "symbol": symbol, "day": day, "strike": strike, "expiry": str(call["expiry"].iloc[0]),
         "n_call": int(len(call)), "n_put": int(len(put)),
         "span": [str(g["time_ist"].iloc[0]), str(g["time_ist"].iloc[-1])],
         "call_ltp_range": [round(float(call["ltp"].min()), 2), round(float(call["ltp"].max()), 2)],
         "put_ltp_range": [round(float(put["ltp"].min()), 2), round(float(put["ltp"].max()), 2)],
         "call_spread_med": _med_spread(call), "put_spread_med": _med_spread(put),
-        "call_oi": _oi(call), "put_oi": _oi(put),
+        "call_oi": dl.get("call_oi", [None, None, None])[:2],   # (first, last) — back-compat shape
+        "put_oi": dl.get("put_oi", [None, None, None])[:2],
+        "deltas": dl,                                            # {call_oi/put_oi/call_vol/put_vol: [f,l,Δ]}
         "implied_spot_range": [round(float(g["implied_spot"].min()), 1),
                                round(float(g["implied_spot"].max()), 1)],
-        "n_crossovers": len(xs), "crossovers": xs}
+        "n_crossovers": len(gx), "crossovers": gx}
+    if gx:                                                       # headline = the LAST cross's grade
+        last = gx[-1]
+        out["blast_grade"] = last.get("grade")
+        out["blast_score"] = last.get("score")
+    return out
