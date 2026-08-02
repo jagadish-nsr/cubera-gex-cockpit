@@ -790,7 +790,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
         H.append(_blast_hero(data, L, ist, spot_live, prof))      # REST/chain lane (stashes its read)
-        H.append(_blast_ws_panel_html(data, ist))                 # WS/tick lane + WS-vs-REST Δ (P1)
+        H.append(_blast_ws_panel_html(data, ist, is_expiry))      # WS/tick lane + WS-vs-REST Δ (P1/P1b)
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -821,6 +821,25 @@ def _get_big_money_collector():
     headless collector (run_big_money_collector.py), so the two never double-write the raw CSV."""
     from app.big_money_live import Collector
     return Collector(save_raw=False).start()
+
+
+@st.cache_resource(show_spinner=False)
+def _get_blast_collector(symbol: str, day: str):
+    """One WS blast-tick collector per (symbol, day) for this server (cache_resource, so multiple browser
+    sessions never double-start it). Fetches spot, resolves the anchor+walls (freezing the ATM at first-
+    call time, i.e. ~13:45), and starts capturing. Its write-lock makes it DEFER to the scheduled driver
+    when that already owns today's archive — so the two never double-write. Raises (not cached → retried)
+    on a transient spot/resolve failure."""
+    from data.dhan_live import fetch_index_ohlc
+    from app.blast_ticks import resolve_and_capture
+    d = fetch_index_ohlc(symbol)
+    sp = float(d["ltp"]) if d and d.get("ltp") is not None else None
+    if sp is None:
+        raise RuntimeError("no spot for the blast anchor")
+    col = resolve_and_capture(symbol, sp)
+    if col is None:
+        raise RuntimeError("could not resolve the blast set")
+    return col
 
 
 def _bm_status_html(status, day: str) -> str:
@@ -1653,20 +1672,42 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
       </div>{chart}</div>'''
 
 
-def _blast_ws_panel_html(data, ist, replay=None):
+def _blast_ws_panel_html(data, ist, is_expiry=False, replay=None):
     """P1 dual-lane: the gamma-blast read from the WS TICK lane (the 4 fixed contracts captured by
     app/blast_ticks.py), shown BESIDE the REST/chain hero with a Δ strip, so the two TRUE scores can be
-    compared live. Reads the tick archive (whoever runs the collector writes it); '' if nothing captured.
-    On non-expiry days the score is calibration-meaningless — this validates the plumbing + the delta."""
+    compared live. On a real expiry day ≥13:45 it AUTO-STARTS the WS collector (deferring to the scheduled
+    driver via the archive lock), reads the tick archive, and logs the WS-vs-REST comparison per expiry.
+    '' if nothing captured. On non-expiry days the score is calibration-meaningless — plumbing + Δ only."""
     try:
         from app.blast_ticks_analysis import hero_read
     except Exception:  # noqa: BLE001
         return ""
+    symbol = getattr(data, "symbol", "NIFTY")
     day = replay["day"] if replay else ist.strftime("%Y-%m-%d")
-    r = hero_read(getattr(data, "symbol", "NIFTY"), day)
-    if r is None:
-        return ""                                       # no WS capture today → don't show the lane
+    # auto-start the WS collector: live Dhan, real expiry, ≥13:45, token present, and not already owned
+    # by the scheduled driver (archive lock) — else read whatever archive exists.
+    status = None
+    if not replay and is_expiry and (ist.hour * 60 + ist.minute) >= 13 * 60 + 45:
+        try:
+            from data.dhan import token_status
+            from app.blast_ticks import archive_locked_fresh
+            src = str(getattr(data, "source", "")).lower()
+            if src.startswith("dhan") and token_status().get("present") \
+                    and not archive_locked_fresh(symbol, day):
+                status = _get_blast_collector(symbol, day).status
+        except Exception:  # noqa: BLE001 - the WS lane is convenience, never break the dashboard
+            status = None
+    r = hero_read(symbol, day)
+    if r is None:                                       # no ticks yet
+        if status is not None:
+            note = ("read-only (scheduled driver owns the archive)" if status.read_only
+                    else ("live — warming up" if status.connected else (status.error or "connecting…")))
+            return ('<div class="card" style="margin-top:10px"><span class="eyebrow">⚡ Gamma-blast · WS '
+                    f'(tick)</span><p class="instruct">Tick lane {note}. Score appears once ticks land and '
+                    'spot crosses the anchor.</p></div>')
+        return ""                                       # nothing captured, nothing starting → hide the lane
     rest = st.session_state.get("simp_blast_rest") or {}
+    _blast_compare_log(day, symbol, r, rest, ist)       # persist the WS-vs-REST comparison (throttled)
     head = (f'<div style="display:flex;justify-content:space-between">'
             f'<span class="eyebrow">⚡ Gamma-blast · WS (tick) · {r["strike"]:,.0f}</span>'
             f'<span class="subnote mono">{r["n_call"]}C/{r["n_put"]}P ticks</span></div>')
@@ -1688,6 +1729,23 @@ def _blast_ws_panel_html(data, ist, replay=None):
              f'<b class="mono">{f(cov*100,0) if cov is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>'
              f'<div><small>Wall ahead</small><b class="mono">{wall_txt}</b><em>cap overhead</em></div></div>')
     return f'<div class="card" style="margin-top:10px">{head}{meter}{_blast_delta_html(r, rest)}</div>'
+
+
+def _blast_compare_log(day, symbol, ws, rest, ist):
+    """Upsert the per-expiry WS-vs-REST comparison journal (P2 longitudinal data), throttled to ~20s so a
+    3s repaint doesn't hammer the disk. Only once a cross exists on at least one lane."""
+    if not (ws.get("cross") or (rest or {}).get("cross")):
+        return
+    import time as _t
+    last = st.session_state.get("_blast_cmp_at", 0.0)
+    if _t.time() - last < 20:
+        return
+    try:
+        from app import blast_compare
+        blast_compare.log(day, symbol, ws, rest, ist.strftime("%H:%M:%S"))
+        st.session_state["_blast_cmp_at"] = _t.time()
+    except Exception:  # noqa: BLE001 - logging must never break the render
+        pass
 
 
 def _blast_delta_html(ws, rest):

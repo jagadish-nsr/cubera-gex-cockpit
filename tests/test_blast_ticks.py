@@ -70,3 +70,18 @@ def test_empty_collector_is_safe():
     col = BlastTickCollector({})
     col.run()                                                  # no contracts → returns cleanly, no throw
     assert col.status.running is False and "no blast pair" in (col.status.error or "")
+
+
+def test_write_lock_single_owner_and_stale_takeover(tmp_path, monkeypatch):
+    import os
+    import time
+    import app.blast_ticks as bt
+    monkeypatch.setattr(bt, "RAW_DIR", tmp_path)
+    assert bt.archive_locked_fresh("NIFTY", "2026-08-04") is False
+    assert bt._acquire_lock("NIFTY", "2026-08-04") is True      # first writer claims it
+    assert bt.archive_locked_fresh("NIFTY", "2026-08-04") is True
+    assert bt._acquire_lock("NIFTY", "2026-08-04") is False     # a second writer is blocked (fresh lock)
+    old = time.time() - 1000                                    # age the lock past the TTL
+    os.utime(bt._lock_path("NIFTY", "2026-08-04"), (old, old))
+    assert bt.archive_locked_fresh("NIFTY", "2026-08-04") is False
+    assert bt._acquire_lock("NIFTY", "2026-08-04") is True      # a dead writer's stale lock is takeable
