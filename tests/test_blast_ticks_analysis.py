@@ -6,7 +6,7 @@ import pandas as pd
 from app.blast_ticks import _COLS
 import app.blast_ticks as bt
 from app.blast_ticks_analysis import (load_pair, load_walls, align, crossovers, deltas, true_score,
-                                      graded_crossovers, summary)
+                                      graded_crossovers, summary, hero_read)
 
 
 def _row(epoch, side, ltp, oi, vol, strike=24000.0, role="anchor"):
@@ -101,7 +101,16 @@ def test_intact_wall_caps_the_score(tmp_path, monkeypatch):
     assert s["crossovers"][0]["has_wall"] is True
 
 
+def test_hero_read_distils_latest_cross(tmp_path, monkeypatch):
+    _write(tmp_path, monkeypatch)                                 # up-cross, covering+expansion = TRUE
+    r = hero_read("NIFTY", "2026-08-04")
+    assert r["strike"] == 24000.0 and r["cross"] is True and r["direction"] == "up"
+    assert r["score"] >= 60 and "TRUE" in r["grade"] and r["n_call"] == 6 and r["n_put"] == 6
+    assert r["cover_frac"] < 0 and r["cross_time"] is not None
+
+
 def test_absent_day_is_none(tmp_path, monkeypatch):
     monkeypatch.setattr(bt, "RAW_DIR", tmp_path)
     assert summary("NIFTY", "2099-01-01") is None
     assert load_pair("NIFTY", "2099-01-01") == (None, None)
+    assert hero_read("NIFTY", "2099-01-01") is None

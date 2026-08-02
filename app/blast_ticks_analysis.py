@@ -211,3 +211,21 @@ def summary(symbol: str, day: str) -> dict | None:
         out["blast_grade"] = last.get("grade")
         out["blast_score"] = last.get("score")
     return out
+
+
+def hero_read(symbol: str, day: str) -> dict | None:
+    """Distil the captured WS day into the fields the dashboard's WS blast panel + the REST-vs-WS delta
+    need: anchor/expiry, tick counts, and the LATEST crossover's score/grade/components/timing. ``cross``
+    is False (no cross yet) but the panel still shows the tick lane is live. None if nothing captured."""
+    s = summary(symbol, day)
+    if not s:
+        return None
+    xs = s.get("crossovers") or []
+    last = xs[-1] if xs else {}
+    return {
+        "symbol": symbol, "day": day, "strike": s["strike"], "expiry": s["expiry"],
+        "n_call": s["n_call"], "n_put": s["n_put"], "span": s["span"], "walls": s["walls"],
+        "cross": bool(xs), "cross_time": last.get("time_ist"), "direction": last.get("direction"),
+        "score": last.get("score"), "grade": last.get("grade"),
+        "cover_frac": last.get("cover_frac"), "wall_ratio": last.get("wall_ratio"),
+        "has_wall": last.get("has_wall"), "implied_spot": last.get("implied_spot")}
