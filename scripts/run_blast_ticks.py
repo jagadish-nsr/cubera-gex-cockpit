@@ -26,8 +26,8 @@ except (AttributeError, ValueError):
     pass
 
 from app.big_money import IST                              # noqa: E402
-from app.blast_ticks import BlastTickCollector, pair_contracts   # noqa: E402
-from data.dhan_feed import resolve_blast_pair              # noqa: E402
+from app.blast_ticks import BlastTickCollector, set_contracts   # noqa: E402
+from data.dhan_feed import resolve_blast_set               # noqa: E402
 from data.dhan_live import fetch_index_ohlc                # noqa: E402
 
 CLOSE_MIN = 15 * 60 + 30
@@ -91,16 +91,18 @@ def main() -> None:
         sp = _spot(sym)
         if sp is None:
             _print(f"  {sym}: no spot — skipping."); continue
-        pair = resolve_blast_pair(sym, sp)
-        if not pair:
-            _print(f"  {sym}: could not resolve an ATM pair — skipping."); continue
-        if not args.any_day and pair["expiry"] != today:
-            _print(f"  {sym}: not an expiry day (nearest expiry {pair['expiry']}) — skipping. "
+        bset = resolve_blast_set(sym, sp)
+        if not bset:
+            _print(f"  {sym}: could not resolve an ATM set — skipping."); continue
+        if not args.any_day and bset["expiry"] != today:
+            _print(f"  {sym}: not an expiry day (nearest expiry {bset['expiry']}) — skipping. "
                    f"Use --any-day to force."); continue
-        col = BlastTickCollector(pair_contracts(pair)).start()
+        col = BlastTickCollector(set_contracts(bset)).start()
         collectors.append((sym, col))
-        _print(f"  {sym}: capturing {pair['strike']:.0f} CE/PE exp {pair['expiry']} "
-               f"(spot {sp:.1f}, ids {pair['call']['security_id']}/{pair['put']['security_id']})")
+        wu = bset["wall_up"]["strike"] if bset.get("wall_up") else "—"
+        wd = bset["wall_dn"]["strike"] if bset.get("wall_dn") else "—"
+        _print(f"  {sym}: capturing anchor {bset['strike']:.0f} CE/PE + walls (up {wu} CE / dn {wd} PE) "
+               f"exp {bset['expiry']} (spot {sp:.1f})")
 
     if not collectors:
         _print("Nothing to capture (no expiry symbol / no spot / no pair)."); return

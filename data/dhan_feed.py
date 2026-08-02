@@ -177,6 +177,37 @@ def resolve_blast_pair(symbol: str, spot: float, expiry: str | None = None, mast
     return {"symbol": symbol, "strike": atm, "expiry": exp, "call": call, "put": put}
 
 
+def resolve_blast_set(symbol: str, spot: float, expiry: str | None = None, master=None) -> dict | None:
+    """The blast anchor pair PLUS the two continuation WALLS: the CALL at the next strike ABOVE (the wall
+    an up-cross must overrun) and the PUT at the next strike BELOW (the down-cross wall). Since the cross
+    direction isn't known at 13:45, both are captured; the scorer uses whichever matches the realised
+    direction. Returns {symbol, strike, step, expiry, call, put, wall_up, wall_dn} — each leg a
+    resolve_option dict tagged with ``role`` (anchor/wall_up/wall_dn). wall_* is None at a grid edge."""
+    pair = resolve_blast_pair(symbol, spot, expiry, master)
+    if not pair:
+        return None
+    o = _option_rows(symbol, master)
+    exp = pair["expiry"]
+    o = o[o["exp"].astype(str) == exp]
+    strikes = sorted({float(k) for k in o["SEM_STRIKE_PRICE"] if k == k})
+    atm = pair["strike"]
+    i = strikes.index(atm)
+    up_k = strikes[i + 1] if i + 1 < len(strikes) else None
+    dn_k = strikes[i - 1] if i - 1 >= 0 else None
+    step = (min((strikes[j + 1] - strikes[j] for j in range(len(strikes) - 1)))
+            if len(strikes) > 1 else None)
+    call = {**pair["call"], "role": "anchor"}
+    put = {**pair["put"], "role": "anchor"}
+    wall_up = resolve_option(symbol, up_k, "CE", exp, master=o) if up_k is not None else None
+    wall_dn = resolve_option(symbol, dn_k, "PE", exp, master=o) if dn_k is not None else None
+    if wall_up:
+        wall_up["role"] = "wall_up"
+    if wall_dn:
+        wall_dn["role"] = "wall_dn"
+    return {"symbol": symbol, "strike": atm, "step": step, "expiry": exp,
+            "call": call, "put": put, "wall_up": wall_up, "wall_dn": wall_dn}
+
+
 def _instrument_list(contracts: dict[int, dict]) -> list[dict]:
     return [{"ExchangeSegment": c["segment"], "SecurityId": str(c["security_id"])}
             for c in contracts.values()]

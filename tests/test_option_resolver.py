@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from data.dhan_feed import resolve_option, resolve_blast_pair
+from data.dhan_feed import resolve_option, resolve_blast_pair, resolve_blast_set
 
 
 def _master():
@@ -65,3 +65,19 @@ def test_resolve_blast_pair_snaps_to_nearest_strike():
 def test_resolve_blast_pair_empty_master():
     assert resolve_blast_pair("NIFTY", 24000, master=pd.DataFrame(
         {"SEM_INSTRUMENT_NAME": [], "SEM_TRADING_SYMBOL": []})) is None
+
+
+def test_resolve_blast_set_anchor_plus_walls():
+    m = _master()                                             # strikes 23900/23950/24000/24050, step 50
+    s = resolve_blast_set("NIFTY", spot=24012, master=m)      # anchor 24000
+    assert s["strike"] == 24000.0 and s["step"] == 50.0
+    assert s["call"]["role"] == "anchor" and s["put"]["role"] == "anchor"
+    # up-wall = CALL at the next strike ABOVE (24050); dn-wall = PUT at the next BELOW (23950)
+    assert s["wall_up"]["strike"] == 24050.0 and s["wall_up"]["side"] == "CE" and s["wall_up"]["role"] == "wall_up"
+    assert s["wall_dn"]["strike"] == 23950.0 and s["wall_dn"]["side"] == "PE" and s["wall_dn"]["role"] == "wall_dn"
+
+
+def test_resolve_blast_set_grid_edge_wall_none():
+    m = _master()
+    top = resolve_blast_set("NIFTY", spot=24050, master=m)    # anchor at the TOP strike → no up-wall
+    assert top["strike"] == 24050.0 and top["wall_up"] is None and top["wall_dn"]["strike"] == 24000.0

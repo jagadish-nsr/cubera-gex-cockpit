@@ -18,20 +18,20 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_blast_pair
+from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_blast_pair, resolve_blast_set
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "journal" / "blast_ticks"          # gitignored (under data/journal/)
 IST = timezone(timedelta(hours=5, minutes=30))
 _IST_OFFSET_S = int(timedelta(hours=5, minutes=30).total_seconds())
 _FLUSH_ROWS, _FLUSH_SECS = 200, 5.0
-_COLS = ["epoch", "time_ist", "symbol", "side", "strike", "expiry", "code",
+_COLS = ["epoch", "time_ist", "symbol", "side", "strike", "role", "expiry", "code",
          "ltp", "ltq", "atp", "volume", "oi", "bid", "ask"]
 
 
 def pair_contracts(pair: dict) -> dict[int, dict]:
     """resolve_blast_pair(...) → {security_id: contract} keyed for connect() + tick lookup. Each contract
-    carries symbol/side/strike/expiry/segment so an archived tick is self-describing. {} if pair is None."""
+    carries symbol/side/strike/role/expiry/segment so an archived tick is self-describing. {} if None."""
     if not pair:
         return {}
     out = {}
@@ -40,7 +40,24 @@ def pair_contracts(pair: dict) -> dict[int, dict]:
         if c:
             out[int(c["security_id"])] = {
                 "symbol": pair["symbol"], "side": c["side"], "strike": pair["strike"],
-                "expiry": pair["expiry"], "segment": c["segment"], "security_id": int(c["security_id"])}
+                "role": c.get("role", "anchor"), "expiry": pair["expiry"], "segment": c["segment"],
+                "security_id": int(c["security_id"])}
+    return out
+
+
+def set_contracts(bset: dict) -> dict[int, dict]:
+    """resolve_blast_set(...) → {security_id: contract} for the anchor pair + the two walls (each at its
+    OWN strike). Skips a wall that's None (grid edge). {} if the set is None."""
+    if not bset:
+        return {}
+    out = {}
+    for leg in ("call", "put", "wall_up", "wall_dn"):
+        c = bset.get(leg)
+        if c:
+            out[int(c["security_id"])] = {
+                "symbol": bset["symbol"], "side": c["side"], "strike": c["strike"],
+                "role": c.get("role", "anchor"), "expiry": bset["expiry"], "segment": c["segment"],
+                "security_id": int(c["security_id"])}
     return out
 
 
@@ -48,9 +65,9 @@ def tick_row(tick, c: dict, epoch: int) -> dict:
     """One archive row from a decoded Tick + its contract meta."""
     dt = datetime.fromtimestamp(epoch, IST)
     return {"epoch": epoch, "time_ist": dt.strftime("%H:%M:%S"), "symbol": c["symbol"],
-            "side": c["side"], "strike": c["strike"], "expiry": c["expiry"], "code": tick.code,
-            "ltp": tick.ltp, "ltq": tick.ltq, "atp": tick.atp, "volume": tick.volume,
-            "oi": tick.oi, "bid": tick.bid, "ask": tick.ask}
+            "side": c["side"], "strike": c["strike"], "role": c.get("role", "anchor"),
+            "expiry": c["expiry"], "code": tick.code, "ltp": tick.ltp, "ltq": tick.ltq,
+            "atp": tick.atp, "volume": tick.volume, "oi": tick.oi, "bid": tick.bid, "ask": tick.ask}
 
 
 @dataclass
@@ -169,10 +186,14 @@ class BlastTickCollector:
         self.status.running = False
 
 
-def resolve_and_capture(symbol: str, spot: float, expiry: str | None = None) -> BlastTickCollector | None:
-    """Convenience: resolve the ATM blast pair at ``spot`` and start capturing. None if it can't resolve."""
-    pair = resolve_blast_pair(symbol, spot, expiry)
-    contracts = pair_contracts(pair)
+def resolve_and_capture(symbol: str, spot: float, expiry: str | None = None,
+                        walls: bool = True) -> BlastTickCollector | None:
+    """Convenience: resolve the ATM anchor (+ the two continuation walls when ``walls``) at ``spot`` and
+    start capturing. None if it can't resolve."""
+    if walls:
+        contracts = set_contracts(resolve_blast_set(symbol, spot, expiry))
+    else:
+        contracts = pair_contracts(resolve_blast_pair(symbol, spot, expiry))
     if not contracts:
         return None
     return BlastTickCollector(contracts).start()

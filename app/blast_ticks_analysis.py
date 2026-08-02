@@ -11,16 +11,38 @@ against the old ~10s-spot cross. Sign-free (parity only, no dealer-sign); decisi
 from __future__ import annotations
 
 
+def _anchor_only(df):
+    """Rows for the ANCHOR strike only. Uses the ``role`` column when present (walls are role wall_up/
+    wall_dn); falls back for legacy pair-only captures (no role) to the strike that has BOTH CE and PE."""
+    if "role" in df.columns and df["role"].notna().any():
+        return df[df["role"] == "anchor"]
+    both = [k for k, g in df.groupby("strike") if set(g["side"]) >= {"CE", "PE"}]
+    return df[df["strike"].isin(both)]
+
+
 def load_pair(symbol: str, day: str):
-    """(call_df, put_df) captured tick frames for a symbol/day, epoch-sorted, or (None, None)."""
+    """(call_df, put_df) for the ANCHOR strike, epoch-sorted, or (None, None). Wall rows are excluded."""
     from app.blast_ticks import load_blast_ticks
     df = load_blast_ticks(symbol, day)
     if df is None or getattr(df, "empty", True):
         return None, None
-    df = df.sort_values("epoch")
-    call = df[df["side"] == "CE"].reset_index(drop=True)
-    put = df[df["side"] == "PE"].reset_index(drop=True)
+    a = _anchor_only(df.sort_values("epoch"))
+    call = a[a["side"] == "CE"].reset_index(drop=True)
+    put = a[a["side"] == "PE"].reset_index(drop=True)
     return (call if len(call) else None), (put if len(put) else None)
+
+
+def load_walls(symbol: str, day: str):
+    """(wall_up_call_df, wall_dn_put_df) — the continuation-wall contracts (CALL above / PUT below the
+    anchor), epoch-sorted, or (None, None) if not captured (legacy pair-only day / grid edge)."""
+    from app.blast_ticks import load_blast_ticks
+    df = load_blast_ticks(symbol, day)
+    if df is None or getattr(df, "empty", True) or "role" not in df.columns:
+        return None, None
+    df = df.sort_values("epoch")
+    up = df[df["role"] == "wall_up"].reset_index(drop=True)
+    dn = df[df["role"] == "wall_dn"].reset_index(drop=True)
+    return (up if len(up) else None), (dn if len(dn) else None)
 
 
 _FFILL = ("call_ltp", "call_bid", "call_ask", "call_oi", "call_vol",
@@ -82,34 +104,50 @@ def _crossed_snapshots(aligned, from_epoch=None):
             for r in g.itertuples()]
 
 
-def true_score(aligned, direction: str, from_epoch=None) -> dict | None:
+def _wall_ahead(wall_df, side: str, from_epoch=None):
+    """The continuation-wall contract's post-cross snapshots as the {side}_oi/{side}_ltp list blast_score's
+    ``ahead`` consumes — so its OI (size + drift) feeds the path/cap component. None if no wall captured."""
+    if wall_df is None or getattr(wall_df, "empty", True):
+        return None
+    g = wall_df if from_epoch is None else wall_df[wall_df["epoch"] >= from_epoch]
+    if g.empty:
+        return None
+    return [{f"{side}_oi": r.oi, f"{side}_ltp": r.ltp} for r in g.itertuples()]
+
+
+def true_score(aligned, direction: str, from_epoch=None, wall_up=None, wall_dn=None) -> dict | None:
     """TRUE-vs-Fake blast score over the (post-cross) window, via app.gammablast.blast_score — reuses the
-    exact ITM-side-writers-covering + premium-expansion grading. ``ahead`` is None here (only the anchor
-    strike is captured, not the next wall), so the wall/path component assumes a clear path — the ignition
-    (OI covering) + thrust (premium) components are the real read. Also attaches the ITM-side ΔOI/Δvol."""
+    exact ITM-writers-covering (ignition) + premium-expansion (thrust) + wall-ahead (path) grading. The
+    wall is the CALL above (up-cross) or PUT below (down-cross); if not captured, path assumes a clear road
+    and the score leans on ignition+thrust. Also attaches the ITM-side ΔOI/Δvol."""
     from app.gammablast import blast_score
     if aligned is None or aligned.empty or direction not in ("up", "down"):
         return None
-    sc = blast_score(direction, _crossed_snapshots(aligned, from_epoch))
+    side = "call" if direction == "up" else "put"
+    ahead = _wall_ahead(wall_up if direction == "up" else wall_dn, side, from_epoch)
+    sc = blast_score(direction, _crossed_snapshots(aligned, from_epoch), ahead=ahead)
     if sc is None:
         return None
     win = aligned if from_epoch is None else aligned[aligned["epoch"] >= from_epoch]
     itm = sc["itm_side"]                                   # 'call' | 'put'
     sc["itm_doi"] = _delta(win, f"{itm}_oi")[2]            # ITM-side OI change over the window (fuel)
     sc["itm_dvol"] = _delta(win, f"{itm}_vol")[2]         # ITM-side volume traded over the window
+    sc["has_wall"] = ahead is not None
     return sc
 
 
-def graded_crossovers(aligned) -> list[dict]:
+def graded_crossovers(aligned, wall_up=None, wall_dn=None) -> list[dict]:
     """Each reconstructed crossover with its TRUE score, graded over the slice from that cross to the end
-    of capture (staying-power window). Empty if none."""
+    of capture (staying-power window), using the direction-matched wall when available. Empty if none."""
     out = []
     for x in crossovers(aligned):
-        sc = true_score(aligned, x["direction"], from_epoch=x["epoch"])
-        out.append({**x, "score": (sc or {}).get("score"), "grade": (sc or {}).get("grade"),
-                    "itm_side": (sc or {}).get("itm_side"), "cover_frac": (sc or {}).get("cover_frac"),
-                    "prem_exp": (sc or {}).get("prem_exp"), "itm_doi": (sc or {}).get("itm_doi"),
-                    "itm_dvol": (sc or {}).get("itm_dvol")})
+        sc = true_score(aligned, x["direction"], from_epoch=x["epoch"],
+                        wall_up=wall_up, wall_dn=wall_dn) or {}
+        out.append({**x, "score": sc.get("score"), "grade": sc.get("grade"),
+                    "itm_side": sc.get("itm_side"), "cover_frac": sc.get("cover_frac"),
+                    "prem_exp": sc.get("prem_exp"), "wall_ratio": sc.get("wall_ratio"),
+                    "wall_frac": sc.get("wall_frac"), "has_wall": sc.get("has_wall"),
+                    "itm_doi": sc.get("itm_doi"), "itm_dvol": sc.get("itm_dvol")})
     return out
 
 
@@ -151,7 +189,8 @@ def summary(symbol: str, day: str) -> dict | None:
         return round(float(s.median()), 2) if len(s) else None
 
     dl = deltas(g)
-    gx = graded_crossovers(g)
+    wall_up, wall_dn = load_walls(symbol, day)
+    gx = graded_crossovers(g, wall_up=wall_up, wall_dn=wall_dn)
     out = {
         "symbol": symbol, "day": day, "strike": strike, "expiry": str(call["expiry"].iloc[0]),
         "n_call": int(len(call)), "n_put": int(len(put)),
@@ -164,6 +203,8 @@ def summary(symbol: str, day: str) -> dict | None:
         "deltas": dl,                                            # {call_oi/put_oi/call_vol/put_vol: [f,l,Δ]}
         "implied_spot_range": [round(float(g["implied_spot"].min()), 1),
                                round(float(g["implied_spot"].max()), 1)],
+        "walls": {"up": (float(wall_up["strike"].iloc[0]) if wall_up is not None else None),
+                  "dn": (float(wall_dn["strike"].iloc[0]) if wall_dn is not None else None)},
         "n_crossovers": len(gx), "crossovers": gx}
     if gx:                                                       # headline = the LAST cross's grade
         last = gx[-1]
