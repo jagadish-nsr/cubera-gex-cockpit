@@ -44,13 +44,35 @@ def _print(s: str = "") -> None:
             pass
 
 
-def _spot(symbol: str):
+def _spot_from_chain(symbol: str):
+    """Fallback spot = the option chain's underlyingValue (Dhan-primary, NSE-backup) — the SAME source the
+    dashboard levels use, and it works when the index /marketfeed/quote is flaky. Only needs the anchor
+    strike, so a slightly stale spot is fine. _fetch_live_chain returns (payload, source, ohlc, note)."""
     try:
-        d = fetch_index_ohlc(symbol)
-        return float(d["ltp"]) if d and d.get("ltp") is not None else None
-    except Exception as e:  # noqa: BLE001
-        _print(f"  spot fetch failed for {symbol}: {type(e).__name__}")
+        from app.data_access import _fetch_live_chain
+        payload, *_ = _fetch_live_chain(config.get_index(symbol), None)
+        sp = ((payload or {}).get("records") or {}).get("underlyingValue")
+        return float(sp) if sp else None
+    except Exception:  # noqa: BLE001
         return None
+
+
+def _spot(symbol: str, tries: int = 5):
+    """Live spot for the ATM anchor. Retries the cheap index quote (a single 13:45 429 shouldn't kill the
+    whole day's capture), then falls back to the option chain's underlyingValue. None only if BOTH fail."""
+    for i in range(tries):
+        try:
+            d = fetch_index_ohlc(symbol)
+            if d and d.get("ltp") is not None:
+                return float(d["ltp"])
+        except Exception as e:  # noqa: BLE001
+            _print(f"  spot quote try {i + 1}/{tries} failed: {type(e).__name__}")
+        time.sleep(3)
+    sp = _spot_from_chain(symbol)                        # fallback: the option chain's underlying
+    if sp:
+        _print(f"  spot from option chain (index quote unavailable): {sp:.1f}")
+        return sp
+    return None
 
 
 def main() -> None:
