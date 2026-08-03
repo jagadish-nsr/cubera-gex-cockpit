@@ -987,7 +987,10 @@ def _bm_day_readout_html(a) -> str:
 
 # Shared horizontal time axis for ALL THREE big-money charts (build-up grid, prints, bursts) so their
 # timelines line up pixel-for-pixel when stacked: same viewBox width + plot margins + minute→x mapping.
-_BM_OPEN, _BM_CLOSE = config.MARKET_OPEN_MIN, config.FNO_CLOSE_MIN   # 09:15–15:40 (F&O, from 2026-08-03)
+# getattr fallbacks so a hot-reload against a STALE cached `config` module (Streamlit reruns the script
+# but doesn't re-import config) degrades to the correct constants instead of crashing. Restart to refresh.
+_BM_OPEN = getattr(config, "MARKET_OPEN_MIN", 9 * 60 + 15)          # 09:15
+_BM_CLOSE = getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40)          # 15:40 (F&O, from 2026-08-03)
 _BM_W, _BM_L, _BM_R = 720, 40, 10                         # viewBox width; left/right plot margins
 
 
