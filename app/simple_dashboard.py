@@ -987,7 +987,7 @@ def _bm_day_readout_html(a) -> str:
 
 # Shared horizontal time axis for ALL THREE big-money charts (build-up grid, prints, bursts) so their
 # timelines line up pixel-for-pixel when stacked: same viewBox width + plot margins + minute→x mapping.
-_BM_OPEN, _BM_CLOSE = 9 * 60 + 15, 15 * 60 + 30           # NSE session (minutes of day)
+_BM_OPEN, _BM_CLOSE = config.MARKET_OPEN_MIN, config.FNO_CLOSE_MIN   # 09:15–15:40 (F&O, from 2026-08-03)
 _BM_W, _BM_L, _BM_R = 720, 40, 10                         # viewBox width; left/right plot margins
 
 

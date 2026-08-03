@@ -32,8 +32,9 @@ except (AttributeError, ValueError):
 
 from app.big_money import IST                          # noqa: E402
 from app.big_money_live import Collector               # noqa: E402
+import config                                           # noqa: E402
 
-OPEN_MIN, CLOSE_MIN = 9 * 60 + 15, 15 * 60 + 30        # NSE/BSE 09:15–15:30 IST
+OPEN_MIN, CLOSE_MIN = config.MARKET_OPEN_MIN, config.FNO_CLOSE_MIN   # 09:15–15:40 (F&O, from 2026-08-03)
 
 
 _LOGF = None            # optional file handle mirroring _print (for the scheduled task's log)
@@ -62,7 +63,7 @@ def _market_window():
     if now.weekday() >= 5:
         return None
     o = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    c = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    c = now.replace(hour=CLOSE_MIN // 60, minute=CLOSE_MIN % 60, second=0, microsecond=0)
     return o.timestamp(), c.timestamp()
 
 

@@ -116,8 +116,17 @@ OI_STALE_HOURS = 30  # NSE OI is end-of-day lagging; flag beyond ~1 trading day
 OI_STRIKE_BAND_PTS = INDICES[DEFAULT_INDEX].band_pts
 
 # --- Market / timezone ------------------------------------------------------
-MARKET_TZ = "Asia/Kolkata"   # NSE session 09:15–15:30 IST
+MARKET_TZ = "Asia/Kolkata"
 UNDERLYING = INDICES[DEFAULT_INDEX].symbol   # back-compat alias for the default index
+
+# NSE session, minutes-since-midnight IST. ⚠️ VERIFY-LIVE landmine (CLAUDE.md): from
+# 2026-08-03 NSE extended EQUITY-DERIVATIVES (F&O: index/stock futures + options) trading
+# to 15:40 (was 15:30), to align with the cash Closing-Auction-Session (15:15–15:35). Open
+# is unchanged 09:15. Data collectors of FUTURES/OPTIONS ticks use FNO_CLOSE_MIN so they don't
+# stop 10 min early and miss the peak expiry-settlement window. NSE circular 2026-05-30.
+MARKET_OPEN_MIN = 9 * 60 + 15        # 09:15
+FNO_CLOSE_MIN = 15 * 60 + 40         # 15:40 (F&O), effective 2026-08-03; was 15:30
+CASH_CLOSE_MIN = 15 * 60 + 30        # 15:30 continuous cash (CAS auction 15:15–15:35 sets the close)
 
 # --- Risk-free / dividend sourcing ------------------------------------------
 # r and q are IMPLIED per-expiry from put-call parity off the same chain — no

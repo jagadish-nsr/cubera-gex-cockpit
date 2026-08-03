@@ -29,8 +29,9 @@ from app.big_money import IST                              # noqa: E402
 from app.blast_ticks import BlastTickCollector, set_contracts   # noqa: E402
 from data.dhan_feed import resolve_blast_set               # noqa: E402
 from data.dhan_live import fetch_index_ohlc                # noqa: E402
+import config                                             # noqa: E402
 
-CLOSE_MIN = 15 * 60 + 30
+CLOSE_MIN = config.FNO_CLOSE_MIN                          # 15:40 from 2026-08-03 (F&O extended)
 _LOGF = None
 
 
@@ -73,7 +74,7 @@ def main() -> None:
     if now.weekday() >= 5:
         _print("Weekend — no session. Nothing to capture."); return
     freeze_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-    close_dt = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    close_dt = now.replace(hour=CLOSE_MIN // 60, minute=CLOSE_MIN % 60, second=0, microsecond=0)
 
     if args.market_hours:
         if time.time() >= close_dt.timestamp():
