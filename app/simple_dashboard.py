@@ -799,8 +799,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('</div><div class="col">')
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
-        H.append(_blast_hero(data, L, ist, spot_live, prof))      # REST/chain lane (stashes its read)
-        H.append(_blast_ws_panel_html(data, ist, is_expiry))      # WS/tick lane + WS-vs-REST Δ (P1/P1b)
+        H.append(_blast_hero(data, L, ist, spot_live, prof))      # REST/chain lane (the dashboard verdict)
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -831,25 +830,6 @@ def _get_big_money_collector():
     headless collector (run_big_money_collector.py), so the two never double-write the raw CSV."""
     from app.big_money_live import Collector
     return Collector(save_raw=False).start()
-
-
-@st.cache_resource(show_spinner=False)
-def _get_blast_collector(symbol: str, day: str):
-    """One WS blast-tick collector per (symbol, day) for this server (cache_resource, so multiple browser
-    sessions never double-start it). Fetches spot, resolves the anchor+walls (freezing the ATM at first-
-    call time, i.e. ~13:45), and starts capturing. Its write-lock makes it DEFER to the scheduled driver
-    when that already owns today's archive — so the two never double-write. Raises (not cached → retried)
-    on a transient spot/resolve failure."""
-    from data.dhan_live import fetch_index_ohlc
-    from app.blast_ticks import resolve_and_capture
-    d = fetch_index_ohlc(symbol)
-    sp = float(d["ltp"]) if d and d.get("ltp") is not None else None
-    if sp is None:
-        raise RuntimeError("no spot for the blast anchor")
-    col = resolve_and_capture(symbol, sp)
-    if col is None:
-        raise RuntimeError("could not resolve the blast set")
-    return col
 
 
 def _bm_status_html(status, day: str) -> str:
@@ -1561,7 +1541,6 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
 
     K = a["atm"]
     if not evs:
-        st.session_state["simp_blast_rest"] = {"K": K, "cross": False}   # for the WS-vs-REST delta
         chart = _svg_crossover(series, K)
         return (f'<div class="card hero"><span class="eyebrow">Gamma-blast · watching {K:,.0f}</span>'
                 f'<div class="verdict lean-warn"><span class="ic">👀</span><span class="big">No cross yet</span></div>'
@@ -1661,11 +1640,6 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
             _alert("early", f"👀 Igniting at {K:,.0f}: score 45+ within 5 min — likely TRUE", "👀", "early")
     except Exception:  # noqa: BLE001 - alerts must never break the render
         pass
-    # stash the REST-lane read so the WS panel can show the WS-vs-REST delta (same anchor K)
-    st.session_state["simp_blast_rest"] = {
-        "K": K, "cross": True, "direction": direction, "cross_time": last["time_ist"],
-        "score": score, "grade": grade, "cover_frac": cover, "wall_ratio": wr,
-        "k_true_min": k_true_min, "res": _res, "fuel": _fuel}
     chart = _svg_crossover(series, K)
     return f'''<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">
       <span class="eyebrow">Gamma-blast verdict · {K:,.0f}</span>
@@ -1683,113 +1657,6 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
         <div><small>Wall ahead</small><b class="down mono">{f(wr,1)+"×" if wr is not None else "—"}</b><em>cap overhead</em></div>
       </div>{chart}</div>'''
-
-
-def _blast_ws_panel_html(data, ist, is_expiry=False, replay=None):
-    """P1 dual-lane: the gamma-blast read from the WS TICK lane (the 4 fixed contracts captured by
-    app/blast_ticks.py), shown BESIDE the REST/chain hero with a Δ strip, so the two TRUE scores can be
-    compared live. On a real expiry day ≥13:45 it AUTO-STARTS the WS collector (deferring to the scheduled
-    driver via the archive lock), reads the tick archive, and logs the WS-vs-REST comparison per expiry.
-    '' if nothing captured. On non-expiry days the score is calibration-meaningless — plumbing + Δ only."""
-    try:
-        from app.blast_ticks_analysis import hero_read
-    except Exception:  # noqa: BLE001
-        return ""
-    symbol = getattr(data, "symbol", "NIFTY")
-    day = replay["day"] if replay else ist.strftime("%Y-%m-%d")
-    # auto-start the WS collector: live Dhan, real expiry, ≥13:45, token present, and not already owned
-    # by the scheduled driver (archive lock) — else read whatever archive exists.
-    status = None
-    if not replay and is_expiry and (ist.hour * 60 + ist.minute) >= 13 * 60 + 45:
-        try:
-            from data.dhan import token_status
-            from app.blast_ticks import archive_locked_fresh
-            src = str(getattr(data, "source", "")).lower()
-            if src.startswith("dhan") and token_status().get("present") \
-                    and not archive_locked_fresh(symbol, day):
-                status = _get_blast_collector(symbol, day).status
-        except Exception:  # noqa: BLE001 - the WS lane is convenience, never break the dashboard
-            status = None
-    r = hero_read(symbol, day)
-    if r is None:                                       # no ticks yet
-        if status is not None:
-            note = ("read-only (scheduled driver owns the archive)" if status.read_only
-                    else ("live — warming up" if status.connected else (status.error or "connecting…")))
-            return ('<div class="card" style="margin-top:10px"><span class="eyebrow">⚡ Gamma-blast · WS '
-                    f'(tick)</span><p class="instruct">Tick lane {note}. Score appears once ticks land and '
-                    'spot crosses the anchor.</p></div>')
-        return ""                                       # nothing captured, nothing starting → hide the lane
-    rest = st.session_state.get("simp_blast_rest") or {}
-    _blast_compare_log(day, symbol, r, rest, ist)       # persist the WS-vs-REST comparison (throttled)
-    head = (f'<div style="display:flex;justify-content:space-between">'
-            f'<span class="eyebrow">⚡ Gamma-blast · WS (tick) · {r["strike"]:,.0f}</span>'
-            f'<span class="subnote mono">{r["n_call"]}C/{r["n_put"]}P ticks</span></div>')
-    if not r["cross"]:
-        body = (f'<p class="instruct">Tick lane live on the anchor <b class="mono">{r["strike"]:,.0f}</b> '
-                f'(+walls) — no crossover yet. Score appears when spot crosses K.</p>')
-        return f'<div class="card" style="margin-top:10px">{head}{body}{_blast_delta_html(r, rest)}</div>'
-    run = str(r["grade"]).startswith("TRUE")
-    fillc = "var(--go)" if run else "var(--warn)"
-    cov = r.get("cover_frac")
-    wr = r.get("wall_ratio")
-    wall_txt = (f'{wr:.1f}×' if wr is not None else ("clear" if r.get("has_wall") is False else "—"))
-    meter = (f'<div class="meter"><div class="head"><span>True-run score · WS</span>'
-             f'<span><b class="mono">{r["score"]}</b> / 100 · {r["grade"]}</span></div>'
-             f'<div class="track"><div class="fill" style="width:{max(3, min(r["score"], 100))}%;'
-             f'background:{fillc}"></div></div>'
-             f'<div class="win-cap">cross {r["cross_time"]} · tick-resolution OI/premium</div></div>'
-             f'<div class="blast-stats"><div><small>{r.get("direction","")}-cross · ITM-writer OI</small>'
-             f'<b class="mono">{f(cov*100,0) if cov is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>'
-             f'<div><small>Wall ahead</small><b class="mono">{wall_txt}</b><em>cap overhead</em></div></div>')
-    return f'<div class="card" style="margin-top:10px">{head}{meter}{_blast_delta_html(r, rest)}</div>'
-
-
-def _blast_compare_log(day, symbol, ws, rest, ist):
-    """Upsert the per-expiry WS-vs-REST comparison journal (P2 longitudinal data), throttled to ~20s so a
-    3s repaint doesn't hammer the disk. Only once a cross exists on at least one lane."""
-    if not (ws.get("cross") or (rest or {}).get("cross")):
-        return
-    import time as _t
-    last = st.session_state.get("_blast_cmp_at", 0.0)
-    if _t.time() - last < 20:
-        return
-    try:
-        from app import blast_compare
-        blast_compare.log(day, symbol, ws, rest, ist.strftime("%H:%M:%S"))
-        st.session_state["_blast_cmp_at"] = _t.time()
-    except Exception:  # noqa: BLE001 - logging must never break the render
-        pass
-
-
-def _blast_delta_html(ws, rest):
-    """The WS-vs-REST comparison strip: Δscore, Δcross-time, anchor match. The whole point of the dual
-    lane — is the tick score earlier / different than the 10s-chain score? Descriptive."""
-    if not rest:
-        return ('<span class="rb-cav">REST lane not computed yet this repaint — the Δ appears once the '
-                'chain hero has run.</span>')
-    bits = []
-    if ws.get("strike") is not None and rest.get("K") is not None and ws["strike"] != rest["K"]:
-        bits.append(f'⚠ different anchor (WS {ws["strike"]:,.0f} vs REST {rest["K"]:,.0f})')
-    wc, rc = ws.get("cross"), rest.get("cross")
-    if wc and rc:
-        ds = (ws.get("score") or 0) - (rest.get("score") or 0)
-        bits.append(f'Δscore <b>{ds:+d}</b> (WS {ws.get("score")} vs REST {rest.get("score")})')
-        tw, tr = _secs(ws.get("cross_time")), _secs(rest.get("cross_time"))
-        if tw is not None and tr is not None:
-            dt = tw - tr
-            when = "same tick" if dt == 0 else (f'WS {abs(dt)}s earlier' if dt < 0 else f'WS {abs(dt)}s later')
-            bits.append(f'Δcross <b>{when}</b>')
-    elif wc and not rc:
-        bits.append('WS crossed, REST hasn\'t (tick lane earlier)')
-    elif rc and not wc:
-        bits.append('REST crossed, WS hasn\'t')
-    else:
-        bits.append('neither lane has crossed yet')
-    return ('<div class="winstrip" style="margin-top:10px"><div class="winrow">'
-            '<span class="wl">WS vs REST</span>'
-            f'<span class="wd">{" · ".join(bits)}</span></div>'
-            '<div class="win-cap">Same anchor, two lanes: tick-WS vs 10s-chain. Neither is truth — WS is '
-            'faster/noisier, REST smoother/slower. Compare, don\'t pick.</div></div>')
 
 
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
