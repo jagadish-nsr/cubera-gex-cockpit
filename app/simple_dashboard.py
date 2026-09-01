@@ -799,7 +799,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('</div><div class="col">')
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
-        H.append(_blast_hero(data, L, ist, spot_live, prof))      # REST/chain lane (the dashboard verdict)
+        H.append(_blast_hero_stable(data, L, ist, spot_live, prof))  # REST/chain lane; never blanks (holds last good)
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -1657,6 +1657,37 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
         <div><small>Wall ahead</small><b class="down mono">{f(wr,1)+"×" if wr is not None else "—"}</b><em>cap overhead</em></div>
       </div>{chart}</div>'''
+
+
+def _blast_hero_stable(data, L, ist, spot_live=None, prof=None):
+    """Keep the gamma-blast verdict on screen at all times during a live blast session.
+
+    The whole live view renders as one ``st.markdown``, so anything that makes ``_blast_hero``
+    throw — or a background snapshot that momentarily lands with empty ``oi_strikes`` (which
+    ``_blast_hero`` answers with the degraded 'live feed only' card) — would blank or regress the
+    verdict for one 2-4s tick before the next repaint fixes it. That flicker is what read as the
+    verdict 'disappearing'. So: render normally on a healthy snapshot and cache the result; on a
+    degraded snapshot or a transient error, re-show the last good verdict (date-scoped, so a new
+    expiry never inherits yesterday's) instead of a blank. Never masks a real state — 'watching',
+    'no cross' and the true verdict are all healthy renders and overwrite the cache each tick."""
+    day = ist.strftime("%Y-%m-%d")
+    degraded = (not _is_live(data)) or (not getattr(data, "oi_strikes", None))
+    if not degraded:
+        try:
+            html = _blast_hero(data, L, ist, spot_live, prof)
+        except Exception:  # noqa: BLE001 — a transient blast-compute error must not blank the view
+            html = None
+        if html:
+            st.session_state["simp_blast_html"] = {"date": day, "html": html}
+            return html
+    cached = st.session_state.get("simp_blast_html")
+    if cached and cached.get("date") == day and cached.get("html"):
+        return cached["html"]                     # hold the last good verdict through the blip
+    try:                                          # first paint (no cache yet): show whatever it says
+        return _blast_hero(data, L, ist, spot_live, prof)
+    except Exception:  # noqa: BLE001
+        return ('<div class="card hero"><span class="eyebrow">Gamma-blast</span>'
+                '<p class="instruct">Updating…</p></div>')
 
 
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
