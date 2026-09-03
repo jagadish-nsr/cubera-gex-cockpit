@@ -110,14 +110,21 @@ def _drop_remap(df):
 
 
 def anchor_strike(df, cut: str = "13:45") -> float | None:
-    """The ATM strike as of ``cut`` (the blast freeze): the listed strike nearest that minute's spot."""
+    """The blast anchor strike as of ``cut``. Uses PUT-CALL PARITY, not rounded spot: at expiry the ATM
+    is the strike where call ≈ put (call − put = spot − K, zero when K = spot), which is exactly the
+    strike the blast fires on. Picking the strike that MINIMISES |call − put| at the cut is robust to the
+    off-by-one that rounding spot causes near a strike boundary (it flipped run/pin on borderline days).
+    Falls back to nearest-spot when premiums are absent (spot-only source)."""
     at = df[df["time_ist"].str[:5] == cut]
-    if at.empty:                                    # fall back to the first row at/after cut
+    if at.empty:                                    # fall back to the first snapshot at/after cut
         cm = _mins(cut)
         at = df[df["time_ist"].map(_mins) >= cm]
         if at.empty:
             return None
         at = at[at["time_ist"] == at["time_ist"].iloc[0]]
+    if {"call_ltp", "put_ltp"} <= set(at.columns) and at[["call_ltp", "put_ltp"]].notna().any().all():
+        parity = (at["call_ltp"] - at["put_ltp"]).abs()
+        return float(at.iloc[parity.values.argmin()]["strike"])
     spot = float(at["spot"].iloc[0])
     return float(at.iloc[(at["strike"] - spot).abs().argmin()]["strike"])
 
@@ -259,6 +266,26 @@ def classify_spot(symbol: str, day: str, cut: str = "13:45") -> dict | None:
     }
 
 
+def move_features(a, itm: str, from_m: float = 0.0) -> dict:
+    """Measure the ITM-side features OVER THE MOVE — from ``from_m`` (the break/commit) to the PEAK
+    excursion — not over the tail of the day. Sampling the tail understated them: by 15:30 the move is
+    done and spot is flat, so a tail window reads ~0. The move is [from_m → the minute of max |disp|].
+    Returns {rdelta, prem_exp, peak_mins, peak_disp}."""
+    w = a[a["mins"] >= from_m]
+    if w is None or len(w) < 2:
+        return {"rdelta": None, "prem_exp": None, "peak_mins": None, "peak_disp": None}
+    up = w["disp"].iloc[-1] >= 0 if itm == "call" else True
+    peak_i = w["disp"].abs().values.argmax()
+    peak_mins = float(w["mins"].iloc[peak_i])
+    seg = w[w["mins"] <= peak_mins]                  # the active-move segment
+    rd = realized_delta(seg, itm, win_min=peak_mins - from_m + 1) if len(seg) >= 3 else None
+    # premium expansion = ITM premium at the peak vs at the break (the full ramp, not the faded tail)
+    p0 = float(seg[f"{itm}_ltp"].iloc[0]); p1 = float(seg[f"{itm}_ltp"].iloc[-1])
+    pe = (p1 / p0 - 1.0) if p0 else None
+    return {"rdelta": rd, "prem_exp": pe, "peak_mins": peak_mins,
+            "peak_disp": round(float(w["disp"].iloc[peak_i]), 1)}
+
+
 def study_day(symbol: str, day: str, cut: str = "13:45") -> dict | None:
     """One-shot offline read of an expiry day: anchor, the persistence-gated break, the sustained-commit
     verdict (run vs pin), realized delta + premium expansion at commit, the 3PM-window move, and the exit
@@ -281,6 +308,7 @@ def study_day(symbol: str, day: str, cut: str = "13:45") -> dict | None:
     at3 = a[a["time_ist"].str[:5] >= "15:00"]
     move_after_3 = float(a["spot"].iloc[-1] - at3["spot"].iloc[0]) if len(at3) else None
     disp3 = float(at3["disp"].iloc[0]) if len(at3) else None
+    mf = move_features(a, itm, from_m)
     ex = exit_signal(a, itm, from_m, cut=cut) if (commit or brk) else {"reason": "no-break"}
     return {
         "symbol": symbol, "day": day, "strike": K, "direction": direction,
@@ -289,11 +317,98 @@ def study_day(symbol: str, day: str, cut: str = "13:45") -> dict | None:
         "break_time": (brk or {}).get("time_ist"),
         "final_disp": round(float(a["disp"].iloc[-1]), 1),
         "max_up": round(float(a["disp"].max()), 1), "max_dn": round(float(a["disp"].min()), 1),
-        "rdelta_commit": (lambda v: round(v, 2) if v is not None else None)(
-            realized_delta(a[a["mins"] >= from_m] if from_m else a, itm)),
-        "prem_exp": (lambda v: round(v, 2) if v is not None else None)(
-            premium_expansion(a, itm, from_m)),
+        "rdelta_commit": (lambda v: round(v, 2) if v is not None else None)(mf["rdelta"]),
+        "prem_exp": (lambda v: round(v, 2) if v is not None else None)(mf["prem_exp"]),
+        "peak_time": None if mf["peak_mins"] is None else a[a["mins"] == mf["peak_mins"]]["time_ist"].iloc[0],
         "disp_at_3pm": None if disp3 is None else round(disp3, 1),
         "move_after_3pm": None if move_after_3 is None else round(move_after_3, 1),
         "exit": ex,
     }
+
+
+# ── offline replay: what the (improved) hero WOULD have shown, minute by minute ──────────────────
+# Every row uses ONLY data up to that minute (point-in-time, CLAUDE.md) — no lookahead. This is the
+# honest test of the read: does it call the run late-but-right, stay quiet on pins, and exit well?
+LEAN_MOVE_PTS = 25.0        # spot travel since 15:00 (half a strike) to start leaning RUN
+LEAN_DELTA = 0.60           # realized ITM-side delta that says the option is committing
+TRAIL_PTS = 30.0           # spot-excursion trailing stop once in the ride
+FLAT_BY = "15:25"          # hard pre-settlement time-stop
+
+
+def hero_verdict_at(s, K: float, now_min: float, cut: str = "13:45") -> dict:
+    """The verdict from the series-so-far ``s`` (rows up to now only). Sign-free, point-in-time.
+
+    Tiers, in the order the study says they become knowable: WATCH (no sustained break, or pre-3PM — we
+    proved there's no reliable early signal) → LEAN <dir> (a persistence break AND, past 15:00, spot has
+    travelled ≥LEAN_MOVE_PTS with realized delta ≥LEAN_DELTA — the option is committing) → RUN <dir>
+    (also displaced ≥COMMIT_PTS now). FADE = broke but pulled back inside / delta weak."""
+    if s is None or len(s) < 2:
+        return {"state": "WATCH", "dir": None, "rdelta": None, "move3": None}
+    brk = persistence_cross(s)
+    disp_now = float(s["disp"].iloc[-1])
+    at3 = s[s["time_ist"].str[:5] >= "15:00"]
+    move3 = float(s["spot"].iloc[-1] - at3["spot"].iloc[0]) if len(at3) else None
+    if not brk:
+        return {"state": "WATCH", "dir": None, "rdelta": None, "move3": move3}
+    d = brk["direction"]
+    itm = "call" if d == "up" else "put"
+    rd = realized_delta(s, itm, win_min=10)
+    # The study says the signal only becomes knowable in the 15:00 window — so pre-3PM a break is just
+    # WATCH+ (hold, no action), and only AFTER 15:00 do we read the 3PM move + delta to lean/confirm/fade.
+    if move3 is None:                               # pre-15:00
+        state = "WATCH+"
+    else:
+        signed_move3 = move3 if d == "up" else -move3     # travel in the break's direction since 15:00
+        committed = abs(disp_now) >= COMMIT_PTS and rd is not None and rd >= LEAN_DELTA
+        leaning = signed_move3 >= LEAN_MOVE_PTS and rd is not None and rd >= LEAN_DELTA
+        if signed_move3 <= -LEAN_MOVE_PTS:          # broke then reversed hard past 3PM → failed break
+            state = "FADE"
+        elif committed:
+            state = "RUN"
+        elif leaning:
+            state = "LEAN"
+        else:
+            state = "WATCH+"
+    return {"state": state, "dir": d, "rdelta": None if rd is None else round(rd, 2),
+            "move3": None if move3 is None else round(move3, 1)}
+
+
+def replay_day(symbol: str, day: str, cut: str = "13:45") -> list[dict] | None:
+    """Minute-by-minute point-in-time replay of the improved hero for one expiry day. Walks the anchor
+    series and, at each minute, emits {time_ist, spot, disp, state, dir, rdelta, move3, action, itm_ltp}.
+    ``action`` narrates the trade the discipline would take: ENTER when it first reaches LEAN/RUN, then
+    HOLD, then EXIT on the spot-trailing stop or the hard 15:25 settlement stop. None if not captured."""
+    df = load_day(symbol, day)
+    if df is None:
+        return None
+    K = anchor_strike(df, cut)
+    a = anchor_series(df, K, cut) if K is not None else None
+    if a is None or len(a) < 3:
+        return None
+    out = []
+    in_trade = False
+    entry_dir = None
+    best = None
+    exited = False
+    for i in range(len(a)):
+        s = a.iloc[: i + 1]
+        r = a.iloc[i]
+        v = hero_verdict_at(s, K, float(r["mins"]), cut)
+        itm = "call" if (entry_dir or v["dir"]) == "up" else "put"
+        action = "—"
+        if not in_trade and not exited and v["state"] in ("LEAN", "RUN"):
+            in_trade, entry_dir, best = True, v["dir"], float(r["disp"]); action = f"ENTER {v['dir']}"
+        elif in_trade:
+            best = max(best, r["disp"]) if entry_dir == "up" else min(best, r["disp"])
+            give = (best - r["disp"]) if entry_dir == "up" else (r["disp"] - best)
+            if r["time_ist"][:5] >= FLAT_BY:
+                action, in_trade, exited = "EXIT settlement", False, True
+            elif give >= TRAIL_PTS:
+                action, in_trade, exited = "EXIT trail", False, True
+            else:
+                action = "HOLD"
+        out.append({"time_ist": r["time_ist"], "spot": round(float(r["spot"]), 1),
+                    "disp": round(float(r["disp"]), 1), "state": v["state"], "dir": v["dir"],
+                    "rdelta": v["rdelta"], "move3": v["move3"], "action": action,
+                    "itm_ltp": round(float(r[f"{itm}_ltp"]), 2)})
+    return out

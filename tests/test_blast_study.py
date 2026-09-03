@@ -72,6 +72,45 @@ def test_exit_spot_trailing_stop_on_retrace():
     assert ex["reason"] == "spot-trailing-stop"
 
 
+def test_anchor_strike_uses_parity_not_rounded_spot():
+    # spot 24028 rounds to 24050, but call≈put (parity ATM) sits at 24000 → parity wins, robust to
+    # the off-by-one that flipped borderline days.
+    rows = []
+    for K, c, p in [(23950, 90, 5), (24000, 40, 41), (24050, 8, 90)]:
+        rows.append({"time_ist": "13:45", "strike": float(K), "spot": 24028.0,
+                     "call_ltp": float(c), "put_ltp": float(p), "call_oi": 1e5, "put_oi": 1e5})
+    assert bs.anchor_strike(pd.DataFrame(rows)) == 24000.0
+
+
+def test_hero_verdict_watches_before_3pm_even_on_a_break():
+    # a clean sustained up-break BEFORE 15:00 must not be actioned (no reliable early signal) → WATCH+
+    rows = [(0, 100, 5, 5), (2, 101, 5, 5)] + [(m, 130, 30, 1) for m in range(4, 40, 2)]
+    a = _series(rows)                                 # cut 13:45 → these minutes are all pre-15:00
+    v = bs.hero_verdict_at(a, 100.0, float(a["mins"].iloc[-1]))
+    assert v["state"] in ("WATCH+", "WATCH") and v["state"] not in ("LEAN", "RUN")
+
+
+def test_replay_is_point_in_time():
+    # a row's verdict must depend ONLY on data up to that minute: truncating the future must not change
+    # any earlier row. Guards against accidental lookahead (CLAUDE.md point-in-time correctness).
+    a = _series([(m, 100 + min(m, 80), 5 + min(m, 80), max(1, 5 - m)) for m in range(0, 120, 2)])
+    full = [bs.hero_verdict_at(a.iloc[: i + 1], 100.0, float(a["mins"].iloc[i]))["state"]
+            for i in range(len(a))]
+    half = len(a) // 2
+    trunc = [bs.hero_verdict_at(a.iloc[: i + 1], 100.0, float(a["mins"].iloc[i]))["state"]
+             for i in range(half)]
+    assert full[:half] == trunc
+
+
+def test_move_features_measured_over_the_move_not_the_tail():
+    # premium peaks mid-window then fades; measuring over the move must capture the ramp (>0),
+    # not the faded tail (which would read ~0 or negative).
+    rows = [(m, 100 + m, 5 + m, 1) for m in range(0, 30, 2)]           # ramp up to +28
+    rows += [(m, 128 - (m - 28), 33 - (m - 28), 1) for m in range(30, 50, 2)]  # fade back
+    mf = bs.move_features(_series(rows), "call", from_m=0)
+    assert mf["prem_exp"] is not None and mf["prem_exp"] > 0.5
+
+
 def test_drop_remap_removes_oi_discontinuity():
     # a final row whose OI leaps >50% above the running median is dropped
     base = [{"time_ist": f"13:{45 + i:02d}", "strike": 100.0, "call_oi": 1000.0, "put_oi": 1000.0}

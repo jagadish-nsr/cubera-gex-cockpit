@@ -23,7 +23,7 @@ try:
 except (AttributeError, ValueError):
     pass
 
-from app.blast_study import classify_spot, study_day        # noqa: E402
+from app.blast_study import classify_spot, replay_day, study_day    # noqa: E402
 
 
 def _expiry_days(symbol: str) -> list[str]:
@@ -44,7 +44,24 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", default="NIFTY")
     ap.add_argument("--cut", default="13:45")
+    ap.add_argument("--replay", metavar="DAY", help="minute-by-minute point-in-time replay for one day")
     args = ap.parse_args()
+
+    if args.replay:
+        rows = replay_day(args.symbol, args.replay, args.cut)
+        if not rows:
+            print(f"No captured ladder for {args.symbol} {args.replay}."); return
+        print(f"== POINT-IN-TIME REPLAY · {args.symbol} {args.replay} · anchor {args.cut} "
+              f"(each row sees only data up to that minute) ==")
+        print(f"{'time':>6} {'spot':>8} {'disp':>5} {'state':>6} {'dir':>4} "
+              f"{'rdelta':>6} {'move3':>6} {'itmLTP':>7}  action")
+        for r in rows:
+            if r["action"] == "—" and r["time_ist"][:5] < "14:55":
+                continue                                  # collapse the quiet pre-3PM watch/hold
+            print(f"{r['time_ist']:>6} {r['spot']:>8.1f} {r['disp']:>5.0f} {r['state']:>6} "
+                  f"{str(r['dir']):>4} {str(r['rdelta']):>6} {str(r['move3']):>6} "
+                  f"{r['itm_ltp']:>7.2f}  {r['action']}")
+        return
 
     days = _expiry_days(args.symbol)
     if not days:
