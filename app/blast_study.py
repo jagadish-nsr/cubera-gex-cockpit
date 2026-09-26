@@ -61,18 +61,41 @@ def _complete(df, cut: str = "13:45", end_min: str = "15:10") -> bool:
     return bool((tm.between(_mins(cut) - 10, _mins(cut) + 10)).any() and tm.max() >= _mins(end_min))
 
 
+def _wide_from_intraday(symbol: str, day: str):
+    """The Dhan intraday store (data.dhan.load_intraday_day) reshaped to the wide per-(time,strike) ladder
+    the study consumes. It's LONG (one CE/PE row per strike-minute) with ``close`` as the price, so pivot
+    CE→call_*, PE→put_*. This is the SAME source the dashboard replay renders, and it reaches back years —
+    so the study/replay run on any stored day, not just the few with a journal capture. None if absent."""
+    try:
+        from data.dhan import load_intraday_day
+    except Exception:  # noqa: BLE001
+        return None
+    raw = load_intraday_day(symbol, day)
+    if raw is None or getattr(raw, "empty", True) or "side" not in raw:
+        return None
+    ce = (raw[raw["side"] == "CE"][["time_ist", "strike", "spot", "close", "oi"]]
+          .rename(columns={"close": "call_ltp", "oi": "call_oi"}))
+    pe = (raw[raw["side"] == "PE"][["time_ist", "strike", "close", "oi"]]
+          .rename(columns={"close": "put_ltp", "oi": "put_oi"}))
+    wide = ce.merge(pe, on=["time_ist", "strike"], how="outer")
+    return wide if not wide.empty else None
+
+
 def load_day(symbol: str, day: str, cut: str = "13:45"):
-    """The per-strike ladder for one expiry day (real spot, call/put ltp+oi+vol, net_gex), from the best
-    source that actually brackets the blast window — gamma_blast (1-min) if complete, else oi_strikes
-    (~5-min). None if no source covers the day. Drops the settlement-remap artifact (see below)."""
+    """The per-strike ladder for one day (real spot, call/put ltp+oi), from the best source that brackets
+    the blast window: gamma_blast (1-min) if complete, else oi_strikes (~5-min), else the Dhan intraday
+    store (long history — what the dashboard replay uses). None if no source covers the day. Drops the
+    settlement-remap artifact (see below)."""
     import pandas as pd
     for src in _LADDER_SOURCES:
         p = _root() / "data" / "journal" / src / symbol / f"{day}.csv"
-        if not p.exists():
-            continue
-        df = pd.read_csv(p)
-        if _complete(df, cut):
-            return _drop_remap(df)
+        if p.exists():
+            df = pd.read_csv(p)
+            if _complete(df, cut):
+                return _drop_remap(df)
+    wide = _wide_from_intraday(symbol, day)          # fallback: the long-history intraday store
+    if wide is not None and _complete(wide, cut):
+        return _drop_remap(wide)
     return None
 
 

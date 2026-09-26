@@ -800,6 +800,12 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
         H.append(_blast_hero_stable(data, L, ist, spot_live, prof))  # REST/chain lane; never blanks (holds last good)
+        # In REPLAY only, show the NEW offline study model beneath it for side-by-side comparison on the
+        # same tape. Deliberately replay-gated: the study model stays OFF the live board (its earlier live
+        # form showed false signals) — this is a comparison/study surface, not a live signal.
+        if replay_on and st.session_state.get("simp_replay_day"):
+            H.append(_blast_hero_study_html(symbol, st.session_state["simp_replay_day"],
+                                            ist.strftime("%H:%M")))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -1688,6 +1694,70 @@ def _blast_hero_stable(data, L, ist, spot_live=None, prof=None):
     except Exception:  # noqa: BLE001
         return ('<div class="card hero"><span class="eyebrow">Gamma-blast</span>'
                 '<p class="instruct">Updating…</p></div>')
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _blast_study_rows(symbol: str, rday: str):
+    """The offline study model's full point-in-time replay for a stored day (app.blast_study.replay_day),
+    cached per day. Each row is the verdict computed from data up to that minute only (no lookahead), so
+    indexing it by the current replay clock gives the study model's read AS OF that minute. Returns [] on
+    any failure — the comparison card is a nicety, it must never break the replay."""
+    try:
+        from app.blast_study import replay_day
+        return replay_day(symbol, rday) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# how the study model's state reads on the card: (label, css lean class, icon)
+_STUDY_STATE = {
+    "WATCH": ("Watching", "lean-warn", "👀"), "WATCH+": ("Break seen · holding for 3PM", "lean-warn", "👀"),
+    "LEAN": ("Leaning", "lean-go", "🚀"), "RUN": ("RUN", "lean-go", "🚀"),
+    "FADE": ("Fade · failed break", "lean-warn", "🪤"),
+}
+
+
+def _blast_hero_study_html(symbol: str, rday: str, now_hhmm: str) -> str:
+    """REPLAY-ONLY comparison card: the NEW (offline study) blast model's read at the current replay
+    minute, shown BENEATH the live hero so the two can be compared on the same tape. Reads the study
+    model's realized-delta commitment + the post-3PM move, and narrates the trade its exit discipline
+    would take (enter late-but-sure, spot-trail, hard 15:25 settlement stop). Point-in-time (only data
+    up to now_hhmm). Deliberately kept OFF the live board — this is a study/comparison surface only."""
+    rows = _blast_study_rows(symbol, rday)
+    if not rows:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · replay</span>'
+                '<p class="instruct">No captured ladder for this day, so the study model has nothing to '
+                'replay. Pick another expiry day.</p></div>')
+    upto = [r for r in rows if str(r["time_ist"])[:5] <= now_hhmm]
+    if not upto:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · replay</span>'
+                '<p class="instruct">The study model anchors at <b>13:45</b> — advance the replay clock '
+                'past it to compare.</p></div>')
+    r = upto[-1]
+    lab, lean, ic = _STUDY_STATE.get(r["state"], ("—", "lean-warn", "•"))
+    dtxt = f" {r['dir']}" if r["dir"] and r["state"] in ("LEAN", "RUN") else ""
+    # if a position is open at this minute, lead with the trade posture (clearer than the raw state,
+    # which can read "watching" mid-ride once the move matures and realized-delta cools)
+    if r["action"] == "HOLD" or str(r["action"]).startswith("ENTER"):
+        lab, lean, ic, dtxt = "In trade", "lean-go", "🚀", f" {r['dir']}"
+    elif str(r["action"]).startswith("EXIT"):
+        lab, lean, ic, dtxt = "Exited", "lean-warn", "🚪", ""
+    rd = "—" if r["rdelta"] is None else f"{r['rdelta']:.2f}"
+    m3 = "—" if r["move3"] is None else f"{r['move3']:+.0f} pt"
+    # the trade the discipline has taken so far on this replay (the last non-idle action up to now)
+    acts = [x for x in upto if x["action"] not in ("—", "HOLD")]
+    trade = (f"<b>{acts[-1]['action']}</b> at {acts[-1]['time_ist']} "
+             f"(ITM prem {acts[-1]['itm_ltp']:.1f})") if acts else "No trade taken."
+    return (f'<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">'
+            f'<span class="eyebrow">🟢 Study model · replay</span>'
+            f'<span class="subnote mono">{r["time_ist"]} · spot {r["spot"]:.0f}</span></div>'
+            f'<div class="verdict"><span class="ic">{ic}</span><span class="big">{lab}{dtxt}</span></div>'
+            f'<div class="blast-stats"><div><small>realized ITM δ</small><b class="mono">{rd}</b>'
+            f'<em>→1 committed</em></div><div><small>move since 3PM</small><b class="mono">{m3}</b>'
+            f'<em>runs travel, pins don\'t</em></div></div>'
+            f'<p class="instruct" style="margin-top:10px">{trade}</p>'
+            f'<span class="rb-cav">Offline study model (realized-delta + 3PM-window + spot-trailing/'
+            f'settlement exit) — shown for comparison against the live hero above. Not on the live board.</span></div>')
 
 
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
