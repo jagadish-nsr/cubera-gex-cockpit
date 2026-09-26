@@ -6,8 +6,11 @@ pain), classifies the regime, and emits a one-sentence playbook for Nifty index
 options. Decision-support only — **not financial advice, no order execution.**
 
 > **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)** — a plain-language
-> setup guide: double-click `run_simple.bat` for the dashboard, and one admin command
-> (`setup_data_collection.ps1`) to turn on automatic background data collection.
+> setup guide. The dashboard runs the same on both platforms (served at
+> **http://localhost:8610**): **Windows** — double-click `run_simple.bat`; **macOS/Linux** —
+> `./run_simple.command` (first run: `chmod +x run_simple.command`, or in Finder right-click →
+> Open). Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
+> on macOS use cron/launchd, or just leave the dashboard open (it self-captures while running).
 
 > Read `CLAUDE.md` first, especially the **dealer-sign landmine**: the US
 > long-call / short-put-gamma convention may NOT hold for India's retail-selling
@@ -39,9 +42,10 @@ python cli.py --demo            # offline SYNTHETIC chain (no network) — sanit
 python cli.py --live            # live NSE Nifty option chain (run locally)
 python cli.py --live --window 0dte
 ```
-Local dashboard (one-click on Windows: double-click `run_app.bat`):
+Local dashboard — one-click: `run_simple.bat` (Windows) or `run_simple.command` (macOS/Linux).
+Or run it directly (forward slashes work on every OS):
 ```
-python -m streamlit run app\dashboard.py
+python -m streamlit run app/simple_dashboard.py --server.port 8610
 ```
 Every output logs its assumptions: lot size (VERIFY), dealer-sign model
 (UNVERIFIED for India), expiry window, OI timestamp, and the parity-implied

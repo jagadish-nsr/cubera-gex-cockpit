@@ -26,16 +26,23 @@ capture use public NSE data.)*
 
 ## 1. Open the dashboard (daily)
 
-**Double-click `run_simple.bat`** in the project folder. A black window opens and
+**Windows:** double-click `run_simple.bat` in the project folder. A black window opens and
 the dashboard appears in your browser. The first launch takes ~1 minute (it installs
 dependencies once); after that it's instant. **Close the black window to stop it.**
 
-Command-line equivalent (if you prefer typing):
+**macOS / Linux:** double-click `run_simple.command` (first time only: right-click → **Open** to
+clear Gatekeeper, or run `chmod +x run_simple.command` once in Terminal). Same behaviour — a window
+opens and the dashboard appears in your browser; close the window / press Ctrl-C to stop it.
 
-```powershell
-cd C:\Users\navee\Python\gex-indian
-python -m streamlit run app\simple_dashboard.py
+Either way the dashboard is served at **http://localhost:8610**.
+
+Command-line equivalent (if you prefer typing) — forward slashes work on every OS:
+
 ```
+cd <the project folder>
+python -m streamlit run app/simple_dashboard.py --server.port 8610
+```
+(On macOS use `python3` if `python` isn't found.)
 
 On the page: use the sidebar **🔄 Refresh** (or tick **⏱️ Auto-refresh**). On expiry
 day the gamma-blast panel lights up automatically. Tick **🔔 Sound alert on ignition**
