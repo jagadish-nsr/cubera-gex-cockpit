@@ -32,7 +32,10 @@ can never be mistaken for live.
 
 **Replaying an expiry** develops the full expiry-day picture — candle, TPO/MP overlay, "where the
 money is building", *and* the **gamma-blast verdict** (it appears in the right column once the replay
-clock passes **13:45**, exactly as it would live; raise the Speed to fast-forward there).
+clock passes **13:45**, exactly as it would live; raise the Speed to fast-forward there). The
+**⚗️ study model card** (§6.3) sits right beneath the hero in replay too, replaying its own
+point-in-time read on the same tape — so you can compare the two verdict-by-verdict as the day
+develops.
 
 **Gamma-blast practice drill.** Tick **🎯 Expiry days only · tag TRUE / Fake gamma-blast** to narrow
 the Day list to expiries, each tagged from the `blast_ml` study: **🚀 TRUE GB** = a sustaining blast
@@ -56,7 +59,7 @@ so a repaint costs **~0.26 s** instead of the ~14 s that used to shade the whole
 
 | Lane | Cadence | Runs on |
 |---|---|---|
-| **Spot / day candle** | **~10 s** — one cheap index quote (~0.5 s) | background thread |
+| **Spot / day candle** | **~4 s** — one cheap index quote (~0.5 s) | background thread |
 | Option chain (levels, walls, footprint) | 1 / 3 / 5 min, clock-aligned | background thread |
 | Futures capture | 3 min, **gap checked before fetching** | background thread |
 | Sector snap | 15 min | background thread |
@@ -79,10 +82,10 @@ headroom drops under 20%. If that warns, raise **Levels refresh** to 3 or 5 min.
   published snapshot instantly (~0.3 s) and the fresh one lands within seconds. It used to be a
   ~14 s blocking fetch that dimmed the page.
 
-The candle therefore moves on a **10-second** beat while the levels stay as of the last chain pull
+The candle therefore moves on a **~4-second** beat while the levels stay as of the last chain pull
 (the header timestamp says when). That split is deliberate: the fast lane moves the *price*, not
 the *map* — recomputing walls from a fresh spot against stale positioning would be a silent
-inconsistency. ~10 s is comfortably inside Dhan's quote quota; a rate-limited poll simply leaves
+inconsistency. ~4 s is comfortably inside Dhan's quote quota; a rate-limited poll simply leaves
 the previous tick in place, and a tick older than 45 s is dropped rather than shown as live.
 - **fetched HH:MM:SS** — the actual chain timestamp. If this stops advancing, the feed is stuck.
 
@@ -449,6 +452,53 @@ call-writer OI change  −12%    Wall ahead  1.4×
 ⚠️ **This is a confirmation-quality read, not an entry signal.** The [B1] backtest showed the edge
 **does not survive spread**. Use it to grade a move you're already in, or to avoid chasing one.
 
+### 6.3 The study model — a second blast read beside the hero (⚗️ experimental)
+
+Directly beneath the hero, **both live and in replay**, a second card labelled **🟢 Study model**
+shows an independent, experimental read of the same blast, anchored on the **same 13:45 strike** so
+the two compare on one strike. It exists because an offline study of the captured expiry days found
+a real weakness in the hero and a cleaner signal:
+
+- **What the hero gets wrong on some days.** The hero's dominant term is *writer OI covering*
+  (weight 0.5). But on expiry afternoon, OI decays 30–90% on **both** sides every day — that's
+  settlement unwind, not directional capitulation — so "covering" reads as fuel on **pins** too, and
+  the grade can sit on TRUE even when nothing runs.
+- **What separates a run from a pin, measured.** Two things did, across the captured expiries:
+  1. **Realized ITM delta** — the fraction of each spot move the ITM option actually captures
+     (`Δpremium / Δspot`, sign-free, bounded 0–1). **→1 = the option is committing** (a real break);
+     **~0.5 = pinned** at the strike. This is the tractable, model-free form of "track the gamma."
+  2. **The move since 3 PM.** On every real run the decisive travel happened **after 15:00**
+     (|61–159| pts); on every pin, spot barely moved after 15:00 (|1–11| pts). Your 3 PM instinct is
+     the single strongest, simplest discriminator in the data.
+
+**How the card reads.** A verdict, two stats, a trade line, and a **call-vs-put premium chart**
+(same chart as the hero, on the study model's own accumulated series):
+
+```
+🟢 Study model · live · 24,150            15:11 · spot 24,199
+🚀 In trade down
+realized ITM δ  0.73   →1 committed     move since 3PM  −58 pt   runs travel, pins don't
+ENTER down at 15:11 (ITM prem 47.1)
+[ call-vs-put premium chart ]
+```
+
+- **States:** *Watching* → *Break seen · holding for 3PM* (a break fired but pre-15:00, so no action)
+  → *Leaning* / *In trade* (the 3PM move + delta confirm) → *Exited* or *Fade · failed break*.
+- **Exit discipline** (the part the hero lacks). Once in, it manages the ride: a **spot-trailing
+  stop** (give back at most ~30 pts from the best excursion — trailing *spot*, not premium, because a
+  premium trail whipsaws on the early chop) and a **hard flat by 15:25** to dodge the settlement
+  print. The trade line always shows the last action taken.
+
+⚠️ **Honest health warning — this is a study model, not a validated signal.**
+- **Small sample** (a handful of expiries, ~2 clean runs) — it's a *diagnostic*, shown for comparison,
+  not a proven classifier. Its earlier live form once showed false signals; it now sits **beside** the
+  hero, never replacing it.
+- **It confirms LATE.** Both real runs committed **45–95 min after 13:45** (usually after 3 PM), so by
+  the time it says "In trade" much of the move has already happened — confirmable = late = smaller
+  edge. There is no fast ignition to catch here; that's a property of the setup, not a bug.
+- The **15:25 stop trades the last few minutes for protection** against the settlement-print collapse.
+- **Decision-support only. You confirm every trade.** It never auto-executes.
+
 ---
 
 ## 7. When does price RESPECT a level — and when does it break?
@@ -541,6 +591,8 @@ feed panel (also runs automatically when a >2 min gap is detected).
   leans toward the inverted "model B" but it's a lean, not a verdict — `DEALER_SIGN_MODEL` stays on
   the US default. Treat flip-based reads with extra suspicion.
 - **Blast edge doesn't survive spread** ([B1]) — confirmation only.
+- **The ⚗️ study model (§6.3) is experimental**, on a small sample of expiries — a diagnostic shown
+  beside the hero for comparison, not a validated signal, and it confirms late by design.
 - **The calm-strangle edge is thinning** in the current Tuesday-weekly regime (§6.1).
 - **Sensex vanna is borrowed from Nifty** — if the two ever decorrelate, that read degrades silently
   apart from the "· via Nifty 50" tag.
