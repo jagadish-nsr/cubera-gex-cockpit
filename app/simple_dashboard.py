@@ -800,12 +800,14 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
         H.append(_blast_hero_stable(data, L, ist, spot_live, prof))  # REST/chain lane; never blanks (holds last good)
-        # In REPLAY only, show the NEW offline study model beneath it for side-by-side comparison on the
-        # same tape. Deliberately replay-gated: the study model stays OFF the live board (its earlier live
-        # form showed false signals) — this is a comparison/study surface, not a live signal.
+        # Show the study model BESIDE the live hero, both live and in replay, so the two read on the same
+        # tape. It carries its own call-vs-put premium chart. Clearly labelled EXPERIMENTAL / decision-
+        # support — it does not replace the hero and never auto-executes.
         if replay_on and st.session_state.get("simp_replay_day"):
             H.append(_blast_hero_study_html(symbol, st.session_state["simp_replay_day"],
                                             ist.strftime("%H:%M")))
+        else:
+            H.append(_blast_study_live_html(data, L, ist, spot_live, symbol))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -1729,35 +1731,88 @@ def _blast_hero_study_html(symbol: str, rday: str, now_hhmm: str) -> str:
                 '<p class="instruct">No captured ladder for this day, so the study model has nothing to '
                 'replay. Pick another expiry day.</p></div>')
     upto = [r for r in rows if str(r["time_ist"])[:5] <= now_hhmm]
+    K = rows[0].get("spot")                                 # only for the empty-state header before 13:45
     if not upto:
-        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · replay</span>'
-                '<p class="instruct">The study model anchors at <b>13:45</b> — advance the replay clock '
-                'past it to compare.</p></div>')
-    r = upto[-1]
+        return _study_card_html([], K, [], "replay")
+    prem = [{"call_ltp": x["call_ltp"], "put_ltp": x["put_ltp"]} for x in upto]
+    return _study_card_html(upto, _blast_study_K(rows), prem, "replay")
+
+
+def _blast_study_K(rows):
+    """Recover the anchor strike from replay rows: spot − disp on the first row (disp = spot − K)."""
+    r = rows[0]
+    return round((r["spot"] - r["disp"]) / 50.0) * 50.0
+
+
+def _study_card_html(rows, K, prem_series, tag):
+    """Render the study-model card from its point-in-time ``rows`` (last row = now) + a call-vs-put
+    premium chart. Shared by the live and replay lanes so they look identical. ``tag`` labels the source."""
+    if not rows:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · ' + tag + '</span>'
+                '<p class="instruct">Anchors at <b>13:45 IST</b> — the study read builds from there.</p></div>')
+    r = rows[-1]
     lab, lean, ic = _STUDY_STATE.get(r["state"], ("—", "lean-warn", "•"))
     dtxt = f" {r['dir']}" if r["dir"] and r["state"] in ("LEAN", "RUN") else ""
-    # if a position is open at this minute, lead with the trade posture (clearer than the raw state,
-    # which can read "watching" mid-ride once the move matures and realized-delta cools)
     if r["action"] == "HOLD" or str(r["action"]).startswith("ENTER"):
         lab, lean, ic, dtxt = "In trade", "lean-go", "🚀", f" {r['dir']}"
     elif str(r["action"]).startswith("EXIT"):
         lab, lean, ic, dtxt = "Exited", "lean-warn", "🚪", ""
     rd = "—" if r["rdelta"] is None else f"{r['rdelta']:.2f}"
     m3 = "—" if r["move3"] is None else f"{r['move3']:+.0f} pt"
-    # the trade the discipline has taken so far on this replay (the last non-idle action up to now)
-    acts = [x for x in upto if x["action"] not in ("—", "HOLD")]
+    acts = [x for x in rows if x["action"] not in ("—", "HOLD")]
     trade = (f"<b>{acts[-1]['action']}</b> at {acts[-1]['time_ist']} "
-             f"(ITM prem {acts[-1]['itm_ltp']:.1f})") if acts else "No trade taken."
+             f"(ITM prem {acts[-1]['itm_ltp']:.1f})") if acts else "No trade taken yet."
+    chart = _svg_crossover([{"call": x["call_ltp"], "put": x["put_ltp"]} for x in prem_series], K)
     return (f'<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">'
-            f'<span class="eyebrow">🟢 Study model · replay</span>'
+            f'<span class="eyebrow">🟢 Study model · {tag} · {K:,.0f}</span>'
             f'<span class="subnote mono">{r["time_ist"]} · spot {r["spot"]:.0f}</span></div>'
             f'<div class="verdict"><span class="ic">{ic}</span><span class="big">{lab}{dtxt}</span></div>'
             f'<div class="blast-stats"><div><small>realized ITM δ</small><b class="mono">{rd}</b>'
             f'<em>→1 committed</em></div><div><small>move since 3PM</small><b class="mono">{m3}</b>'
             f'<em>runs travel, pins don\'t</em></div></div>'
-            f'<p class="instruct" style="margin-top:10px">{trade}</p>'
-            f'<span class="rb-cav">Offline study model (realized-delta + 3PM-window + spot-trailing/'
-            f'settlement exit) — shown for comparison against the live hero above. Not on the live board.</span></div>')
+            f'<p class="instruct" style="margin-top:10px">{trade}</p>{chart}'
+            f'<span class="rb-cav">⚗️ EXPERIMENTAL study model (realized-delta + 3PM-window + spot-trailing/'
+            f'settlement exit), shown beside the live hero for comparison. Decision-support — confirm every trade.</span></div>')
+
+
+def _blast_study_live_html(data, L, ist, spot_live, symbol):
+    """LIVE study-model lane: accumulate a 1-min anchor series in session (spot + the frozen ATM's
+    call/put premiums + OI) and run the SAME point-in-time engine the replay uses (blast_study.
+    replay_series), so the live study read matches the offline one exactly. Anchored on the SAME 13:45
+    strike as the live hero so the two compare on one strike. Shown OFF to the side, clearly experimental."""
+    from app.blast_study import anchor_strike as _pk, replay_series, series_from_points
+    from app.gammablast import strike_oi, strike_premiums
+    if not _is_live(data) or not data.oi_strikes:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · live</span>'
+                '<p class="instruct">Live feed only.</p></div>')
+    today = ist.strftime("%Y-%m-%d")
+    ss = st.session_state.get("simp_blast_study")
+    if not ss or ss.get("date") != today:
+        ss = {"date": today, "points": {}}
+        st.session_state["simp_blast_study"] = ss
+    # anchor: reuse the live hero's frozen 13:45 ATM if it's set (same strike → fair comparison);
+    # otherwise the parity ATM from the current chain. Before 13:45 the hero hasn't frozen → watch.
+    K = (st.session_state.get("simp_blast", {}) or {}).get("anchors", {})
+    K = (K or {}).get("atm")
+    if K is None:
+        import pandas as pd
+        rows_now = [{"time_ist": ist.strftime("%H:%M"), "strike": s.get("strike"),
+                     "spot": L.spot, "call_ltp": s.get("call_ltp"), "put_ltp": s.get("put_ltp")}
+                    for s in data.oi_strikes if s.get("call_ltp") is not None and s.get("put_ltp") is not None]
+        K = _pk(pd.DataFrame(rows_now)) if rows_now else None
+    if K is None:
+        return _study_card_html([], None, [], "live")
+    call, put = strike_premiums(data.oi_strikes, K)
+    coi, poi = strike_oi(data.oi_strikes, K)
+    now_min = ist.strftime("%H:%M")
+    ss["points"][now_min] = {"spot": float(spot_live) if spot_live else L.spot,
+                             "call_ltp": call, "put_ltp": put, "call_oi": coi, "put_oi": poi}
+    a = series_from_points(ss["points"], float(K))
+    rows = replay_series(a, float(K)) if a is not None else []
+    prem = [{"call_ltp": v["call_ltp"], "put_ltp": v["put_ltp"]}
+            for _, v in sorted(ss["points"].items(), key=lambda kv: kv[0])
+            if v.get("call_ltp") is not None and v.get("put_ltp") is not None]
+    return _study_card_html(rows, float(K), prem, "live")
 
 
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying

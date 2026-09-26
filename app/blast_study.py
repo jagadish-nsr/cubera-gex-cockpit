@@ -396,18 +396,14 @@ def hero_verdict_at(s, K: float, now_min: float, cut: str = "13:45") -> dict:
             "move3": None if move3 is None else round(move3, 1)}
 
 
-def replay_day(symbol: str, day: str, cut: str = "13:45") -> list[dict] | None:
-    """Minute-by-minute point-in-time replay of the improved hero for one expiry day. Walks the anchor
-    series and, at each minute, emits {time_ist, spot, disp, state, dir, rdelta, move3, action, itm_ltp}.
-    ``action`` narrates the trade the discipline would take: ENTER when it first reaches LEAN/RUN, then
-    HOLD, then EXIT on the spot-trailing stop or the hard 15:25 settlement stop. None if not captured."""
-    df = load_day(symbol, day)
-    if df is None:
-        return None
-    K = anchor_strike(df, cut)
-    a = anchor_series(df, K, cut) if K is not None else None
+def replay_series(a, K: float, cut: str = "13:45") -> list[dict]:
+    """Walk an anchor series ``a`` (cols: time_ist, mins, spot, disp, call_ltp, put_ltp) minute by minute,
+    point-in-time, emitting one row per minute: {time_ist, spot, disp, state, dir, rdelta, move3, action,
+    call_ltp, put_ltp, itm_ltp}. ``action`` narrates the discipline's trade: ENTER on first LEAN/RUN, then
+    HOLD, then EXIT on the spot-trailing stop or the hard 15:25 settlement stop. The SAME engine backs
+    both the stored-day replay and the live accumulation, so they can never drift. [] if too short."""
     if a is None or len(a) < 3:
-        return None
+        return []
     out = []
     in_trade = False
     entry_dir = None
@@ -433,5 +429,38 @@ def replay_day(symbol: str, day: str, cut: str = "13:45") -> list[dict] | None:
         out.append({"time_ist": r["time_ist"], "spot": round(float(r["spot"]), 1),
                     "disp": round(float(r["disp"]), 1), "state": v["state"], "dir": v["dir"],
                     "rdelta": v["rdelta"], "move3": v["move3"], "action": action,
+                    "call_ltp": round(float(r["call_ltp"]), 2), "put_ltp": round(float(r["put_ltp"]), 2),
                     "itm_ltp": round(float(r[f"{itm}_ltp"]), 2)})
     return out
+
+
+def series_from_points(points: dict, K: float, cut: str = "13:45"):
+    """Build the anchor-series frame the study consumes from a live-accumulated ``points`` dict
+    {`HH:MM`: {spot, call_ltp, put_ltp, call_oi, put_oi}} (what the dashboard collects each rerun) — so
+    the LIVE study lane reuses the exact replay engine. None until there are >=3 timed points."""
+    import pandas as pd
+    if not points or len(points) < 3:
+        return None
+    rows = []
+    for t, v in sorted(points.items(), key=lambda kv: _mins(kv[0])):
+        if v.get("spot") is None or v.get("call_ltp") is None or v.get("put_ltp") is None:
+            continue
+        rows.append({"time_ist": t, "spot": float(v["spot"]), "call_ltp": float(v["call_ltp"]),
+                     "put_ltp": float(v["put_ltp"]), "call_oi": v.get("call_oi"), "put_oi": v.get("put_oi")})
+    if len(rows) < 3:
+        return None
+    df = pd.DataFrame(rows)
+    df["mins"] = df["time_ist"].map(_mins) - _mins(cut)
+    df["disp"] = df["spot"] - K
+    return df
+
+
+def replay_day(symbol: str, day: str, cut: str = "13:45") -> list[dict] | None:
+    """Minute-by-minute point-in-time replay of the improved hero for one STORED day. None if not
+    captured; otherwise delegates the walk to replay_series (shared with the live lane)."""
+    df = load_day(symbol, day)
+    if df is None:
+        return None
+    K = anchor_strike(df, cut)
+    a = anchor_series(df, K, cut) if K is not None else None
+    return replay_series(a, K, cut) or None
