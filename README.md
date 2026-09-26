@@ -19,16 +19,24 @@ options. Decision-support only — **not financial advice, no order execution.**
 
 ## Status
 - ✅ Engine inherited from `../GEX` (market-agnostic) + India data layer.
-- ✅ Live NSE option-chain pull (`data/nse.py: fetch_chain` / `fetch_chain_v3`).
-- ✅ CLI table + playbook (`cli.py`) and a local Streamlit dashboard (`app/`).
-- ✅ Intraday time-series logging + Windows Task Scheduler setup; captures India
-  VIX, USD/INR, and a news-intensity gauge alongside the GEX levels.
+- ✅ **Live pipeline:** Dhan REST option chain (primary) → NSE (automatic fallback),
+  clock-aligned background fetch; a Dhan Market-Feed **websocket** drives the live
+  big-money futures tape and the expiry-day blast tick capture.
+- ✅ **Daily dashboard** (`app/simple_dashboard.py`) — the plain-language face: value
+  profile (TPO) + live candle + GEX level ladder, the **big-money tape**, OI
+  footprint / trailing-flow windows, and on expiry the **gamma-blast** verdict (the
+  original hero **plus an experimental "study model" shown beside it** — realized-delta
+  + 3PM-window + an explicit exit discipline). One-click launchers for **Windows and
+  macOS/Linux** (see above); the dashboard self-captures its own history while open.
+- ✅ **Multi-index:** Nifty 50, Bank Nifty, Sensex (Sensex borrows Nifty's vanna regime).
+- ✅ CLI table + playbook (`cli.py`); intraday time-series + per-strike OI logging with
+  Windows Task Scheduler setup (captures India VIX, USD/INR, a news-intensity gauge).
 - ✅ **Sign-free positioning suite** (all immune to the dealer-sign landmine):
   magnet drift, per-strike ΔOI footprint, participant-wise OI (FII/Client/DII/Pro),
-  intraday build-up streaks, a true-vs-fake **gamma-blast score**, and **Nifty
-  futures OI build-up** (daily bhavcopy + live intraday). See **Research & findings**.
-- ✅ **133 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
-  adapter/parse, expiry calendar, regime, parity, positioning, and scoring.
+  intraday build-up streaks, the true-vs-fake **gamma-blast score**, a prior-day-level
+  **stop-run sweep** study, and **Nifty futures OI build-up**. See **Research & findings**.
+- ✅ **313 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
+  adapter/parse, expiry calendar, regime, parity, positioning, blast, and scoring.
 - ⏳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
 
 ## Install
@@ -65,26 +73,38 @@ python -m pytest -q
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).
 - `config.py` — India config: `NIFTY_LOT_SIZE` (VERIFY), expiry window, dealer
   model (UNVERIFIED for India), flip grid, OI staleness.
-- `app/` — Streamlit dashboard, data access, intraday time-series capture, and the
-  sign-free positioning modules (`oi_footprint`, `gammablast`, `participant_oi`,
-  `futures_buildup`, `magnet_trend`).
-- `scripts/` — session/time-series logging, EOD captures (participant OI, futures
-  bhavcopy), and the point-in-time IC studies (`analyze_*`).
-- `*.bat` / `setup_*scheduler*` — Windows launchers + scheduled capture setup
-  (time-series, participant OI, futures build-up, gamma-blast).
-- `docs/` — scoping, user guide, and the research/findings notes below.
+- `app/` — the Streamlit dashboards (`simple_dashboard.py` is the daily face,
+  `dashboard.py` the technical one), live data access + fetch lanes, intraday capture,
+  and the sign-free modules: `oi_footprint`, `gammablast`, `blast_study` (the study
+  model) / `blast_ticks`, `big_money*` (the tape + WS feed), `stophunt`, `timeseries`,
+  `participant_oi`, `futures_buildup`, `magnet_trend`.
+- `data/` — `nse.py` (NSE adapter), `dhan*.py` (Dhan REST + Market-Feed websocket),
+  `expiry.py`, `parity.py`, `replay.py` (stored-day replay), `news.py`.
+- `scripts/` — session/time-series logging, EOD captures, the headless collectors
+  (`run_blast_ticks.py`, `run_big_money_collector.py`), and the point-in-time studies
+  (`analyze_*`, `blast_study.py`, `preempt_study.py`).
+- Launchers — `run_simple.bat` (Windows) / `run_simple.command` (macOS/Linux) for the
+  dashboard; `setup_*scheduler*.bat` + `scripts/install_*.ps1` for Windows scheduled capture.
+- `docs/` — scoping, `simple-dashboard.md` (the in-app help), user guide, and the
+  research/findings notes below.
 
 ## Research & findings (sign-free, decision-support only)
 Exploratory studies — read the **sign** and hit-rate, never the decimals; tiny,
 autocorrelated samples. The recurring result: **OI/volume/turnover read *positioning*
 and *expected move size*, not next-move *direction*.**
-- `docs/futures-buildup.md` — Nifty futures OI build-up: verified NSE endpoints
-  (bhavcopy + live), the rollover/units landmines, next-day IC (underpowered, ~0).
-- `docs/gamma-blast-score.md` — true-vs-fake blast score (Spearman +0.79; live-
-  validated 07-07); turnover-ignition and two-sided-parity confirms both **rejected**.
-- `docs/intraday-buildup-streaks.md` — live-only + turnover rework; turnover predicts
-  move *size* (|move| IC +0.3) not *direction* (IC ≈ 0); streaks mean-revert.
+- `docs/findings-summary.md` — **start here.** The research arc's closer: directional
+  edge from OI/GEX is ~zero at every horizon; the volatility-regime read is the real part.
+- `docs/simple-dashboard.md` — the dashboard component guide (same text as the in-app 📖 Help).
+- `docs/gamma-blast-research.md` / `gamma-blast-score.md` — the true-vs-fake blast score
+  (Spearman +0.79; live-validated) and the ignition-timing study; the newer offline study
+  behind the dashboard's "study model" (realized-delta + the 3PM-window separator).
+- `docs/futures-buildup.md` — Nifty futures OI build-up: verified endpoints, the
+  rollover/units landmines, next-day IC (underpowered, ~0).
+- `docs/intraday-buildup-streaks.md` — turnover predicts move *size* (|move| IC +0.3)
+  not *direction* (≈ 0); streaks mean-revert.
 - `docs/participant-oi.md` — participant-wise OI + FII-drift IC.
+- `docs/tick-data-ic-research.md`, `docs/big-money-tape.md` — the big-money tape + the
+  literature review on tick-data predictive IC (contemporaneous strong, predictive ~0).
 
 ## Verify-live before trusting (never guess — see `BUILD_PLAN.md` §3)
 1. NSE data source + pricing.   2. Current Nifty lot size.
