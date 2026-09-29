@@ -634,12 +634,13 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     data = st.session_state.get("simp_data")
     if data is None:
         err = st.session_state.get("simp_err", "")
-        st.warning(f"⏳ Waiting for the first {config.get_index(symbol).label} chain pull… "
-                   f"{'(' + str(err) + ')' if err else 'the feed usually lands within ~15s — this page '
-                   'refreshes itself.'}")
+        err_msg = f"({err})" if err else "the feed usually lands within ~15s — this page refreshes itself."
+        st.warning(f"⏳ Waiting for the first {config.get_index(symbol).label} chain pull… {err_msg}")
+
         st.caption("Still blank after ~30s? Check the Dhan token in the sidebar, or tick "
                    "**Demo data (offline)** to verify the view itself is healthy.")
         st.stop()
+
 
     L = data.levels
     ist = data.fetched_at + timedelta(hours=5, minutes=30)

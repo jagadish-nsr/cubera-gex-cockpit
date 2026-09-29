@@ -227,15 +227,6 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             _nse_vix = _fx["vix"].result() if "vix" in _fx else None
         india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
 
-            if not _dhan:
-                from data.nse import fetch_india_vix as _nvx
-                _fx["vix"] = _ex.submit(_nvx)
-            payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
-            rows, spot = parse_nse_option_chain(payload)
-            news = _fx["news"].result()
-            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
-            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
-        india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
 
     _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
     snap = from_nse_results(
