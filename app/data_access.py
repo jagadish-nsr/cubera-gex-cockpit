@@ -1,13 +1,7 @@
 """Dashboard data pipeline — NO streamlit import, so it is unit-testable offline.
 
-load_dashboard() runs the full chain: pull (NSE / Breeze / Dhan / demo) -> snapshot ->
-filter window -> compute_levels -> regime view, and returns a small bundle the
-UI renders.
-
-DATA_SOURCE flag (config.py):
-  "icici_breeze" — default; ICICI Direct Breeze API (NIFTY, BANKNIFTY, SENSEX).
-  "dhan"         — Dhan broker API (NIFTY, BANKNIFTY).
-  "nse"          — legacy NSE scraper (NIFTY, BANKNIFTY only).
+load_dashboard() runs the full chain: pull (NSE or demo) -> snapshot -> filter
+window -> compute_levels -> regime view, and returns a small bundle the UI renders.
 """
 
 from __future__ import annotations
@@ -21,7 +15,7 @@ from data.nse import from_nse_results
 from gex.levels import Levels, compute_levels
 from regime.classify import RegimeView, from_levels
 
-WINDOW_CHOICES = ["0dte", "0dte_to_next_monthly", "weekly", "monthly", "all"]
+WINDOW_CHOICES = ["0dte_to_next_monthly", "weekly", "0dte", "monthly", "all"]
 
 
 @dataclass
@@ -34,311 +28,146 @@ class DashboardData:
     window: str
     source: str
     symbol: str = config.DEFAULT_INDEX   # which index this bundle is for
-    index_label: str = ""                # display name ("Nifty 50" / "Bank Nifty" / "Sensex")
-    oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live fetch only)
-    oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot
-    contracts: object = None       # options snapshot contracts DataFrame
-    india_vix: dict | None = None  # {last, change, pct_change}; NSE only, best-effort
+    index_label: str = ""                # display name ("Nifty 50" / "Bank Nifty")
+    oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
+    oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot (live NSE)
+    india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
     usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
     news: dict | None = None       # {count, impact, top}; free RSS, best-effort
+    vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
+    charm_now: float | None = None  # live dealer-charm exposure (better vol metric at 0-DTE)
+    dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
+    day_ohlc: dict | None = None    # true index day OHLC {open,high,low,close,ltp} (Dhan feed only)
+    source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
+    proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
+    proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
+    sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
+    contracts: object = None           # options snapshot contracts DataFrame (v2 tab strike analysis)
 
 
-def _load_from_nse(idx, window, fetched_at):
-    """Load dashboard data from the NSE scraper (original path, unchanged)."""
-    if idx.symbol == "SENSEX":
-        raise ValueError(
-            "SENSEX is not available via the NSE data source. "
-            "Set DATA_SOURCE=icici_breeze or DATA_SOURCE=dhan in your .env "
-            "to use an API adapter that supports SENSEX."
+def _live_greeks(contracts, spot: float, lot: float) -> dict:
+    """Current dealer VANNA & CHARM exposure |Σ greek·(callOI−putOI)| over the ~21 nearest strikes
+    of the nearest expiry, ×lot to match the Dhan cache scale (Dhan OI is already in shares) —
+    plus days-to-expiry. The gauge uses charm ≤1.5 DTE (sharper there, Study #8/T1b) else vanna.
+    Returns {vanna, charm, dte} (values may be None) — non-essential, never raises."""
+    import numpy as np
+    from scipy.stats import norm
+    out = {"vanna": None, "charm": None, "dte": None}
+    try:
+        df = contracts.dropna(subset=["strike", "oi", "iv", "T"])
+        exp = df["expiry"].min()
+        d = df[df["expiry"] == exp]
+        T = float(d["T"].iloc[0])
+        if not (T > 0) or not (spot > 0) or not lot:
+            return out
+        out["dte"] = T * 365.0
+        typ = d["type"].astype(str).str.upper()
+        calls = d[typ.str.startswith(("C",))].set_index("strike")
+        puts = d[typ.str.startswith(("P",))].set_index("strike")
+        strikes = sorted(set(calls.index) & set(puts.index), key=lambda k: abs(k - spot))[:21]
+        sq = T ** 0.5
+        vanna = charm = 0.0
+        for k in strikes:
+            coi = float(calls.loc[k, "oi"]); poi = float(puts.loc[k, "oi"])
+            iv = float(calls.loc[k, "iv"]) if k >= spot else float(puts.loc[k, "iv"])
+            if not (iv == iv and iv > 0):
+                continue
+            d1 = (np.log(spot / k) + 0.5 * iv * iv * T) / (iv * sq)
+            d2 = d1 - iv * sq
+            phi = norm.pdf(d1)
+            vanna += (-phi * d2 / iv) * (coi - poi)
+            charm += (phi * d2 / (2.0 * T)) * (coi - poi)
+        out["vanna"] = abs(vanna) * float(lot)
+        out["charm"] = abs(charm) * float(lot)
+        return out
+    except Exception:  # noqa: BLE001 - gauge overlay is non-essential
+        return out
+
+
+def _fetch_live_chain(idx, live_source: str | None):
+    """Pull the LIVE chain as an NSE-shaped payload, honouring the Dhan-primary / NSE-backup
+    policy (config.LIVE_SOURCE). Returns (payload, source, day_ohlc, note). Dhan failures (expired
+    24h token, un-subscribed Data API, network, or a shape mismatch that makes the adapter raise)
+    fall back to the NSE scrape — a stale token degrades the feed, never breaks the dashboard."""
+    from data.nse import fetch_chain as nse_fetch
+    pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+    note = None
+    if pref in ("dhan", "auto"):
+        has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+        if pref == "dhan" or has_token:
+            try:
+                from data import dhan_live
+                payload = dhan_live.fetch_chain(idx.symbol)     # throttled, ≥3s/expiry
+                ohlc = dhan_live.fetch_index_ohlc(idx.symbol)   # true day OHLC, best-effort
+                return payload, "dhan", ohlc, None
+            except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
+                note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
+        elif pref == "auto":
+            note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
+    payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
+    source = "nse (Dhan fallback)" if note and "using NSE" in note and pref != "nse" else "nse"
+    return payload, source, None, note
+
+
+def _proxy_vanna(proxy_symbol: str, live_source: str | None,
+                 sign_model: str | None = None) -> float | None:
+    """Live dealer-|vanna| of a correlated proxy index (e.g. NIFTY for SENSEX), for a BORROWED
+    regime read. One nearest-expiry chain (Dhan if a token is present, else NSE), snapshot ->
+    _live_greeks. Best-effort: None on ANY failure, so the regime just falls back to the index's
+    own vanna. See the SENSEX-vanna study (NIFTY vanna grades SENSEX's move; SENSEX's own does not)."""
+    try:
+        from data.nse import parse_nse_option_chain
+        pidx = config.get_index(proxy_symbol)
+        pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+        has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+        if pref in ("dhan", "auto") and has_token:
+            from data import dhan_live
+            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)  # nearest expiry is enough
+        else:
+            from data.nse import fetch_chain as nse_fetch
+            payload = nse_fetch(pidx.symbol, has_weekly=pidx.has_weekly)
+        rows, spot = parse_nse_option_chain(payload)
+        snap = from_nse_results(
+            rows, spot=spot, expiry_window="all",
+            dealer_sign_model=(sign_model or config.DEALER_SIGN_MODEL),
+            fetched_at=datetime.now(timezone.utc), underlying=pidx.symbol,
         )
-    from data.news import fetch_news
-    from data.nse import (aggregate_oi_volume, fetch_chain, fetch_india_vix,
-                          fetch_usdinr, nearest_expiry_premiums,
-                          parse_nse_option_chain, per_strike_nearest_changes,
-                          per_strike_oi)
-
-    payload = fetch_chain(idx.symbol, has_weekly=idx.has_weekly)
-    rows, spot = parse_nse_option_chain(payload)
-    india_vix = fetch_india_vix()
-    usdinr = fetch_usdinr()
-    news = fetch_news()
-    source = "nse"
-
-    oi_volume = aggregate_oi_volume(payload)
-    oi_strikes_raw = per_strike_oi(payload, spot=spot, band_pts=idx.band_pts)
-    prem = nearest_expiry_premiums(rows)
-    nc = per_strike_nearest_changes(payload, spot=spot, band_pts=idx.band_pts)
-
-    return rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc
+        return _live_greeks(snap.contracts, float(spot), pidx.lot_size).get("vanna")
+    except Exception:  # noqa: BLE001 - borrowed regime is best-effort context
+        return None
 
 
-def _load_from_breeze(idx, window, fetched_at):
-    """Load dashboard data from ICICI Direct Breeze API."""
-    from data.icici_breeze import (
-        aggregate_oi_volume_breeze,
-        fetch_chain_breeze,
-        nearest_expiry_premiums_breeze,
-        per_strike_oi_breeze,
-    )
-
-    api_key = config.ICICI_BREEZE_API_KEY
-    api_secret = config.ICICI_BREEZE_API_SECRET
-    session_token = config.ICICI_BREEZE_SESSION_TOKEN
-
-    if not (api_key and api_secret and session_token):
-        raise RuntimeError(
-            "DATA_SOURCE=icici_breeze requires ICICI_BREEZE_API_KEY, "
-            "ICICI_BREEZE_API_SECRET, and ICICI_BREEZE_SESSION_TOKEN to be set in .env. "
-            "The session token must be refreshed daily."
-        )
-
-    rows, spot = fetch_chain_breeze(
-        idx.symbol,
-        api_key=api_key,
-        api_secret=api_secret,
-        session_token=session_token,
-        has_weekly=idx.has_weekly,
-        window=window,
-        fetched_at=fetched_at,
-        exchange=idx.exchange,
-    )
-    source = "icici_breeze"
-
-    # Fetch supplementary market context (VIX, USDINR, News) via Breeze, fallback to NSE
-    from data.icici_breeze import fetch_india_vix_breeze, fetch_usdinr_breeze
-    try:
-        from data.news import fetch_news
-        news = fetch_news()
-    except Exception:
-        news = None
-    try:
-        india_vix = fetch_india_vix_breeze(
-            api_key=api_key, api_secret=api_secret, session_token=session_token)
-    except Exception:
-        india_vix = None
-    if india_vix is None:
-        try:
-            from data.nse import fetch_india_vix
-            india_vix = fetch_india_vix()
-        except Exception:
-            india_vix = None
-    try:
-        usdinr = fetch_usdinr_breeze(
-            api_key=api_key, api_secret=api_secret, session_token=session_token)
-    except Exception:
-        usdinr = None
-    if usdinr is None:
-        try:
-            from data.nse import fetch_usdinr
-            usdinr = fetch_usdinr()
-        except Exception:
-            usdinr = None
-
-    oi_volume = aggregate_oi_volume_breeze(rows)
-    oi_strikes_raw = per_strike_oi_breeze(rows, spot=spot, band_pts=idx.band_pts)
-    prem = nearest_expiry_premiums_breeze(rows)
-    # Breeze does not provide "change vs prev close" per strike on live chain;
-    # we enrich from the EOD store (populated by the background seed below).
-    nc: dict = _build_nc_from_eod_store(idx.symbol, spot, fetched_at)
-
-    # --- Seed EOD historical store (best-effort, background-safe) ------------
-    # Persist today's live snapshot to the local EOD store so that tomorrow's
-    # ΔOI (doi) can be computed. Also backfills the last N trading days if
-    # this is the first run (no local history).
-    _seed_eod_store_if_needed(
-        idx.symbol, spot, fetched_at, rows,
-        api_key=api_key, api_secret=api_secret, session_token=session_token,
-        exchange=idx.exchange,
-    )
-
-    payload = None   # NSE-specific extras not available via Breeze
-
-    return rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc
-
-
-def _load_from_dhan(idx, window, fetched_at):
-    """Load dashboard data from the Dhan broker API."""
-    from data.dhan import (
-        DhanCredentialError,
-        aggregate_oi_volume_dhan,
-        fetch_chain_dhan,
-        nearest_expiry_premiums_dhan,
-        per_strike_oi_dhan,
-    )
-
-    client_id    = config.DHAN_CLIENT_ID
-    access_token = config.DHAN_ACCESS_TOKEN
-
-    if not (client_id and access_token):
-        raise RuntimeError(
-            "DATA_SOURCE=dhan requires DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN "
-            "to be set in your .env file. "
-            "Generate them at: https://dhanhq.co/docs/latest/authentication/"
-        )
-
-    if idx.symbol == "SENSEX":
-        raise ValueError(
-            "SENSEX is not supported by the Dhan adapter. "
-            "Set DATA_SOURCE=icici_breeze in your .env to access SENSEX."
-        )
-
-    rows, spot = fetch_chain_dhan(
-        idx.symbol,
-        client_id=client_id,
-        access_token=access_token,
-        has_weekly=idx.has_weekly,
-        window=window,
-        fetched_at=fetched_at,
-        exchange=idx.exchange,
-    )
-    source = "dhan"
-
-    # Supplementary market context — try Dhan first, fall back to NSE scrape
-    from data.dhan import fetch_india_vix_dhan, fetch_usdinr_dhan
-    try:
-        from data.news import fetch_news
-        news = fetch_news()
-    except Exception:
-        news = None
-    try:
-        india_vix = fetch_india_vix_dhan(client_id=client_id, access_token=access_token)
-    except Exception:
-        india_vix = None
-    if india_vix is None:
-        try:
-            from data.nse import fetch_india_vix
-            india_vix = fetch_india_vix()
-        except Exception:
-            india_vix = None
-    try:
-        usdinr = fetch_usdinr_dhan(client_id=client_id, access_token=access_token)
-    except Exception:
-        usdinr = None
-    if usdinr is None:
-        try:
-            from data.nse import fetch_usdinr
-            usdinr = fetch_usdinr()
-        except Exception:
-            usdinr = None
-
-    oi_volume      = aggregate_oi_volume_dhan(rows)
-    oi_strikes_raw = per_strike_oi_dhan(rows, spot=spot, band_pts=idx.band_pts)
-    prem           = nearest_expiry_premiums_dhan(rows)
-    nc: dict       = _build_nc_from_eod_store(idx.symbol, spot, fetched_at)
-
-    payload = None  # NSE-specific extras not available via Dhan
-
-    return rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc
-
-
-def _build_nc_from_eod_store(symbol: str, spot: float, fetched_at) -> dict:
-    """Build the nearest-change (nc) dict from the local EOD store.
-
-    Returns a dict keyed by strike with {call_doi_near, put_doi_near} populated
-    from yesterday's EOD OI. Falls back to empty dict gracefully.
-    """
-    from datetime import timedelta
-    from data.storage import load_oi_strikes_eod
-
-    ist_today = (fetched_at + timedelta(hours=5, minutes=30)).date()
-    nc: dict = {}
-    # Try last 7 calendar days to find the most recent EOD data
-    for offset in range(1, 8):
-        prev_d = ist_today - timedelta(days=offset)
-        prev_rows = load_oi_strikes_eod(symbol, prev_d)
-        if prev_rows:
-            for r in prev_rows:
-                k = float(r.get("strike", 0))
-                typ = str(r.get("type", ""))
-                oi = float(r.get("oi") or 0)
-                cell = nc.setdefault(k, {})
-                if typ == "C":
-                    cell["prev_call_oi"] = oi
-                elif typ == "P":
-                    cell["prev_put_oi"] = oi
-            break
-    return nc
-
-
-def _seed_eod_store_if_needed(
-    symbol: str, spot: float, fetched_at, live_rows: list[dict],
-    *, api_key: str, api_secret: str, session_token: str, exchange: str = "NSE"
-) -> None:
-    """Persist today's option-chain snapshot to the EOD store (best-effort).
-
-    Also backfills the last 5 trading days if we have no local history at all
-    (first-run bootstrap). Runs in-process (not threaded) but all errors are
-    swallowed so a failure never blocks the dashboard render.
-    """
-    import threading
-    from datetime import timedelta
-    from data.storage import available_eod_dates, save_oi_strikes_eod
-    from data.expiry import next_monthly_expiry
-
-    ist_today = (fetched_at + timedelta(hours=5, minutes=30)).date()
-
-    def _seed():
-        try:
-            existing = available_eod_dates(symbol)
-
-            # Persist today's live chain as EOD snapshot
-            eod_rows = []
-            for r in live_rows:
-                eod_rows.append({
-                    "date_ist": str(ist_today),
-                    "symbol": symbol,
-                    "expiry": str(r.get("expiry", "")),
-                    "strike": r.get("strike"),
-                    "type": r.get("type"),
-                    "oi": r.get("oi"),
-                    "doi": r.get("doi"),
-                    "volume": r.get("vol"),
-                    "close_price": r.get("price"),
-                })
-            if eod_rows:
-                save_oi_strikes_eod(symbol, ist_today, eod_rows)
-
-            # Backfill options: if we have fewer than 3 days of history, fetch the last 5 trading days
-            if len(existing) < 3:
-                from data.icici_breeze import fetch_options_eod_breeze
-                expiry = next_monthly_expiry(ist_today, exchange)
-                for offset in range(1, 6):
-                    day = ist_today - timedelta(days=offset)
-                    if day.weekday() >= 5:  # skip weekends
-                        continue
-                    if str(day) in [str(d) for d in existing]:
-                        continue
-                    fetch_options_eod_breeze(
-                        symbol, day, spot, expiry,
-                        api_key=api_key, api_secret=api_secret, session_token=session_token,
-                    )
-
-            # Backfill futures: if we have fewer than 3 days of history, fetch the last 15 calendar days of futures history
-            if len(existing) < 3:
-                from data.icici_breeze import fetch_futures_history_breeze
-                from_date = ist_today - timedelta(days=15)
-                fetch_futures_history_breeze(
-                    symbol, from_date, ist_today,
-                    api_key=api_key, api_secret=api_secret, session_token=session_token,
-                    exchange=exchange,
-                )
-        except Exception:  # noqa: BLE001
-            pass
-
-    # Run in a daemon thread so it doesn't block the dashboard render
-    t = threading.Thread(target=_seed, daemon=True)
-    t.start()
+def _prefer_dhan(live_source) -> bool:
+    """True when the live feed will be Dhan (token present + not forced to NSE) — in which case
+    India VIX rides the bundled index-OHLC quote and no separate NSE VIX call is needed."""
+    pref = (live_source or config.LIVE_SOURCE or "auto").lower()
+    if pref == "nse":
+        return False
+    return bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
-                   symbol: str | None = None) -> DashboardData:
+                   symbol: str | None = None, live_source: str | None = None,
+                   sign_model: str | None = None) -> DashboardData:
+    """Load a full DashboardData bundle.
+
+    Parameters
+    ----------
+    sign_model : str | None
+        Dealer gamma sign convention. Pass explicitly per-tab to isolate models:
+          - Tab 1 (remote/US): ``"long_call_short_put"``
+          - Tab 2 (India SCSP): ``"short_call_short_put"``
+        Falls back to ``config.DEALER_SIGN_MODEL`` when None (legacy callers).
+    """
     window = window or config.EXPIRY_WINDOW_DEFAULT
     idx = config.get_index(symbol)             # resolves symbol -> lot size, weekly, band
     fetched_at = datetime.now(timezone.utc)
+    day_ohlc = None
+    source_note = None
+    proxy_vanna = None
 
     if use_demo:
         from data.demo import build_demo_rows
-        from data.nse import nearest_expiry_premiums
 
         rows, spot = build_demo_rows(fetched_at=fetched_at)
         source = "DEMO-SYNTHETIC"
@@ -346,71 +175,49 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         india_vix = None
         usdinr = None
         news = None
-        oi_volume = None
-        
-        # Synthesize oi_strikes_raw from demo rows
-        oi_strikes_raw = []
-        for r in rows:
-            k = float(r["strike"])
-            cell = next((c for c in oi_strikes_raw if c["strike"] == k), None)
-            if not cell:
-                cell = {"strike": k, "call_oi": 0.0, "call_doi": 0.0, "call_vol": 0.0,
-                        "put_oi": 0.0, "put_doi": 0.0, "put_vol": 0.0}
-                oi_strikes_raw.append(cell)
-            if r["type"] == "C":
-                cell["call_oi"] += float(r["oi"])
-            else:
-                cell["put_oi"] += float(r["oi"])
-        oi_strikes_raw.sort(key=lambda x: x["strike"])
-        
-        prem = nearest_expiry_premiums(rows)
-        nc: dict = {}
-    elif config.DATA_SOURCE == "dhan":
-        rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc = \
-            _load_from_dhan(idx, window, fetched_at)
-    elif config.DATA_SOURCE == "icici_breeze":
-        rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc = \
-            _load_from_breeze(idx, window, fetched_at)
+        sectors = None
     else:
-        rows, spot, source, payload, india_vix, usdinr, news, oi_volume, oi_strikes_raw, prem, nc = \
-            _load_from_nse(idx, window, fetched_at)
+        import concurrent.futures as _cf
+        from data.news import fetch_news
+        from data.sectors import fetch_sector_snap
+        from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
+                              parse_nse_option_chain, per_strike_nearest_changes,
+                              per_strike_oi)
 
+        usdinr = None          # USD/INR retired — Dhan has no live contract and it's unresearched
+        # Run news, the proxy pull, and (NSE-only) VIX CONCURRENTLY with the main chain so they hide
+        # under its ~10-15s instead of adding serially. On Dhan, VIX rides the index-OHLC quote
+        # (day_ohlc["vix"]) — no separate call. All fail-soft.
+        _dhan = _prefer_dhan(live_source)
+        _nse_vix = None
+        # Sector strip: NOT on the fetch path. This returns the cached rows instantly and
+        # self-refreshes on its own 15-min background timer, so the slow-moving rotation context
+        # never competes with the chain / futures pull for time or worker threads.
+        sectors = fetch_sector_snap()
+        _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
+        with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
+            _fx = {"news": _ex.submit(fetch_news)}
+            if idx.regime_proxy:
+                _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source, _resolved_sign_model)
+            if not _dhan:
+                from data.nse import fetch_india_vix as _nvx
+                _fx["vix"] = _ex.submit(_nvx)
+            payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
+            rows, spot = parse_nse_option_chain(payload)
+            news = _fx["news"].result()
+            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
+            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
+        india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
+
+    _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
     snap = from_nse_results(
         rows, spot=spot, expiry_window=window,
-        dealer_sign_model=config.DEALER_SIGN_MODEL, source=source,
+        dealer_sign_model=_resolved_sign_model, source=source,
         fetched_at=fetched_at, oi_timestamp=fetched_at, underlying=idx.symbol,
     )
-
-    # --- Post-close expiry-day handling ---
-    # When a 0dte/weekly window is selected and the market has closed on expiry day,
-    # T becomes ≤ 0 for those contracts. Advance the filter ref by one day so we
-    # fall through to the next weekly/monthly expiry automatically, rather than
-    # returning an empty chain or crashing on parity T≤0.
-    from datetime import timedelta
-    filter_ref = fetched_at.date()
-    ist_now = fetched_at + timedelta(hours=5, minutes=30)
-    market_closed_today = ist_now.hour * 100 + ist_now.minute >= 1530
-    if market_closed_today and window in ("0dte", "weekly"):
-        # Try with advanced ref; fall back to current ref if it still yields contracts
-        from data.expiry import filter_expiry_window as _few
-        next_ref = filter_ref + timedelta(days=1)
-        advanced = _few(snap.contracts, window, next_ref,
-                        has_weekly=idx.has_weekly, exchange=idx.exchange)
-        if not advanced.empty:
-            filter_ref = next_ref
-
-    snap.contracts = filter_expiry_window(
-        snap.contracts, window, filter_ref,
-        has_weekly=idx.has_weekly, exchange=idx.exchange,
-    )
-    if snap.contracts.empty:
-        raise ValueError(
-            f"No contracts found for the '{window}' window for {idx.symbol}. "
-            "After market close on expiry day the 0dte/weekly window may be empty — "
-            "try switching to 'weekly' or 'monthly' window."
-        )
+    snap.contracts = filter_expiry_window(snap.contracts, window, fetched_at.date(),
+                                          has_weekly=idx.has_weekly)
     snap.validate()
-
 
     levels = compute_levels(
         snap, contract_size=idx.lot_size,
@@ -421,13 +228,19 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
     )
     view = from_levels(levels)
     expiries = sorted(snap.contracts["expiry"].unique().tolist())
-
-    # Build oi_strikes with enriched fields (premiums, gex, nearest-expiry doi)
-    oi_strikes: list | None = None
-    if oi_strikes_raw is not None:
+    oi_volume = aggregate_oi_volume(payload) if payload is not None else None
+    oi_strikes = (per_strike_oi(payload, spot=spot, band_pts=idx.band_pts)
+                  if payload is not None else None)
+    if oi_strikes is not None:
+        # Enrich each strike with the nearest-expiry premium (for the crossover
+        # watch) and the engine's gamma exposure (net_gex, for the Δgamma map).
+        prem = nearest_expiry_premiums(rows)
+        # Nearest-expiry OI-change + premium-change (both vs prev close) so the
+        # footprint build-up tag is exact (aligned expiry + window), not approximate.
+        nc = per_strike_nearest_changes(payload, spot=spot, band_pts=idx.band_pts)
         gex = (dict(zip(levels.per_strike["strike"], levels.per_strike["net_gex"]))
                if levels.per_strike is not None else {})
-        for s in oi_strikes_raw:
+        for s in oi_strikes:
             k = s["strike"]
             p = prem.get(k, {})
             s["call_ltp"] = p.get("call_ltp")
@@ -438,12 +251,17 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["put_doi_near"] = c.get("put_doi_near")
             s["call_dprem"] = c.get("call_dprem")
             s["put_dprem"] = c.get("put_dprem")
-        oi_strikes = oi_strikes_raw
-
+            s["call_oi_near"] = c.get("call_oi_near")   # nearest-expiry abs OI (trailing windows)
+            s["put_oi_near"] = c.get("put_oi_near")
+    gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
     return DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
-        n_contracts=len(snap.contracts), contracts=snap.contracts, expiries=expiries, window=window, source=source,
+        contracts=snap.contracts,
+        n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
         symbol=idx.symbol, index_label=idx.label,
         oi_volume=oi_volume, oi_strikes=oi_strikes, india_vix=india_vix,
-        usdinr=usdinr, news=news,
+        usdinr=usdinr, news=news, vanna_now=gk["vanna"], charm_now=gk["charm"], dte_now=gk["dte"],
+        day_ohlc=day_ohlc, source_note=source_note,
+        proxy_vanna=proxy_vanna, proxy_symbol=(idx.regime_proxy if proxy_vanna is not None else None),
+        sectors=sectors,
     )

@@ -1,13 +1,13 @@
-# gex-indian dependencies. Prefer stdlib + numpy/scipy/pandas (per CLAUDE.md).
-#   numpy/scipy - vectorised Black-Scholes gamma + the flip-profile grid.
-#   pandas      - hold/filter the options chain.
-#   requests    - NSE option-chain pull.
+# Explicit, pinned minimum dependencies for the pure GEX model.
+# Core calculation stack:
+#   numpy, scipy, pandas - arrays, interpolation, put-call parity, stats.
+#   requests    - NSE and Dhan API network calls.
 #   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
 #   streamlit-autorefresh - non-blocking timer for the dashboard auto-refresh.
 #   pytest      - test runner for the hand-checkable fixtures.
-#   python-dotenv - load .env credentials (DATA_SOURCE, ICICI_BREEZE_* keys).
-#   breeze-connect - ICICI Direct Breeze API SDK (optional: only needed when
-#                    DATA_SOURCE=icici_breeze in .env).
+#   python-dotenv - load .env credentials (DATA_SOURCE, DHAN_* keys).
+#   pyarrow     - parquet I/O for the Dhan intraday store + feature caches.
+#   scikit-learn - gamma-blast ML studies (HistGradientBoosting / logistic).
 numpy>=1.26
 scipy>=1.11
 pandas>=2.1
@@ -16,4 +16,5 @@ streamlit>=1.40
 streamlit-autorefresh>=1.0
 pytest>=8.0
 python-dotenv>=1.0
-breeze-connect>=1.0.69
+pyarrow>=15.0
+scikit-learn>=1.5

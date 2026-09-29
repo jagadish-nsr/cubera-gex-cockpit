@@ -382,3 +382,49 @@ def regime_daily_move_now(store: str, vanna_now: float | None, charm_now: float 
     if dte_now is not None and dte_now <= DTE_CHARM_MAX and charm_now is not None:
         return regime_daily_move(store, charm_now, metric="charm", dte_max=DTE_CHARM_MAX)
     return regime_daily_move(store, vanna_now, metric="vanna")
+
+
+@functools.lru_cache(maxsize=16)
+def _daymove_stats_proxy(move_store: str, regime_store: str, move_mtime: float, regime_mtime: float):
+    """Tercile cuts on the REGIME_STORE's per-stamp |vanna|, but daily HL% from the MOVE_STORE,
+    aligned by day. A BORROWED regime for correlated indices: the deeper book (regime_store, e.g.
+    NIFTY) supplies the clean vanna grading; the target (move_store, e.g. SENSEX) supplies the
+    realized move magnitude. Verified NIFTY->SENSEX separation 1.73x (SENSEX's own vanna is only
+    0.92x pooled — scrambled by its expiry-cadence churn). Mirrors ``_daymove_stats`` but cross-index."""
+    import numpy as np
+    fr, fm = load_features(regime_store), load_features(move_store)
+    if fr is None or fm is None or len(fr) < 1000:
+        return None
+    col = "vanna" if "vanna" in fr.columns else "net_gex"
+    fr = fr.sort_values(["day", "time_ist"]).reset_index(drop=True)
+    hl = fm.groupby("day")["spot"].agg(lambda s: (s.max() - s.min()) / s.iloc[0] * 100.0)
+    hl = hl.where(hl <= _MAX_DAY_HL_PCT)                    # drop corrupt-tick days
+    a = fr[col].abs().to_numpy()
+    d = fr["day"].map(hl).to_numpy()
+    ok = np.isfinite(a) & np.isfinite(d)
+    a, d = a[ok], d[ok]
+    if len(a) < 300:
+        return None
+    q1, q2 = np.percentile(a, [33, 66])
+    lo = float(np.median(d[a <= q1]))
+    hi = float(np.median(d[a >= q2]))
+    mid = float(np.median(d[(a > q1) & (a < q2)]))
+    return np.sort(a), float(q1), float(q2), lo, mid, hi
+
+
+def regime_daily_move_proxy(move_store: str, regime_store: str,
+                            proxy_vanna: float | None) -> dict | None:
+    """Expected daily HL% for MOVE_STORE, graded by REGIME_STORE's LIVE |vanna| (borrowed regime).
+    Same shape as ``regime_daily_move`` but the tercile + live value come from the proxy book."""
+    import numpy as np
+    pr, pm = _cache_path(regime_store), _cache_path(move_store)
+    if not (pr.exists() and pm.exists()) or proxy_vanna is None or not np.isfinite(proxy_vanna):
+        return None
+    v = abs(proxy_vanna)
+    stats = _daymove_stats_proxy(move_store, regime_store, pm.stat().st_mtime, pr.stat().st_mtime)
+    if stats is None:
+        return None
+    _srt, q1, q2, lo, mid, hi = stats
+    hl_pct = hi if v >= q2 else lo if v <= q1 else mid
+    tag = "calm" if v >= q2 else "wild" if v <= q1 else "mid"
+    return {"hl_pct": hl_pct, "tag": tag, "lo_hl": lo, "hi_hl": hi, "metric": "vanna(proxy)"}

@@ -80,7 +80,7 @@ def _save_blast(data) -> int:
         return 0
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                       directory=GAMMA_BLAST_DIR)
+                       directory=GAMMA_BLAST_DIR, symbol=data.symbol)
     return len(rows)
 
 

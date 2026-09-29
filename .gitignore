@@ -16,3 +16,8 @@ data/journal/
 data/.dhan_token
 data/.dhan_client_id
 .dhan_token
+
+.DS_Store
+*.DS_Store
+logs/
+

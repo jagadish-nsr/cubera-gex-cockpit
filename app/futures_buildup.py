@@ -28,6 +28,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FUTURES_DIR = ROOT / "data" / "journal" / "futures"
 # Intraday snapshots (live endpoint), one row per snapshot: futures_intraday/<SYMBOL>/.
 FUTURES_INTRADAY_DIR = ROOT / "data" / "journal" / "futures_intraday"
+FUTURES_INTRADAY_DHAN_DIR = ROOT / "data" / "journal" / "futures_intraday_dhan"  # Dhan feed, separate
+
+
+def futures_intraday_dir_for(source: str | None) -> Path:
+    """Intraday futures journal root for a feed source — Dhan kept separate from NSE (compare later,
+    never mix). 'dhan' -> futures_intraday_dhan; NSE / fallback / None -> futures_intraday."""
+    return FUTURES_INTRADAY_DHAN_DIR if (source or "").lower().startswith("dhan") else FUTURES_INTRADAY_DIR
 FUTURES_INTRADAY_FIELDS = [
     "timestamp_utc", "time_ist", "date_ist", "symbol", "expiry",
     "price", "change", "oi", "volume", "agg_oi", "agg_vol", "spot",
@@ -102,31 +109,6 @@ def load_futures_day(date_ist: str, symbol: str) -> dict | None:
     """Load one day's futures record back into the parse_index_futures shape, or None."""
     path = _path_for(date_ist, symbol)
     if not path.exists():
-        # Fallback to local EOD storage from data.storage
-        try:
-            from datetime import date
-            from data.storage import load_futures_eod
-            d = date.fromisoformat(date_ist)
-            rows = load_futures_eod(symbol, d)
-            if rows:
-                r = rows[0]
-                return {
-                    "symbol": symbol,
-                    "expiry": r.get("expiry"),
-                    "close": r.get("close"),
-                    "prev_close": r.get("prev_close"),
-                    "dprice": r.get("dprice"),
-                    "near_oi": r.get("oi"),
-                    "near_doi": r.get("doi"),
-                    "near_vol": r.get("volume"),
-                    "agg_oi": r.get("oi"),
-                    "agg_doi": r.get("doi"),
-                    "agg_vol": r.get("volume"),
-                    "spot": r.get("close"),  # close price is a proxy for spot if spot not fetched
-                    "n_contracts": 1
-                }
-        except Exception:
-            pass
         return None
     with open(path, newline="", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
@@ -148,15 +130,7 @@ def load_futures_day(date_ist: str, symbol: str) -> dict | None:
 def available_days(symbol: str) -> list[str]:
     """Sorted IST dates (YYYY-MM-DD) with a captured futures file for ``symbol``."""
     d = FUTURES_DIR / symbol
-    days = set(p.stem for p in d.glob("*.csv")) if d.exists() else set()
-    # Unify with EOD store
-    try:
-        from data.storage import available_eod_dates
-        for dt in available_eod_dates(symbol):
-            days.add(dt.isoformat())
-    except Exception:
-        pass
-    return sorted(days)
+    return sorted(p.stem for p in d.glob("*.csv")) if d.exists() else []
 
 
 def futures_series(symbol: str = "NIFTY", n: int = 10, days: list[str] | None = None) -> list[dict]:
@@ -179,8 +153,8 @@ def futures_series(symbol: str = "NIFTY", n: int = 10, days: list[str] | None = 
 
 
 # --- Intraday capture (live endpoint; forward-only history) --------------------
-def _intraday_path(date_ist: str, symbol: str) -> Path:
-    return FUTURES_INTRADAY_DIR / symbol / f"{date_ist}.csv"
+def _intraday_path(date_ist: str, symbol: str, directory: Path | None = None) -> Path:
+    return (directory or FUTURES_INTRADAY_DIR) / symbol / f"{date_ist}.csv"
 
 
 def _hhmm(t: str) -> int | None:
@@ -207,17 +181,18 @@ def _last_time_ist(path: Path) -> str | None:
 
 
 def append_futures_snapshot(rec: dict, timestamp_utc: str, time_ist: str, date_ist: str,
-                            symbol: str | None = None, min_gap_minutes: float = 0.0):
+                            symbol: str | None = None, min_gap_minutes: float = 0.0,
+                            directory: Path | None = None):
     """Append one live futures snapshot (from parse_futures_live) to the intraday
     journal. ``min_gap_minutes`` skips the write if the last row is younger than that
     (keeps a best-effort dashboard capture from double-writing between logger ticks).
-    Returns (path, written)."""
+    ``directory`` routes to the feed's own journal (Dhan vs NSE). Returns (path, written)."""
     if not rec:
         return None, False
     symbol = symbol or rec.get("symbol")
     if not symbol:
         return None, False
-    path = _intraday_path(date_ist, symbol)
+    path = _intraday_path(date_ist, symbol, directory)
     if min_gap_minutes and path.exists():
         last = _last_time_ist(path)
         a, b = _hhmm(last), _hhmm(time_ist)
@@ -236,9 +211,9 @@ def append_futures_snapshot(rec: dict, timestamp_utc: str, time_ist: str, date_i
     return path, True
 
 
-def load_futures_intraday_day(date_ist: str, symbol: str):
+def load_futures_intraday_day(date_ist: str, symbol: str, directory: Path | None = None):
     """Today's intraday futures snapshots as a DataFrame (sorted by time), or None."""
-    path = _intraday_path(date_ist, symbol)
+    path = _intraday_path(date_ist, symbol, directory)
     if not path.exists():
         return None
     import pandas as pd
@@ -247,10 +222,12 @@ def load_futures_intraday_day(date_ist: str, symbol: str):
 
 
 def capture_futures_snapshot(symbol: str = "NIFTY", now_utc: datetime | None = None,
-                             fetch_fn=None, parse_fn=None, min_gap_minutes: float = 0.0):
+                             fetch_fn=None, parse_fn=None, min_gap_minutes: float = 0.0,
+                             directory: Path | None = None):
     """Best-effort: fetch the live futures quote and append an intraday snapshot.
     Returns (path, written) or None if unreachable/unsupported symbol. fetch_fn/parse_fn
-    injectable for tests (default to the live data.nse functions)."""
+    injectable (default NSE live; pass Dhan's fetch_futures_dhan + an identity parse for the Dhan
+    feed). ``directory`` routes to the feed's own journal."""
     if fetch_fn is None or parse_fn is None:
         from data.nse import fetch_futures_live, parse_futures_live
         fetch_fn = fetch_fn or fetch_futures_live
@@ -263,7 +240,7 @@ def capture_futures_snapshot(symbol: str = "NIFTY", now_utc: datetime | None = N
     ist = now + timedelta(hours=5, minutes=30)
     return append_futures_snapshot(rec, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                    ist.strftime("%H:%M"), ist.strftime("%Y-%m-%d"),
-                                   symbol, min_gap_minutes)
+                                   symbol, min_gap_minutes, directory=directory)
 
 
 def intraday_futures_buildup(day_df) -> dict | None:

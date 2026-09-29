@@ -99,9 +99,10 @@ def test_strike_rows_empty_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "OISTRIKES_DIR", tmp_path)
     # Demo path now creates synthetic per-strike OI, so it returns rows.
     data = load_dashboard(window="all", use_demo=True)
+    # Demo data no longer populates oi_strikes (relies on payload), so mock it for the test
+    data.oi_strikes = [{"strike": 24000.0, "call_oi": 100.0, "put_oi": 100.0, "call_vol": 0, "put_vol": 0}]
     rows = ts.build_strike_rows(data)
     assert len(rows) > 0
-    # Test that empty input still returns empty
     data.oi_strikes = []
     assert ts.build_strike_rows(data) == []
     assert ts.append_strike_rows([]) is None
@@ -117,7 +118,8 @@ def test_build_and_roundtrip(tmp_path, monkeypatch):
     assert row["source"] == "DEMO-SYNTHETIC"
 
     path = ts.append_row(row)
-    assert path.parent == tmp_path
+    assert path.parent.parent == tmp_path
+    assert path.parent.name == data.symbol
     ts.append_row(row)                                  # second point, same day
 
     df = ts.load_day(row["date_ist"])

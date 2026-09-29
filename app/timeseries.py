@@ -19,13 +19,43 @@ from pathlib import Path
 
 import pandas as pd
 
+import config
+
 ROOT = Path(__file__).resolve().parents[1]
+# Each capture stream is namespaced by index under a per-symbol SUBFOLDER, e.g.
+# data/journal/timeseries/NIFTY/2026-06-29.csv and .../BANKNIFTY/... — so the two
+# indices never mix in one file. ``symbol=None`` resolves to config.DEFAULT_INDEX.
 TS_DIR = ROOT / "data" / "journal" / "timeseries"
 # Per-strike OI/ΔOI capture (long format: one row per strike per snapshot).
-OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"
+OISTRIKES_DIR = ROOT / "data" / "journal" / "oi_strikes"          # NSE (+ legacy) feed
+OISTRIKES_DHAN_DIR = ROOT / "data" / "journal" / "oi_strikes_dhan"  # Dhan feed — kept SEPARATE
+
+
+def oistrikes_dir_for(source: str | None) -> Path:
+    """The per-strike journal root for a feed source. Dhan is kept in its OWN tree so the two
+    feeds never mix and can be compared later. 'dhan' -> oi_strikes_dhan; NSE / Dhan-NSE-fallback /
+    None / demo -> oi_strikes."""
+    return OISTRIKES_DHAN_DIR if (source or "").lower().startswith("dhan") else OISTRIKES_DIR
+
+
+def gamma_blast_dir_for(source: str | None) -> Path:
+    """The 1-min gamma-blast capture root for a feed source — Dhan kept separate (never mixed).
+    'dhan' -> gamma_blast_dhan; NSE / fallback / None / demo -> gamma_blast."""
+    return GAMMA_BLAST_DHAN_DIR if (source or "").lower().startswith("dhan") else GAMMA_BLAST_DIR
 # Expiry-day 1-min capture for the gamma-blast study (same per-strike schema,
 # finer cadence, bounded window) — kept separate so it doesn't mix cadences.
 GAMMA_BLAST_DIR = ROOT / "data" / "journal" / "gamma_blast"
+GAMMA_BLAST_DHAN_DIR = ROOT / "data" / "journal" / "gamma_blast_dhan"  # Dhan feed, separate
+
+
+def _sym(symbol: str | None) -> str:
+    """Resolve a capture symbol (None -> the default index), upper-cased."""
+    return (symbol or config.DEFAULT_INDEX).upper()
+
+
+def _stream_dir(base: Path, symbol: str | None) -> Path:
+    """The per-symbol subfolder of a capture stream (base / SYMBOL)."""
+    return base / _sym(symbol)
 
 # One row per strike per snapshot. Keep this list and build_strike_rows() in step.
 # call_ltp/put_ltp = nearest-expiry mid premiums (for the crossover watch);
@@ -37,6 +67,9 @@ STRIKE_FIELDS = [
     # Nearest-expiry OI-change + premium-change, both vs prev close (for the EXACT
     # build-up tag). Appended last so old CSVs stay readable (missing => optional).
     "call_doi_near", "put_doi_near", "call_dprem", "put_dprem",
+    # Nearest-expiry ABSOLUTE OI — a source-consistent series (live + Dhan backfill) that the
+    # trailing windows difference (baseline cancels → the window's nearest-expiry OI change).
+    "call_oi_near", "put_oi_near",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -98,29 +131,15 @@ def _news_top(s) -> str:
     return " ".join(str(s).split())[:120]
 
 
-def _ts_dir_for(symbol: str | None = None) -> Path:
-    """Return the time-series directory for the given symbol.
-
-    When symbol is given (e.g. "NIFTY", "BANKNIFTY", "SENSEX"), the journal
-    lives in a per-index subdirectory:  data/journal/timeseries/NIFTY/
-    When symbol is None, fall back to the legacy flat TS_DIR for back-compat.
-    """
-    if symbol:
-        return TS_DIR / symbol.upper()
-    return TS_DIR
-
-
 def ts_path_for(date_ist: str, symbol: str | None = None) -> Path:
-    return _ts_dir_for(symbol) / f"{date_ist}.csv"
+    # Resolve TS_DIR at CALL time (tests monkeypatch it; a default-arg would bind
+    # the old value at def-time — see strikes_path_for for the same guard).
+    return _stream_dir(TS_DIR, symbol) / f"{date_ist}.csv"
 
 
 def available_days(symbol: str | None = None) -> list[str]:
-    """Sorted IST dates (YYYY-MM-DD) for which a time-series file exists.
-
-    When ``symbol`` is given the per-index subdirectory is searched;
-    when None the legacy flat TS_DIR is used (back-compat).
-    """
-    d = _ts_dir_for(symbol)
+    """Sorted IST dates (YYYY-MM-DD) with a time-series file for this index."""
+    d = _stream_dir(TS_DIR, symbol)
     if not d.exists():
         return []
     return sorted(p.stem for p in d.glob("*.csv"))
@@ -198,24 +217,31 @@ def build_strike_rows(data) -> list[dict]:
             "put_doi_near": _f(s.get("put_doi_near")),
             "call_dprem": _f(s.get("call_dprem"), 2),
             "put_dprem": _f(s.get("put_dprem"), 2),
+            "call_oi_near": _f(s.get("call_oi_near")),
+            "put_oi_near": _f(s.get("put_oi_near")),
         })
     return rows
 
 
-def strikes_path_for(date_ist: str, directory: Path | None = None) -> Path:
-    return (directory or OISTRIKES_DIR) / f"{date_ist}.csv"
+def strikes_path_for(date_ist: str, symbol: str | None = None,
+                     directory: Path | None = None) -> Path:
+    # Resolve the module global at CALL time (default-arg binding would capture it
+    # at def-time and break monkeypatch in tests / any reassignment of OISTRIKES_DIR).
+    return _stream_dir(directory or OISTRIKES_DIR, symbol) / f"{date_ist}.csv"
 
 
 def append_strike_rows(rows: list[dict], date_ist: str | None = None,
+                       symbol: str | None = None,
                        directory: Path | None = None) -> Path | None:
-    """Append per-strike rows to that IST day's CSV under ``directory`` (header on
-    a new file). No-op returning None if there are no rows. ``directory`` lets the
-    1-min gamma-blast logger write to its own folder with the same schema."""
+    """Append per-strike rows to that IST day's CSV under ``directory/SYMBOL``
+    (header on a new file). No-op returning None if there are no rows.
+    ``directory`` lets the 1-min gamma-blast logger write to its own folder with
+    the same schema; None => OISTRIKES_DIR. ``symbol`` picks the index subfolder
+    (None => default index)."""
     if not rows:
         return None
-    directory = directory or OISTRIKES_DIR
     date_ist = date_ist or rows[0]["date_ist"]
-    path = strikes_path_for(date_ist, directory)
+    path = strikes_path_for(date_ist, symbol, directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     new_file = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as fh:
@@ -226,36 +252,18 @@ def append_strike_rows(rows: list[dict], date_ist: str | None = None,
     return path
 
 
-def load_strikes_day(date_ist: str, directory: Path | None = None,
-                     symbol: str | None = None) -> pd.DataFrame:
+def load_strikes_day(date_ist: str, symbol: str | None = None,
+                     directory: Path | None = None) -> pd.DataFrame:
     """Load one IST day's per-strike capture (empty frame if none yet).
-
-    When ``symbol`` is provided, also falls back to the EOD store
-    (data/journal/eod/<SYMBOL>/) so Breeze-sourced indices (SENSEX, BANKNIFTY)
-    can populate the footprint / streak sections using historical data.
-    """
-    path = strikes_path_for(date_ist, directory)
-    if path.exists():
-        return pd.read_csv(path)
-
-    # Fallback: try the EOD store for non-NSE indices
-    if symbol:
-        try:
-            from data.storage import load_oi_strikes_eod
-            from datetime import date
-            d = date.fromisoformat(date_ist)
-            eod_rows = load_oi_strikes_eod(symbol, d)
-            if eod_rows:
-                return pd.DataFrame(eod_rows)
-        except Exception:
-            pass
-
-    return pd.DataFrame(columns=STRIKE_FIELDS)
+    directory=None => OISTRIKES_DIR; symbol=None => default index (resolved now)."""
+    path = strikes_path_for(date_ist, symbol, directory)
+    if not path.exists():
+        return pd.DataFrame(columns=STRIKE_FIELDS)
+    return pd.read_csv(path)
 
 
-def append_row(row: dict, date_ist: str | None = None,
-               symbol: str | None = None) -> Path:
-    """Append one row to that IST day's CSV (writing a header for a new file)."""
+def append_row(row: dict, date_ist: str | None = None, symbol: str | None = None) -> Path:
+    """Append one row to that IST day's CSV under TS_DIR/SYMBOL (header on a new file)."""
     date_ist = date_ist or row["date_ist"]
     path = ts_path_for(date_ist, symbol)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,11 +277,7 @@ def append_row(row: dict, date_ist: str | None = None,
 
 
 def load_day(date_ist: str, symbol: str | None = None) -> pd.DataFrame:
-    """Load one IST day's time-series (empty DataFrame if none captured yet).
-
-    When ``symbol`` is given the per-index subdirectory is used;
-    when None the legacy flat TS_DIR path is used (back-compat).
-    """
+    """Load one IST day's time-series (empty DataFrame if none captured yet)."""
     path = ts_path_for(date_ist, symbol)
     if not path.exists():
         return pd.DataFrame(columns=FIELDS)
@@ -301,7 +305,8 @@ def append_if_due(row: dict, min_gap_minutes: float = 10.0,
 
     Lets independent writers (the capture loop + the dashboard auto-save) share
     one file without doubling up. Returns (path, written); on skip written=False
-    and nothing is written. min_gap_minutes <= 0 disables the guard.
+    and nothing is written. min_gap_minutes <= 0 disables the guard. The guard is
+    per-index (it reads this symbol's day file).
     """
     date_ist = row["date_ist"]
     if min_gap_minutes > 0:
@@ -310,4 +315,4 @@ def append_if_due(row: dict, min_gap_minutes: float = 10.0,
         if last is not None and now is not None:
             if (now - last).total_seconds() < min_gap_minutes * 60:
                 return ts_path_for(date_ist, symbol), False
-    return append_row(row, symbol), True
+    return append_row(row, symbol=symbol), True

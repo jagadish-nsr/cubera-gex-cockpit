@@ -38,7 +38,11 @@ class Index:
     lot_size: int      # contract multiplier — VERIFY against the current circular
     has_weekly: bool   # are weekly expiries served? (drives the expiry window/fetch)
     band_pts: float    # per-strike OI band: keep strikes within ± this of spot
-    exchange: str = "NSE"   # "NSE" (NFO) or "BSE" (BFO) — for Breeze API routing
+    exchange: str = "NSE"         # "NSE" (NFO) or "BSE" (BFO) — for expiry routing
+    regime_proxy: str | None = None  # borrow this index's |vanna| regime.
+    #   SENSEX→NIFTY: SENSEX's own vanna doesn't grade its move cleanly
+    #   but NIFTY's does (1.73-1.87x, corr 0.988, verified 2026-07-18).
+    #   None = use the index's own vanna.
 
 
 # CONFIRMED 2026-07 (user-verified against broker):
@@ -49,11 +53,12 @@ class Index:
 #    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
 #    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
 #  - SENSEX: lot 20 (BSE F&O); WEEKLY + monthly; expiry THURSDAY (BSE/BFO).
-#    SENSEX is only available via DATA_SOURCE="icici_breeze".
+#    SENSEX is Dhan-only (BSE). Its own vanna doesn't grade its move cleanly so it
+#    borrows NIFTY's vanna for the v1 regime gauge (regime_proxy="NIFTY").
 INDICES: dict[str, Index] = {
     "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE"),
     "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30,  False, 4000, "NSE"),
-    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  3000, "BSE"),
+    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  6000, "BSE", regime_proxy="NIFTY"),
 }
 DEFAULT_INDEX = "NIFTY"
 
@@ -87,12 +92,14 @@ def get_index(symbol: str | None) -> Index:
 #
 # Set DATA_SOURCE in your .env to switch adapters.  Default: dhan.
 DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "dhan").strip().lower()
+LIVE_SOURCE = DATA_SOURCE
 
-VALID_DATA_SOURCES = {"nse", "icici_breeze", "dhan"}
+VALID_DATA_SOURCES = {"nse", "icici_breeze", "dhan", "auto"}
 if DATA_SOURCE not in VALID_DATA_SOURCES:
     raise ValueError(
         f"Unknown DATA_SOURCE={DATA_SOURCE!r}; valid: {sorted(VALID_DATA_SOURCES)}"
     )
+
 
 # --- ICICI Direct Breeze API credentials ------------------------------------
 # Required when DATA_SOURCE="icici_breeze". Set via .env (never commit real keys).
@@ -110,9 +117,14 @@ DHAN_CLIENT_ID:    str | None = os.environ.get("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN: str | None = os.environ.get("DHAN_ACCESS_TOKEN")
 
 # --- Dealer gamma sign convention -------------------------------------------
-# Indian Market Mode: Institutional dealers (FII/PRO) are typically net option sellers.
-# This implies they are short gamma on BOTH calls and puts (short_call_short_put).
-# This creates a structurally volatile regime where OI walls act as breakout triggers.
+# ⚠️ LEGACY FALLBACK ONLY — tabs now own their sign convention explicitly.
+#
+# Architecture: load_dashboard(sign_model=...) is the authoritative source.
+#   Tab 1 (origin/main mirror)   → sign_model="long_call_short_put"  (US convention)
+#   Tab 2 (India SCSP research)  → sign_model="short_call_short_put" (India: dealers short BOTH legs)
+#
+# This global is only used when sign_model is not passed (e.g. test helpers, scripts).
+# Both models must be supported by gex/core.py and gex/flip.py permanently.
 DEALER_SIGN_MODEL = os.environ.get("DEALER_SIGN_MODEL", "short_call_short_put")
 
 # --- Contract multiplier (default index lot size) ---------------------------

@@ -1,19 +1,15 @@
-#!/usr/bin/env bash
-# Start the Indian GEX application with the Real-time Daemon
+#!/bin/bash
+set -e
 
-# Check for python-dotenv
-if ! python3 -c "import dotenv" &> /dev/null; then
-    echo "Warning: python-dotenv not installed. The in-app token updater might not work."
-fi
+# Change to project root
+cd "$(dirname "$0")/.." || exit 1
 
-# Start the background daemon
-echo "Starting Breeze Background Daemon..."
+echo "Starting GEX Daemon (option chain & participant OI)..."
 python3 scripts/breeze_daemon.py &
 DAEMON_PID=$!
 
-echo "Starting Streamlit Dashboard..."
-python3 -m streamlit run app/dashboard.py "$@"
+echo "Starting Indian GEX Dashboard (3-Tab)..."
+python3 -m streamlit run app/dashboard.py
 
-# When streamlit exits, kill the daemon
+# Cleanup when streamlit exits
 kill $DAEMON_PID
-echo "GEX stopped."
