@@ -147,8 +147,10 @@ def main() -> None:
         s = _stats(sub, 0.03)
         _print(f"    {ERA_LABELS[e]:<42} {s['n']:>5} {s['win']:>4.0f}% {s['mean']:>+6.1f}% {s['ptar']:>4.0f}%")
 
-    _print("\n(3) MODEL, afternoon only (≥13:45, at 3% half-spread):")
-    aft = model[model["tod"] >= 13 * 60 + 45]
+    from app.gammablast import afternoon_cut
+    cut_m, cut_lbl = afternoon_cut()
+    _print(f"\n(3) MODEL, afternoon only (≥{cut_lbl}, at 3% half-spread):")
+    aft = model[model["tod"] >= cut_m]
     s = _stats(aft, 0.03)
     _print(f"    n={s['n']}  win {s['win']:.0f}%  expectancy {s['mean']:+.1f}%/trade  "
            f"target-hit {s['ptar']:.0f}%  stopped {s['pstop']:.0f}%  payoff {s['payoff']:.2f}×")

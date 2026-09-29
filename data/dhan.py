@@ -29,8 +29,13 @@ _REQUIRED = ("open", "high", "low", "close", "volume", "oi", "iv", "spot", "stri
 
 # Index-underlying securityIds (from the Dhan scrip master) + the expiry interval that actually
 # has options: NIFTY still lists weeklies; BANKNIFTY is monthly-only since Nov-2024.
-DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25}
-DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH"}
+# Confirmed live 2026-07-18 via scripts/dhan_index_probe.py (scrip master + live chain).
+# SENSEX is a BSE index (id 51) but its option chain is served on the same IDX_I segment.
+DHAN_UNDERLYING = {"NIFTY": 13, "BANKNIFTY": 25, "SENSEX": 51}
+DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH", "SENSEX": "WEEK"}
+# F&O exchange segment for the historical rollingoption pull: NIFTY/BANKNIFTY are NSE, SENSEX is
+# BSE. Confirmed live 2026-07-18 (BSE_FNO returns SENSEX candles; NSE_FNO returns none).
+DHAN_SEGMENT = {"NIFTY": "NSE_FNO", "BANKNIFTY": "NSE_FNO", "SENSEX": "BSE_FNO"}
 _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
 # --- Live option-chain adapter constants ------------------------------------
@@ -76,10 +81,61 @@ def _headers() -> dict:
     return h
 
 
+# --- token store (SEBI caps the access token at 24h; user re-pastes daily) -----------
+TOKEN_FILE = ROOT / "data" / ".dhan_token"          # gitignored secret; never commit / log
+
+
+def write_token(token: str) -> None:
+    """Persist a pasted Dhan access token to the gitignored ``data/.dhan_token``. The token is
+    a SECRET — this never logs it. Strips whitespace; refuses an empty string."""
+    tok = (token or "").strip()
+    if not tok:
+        raise ValueError("empty token")
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(tok, encoding="utf-8")
+
+
+def _jwt_exp(token: str):
+    """Best-effort: read the unverified ``exp`` (unix seconds) from a Dhan JWT access token.
+    We do NOT verify the signature — this is only to show the user how long the token is still
+    valid. Returns an aware UTC datetime or None if the token isn't a decodable JWT."""
+    import base64
+    import json as _json
+    from datetime import datetime, timezone
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)                      # pad base64url
+        claims = _json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp")
+        return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
+    except Exception:  # noqa: BLE001 - malformed / non-JWT token
+        return None
+
+
+def token_status() -> dict:
+    """Non-secret status of the current Dhan token for the UI: whether one is present, where it
+    came from (env/file), and — decoded from the JWT ``exp`` claim — whether it is still valid and
+    for how long. NEVER returns the token itself. ``expired`` is None when expiry is unknowable."""
+    from datetime import datetime, timezone
+    env = bool(os.environ.get("DHAN_ACCESS_TOKEN"))
+    token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
+    if not token:
+        return {"present": False, "source": None, "exp": None, "hours_left": None, "expired": None}
+    exp = _jwt_exp(token)
+    hours_left = expired = None
+    if exp is not None:
+        hours_left = (exp - datetime.now(timezone.utc)).total_seconds() / 3600.0
+        expired = hours_left <= 0
+    return {"present": True, "source": "env" if env else "file",
+            "exp": exp.isoformat() if exp else None,
+            "hours_left": hours_left, "expired": expired}
+
+
 def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
                          opt_type: str = "CALL", expiry_flag: str = "WEEK", expiry_code: int = 1,
                          interval: str = "1", security_id: int = NIFTY_SECURITY_ID,
-                         required=_REQUIRED, timeout: int = 40) -> dict | None:
+                         required=_REQUIRED, timeout: int = 40,
+                         segment: str = "NSE_FNO") -> dict | None:
     """POST charts/rollingoption for one relative strike/type over [from_date, to_date)
     (YYYY-MM-DD; toDate non-inclusive). ``strike`` = 'ATM' or 'ATM+1'..'ATM+10'/'ATM-1'..
     'ATM-10'. ``expiry_code`` is 1-based (1 = nearest expiry of the flag, 2 = next …; 0 is
@@ -88,7 +144,7 @@ def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
     import requests
 
     body = {
-        "exchangeSegment": "NSE_FNO", "interval": str(interval),
+        "exchangeSegment": segment, "interval": str(interval),
         "securityId": security_id, "instrument": "OPTIDX",
         "expiryFlag": expiry_flag, "expiryCode": int(expiry_code),
         "strike": strike, "drvOptionType": opt_type,
@@ -118,7 +174,7 @@ def _rel_strike(off: int) -> str:
 def fetch_option_matrix(from_date: str, to_date: str, offsets=_OFFSETS,
                         flag: str = "WEEK", code: int = 1, interval: str = "1",
                         security_id: int = NIFTY_SECURITY_ID, sleep: float = 0.15,
-                        retries: int = 2):
+                        retries: int = 2, segment: str = "NSE_FNO"):
     """One page (≤~45d): fetch every ATM-offset CALL & PUT and return a tidy LONG DataFrame —
     one row per (candle, strike-offset, side) with the actual absolute ``strike``/``spot`` each
     candle carries. None if nothing came back. Polite ``sleep`` between calls; a soft failure
@@ -132,7 +188,7 @@ def fetch_option_matrix(from_date: str, to_date: str, offsets=_OFFSETS,
             df = None
             for attempt in range(retries + 1):
                 resp = fetch_rolling_option(from_date, to_date, _rel_strike(off), opt,
-                                            flag, code, interval, security_id)
+                                            flag, code, interval, security_id, segment=segment)
                 if resp and "_error" in resp:
                     time.sleep(0.4 * (attempt + 1))
                     continue
@@ -186,17 +242,19 @@ def available_intraday_days(store: str = "NIFTY") -> list[str]:
 def backfill_intraday_options(start: str, end: str, symbol: str = "NIFTY",
                               offsets=_OFFSETS, flag: str | None = None, code: int = 1,
                               interval: str = "1", security_id: int | None = None,
-                              store: str | None = None, log=print) -> dict:
+                              store: str | None = None, segment: str | None = None,
+                              log=print) -> dict:
     """Page over [start, end] in ~42-day WEEK-safe windows (newest→oldest), fetch the full
-    ATM±N CE/PE matrix, and write one parquet per trading day. ``flag``/``security_id`` default
-    from the symbol (WEEK+13 for NIFTY, MONTH+25 for BANKNIFTY); ``store`` (the on-disk key)
-    defaults to the symbol — pass e.g. 'NIFTY_M' to keep a non-default expiry book separate.
-    Resumable: a page whose newest trading day is already on disk is skipped without an API
-    call. Returns a small summary."""
+    ATM±N CE/PE matrix, and write one parquet per trading day. ``flag``/``security_id``/``segment``
+    default from the symbol (WEEK+13+NSE_FNO for NIFTY, MONTH+25+NSE_FNO for BANKNIFTY,
+    WEEK+51+BSE_FNO for SENSEX); ``store`` (the on-disk key) defaults to the symbol — pass e.g.
+    'NIFTY_M' to keep a non-default expiry book separate. Resumable: a page whose newest trading
+    day is already on disk is skipped without an API call. Returns a small summary."""
     from datetime import date, timedelta
 
     flag = flag or DHAN_OPT_FLAG.get(symbol, "WEEK")
     security_id = security_id or DHAN_UNDERLYING.get(symbol, NIFTY_SECURITY_ID)
+    segment = segment or DHAN_SEGMENT.get(symbol, "NSE_FNO")
     store = store or symbol
     d0, d1 = date.fromisoformat(start), date.fromisoformat(end)
     have = set(available_intraday_days(store))
@@ -206,7 +264,7 @@ def backfill_intraday_options(start: str, end: str, symbol: str = "NIFTY",
         lo = max(d0, hi - timedelta(days=_PAGE_DAYS - 1))
         pages += 1
         mat, misses = fetch_option_matrix(lo.isoformat(), (hi + timedelta(days=1)).isoformat(),
-                                          offsets, flag, code, interval, security_id)
+                                          offsets, flag, code, interval, security_id, segment=segment)
         all_misses += len(misses)
         if mat is None:
             log(f"  page {lo}..{hi}: no data ({len(misses)} misses)")
@@ -231,30 +289,45 @@ DHAN_FUT_DIR = ROOT / "data" / "journal" / "dhan_futures"
 _FUT_MAX_DAYS = 90               # charts/intraday hard cap (both window size and lookback)
 
 
-def near_month_future_id(symbol: str = "NIFTY") -> dict | None:
-    """Look up the CURRENT near-month index-futures securityId (+ expiry, lot) from the Dhan
-    scrip master. The active contract is the only one whose intraday history is fetchable —
-    expired contracts drop out of the master, so futures intraday depth is ~one contract life."""
+def load_scrip_master():
+    """The Dhan scrip master as a DataFrame (or None). Downloaded fresh; pass the result to
+    ``near_month_future_id(..., master=...)`` to resolve several symbols from ONE download."""
     import io
-    from datetime import date
     import requests
     import pandas as pd
-
     r = requests.get(_SCRIP_MASTER, timeout=90)
     if r.status_code != 200:
         return None
-    df = pd.read_csv(io.BytesIO(r.content), low_memory=False)
+    return pd.read_csv(io.BytesIO(r.content), low_memory=False)
+
+
+def nearest_futures(symbol: str = "NIFTY", n: int = 2, master=None) -> list[dict]:
+    """The ``n`` nearest (non-expired) index-futures contracts for ``symbol``, sorted by expiry —
+    each ``{security_id, symbol(tradingsymbol), expiry, lot}``. Used to watch near + next month for the
+    big-money tape (so the roll doesn't hide the migrating flow). Empty list if none. Pass a preloaded
+    ``master`` (from ``load_scrip_master``) to avoid re-downloading per symbol."""
+    from datetime import date
+    import pandas as pd
+
+    df = master if master is not None else load_scrip_master()
+    if df is None:
+        return []
     f = df[(df["SEM_INSTRUMENT_NAME"] == "FUTIDX")
            & (df["SEM_TRADING_SYMBOL"].astype(str).str.startswith(f"{symbol}-"))].copy()
     if f.empty:
-        return None
+        return []
     f["exp"] = pd.to_datetime(f["SEM_EXPIRY_DATE"], errors="coerce")
     f = f[f["exp"].dt.date >= date.today()].sort_values("exp")
-    if f.empty:
-        return None
-    row = f.iloc[0]
-    return {"security_id": int(row["SEM_SMST_SECURITY_ID"]), "symbol": row["SEM_TRADING_SYMBOL"],
-            "expiry": row["exp"].date().isoformat(), "lot": int(row["SEM_LOT_UNITS"])}
+    return [{"security_id": int(r["SEM_SMST_SECURITY_ID"]), "symbol": r["SEM_TRADING_SYMBOL"],
+             "expiry": r["exp"].date().isoformat(), "lot": int(r["SEM_LOT_UNITS"])}
+            for _, r in f.head(n).iterrows()]
+
+
+def near_month_future_id(symbol: str = "NIFTY", master=None) -> dict | None:
+    """The CURRENT near-month index-futures contract (securityId + expiry + lot), or None. Thin wrapper
+    over ``nearest_futures`` for the historical-backfill callers that only need the front month."""
+    fs = nearest_futures(symbol, n=1, master=master)
+    return fs[0] if fs else None
 
 
 def fetch_futures_intraday(security_id: int, from_date: str, to_date: str,

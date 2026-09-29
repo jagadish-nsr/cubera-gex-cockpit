@@ -6,8 +6,11 @@ pain), classifies the regime, and emits a one-sentence playbook for Nifty index
 options. Decision-support only — **not financial advice, no order execution.**
 
 > **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)** — a plain-language
-> setup guide: double-click `run_simple.bat` for the dashboard, and one admin command
-> (`setup_data_collection.ps1`) to turn on automatic background data collection.
+> setup guide. The dashboard runs the same on both platforms (served at
+> **http://localhost:8610**): **Windows** — double-click `run_simple.bat`; **macOS/Linux** —
+> `./run_simple.command` (first run: `chmod +x run_simple.command`, or in Finder right-click →
+> Open). Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
+> on macOS use cron/launchd, or just leave the dashboard open (it self-captures while running).
 
 > Read `CLAUDE.md` first, especially the **dealer-sign landmine**: the US
 > long-call / short-put-gamma convention may NOT hold for India's retail-selling
@@ -15,19 +18,25 @@ options. Decision-support only — **not financial advice, no order execution.**
 > is trusted. Treat the dealer sign as UNKNOWN, not as the US default.
 
 ## Status
-- ✅ Engine inherited from `../GEX` (market-agnostic) + India data layer.
-- ✅ Live option-chain pull via **three configurable adapters**: ICICI Direct Breeze (default), Dhan, NSE scraper.
-- ✅ CLI table + playbook (`cli.py`) and a local Streamlit dashboard (`app/`).
-- ✅ Intraday time-series logging + Windows Task Scheduler setup; captures India
-  VIX, USD/INR, and a news-intensity gauge alongside the GEX levels.
+- ✅ **Live pipeline:** Dhan REST option chain (primary) → NSE (automatic fallback),
+  clock-aligned background fetch; a Dhan Market-Feed **websocket** drives the live
+  big-money futures tape and the expiry-day blast tick capture.
+- ✅ **Daily dashboard** (`app/simple_dashboard.py` / `app/dashboard.py`) — the plain-language face: value
+  profile (TPO) + live candle + GEX level ladder, the **big-money tape**, OI
+  footprint / trailing-flow windows, positioning tabs, and on expiry the **gamma-blast** verdict (the
+  original hero **plus an experimental "study model" shown beside it** — realized-delta
+  + 3PM-window + an explicit exit discipline). One-click launchers for **Windows and
+  macOS/Linux**; the dashboard self-captures its own history while open.
+- ✅ **Multi-index:** Nifty 50, Bank Nifty, Sensex (Sensex borrows Nifty's vanna regime).
+- ✅ CLI table + playbook (`cli.py`); intraday time-series + per-strike OI logging with
+  Windows Task Scheduler setup (captures India VIX, USD/INR, a news-intensity gauge).
 - ✅ **Sign-free positioning suite** (all immune to the dealer-sign landmine):
-  magnet drift, per-strike δOI footprint, participant-wise OI (FII/Client/DII/Pro),
-  intraday build-up streaks, a true-vs-fake **gamma-blast score**, and **Nifty
-  futures OI build-up** (daily bhavcopy + live intraday). See **Research & findings**.
-- ✅ **180 tests pass** (`python3 -m pytest -q`) — hand-checkable fixtures, NSE
-  adapter/parse, ICICI Breeze adapter, Dhan adapter, expiry calendar, regime, parity,
-  positioning, and scoring.
-- ⛳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
+  magnet drift, per-strike ΔOI footprint, participant-wise OI (FII/Client/DII/Pro),
+  intraday build-up streaks, the true-vs-fake **gamma-blast score**, a prior-day-level
+  **stop-run sweep** study, and **Nifty futures OI build-up**. See **Research & findings**.
+- ✅ **313 tests pass** (`python -m pytest -q`) — hand-checkable fixtures, NSE
+  adapter/parse, expiry calendar, regime, parity, positioning, blast, and scoring.
+- ⏳ Dealer-sign model and lot size / expiry rules remain **VERIFY-live** (below).
 
 ## Data Sources
 
@@ -72,7 +81,12 @@ python3 cli.py --live            # live chain via DATA_SOURCE adapter in .env
 python3 cli.py --live --symbol SENSEX     # SENSEX (requires DATA_SOURCE=icici_breeze)
 python3 cli.py --live --window 0dte
 ```
-Local dashboard:
+Local dashboard — one-click: `run_simple.bat` (Windows) or `run_simple.command` (macOS/Linux).
+Or run it directly:
+```
+python3 -m streamlit run app/simple_dashboard.py --server.port 8610
+```
+Or the multi-tab shell:
 ```
 python3 -m streamlit run app/dashboard.py
 ```
@@ -96,26 +110,39 @@ python -m pytest -q
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).
 - `config.py` — India config: `INDICES` registry, `DATA_SOURCE` flag, adapter
   credentials, dealer sign model, flip grid, OI staleness.
-- `app/` — Streamlit dashboard, data access, intraday time-series capture, and the
-  sign-free positioning modules (`oi_footprint`, `gammablast`, `participant_oi`,
-  `futures_buildup`, `magnet_trend`).
-- `scripts/` — session/time-series logging, EOD captures (participant OI, futures
-  bhavcopy), and the point-in-time IC studies (`analyze_*`).
-- `*.bat` / `setup_*scheduler*` — Windows launchers + scheduled capture setup
-  (time-series, participant OI, futures build-up, gamma-blast).
-- `docs/` — scoping, user guide, and the research/findings notes below.
+- `app/` — the Streamlit dashboards (`simple_dashboard.py` is the daily face,
+  `dashboard.py` the technical one), live data access + fetch lanes, intraday capture,
+  and the sign-free modules: `oi_footprint`, `gammablast`, `blast_study` (the study
+  model) / `blast_ticks`, `big_money*` (the tape + WS feed), `stophunt`, `timeseries`,
+  `participant_oi`, `futures_buildup`, `magnet_trend`.
+- `data/` — `nse.py` (NSE adapter), `dhan*.py` (Dhan REST + Market-Feed websocket),
+  `expiry.py`, `parity.py`, `replay.py` (stored-day replay), `news.py`.
+- `scripts/` — session/time-series logging, EOD captures, the headless collectors
+  (`run_blast_ticks.py`, `run_big_money_collector.py`), and the point-in-time studies
+  (`analyze_*`, `blast_study.py`, `preempt_study.py`).
+- Launchers — `run_simple.bat` (Windows) / `run_simple.command` (macOS/Linux) for the
+  dashboard; `setup_*scheduler*.bat` + `scripts/install_*.ps1` for Windows scheduled capture.
+- `docs/` — scoping, `simple-dashboard.md` (the in-app help), user guide, and the
+  research/findings notes below.
+
 
 ## Research & findings (sign-free, decision-support only)
 Exploratory studies — read the **sign** and hit-rate, never the decimals; tiny,
 autocorrelated samples. The recurring result: **OI/volume/turnover read *positioning*
 and *expected move size*, not next-move *direction*.**
-- `docs/futures-buildup.md` — Nifty futures OI build-up: verified NSE endpoints
-  (bhavcopy + live), the rollover/units landmines, next-day IC (underpowered, ~0).
-- `docs/gamma-blast-score.md` — true-vs-fake blast score (Spearman +0.79; live-
-  validated 07-07); turnover-ignition and two-sided-parity confirms both **rejected**.
-- `docs/intraday-buildup-streaks.md` — live-only + turnover rework; turnover predicts
-  move *size* (|move| IC +0.3) not *direction* (IC ≈ 0); streaks mean-revert.
+- `docs/findings-summary.md` — **start here.** The research arc's closer: directional
+  edge from OI/GEX is ~zero at every horizon; the volatility-regime read is the real part.
+- `docs/simple-dashboard.md` — the dashboard component guide (same text as the in-app 📖 Help).
+- `docs/gamma-blast-research.md` / `gamma-blast-score.md` — the true-vs-fake blast score
+  (Spearman +0.79; live-validated) and the ignition-timing study; the newer offline study
+  behind the dashboard's "study model" (realized-delta + the 3PM-window separator).
+- `docs/futures-buildup.md` — Nifty futures OI build-up: verified endpoints, the
+  rollover/units landmines, next-day IC (underpowered, ~0).
+- `docs/intraday-buildup-streaks.md` — turnover predicts move *size* (|move| IC +0.3)
+  not *direction* (≈ 0); streaks mean-revert.
 - `docs/participant-oi.md` — participant-wise OI + FII-drift IC.
+- `docs/tick-data-ic-research.md`, `docs/big-money-tape.md` — the big-money tape + the
+  literature review on tick-data predictive IC (contemporaneous strong, predictive ~0).
 
 ## Verify-live before trusting (never guess — see `BUILD_PLAN.md` §3)
 1. NSE data source + pricing.   2. Current Nifty lot size.

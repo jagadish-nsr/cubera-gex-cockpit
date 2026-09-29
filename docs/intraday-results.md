@@ -659,12 +659,272 @@ rank-IC but not a tradeable edge net of cost, at any Δ×h, cross-book. **Data-q
 work: the NIFTY_M and BANKNIFTY `spot` columns carry sustained pre-2025 corruption — cross-check against
 the clean NIFTY feed or restrict to Sep25+/OOS.** Sign-free of the GEX landmine.
 
+## Study #25 — does MARKET PROFILE (TPO on the underlying) add anything — direction or vol-regime — beyond today-HL + |vanna|?  → NO (direction dead under the mirror; vol content subsumed by today-HL)
+`app/market_profile.py` + `scripts/analyze_market_profile.py`. A TPO **time-at-price** profile is a
+*realized-behaviour* level (where price actually spent time), not a positioning level — and #12 found
+pinning is *stickiness, not attraction*, so a profile is plausibly the cleaner encoding of that effect
+than peak-OI. Built at native **1-min** (finer than the traditional 30-min brackets): POC = modal price
+bin, value area = the 70% time band (VAH/VAL), plus the day-type **SHAPE** stats that are the real
+content — value-area width ÷ range, distribution **mode count**, and **time-at-POC ratio** (a
+realized-vol-regime descriptor). NIFTY, **1234 clean-spot days** (2021-07→2026-07); bad-tick days
+(>12% HL) dropped. Point-in-time: today's FULL profile is known at today's close → clean for predicting
+TOMORROW; the same-day POC look-ahead trap (the #5 +0.64→+0.02 shape) is avoided by testing next-day only.
+
+- **DIRECTION — dead under the mirror rig:** prior-day POC as a next-day attractor — price closes TOWARD
+  the POC **50%** vs **50%** toward its same-distance MIRROR (POC ≈ mirror). The same null the
+  mid-zone/mirror placebos delivered in #12/#14/#16; a POC is the same geometry with a different
+  construction, and it fails the same way.
+- **VOL-REGIME (Test A) — shape has raw IC but it is a RESTATEMENT of today-HL:** today's profile shape →
+  tomorrow's realized HL%: **tpoc_ratio IC −0.316**, **n_modes +0.239** (raw, real-looking) — but both
+  **collapse under today-HL** (−0.061 / −0.048) and fully under HL+|vanna| (−0.065 / −0.012);
+  `va_width_pct` is ~0 throughout. The shape is re-encoding today's range (vol clustering, #17), not new
+  information — fails the incremental bar exactly as the build-up did in #23.
+- **VOL-PRICING (Test B) — realized value-area vs implied move, weak + unstable:** `accept_pct` (VA
+  half-width, ~1σ realized) → tomorrow HL IC **+0.309** but **−0.004 under today-HL** (it IS today's
+  range). The ratio **r = accept ÷ implied** (realized acceptance ÷ σ√τ at the open; <1 ⇒ vol
+  over-priced) is only **+0.066** raw and **sign-unstable across controls** (−0.199 | today-HL, +0.187 |
+  ATM-IV) with **OOS decay +0.092 → +0.028** — the classic decays-to-zero shape; its non-zero IV-partial
+  is today-HL's vol-clustering leaking through, not an IV-orthogonal MP signal.
+
+**Conclusion:** Market Profile on Nifty carries **no direction edge** (POC = its mirror) and **no
+vol-regime information beyond today's realized range + |vanna|** (every shape/acceptance IC collapses
+under today-HL) — a clean null, the same "statistically real residual that adds nothing incremental"
+shape as vanna-VRP (#11/#18). The levels remain a legitimate *decision-support map* (where price
+accepted), not a signal. **Pre-registered follow-up (ONE run, bar set here):** Test B measured `r`
+against tomorrow's *range* when the hypothesis was vol *over-pricing*, so the correct target is the
+**forward short-straddle P&L**, not spot-RV (the exact venue where #11's +0.11 residual died in
+#11b/#18). It SURVIVES only if — all four — the partial of `r` against the existing sell-IV/VRP signal
+is non-zero, the sign is stable across the **IV and DTE** controls, it clears **walk-forward OOS on
+actual straddle P&L**, and it is strictly point-in-time (`r` known at entry, payoff measured after) with
+**no contemporaneous-VRP leakage** (r ≈ realized÷implied ≈ the VRP itself). Prior: **low** (r already
+sign-unstable + OOS-decayed; the arc's rule is that real residuals don't monetize). If it fails any
+criterion it is a **footnote here, not a #26**. Sign-free of the GEX landmine.
+
+> **Follow-up RESULT — ran once, FAILED the bar, MP closed** (`scripts/backtest_mp_straddle.py`,
+> 1156 NIFTY days). r(t−1) → the ATM short-straddle **seller** return(t) (enter t open, exit t close;
+> median seller ret +17.2% of premium): raw IC only **+0.052**, IV-entry partial **+0.049** (→ **+0.019**
+> adding DTE). It fails every criterion — **(4) the prior-VRP partial is +0.009 ≈ 0** (control for
+> yesterday's realized÷implied and it vanishes → r IS the VRP restated, the contemporaneous-VRP leak the
+> bar was built to catch); **(2) sign is unstable** (IV terciles +0.083 → **−0.016** flips; DTE terciles
+> +0.005 → +0.120 swings); **(3) OOS decays** +0.065 → +0.029. So the vol-over-pricing residual does **not**
+> monetize into forward straddle P&L — the first-time-would-have-been-surprising outcome that, per the arc
+> (#11b/#18), did not happen. Market Profile is fully closed: a decision-support map, not an edge.
+
+**#25 addenda (two extension tests, both confirming the null from new angles):**
+
+*(a) Do our FORWARD-PRICED option levels predict where price will later ACCEPT?* — the hunch that
+options, being forward-priced, should carry information about tomorrow's POC / VAH / VAL.
+`scripts/analyze_mp_vs_options.py`, 1234 NIFTY days, EOD option levels of day t → the TPO of t+1 …
+t+H (1D/1W/2W/1M composites), everything in **deviations-from-today's-close** to kill the
+trivial-anchor trap (magnet ≈ max-pain ≈ POC ≈ close, all near spot). **NO.** The naive **close is
+the best POC predictor at every horizon** and no option level beats it: at 1D, close error 110 pts,
+**magnet 118, max_pain 125** (both WORSE), and the deviation-corrs are weak and the **wrong sign**
+(magnet −0.06, max_pain −0.10 — a faint *anti*-prediction, the opposite of "price gravitates to the
+level"), partial-beyond-today-POC ≈ −0.04/−0.06. Walls → VAH/VAL: corr ~+0.01–0.04 (no relationship);
+at 2W/1M a wall's error is marginally below a single noisy day's VAH, but that is *lower variance*,
+not prediction (corr ≈ 0.01). So the forward-priced intuition does **not** translate — option
+positioning clusters near spot too, and once the common anchor is removed the residual is ~0 with a
+faint wrong sign. Option levels are a positioning *map*, not a predictor of realized acceptance.
+
+*(b) Does the price DISTRIBUTION (POC momentum / stretch / shape / day-type) predict direction or
+reversals?* — `scripts/analyze_mp_shape_direction.py`, 1234 NIFTY days, all point-in-time (feature at
+t's close → t+1). **NO, on every construction.** POC MOMENTUM (5D %Δ) → next return IC **+0.014**,
+partial | price-momentum **+0.022** (and price-mom itself is +0.007) — POC momentum is price momentum
+restated, and neither predicts. STRETCH from value (close−POC) → next return IC **+0.020** but
+**−0.006** controlling for today's own return — no reversion-from-value. SHAPE → *direction*: all ~0
+(n_modes +0.007, tpoc +0.009, va_width −0.042). SHAPE → next-day *|move|*: `tpoc_ratio −0.146`,
+`n_modes +0.101` are real but **collapse under today-HL** (→ −0.009/−0.050) — vol-clustering restated
+(#25 again). DAY-TYPE BOXES (close vs the value area): next-day win% spans **47–55%** against a **52%
+base**, **non-monotone** (below-VAL 54, lower-VA 53, upper-VA 47, above-VAH 55) — noise. The only
+repeatable thing is that a **single-print day → a calmer next day** (0.52% vs 0.67% next |move|) — a
+legitimate *vol-regime* read (rotational→calm), which is exactly the decision-support use and exactly
+the content already in today-HL + |vanna|; it says nothing about direction. Confirms the arc: the
+distribution is a regime/vol descriptor, never a directional signal — which is why it ships as the
+labelled POC/value overlay beside the walls, not as a trigger.
+
 ---
 
-**Scoreboard update (as of #24):** the directional nulls now also cover *combining* factors — volume
+**Scoreboard update (as of #25):** the directional nulls now also cover *combining* factors — volume
 conviction (#22) and intraday momentum (#23) neither rescue nor complement the price+OI build-up — and the
 one non-noise effect, generic mean-reversion, is now shown **not tradeable even on the cheap futures leg**
-(#24: loses at zero cost, mechanism refuted, dead OOS). The only surviving edge remains **vol/short-premium**
+(#24: loses at zero cost, mechanism refuted, dead OOS). And **Market Profile** (#25) — realized
+time-at-price levels, a genuinely different data source (where price *accepted*, not where OI is *open*) —
+nulls the same way: direction = its own mirror, and the day-type shape is subsumed by today-HL + |vanna|,
+so it adds nothing incremental (and the pre-registered vol-over-pricing follow-up on forward straddle P&L
+was run once and FAILED the bar — the ratio is contemporaneous VRP restated, prior-VRP partial +0.009,
+sign-unstable, OOS-decayed — so MP is fully closed). The only surviving edge remains **vol/short-premium**
 (sell rich IV S6/S11 + next-day vol-regime persistence #17). Direction is dead on Nifty at every horizon and
 every execution venue we can measure; the tool is decision-support, and the one thing that pays is being the
 vol seller, sized for the tail.
+
+---
+
+## Study #26 — the EXPIRY PIN: does the last hour RUN to the pin, or is the pin just where price already sits?  → DESCRIPTIVE, not a magnet (no last-hour pull; direction a coin flip)
+`scripts/analyze_expiry_pin.py`. The folk "0-DTE pin" claim, tested clean: **LOCK** the pin at T−60
+(the 14:30 snapshot, computed once from that snapshot's OI and frozen — recomputing every minute would
+let the pin chase spot and manufacture a fake pin), then look only at the last 60 min of price. Two pin
+definitions: **max-pain** (holder-payout min) and **peak-OI** (single most-crowded strike). 30 expiries
+(2025-12-16→2026-07-07, all Sep25+ Tuesday-weekly era — no era contamination). Sign-free (OI concentration,
+not the dealer-sign landmine).
+
+- **The close DOES land near max-pain — but it's already there by mid-afternoon.** At the 14:30 lock,
+  spot is already a median **18 pt** from max-pain (< ½ strike). The final hour then *widens* the gap to a
+  median **33 pt**, and distance-to-the-frozen-pin shrank on only **33%** of days — so there is no
+  last-hour "rally into the pin"; if anything price drifts slightly off it. Close within 1 strike 63%,
+  within 0.25% 70% — but that closeness is inherited from 14:30, not produced by the final hour.
+- **The last-30-min direction is a coin flip.** Among the 20/30 days with ≥½-strike of room at 15:00, 13
+  moved toward the pin (65%) — but **two-sided p = 0.26**, not significant, and inflated by dropping the 10
+  days already glued to the pin. Peak-OI: exactly 50% (p = 1.00).
+- **Peak-OI is the wrong pin** — a clean null on every metric (within 1 strike 30%, converged 20%). Only
+  **max-pain** matters, and it beats raw 14:30-spot persistence only modestly (median 33 vs 41 pt).
+- **Freeze-time sweep (13:45 / 14:00 / 14:30 / 15:00) confirms it.** At *every* lock spot is already a
+  median 17–24 pt from the pin. Later locks only *look* better (converged 17%→40%, close 47→35 pt) because
+  the pin is frozen closer to the close it's "predicting" — the pull isn't stronger late, you're just
+  giving it less time to wander (and max-pain keeps re-centering on spot through the afternoon). 14:30 is
+  the best of the bunch: the only lock where the pin clearly beats persistence (60%) while still a genuine
+  1-hour-out forecast.
+
+**Conclusion:** max-pain is a **descriptive map** of where price already sits by early-to-mid afternoon,
+**not a magnet that drags the final hour** — no significant last-hour direction at any freeze. Same shape
+as #12 (pinning is stickiness, not attraction) and #25 (the POC is its own mirror): a legitimate
+decision-support level, never a directional trigger. Sign-free of the landmine.
+
+## Study #27 — MARKET PROFILE × the expiry PIN: is the mid-day "buy the pin strike toward the pin" trade profitable, and does POC↔pin / morning TPO shape inform the TRUE blasts?  → NO trade (worse than its mirror); morning shape = mild persistence only
+`scripts/analyze_pin_poc_trade.py`, 116 NIFTY expiries (2021-07→2026-06). Combines #25 (TPO/POC) with #26
+(the pin). Two questions, both sign-free.
+
+**Q1 — the trade: a systematic loser.** At 12:15, *when spot sits on the developing POC* (within ½ strike,
+50/116 days), buy the NAKED option struck **at** the max-pain pin in the pin's direction (pin above → CALL,
+below → PUT), hold to close, P&L = the real 1-min traded premium of that exact strike.
+
+| | n | win% | mean | median | best |
+|---|---:|---:|---:|---:|---:|
+| **PIN-dir @ POC touch** (the trade) | 38 | **8%** | **−57%** | **−99.6%** | +916% |
+| MIRROR placebo (wrong side, same distance) | 39 | 26% | +2.8% | −99.5% | +1187% |
+| PIN-dir, all days (no POC filter) | 89 | 18% | −25% | −99.6% | +986% |
+
+It fails on **two** independent counts: (1) **price doesn't run to the pin from mid-day — it drifts away**:
+the sign-free check shows spot moving *toward* the pin from 12:15→close only **42%** of the time (net drift
+*away*; the #26 last-30-min lean does not extend to the whole afternoon); (2) **an option struck AT the pin
+pays only on an OVERSHOOT** — if the pin is a magnet and price stops on it, the pin-struck option decays to
+~0 (median −99.6%). The tell that kills it: the **MIRROR placebo (deliberately wrong side) beats the real
+trade** (+2.8% vs −57%), because the net drift is *away* from the pin. Not a setup — a theta donation.
+(Premiums are MID/LTP; real expiry-afternoon fills are worse, so the true P&L is worse still.)
+
+**Q2 — does |POC−pin| or the morning TPO shape inform the TRUE blasts?** Spearman IC of a mid-day structure
+feature vs the post-trigger outcome, within TRUE-graded 0-DTE afternoon crossings (>12:15, point-in-time).
+**Trust the day-collapsed column** (279 crossings cluster into **90 days**; per-crossing double-counts busy
+days):
+
+| feature | per-crossing (cont / mult) | **day-collapsed n=90 (cont / mult)** |
+|---|---:|---:|
+| \|POC − pin\| (pts) | +0.04 / +0.05 | **+0.21 / +0.27** |
+| VA-width / range (shape) | +0.24 / +0.18 | **+0.25 / +0.22** |
+| morning #modes | +0.19 / +0.18 | +0.15 / +0.24 |
+| morning POC concentration | −0.12 / −0.16 | −0.09 / −0.25 |
+
+A **mild, consistent** day-level tilt (all ~+0.2–0.27, ~2 SE at n=90): a **directional / un-pinned morning**
+— wide value area, more modes, low POC concentration, POC sitting *far* from the pin — precedes TRUE
+afternoon blasts that continue further with bigger premium multiples. But *what it is* matters: "the morning
+trended → the afternoon break runs" is **vol/trend persistence** (the #13/#23 finding, positive
+morning→afternoon autocorr), read through a TPO lens — **not** information about the pin or POC specifically.
+At 8 ICs on 90 overlapping days with MID-fill multiples, it is a weak confirming hint, not a rule.
+
+**Quantifying "wide VA" (the normalisation question).** Three sensible normalisations of the morning
+value-area width, each controlling a different thing — and their day-collapsed IC vs the same TRUE-blast
+outcome:
+
+| score | what it controls for | day-collapsed IC (cont / mult) |
+|---|---|---:|
+| **VA-width ÷ POC** (≈ VA/price, the user's "VA/POC") | index *level* (24k vs Sensex 80k) → absolute width comparable across days/indices | +0.15 / +0.27 |
+| **z-score of VA-width÷POC** vs the sample | *regime* ("wider than a typical morning") | +0.15 / +0.27 |
+| **VA-width ÷ day-range** (`va_width_pct`) | level *and* vol → a pure day-*type* score (rotational↔directional, 0–1) | **+0.25 / +0.22** |
+| \|POC−pin\| ÷ VA-width (pin gap in VA-widths) | expresses the pin as "inside/outside value" | +0.15 / +0.07 (weaker than raw pts) |
+
+Two honest takeaways: **(i)** the z-score and VA÷POC give *identical* IC — because **Spearman is
+rank-invariant**, so on a single homogeneous NIFTY sample dividing by price or z-scoring does **not** change
+a rank test. Normalisation earns its keep for *cross-index comparability, fixed thresholds, and any
+linear/ML combination* — not for the rank IC here. **(ii)** For a single "wide-VA" number, **VA-width ÷
+day-range** is the best day-*type* score (it's the strongest and needs no external scale), and **VA-width ÷
+POC (z-scored vs trailing days)** is the right *absolute-width regime* score for pooling across price levels
+/ indices. Normalising the **pin↔POC gap by VA-width did *not* help** (+0.15/+0.07 < raw +0.21/+0.27) — keep
+that gap in points (or % of POC).
+
+**Conclusion:** the combined MP×pin play does not produce an edge — the mid-day pin trade loses (worse than
+its mirror, because price drifts off the pin and a pin-struck option needs an overshoot), and the morning
+distribution's mild link to TRUE-blast follow-through is trend persistence, not a pin/POC signal. Consistent
+with #25/#26: TPO and the pin are decision-support *maps*, not triggers. The normalisation work stands on its
+own as the recommended way to score "wide VA" going forward (VA÷range for day-type; VA÷POC z-scored for
+regime). Sign-free of the landmine.
+
+## Study #28 — the user's replay-observed TRUE-blast SETUP: pin on spot at 13:45 → runs to POC, effective when pin is OUTSIDE value, |pin−POC| large, double-distribution  → SETUP mostly holds (mild); the "runs to POC" DIRECTION inverts
+`scripts/analyze_blast_pin_va.py`, **208 labelled NIFTY expiries** (2021-07→2026-07). From watching TRUE-blast
+replays the user proposed: at the 13:45 lock spot sits on the expiry pin and then runs toward POC, and the blast
+is *effective* when the pin is **outside the value area**, **|pin−POC| is large**, and the morning is a
+**double-distribution**. This is the 13:45-lock, TRUE-vs-FAKE angle on #27's structure features (which measured
+continuation *within* TRUE crossings). Unit = the expiry day, split TRUE-GB vs FAKE-GB by the blast_ml afternoon
+(≥13:45) 0-DTE crossings (TRUE = at least one reached a sustaining score — the same tag the replay practice-drill
+uses); features frozen at 13:45 (developing TPO profile + max-pain pin). Sign-free; the afternoon move is a MID
+underlying magnitude. **Base rate is TRUE-GB 77%** (the label is TRUE-heavy → not very selective, so read lifts,
+not absolute rates).
+
+- **Spot IS on the pin at 13:45 — CONFIRMED (mild):** median |spot−pin| **21 pt** vs |spot−POC| 29 pt (spot sits
+  nearer the pin).
+- **"…then runs to POC" — INVERTED:** spot moves *toward* the 13:45 POC only **44%** of days (p=0.11), and just
+  **35%** when the pin is outside VA — so on the effective days it blasts **further away from POC** (past the pin,
+  out of value), it does not revert to value. TRUE-GB days move toward POC *less* than FAKE (43% vs 47%). Same
+  drift-off-the-pin geometry as #26; the effective blast is a **breakout that continues away from value**, not a
+  pin→POC reversion. (The one piece of the intuition that reverses — trading it as a reversion would be wrong.)
+- **Pin OUTSIDE VA → CONFIRMED (mild):** TRUE-GB **83% vs 75%** (+8 pp), afternoon move 0.22% vs 0.18%.
+- **Larger |pin−POC| → PARTIAL:** non-monotone by tercile (78 / 70 / **84**%) — only the top tercile
+  (38–278 pt) lifts (and has the biggest move, 0.26%); Spearman IC(|pin−POC|, TRUE) = **+0.08** (weak).
+- **Double-distribution morning → CONFIRMED (strongest):** TRUE-GB **80% vs 68%** (+12 pp), move 0.20% vs 0.13%.
+- **Combined setup (pin outside VA · |pin−POC|≥median · double-dist):** the strongest cell — **85%** TRUE-GB and
+  0.24% move vs 77%/0.18% for everything else — but **n=48, p vs base = 0.23** (not significant).
+
+**Conclusion:** the *setup* the user reads off replays is **supported as a mild, consistent tendency** — pin out
+of value + wide pin–POC gap + double-distribution associate with more/bigger blasts, and the continuous
+afternoon-move medians corroborate every cell (effective cells move larger), so it is not noise. But two honest
+limits: the "runs to POC" **direction is reversed** (effective blasts run *away* from value), and the three
+"conditions" **co-move** — a double-distribution day with the pin far outside value *is* one underlying
+directional/trend-day factor, the #13/#27 persistence story seen through the pin/VA lens, not three independent
+edges. Against a 77% base rate the lifts are real in direction but modest and individually non-significant. Fits
+the arc: a legitimate **regime/day-type read** (this day is set up to trend, so a break is likelier to run than
+fade), never a directional trigger. This is exactly the mild prior the dashboard already surfaces as the PINNED /
+UN-PINNED "Day-type context" under the blast verdict (§4.6 of docs/simple-dashboard.md). Sign-free of the landmine.
+
+## Study #29 — the value profile at the OPTION-EXPIRY-WEEKLY frequency (Wed→Tue) vs FAST-TRUE blasts  → the #28 geometry re-expressed as a DISTANCE (spot-out-of-weekly-value +9pp, |pin−wPOC| monotone IC+0.15); the binary pin-out-VA / double-dist DIE at weekly frequency; still a mild sign-free tendency, n.s. combined
+`scripts/analyze_weekly_profile_blast.py`, **208 labelled NIFTY expiries** (2021-07→2026-07). Every prior TPO study
+built the profile from a single session (the expiry morning ≤ the lock). Here the **frequency is the expiry week**:
+for a NIFTY Tuesday expiry the week runs **Wednesday → Tuesday** (day after the prior expiry, through this expiry).
+We aggregate all 1-min spot across that week and compute **one POC / value area** for it — a full week of price
+acceptance, a steadier value read than a half-day developing profile. **Point-in-time:** the weekly profile is frozen
+at the expiry-day **13:45 lock** (every prior week-day's full session + the expiry morning ≤13:45); the outcome fires
+strictly after, so features never see it. Target = **FAST-TRUE** (from `analyze_blast_speed.py`): an expiry day where
+at least one 0-DTE afternoon (≥13:45) crossing ignited to a sustaining grade **within ≤10 min** of the cross
+(`k_true∈{1,2}`). **Base rate FAST-TRUE 48%** — far more selective/balanced than plain-TRUE's 77%, so lifts are
+readable (a coin-flip is the right null). Weekly bin coarsened to ~10 pt (~45 bins) so POC/VA/shape read at
+session-comparable grain — the 5-pt session bin over a ~500-pt week makes `_count_modes` see every jitter as a mode.
+
+- **Spot OUTSIDE the weekly value area at 13:45 → CONFIRMED (the cleanest, big n):** FAST-TRUE **52% vs 43%** (+9 pp;
+  n=104/104), any-TRUE 86% vs 69%. Price already carried beyond where the week accepted value ⇒ a faster, sustaining
+  afternoon break is likelier.
+- **Larger |pin − weekly POC| → CONFIRMED, MONOTONE (best):** FAST-TRUE by tercile **39 → 46 → 57%** (low→high),
+  Spearman IC = **+0.15**. The widest pin↔weekly-POC gaps ignite fastest.
+- **Pin OUTSIDE the weekly VA → DEAD:** 47% vs 48% (−1 pp). The weekly VA is wide (median **220 pt ≈ 50%** of the
+  week's range), so "pin outside it" is a blunt, rare condition and carries no signal — unlike the *morning* VA where
+  pin-out-VA was #28's +8 pp winner.
+- **Weekly day-type shape → NULL:** the binary double-distribution **saturates** (99% of weeks have ≥2 modes — over a
+  week almost everything is multi-modal, so it can't discriminate). The meaningful weekly axis, VA-width/week-range
+  (narrow = directional week), is **non-monotone** (38 / 58 / 47%), IC +0.06 — null.
+- **Combined (spot outside weekly VA · |pin−wPOC|≥median):** 52% vs 45% (+7 pp) but **n=80, p vs base = 0.43** — not
+  significant, same as #28's combined cell.
+
+**Conclusion:** the expiry-week lens keeps #28's underlying story — *price displaced from accepted value → likelier a
+fast, sustaining break* — but **re-expresses it as a continuous DISTANCE, not a binary**. What flips vs the morning
+profile is instructive: the wide weekly value area kills the binary "pin outside VA" (blunt at this frequency) and the
+mode-count saturates, while the *continuous* distances (spot out of weekly value +9 pp; |pin ↔ weekly-POC| monotone,
+IC +0.15) survive cleanly and with big n. It's the **same mild, sign-free trend-day tendency at a steadier frequency,
+not a new edge** — the co-moving pieces don't reach significance when combined. Fits the arc: a legitimate
+regime/day-type read (this week is set up to trend, so the expiry break is likelier to run fast), never a directional
+trigger. Sign-free of the landmine; the afternoon move is a MID underlying magnitude (real fills worse).

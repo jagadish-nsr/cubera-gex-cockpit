@@ -36,9 +36,10 @@ def test_is_expiry_day_matches_nearest_expiry_today():
 
 def test_save_blast_writes_to_gamma_blast_dir(tmp_path, monkeypatch):
     import app.timeseries as ts
-    monkeypatch.setattr(lt, "GAMMA_BLAST_DIR", tmp_path)
+    # _save_blast routes via gamma_blast_dir_for(source); NSE/None -> GAMMA_BLAST_DIR (patch it here).
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DIR", tmp_path)
     data = SimpleNamespace(
-        symbol="BANKNIFTY",
+        symbol="BANKNIFTY", source="nse",
         fetched_at=datetime(2026, 6, 30, 5, 0, tzinfo=timezone.utc),
         levels=SimpleNamespace(spot=57000.0),
         oi_strikes=[{"strike": 57000.0, "call_oi": 1, "call_doi": 2, "put_oi": 3,
@@ -51,6 +52,24 @@ def test_save_blast_writes_to_gamma_blast_dir(tmp_path, monkeypatch):
     df = ts.load_strikes_day("2026-06-30", symbol="BANKNIFTY", directory=tmp_path)
     assert len(df) == 1 and df["strike"].iloc[0] == 57000.0
     # demo-style bundle with no per-strike data -> no-op
-    assert lt._save_blast(SimpleNamespace(symbol="NIFTY",
+    assert lt._save_blast(SimpleNamespace(symbol="NIFTY", source="nse",
                           fetched_at=data.fetched_at,
                           levels=SimpleNamespace(spot=1.0), oi_strikes=[])) == 0
+
+
+def test_save_blast_routes_dhan_to_separate_dir(tmp_path, monkeypatch):
+    """Dhan blast captures land in gamma_blast_dhan, never mixed with the NSE tree."""
+    import app.timeseries as ts
+    nse_dir, dhan_dir = tmp_path / "nse", tmp_path / "dhan"
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DIR", nse_dir)
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DHAN_DIR", dhan_dir)
+    data = SimpleNamespace(
+        symbol="NIFTY", source="dhan",
+        fetched_at=datetime(2026, 6, 30, 5, 0, tzinfo=timezone.utc),
+        levels=SimpleNamespace(spot=24000.0),
+        oi_strikes=[{"strike": 24000.0, "call_oi": 1, "put_oi": 2,
+                     "call_ltp": 50.0, "put_ltp": 50.0, "net_gex": 3}],
+    )
+    assert lt._save_blast(data) == 1
+    assert ts.load_strikes_day("2026-06-30", symbol="NIFTY", directory=dhan_dir).shape[0] == 1
+    assert not (nse_dir / "NIFTY").exists()          # NSE tree untouched

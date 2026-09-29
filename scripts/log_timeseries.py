@@ -73,14 +73,15 @@ def _is_expiry_day(data) -> bool:
 
 
 def _save_blast(data) -> int:
-    """Write this pull's per-strike rows to the 1-min gamma-blast journal
-    (data/journal/gamma_blast/<SYMBOL>/). Returns the strike count (0 on demo)."""
+    """Write this pull's per-strike rows to the 1-min gamma-blast journal, routed to the feed's own
+    tree (Dhan -> gamma_blast_dhan/<SYMBOL>/). Returns the strike count (0 on demo)."""
+    from app.timeseries import gamma_blast_dir_for
     rows = build_strike_rows(data)
     if not rows:
         return 0
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                       directory=GAMMA_BLAST_DIR, symbol=data.symbol)
+                       symbol=data.symbol, directory=gamma_blast_dir_for(getattr(data, "source", None)))
     return len(rows)
 
 
@@ -105,20 +106,40 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     if not written:
         return f"{head}  -> skipped (a row < {min_gap:g} min old exists){blast_tag}", data
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
-    # row so the two captures never drift (skip writes nothing on either side).
+    # row so the two captures never drift (skip writes nothing on either side). Routed to the
+    # feed's own journal (Dhan -> oi_strikes_dhan) so sources never mix.
+    from app.timeseries import oistrikes_dir_for
     strike_rows = build_strike_rows(data)
-    append_strike_rows(strike_rows, date_ist=row["date_ist"])
+    append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol,
+                       directory=oistrikes_dir_for(data.source))
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
+    # On the Dhan feed, top up any 1-min OI gap (late start / missed stretch) from Dhan history —
+    # a no-op when a 1-min capture is already caught up (see maybe_backfill_oi's gap check).
+    bf_tag = ""
+    if str(data.source or "").lower().startswith("dhan"):
+        try:
+            from app.oi_backfill import maybe_backfill_oi
+            r = maybe_backfill_oi(data.symbol, row["date_ist"], log=lambda *a: None)
+            if r.get("stamps"):
+                bf_tag = f" +bf{r['stamps']}"
+        except Exception:  # noqa: BLE001 - backfill is best-effort context
+            pass
     # Index-futures intraday snapshot (SEPARATE live call; best-effort, never fatal).
     fut_tag = ""
     try:
-        from app.futures_buildup import capture_futures_snapshot
-        got = capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=min_gap)
+        from app.futures_buildup import capture_futures_snapshot, futures_intraday_dir_for
+        fdir = futures_intraday_dir_for(data.source)
+        if str(data.source or "").lower().startswith("dhan"):   # Dhan-native futures quote
+            from data.dhan_live import fetch_futures_dhan
+            got = capture_futures_snapshot(symbol=data.symbol, fetch_fn=fetch_futures_dhan,
+                                           parse_fn=lambda p, s: p, min_gap_minutes=min_gap, directory=fdir)
+        else:
+            got = capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=min_gap, directory=fdir)
         if got and got[1]:
             fut_tag = " +fut"
     except Exception:  # noqa: BLE001 - futures capture is optional context
         pass
-    return f"{head}  -> {path.name}{extra}{fut_tag}{blast_tag}", data
+    return f"{head}  -> {path.name}{extra}{bf_tag}{fut_tag}{blast_tag}", data
 
 
 def _run_blast_window(symbol: str | None) -> None:

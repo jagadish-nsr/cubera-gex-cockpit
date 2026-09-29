@@ -42,6 +42,30 @@ class DashboardData:
     proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
     proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
     sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
+@dataclass
+class DashboardData:
+    levels: Levels
+    view: RegimeView
+    fetched_at: datetime
+    n_contracts: int
+    expiries: list
+    window: str
+    source: str
+    symbol: str = config.DEFAULT_INDEX   # which index this bundle is for
+    index_label: str = ""                # display name ("Nifty 50" / "Bank Nifty")
+    oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
+    oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot (live NSE)
+    india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
+    usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
+    news: dict | None = None       # {count, impact, top}; free RSS, best-effort
+    vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
+    charm_now: float | None = None  # live dealer-charm exposure (better vol metric at 0-DTE)
+    dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
+    day_ohlc: dict | None = None    # true index day OHLC {open,high,low,close,ltp} (Dhan feed only)
+    source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
+    proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
+    proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
+    sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
     contracts: object = None           # options snapshot contracts DataFrame (v2 tab strike analysis)
 
 
@@ -94,6 +118,9 @@ def _fetch_live_chain(idx, live_source: str | None):
     note = None
     if pref in ("dhan", "auto"):
         has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+        if not has_token:
+            from data.dhan import token_status
+            has_token = bool(token_status().get("present"))
         if pref == "dhan" or has_token:
             try:
                 from data import dhan_live
@@ -120,6 +147,9 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
         pidx = config.get_index(proxy_symbol)
         pref = (live_source or config.LIVE_SOURCE or "auto").lower()
         has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+        if not has_token:
+            from data.dhan import token_status
+            has_token = bool(token_status().get("present"))
         if pref in ("dhan", "auto") and has_token:
             from data import dhan_live
             payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)  # nearest expiry is enough
@@ -143,22 +173,16 @@ def _prefer_dhan(live_source) -> bool:
     pref = (live_source or config.LIVE_SOURCE or "auto").lower()
     if pref == "nse":
         return False
-    return bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
+    if bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN):
+        return True
+    from data.dhan import token_status
+    return bool(token_status().get("present"))
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
                    symbol: str | None = None, live_source: str | None = None,
                    sign_model: str | None = None) -> DashboardData:
-    """Load a full DashboardData bundle.
-
-    Parameters
-    ----------
-    sign_model : str | None
-        Dealer gamma sign convention. Pass explicitly per-tab to isolate models:
-          - Tab 1 (remote/US): ``"long_call_short_put"``
-          - Tab 2 (India SCSP): ``"short_call_short_put"``
-        Falls back to ``config.DEALER_SIGN_MODEL`` when None (legacy callers).
-    """
+    """Load a full DashboardData bundle."""
     window = window or config.EXPIRY_WINDOW_DEFAULT
     idx = config.get_index(symbol)             # resolves symbol -> lot size, weekly, band
     fetched_at = datetime.now(timezone.utc)
@@ -185,20 +209,24 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                               per_strike_oi)
 
         usdinr = None          # USD/INR retired — Dhan has no live contract and it's unresearched
-        # Run news, the proxy pull, and (NSE-only) VIX CONCURRENTLY with the main chain so they hide
-        # under its ~10-15s instead of adding serially. On Dhan, VIX rides the index-OHLC quote
-        # (day_ohlc["vix"]) — no separate call. All fail-soft.
+        sectors = fetch_sector_snap()
         _dhan = _prefer_dhan(live_source)
         _nse_vix = None
-        # Sector strip: NOT on the fetch path. This returns the cached rows instantly and
-        # self-refreshes on its own 15-min background timer, so the slow-moving rotation context
-        # never competes with the chain / futures pull for time or worker threads.
-        sectors = fetch_sector_snap()
         _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
         with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
             _fx = {"news": _ex.submit(fetch_news)}
             if idx.regime_proxy:
                 _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source, _resolved_sign_model)
+            if not _dhan:
+                from data.nse import fetch_india_vix as _nvx
+                _fx["vix"] = _ex.submit(_nvx)
+            payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
+            rows, spot = parse_nse_option_chain(payload)
+            news = _fx["news"].result()
+            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
+            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
+        india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
+
             if not _dhan:
                 from data.nse import fetch_india_vix as _nvx
                 _fx["vix"] = _ex.submit(_nvx)

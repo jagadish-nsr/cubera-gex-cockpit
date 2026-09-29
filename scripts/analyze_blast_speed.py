@@ -94,11 +94,13 @@ def main() -> None:
                     for c, t, wr, we in zip(df["cover"], df["thrust"],
                                             df["wall_ratio"], df["wall_erode"])]
     ever = df["k_true"].notna()
-    aft = df[(df["dte"] <= 1.5) & (df["tod"] >= 13 * 60 + 45)]      # the real blast window
+    from app.gammablast import afternoon_cut
+    cut_m, cut_lbl = afternoon_cut()
+    aft = df[(df["dte"] <= 1.5) & (df["tod"] >= cut_m)]      # the real blast window
 
     _print(f"Speed-of-ignition + transitions · {store} · {len(df):,} crossings "
            f"({df['day'].nunique()} days)  ·  good blast = ≥{good:g}× winning-leg peak")
-    _print(f"reached TRUE within 30 min: {100*ever.mean():.0f}% (0-DTE afternoon "
+    _print(f"reached TRUE within 30 min: {100*ever.mean():.0f}% (0-DTE afternoon (≥{cut_lbl}) "
            f"{100*aft['k_true'].notna().mean():.0f}%)  ·  median time-to-TRUE: "
            f"{df.loc[ever,'k_true'].median()*5:.0f} min\n")
     _print("Time-to-TRUE distribution (share of ALL crossings):")
@@ -108,12 +110,12 @@ def main() -> None:
 
     _dist_table(df, "(1) Post-trigger peak-multiple DISTRIBUTION by speed — ALL crossings:", good)
     _print("")
-    _dist_table(aft, "(2) same — 0-DTE AFTERNOON (≥13:45), the real blast window:", good)
+    _dist_table(aft, f"(2) same — 0-DTE AFTERNOON (≥{cut_lbl}), the real blast window:", good)
     _print("")
-    _transition(aft, "(3) Value of WAITING — static 10-min grade → reaches TRUE → good blast "
-                     "(0-DTE afternoon):", good)
+    _transition(aft, f"(3) Value of WAITING — static 10-min grade → reaches TRUE → good blast "
+                     f"(0-DTE afternoon (≥{cut_lbl})):", good)
 
-    _print("\n(4) 0-DTE afternoon by expiry-structure era — ever-TRUE% and FAST good-blast rate:")
+    _print(f"\n(4) 0-DTE afternoon (≥{cut_lbl}) by expiry-structure era — ever-TRUE% and FAST good-blast rate:")
     _print(f"    {'era':<42} {'ever-TRUE%':>10} {'FAST n':>7} {'FAST ≥'+format(good,'g')+'×':>10}")
     for e in era_order(aft["era"].unique()):
         sub = aft[aft["era"] == e]

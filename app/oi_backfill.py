@@ -62,13 +62,13 @@ def backfill_oi_strikes_dhan(symbol: str, date_ist: str, log=print) -> dict:
     present). Best-effort: an empty/failed Dhan pull returns zeros, never raises."""
     from datetime import date as _date, datetime, timedelta, timezone
 
-    from data.dhan import (DHAN_OPT_FLAG, DHAN_UNDERLYING, NIFTY_SECURITY_ID,
+    from data.dhan import (DHAN_OPT_FLAG, DHAN_SEGMENT, DHAN_UNDERLYING, NIFTY_SECURITY_ID,
                            fetch_option_matrix)
     from app.timeseries import (OISTRIKES_DHAN_DIR, append_strike_rows, load_strikes_day)
 
     flag = DHAN_OPT_FLAG.get(symbol, "WEEK")
     sid = DHAN_UNDERLYING.get(symbol, NIFTY_SECURITY_ID)
-    seg = "BSE_FNO" if symbol == "SENSEX" else "NSE_FNO"
+    seg = DHAN_SEGMENT.get(symbol, "NSE_FNO")
     d0 = _date.fromisoformat(date_ist)
     mat, misses = fetch_option_matrix(d0.isoformat(), (d0 + timedelta(days=1)).isoformat(),
                                       flag=flag, code=1, interval="1", security_id=sid, segment=seg)

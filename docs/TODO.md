@@ -5,6 +5,200 @@ Running backlog of planned work. Newest entries on top. Each entry is timestampe
 
 ---
 
+## 2026-07-22 IST — [W2] Big-money FUTURES tape (live websocket)  ✅ CORE BUILT (2026-07-22 — decoder+filter+collector+dashboard+tests, proven live; remaining = calibrate floors, next-month roll)
+
+**Built (2026-07-22, proven end-to-end on the live feed):** `data/dhan_feed.py` (v2 WS client + binary
+decoder, offsets LOCKED by `tests/test_dhan_feed.py` hex fixtures), `app/big_money.py` (pure filter:
+`notional`/`classify_aggressor`/`_BurstTracker`/`BigMoneyDetector` + `Event` + JSONL store), and
+`scripts/run_big_money_collector.py` (headless runner, `--dry-run`, `--print-floor`/`--burst-floor`).
+Verified live: prints + bursts fire with correct aggressor side (▲BUY/▼SELL/•), notional, lots, and
+EXCHANGE time (fixed a Dhan-LTT IST-wall-as-epoch +5:30 bug).
+
+**+ Automated & integrated (2026-07-22):** `app/big_money_live.py` — a `Collector` daemon thread
+auto-started from the dashboard via `st.cache_resource` (one singleton/server; sidebar toggle
+"🐋 Big-money tape (live, auto)", default on). It also **archives every raw Quote/Full tick** to
+`data/journal/big_money_raw/<SYM>/<day>.csv` — because Dhan's HISTORICAL API has NO tick data (finest =
+1-min candles, verified in docs), the live feed is the only tick source. The tape card shows a live
+health strip (connected · last-tick age · events · raw-ticks · per-symbol tick counts). Optimised
+startup: `resolve_futures` now downloads the scrip master ONCE (was 3×). 251 tests green.
+
+**+ Ops (2026-07-22):** `scripts/run_big_money_collector.py --market-hours` (IST-aware: waits 09:15,
+stops 15:30, auto-logs) now runs the shared `Collector` (raw + events); `scripts/install_collector_schedule.ps1`
+registers a Windows weekday task (fires 03:15 local → collector waits for open; DST-robust since it waits
+in IST); `scripts/big_money_summary.py` reports the print/burst notional distributions (→ suggested p99
+floors) + biggest prints + buy-vs-sell signed flow (the directional lean) for calibration.
+
+**+ Events → SQLite + flow bias (2026-07-22):** `app/big_money_db.py` — the big-money EVENT store is now
+SQLite (`data/journal/big_money.db`, WAL, UNIQUE-key dedupe); `append_event`/`load_events` delegate to it
+(callers unchanged), `migrate_jsonl` imports legacy files, `daily_rollup` aggregates per (day,symbol):
+buy vs sell-initiated ₹, net flow, lean, biggest. `scripts/big_money_rollup.py` prints the day-by-day
+directional ledger. The dashboard tape now opens with a **"Big-money flow bias · today"** block (per-symbol
+buy/sell ₹ + net lean) so opening mid-day gives the running read — DESCRIPTIVE order flow, explicitly NOT
+a validated forecast (to be sharpened with data/study).
+
+**+ Parquet compaction + flow-IC harness (2026-07-22):** `scripts/compact_raw_ticks.py` compacts finished
+raw-tick CSVs → Parquet (merge+dedupe; `--market-hours` collector auto-compacts today on exit;
+`load_raw_ticks` prefers Parquet). `scripts/big_money_flow_ic.py` = the pre-registered validation of the
+flow-bias (daily net-flow lean → next-session return, Spearman IC vs shuffled mirror, per symbol); reports
+INSUFFICIENT until ~15+ captured sessions — the flow bias stays DESCRIPTIVE until it beats the placebo.
+253 tests green.
+
+**Scheduled tasks (audited 2026-07-22):** the raw-tick collector `GEX-BigMoneyCollector` IS registered
+(Ready). The existing `*GEX-TimeSeries` / `*Log` / `GEX-FuturesBuildup` / `GEX-ParticipantOI` tasks collect
+DIFFERENT data (option-chain OI already Dhan-primary w/ NSE backup; gex_history; NSE bhavcopy;
+**NSE-only participant-wise FII/DII OI**) — big-money (futures ticks) does NOT replace them, so they were
+KEPT. Optional future: flip `log_timeseries` to Dhan-only (drop NSE fallback) but keep the EOD NSE tasks.
+
+**+ Futures rollover — Option A (2026-07-23):** watch the TWO nearest contracts per symbol
+(`resolve_futures(rolls=2)` → `nearest_futures`, tagged roll=near/next) and aggregate by symbol. Prints
+stay per-contract (tagged `expiry`), bursts aggregate to symbol level (`_SymbolBurstTracker` sums both
+contracts' volume deltas into one window, tagged `AGG`), flow/rollup fold in via `GROUP BY symbol`. New
+`futures_state` table + rollover gauge on the tape (`%rolled = next_OI/(near+next OI)`; verified live
+2026-07-23: NIFTY ~29%, BankNifty ~32% rolled to Aug). Dedupe keys extended with `expiry`; collector
+re-resolves near/next daily. 258 tests green. NOT yet: calendar-spread detection.
+
+**+ ΔOI / positioning (2026-07-24):** every event now carries `oi` (symbol total, near+next) + `doi`
+(ΔOI over the burst window) — `_SymbolBurstTracker` tracks per-contract OI. `buildup(direction, doi)` =
+the four-quadrant read (long/short build-up, covering, unwinding). `big_money_analysis.py` §4 = day OI
+trend + per-bucket build-up + per-print build-up ₹; the tape shows a per-row build-up tag. Turns bursts
+from *flow* into *positioning* and gives them a direction. `docs/burst-analysis.md` is the research/reading
+guide. 261 tests green. Needs a session captured AFTER this change (pre-ΔOI events show "no OI").
+
+**+ Conviction ΔOI/Δvol + 180s window fix (2026-07-24):** conviction = share of window volume that became
+NET positioning vs churn. FIXED the window: measured OI updates ~every 60s, so the 10s burst window gave
+|conv|≈0 — conviction now uses a decoupled 180s positioning window (`POS_WINDOW_S`); the tracker returns
+`(fired,wnot,wqty,tot_oi,doi,conv)` and events carry `conv`. **Validated on 2026-07-24 raw: |conv| med
+0.34, 65–71% positioning, net +0.2–0.3 BUILDING** (was 0.00/17% at 10s). `scripts/rederive_events.py`
+replays the raw archive through the current detector so a fix reaches already-captured days (raw =
+source of truth); `big_money_analysis.py --db`. Flow-IC run: INSUFFICIENT (2 pairs, need ≥15). 262 green.
+
+**+ Dashboard day-readout + tick REPLAY (2026-07-24):** analyse-compute moved to `app/big_money_analysis.py`
+(`analyse` / `analyse_frame`, shared by the script). Tape card now shows a "Day so far" readout for the
+selected symbol (counts, day OI, build-up ₹ split, net conviction + positioning share, heaviest prices).
+Sidebar *🎬 Replay big-money* scrubs a captured day (day + IST clock) — re-derives events tick-by-tick from
+the raw archive up to the clock (`rederive_events(upto_epoch=…)`, `available_raw_days`) and renders the tape
++ readout as of that moment. Live + replay renders verified. 262 green.
+
+**Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
+accrue; burst-level directional tag (long vs short build-up, needs window Δprice); intraday (half→half)
+flow test; calendar-spread detection; deferred phases (constituents, cross-book synthesis).
+
+**SENSEX added (2026-07-22) but BSE-gated:** wired into floors/defaults/tape and resolves from the
+scrip master (BSE_FNO, lot 20), but verify-live shows the websocket returns **0 SENSEX packets** on the
+current token (a NIFTY control on the same connection ticks) — BSE live data is a separate Dhan
+entitlement. Its 0-count is flagged ⚠️ in the health strip; it lights up automatically once BSE is
+enabled. **Remaining:** enable BSE live-data for SENSEX; calibrate ₹ floors on a full session;
+next-month roll (current-expiry thins pre-expiry); deferred phases (constituents, cross-book synthesis).
+
+
+
+**Why:** the live complement to our stored-tick studies — surface **unusually large activity** in the
+index futures in real time. Honest framing (the landmine): retail feeds are **aggregated broadcast**, so
+we CANNOT see orders or participant identity — only large **prints** (single-tick LTQ) and **bursts**
+(volume/OI clustered in seconds). So this is a *large-trade / unusual-activity tape*, an inference of big
+money, NOT literal order tracking. A big print is also **direction-ambiguous** (a ₹cr sell could be a
+hedge); the most we honestly add is **aggressor side** via best bid/ask (Lee-Ready). Report the flow,
+never predict from it — same sign-free discipline as the dealer-sign landmine. Scope decided with the user:
+**NIFTY + BankNifty CURRENT-EXPIRY FUTURES only** — options are deferred because you can't separate a
+directional print from a hedge/spread leg in the chain; futures are one clean directional instrument each.
+
+**Gate — DONE (2026-07-21):** live Market-Feed websocket entitlement CONFIRMED via `scripts/dhan_ws_probe.py`;
+all tiers flow (Ticker/Quote/Full), little-endian, **LTQ (Quote) + 5-level bid/ask (Full) both available**, so
+the ₹ filter AND aggressor-side are buildable. Endpoint/format/ids in the `dhan-live-ws-feed` memory.
+
+**Architecture (decoupled — Streamlit can't hold a long-lived socket; reuse the "collector → file store →
+dashboard reads" shape of the live pipeline):**
+```
+Dhan WS ─► collector (always-on) ─► append-only event store (JSONL/day) + in-mem ring ─► dashboard tape fragment
+           decode → ₹/burst filter → aggressor tag              (tails last N events, auto-refresh, filters)
+```
+
+**Build (smallest-first):**
+1. **`data/dhan_feed.py` — the WS client + decoder** (new; keep raw, no SDK, mirror `data/dhan.py` secret
+   handling). `connect()` builds the v2 URL from `_secret` token + client id (NEVER logged), subscribes to the
+   two futures from `near_month_future_id("NIFTY"/"BANKNIFTY")`. A `decode(frame)` for the binary packets
+   (header @0, LTP float32 @8, little-endian — calibrate LTQ/volume/bid-ask offsets from the probe's raw hex
+   FIRST, verify vs a live Quote/Full packet). Reconnect + daily-token-refresh loop (24h cap, same as REST).
+   ⚠️ non-blocking recv with a drop/coalesce policy — packet rate is highest exactly during the bursts we care
+   about (measure it live first, see VERIFY).
+2. **`app/big_money.py` — the filter (pure, testable)**. `notional = ltp * ltq * lot` (lot from the resolved
+   contract). Two filters: (a) **absolute single-print** ≥ a per-index ₹ floor (named constants, CALIBRATE on
+   day-1 real tape — 1 NIFTY lot ≈ ₹15.7L, 1 BankNifty lot ≈ ₹17.4L, so a "big" print is tens of lots ≈ few
+   ₹cr); (b) **relative burst** — Δvolume over a K-sec window ≥ X× the instrument's rolling-median trade size
+   (catches sliced/iceberg orders). `aggressor(ltp, bid, ask)` → buy/sell-initiated (Lee-Ready; None if
+   inside the spread). Every fired event records the raw fields that tripped it (make-state-visible / fail-loud).
+3. **`scripts/run_big_money_collector.py` — the always-on process**. Wires client→filter→store: append each
+   qualifying event to `data/journal/big_money/<SYMBOL>/<day>.jsonl` (gitignored) with the EXCHANGE tick
+   timestamp (not receipt time; note latency), plus a small in-memory ring for freshness. `--dry-run` prints to
+   console (the day-1 calibration run). Graceful on close/disconnect; logs packet-rate stats on exit.
+4. **`app/simple_dashboard.py` — the tape fragment (read-only)**. A "🐋 Big-money tape" card that tails the
+   event store (last N events), one timestamped row each: `HH:MM:SS · index · ▲buy/▼sell · N lots · ₹X.Xcr ·
+   @price`, colour by side, newest on top. Filters row: index / min-notional / side. Auto-refresh like the
+   other live panels. Purely a readout — **no verdict, no trade call** (decision-support; you confirm).
+5. **Tests** (`tests/test_big_money.py`): `notional`/`aggressor` hand-checks; abs floor fires at threshold and
+   not below; relative burst on a synthetic volume series; a decoder round-trip on a captured sample packet
+   (hex fixture) so the offsets are pinned. Store read/write + graceful-missing-file.
+6. **Docs:** `docs/big-money-tape.md` — the honest-framing preamble (prints not orders; direction-ambiguous),
+   the filter definitions + calibrated floors, the field/format reference (from the probe), and the run recipe.
+
+**VERIFY-live before trusting (never guess):** (a) tick-RATE during 09:15–15:30 IST — re-run
+`dhan_ws_probe.py 30` live to size throughput/backpressure (closed-market probe can't show it); (b) the exact
+Quote/Full field offsets past LTP (LTQ/volume/bid/ask) against a live packet; (c) re-resolve the futures ids
+each session (they roll — the probe already does). Token 24h-capped → collector needs re-paste/reconnect.
+
+**Out of scope (deferred, note so it's not a silent gap):** the options chain (hedge-vs-directional
+unknowable); **next-month roll** — "current expiry only" thins in the last 1–2 days as liquidity rolls, so
+late-cycle big prints migrate to the contract we're not watching (add auto-roll / next-month later); any
+auto-execution (staged, human-confirm only — hard rule). Effort: med (new WS decoder is the real work; filter +
+tape are small). Sign-free; decision-support only. Phasing: 1→2→(3 dry-run, calibrate floors)→4.
+
+---
+
+## 2026-07-21 IST — [W1] Expiry-week value overlay (upgrade the "5-day composite")  ⏳ TODO (visual only; Study #29 `docs/intraday-results.md`)
+
+**Why:** Study #29 computed the value profile at the **option-expiry-weekly** frequency (Wed→Tue for a
+NIFTY Tuesday expiry) and found the useful content is a *map*, not a signal: spot sitting **outside the
+weekly value area** (+9 pp FAST-TRUE) and a wide **|pin − weekly-POC| gap** (monotone, IC +0.15) are a
+mild trend-day tendency — but the combined cell is **n.s. (p=0.43)** and it's the same prior the blast
+verdict already shows as PINNED/UN-PINNED. So the defensible dashboard change is to make the *weekly value
+area itself* a cleaner reference layer, and **NOT** add any new verdict/trigger text. The dashboard already
+has a "📊 5-day value (composite)" toggle (`simp_weekly`), but it's a plain trailing-5-days composite on the
+base 5-pt bin — this task corrects it to the true expiry-week boundary and the session-comparable bin.
+
+**Build (contained, purely visual — do NOT touch the blast verdict / `_pin_context_line`):**
+1. **Factor Study #29's helpers into `app/market_profile.py`** (reuse, single source):
+   - `expiry_week_days(symbol, source, today) -> list[str]` — trading days from **the day after the prior
+     expiry through `today`**, bounded to ≤9 calendar days of `today` (skip feature-cache gaps). Find the
+     prior expiry with `data.replay._expiry_cache(symbol)` (dte<0.6 set) and fall back to
+     `data.expiry.next_weekly_expiry` when the cache doesn't cover recent days — same dual path
+     `data.replay.is_expiry_day` already uses. Port `_week_days`/`WEEK_MAX_GAP=9` from
+     `scripts/analyze_weekly_profile_blast.py`.
+   - `weekly_bin(arr, base_bp, n_target=45)` — port `_weekly_bin`: coarsen to ~week_range/45 (≈10 pt for
+     NIFTY) so `_count_modes`/VA read at session grain, not the 100+-bin jitter of the 5-pt bin.
+2. **Rewire `overlay_profiles(..., weekly=True)`** (lines ~168-172): replace the `recent[-5:]` composite with
+   `expiry_week_days(...)` — each prior week-day's full session (`_spot_for`) **plus today's developing bars
+   ≤ now** (point-in-time; today's series is already fetched as `ts` for `today_prof`, reuse it), concat, and
+   `day_profile(pd.Series(arr), bin_pts=weekly_bin(arr, bp))`. Keep the graceful-None contract (short/empty
+   week → `weekly=None`). Add the week's day-count to the return dict (e.g. `"week_days": n`).
+3. **Relabel the UI "5-day"→"week"** — the toggle text/help (`app/simple_dashboard.py` ~449-451: "📊 Weekly
+   value (expiry week)"), the candle legend "5-day (5D·)" (~723-725), and the label prefixes inside
+   `_range_candle` where the weekly VAH/POC/VAL are drawn dotted (grep "5D" in `_range_candle`, ~1200-1260).
+   Keep the dotted style so week ≠ prior-day (dashed) ≠ today (solid).
+4. **Docs:** `docs/simple-dashboard.md` §4.6 — one line that the composite is now the true expiry-week (Wed→Tue)
+   value map, explicitly a **reference map, not a signal** (cite Study #29's n.s. combined result so nobody
+   reads the overlay as a trigger).
+5. **Tests (`tests/test_market_profile.py` or a new `tests/test_expiry_week.py`):** `expiry_week_days` returns
+   Wed→Tue for a known expiry and drops a >9-day cache gap; `weekly_bin` coarsens a wide-range week and floors
+   at `base_bp` for a narrow one; `overlay_profiles(weekly=True)` on a replay/stored day yields a `weekly` dict
+   whose VAL≤POC≤VAH and `week_days≈5`, and `None` when there's <2 week-days.
+
+**Explicitly out of scope:** any spot-vs-weekly-value or pin↔weekly-POC **distance readout / chip / verdict
+line** — that would dress the n.s. Study #29 tendency as a signal (same reason #26/#28 stayed maps). Revisit
+only if a future study makes the weekly distance significant. Effort: low–med (one overlay path + labels +
+tests; no engine, no new capture). Sign-free; point-in-time; decision-support only.
+
+---
+
 ## 2026-07-15 IST — [B1] Gamma-blast BACKTEST skill  ✅ DONE (2026-07-15 — `scripts/backtest_gamma_blast.py` on the 1-min entry model; verdict: real selector, NOT tradeable after spread — see gamma-blast-research.md §7e)
 
 **Result:** built the 1-min crossing/trajectory primitives (`scripts/_blast1min.py`), the 1-min timing

@@ -314,7 +314,10 @@ def _fut_badge(label):
     return cls, ic, (label or "—").title()
 
 
-_SPOT_TICK_S = 10.0     # fast SPOT lane: one cheap index quote every 10s, off the render thread
+_SPOT_TICK_S = 4.0      # fast SPOT lane: one cheap index quote every ~4s, off the render thread. 4s
+                        # (not 2s) keeps comfortable headroom in the SHARED /marketfeed "quote" rate
+                        # bucket — spot + VIX + the blast fuel two-strike fetch all draw from it, and
+                        # 429s were measured at 1-2s spacing. True ≤2s = the WS lane, not more REST.
 _POLL_S = 3             # fragment repaint poll while auto — a pure in-memory read of the last
                         # published snapshot (NO network here), so repaints are instant / no dim.
 _FETCH_LEAD_S = 15      # background fetcher starts the pull this many s BEFORE each clock boundary
@@ -336,12 +339,16 @@ def _dhan_feed_controls(symbol: str) -> None:
     """Sidebar: paste/refresh the Dhan access token (SEBI-capped at 24h) and see its status.
     The token is a SECRET — stored gitignored in data/.dhan_token, never shown or logged. A stale
     token just falls the feed back to NSE, so this is convenience, not a hard dependency."""
-    import config
+    from data.dhan import token_status, write_token
 
     st.divider()
-    has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
-    if not has_token:
+    stt = token_status()
+    if not stt["present"]:
         head, exp0 = "🔌 Dhan feed — not set (using NSE)", True
+    elif stt["expired"]:
+        head, exp0 = "🔴 Dhan token expired — re-paste", True
+    elif stt["hours_left"] is not None:
+        head, exp0 = f"🟢 Dhan token · ~{stt['hours_left']:.1f}h left", False
     else:
         head, exp0 = "🟢 Dhan token set", False
 
@@ -433,15 +440,15 @@ def main():
         # Controls REPAINTING, not fetching: the background lanes run either way. Defaults ON now
         # that a repaint costs ~0.26s (it defaulted off when a refresh dimmed the page for ~14s).
         auto = st.checkbox("🔴 Live updates", value=True,
-                           help="Keep the page updating in place: spot & candle every 10s, levels "
+                           help="Keep the page updating in place: spot & candle every ~4s, levels "
                                 "on the interval below. Untick to freeze the screen (the feed "
                                 "keeps running in the background).")
         auto_mins = st.selectbox("Levels refresh", [1, 3, 5], index=1, format_func=lambda m: f"{m} min",
                                  disabled=not auto,
                                  help="How often the OPTION CHAIN is pulled — walls, magnet, flip, "
-                                      "footprint, greeks. Spot and the day candle update every 10s "
+                                      "footprint, greeks. Spot and the day candle update every ~4s "
                                       "regardless of this setting.")
-        st.caption("Spot & candle 10s · levels on the interval · page repaints every 3s")
+        st.caption("Spot & candle ~4s · levels on the interval · page repaints every 3s")
         st.checkbox("📊 5-day value (composite)", value=False, key="simp_weekly",
                     help="Overlay the 5-day composite value area / POC (dotted) on the profile, "
                          "alongside the prior-day value (dashed). A longer-horizon reference map.")
@@ -538,9 +545,8 @@ def main():
     st.session_state["_bm_status"] = None
     if st.session_state.get("simp_bigmoney", True) and not use_demo:
         try:
-            import config
-            has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
-            if has_token:
+            from data.dhan import token_status
+            if token_status().get("present"):
                 st.session_state["_bm_status"] = _get_big_money_collector().status
         except Exception:  # noqa: BLE001 - the tape is convenience, never break the dashboard
             pass
@@ -617,12 +623,22 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
             st.session_state["simp_asof"] = pub["as_of"]
             st.session_state["simp_err"] = pub.get("err")
         elif st.session_state.get("simp_data") is None:
-            _sync_fetch(symbol, use_demo)
+            # cold start: the background lane hasn't published yet → one blocking pull. Show a spinner
+            # so the first paint reads "pulling…" instead of looking blank/broken for ~15s.
+            with st.spinner(f"Pulling the {config.get_index(symbol).label} option chain — "
+                            f"first load takes ~15s…"):
+                _sync_fetch(symbol, use_demo)
     elif refresh or st.session_state.get("simp_data") is None:
-        _sync_fetch(symbol, use_demo)
+        with st.spinner("Loading demo data…" if use_demo else f"Pulling {symbol}…"):
+            _sync_fetch(symbol, use_demo)
     data = st.session_state.get("simp_data")
     if data is None:
-        st.error(f"Could not load data. {st.session_state.get('simp_err','')}")
+        err = st.session_state.get("simp_err", "")
+        st.warning(f"⏳ Waiting for the first {config.get_index(symbol).label} chain pull… "
+                   f"{'(' + str(err) + ')' if err else 'the feed usually lands within ~15s — this page '
+                   'refreshes itself.'}")
+        st.caption("Still blank after ~30s? Check the Dhan token in the sidebar, or tick "
+                   "**Demo data (offline)** to verify the view itself is healthy.")
         st.stop()
 
     L = data.levels
@@ -740,7 +756,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
             _bm_replay = {"day": _rday, "clock": _clock, "upto_epoch": _upto}
         except (ValueError, TypeError):
             _bm_replay = None
-    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay))
+    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay, spot=spot_live))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
@@ -783,7 +799,15 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append('</div><div class="col">')
     if show_blast:
         H.append('<h2 class="lbl">Suggested play</h2>')
-        H.append(_blast_hero(data, L, ist, spot_live, prof))
+        H.append(_blast_hero_stable(data, L, ist, spot_live, prof))  # REST/chain lane; never blanks (holds last good)
+        # Show the study model BESIDE the live hero, both live and in replay, so the two read on the same
+        # tape. It carries its own call-vs-put premium chart. Clearly labelled EXPERIMENTAL / decision-
+        # support — it does not replace the hero and never auto-executes.
+        if replay_on and st.session_state.get("simp_replay_day"):
+            H.append(_blast_hero_study_html(symbol, st.session_state["simp_replay_day"],
+                                            ist.strftime("%H:%M")))
+        else:
+            H.append(_blast_study_live_html(data, L, ist, spot_live, symbol))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -851,28 +875,6 @@ def _exp_label(expiry) -> str:
         return _dt.strptime(str(expiry)[:10], "%Y-%m-%d").strftime("%b")
     except (ValueError, TypeError):
         return ""
-
-
-def _oi_tag(r) -> str:
-    """A compact ΔOI build-up tag for a tape row: for a print, the four-quadrant read (side + ΔOI);
-    else a plain OI arrow. '' if no ΔOI on the event (pre-ΔOI-capture rows)."""
-    doi = r.get("doi")
-    if doi is None or doi != doi:
-        return ""
-    if r.get("kind") == "print" and r.get("side") in ("buy", "sell"):
-        from app.big_money import buildup
-        q = buildup(1 if r["side"] == "buy" else -1, doi)
-        ab = {"long build-up": ("L+", "var(--go)"), "short build-up": ("S+", "var(--stop)"),
-              "short covering": ("S⤴", "var(--go)"), "long unwinding": ("L⤵", "var(--stop)")}.get(q or "")
-        if ab:
-            return f'<span title="{q}" style="color:{ab[1]};font-weight:700">{ab[0]}</span>'
-    a = "▲" if doi > 0 else "▼" if doi < 0 else "·"
-    # burst: show conviction (ΔOI/Δvol over the positioning window) — positioning vs churn
-    cv = r.get("conv")
-    if cv is not None and cv == cv and r.get("kind") == "burst":
-        col = "var(--go)" if cv > 0.15 else "var(--stop)" if cv < -0.15 else "var(--ink-mute)"
-        return f'<span title="ΔOI {doi:+,.0f} · conviction {cv:+.2f}" style="color:{col}">{a}{abs(cv):.1f}</span>'
-    return f'<span title="ΔOI {doi:+,.0f}" style="color:var(--ink-mute)">{a}OI</span>'
 
 
 def _bm_rollover_html() -> str:
@@ -971,63 +973,110 @@ def _bm_day_readout_html(a) -> str:
             f'<div class="mono" style="font-size:.84rem">{" &nbsp;·&nbsp; ".join(t)}</div>{bhtml}{vhtml}</div>')
 
 
-def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min") -> str:
-    """A positioning heatmap vs price at ``key`` granularity: one block per bucket, coloured by the OI
-    BUILD-UP that window (green = price up, red = down; opacity = size of ΔOI), with the futures price
-    line overlaid. Hover a block for the exact build-up quadrant. Descriptive; a map, not a signal."""
+# Shared horizontal time axis for ALL THREE big-money charts (build-up grid, prints, bursts) so their
+# timelines line up pixel-for-pixel when stacked: same viewBox width + plot margins + minute→x mapping.
+# getattr fallbacks so a hot-reload against a STALE cached `config` module (Streamlit reruns the script
+# but doesn't re-import config) degrades to the correct constants instead of crashing. Restart to refresh.
+_BM_OPEN = getattr(config, "MARKET_OPEN_MIN", 9 * 60 + 15)          # 09:15
+_BM_CLOSE = getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40)          # 15:40 (F&O, from 2026-08-03)
+_BM_W, _BM_L, _BM_R = 720, 40, 10                         # viewBox width; left/right plot margins
+
+
+def _bm_x(m: float) -> float:
+    """Minute-of-day → x on the shared big-money time axis (identical across the 3 charts)."""
+    return _BM_L + (m - _BM_OPEN) / (_BM_CLOSE - _BM_OPEN) * (_BM_W - _BM_L - _BM_R)
+
+
+def _bm_buildup_grid_html(a, key: str = "time", label: str = "15-min", step_min: int = 15) -> str:
+    """A positioning heatmap on a FIXED session grid (9:15→15:30, one block per ``step_min``). TWO stacked
+    rows, same colour (green = price up, red = down) and same time axis, differing only in what opacity means:
+    row 1 = OI BUILD-UP (opacity = size of ΔOI — how much positioned); row 2 = CONVICTION (opacity = ΔOI/ΔVol,
+    the ₹-weighted mean of that slot's bursts — how *sticky* the flow was). Dark in both = large & sticky;
+    dark top / faint bottom = churn. Future blocks sit empty and the live block recolours as ticks arrive.
+    Hover a block for detail. No price line — price lives in the hover. Descriptive; a map, not a signal."""
     t = (a or {}).get(key)
     if not t:
         return ""
     from app.oi_footprint import classify_buildup
-    b = []
+
+    def _m(hhmm: str) -> int:
+        h, mm = hhmm[:5].split(":")
+        return int(h) * 60 + int(mm)
+
+    b: dict[int, dict] = {}                                  # bucket keyed by start-minute of the day
     prev_oi = prev_px = None
     for x in t:
         px, oi = x.get("px"), x.get("oi")
         doi = (oi - prev_oi) if (oi is not None and prev_oi is not None) else None
         dpx = (px - prev_px) if (px is not None and prev_px is not None) else None
-        b.append({"t": x["t"], "px": px, "doi": doi, "dpx": dpx,
-                  "q": classify_buildup(doi, dpx) if (doi is not None and dpx is not None) else None})
+        b[_m(x["t"])] = {"t": x["t"][:5], "px": px, "doi": doi, "dpx": dpx,
+                         "q": classify_buildup(doi, dpx) if (doi is not None and dpx is not None) else None}
         if oi is not None:
             prev_oi = oi
         if px is not None:
             prev_px = px
-    pxs = [x["px"] for x in b if x["px"] is not None]
-    if len(pxs) < 2:
+    if not any(v["doi"] is not None for v in b.values()):
         return ""
-    pmin, pmax = min(pxs), max(pxs)
-    span = (pmax - pmin) or 1.0
-    maxdoi = max((abs(x["doi"]) for x in b if x["doi"] is not None), default=1.0) or 1.0
-    n = len(b)
-    W, cw, top, plotH, blkY, blkH = 700, 700 / n, 10, 96, 116, 40
+    maxdoi = max((abs(v["doi"]) for v in b.values() if v["doi"] is not None), default=1.0) or 1.0
+    slots = list(range(_BM_OPEN, _BM_CLOSE, step_min))       # fixed 9:15→15:30 grid on the shared time axis
 
-    def Y(px):
-        return top + (pmax - px) / span * plotH
+    # Row 2 data: per-slot CONVICTION = ₹-weighted mean ΔOI/ΔVol of the bursts that fell in each slot.
+    agg: dict[int, list[float]] = {}
+    for z in ((a or {}).get("bursts") or []):
+        if z.get("conv") is None:
+            continue
+        sl = int((z["min"] - _BM_OPEN) // step_min) * step_min + _BM_OPEN
+        acc = agg.setdefault(sl, [0.0, 0.0])
+        acc[0] += z["conv"] * z["cr"]
+        acc[1] += z["cr"]
+    conv_by_slot = {k: (v[0] / v[1]) for k, v in agg.items() if v[1]}
+    two_row = bool(conv_by_slot)
 
-    s = [f'<svg viewBox="0 0 {W} 172" width="100%" style="display:block" '
-         f'preserveAspectRatio="none" role="img" aria-label="15-min OI build-up vs price">']
-    for i, x in enumerate(b):                                # build-up blocks
-        px0 = i * cw
-        if x["doi"] is not None and x["dpx"] is not None:
-            fill = "var(--go)" if x["dpx"] > 0 else "var(--stop)" if x["dpx"] < 0 else "var(--ink-mute)"
-            op = 0.14 + 0.82 * min(1.0, abs(x["doi"]) / maxdoi)
-            tip = f'{x["t"]}  {x["q"] or "flat"}  ΔOI {x["doi"]:+,.0f}  px {x["px"]:,.0f}'
+    top, h1, gap, h2 = 8, 66, 10, 44                         # build-up band / gap / conviction band
+    y2 = top + h1 + gap
+    labY = (y2 + h2 if two_row else top + h1) + 14
+    H = labY + 4
+
+    s = [f'<svg viewBox="0 0 {_BM_W} {H}" width="100%" style="display:block" preserveAspectRatio="none" '
+         f'role="img" aria-label="{label} OI build-up and conviction on a fixed session grid">']
+    for mm in slots:                                         # ROW 1 — build-up (opacity = |ΔOI|, the size)
+        x0, x1 = _bm_x(mm), _bm_x(mm + step_min)             # edges pinned to the shared time axis
+        v = b.get(mm)
+        lab = f'{mm // 60:02d}:{mm % 60:02d}'
+        if v and v["doi"] is not None and v["dpx"] is not None:
+            fill = "var(--go)" if v["dpx"] > 0 else "var(--stop)" if v["dpx"] < 0 else "var(--ink-mute)"
+            op = 0.16 + 0.80 * min(1.0, abs(v["doi"]) / maxdoi)
+            tip = f'{lab}  {v["q"] or "flat"}  ΔOI {v["doi"]:+,.0f}  px {v["px"]:,.0f}'
         else:
-            fill, op, tip = "var(--ink-mute)", 0.07, x["t"]
-        s.append(f'<rect x="{px0 + 1:.1f}" y="{blkY}" width="{cw - 2:.1f}" height="{blkH}" rx="2" '
+            fill, op, tip = "var(--ink-mute)", 0.05, lab
+        s.append(f'<rect x="{x0 + 0.6:.1f}" y="{top}" width="{x1 - x0 - 1.2:.1f}" height="{h1}" rx="1.5" '
                  f'style="fill:{fill};opacity:{op:.2f}"><title>{tip}</title></rect>')
-    pts = " ".join(f'{i * cw + cw / 2:.1f},{Y(x["px"]):.1f}' for i, x in enumerate(b) if x["px"] is not None)
-    s.append(f'<polyline points="{pts}" fill="none" stroke="var(--ink)" stroke-width="1.7" opacity="0.85"/>')
-    s.append(f'<text x="3" y="{Y(pmax) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmax:,.0f}</text>')
-    s.append(f'<text x="3" y="{Y(pmin):.0f}" style="font-size:9px;fill:var(--ink-mute)">{pmin:,.0f}</text>')
-    lstep = max(1, n // 8)
-    for i, x in enumerate(b):
-        if i % lstep == 0:
-            s.append(f'<text x="{i * cw + cw / 2:.1f}" y="169" text-anchor="middle" '
-                     f'style="font-size:8.5px;fill:var(--ink-mute)">{x["t"]}</text>')
+    if two_row:
+        for mm in slots:                                     # ROW 2 — conviction (opacity = |ΔOI/ΔVol|, sticky)
+            x0, x1 = _bm_x(mm), _bm_x(mm + step_min)
+            v, cv = b.get(mm), conv_by_slot.get(mm)
+            lab = f'{mm // 60:02d}:{mm % 60:02d}'
+            if cv is not None:
+                dpx = (v or {}).get("dpx") or 0
+                fill = "var(--go)" if dpx > 0 else "var(--stop)" if dpx < 0 else "var(--ink-mute)"
+                op = 0.16 + 0.80 * min(1.0, abs(cv))
+                tip = f'{lab}  conviction {cv:+.2f} ({"sticky" if abs(cv) >= 0.25 else "churn"})'
+            else:
+                fill, op, tip = "var(--ink-mute)", 0.05, lab
+            s.append(f'<rect x="{x0 + 0.6:.1f}" y="{y2}" width="{x1 - x0 - 1.2:.1f}" height="{h2}" rx="1.5" '
+                     f'style="fill:{fill};opacity:{op:.2f}"><title>{tip}</title></rect>')
+        s.append(f'<text x="3" y="{top + h1 / 2 + 3:.0f}" style="font-size:8px;fill:var(--ink-mute)">size</text>')
+        s.append(f'<text x="3" y="{y2 + h2 / 2 + 3:.0f}" style="font-size:8px;fill:var(--ink-mute)">grip</text>')
+    for mm in slots:                                         # shared time ticks (45-min → align w/ scatters)
+        if (mm - _BM_OPEN) % 45 == 0:
+            s.append(f'<text x="{_bm_x(mm):.1f}" y="{labY:.0f}" text-anchor="middle" '
+                     f'style="font-size:8.5px;fill:var(--ink-mute)">{mm // 60:02d}:{mm % 60:02d}</text>')
     s.append("</svg>")
-    legend = (f'<span class="rb-cav">{label} OI build-up vs price · block colour = price up (green) / down '
-              '(red), opacity = size of ΔOI (positioning) · line = futures price · hover a block for the '
-              'build-up quadrant.</span>')
+    legend = (f'<span class="rb-cav">{label} grid, fixed 9:15→15:30 · colour = price up (green) / down (red) · '
+              + ('<b>top (size)</b> opacity = ΔOI, how much positioned · <b>bottom (grip)</b> opacity = '
+                 'conviction ΔOI/ΔVol, how sticky · dark in both = large &amp; sticky; dark top / faint bottom '
+                 '= churn · ' if two_row else 'opacity = size of ΔOI (positioning) · ')
+              + 'live block recolours as ticks arrive · hover for detail.</span>')
     return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
             f'<div class="eyebrow" style="margin-bottom:4px">Build-up × time × price · {a["symbol"]} · {label}</div>'
             + "".join(s) + legend + '</div>')
@@ -1041,16 +1090,14 @@ def _bm_print_scatter_html(a) -> str:
     if not pr:
         return ""
     import math
-    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    OPEN, CLOSE = _BM_OPEN, _BM_CLOSE
     prices = [p["price"] for p in pr]
     pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
     pmin, pmax = min(prices + pl), max(prices + pl)
     span = (pmax - pmin) or 1.0
     maxcr = max((p["cr"] for p in pr), default=1.0) or 1.0
-    W, L, R, top, plotH = 720, 40, 8, 10, 120
-
-    def X(m):
-        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+    W, top, plotH = _BM_W, 10, 120
+    X = _bm_x
 
     def Y(px):
         return top + (pmax - px) / span * plotH
@@ -1081,32 +1128,41 @@ def _bm_print_scatter_html(a) -> str:
             + "".join(s) + legend + '</div>')
 
 
+_BM_QUAD_COL = {"long build-up": "var(--go)", "short build-up": "var(--stop)",
+                "short covering": "var(--call)", "long unwinding": "var(--warn)"}
+
+
+def _bm_quad(conv, dpx):
+    """Four-quadrant build-up + colour for one burst, from its window ΔOI sign (via conviction) and price
+    move ``dpx`` — mirrors app.big_money.buildup. Churn (|conv|<0.15) or a flat/absent price move → None."""
+    if conv is None or dpx is None or abs(conv) < 0.15 or dpx == 0:
+        return None, "var(--ink-mute)"
+    build, up = conv > 0, dpx > 0                      # OI building(+)/unwinding(−); price up/down
+    q = ("long build-up" if up else "short build-up") if build else \
+        ("short covering" if up else "long unwinding")
+    return q, _BM_QUAD_COL[q]
+
+
 def _bm_burst_scatter_html(a) -> str:
-    """BURSTS-ONLY graph: every burst as a dot at its (time, price), coloured by CONVICTION (green =
-    positioning-building, red = unwinding, grey = churn — bursts have no aggressor side), sized by ₹
+    """BURSTS-ONLY graph: every burst as a dot at its (time, price), coloured by the four-quadrant BUILD-UP
+    (ΔOI sign × price move over the positioning window): green long build-up (px↑OI↑), red short build-up /
+    writing (px↓OI↑), blue short covering (px↑OI↓), amber long unwinding (px↓OI↓); grey = churn. Sized by ₹
     notional, with the futures price line for context. Prints excluded. Map, not a signal."""
     bs = (a or {}).get("bursts")
     if not bs:
         return ""
     import math
-    OPEN, CLOSE = 9 * 60 + 15, 15 * 60 + 30
+    OPEN, CLOSE = _BM_OPEN, _BM_CLOSE
     prices = [b["price"] for b in bs]
     pl = [x["px"] for x in (a.get("time") or []) if x.get("px") is not None]
     pmin, pmax = min(prices + pl), max(prices + pl)
     span = (pmax - pmin) or 1.0
     maxcr = max((b["cr"] for b in bs), default=1.0) or 1.0
-    W, L, R, top, plotH = 720, 40, 8, 10, 120
-
-    def X(m):
-        return L + (m - OPEN) / (CLOSE - OPEN) * (W - L - R)
+    W, top, plotH = _BM_W, 10, 120
+    X = _bm_x
 
     def Y(px):
         return top + (pmax - px) / span * plotH
-
-    def cfill(c):
-        if c is None:
-            return "var(--ink-mute)"
-        return "var(--go)" if c > 0.15 else "var(--stop)" if c < -0.15 else "var(--ink-mute)"
 
     s = [f'<svg viewBox="0 0 {W} {top + plotH + 22}" width="100%" style="display:block" '
          f'role="img" aria-label="bursts by time and price">']
@@ -1116,25 +1172,227 @@ def _bm_burst_scatter_html(a) -> str:
         s.append(f'<polyline points="{bpts}" fill="none" stroke="var(--ink)" stroke-width="1.2" opacity="0.4"/>')
     for b in sorted(bs, key=lambda z: -z["cr"]):
         r = 2.0 + 5.0 * math.sqrt(b["cr"] / maxcr)
+        q, fill = _bm_quad(b.get("conv"), b.get("dpx"))
         cv = f'{b["conv"]:+.2f}' if b["conv"] is not None else '—'
+        dp = f'{b["dpx"]:+.0f}' if b.get("dpx") is not None else '—'
         s.append(f'<circle cx="{X(b["min"]):.1f}" cy="{Y(b["price"]):.1f}" r="{r:.1f}" '
-                 f'style="fill:{cfill(b["conv"])};opacity:0.5"><title>{b["t"]}  ₹{b["cr"]:.2f}cr  '
-                 f'@{b["price"]:,.0f}  conv {cv}</title></circle>')
+                 f'style="fill:{fill};opacity:0.5"><title>{b["t"]}  ₹{b["cr"]:.2f}cr  '
+                 f'@{b["price"]:,.0f}  {q or "churn"}  (conv {cv}, Δpx {dp})</title></circle>')
     for px in (pmax, pmin):
         s.append(f'<text x="2" y="{Y(px) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{px:,.0f}</text>')
     for m in range(OPEN, CLOSE + 1, 45):
         s.append(f'<text x="{X(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
                  f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
     s.append("</svg>")
-    legend = ('<span class="rb-cav">Every BURST (sliced flow ≥ floor) at its price &amp; time · '
-              '<span style="color:var(--go)">building</span> / <span style="color:var(--stop)">unwinding</span>'
-              ' / grey = churn (conviction) · dot size = ₹ · faint line = price. Prints excluded.</span>')
+    legend = ('<span class="rb-cav">Every BURST (sliced flow ≥ floor) at its price &amp; time · build-up = ΔOI × price: '
+              '<span style="color:var(--go)">long build-up</span> / <span style="color:var(--stop)">short build-up '
+              '(writing)</span> / <span style="color:var(--call)">short covering</span> / '
+              '<span style="color:var(--warn)">long unwinding</span> · grey = churn · dot size = ₹ · '
+              'faint line = price. Prints excluded.</span>')
     return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
             f'<div class="eyebrow" style="margin-bottom:4px">Bursts · time × price · {a["symbol"]}</div>'
             + "".join(s) + legend + '</div>')
 
 
-def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> str:
+def _bm_card(title: str, body: str, legend: str) -> str:
+    """Shared framing for the big-money SVG cards (border box + eyebrow + caption)."""
+    return ('<div style="margin:6px 0 8px;padding:8px 10px 4px;border:1px solid var(--line);border-radius:8px">'
+            f'<div class="eyebrow" style="margin-bottom:4px">{title}</div>{body}'
+            f'<span class="rb-cav">{legend}</span></div>')
+
+
+def _bm_value_profile_html(a, spot=None) -> str:
+    """VALUE PROFILE: big-print ₹ transacted at each FUTURES price level (buy vs sell vs mid), price descending,
+    with the POC (heaviest level) flagged. Shows WHERE big money did business — support/resistance shelves —
+    not a direction. When ``spot`` is given, each level also shows its spot-equivalent (futures − basis, basis =
+    latest futures px − spot), since strikes/levels are quoted on spot. Prints only. Map, not a signal."""
+    vp = [r for r in ((a or {}).get("value_profile") or []) if r.get("total")]
+    if not vp:
+        return ""
+    vp = sorted(vp, key=lambda r: -r["price"])                # high price on top, like the scatters
+    maxtot = max(r["total"] for r in vp) or 1.0
+    poc = max(vp, key=lambda r: r["total"])["price"]
+    # basis (futures − spot) from the profile's OWN contract ref (vp_fut_ref = the dominant contract's
+    # latest px), so the spot column uses that contract's basis — not a near/next mix.
+    fut_now = (a or {}).get("vp_fut_ref")
+    basis = (fut_now - spot) if (spot and fut_now) else None
+    L = 96 if basis is not None else 62                       # wider gutter when a spot column is shown
+    W, R, rowh, gap = _BM_W, 78, 16, 3                        # L = price-label gutter, R = ₹ label
+    H = 6 + len(vp) * (rowh + gap)
+    s = [f'<svg viewBox="0 0 {W} {H}" width="100%" style="display:block" role="img" '
+         f'aria-label="value profile — ₹ by price">']
+    for i, r in enumerate(vp):
+        y = 6 + i * (rowh + gap)
+        full = (W - L - R) * (r["total"] / maxtot)
+        x = L
+        for key, colr in (("buy", "var(--go)"), ("sell", "var(--stop)"), ("mid", "var(--ink-mute)")):
+            w = full * (r.get(key, 0.0) / r["total"]) if r["total"] else 0.0
+            if w > 0.2:
+                s.append(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{rowh}" rx="1.5" '
+                         f'style="fill:{colr};opacity:0.72"><title>{r["price"]:,.0f}  {key} ₹{r.get(key,0):.1f}cr'
+                         f'</title></rect>')
+            x += w
+        poc_lbl = ' ◄POC' if r["price"] == poc else ''
+        wt = '700' if r["price"] == poc else '400'
+        futx = (L - 42) if basis is not None else (L - 4)     # futures label; leave room for the spot column
+        s.append(f'<text x="{futx}" y="{y + rowh - 4}" text-anchor="end" style="font-size:9.5px;'
+                 f'font-weight:{wt};fill:var(--ink-2)">{r["price"]:,.0f}</text>')
+        if basis is not None:
+            s.append(f'<text x="{L - 4}" y="{y + rowh - 4}" text-anchor="end" style="font-size:8.5px;'
+                     f'fill:var(--ink-mute)">{r["price"] - basis:,.0f}s</text>')
+        s.append(f'<text x="{L + full + 4:.1f}" y="{y + rowh - 4}" style="font-size:9px;'
+                 f'fill:var(--ink-mute)">₹{r["total"]:.0f}cr{poc_lbl}</text>')
+    s.append("</svg>")
+    basis_note = (f' · <b>fut</b> / <b>spot</b> columns (spot = fut − basis {basis:+.0f})' if basis is not None
+                  else '')
+    exp = (a or {}).get("vp_expiry")
+    lbl = _exp_label(exp)
+    con = f' · {lbl}' if lbl else ''
+    lead = (f'Big-print ₹ transacted at each futures level ({lbl} contract, the day\'s heaviest) · '
+            if lbl else 'Big-print ₹ transacted at each futures level · ')
+    return _bm_card(
+        f'Value profile · ₹ by price · {a["symbol"]}{con}', "".join(s),
+        lead + '<span style="color:var(--go)">buy</span> / <span style="color:var(--stop)">sell</span> / '
+        'grey mid · <b>POC</b> = heaviest level' + basis_note +
+        '. Where big money did business (shelves), <b>not</b> a direction. Prints only.')
+
+
+def _bm_oi_trajectory_html(a) -> str:
+    """INTRADAY OI TRAJECTORY: total futures open interest (near+next) through the session on the shared time
+    axis. Rising OI = net new positions being built, falling = unwinding. Descriptive positioning context — a
+    contemporaneous read, not a lead. Aligned with the three time×price charts above."""
+    pts = [(_secs(b["t"]) / 60.0, b["oi"]) for b in ((a or {}).get("time") or [])
+           if b.get("oi") is not None and _secs(b["t"]) is not None]
+    if len(pts) < 2:
+        return ""
+    ois = [o for _, o in pts]
+    omin, omax = min(ois), max(ois)
+    span = (omax - omin) or 1.0
+    top, plotH = 10, 84
+    open_oi, last_oi = ois[0], ois[-1]
+    up = last_oi >= open_oi
+    col = "var(--go)" if up else "var(--stop)"
+
+    def Y(o):
+        return top + (omax - o) / span * plotH
+
+    line = " ".join(f'{_bm_x(m):.1f},{Y(o):.1f}' for m, o in pts)
+    area = (f'{_bm_x(pts[0][0]):.1f},{top + plotH:.1f} ' + line
+            + f' {_bm_x(pts[-1][0]):.1f},{top + plotH:.1f}')
+    s = [f'<svg viewBox="0 0 {_BM_W} {top + plotH + 22}" width="100%" style="display:block" role="img" '
+         f'aria-label="intraday open interest">',
+         f'<polygon points="{area}" style="fill:{col};opacity:0.10"/>',
+         f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.6"/>']
+    for o, tag in ((omax, "hi"), (omin, "lo")):
+        s.append(f'<text x="2" y="{Y(o) + 3:.0f}" style="font-size:9px;fill:var(--ink-mute)">{o/1e6:.2f}M</text>')
+    for m in range(_BM_OPEN, _BM_CLOSE + 1, 45):
+        s.append(f'<text x="{_bm_x(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    d = last_oi - open_oi
+    return _bm_card(
+        f'Open interest · intraday · {a["symbol"]}',
+        f'<div class="mono" style="font-size:.82rem;margin:2px 0 2px">open {open_oi/1e6:.2f}M → now '
+        f'<b style="color:{col}">{last_oi/1e6:.2f}M ({d/1e6:+.2f}M)</b></div>' + "".join(s),
+        'Total futures OI (near+next) through the day · <span style="color:var(--go)">rising</span> = '
+        'positions built, <span style="color:var(--stop)">falling</span> = unwound. Contemporaneous '
+        'positioning context, <b>not</b> a lead.')
+
+
+def _bm_cvd_html(a) -> str:
+    """CUMULATIVE FLOW (CVD-like): running buy − sell ₹ of big PRINTS across the session on the shared time
+    axis — the aggressor tug-of-war. Above zero = net buy-initiated so far, below = net sell. DESCRIPTIVE order
+    flow whose contemporaneous link to price flipped sign day-to-day in the sample — a map, not a forecast."""
+    tb = [b for b in ((a or {}).get("time") or []) if _secs(b.get("t")) is not None]
+    if not tb:
+        return ""
+    cum, run = [], 0.0
+    for b in tb:
+        run += (b.get("net") or 0.0)
+        cum.append((_secs(b["t"]) / 60.0, run))
+    vals = [c for _, c in cum]
+    lo, hi = min(vals + [0.0]), max(vals + [0.0])
+    span = (hi - lo) or 1.0
+    top, plotH = 10, 76
+    net = vals[-1]
+    col = "var(--go)" if net >= 0 else "var(--stop)"
+
+    def Y(v):
+        return top + (hi - v) / span * plotH
+
+    z = Y(0.0)
+    line = " ".join(f'{_bm_x(m):.1f},{Y(v):.1f}' for m, v in cum)
+    area = f'{_bm_x(cum[0][0]):.1f},{z:.1f} ' + line + f' {_bm_x(cum[-1][0]):.1f},{z:.1f}'
+    s = [f'<svg viewBox="0 0 {_BM_W} {top + plotH + 22}" width="100%" style="display:block" role="img" '
+         f'aria-label="cumulative signed flow">',
+         f'<polygon points="{area}" style="fill:{col};opacity:0.12"/>',
+         f'<line x1="{_bm_x(_BM_OPEN):.1f}" y1="{z:.1f}" x2="{_bm_x(_BM_CLOSE):.1f}" y2="{z:.1f}" '
+         f'stroke="var(--ink-mute)" stroke-width="0.8" stroke-dasharray="3 3"/>',
+         f'<polyline points="{line}" fill="none" stroke="{col}" stroke-width="1.6"/>']
+    for m in range(_BM_OPEN, _BM_CLOSE + 1, 45):
+        s.append(f'<text x="{_bm_x(m):.1f}" y="{top + plotH + 16:.0f}" text-anchor="middle" '
+                 f'style="font-size:8.5px;fill:var(--ink-mute)">{m // 60:02d}:{m % 60:02d}</text>')
+    s.append("</svg>")
+    lean = "BUY" if net > 0 else "SELL" if net < 0 else "flat"
+    return _bm_card(
+        f'Cumulative flow · buy − sell ₹ · {a["symbol"]}',
+        f'<div class="mono" style="font-size:.82rem;margin:2px 0 2px">net so far '
+        f'<b style="color:{col}">{net:+.1f}cr ({lean})</b></div>' + "".join(s),
+        'Running buy − sell ₹ of big prints (Lee-Ready) · above 0 = net buy-initiated, below = net sell. '
+        'DESCRIPTIVE order flow — its link to price flipped sign day-to-day, so <b>not</b> a forecast.')
+
+
+def _bm_sweepwatch_html(symbol, day, replay=None) -> str:
+    """PRIOR-DAY SWEEP WATCH: the one stop-run signal that cleared the placebo on both NIFTY and BankNifty
+    (day-clustered) — a fast breach of the prior day's high/low/close LEANS to fade back. Shows each level,
+    its distance from the latest futures price, and — if swept today — when + the current state (faded /
+    beyond / pending). Descriptive lean, NOT an auto-signal; you confirm. See docs/tick-data-ic-research.md."""
+    try:
+        from app.big_money_live import available_raw_days, load_raw_ticks
+        from app.stophunt import prev_day_levels, scan_live
+    except Exception:  # noqa: BLE001
+        return ""
+    alld = available_raw_days(symbol)
+    earlier = [d for d in alld if d < day]
+    if not earlier:
+        return ""                                              # need a prior captured day for the levels
+    pv = prev_day_levels(load_raw_ticks(symbol, earlier[-1]))
+    df = load_raw_ticks(symbol, day)
+    if pv is None or df is None or getattr(df, "empty", True):
+        return ""
+    upto = replay["upto_epoch"] if replay else None
+    r = scan_live(df, pv, upto_epoch=upto)
+    if not r.get("levels") or r.get("spot") is None:
+        return ""
+    pill = {"faded": ("var(--go)", "✔ faded back"), "pending": ("var(--warn)", "● just swept — watch"),
+            "beyond": ("var(--ink-mute)", "→ trended through")}
+    nm = {"high": "prior-day HIGH", "low": "prior-day LOW", "close": "prior-day CLOSE"}
+    rows = []
+    for lv in r["levels"]:
+        dist = lv["dist"]
+        dtxt = f'{dist:+.0f} pts' + (' above' if dist > 0 else ' below' if dist < 0 else '')
+        if lv.get("swept"):
+            col, lab = pill.get(lv.get("state"), ("var(--ink-mute)", lv.get("state", "")))
+            right = f'<span style="color:{col};font-weight:700">{lab}</span> · swept {lv.get("swept_at","")}'
+        else:
+            right = '<span style="color:var(--ink-mute)">not swept</span>'
+        rows.append(
+            f'<div style="display:flex;justify-content:space-between;gap:10px;padding:2px 0;font-size:.84rem">'
+            f'<span style="font-weight:600">{nm.get(lv["name"], lv["name"])}</span>'
+            f'<span class="mono" style="color:var(--ink-2)">{lv["level"]:,.0f} · {dtxt}</span>'
+            f'<span class="mono">{right}</span></div>')
+    return (
+        '<div style="margin:2px 0 8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px">'
+        f'<div class="eyebrow" style="margin-bottom:4px">Prior-day sweep watch · {symbol} '
+        f'(fut {r["spot"]:,.0f})</div>' + "".join(rows) +
+        '<span class="rb-cav">A fast breach of the prior day\'s H/L/C <b>leans to fade back</b> — the one '
+        'stop-run pattern that cleared a placebo on NIFTY+BankNifty (n=6 days, exploratory). '
+        '<span style="color:var(--warn)">just-swept</span> = the live watch; '
+        '<span style="color:var(--go)">faded</span> = pattern played out; grey = trended through. '
+        'Descriptive lean, <b>not</b> a signal; you confirm.</span></div>')
+
+
+def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot=None) -> str:
     """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
     plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
     from its raw archive up to the replay clock (raw = source of truth) and shows the tape + readout as
@@ -1182,36 +1440,18 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20) -> s
         return (head + extra + f'<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">{note}'
                 '</div></div>')
 
-    side_badge = {"buy": '<span style="color:var(--go);font-weight:700">▲ BUY</span>',
-                  "sell": '<span style="color:var(--stop);font-weight:700">▼ SELL</span>',
-                  None: '<span style="color:var(--ink-mute)">•</span>'}
-    tr = []
-    for r in rows:
-        cr = (r.get("notional") or 0) / 1e7
-        lots = r.get("lots")
-        lots_s = f"{lots:.0f}" if lots is not None else "?"
-        kind = (r.get("kind") or "").upper()
-        tr.append(
-            f'<tr><td class="mono" style="color:var(--ink-2)">{r.get("ts_ist","")[11:]}</td>'
-            f'<td style="font-weight:700">{r.get("symbol","")} '
-            f'<span class="mono" style="font-size:.68rem;color:var(--ink-mute)">{_exp_label(r.get("expiry"))}</span></td>'
-            f'<td>{side_badge.get(r.get("side"))}</td>'
-            f'<td style="color:var(--ink-mute);font-size:.78rem">{kind}</td>'
-            f'<td class="mono" style="text-align:right">{lots_s}L</td>'
-            f'<td class="mono" style="text-align:right;font-weight:700">₹{cr:.2f}cr</td>'
-            f'<td class="mono" style="text-align:right;color:var(--ink-2)">@{r.get("price",0):.1f}</td>'
-            f'<td class="mono" style="text-align:center;font-size:.74rem">{_oi_tag(r)}</td></tr>')
-    table = ('<table style="width:100%;border-collapse:collapse;font-size:.9rem;margin-top:6px">'
-             '<tbody>' + "".join(tr) + '</tbody></table>')
     cav = ('<span class="rb-cav">Large prints & bursts on the aggregated feed — an <i>inference</i> of '
            'big activity, not orders; side = aggressor (Lee-Ready), a flow read not a prediction. '
            'Exchange time. Decision-support.</span>')
-    grids = (_bm_buildup_grid_html(readout, "time", "15-min") + _bm_buildup_grid_html(readout, "time3", "3-min")
-             + _bm_burst_scatter_html(readout) + _bm_print_scatter_html(readout))
+    grids = (_bm_buildup_grid_html(readout, "time", "15-min")
+             + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout)
+             + _bm_oi_trajectory_html(readout) + _bm_cvd_html(readout)
+             + _bm_value_profile_html(readout, spot=(None if replay else spot)))  # live spot ≠ past futures
+    sweepwatch = _bm_sweepwatch_html(symbol, day, replay)
     if replay:
-        return head + _bm_day_readout_html(readout) + grids + table + cav + '</div>'
+        return head + _bm_day_readout_html(readout) + sweepwatch + grids + cav + '</div>'
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
-            + grids + table + _bm_status_html(status, day) + cav + '</div>')
+            + sweepwatch + grids + _bm_status_html(status, day) + cav + '</div>')
 
 
 _BLAST_TICK_S = 10          # spot-lane resolution for timing the crossover
@@ -1401,11 +1641,11 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
             except Exception:  # noqa: BLE001
                 pass
             if st.session_state.get("simp_sound", True):
-                _beep(sound, msg)
+                _beep(sound)
         if fast_true:
-            _alert("fast", f"⚡ {direction.upper()} FAST TRUE at {K:,.0f} (+{k_true_min}m) — best blast setup", "⚡", "fast")
+            _alert("fast", f"⚡ FAST TRUE at {K:,.0f} (+{k_true_min}m) — best blast setup", "⚡", "fast")
         elif early45:
-            _alert("early", f"👀 {direction.upper()} Igniting at {K:,.0f}: score 45+ within 5 min — likely TRUE", "👀", "fast")
+            _alert("early", f"👀 Igniting at {K:,.0f}: score 45+ within 5 min — likely TRUE", "👀", "early")
     except Exception:  # noqa: BLE001 - alerts must never break the render
         pass
     chart = _svg_crossover(series, K)
@@ -1425,6 +1665,154 @@ def _blast_hero(data, L, ist, spot_live=None, prof=None):
           <b class="mono">{f(cover*100,0) if cover is not None else "—"}%</b><em>−ve = covering (fuel)</em></div>
         <div><small>Wall ahead</small><b class="down mono">{f(wr,1)+"×" if wr is not None else "—"}</b><em>cap overhead</em></div>
       </div>{chart}</div>'''
+
+
+def _blast_hero_stable(data, L, ist, spot_live=None, prof=None):
+    """Keep the gamma-blast verdict on screen at all times during a live blast session.
+
+    The whole live view renders as one ``st.markdown``, so anything that makes ``_blast_hero``
+    throw — or a background snapshot that momentarily lands with empty ``oi_strikes`` (which
+    ``_blast_hero`` answers with the degraded 'live feed only' card) — would blank or regress the
+    verdict for one 2-4s tick before the next repaint fixes it. That flicker is what read as the
+    verdict 'disappearing'. So: render normally on a healthy snapshot and cache the result; on a
+    degraded snapshot or a transient error, re-show the last good verdict (date-scoped, so a new
+    expiry never inherits yesterday's) instead of a blank. Never masks a real state — 'watching',
+    'no cross' and the true verdict are all healthy renders and overwrite the cache each tick."""
+    day = ist.strftime("%Y-%m-%d")
+    degraded = (not _is_live(data)) or (not getattr(data, "oi_strikes", None))
+    if not degraded:
+        try:
+            html = _blast_hero(data, L, ist, spot_live, prof)
+        except Exception:  # noqa: BLE001 — a transient blast-compute error must not blank the view
+            html = None
+        if html:
+            st.session_state["simp_blast_html"] = {"date": day, "html": html}
+            return html
+    cached = st.session_state.get("simp_blast_html")
+    if cached and cached.get("date") == day and cached.get("html"):
+        return cached["html"]                     # hold the last good verdict through the blip
+    try:                                          # first paint (no cache yet): show whatever it says
+        return _blast_hero(data, L, ist, spot_live, prof)
+    except Exception:  # noqa: BLE001
+        return ('<div class="card hero"><span class="eyebrow">Gamma-blast</span>'
+                '<p class="instruct">Updating…</p></div>')
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _blast_study_rows(symbol: str, rday: str):
+    """The offline study model's full point-in-time replay for a stored day (app.blast_study.replay_day),
+    cached per day. Each row is the verdict computed from data up to that minute only (no lookahead), so
+    indexing it by the current replay clock gives the study model's read AS OF that minute. Returns [] on
+    any failure — the comparison card is a nicety, it must never break the replay."""
+    try:
+        from app.blast_study import replay_day
+        return replay_day(symbol, rday) or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+# how the study model's state reads on the card: (label, css lean class, icon)
+_STUDY_STATE = {
+    "WATCH": ("Watching", "lean-warn", "👀"), "WATCH+": ("Break seen · holding for 3PM", "lean-warn", "👀"),
+    "LEAN": ("Leaning", "lean-go", "🚀"), "RUN": ("RUN", "lean-go", "🚀"),
+    "FADE": ("Fade · failed break", "lean-warn", "🪤"),
+}
+
+
+def _blast_hero_study_html(symbol: str, rday: str, now_hhmm: str) -> str:
+    """REPLAY-ONLY comparison card: the NEW (offline study) blast model's read at the current replay
+    minute, shown BENEATH the live hero so the two can be compared on the same tape. Reads the study
+    model's realized-delta commitment + the post-3PM move, and narrates the trade its exit discipline
+    would take (enter late-but-sure, spot-trail, hard 15:25 settlement stop). Point-in-time (only data
+    up to now_hhmm). Deliberately kept OFF the live board — this is a study/comparison surface only."""
+    rows = _blast_study_rows(symbol, rday)
+    if not rows:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · replay</span>'
+                '<p class="instruct">No captured ladder for this day, so the study model has nothing to '
+                'replay. Pick another expiry day.</p></div>')
+    upto = [r for r in rows if str(r["time_ist"])[:5] <= now_hhmm]
+    K = rows[0].get("spot")                                 # only for the empty-state header before 13:45
+    if not upto:
+        return _study_card_html([], K, [], "replay")
+    prem = [{"call_ltp": x["call_ltp"], "put_ltp": x["put_ltp"]} for x in upto]
+    return _study_card_html(upto, _blast_study_K(rows), prem, "replay")
+
+
+def _blast_study_K(rows):
+    """Recover the anchor strike from replay rows: spot − disp on the first row (disp = spot − K)."""
+    r = rows[0]
+    return round((r["spot"] - r["disp"]) / 50.0) * 50.0
+
+
+def _study_card_html(rows, K, prem_series, tag):
+    """Render the study-model card from its point-in-time ``rows`` (last row = now) + a call-vs-put
+    premium chart. Shared by the live and replay lanes so they look identical. ``tag`` labels the source."""
+    if not rows:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · ' + tag + '</span>'
+                '<p class="instruct">Anchors at <b>13:45 IST</b> — the study read builds from there.</p></div>')
+    r = rows[-1]
+    lab, lean, ic = _STUDY_STATE.get(r["state"], ("—", "lean-warn", "•"))
+    dtxt = f" {r['dir']}" if r["dir"] and r["state"] in ("LEAN", "RUN") else ""
+    if r["action"] == "HOLD" or str(r["action"]).startswith("ENTER"):
+        lab, lean, ic, dtxt = "In trade", "lean-go", "🚀", f" {r['dir']}"
+    elif str(r["action"]).startswith("EXIT"):
+        lab, lean, ic, dtxt = "Exited", "lean-warn", "🚪", ""
+    rd = "—" if r["rdelta"] is None else f"{r['rdelta']:.2f}"
+    m3 = "—" if r["move3"] is None else f"{r['move3']:+.0f} pt"
+    acts = [x for x in rows if x["action"] not in ("—", "HOLD")]
+    trade = (f"<b>{acts[-1]['action']}</b> at {acts[-1]['time_ist']} "
+             f"(ITM prem {acts[-1]['itm_ltp']:.1f})") if acts else "No trade taken yet."
+    chart = _svg_crossover([{"call": x["call_ltp"], "put": x["put_ltp"]} for x in prem_series], K)
+    return (f'<div class="card hero {lean}"><div style="display:flex;justify-content:space-between">'
+            f'<span class="eyebrow">🟢 Study model · {tag} · {K:,.0f}</span>'
+            f'<span class="subnote mono">{r["time_ist"]} · spot {r["spot"]:.0f}</span></div>'
+            f'<div class="verdict"><span class="ic">{ic}</span><span class="big">{lab}{dtxt}</span></div>'
+            f'<div class="blast-stats"><div><small>realized ITM δ</small><b class="mono">{rd}</b>'
+            f'<em>→1 committed</em></div><div><small>move since 3PM</small><b class="mono">{m3}</b>'
+            f'<em>runs travel, pins don\'t</em></div></div>'
+            f'<p class="instruct" style="margin-top:10px">{trade}</p>{chart}'
+            f'<span class="rb-cav">⚗️ EXPERIMENTAL study model (realized-delta + 3PM-window + spot-trailing/'
+            f'settlement exit), shown beside the live hero for comparison. Decision-support — confirm every trade.</span></div>')
+
+
+def _blast_study_live_html(data, L, ist, spot_live, symbol):
+    """LIVE study-model lane: accumulate a 1-min anchor series in session (spot + the frozen ATM's
+    call/put premiums + OI) and run the SAME point-in-time engine the replay uses (blast_study.
+    replay_series), so the live study read matches the offline one exactly. Anchored on the SAME 13:45
+    strike as the live hero so the two compare on one strike. Shown OFF to the side, clearly experimental."""
+    from app.blast_study import anchor_strike as _pk, replay_series, series_from_points
+    from app.gammablast import strike_oi, strike_premiums
+    if not _is_live(data) or not data.oi_strikes:
+        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · live</span>'
+                '<p class="instruct">Live feed only.</p></div>')
+    today = ist.strftime("%Y-%m-%d")
+    ss = st.session_state.get("simp_blast_study")
+    if not ss or ss.get("date") != today:
+        ss = {"date": today, "points": {}}
+        st.session_state["simp_blast_study"] = ss
+    # anchor: reuse the live hero's frozen 13:45 ATM if it's set (same strike → fair comparison);
+    # otherwise the parity ATM from the current chain. Before 13:45 the hero hasn't frozen → watch.
+    K = (st.session_state.get("simp_blast", {}) or {}).get("anchors", {})
+    K = (K or {}).get("atm")
+    if K is None:
+        import pandas as pd
+        rows_now = [{"time_ist": ist.strftime("%H:%M"), "strike": s.get("strike"),
+                     "spot": L.spot, "call_ltp": s.get("call_ltp"), "put_ltp": s.get("put_ltp")}
+                    for s in data.oi_strikes if s.get("call_ltp") is not None and s.get("put_ltp") is not None]
+        K = _pk(pd.DataFrame(rows_now)) if rows_now else None
+    if K is None:
+        return _study_card_html([], None, [], "live")
+    call, put = strike_premiums(data.oi_strikes, K)
+    coi, poi = strike_oi(data.oi_strikes, K)
+    now_min = ist.strftime("%H:%M")
+    ss["points"][now_min] = {"spot": float(spot_live) if spot_live else L.spot,
+                             "call_ltp": call, "put_ltp": put, "call_oi": coi, "put_oi": poi}
+    a = series_from_points(ss["points"], float(K))
+    rows = replay_series(a, float(K)) if a is not None else []
+    prem = [{"call_ltp": v["call_ltp"], "put_ltp": v["put_ltp"]}
+            for _, v in sorted(ss["points"].items(), key=lambda kv: kv[0])
+            if v.get("call_ltp") is not None and v.get("put_ltp") is not None]
+    return _study_card_html(rows, float(K), prem, "live")
 
 
 _OHLC_TOL = 0.004          # 0.4% — a fresh quote's ltp must agree with the chain's live underlying
@@ -1816,14 +2204,13 @@ def _opt_window_row(lbl, minutes, w, is_expiry):
             f'<span class="wbadge {cls}">{txt}</span><span class="wd">{dtxt}</span></div>')
 
 
-def _beep(kind, msg="Gamma-blast ignition"):
+def _beep(kind):
     """Best-effort browser bell via a WebAudio tone. 'fast' = a higher double-beep; 'early' =
     a single tone. Runs in the main page (st.html + unsafe_allow_javascript) so it shares the
     page's gesture context — but browser autoplay policy can still mute it until the tab has
     had a click; the st.toast is the always-on channel. Also fires a desktop Notification if
     permission was granted."""
     freq, reps = (880, 2) if kind == "fast" else (660, 1)
-    safe_msg = msg.replace("'", "\\'")
     js = """<script>(function(){try{
       var C=window.AudioContext||window.webkitAudioContext; if(!C)return;
       var ctx=new C(); if(ctx.state==='suspended'){ctx.resume();}
@@ -1833,10 +2220,9 @@ def _beep(kind, msg="Gamma-blast ignition"):
         g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(0.3,t+0.02);
         g.gain.exponentialRampToValueAtTime(0.0001,t+0.35);o.start(t);o.stop(t+0.37);t+=0.45;}
       if('Notification'in window){if(Notification.permission==='granted'){
-        try{new Notification('MSG');}catch(e){}}
+        try{new Notification('Gamma-blast ignition');}catch(e){}}
         else if(Notification.permission!=='denied'){try{Notification.requestPermission();}catch(e){}}}
-      setTimeout(function(){ alert('MSG'); }, 100);
-    }catch(e){}})();</script>""".replace("REPS", str(reps)).replace("FREQ", str(freq)).replace("MSG", safe_msg)
+    }catch(e){}})();</script>""".replace("REPS", str(reps)).replace("FREQ", str(freq))
     try:
         st.html(js, unsafe_allow_javascript=True)          # main-page, non-deprecated
     except TypeError:

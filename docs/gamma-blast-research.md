@@ -319,6 +319,30 @@ decision-support, not alpha. Caveats: mid-close fills (real book worse), close-t
 trigger, sign-free. **[B1] is answered:** the honest use is a live *confirmation-quality* readout (see
 the dashboard timing panel), not an automated trade.
 
+## 7f. Freeze-time robustness — 1:45pm vs 2:30pm (2026-07-20)
+
+Everything above froze the blast window at **13:45** (the "1:45pm ATM" anchor of §2a). To check the
+studies aren't an artifact of that one cut, the afternoon boundary was made a single env-overridable
+knob — **`BLAST_AFT_CUT='HH:MM'`** (default `13:45`), read by `app.gammablast.afternoon_cut()` and used
+by `analyze_blast_{speed,timing,premium,compression}.py` and `backtest_gamma_blast.py §3`. Re-running the
+whole suite at **`BLAST_AFT_CUT=14:30`** vs the 13:45 baseline (NIFTY, same 458 0-DTE days):
+
+| study / metric | 13:45 | 14:30 | note |
+|---|---|---|---|
+| speed — FAST (≤10m) 0-DTE aft, ≥1.5× / ≥2× | 21% / 7% (n=191) | 23% / **14%** (n=73) | tighter, ~⅓ the n |
+| timing — ≤5-min-TRUE aft, ≥1.5× / ≥2× | 36% / 11% (n=47) | **41%** / **18%** (n=22) | same shape, half the n |
+| premium — 0-DTE aft `peak≥3×`, TRUE vs WEAK vs FAKE-def | 2 / 3 / 8% | 2 / 6 / 11% | grade **still doesn't** top the ≥3× lottery |
+| backtest §3 — afternoon MODEL @3% expectancy | −4.1% (n=69) | **−6.9%** (n=44) | negative at both, **worse** later |
+| compression — expiry ρ(morning, aft_range) | +0.43 | +0.43 | still **persistence, not a coil** |
+
+**Verdict — the freeze time is not load-bearing.** Moving to 14:30 tightens the speed/timing
+distributions (the late-blast subset is a touch cleaner) but on **roughly half the crossings**, and it
+changes **none** of the conclusions: the grade still fails to separate the premium payoff (§7b), the
+afternoon backtest is still negative — in fact more negative (§7e), and the morning→afternoon
+autocorrelation stays positive so the "quiet-morning coil" is still ordinary vol persistence. 13:45
+remains the documented default (more data, no worse signal); 14:30 is a defensible but not superior
+alternative. The knob stays so any freeze is one env var away, but the research verdict is unchanged.
+
 ## 7. References
 
 Practitioner / strategy descriptions (Indian market):

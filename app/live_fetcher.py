@@ -61,11 +61,7 @@ def _loop(symbol: str) -> None:
                 stamp = time.time()
         ev.clear()
         try:
-            data = load_dashboard(
-                window=cfg.get("window"), use_demo=bool(cfg.get("use_demo")),
-                symbol=symbol, live_source=cfg.get("live_source"),
-                sign_model=cfg.get("sign_model")
-            )
+            data = load_dashboard(None, bool(cfg.get("use_demo")), symbol, cfg.get("live_source"))
             as_of = datetime.fromtimestamp(stamp, tz=timezone.utc) + timedelta(hours=5, minutes=30)
             _STORE[symbol] = {"data": data, "as_of": as_of.replace(tzinfo=None),
                               "fetched": datetime.now(timezone.utc), "err": None}
@@ -76,14 +72,12 @@ def _loop(symbol: str) -> None:
         served = stamp
 
 
-def ensure(symbol: str, use_demo: bool, live_source, interval_s: int, lead_s: float = 15.0,
-           sign_model: str | None = None, window: str | None = None) -> None:
+def ensure(symbol: str, use_demo: bool, live_source, interval_s: int, lead_s: float = 15.0) -> None:
     """Ensure a background fetcher is running for ``symbol`` with the current settings (idempotent —
     updates the live config each call; (re)starts the daemon thread only if it isn't alive)."""
     with _LOCK:
         _CFG[symbol] = {"use_demo": use_demo, "live_source": live_source,
-                        "interval": int(interval_s), "lead": float(lead_s),
-                        "sign_model": sign_model, "window": window}
+                        "interval": int(interval_s), "lead": float(lead_s)}
         t = _THREADS.get(symbol)
         if t is None or not t.is_alive():
             t = threading.Thread(target=_loop, args=(symbol,), name=f"live-{symbol}", daemon=True)

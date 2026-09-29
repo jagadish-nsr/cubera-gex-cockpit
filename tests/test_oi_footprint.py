@@ -289,3 +289,35 @@ def test_footprint_series_over_snapshots():
     assert [t for t, *_ in ser] == ["09:30", "10:00"]     # one row per snapshot, sorted
     # 09:30 support center = 100 (only put adds at 100); resistance = 102
     assert ser[0][1] == 100.0 and ser[0][2] == 102.0
+
+
+def test_window_footprint_uses_nearest_abs_oi_and_is_source_consistent():
+    """The trailing windows must difference call_oi_near/put_oi_near (nearest-expiry ABSOLUTE OI —
+    the field both the live capture and the Dhan backfill write), so a put-OI build reads
+    'put-writing' (= support) and works regardless of which source produced the snapshots."""
+    rows = []
+    for t, add in (("14:50", 0), ("15:00", 120000)):        # +120k puts at 24000 over the window
+        for k in (23900, 24000, 24100):
+            rows.append({"time_ist": t, "date_ist": "2026-07-17", "strike": float(k), "spot": 24000.0,
+                         "call_oi_near": 400000.0, "put_oi_near": 400000.0 + (add if k == 24000 else 0),
+                         "call_ltp": 40.0, "put_ltp": 55.0})
+    df = pd.DataFrame(rows)
+    w = window_footprint(df, 15, spot=24000.0, band_pts=2000, now_hm=15 * 60, lot_size=65)
+    assert w is not None and w["near"] is True
+    assert w["label"] == "put-writing" and w["put_add"] > w["call_add"]
+    assert w["peak_strike"] == 24000.0
+
+
+def test_window_footprint_falls_back_when_oi_near_all_blank():
+    """A CSV that has the oi_near columns but ALL blank (e.g. an older/partial file) must fall back
+    to all-expiry call_oi/put_oi rather than reading blanks as 'thin'."""
+    rows = []
+    for t, add in (("14:50", 0), ("15:00", 90000)):
+        for k in (23900, 24000, 24100):
+            rows.append({"time_ist": t, "date_ist": "2026-07-17", "strike": float(k), "spot": 24000.0,
+                         "call_oi_near": None, "put_oi_near": None,
+                         "call_oi": 300000.0 + (add if k == 24100 else 0), "put_oi": 300000.0,
+                         "call_ltp": 40.0, "put_ltp": 40.0})
+    df = pd.DataFrame(rows)
+    w = window_footprint(df, 15, spot=24000.0, band_pts=2000, now_hm=15 * 60, lot_size=65)
+    assert w is not None and w["near"] is False and w["label"] == "call-writing"

@@ -79,19 +79,11 @@ def get_index(symbol: str | None) -> Index:
 # DATA SOURCE FEATURE FLAG
 # ---------------------------------------------------------------------------
 # Controls which data provider is used for option-chain fetches.
-#   "dhan"         — DEFAULT. Dhan broker API (requires DHAN_CLIENT_ID +
-#                    DHAN_ACCESS_TOKEN; static token, no daily refresh).
-#                    Provides real-time greeks (delta, gamma, theta, vega) and IV
-#                    directly from the API. Supports NIFTY, BANKNIFTY.
-#   "icici_breeze" — ICICI Direct Breeze API (requires API key + secret +
-#                    daily session token; set via .env). Supports NIFTY, BANKNIFTY,
-#                    and SENSEX (BSE/BFO).
-#   "nse"          — Legacy: scrapes the official NSE endpoint (no credentials
-#                    required, but rate-limited and blocks datacenter IPs).
-#                    Supports NIFTY and BANKNIFTY only. SENSEX is not on NSE.
-#
-# Set DATA_SOURCE in your .env to switch adapters.  Default: dhan.
-DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "dhan").strip().lower()
+#   "auto"         — DEFAULT. Uses Dhan when token is present, else NSE backup.
+#   "dhan"         — Dhan broker API (requires DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN).
+#   "icici_breeze" — ICICI Direct Breeze API (requires API key + secret + daily session token).
+#   "nse"          — Legacy: scrapes official NSE endpoint.
+DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "auto").strip().lower()
 LIVE_SOURCE = DATA_SOURCE
 
 VALID_DATA_SOURCES = {"nse", "icici_breeze", "dhan", "auto"}
@@ -102,19 +94,14 @@ if DATA_SOURCE not in VALID_DATA_SOURCES:
 
 
 # --- ICICI Direct Breeze API credentials ------------------------------------
-# Required when DATA_SOURCE="icici_breeze". Set via .env (never commit real keys).
-# The session_token must be refreshed every day — generate it at:
-#   https://api.icicidirect.com/apiuser/login?api_key=<url-encoded-api-key>
 ICICI_BREEZE_API_KEY:       str | None = os.environ.get("ICICI_BREEZE_API_KEY")
 ICICI_BREEZE_API_SECRET:    str | None = os.environ.get("ICICI_BREEZE_API_SECRET")
 ICICI_BREEZE_SESSION_TOKEN: str | None = os.environ.get("ICICI_BREEZE_SESSION_TOKEN")
 
 # --- Dhan API credentials ---------------------------------------------------
-# Required when DATA_SOURCE="dhan". Set via .env (never commit real keys).
-# The access token is static (no daily refresh unlike ICICI Breeze).
-# Generate at: https://dhanhq.co/docs/latest/authentication/
 DHAN_CLIENT_ID:    str | None = os.environ.get("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN: str | None = os.environ.get("DHAN_ACCESS_TOKEN")
+
 
 # --- Dealer gamma sign convention -------------------------------------------
 # ⚠️ LEGACY FALLBACK ONLY — tabs now own their sign convention explicitly.
@@ -164,8 +151,17 @@ OI_STALE_HOURS = 30  # NSE OI is end-of-day lagging; flag beyond ~1 trading day
 OI_STRIKE_BAND_PTS = INDICES[DEFAULT_INDEX].band_pts
 
 # --- Market / timezone ------------------------------------------------------
-MARKET_TZ = "Asia/Kolkata"   # NSE session 09:15–15:30 IST
+MARKET_TZ = "Asia/Kolkata"
 UNDERLYING = INDICES[DEFAULT_INDEX].symbol   # back-compat alias for the default index
+
+# NSE session, minutes-since-midnight IST. ⚠️ VERIFY-LIVE landmine (CLAUDE.md): from
+# 2026-08-03 NSE extended EQUITY-DERIVATIVES (F&O: index/stock futures + options) trading
+# to 15:40 (was 15:30), to align with the cash Closing-Auction-Session (15:15–15:35). Open
+# is unchanged 09:15. Data collectors of FUTURES/OPTIONS ticks use FNO_CLOSE_MIN so they don't
+# stop 10 min early and miss the peak expiry-settlement window. NSE circular 2026-05-30.
+MARKET_OPEN_MIN = 9 * 60 + 15        # 09:15
+FNO_CLOSE_MIN = 15 * 60 + 40         # 15:40 (F&O), effective 2026-08-03; was 15:30
+CASH_CLOSE_MIN = 15 * 60 + 30        # 15:30 continuous cash (CAS auction 15:15–15:35 sets the close)
 
 # --- Risk-free / dividend sourcing ------------------------------------------
 # r and q are IMPLIED per-expiry from put-call parity off the same chain — no

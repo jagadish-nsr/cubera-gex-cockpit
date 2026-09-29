@@ -100,15 +100,17 @@ def main() -> None:
     _print("")
     _table(kept[kept["dte"] <= 1.5], "(2) 0-DTE crossings (DTE ≤ 1.5) — where the blast actually lives:")
     _print("")
-    aft = kept[(kept["dte"] <= 1.5) & (kept["tod"] >= 13 * 60 + 45)]     # the real blast window
-    _table(aft, "(2b) 0-DTE AFTERNOON crossings (≥13:45 IST) — the actual retail blast window "
+    from app.gammablast import afternoon_cut
+    cut_m, cut_lbl = afternoon_cut()
+    aft = kept[(kept["dte"] <= 1.5) & (kept["tod"] >= cut_m)]     # the real blast window
+    _table(aft, f"(2b) 0-DTE AFTERNOON crossings (≥{cut_lbl} IST) — the actual retail blast window "
                 "(cheap ATM leg):")
 
     # (3) the headline the user asked for: TRUE vs WEAK ≥3× counts, split by expiry-structure era
     kept["era"] = kept["day"].map(expiry_era)
-    _print("\n(3) 0-DTE AFTERNOON '≥3× peak jump' — TRUE vs WEAK by expiry-structure era (counts):")
+    _print(f"\n(3) 0-DTE AFTERNOON (≥{cut_lbl}) '≥3× peak jump' — TRUE vs WEAK by expiry-structure era (counts):")
     _print(f"    {'era':<42} {'TRUE n / ≥3×':>16} {'WEAK n / ≥3×':>16}")
-    e0 = kept[(kept["dte"] <= 1.5) & (kept["tod"] >= 13 * 60 + 45)]
+    e0 = kept[(kept["dte"] <= 1.5) & (kept["tod"] >= cut_m)]
     for e in era_order(e0["era"].unique()):
         sub = e0[e0["era"] == e]
         true = sub[sub["grade"] == _BUCKETS[0][0]]

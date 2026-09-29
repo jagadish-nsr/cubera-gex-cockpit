@@ -90,8 +90,12 @@ FIELDS = [
 ]
 
 
-_OPEN_IST = (9, 15)     # NSE cash session 09:15-15:30 IST
-_CLOSE_IST = (15, 30)
+# session window from config (single source; F&O extended to 15:40 on 2026-08-03). getattr fallbacks so a
+# hot-reload against a stale cached `config` degrades gracefully instead of crashing (restart to refresh).
+_open_min = getattr(config, "MARKET_OPEN_MIN", 9 * 60 + 15)
+_close_min = getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40)
+_OPEN_IST = (_open_min // 60, _open_min % 60)      # 09:15
+_CLOSE_IST = (_close_min // 60, _close_min % 60)   # 15:40 (option chain = F&O)
 
 
 def _ist(now_utc: datetime) -> datetime:

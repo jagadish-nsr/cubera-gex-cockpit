@@ -179,6 +179,22 @@ peak-turnover) as a *where-the-money-is-committing* read, explicitly not an S/R 
    fragile now. Returns are % of the *credit* (small vs SPAN margin); mid-close fills + modelled
    spread. This is the first *dashboard-play* backtest that comes out positive.
 
+7. **Defined-risk variant — the short IRON FLY is NOT better after cost (2026-07-17).**
+   `scripts/backtest_iron_fly.py`. When the call & put walls coincide on one strike (a strong pin),
+   "sell at the walls" degenerates into a naked straddle, so the dashboard now steps the strikes ±1
+   out (a 2-leg stepped strangle) — and we tested the obvious defined-risk alternative, a short iron
+   fly (sell the pin straddle + BUY wings W strikes out), held to close (the wings are the stop).
+   Same CALM entry; return = % of *defined max risk* (ROI). **At mid it is only marginally positive
+   (CALM +0.6 / +1.1 / +3.0%/trade for wings W=2/3/4, payoff <1×), and after a realistic per-leg
+   spread it goes firmly NEGATIVE** (CALM @2% half-spread: −59 / −22 / −10%/trade for W=2/3/4; every
+   expiry era negative). The reason is structural: a 4-leg fly crosses the bid/ask **8 times** (four
+   legs, entry+exit) vs the strangle's four, so the bought wings cost more theta than the tail they
+   remove. Wider wings bleed least (bigger denominator) but never clear cost. **Takeaway: the capped
+   tail is not worth the extra two legs' spread — the 2-leg (stepped) strangle is the better execution
+   of the calm short-premium edge; use the fly only if a hard max-loss cap is required, eyes open to
+   the negative post-cost drift.** Nearest-strike premiums, modelled per-leg spread, MTM-at-close;
+   sign-free.
+
 ## 6. What the tool is for
 Not a directional-alpha engine. A **structure / positioning / expected-volatility
 decision-support dashboard** for a human to read context — walls, magnet/max-pain, build-up
