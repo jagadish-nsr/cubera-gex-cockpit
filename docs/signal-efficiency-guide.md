@@ -104,7 +104,7 @@ The analytics engine dissects signal efficiency across two critical dimensions:
 
 ## 5. SQLite Data Storage & Retention Housekeeping
 
-All bars, signals, and outcome records are stored in [`data/sentinel.db`](file:///Users/jagadish/MyProjects/Applications/Indian-GEX-main/data/sentinel.db).
+All bars, signals, and outcome records are stored in [`data/sentinel.db`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/sentinel.db).
 
 ### Retention Standards:
 * **1-Minute Bars (`sentinel_bars`):** **60 calendar days**. (Sufficient for high-frequency intraday charts and multi-session tape context).

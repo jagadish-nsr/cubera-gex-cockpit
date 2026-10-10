@@ -13,9 +13,9 @@ Access any of the specialized technical guides directly in your browser or click
    - Mathematical formulas for Gamma Exposure (GEX), Call/Put Walls, Gamma Flip, Max Pain, CVD, VWAP bands, Delta MTM option pricing, and dynamic position sizing.
 
 2. **[🎯 Options Recommendation Strategies Guide](/?view=options_strategies_guide)**
-   - Operational field guide for the **Top 3 CE & Top 3 PE Recommendation Engine**.
-   - Deep dive on **MOMENTUM**, **STRUCTURE**, and **GAMMA SQUEEZE** plays: data points used, inference logic, entry triggers, spot invalidation levels, and target/stop pricing.
-   - Roadmap for next-generation alpha strategies (0DTE Vanna-Charm compression, OrderFlow Iceberg absorption, Volatility Dispersion).
+   - Operational field guide for the **High-Conviction Options Recommendations Engine (Score ≥ 75)**.
+   - Deep dive on all 7 institutional strategies: **MOMENTUM**, **STRUCTURE**, **GAMMA SQUEEZE**, **ICEBERG FADE**, **VANNA-CHARM**, **VOL DISPERSION**, and **RATIO REVERSAL**.
+   - Comprehensive trigger mechanics, spot invalidation levels, target/stop pricing, and capital preservation filtering.
 
 3. **[⚡ OrderFlow Sentinel Stream Signals Guide](/?view=orderflow_guide)**
    - Microstructure indicators: CVD, OrderFlow Delta, absorption, trapped buyers/sellers, and momentum divergence.

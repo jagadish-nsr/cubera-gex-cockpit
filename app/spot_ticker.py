@@ -130,43 +130,23 @@ def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
 
 def get_instant_quote(symbol: str = "NIFTY") -> dict:
     """Return an instant Dhan live quote bundle with 0ms in-memory response.
-    Never blocks on the option chain or GEX solver."""
+    Never blocks on the network or rate gate; background pollers maintain fresh state."""
     ensure(symbol)
     rec = _STORE.get(symbol)
     now = time.time()
 
-    if rec and rec.get("quote") and (now - rec.get("at", 0)) < STALE_AFTER_S:
+    if rec and rec.get("quote"):
         return rec["quote"]
 
     ohlc = rec.get("ohlc") if rec else None
     fut = rec.get("fut") if rec else None
-
-    if not ohlc:
-        try:
-            from data.dhan_live import fetch_index_ohlc
-            ohlc = fetch_index_ohlc(symbol)
-            if ohlc:
-                rec = _STORE.setdefault(symbol, {"at": now, "err": None})
-                rec["ohlc"] = ohlc
-                rec["at"] = now
-        except Exception:
-            ohlc = None
-
-    if not fut:
-        try:
-            from data.dhan_live import fetch_futures_dhan
-            fut = fetch_futures_dhan(symbol)
-            if fut and rec:
-                rec["fut"] = fut
-        except Exception:
-            fut = None
-
     quote = _compile_quote(symbol, ohlc, fut)
     if rec:
         rec["quote"] = quote
     else:
         _STORE[symbol] = {"ohlc": ohlc, "fut": fut, "quote": quote, "at": now, "err": None}
     return quote
+
 
 
 def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None) -> None:
@@ -248,11 +228,20 @@ def get_option_ws_quote(symbol: str, strike: float, side: str, max_age_s: float 
 
 def _loop(symbol: str, interval_s: float) -> None:
     from data.dhan_live import fetch_index_ohlc, fetch_futures_dhan
+    import config
     while True:
-        # Back off REST polling when the WebSocket feed is already providing live ticks
+        # 1. Back off REST polling when the WebSocket feed is actively providing live ticks
         if _ws_is_live_for(symbol, max_silence_s=10.0):
             time.sleep(WS_BACKOFF_S)
             continue
+
+        # 2. Back off when market is closed — prices don't change outside market hours
+        if not config.is_market_open():
+            rec = _STORE.get(symbol)
+            if rec and rec.get("ohlc"):
+                time.sleep(60.0)
+                continue
+
         ok = False
         try:
             d = fetch_index_ohlc(symbol)

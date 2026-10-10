@@ -145,11 +145,14 @@ TOKEN_FILE = ROOT / "data" / ".dhan_token"          # gitignored secret; never c
 def write_token(token: str) -> None:
     """Persist a pasted Dhan access token to the gitignored ``data/.dhan_token``,
     update in-memory environment, and update ``.env`` if present. The token is
-    a SECRET — this never logs it. Strips whitespace; refuses an empty string."""
+    a SECRET — this never logs it. Strips whitespace; validates JWT structure."""
     import re
     tok = (token or "").strip()
     if not tok:
         raise ValueError("empty token")
+    parts = tok.split(".")
+    if len(parts) != 3 or not all(parts):
+        raise ValueError("Invalid JWT token format. Dhan access token must have 3 parts separated by dots.")
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(tok, encoding="utf-8")
 
@@ -178,16 +181,11 @@ def write_token(token: str) -> None:
 def token_status() -> dict:
     """Non-secret status of the current Dhan token for the UI: whether one is present, where it
     came from (env/file), and — decoded from the JWT ``exp`` claim — whether it is still valid and
-    for how long. NEVER returns the token itself. ``expired`` is None when expiry is unknowable."""
+    for how long. NEVER returns the token itself. ``expired`` is True when expired or invalid."""
     from datetime import datetime, timezone
     token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
     if not token:
         return {"present": False, "source": None, "exp": None, "hours_left": None, "expired": None}
-    exp = _jwt_exp(token)
-    hours_left = expired = None
-    if exp is not None:
-        hours_left = (exp - datetime.now(timezone.utc)).total_seconds() / 3600.0
-        expired = hours_left <= 0
 
     file_match = False
     if TOKEN_FILE.exists():
@@ -196,13 +194,29 @@ def token_status() -> dict:
         except OSError:
             pass
 
+    exp = _jwt_exp(token)
+    if exp is None:
+        return {
+            "present": False,
+            "source": "file" if file_match else "env",
+            "exp": None,
+            "hours_left": None,
+            "expired": True,
+            "malformed": True,
+        }
+
+    hours_left = (exp - datetime.now(timezone.utc)).total_seconds() / 3600.0
+    expired = hours_left <= 0
+
     return {
-        "present": True,
+        "present": not expired,
         "source": "file" if file_match else "env",
-        "exp": exp.isoformat() if exp else None,
+        "exp": exp.isoformat(),
         "hours_left": hours_left,
         "expired": expired,
+        "malformed": False,
     }
+
 
 
 def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",

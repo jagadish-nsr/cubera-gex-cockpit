@@ -129,11 +129,9 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
     pref = (live_source or config.LIVE_SOURCE or "auto").lower()
     note = None
     if pref in ("dhan", "auto"):
-        has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
-        if not has_token:
-            from data.dhan import token_status
-            has_token = bool(token_status().get("present"))
-        if pref == "dhan" or has_token:
+        from data.dhan import token_status
+        has_token = bool(token_status().get("present"))
+        if has_token:
             try:
                 from data import dhan_live
                 payload = dhan_live.fetch_chain(idx.symbol, max_expiries=max_expiries)     # throttled, ≥3s/expiry
@@ -152,7 +150,7 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
                 return payload, "dhan", ohlc, None
             except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
                 note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
-        elif pref == "auto":
+        else:
             note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
 
     if idx.symbol == "SENSEX":
@@ -187,10 +185,8 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
 
         from data.nse import parse_nse_option_chain
         pref = (live_source or config.LIVE_SOURCE or "auto").lower()
-        has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
-        if not has_token:
-            from data.dhan import token_status
-            has_token = bool(token_status().get("present"))
+        from data.dhan import token_status
+        has_token = bool(token_status().get("present"))
 
         # If live_source is explicitly "dhan", use Dhan; otherwise prefer fast NSE
         # to avoid starving the primary index's 3.1s rate gate
@@ -219,10 +215,9 @@ def _prefer_dhan(live_source) -> bool:
     pref = (live_source or config.LIVE_SOURCE or "auto").lower()
     if pref == "nse":
         return False
-    if bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN):
-        return True
     from data.dhan import token_status
     return bool(token_status().get("present"))
+
 
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,

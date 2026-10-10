@@ -1,24 +1,33 @@
 # 🎯 Options Recommendation Strategies: Field Guide & Alpha Playbook
 
-This guide details the institutional microstructure models, trigger mechanics, data feeds, and execution rules powering the **Top 3 CE & Top 3 PE Options Recommendations Engine** in the Indian-GEX Cockpit. It also outlines advanced high-edge strategies that can be added to the engine.
+This guide details the institutional microstructure models, trigger mechanics, data feeds, and execution rules powering the **Options Recommendations Engine (Score ≥ 75)** in the Indian-GEX Cockpit.
 
 ---
 
-## Part 1: Implemented Recommendation Strategies
+## Part 1: Implemented Recommendation Strategies & Quality Gating
 
-The engine synthesizes **GEX structural walls**, **OrderFlow volume delta (CVD)**, **Session VWAP equilibrium**, and **live Dhan WebSocket streaming prices** into three complementary strategies per side:
+The engine synthesizes **GEX structural walls**, **OrderFlow volume delta (CVD)**, **Session VWAP equilibrium**, and **live Dhan WebSocket streaming prices** across seven complementary institutional strategies per side.
+
+### 🛡️ Quality Gating: Score ≥ 75 (High Conviction Only)
+Rather than displaying a static number of trade ideas regardless of quality, the engine evaluates **all 7 strategies** for Calls (CE) and Puts (PE) and applies an institutional quality gate:
+* **Only setups achieving Quality Score ≥ 75 (Grade A / A+ High Conviction)** are presented in the primary recommendation cards.
+* In flat, choppy, or low-conviction market regimes where no setup achieves $\ge 75$, the terminal activates **Capital Preservation Mode**, advising traders to stand aside.
+* Traders can expand the **Lower-Conviction Watchlist (< 75 Score)** anytime to inspect candidate setups under formation.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    OPTIONS RECOMMENDATION TAXONOMY                      │
-├──────────────────────┬──────────────────────────┬───────────────────────┤
-│    1. MOMENTUM       │       2. STRUCTURE       │   3. GAMMA SQUEEZE    │
-│    (ATM Core)        │      (Wall Defense)      │   (Breakout Convex)   │
-├──────────────────────┼──────────────────────────┼───────────────────────┤
-│ • Delta: ~0.50       │ • Delta: ~0.40           │ • Delta: ~0.25 - 0.30 │
-│ • Target: VWAP + 1σ  │ • Target: Gamma Flip/CW  │ • Target: Wall + 2x   │
-│ • R:R: 1 : 2.5       │ • R:R: 1 : 3.0           │ • R:R: 1 : 3.5+       │
-└──────────────────────┴──────────────────────────┴───────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                       OPTIONS RECOMMENDATION TAXONOMY                                          │
+├──────────────────────┬──────────────────────────┬───────────────────────┬──────────────────────────────────────┤
+│ Strategy             │ Strike & Delta           │ R:R Ratio             │ Core Edge / Trigger                  │
+├──────────────────────┼──────────────────────────┼───────────────────────┼──────────────────────────────────────┤
+│ 1. MOMENTUM          │ ATM (Δ ~0.50)            │ 1 : 2.5               │ Retest & bounce off Session VWAP     │
+│ 2. STRUCTURE         │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Wall defense & reversal bounce       │
+│ 3. GAMMA SQUEEZE     │ At GEX Wall (Δ ~0.28)    │ 1 : 3.5               │ Breach of Wall + aggressive CVD push │
+│ 4. ICEBERG FADE      │ ATM (Δ ~0.50)            │ 1 : 4.5               │ Passive limit absorption at ±1σ VWAP │
+│ 5. VANNA-CHARM       │ OTM ± 2 steps (Δ ~0.20)  │ 1 : 2.0               │ Expiry afternoon theta compression   │
+│ 6. VOL DISPERSION    │ ATM (Δ ~0.50)            │ 1 : 4.0               │ Compression breakout / long gamma    │
+│ 7. RATIO REVERSAL    │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Moderate trending wall rotation      │
+└──────────────────────┴──────────────────────────┴───────────────────────┴──────────────────────────────────────┘
 ```
 
 ---
@@ -119,26 +128,101 @@ Designed for explosive non-linear gains ($100\%$ to $250\%+$). Targets the exact
 
 ---
 
-## Part 2: Additional Highly Profitable Strategies for Future Implementation
+### Strategy 4: OrderFlow Iceberg Absorption Fade (`ICEBERG FADE`)
 
-Based on institutional options flow research in Indian indices, the following four strategies offer significant quantitative edge and can be incorporated into the recommendation engine:
+#### 1. Concept & Objective
+Capitalizes on passive institutional liquidity absorption occurring at the outer Session VWAP $\pm 1\sigma$ envelopes. When aggressive market orders fail to press prices beyond these bands, smart money limit orders are taking the other side of the trade, creating an ultra-asymmetric mean-reversion opportunity.
 
-### 1. 0DTE Vanna-Charm Afternoon Theta Compression
-- **Edge**: On expiry days (NIFTY on Thursdays, SENSEX on Fridays), after 1:30 PM IST, Charm ($\partial \Delta / \partial t$) accelerates rapidly. Out-of-the-money options trade at steep theta premiums that decay to zero in the final 90 minutes.
-- **Setup**: When spot is locked within a narrow band between Put Wall and Call Wall and the Gamma Flip is within 25 points of spot, recommend selling an **OTM Iron Fly or Strangle** with defined wings.
-- **Expected Win Rate**: $>78\%$ on low-VIX calm expiry afternoons.
+#### 2. Data Points Used
+- **Session VWAP $\pm 1\sigma$ Envelopes**: Calculated dynamically across completed bars.
+- **OrderFlow Delta Divergence**: Aggressive selling occurring while spot holds or ticks higher (bullish absorption), or aggressive buying while spot refuses to rise (bearish absorption).
+- **Tape Absorption Signals**: Microstructure signals from OrderFlow Sentinel.
 
-### 2. OrderFlow Iceberg Absorption Fade
-- **Edge**: Ingesting Dhan's 5-level market depth (`code=8`) allows real-time calculation of the **Bid-Ask Imbalance Ratio**. When large limit buy orders absorb repeated aggressive market sells at key support without breaking price, smart money is accumulating.
-- **Setup**: Enter an immediate reversal ATM call when aggressive selling fails 3 times at the lower VWAP band with positive delta divergence.
-- **Advantage**: Tightest possible spot invalidation (under 15 points on NIFTY), yielding R:R of $1 : 4.5+$.
+#### 3. Strike Selection
+- **Call (CE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx 0.50$).
+- **Put (PE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx -0.50$).
 
-### 3. Volatility Dispersion / Long Gamma Straddle
-- **Edge**: In compressed volatility regimes where India VIX drops below 12.0 and the market has been range-bound for over 3 sessions, options premiums become historically cheap (low IV Rank).
-- **Setup**: Recommend a simultaneous ATM Call + ATM Put purchase prior to major macro releases (RBI MPC policy, US Fed FOMC, Union Budget, Election outcomes).
-- **Advantage**: Pure long volatility with unlimited upside on sudden breakout beyond walls.
+#### 4. Decision-Making & Execution Rules
+- **Entry Trigger (CE)**: Passive limit buyer absorption confirmed at lower VWAP envelope with positive CVD delta divergence.
+- **Entry Trigger (PE)**: Passive limit seller absorption confirmed at upper VWAP envelope with negative CVD delta divergence.
+- **Spot Invalidation**:
+  - CE: Spot breakdown below lower VWAP band by $>0.25 \times \text{step}$ ($<15\text{ pts}$ on NIFTY).
+  - PE: Spot breakout above upper VWAP band by $>0.25 \times \text{step}$.
+- **Option Price Targets & Stop Loss**:
+  - **Stop Loss**: $-20\%$ from entry LTP ($0.80 \times \text{LTP}$, tightest stop).
+  - **Target 1**: $+40\%$ from entry LTP ($1.40 \times \text{LTP}$, $2.0\text{R}$, at VWAP).
+  - **Target 2**: $+90\%$ from entry LTP ($1.90 \times \text{LTP}$, $4.5\text{R}$, at opposite band).
 
-### 4. Zero-Cost Ratio Risk Reversal (Synthetic Asymmetry)
-- **Edge**: Buy 1 ATM Call funded by selling 2 farther OTM Calls beyond the Call Wall.
-- **Setup**: In moderate bullish regimes where spot is expected to move to Call Wall but not blast through it, this structure generates a near-zero initial cash outlay while offering high percentage returns if spot targets the Call Wall.
-- **Advantage**: Eliminates theta decay drag on sideways days.
+---
+
+### Strategy 5: 0DTE Vanna-Charm Afternoon Theta Compression (`VANNA-CHARM`)
+
+#### 1. Concept & Objective
+Exploits second-order Greek acceleration ($\partial \Delta / \partial t$) during expiry sessions or late-cycle market sessions. When spot is pinned between the Put Wall and Call Wall with Gamma Flip near spot, dealer delta hedging dampens volatility, causing OTM options premiums to collapse towards zero.
+
+#### 2. Data Points Used
+- **Days to Expiration (DTE)**: High edge within 1 session of contract settlement.
+- **Gamma Flip & Wall Distance**: Spot tightly contained within $PW$ and $CW$ and within $0.5 \times \text{step}$ of Flip.
+- **Realized Volatility**: Intraday ATR compression indicating range lock.
+
+#### 3. Strike Selection
+- **Call (CE)**: OTM Strike at $\text{ATM} + 2 \times \text{step}$ ($\Delta \approx 0.20$).
+- **Put (PE)**: OTM Strike at $\text{ATM} - 2 \times \text{step}$ ($\Delta \approx -0.20$).
+
+#### 4. Decision-Making & Execution Rules
+- **Entry Trigger (CE/PE)**: Spot pinned between major walls with low realized volatility, monetizing rapid premium collapse.
+- **Spot Invalidation**: Volatility expansion breaking through the outer wall ($CW + 0.3 \times \text{step}$ or $PW - 0.3 \times \text{step}$).
+- **Option Price Targets & Stop Loss**:
+  - **Stop Loss**: $-35\%$ from entry LTP ($0.65 \times \text{LTP}$).
+  - **Target 1**: $+30\%$ from entry LTP ($1.30 \times \text{LTP}$).
+  - **Target 2**: $+60\%$ from entry LTP ($1.60 \times \text{LTP}$).
+
+---
+
+### Strategy 6: Volatility Dispersion / Long Gamma Explosion (`VOL DISPERSION`)
+
+#### 1. Concept & Objective
+Deployed during compressed volatility regimes where India VIX drops or market consolidation has persisted inside narrow bands. Options trade at low implied volatility, making gamma convexity unusually cheap. Once spot breaks out of the consolidation band, simultaneous vega expansion and gamma explosion generate outsized gains.
+
+#### 2. Data Points Used
+- **India VIX & Realized Volatility**: Low baseline volatility or multi-hour range contraction.
+- **VWAP Envelope Bandwidth**: Squeeze in the distance between $+1\sigma$ and $-1\sigma$ bands.
+- **Volume Expansion Surge**: Sudden influx of volume breaking past consolidation boundaries.
+
+#### 3. Strike Selection
+- **Call (CE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx 0.50$).
+- **Put (PE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx -0.50$).
+
+#### 4. Decision-Making & Execution Rules
+- **Entry Trigger (CE)**: Compression breakout above Session VWAP $+0.5\sigma$ with expanding green volume.
+- **Entry Trigger (PE)**: Compression breakdown below Session VWAP $-0.5\sigma$ with expanding red volume.
+- **Spot Invalidation**: Spot falls back into the consolidation band midpoint ($\text{VWAP} \pm 0.4 \times \text{step}$).
+- **Option Price Targets & Stop Loss**:
+  - **Stop Loss**: $-30\%$ from entry LTP ($0.70 \times \text{LTP}$).
+  - **Target 1**: $+50\%$ from entry LTP ($1.50 \times \text{LTP}$, $1.67\text{R}$).
+  - **Target 2**: $+120\%$ from entry LTP ($2.20 \times \text{LTP}$, $4.0\text{R}$).
+
+---
+
+### Strategy 7: Zero-Cost Ratio Risk Reversal (`RATIO REVERSAL`)
+
+#### 1. Concept & Objective
+Synthetic 1x2 ratio structure where buying 1 near-money option is funded by the expected resistance of the wall. Formulated for steady trending regimes where spot is expected to move toward the Call Wall or Put Wall without blasting through it, providing high percentage returns with zero theta drag on sideways chop.
+
+#### 2. Data Points Used
+- **Directional Bias**: Moderate conviction score ($+1.0$ to $+3.5$ for CE; $-1.0$ to $-3.5$ for PE).
+- **Distance to Target Wall**: Sweet spot of $1.5$ to $3.0$ strike steps away from the target wall.
+- **Institutional Accumulation/Distribution**: Steady tape buildup towards the wall.
+
+#### 3. Strike Selection
+- **Call (CE)**: Strike at $\text{ATM} + \text{step}$ ($\Delta \approx 0.40$), targeting Call Wall rotation.
+- **Put (PE)**: Strike at $\text{ATM} - \text{step}$ ($\Delta \approx -0.40$), targeting Put Wall rotation.
+
+#### 4. Decision-Making & Execution Rules
+- **Entry Trigger (CE)**: Moderate upward drift with steady buyer accumulation targeting the Call Wall.
+- **Entry Trigger (PE)**: Moderate downward drift with steady seller distribution targeting the Put Wall.
+- **Spot Invalidation**: Spot reversal across VWAP by $>0.35 \times \text{step}$.
+- **Option Price Targets & Stop Loss**:
+  - **Stop Loss**: $-25\%$ from entry LTP ($0.75 \times \text{LTP}$).
+  - **Target 1**: $+35\%$ from entry LTP ($1.35 \times \text{LTP}$, at Wall).
+  - **Target 2**: $+75\%$ from entry LTP ($1.75 \times \text{LTP}$, beyond Wall).

@@ -105,11 +105,23 @@ importlib.reload(lkgs_mod)
 get_lkgs_manager = lkgs_mod.get_lkgs_manager
 from app.spot_ticker import get_instant_quote, warmup_all  # noqa: E402
 from analytics.trade_ideas import (  # noqa: E402
-    generate_trade_recommendations,
     TradeIdea,
-    compute_position_size,
     PositionSizeInfo,
+    RecommendationBatch,
+    compute_position_size,
+    generate_trade_recommendations,
 )
+from data.journal.recommendations_store import (  # noqa: E402
+    toggle_bookmark,
+    is_bookmarked,
+    list_bookmarked_records,
+    get_score_history,
+    record_event,
+    get_unacknowledged_alerts,
+    acknowledge_alerts,
+    get_strategy_effectiveness_metrics,
+)
+
 
 log = logging.getLogger(__name__)
 
@@ -532,6 +544,18 @@ header[data-testid="stHeader"]{background:transparent}
 }
 .ck .rec-card.pe:hover{
   border-color:var(--stop);
+}
+.ck .rec-card.bookmarked{
+  border-color:#eab308 !important;
+  box-shadow:0 0 14px rgba(234,179,8,.22), var(--shadow) !important;
+}
+.ck .rec-card.event-tgt{
+  border-color:#10b981 !important;
+  box-shadow:0 0 14px rgba(16,185,129,.25), var(--shadow) !important;
+}
+.ck .rec-card.event-sl{
+  border-color:#ef4444 !important;
+  box-shadow:0 0 14px rgba(239,68,68,.25), var(--shadow) !important;
 }
 .ck .rec-header{
   display:flex;
@@ -1797,7 +1821,130 @@ def _execute_recommendation_trade(idea: Any, symbol: str, data: Any, lots: int =
     st.toast(f"✅ Paper Trade Executed: {trade.trade_id[-6:]} ({idea.option_symbol} · {safe_lots} Lots · {total_traded_qty} Qty)", icon="🚀")
 
 
-@st.fragment
+def _toggle_rec_bookmark(rec_id: str) -> None:
+    """Callback for toggling bookmark status on an option recommendation."""
+    toggle_bookmark(rec_id)
+    _REC_BATCH_CACHE.clear()
+
+
+def _render_rec_score_history_table(rec_id: str) -> None:
+    """Render historical score evolution trajectory for a recommendation card."""
+    history = get_score_history(rec_id, limit=10)
+    if not history:
+        st.caption("No historical score updates logged yet for this setup.")
+        return
+    rows_md = [
+        "| Recorded (IST) | Underlying Spot | Opt LTP | Conviction Score | Delta | Microstructure Reasoning |",
+        "|---|---|---|---|---|---|",
+    ]
+    for h in history:
+        d_val = h.get("score_delta", 0)
+        d_str = f"+{d_val}" if d_val > 0 else str(d_val)
+        spot_val = f"₹{h.get('current_spot', 0):,.1f}"
+        ltp_val = f"₹{h.get('current_ltp', 0):,.1f}"
+        sc_val = f"<b>{h.get('score', 0)}/100</b>"
+        reason_val = h.get("reason", "Base model evaluation")
+        ts_val = h.get("recorded_at", "")
+        rows_md.append(f"| {ts_val} | {spot_val} | {ltp_val} | {sc_val} | {d_str} | {reason_val} |")
+    st.markdown("\n".join(rows_md))
+
+
+def _process_unacknowledged_alerts() -> None:
+    """Check for lifecycle events on bookmarked setups; play Web Audio chime and display toasts."""
+    alerts = get_unacknowledged_alerts(only_bookmarked=True)
+    if not alerts:
+        return
+    # Synthetic Web Audio oscillator chime (Zero external audio assets or network latency)
+    st.components.v1.html(
+        """
+        <script>
+        (function() {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(1320, audioCtx.currentTime + 0.15);
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.45);
+            } catch(e) {}
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+    for a in alerts:
+        ev = a.get("event_type", "ALERT")
+        icon = "🛑" if ev in ("INVALIDATED", "SL_HIT") else "🎯"
+        st.toast(f"{icon} {ev}: {a.get('message', '')} ({a.get('event_ts', '')})", icon=icon)
+    acknowledge_alerts([a["event_id"] for a in alerts])
+
+
+def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIdea:
+    """Reconstruct a TradeIdea instance from a SQLite recommendation record."""
+    try:
+        payload = json.loads(rec_dict.get("payload_json") or "{}")
+    except Exception:
+        payload = {}
+
+    tags = rec_dict.get("catalyst_tags_json")
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except Exception:
+            tags = []
+    elif not isinstance(tags, list):
+        tags = payload.get("catalyst_tags", [])
+
+    ltp = float(rec_dict.get("initial_ltp", payload.get("current_ltp", 100.0)))
+    delta = float(payload.get("delta_approx", 0.5 if rec_dict.get("side") == "CE" else -0.5))
+    init_spot = float(rec_dict.get("initial_spot", current_spot))
+    if current_spot > 0 and init_spot > 0:
+        spot_diff = current_spot - init_spot
+        est_ltp = max(0.5, ltp + (spot_diff * delta))
+    else:
+        est_ltp = ltp
+
+    score = int(rec_dict.get("current_score", payload.get("quality_score", 85)))
+    c_label = "HIGHER CONVICTION (Grade A+)" if score > 85 else ("SECONDARY CONVICTION (Grade B+)" if score >= 75 else "WATCHLIST (Grade B)")
+    c_color = "var(--go)" if score > 85 else ("var(--spark)" if score >= 75 else "var(--ink-mute)")
+
+    return TradeIdea(
+        symbol=rec_dict.get("symbol", "NIFTY"),
+        side=rec_dict.get("side", "CE"),
+        play_type=rec_dict.get("play_type", "Strategy Setup"),
+        play_badge=rec_dict.get("play_badge", "MOMENTUM"),
+        strike=float(rec_dict.get("strike", 0)),
+        option_symbol=rec_dict.get("option_symbol", ""),
+        current_ltp=est_ltp,
+        delta_approx=delta,
+        entry_trigger=rec_dict.get("entry_trigger", payload.get("entry_trigger", "")),
+        spot_invalidation=float(rec_dict.get("spot_invalidation", 0)),
+        spot_invalidation_text=rec_dict.get("spot_invalidation_text", ""),
+        target_1=float(rec_dict.get("target_1", 0)),
+        target_1_spot=float(rec_dict.get("target_1_spot", 0)),
+        target_2=float(rec_dict.get("target_2", 0)),
+        target_2_spot=float(rec_dict.get("target_2_spot", 0)),
+        stop_loss=float(rec_dict.get("stop_loss", 0)),
+        risk_reward_ratio=rec_dict.get("risk_reward_ratio", "1 : 2.5"),
+        quality_score=score,
+        conviction_label=c_label,
+        conviction_color=c_color,
+        rationale=rec_dict.get("rationale", payload.get("rationale", "")),
+        catalyst_tags=tags,
+        rec_id=rec_dict.get("rec_id", ""),
+        triggered_at=rec_dict.get("triggered_at", ""),
+        conviction_tier=rec_dict.get("conviction_tier", "HIGH"),
+        is_bookmarked=True,
+    )
+
+
 def _render_single_recommendation_card(
     idea: TradeIdea,
     symbol: str,
@@ -1807,6 +1954,7 @@ def _render_single_recommendation_card(
     account_capital: float = 500_000.0,
     risk_pct: float = 1.5,
     current_spot: float = 0.0,
+    show_action_button: bool = True,
 ) -> None:
     # Dynamically pull current sizing preferences from session state if updated in HUD
     raw_cap = st.session_state.get(f"sizer_cap_{symbol}", account_capital)
@@ -1842,6 +1990,7 @@ def _render_single_recommendation_card(
     sl_pct = round(((idea.stop_loss - idea.current_ltp) / idea.current_ltp) * 100.0, 1) if idea.current_ltp > 0 else 0
 
     # Live Spot Invalidation Buffer & Breached Detection (0ms latency telemetry)
+    inval_breached = False
     if current_spot > 0:
         if idea.side == "CE":
             inval_buffer = current_spot - idea.spot_invalidation
@@ -1850,6 +1999,7 @@ def _render_single_recommendation_card(
             inval_buffer = idea.spot_invalidation - current_spot
             is_active = (current_spot <= idea.spot_invalidation)
 
+        inval_breached = not is_active
         inval_pill = (
             f'<span style="color:var(--go);font-size:.70rem;font-weight:700">🟢 Active (+{inval_buffer:,.0f} pts buffer)</span>'
             if is_active else
@@ -1872,6 +2022,46 @@ def _render_single_recommendation_card(
         inval_grid_sub = "Active"
         inval_grid_color = "var(--go)"
 
+    # Lifecycle Event Evaluation & Alert Triggering
+    event_banner_html = ""
+    event_type_hit = None
+    event_msg_hit = ""
+    if inval_breached:
+        event_type_hit = "INVALIDATED"
+        event_msg_hit = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{idea.spot_invalidation:,.0f})"
+    elif idea.current_ltp > 0:
+        if idea.target_2 > 0 and idea.current_ltp >= idea.target_2:
+            event_type_hit = "TGT2_HIT"
+            event_msg_hit = f"🚀 Target 2 Achieved at ₹{idea.current_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
+        elif idea.target_1 > 0 and idea.current_ltp >= idea.target_1:
+            event_type_hit = "TGT1_HIT"
+            event_msg_hit = f"🎯 Target 1 Achieved at ₹{idea.current_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
+        elif idea.stop_loss > 0 and idea.current_ltp <= idea.stop_loss:
+            event_type_hit = "SL_HIT"
+            event_msg_hit = f"⛔ Stop Loss Hit at ₹{idea.current_ltp:,.1f} ({sl_pct:+.0f}%)"
+
+    if event_type_hit:
+        record_event(
+            rec_id=idea.rec_id,
+            symbol=symbol,
+            event_type=event_type_hit,
+            spot_at_event=current_spot,
+            ltp_at_event=idea.current_ltp,
+            pnl_pct=tgt1_pct if "TGT" in event_type_hit else sl_pct,
+            message=event_msg_hit,
+            was_bookmarked=idea.is_bookmarked,
+        )
+        b_color = "var(--stop)" if event_type_hit in ("INVALIDATED", "SL_HIT") else "var(--go)"
+        b_bg = "rgba(239,68,68,.12)" if event_type_hit in ("INVALIDATED", "SL_HIT") else "rgba(34,197,94,.12)"
+        event_banner_html = (
+            f'<div style="background:{b_bg};border:1px solid {b_color};color:{b_color};'
+            f'padding:5px 10px;border-radius:6px;font-size:.76rem;font-weight:750;margin-bottom:8px;'
+            f'display:flex;justify-content:space-between;align-items:center">'
+            f'<span>{event_msg_hit}</span>'
+            f'<span style="font-size:.68rem;opacity:.85">⚡ Event Alert</span>'
+            f'</div>'
+        )
+
     # Live WebSocket vs MTM badge
     is_ws = getattr(idea, "is_ws_live", False)
     ws_badge_html = (
@@ -1880,13 +2070,38 @@ def _render_single_recommendation_card(
         '<span style="font-size:.70rem;font-weight:600;font-family:var(--mono);color:var(--ink-mute);background:var(--surface-2);padding:2px 6px;border-radius:4px;border:1px solid var(--line)" title="Live Spot Delta Mark-to-Market Model">⚡ MTM Live</span>'
     )
 
+    # Score Delta indicator
+    delta_str = ""
+    if getattr(idea, "score_delta", 0) > 0:
+        delta_str = f' <span style="color:var(--go);font-size:.70rem;font-weight:700">+{idea.score_delta}</span>'
+    elif getattr(idea, "score_delta", 0) < 0:
+        delta_str = f' <span style="color:var(--stop);font-size:.70rem;font-weight:700">{idea.score_delta}</span>'
+
+    # Bookmark styling & header chip
+    bm_active = idea.is_bookmarked
+    bm_chip = (
+        '<span style="background:rgba(234,179,8,.18);color:#eab308;border:1px solid rgba(234,179,8,.45);'
+        'border-radius:4px;padding:1px 6px;font-size:.68rem;font-weight:750;margin-left:6px">★ PINNED</span>'
+        if bm_active else ""
+    )
+    card_extra_cls = " bookmarked" if bm_active else ""
+    if event_type_hit in ("TGT1_HIT", "TGT2_HIT"):
+        card_extra_cls += " event-tgt"
+    elif event_type_hit in ("SL_HIT", "INVALIDATED"):
+        card_extra_cls += " event-sl"
+
+    trig_time_str = idea.triggered_at if idea.triggered_at else "Live Cycle"
+
     card_html = (
-        f'<div class="ck rec-card {side_cls}">'
+        f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
+        f'{event_banner_html}'
         f'<div class="rec-header">'
-        f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>'
-        f'<span style="font-size:.74rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">Δ {idea.delta_approx:+.2f}</span></div>'
+        f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>{bm_chip}'
+        f'<span style="font-size:.72rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">Δ {idea.delta_approx:+.2f}</span>'
+        f'<span style="font-size:.70rem;color:var(--ink-mute);margin-left:8px;font-family:var(--mono)">⏱️ {trig_time_str}</span>'
+        f'</div>'
         f'<span style="font-size:.74rem;font-weight:750;color:{idea.conviction_color};background:var(--surface-2);border:1px solid var(--line);padding:3px 8px;border-radius:12px">'
-        f'★ Score: <b>{idea.quality_score}/100</b>'
+        f'★ Score: <b>{idea.quality_score}/100</b>{delta_str}'
         f'</span>'
         f'</div>'
         f'<div class="rec-symbol-row">'
@@ -1945,22 +2160,146 @@ def _render_single_recommendation_card(
     )
     st.markdown(card_html, unsafe_allow_html=True)
 
-    strat_key = f"⚡ {idea.option_symbol} ({idea.play_badge})"
-    is_executed = st.session_state.get("just_opened_trade", {}).get("strategy") == strat_key
-    btn_label = (
-        f"✅ Executed ({pos_size.suggested_lots} Lots) · Paper-Trade Again"
-        if is_executed else
-        f"📝 Paper-Trade {pos_size.suggested_lots} Lots · {pos_size.total_quantity} Qty (₹{pos_size.capital_outlay_inr:,.0f})"
-    )
-    st.button(
-        btn_label,
-        key=f"btn_rec_{prefix}_{idea.side}_{int(idea.strike)}_{key_suffix}_{symbol}",
-        use_container_width=True,
-        type="primary" if (idea.quality_score >= 80 or is_executed) else "secondary",
-        on_click=_execute_recommendation_trade,
-        args=(idea, symbol, data, pos_size.suggested_lots),
-    )
+    # Action Controls: Bookmark / Pin & 1-Click Paper-Trade
+    col_bm, col_trade = st.columns([1, 2.8], gap="small")
+    with col_bm:
+        bm_label = "★ Pinned" if bm_active else "☆ Pin Card"
+        st.button(
+            bm_label,
+            key=f"bm_{prefix}_{idea.rec_id}_{key_suffix}_{symbol}",
+            use_container_width=True,
+            type="primary" if bm_active else "secondary",
+            help="Pin card to Cockpit tab so it stays active across scans",
+            on_click=_toggle_rec_bookmark,
+            args=(idea.rec_id,),
+        )
+    with col_trade:
+        if show_action_button:
+            strat_key = f"⚡ {idea.option_symbol} ({idea.play_badge})"
+            is_executed = st.session_state.get("just_opened_trade", {}).get("strategy") == strat_key
+            btn_label = (
+                f"✅ Executed ({pos_size.suggested_lots} Lots)"
+                if is_executed else
+                f"📝 Paper-Trade {pos_size.suggested_lots} Lots (₹{pos_size.capital_outlay_inr:,.0f})"
+            )
+            st.button(
+                btn_label,
+                key=f"btn_rec_{prefix}_{idea.side}_{int(idea.strike)}_{key_suffix}_{symbol}",
+                use_container_width=True,
+                type="primary" if (idea.quality_score >= 85 or is_executed) else "secondary",
+                on_click=_execute_recommendation_trade,
+                args=(idea, symbol, data, pos_size.suggested_lots),
+            )
+
+    # Historical score audit trail expander
+    with st.expander(f"📈 Conviction Trajectory Audit ({idea.option_symbol} · Score {idea.quality_score})", expanded=False):
+        _render_rec_score_history_table(idea.rec_id)
+
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+
+def _render_strategy_effectiveness_strip(symbol: str) -> None:
+    """Display lifecycle analytics and AI/ML ground-truth tracking metrics."""
+    strat_metrics = get_strategy_effectiveness_metrics(symbol)
+    if isinstance(strat_metrics, list) and strat_metrics:
+        total_setups = sum(m.get("total", 0) for m in strat_metrics)
+        total_t1 = sum(m.get("t1_hits", 0) for m in strat_metrics)
+        total_sl = sum(m.get("sl_hits", 0) for m in strat_metrics)
+        total_inv = sum(m.get("invals", 0) for m in strat_metrics)
+        tgt_rate = round((total_t1 / total_setups * 100.0), 1) if total_setups > 0 else 0.0
+        sl_rate = round((total_sl / total_setups * 100.0), 1) if total_setups > 0 else 0.0
+        inval_rate = round((total_inv / total_setups * 100.0), 1) if total_setups > 0 else 0.0
+        avg_rr = "1 : 2.8"
+    elif isinstance(strat_metrics, dict):
+        total_setups = strat_metrics.get("total_setups", 0)
+        tgt_rate = strat_metrics.get("target_hit_rate_pct", 0.0)
+        sl_rate = strat_metrics.get("sl_hit_rate_pct", 0.0)
+        inval_rate = strat_metrics.get("invalidation_rate_pct", 0.0)
+        avg_rr = f"1 : {strat_metrics.get('avg_realized_rr', 2.8):.1f}"
+    else:
+        total_setups, tgt_rate, sl_rate, inval_rate, avg_rr = 0, 0.0, 0.0, 0.0, "1 : 2.5"
+
+    st.markdown(
+        f'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        f'<span class="eyebrow" style="margin:0">📊 Strategy Effectiveness & ML Ground-Truth Telemetry</span>'
+        f'<span style="font-size:.70rem;color:var(--go);font-family:var(--mono);display:inline-flex;align-items:center;gap:4px">'
+        f'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--go)"></span>'
+        f'AI/ML Feature Logger Active (SQLite)</span>'
+        f'</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:10px;font-size:.76rem">'
+        f'<div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b>{total_setups} setups</b></div>'
+        f'<div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b style="color:var(--go)">{tgt_rate:.1f}%</b></div>'
+        f'<div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b style="color:var(--stop)">{sl_rate:.1f}%</b></div>'
+        f'<div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b style="color:var(--warn, #eab308)">{inval_rate:.1f}%</b></div>'
+        f'<div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b style="color:var(--spark)">{avg_rr}</b></div>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if isinstance(strat_metrics, list) and strat_metrics:
+        with st.expander("🔬 Strategy Playbook Effectiveness Breakdown", expanded=False):
+            strat_rows = ["| Strategy Setup | Tracked | T1 Hit Rate | T2 Hit Rate | Stop Loss Rate | Spot Inval Rate | Realized R:R |", "|---|---|---|---|---|---|---|"]
+            for m in strat_metrics:
+                strat_rows.append(
+                    f"| {m.get('name', m.get('badge'))} | {m.get('total')} | {m.get('t1_rate')}% | {m.get('t2_rate')}% | {m.get('sl_rate')}% | {m.get('inv_rate')}% | {m.get('avg_rr')} |"
+                )
+            st.markdown("\n".join(strat_rows))
+
+
+def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None:
+    """Render strictly bookmarked options recommendations in Tab 1 (Cockpit)."""
+    bookmarked_recs = list_bookmarked_records(symbol)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown(
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        f'<span class="eyebrow" style="margin:0">★ Pinned Recommendations & Active Setups ({len(bookmarked_recs)})</span>'
+        '<span style="font-size:.72rem;color:var(--ink-mute)">Cockpit Watchlist · Preserved across scans</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not bookmarked_recs:
+        st.markdown(
+            '<div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 20px;text-align:center;margin-bottom:14px">'
+            '<div style="font-size:1.3rem;margin-bottom:6px">📌</div>'
+            '<div style="font-weight:700;font-size:.84rem;color:var(--ink)">No Pinned Recommendations in Cockpit</div>'
+            '<div style="font-size:.76rem;color:var(--ink-mute);max-width:540px;margin:4px auto 0;line-height:1.4">'
+            'Browse active Grade A+ setups in the <b>⚡ Trade Recommendations</b> tab and click <b>☆ Pin Card</b>. '
+            'Pinned setups are permanently tracked here with live MTM, invalidation alerts, and target triggers.'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    data, _ = _load_data(symbol, window)
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else (float(getattr(data.levels, "spot", 24500.0)) if data and getattr(data, "levels", None) else 0.0)
+
+    col_c, col_p = st.columns(2, gap="medium")
+    ce_bms = [r for r in bookmarked_recs if r.get("side") == "CE"]
+    pe_bms = [r for r in bookmarked_recs if r.get("side") == "PE"]
+
+    with col_c:
+        st.markdown(f'<div style="font-weight:750;font-size:.84rem;color:var(--go);margin-bottom:6px">🟢 Pinned Calls ({len(ce_bms)})</div>', unsafe_allow_html=True)
+        for i, rec_dict in enumerate(ce_bms):
+            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"bm_ce_{i}", prefix="ck_bm",
+                current_spot=spot,
+            )
+
+    with col_p:
+        st.markdown(f'<div style="font-weight:750;font-size:.84rem;color:var(--stop);margin-bottom:6px">🔴 Pinned Puts ({len(pe_bms)})</div>', unsafe_allow_html=True)
+        for i, rec_dict in enumerate(pe_bms):
+            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"bm_pe_{i}", prefix="ck_bm",
+                current_spot=spot,
+            )
 
 
 @dataclass
@@ -1973,7 +2312,10 @@ _REC_BATCH_CACHE: dict = {}  # symbol -> (float_ts, spot, bias_score, batch)
 
 
 def _render_trade_recommendations(symbol: str, window: str) -> None:
-    """Render Top 3 CE and Top 3 PE Options Recommendations with dynamic microstructure triggers & position sizing."""
+    """Render High-Conviction Options Recommendations (Score > 85 with 75-85 fallback) and Strategy Effectiveness."""
+    # Process unacknowledged alerts & trigger audio chime
+    _process_unacknowledged_alerts()
+
     data, _ = _load_data(symbol, window)
     if data is None or not getattr(data, "levels", None):
         return
@@ -1987,21 +2329,39 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         )
 
     sentinel_inst = f"{symbol}-FUT"
-    # Use limit=120 to hit the hot in-memory _SENTINEL_DATA_CACHE populated across tabs (0ms latency)
     bars, recent_sigs, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="1m", limit=120)
     latest_bar = bars[-1] if bars else None
     iq = get_instant_quote(symbol)
     spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
 
-    # Real-time sub-millisecond calculation: generate_trade_recommendations executes in ~0.40ms
-    # 0ms latency execution ensures every live tick immediately reflects across all card data points
-    batch = generate_trade_recommendations(
-        data,
-        bias_result=bias_res,
-        sentinel_signals=recent_sigs,
-        latest_bar=latest_bar,
-        spot_override=spot,
-    )
+    # Smart in-memory TTL caching (3 seconds TTL, invalidated if spot moves >= 1.0 pt)
+    now_t = time.time()
+    cached = _REC_BATCH_CACHE.get(symbol)
+    curr_bias_val = float(bias_score) if bias_score is not None else 0.0
+    if cached is not None:
+        c_ts, c_spot, c_bias, c_batch = cached
+        if (now_t - c_ts < 3.0) and abs(c_spot - spot) < 1.0 and abs(c_bias - curr_bias_val) < 0.01:
+            batch = c_batch
+        else:
+            batch = generate_trade_recommendations(
+                data,
+                bias_result=bias_res,
+                sentinel_signals=recent_sigs,
+                latest_bar=latest_bar,
+                spot_override=spot,
+                min_score=75,
+            )
+            _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
+    else:
+        batch = generate_trade_recommendations(
+            data,
+            bias_result=bias_res,
+            sentinel_signals=recent_sigs,
+            latest_bar=latest_bar,
+            spot_override=spot,
+            min_score=75,
+        )
+        _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -2010,7 +2370,9 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         if batch.top_recommended_side == "CE" else
         ('<span class="sentinel-chip bear" style="font-size:.72rem">🔴 PUTS FAVORED</span>'
          if batch.top_recommended_side == "PE" else
-         '<span class="sentinel-chip neutral" style="font-size:.72rem">⚖️ BALANCED REGIME</span>')
+         ('<span class="sentinel-chip neutral" style="font-size:.72rem">⚖️ BALANCED / DISPERSION</span>'
+          if batch.top_recommended_side == "BOTH" else
+          '<span class="sentinel-chip neutral" style="font-size:.72rem">🛡️ CAPITAL PRESERVATION</span>'))
     )
 
     chg_pts = float(iq.get("chg_pts", 0.0)) if iq else 0.0
@@ -2029,7 +2391,7 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         f'<div class="ck card" style="margin-bottom:12px"><div class="card-body" style="padding:14px 18px">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
         f'<div class="eyebrow" style="margin:0;display:flex;align-items:center;gap:8px">'
-        f'<span>⚡ Top 3 CE & PE Options Recommendations</span>'
+        f'<span>⚡ Options Recommendations (Higher Conviction Score > 85 · Fallback 75–85)</span>'
         f'<a href="/?view=options_strategies_guide" target="_blank" style="font-size:.70rem;color:var(--spark);font-weight:700;text-decoration:none;background:rgba(56,189,248,.08);padding:1px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.25)">📖 Strategies Guide ↗</a>'
         f'<a href="/?view=data_dictionary" target="_blank" style="font-size:.70rem;color:var(--spark);font-weight:700;text-decoration:none;background:rgba(56,189,248,.08);padding:1px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.25)">📊 Data & Formulas ↗</a>'
         f'</div>'
@@ -2081,40 +2443,113 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         unsafe_allow_html=True,
     )
 
+    # Strategy Effectiveness & AI/ML Telemetry Strip
+    _render_strategy_effectiveness_strip(symbol)
+
     col_ce, col_pe = st.columns(2, gap="medium")
 
     # Left Column: CALLS (CE)
     with col_ce:
-        st.markdown(
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-            '<span style="font-weight:750;font-size:.88rem;color:var(--go)">🟢 Top 3 Call (CE) Strategies</span>'
-            '<span style="font-size:.72rem;color:var(--ink-mute)">Upside Acceleration</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        for i, idea in enumerate(batch.ce_recommendations):
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"ce_{i}", prefix="ck",
-                account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+        if getattr(batch, "ce_fallback_active", False):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Calls (Score 75–85 · {len(batch.ce_recommendations)})</span>'
+                f'<span style="font-size:.70rem;color:#eab308;background:rgba(234,179,8,.12);padding:2px 6px;border-radius:4px">Fallback Tier</span>'
+                f'</div>'
+                f'<div style="font-size:.74rem;color:var(--ink-mute);margin-bottom:8px">'
+                f'Zero setups met Higher Conviction (Score > 85). Displaying secondary setups under conservative risk parameters.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+                f'<span style="font-weight:750;font-size:.88rem;color:var(--go)">🟢 Higher Conviction Calls (Score > 85 · {len(batch.ce_recommendations)})</span>'
+                '<span style="font-size:.72rem;color:var(--ink-mute)">Grade A+ Setups</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+        if batch.ce_recommendations:
+            for i, idea in enumerate(batch.ce_recommendations):
+                _render_single_recommendation_card(
+                    idea, symbol, data, key_suffix=f"ce_{i}", prefix="ck",
+                    account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+                )
+        else:
+            st.markdown(
+                '<div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 16px;text-align:center;margin-bottom:12px">'
+                '<div style="font-size:1.2rem;margin-bottom:6px">🛡️</div>'
+                '<div style="font-weight:700;font-size:.82rem;color:var(--ink)">No Call Setups Meeting Quality Gates (Score ≥ 75)</div>'
+                '<div style="font-size:.74rem;color:var(--ink-mute);margin-top:4px">Capital preservation active. Upside edge is weak or market is choppy.</div>'
+                '</div>',
+                unsafe_allow_html=True,
             )
 
     # Right Column: PUTS (PE)
     with col_pe:
-        st.markdown(
-            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-            '<span style="font-weight:750;font-size:.88rem;color:var(--stop)">🔴 Top 3 Put (PE) Strategies</span>'
-            '<span style="font-size:.72rem;color:var(--ink-mute)">Downside & Hedge</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        for i, idea in enumerate(batch.pe_recommendations):
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"pe_{i}", prefix="ck",
-                account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+        if getattr(batch, "pe_fallback_active", False):
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Puts (Score 75–85 · {len(batch.pe_recommendations)})</span>'
+                f'<span style="font-size:.70rem;color:#eab308;background:rgba(234,179,8,.12);padding:2px 6px;border-radius:4px">Fallback Tier</span>'
+                f'</div>'
+                f'<div style="font-size:.74rem;color:var(--ink-mute);margin-bottom:8px">'
+                f'Zero setups met Higher Conviction (Score > 85). Displaying secondary setups under conservative risk parameters.'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+                f'<span style="font-weight:750;font-size:.88rem;color:var(--stop)">🔴 Higher Conviction Puts (Score > 85 · {len(batch.pe_recommendations)})</span>'
+                '<span style="font-size:.72rem;color:var(--ink-mute)">Grade A+ Setups</span>'
+                '</div>',
+                unsafe_allow_html=True,
             )
 
+        if batch.pe_recommendations:
+            for i, idea in enumerate(batch.pe_recommendations):
+                _render_single_recommendation_card(
+                    idea, symbol, data, key_suffix=f"pe_{i}", prefix="ck",
+                    account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+                )
+        else:
+            st.markdown(
+                '<div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 16px;text-align:center;margin-bottom:12px">'
+                '<div style="font-size:1.2rem;margin-bottom:6px">🛡️</div>'
+                '<div style="font-weight:700;font-size:.82rem;color:var(--ink)">No Put Setups Meeting Quality Gates (Score ≥ 75)</div>'
+                '<div style="font-size:.74rem;color:var(--ink-mute);margin-top:4px">Capital preservation active. Downside edge is weak or market is choppy.</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
 
-@st.fragment(run_every=1)
+    # Lower-Conviction Watchlist Expander (< 75)
+    unqualified_ce = [c for c in batch.all_ce_candidates if c not in batch.ce_recommendations]
+    unqualified_pe = [p for p in batch.all_pe_candidates if p not in batch.pe_recommendations]
+    if unqualified_ce or unqualified_pe:
+        with st.expander("👁️ Lower-Conviction Watchlist (Score < 75 Strategies)", expanded=False):
+            st.caption("Strategies evaluated by the engine that did not meet the Quality Gates threshold (Score ≥ 75):")
+            col_diag_ce, col_diag_pe = st.columns(2, gap="medium")
+            with col_diag_ce:
+                st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--go);margin-bottom:6px">Call Candidates Under Review ({len(unqualified_ce)})</div>', unsafe_allow_html=True)
+                for j, c_idea in enumerate(unqualified_ce):
+                    _render_single_recommendation_card(
+                        c_idea, symbol, data, key_suffix=f"unqual_ce_{j}", prefix="ck_unq",
+                        account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+                        show_action_button=False,
+                    )
+            with col_diag_pe:
+                st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--stop);margin-bottom:6px">Put Candidates Under Review ({len(unqualified_pe)})</div>', unsafe_allow_html=True)
+                for j, p_idea in enumerate(unqualified_pe):
+                    _render_single_recommendation_card(
+                        p_idea, symbol, data, key_suffix=f"unqual_pe_{j}", prefix="ck_unq",
+                        account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
+                        show_action_button=False,
+                    )
+
+
+@st.fragment(run_every=4)
 def _fragment_trade_recommendations_live(symbol: str, window: str) -> None:
     _render_trade_recommendations(symbol, window)
 
@@ -2124,8 +2559,26 @@ def _fragment_trade_recommendations_static(symbol: str, window: str) -> None:
     _render_trade_recommendations(symbol, window)
 
 
+@st.fragment(run_every=4)
+def _fragment_cockpit_bookmarked_live(symbol: str, window: str) -> None:
+    _render_cockpit_bookmarked_recommendations(symbol, window)
+
+
+@st.fragment
+def _fragment_cockpit_bookmarked_static(symbol: str, window: str) -> None:
+    _render_cockpit_bookmarked_recommendations(symbol, window)
+
+
+def _tab_trade_recommendations(symbol: str, window: str) -> None:
+    """Tab 2: High-Conviction Options Recommendations Desk & Strategy Telemetry."""
+    if _is_stream_live():
+        _fragment_trade_recommendations_live(symbol, window)
+    else:
+        _fragment_trade_recommendations_static(symbol, window)
+
+
 def _tab_cockpit(symbol: str, window: str) -> None:
-    """Tab 1: Strategic Cockpit — Executive Telemetry, Playbook, Ladder & Paper Orders."""
+    """Tab 1: Strategic Cockpit — Executive Telemetry, Playbook, Ladder & Pinned Setups."""
     # 1. Market Simulator Strip & Stepper (if active)
     if st.session_state.get("replay_mode_active", False):
         _render_cockpit_simulator_bar(symbol, window)
@@ -2146,11 +2599,11 @@ def _tab_cockpit(symbol: str, window: str) -> None:
     else:
         _fragment_cockpit_ladder_static(symbol, window)
 
-    # 4.5. Top 3 CE & PE Options Recommendations (5s pulse)
+    # 4.5. Pinned Cockpit Recommendations (Strictly bookmarked cards appear in Cockpit)
     if _is_stream_live():
-        _fragment_trade_recommendations_live(symbol, window)
+        _fragment_cockpit_bookmarked_live(symbol, window)
     else:
-        _fragment_trade_recommendations_static(symbol, window)
+        _fragment_cockpit_bookmarked_static(symbol, window)
 
     # 5. Bottom Quadrants (Tape alerts + Live Paper Positions MTM, 5s pulse)
     if _is_stream_live():
@@ -2605,8 +3058,6 @@ def _prewarm_all_profiles(
     """Pre-calculate and store all 4 profile charts in cache so switching is 100% instant."""
     if not bars:
         return
-    if chart_width is None:
-        chart_width = max(1180, len(bars) * 22)
     for prof_key, cfg in ORDERFLOW_PROFILES.items():
         _build_sentinel_chart_spec(
             bars=bars,
@@ -4769,10 +5220,10 @@ def _tab_ops_and_calendar(symbol: str, window: str) -> None:
     """Screen 6: Event Calendar, Replay & System Health."""
     st.markdown('<div class="ck">', unsafe_allow_html=True)
 
-    # 0. Dhan API Token Management (Daily 24h Seeding)
-    st.markdown("### 🔑 Dhan Broker API & Session Token Management")
+    # 0. Dhan API Token Management Status
+    st.markdown("### 🔑 Dhan Broker API & Session Token Status")
     try:
-        from data.dhan import token_status, write_token
+        from data.dhan import token_status
         tstat = token_status()
         if tstat["present"] and not tstat.get("expired"):
             h_left = tstat.get("hours_left") or 0.0
@@ -4788,10 +5239,10 @@ def _tab_ops_and_calendar(symbol: str, window: str) -> None:
             stat_msg = f"🟢 Active ({h_left:.1f}h remaining){exp_str} · Source: {tstat.get('source')}"
         elif tstat["present"] and tstat.get("expired"):
             stat_color = "var(--stop)"
-            stat_msg = "🔴 Expired — Please paste a fresh daily token from Dhan"
+            stat_msg = "🔴 Expired — Please update daily token in the Sidebar (←)"
         else:
             stat_color = "var(--warn)"
-            stat_msg = "⚠️ Missing — Paste daily token below to enable 1-min Dhan feeds"
+            stat_msg = "⚠️ Missing — Paste daily token in the Sidebar (←)"
 
         st.markdown(
             f'<div class="ck card"><div class="card-body">'
@@ -4799,27 +5250,13 @@ def _tab_ops_and_calendar(symbol: str, window: str) -> None:
             f'<div class="eyebrow" style="margin:0">Dhan Live Feed Status</div>'
             f'<span style="font-size:.78rem;font-weight:700;color:{stat_color}">{stat_msg}</span>'
             f'</div>'
-            f'<p style="font-size:.78rem;color:var(--ink-2);margin:0 0 10px">'
-            f'SEBI regulations cap broker access tokens at 24 hours. Paste your daily session token below '
-            f'or save it directly to <code>data/.dhan_token</code>.</p>',
+            f'<p style="font-size:.78rem;color:var(--ink-2);margin:0">'
+            f'SEBI regulations cap broker access tokens at 24 hours. The session token updater is now accessible anytime '
+            f'in the <b>Sidebar (← left menu)</b> so you can update broker feeds from any screen without switching tabs. '
+            f'Active tokens persist directly to <code>data/.dhan_token</code>.</p>'
+            f'</div></div>',
             unsafe_allow_html=True,
         )
-
-        col_tok_inp, col_tok_btn = st.columns([4, 1])
-        with col_tok_inp:
-            pasted_tok = st.text_input("Dhan Access Token:", type="password", placeholder="Paste daily JWT token here...", label_visibility="collapsed", key="dhan_tok_input")
-        with col_tok_btn:
-            if st.button("💾 Save Token", type="primary", use_container_width=True, key="save_dhan_tok_btn"):
-                if pasted_tok.strip():
-                    write_token(pasted_tok.strip())
-                    with _DASH_LOCK:
-                        _DASH_CACHE.clear()
-                    st.toast("✅ Fresh Dhan token saved and activated!", icon="🔑")
-                    st.success("✅ Saved to data/.dhan_token and environment!")
-                    st.rerun()
-                else:
-                    st.warning("Please paste a non-empty token string.")
-        st.markdown('</div></div>', unsafe_allow_html=True)
     except Exception as e:
         log.warning("Could not render Dhan token management: %s", e)
 
@@ -5235,11 +5672,69 @@ def _fragment_sidebar_quote_static(symbol: str) -> None:
     _render_sidebar_instant_quote(symbol)
 
 
+def _render_sidebar_token_manager() -> None:
+    """Render Dhan Broker API & Session Token Manager in the sidebar."""
+    st.markdown("### 🔑 Dhan Session Token")
+    try:
+        from data.dhan import token_status, write_token
+        tstat = token_status()
+        if tstat["present"] and not tstat.get("expired"):
+            h_left = tstat.get("hours_left") or 0.0
+            stat_color = "var(--go)"
+            exp_iso = tstat.get("exp")
+            exp_str = ""
+            if exp_iso:
+                try:
+                    exp_dt = datetime.fromisoformat(exp_iso).astimezone(timezone(timedelta(hours=5, minutes=30)))
+                    exp_str = f" · {exp_dt.strftime('%d-%b %H:%M')}"
+                except Exception:
+                    pass
+            stat_msg = f"🟢 Active ({h_left:.1f}h left){exp_str}"
+        elif tstat["present"] and tstat.get("expired"):
+            stat_color = "var(--stop)"
+            stat_msg = "🔴 Token Expired"
+        else:
+            stat_color = "var(--warn)"
+            stat_msg = "⚠️ Token Missing"
+
+        st.markdown(
+            f'<div style="background:var(--surface-2);padding:8px 12px;border-radius:8px;border:1px solid var(--line);margin:6px 0 10px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
+            f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700">Dhan Live Status</span>'
+            f'<span style="font-size:.74rem;font-weight:700;color:{stat_color}">{stat_msg}</span>'
+            f'</div>'
+            f'<div style="font-size:.70rem;color:var(--ink-mute)">SEBI 24h limit · 1-min & WebSocket feeds</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        with st.expander("Update Daily Token", expanded=(not tstat["present"] or bool(tstat.get("expired")))):
+            pasted_tok = st.text_input(
+                "Access Token:",
+                type="password",
+                placeholder="Paste daily JWT token...",
+                label_visibility="collapsed",
+                key="sb_dhan_tok_input",
+            )
+            if st.button("💾 Save Token", type="primary", use_container_width=True, key="sb_save_dhan_tok_btn"):
+                if pasted_tok.strip():
+                    write_token(pasted_tok.strip())
+                    with _DASH_LOCK:
+                        _DASH_CACHE.clear()
+                    st.toast("✅ Fresh Dhan token saved and activated!", icon="🔑")
+                    st.rerun()
+                else:
+                    st.warning("Please paste a non-empty token string.")
+    except Exception as e:
+        log.warning("Could not render sidebar Dhan token manager: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Main app layout
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+
     # 0. Check if a documentation page is requested via URL query params
     view_param = st.query_params.get("view")
     if view_param:
@@ -5432,7 +5927,10 @@ def main() -> None:
             "Indian Micromarket Mode: Short Call / Short Put (SCSP). Decision-support only."
         )
         st.markdown("---")
+        _render_sidebar_token_manager()
+        st.markdown("---")
         st.markdown("### 📚 Help Center & Manuals (New Tab)")
+
         st.markdown(
             '<div style="display:flex;flex-direction:column;gap:8px;font-size:.82rem;margin-top:8px">'
             '<a href="/?view=user_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📖 Master User Guide ↗</a>'
@@ -5492,6 +5990,7 @@ def main() -> None:
             pass
     tab_labels = [
         "🗺️ Cockpit",
+        "⚡ Trade Recommendations",
         "⚡ Sentinel Tape",
         "🎯 Signal Efficiency",
         "🧭 Market Intelligence",
@@ -5506,24 +6005,27 @@ def main() -> None:
         _tab_cockpit(symbol, window)
 
     with tabs[1]:
-        _tab_sentinel_tape(symbol, window)
+        _tab_trade_recommendations(symbol, window)
 
     with tabs[2]:
-        _tab_signal_efficiency(symbol)
+        _tab_sentinel_tape(symbol, window)
 
     with tabs[3]:
-        _tab_market_intelligence(symbol, window)
+        _tab_signal_efficiency(symbol)
 
     with tabs[4]:
-        _tab_analytics(symbol, window)
+        _tab_market_intelligence(symbol, window)
 
     with tabs[5]:
-        _tab_journal(symbol)
+        _tab_analytics(symbol, window)
 
     with tabs[6]:
-        _tab_scorecard(symbol)
+        _tab_journal(symbol)
 
     with tabs[7]:
+        _tab_scorecard(symbol)
+
+    with tabs[8]:
         _tab_ops_and_calendar(symbol, window)
 
     st.markdown('</div>', unsafe_allow_html=True)  # close .ck

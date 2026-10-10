@@ -1,4 +1,4 @@
-"""analytics/trade_ideas.py — Top 3 CE/PE Options Recommendation Engine.
+"""analytics/trade_ideas.py — Institutional Options Recommendation Engine (Score >= 75).
 
 Synthesizes:
 1. Real-time Spot & GEX Structure (Spot, Call Wall, Put Wall, Gamma Flip, Max Pain)
@@ -6,23 +6,31 @@ Synthesizes:
 3. Institutional Buildup & Strike Velocity (OI changes, Short Covering, Long Buildup)
 4. Macro Context & Directional Bias (-10.0 to +10.0 conviction score)
 
-Produces 3 actionable trade ideas for Calls (CE) and 3 for Puts (PE):
-- Play 1: ATM Momentum Play (Delta ~0.45-0.55, closest to Spot)
-- Play 2: Institutional Liquidity / Structure Play (Key buildup strike / wall defense)
-- Play 3: Gamma Squeeze / Lotto Play (OTM convexity near major GEX acceleration walls)
+Evaluates 7 institutional options strategies for Calls (CE) and Puts (PE):
+- Strategy 1: ATM Momentum Play (Delta ~0.50, closest to Spot)
+- Strategy 2: Institutional Structure Play (Key buildup strike / wall defense)
+- Strategy 3: Gamma Squeeze / Breakdown Lotto (OTM convexity near major GEX acceleration walls)
+- Strategy 4: OrderFlow Iceberg Absorption Fade (Tape absorption at VWAP +/- 1sigma envelopes)
+- Strategy 5: 0DTE Vanna-Charm Afternoon Theta Compression (Expiry afternoon pinning harvest)
+- Strategy 6: Volatility Dispersion / Long Gamma Explosion (Compressed IV range-breakout convexity)
+- Strategy 7: Zero-Cost Ratio Risk Reversal (Synthetic 1x2 ratio asymmetry targeting walls)
 
-Separation guarantee:
-- Pure analytical and recommendation logic, unit-testable offline without Streamlit or network calls.
-- Fail-soft defaults for missing or degraded data streams.
+Filters recommendations to only surface High-Conviction trade ideas (Score >= 75).
+Preserves pure analytical and recommendation logic, unit-testable offline without Streamlit.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import math
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 import config
+
+# Deduplication cache for WebSocket option strike subscriptions: (symbol, strike)
+_SUBSCRIBED_REC_STRIKES: set[tuple[str, float]] = set()
+
 
 
 @dataclass
@@ -43,28 +51,35 @@ class PositionSizeInfo:
 class TradeIdea:
     symbol: str
     side: str                          # "CE" | "PE"
-    play_type: str                     # "ATM Momentum", "Institutional Structure", "Gamma Squeeze Lotto"
-    play_badge: str                    # "MOMENTUM" | "STRUCTURE" | "GAMMA SQUEEZE"
+    play_type: str                     # e.g. "ATM Momentum Play", "OrderFlow Iceberg Absorption Fade"
+    play_badge: str                    # "MOMENTUM" | "STRUCTURE" | "GAMMA SQUEEZE" | "ICEBERG FADE" | "VANNA-CHARM" | "VOL DISPERSION" | "RATIO REVERSAL"
     strike: float
     option_symbol: str                 # e.g. "NIFTY 24500 CE"
     current_ltp: float                 # Estimated or live Option Premium
     delta_approx: float                # Delta estimate (e.g. 0.50 or -0.50)
-    entry_trigger: str                 # Microstructure trigger (e.g., "Pullback to VWAP @ 24,480")
+    entry_trigger: str                 # Microstructure trigger
     spot_invalidation: float           # Spot price level that invalidates the trade
     spot_invalidation_text: str        # Plain-English spot invalidation condition
-    target_1: float                    # Option price target 1 (1R / ~30-40%)
+    target_1: float                    # Option price target 1
     target_1_spot: float               # Spot level corresponding to Target 1
-    target_2: float                    # Option price target 2 (2R+ / ~60-120%)
+    target_2: float                    # Option price target 2
     target_2_spot: float               # Spot level corresponding to Target 2
-    stop_loss: float                   # Option premium stop loss (e.g. -25% to -35%)
-    risk_reward_ratio: str             # e.g. "1 : 2.4"
+    stop_loss: float                   # Option premium stop loss
+    risk_reward_ratio: str             # e.g. "1 : 2.5", "1 : 4.5"
     quality_score: int                 # 0 to 100
-    conviction_label: str              # "HIGH CONVICTION", "TACTICAL OPPORTUNITY", "COUNTER-TREND / SPECULATIVE"
+    conviction_label: str              # "HIGH CONVICTION (Grade A+)", etc.
     conviction_color: str              # CSS color token
     rationale: str                     # Detailed institutional setup narrative
     catalyst_tags: list[str] = field(default_factory=list)
     position_size: PositionSizeInfo | None = None
     is_ws_live: bool = False           # True when raw exchange trade ticks arrive via WebSocket
+    rec_id: str = ""                   # Unique persistent ID e.g. "NIFTY_CE_22600_MOMENTUM"
+    triggered_at: str = ""             # Formatted IST datetime string
+    conviction_tier: str = "HIGH"      # "HIGH" (Score > 85), "MEDIUM" (75-85), "LOW" (<75)
+    is_bookmarked: bool = False        # User pinned state
+    score_delta: int = 0               # Real-time score delta
+    score_reason: str = ""             # Explanation for why score is increasing or fading
+    score_history: list[dict] = field(default_factory=list)  # Historical data points
 
 
 @dataclass
@@ -81,6 +96,16 @@ class RecommendationBatch:
     pe_recommendations: list[TradeIdea] = field(default_factory=list)
     top_recommended_side: str = "NEUTRAL"   # "CE" | "PE" | "BOTH" | "NEUTRAL"
     executive_summary: str = ""
+    all_ce_candidates: list[TradeIdea] = field(default_factory=list)
+    all_pe_candidates: list[TradeIdea] = field(default_factory=list)
+    min_score_filter: int = 75
+    higher_ce_recommendations: list[TradeIdea] = field(default_factory=list)
+    higher_pe_recommendations: list[TradeIdea] = field(default_factory=list)
+    lower_ce_recommendations: list[TradeIdea] = field(default_factory=list)
+    lower_pe_recommendations: list[TradeIdea] = field(default_factory=list)
+    ce_fallback_active: bool = False
+    pe_fallback_active: bool = False
+    bookmarked_recommendations: list[TradeIdea] = field(default_factory=list)
 
 
 def _round_strike(price: float, step: int) -> float:
@@ -266,6 +291,9 @@ def _compute_trade_score(
     put_wall: float,
     sentinel_signals: Sequence[Any] | None,
     leg_doi: float,
+    vwap_upper: float = 0.0,
+    vwap_lower: float = 0.0,
+    flip: float = 0.0,
 ) -> tuple[int, str, str]:
     """Calculates Trade Quality Score (0-100), Conviction Label, and Badge Color."""
     score = 55
@@ -291,29 +319,44 @@ def _compute_trade_score(
             score -= 12
 
     # 2. VWAP & Equilibrium Location (Weight: 15 pts)
+    pt_upper = play_type.upper()
     if side == "CE":
         if spot >= vwap:
             score += 12  # Trading in upper distribution
         else:
-            if play_type == "ATM Momentum":
+            if "MOMENTUM" in pt_upper:
                 score -= 8   # Buying ATM call when spot is below VWAP is risky
+            elif "ICEBERG" in pt_upper or "ABSORPTION" in pt_upper:
+                score += 12  # Buying lower-envelope absorption is the exact setup objective
             else:
                 score += 5   # Buying support structure below VWAP
     else:  # PE
         if spot <= vwap:
             score += 12  # Trading in lower distribution
         else:
-            if play_type == "ATM Momentum":
+            if "MOMENTUM" in pt_upper:
                 score -= 8   # Buying ATM put when spot is above VWAP is risky
+            elif "ICEBERG" in pt_upper or "ABSORPTION" in pt_upper:
+                score += 12  # Shorting upper-envelope absorption is the exact setup objective
             else:
                 score += 5   # Shorting resistance above VWAP
 
     # 3. Sentinel OrderFlow signals (Weight: 20 pts)
+    has_absorption_sig = False
+    has_exhaustion_sig = False
+    has_breakout_sig = False
     if sentinel_signals:
-        top_sigs = [s for s in sentinel_signals if getattr(s, "score", 0) >= 60][:3]
+        top_sigs = [s for s in sentinel_signals if getattr(s, "score", 0) >= 55][:4]
         for sig in top_sigs:
             cat = str(getattr(sig, "category", "")).upper()
             sig_type = str(getattr(sig, "type", "")).upper()
+            if "ABSORPTION" in sig_type or "ABSORPTION" in cat:
+                has_absorption_sig = True
+            if "EXHAUSTION" in sig_type or "EXHAUSTION" in cat:
+                has_exhaustion_sig = True
+            if "BREAKOUT" in sig_type or "MOMENTUM" in sig_type:
+                has_breakout_sig = True
+
             if side == "CE":
                 if cat == "BULLISH" or "BUY" in sig_type or "ABSORPTION" in sig_type:
                     score += 10
@@ -328,27 +371,70 @@ def _compute_trade_score(
                     score -= 8
 
     # 4. Buildup & Velocity confirmation (Weight: 10 pts)
-    if side == "CE":
-        if leg_doi > 0:
-            score += 8  # Open interest expanding in Call
-    else:
-        if leg_doi > 0:
-            score += 8  # Open interest expanding in Put
+    if leg_doi > 0:
+        score += 8  # Open interest expanding in direction of trade
 
-    # 5. Play type specific bonuses
-    if play_type == "Gamma Squeeze Lotto":
-        # Squeeze requires spot near wall
+    # 5. Play type specific bonuses & institutional condition tests
+    if "GAMMA SQUEEZE" in pt_upper:
         dist_to_wall = abs(spot - (call_wall if side == "CE" else put_wall))
         if dist_to_wall <= (spot * 0.006):  # within 0.6% of wall
             score += 12
         else:
             score -= 6
 
+    elif "ICEBERG" in pt_upper or "ABSORPTION" in pt_upper:
+        # Edge: Absorption at VWAP envelopes
+        if side == "CE":
+            at_lower_band = (vwap_lower > 0 and spot <= (vwap_lower + (vwap - vwap_lower) * 0.35)) or (spot < vwap)
+            if at_lower_band:
+                score += 12
+            if has_absorption_sig or has_exhaustion_sig:
+                score += 10
+        else:
+            at_upper_band = (vwap_upper > 0 and spot >= (vwap_upper - (vwap_upper - vwap) * 0.35)) or (spot > vwap)
+            if at_upper_band:
+                score += 12
+            if has_absorption_sig or has_exhaustion_sig:
+                score += 10
+
+    elif "VANNA" in pt_upper or "CHARM" in pt_upper or "THETA" in pt_upper:
+        # Edge: Pinning between walls & near Gamma Flip in low-VIX / calm market
+        is_pinned = (put_wall <= spot <= call_wall) or (abs(call_wall - put_wall) > 0 and put_wall * 0.998 <= spot <= call_wall * 1.002)
+        if is_pinned:
+            score += 10
+        if flip > 0 and abs(spot - flip) <= max(35.0, spot * 0.002):
+            score += 8
+        if abs(bias_score) <= 2.5:  # Balanced market ideal for theta compression
+            score += 8
+
+    elif "VOL" in pt_upper or "DISPERSION" in pt_upper:
+        # Edge: Range compression ready for explosive breakout
+        if abs(spot - vwap) <= max(25.0, spot * 0.0015):
+            score += 10
+        if has_breakout_sig or abs(bias_score) >= 2.5:
+            score += 8
+
+    elif "RATIO" in pt_upper or "REVERSAL" in pt_upper:
+        # Edge: Moderate directional drift with high R:R to Wall
+        if side == "CE":
+            if 1.0 <= bias_score <= 4.0:
+                score += 14
+            elif bias_score > 4.0:
+                score += 6
+        else:
+            if -4.0 <= bias_score <= -1.0:
+                score += 14
+            elif bias_score < -4.0:
+                score += 6
+
     # Clamp to [15, 95]
     score = max(15, min(95, score))
 
     if score >= 80:
         label = "HIGH CONVICTION (Grade A+)"
+        color = "var(--go)"
+    elif score >= 75:
+        label = "HIGH CONVICTION (Grade A)"
         color = "var(--go)"
     elif score >= 65:
         label = "TACTICAL OPPORTUNITY (Grade B+)"
@@ -461,6 +547,694 @@ def compute_position_size(
     )
 
 
+def _evaluate_ce_strategies(
+    symbol: str,
+    step: int,
+    spot: float,
+    chain_spot: float,
+    call_wall: float,
+    put_wall: float,
+    flip: float,
+    session_vwap: float,
+    vwap_upper: float,
+    vwap_lower: float,
+    bias_score: float,
+    sentinel_signals: Sequence[Any] | None,
+    ce_atm_k: float,
+    ce_struct_k: float,
+    ce_squeeze_k: float,
+    ce_vanna_k: float,
+    oi_strikes: Any,
+    contracts_df: Any,
+    oi_map: dict[float, dict],
+    contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
+) -> list[TradeIdea]:
+    """Evaluates 7 institutional Call candidate strategies in parallel."""
+    # =======================================================================
+    # CALL CANDIDATE STRATEGIES (7 Plays)
+    # =======================================================================
+    ce_recs: list[TradeIdea] = []
+
+    # Common chain quote lookups for Calls
+    ce_atm_ltp, ce_atm_delta, ce_atm_oi, ce_atm_doi, ce_atm_ws = _lookup_chain_data(
+        ce_atm_k, True, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    ce_struct_ltp, ce_struct_delta, ce_struct_oi, ce_struct_doi, ce_struct_ws = _lookup_chain_data(
+        ce_struct_k, True, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    ce_sq_ltp, ce_sq_delta, ce_sq_oi, ce_sq_doi, ce_sq_ws = _lookup_chain_data(
+        ce_squeeze_k, True, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    ce_vc_ltp, ce_vc_delta, ce_vc_oi, ce_vc_doi, ce_vc_ws = _lookup_chain_data(
+        ce_vanna_k, True, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+
+    # 1. CE MOMENTUM
+    ce_atm_score, ce_atm_label, ce_atm_color = _compute_trade_score(
+        "CE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_atm_inval_spot = round(min(session_vwap - (step * 0.35), spot - (step * 0.6)), 0)
+    ce_atm_tgt1_spot = round(max(vwap_upper, spot + (step * 0.75)), 0)
+    ce_atm_tgt2_spot = round(call_wall, 0)
+    ce_atm_sl = max(1.0, round(ce_atm_ltp * 0.72, 1))
+    ce_atm_tgt1 = round(ce_atm_ltp * 1.35, 1)
+    ce_atm_tgt2 = round(ce_atm_ltp * 1.70, 1)
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="ATM Momentum Play",
+            play_badge="MOMENTUM",
+            strike=ce_atm_k,
+            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            current_ltp=ce_atm_ltp,
+            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+            entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
+            spot_invalidation=ce_atm_inval_spot,
+            spot_invalidation_text=f"Spot breakdown below ₹{ce_atm_inval_spot:,.0f} (invalidates VWAP support)",
+            target_1=ce_atm_tgt1,
+            target_1_spot=ce_atm_tgt1_spot,
+            target_2=ce_atm_tgt2,
+            target_2_spot=ce_atm_tgt2_spot,
+            stop_loss=ce_atm_sl,
+            risk_reward_ratio="1 : 2.5",
+            quality_score=ce_atm_score,
+            conviction_label=ce_atm_label,
+            conviction_color=ce_atm_color,
+            rationale=(
+                f"Capitalizes on pure delta momentum with {symbol} holding equilibrium. "
+                f"Delta ~{ce_atm_delta:.2f} provides rapid premium expansion with target towards Call Wall ({call_wall:,.0f})."
+            ),
+            catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
+            is_ws_live=ce_atm_ws,
+        )
+    )
+
+    # 2. CE STRUCTURE
+    ce_struct_score, ce_struct_label, ce_struct_color = _compute_trade_score(
+        "CE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_struct_inval_spot = round(put_wall - (step * 0.3), 0)
+    ce_struct_tgt1_spot = round(flip if flip > spot else spot + step, 0)
+    ce_struct_tgt2_spot = round(call_wall, 0)
+    ce_struct_sl = max(1.0, round(ce_struct_ltp * 0.68, 1))
+    ce_struct_tgt1 = round(ce_struct_ltp * 1.45, 1)
+    ce_struct_tgt2 = round(ce_struct_ltp * 1.95, 1)
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="Institutional Structure Play",
+            play_badge="STRUCTURE",
+            strike=ce_struct_k,
+            option_symbol=f"{symbol} {int(ce_struct_k)} CE",
+            current_ltp=ce_struct_ltp,
+            delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
+            entry_trigger=f"Passive buyer absorption confirmed at Put Wall (₹{put_wall:,.0f}) or breakout through Gamma Flip (₹{flip:,.0f}).",
+            spot_invalidation=ce_struct_inval_spot,
+            spot_invalidation_text=f"Structural breakdown below Put Wall @ ₹{ce_struct_inval_spot:,.0f}",
+            target_1=ce_struct_tgt1,
+            target_1_spot=ce_struct_tgt1_spot,
+            target_2=ce_struct_tgt2,
+            target_2_spot=ce_struct_tgt2_spot,
+            stop_loss=ce_struct_sl,
+            risk_reward_ratio="1 : 3.0",
+            quality_score=ce_struct_score,
+            conviction_label=ce_struct_label,
+            conviction_color=ce_struct_color,
+            rationale=(
+                f"Tied to institutional Put-writer defense at {put_wall:,.0f}. "
+                f"Offers high asymmetry as spot rotates back towards upper distribution."
+            ),
+            catalyst_tags=["OI Buildup Support", "Wall Reversal", "High Asymmetry"],
+            is_ws_live=ce_struct_ws,
+        )
+    )
+
+    # 3. CE GAMMA SQUEEZE
+    ce_sq_score, ce_sq_label, ce_sq_color = _compute_trade_score(
+        "CE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_sq_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_sq_inval_spot = round(call_wall - (step * 0.4), 0)
+    ce_sq_tgt1_spot = round(call_wall + step, 0)
+    ce_sq_tgt2_spot = round(call_wall + (2 * step), 0)
+    ce_sq_sl = max(1.0, round(ce_sq_ltp * 0.60, 1))
+    ce_sq_tgt1 = round(ce_sq_ltp * 1.60, 1)
+    ce_sq_tgt2 = round(ce_sq_ltp * 2.40, 1)
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="Gamma Squeeze Lotto Play",
+            play_badge="GAMMA SQUEEZE",
+            strike=ce_squeeze_k,
+            option_symbol=f"{symbol} {int(ce_squeeze_k)} CE",
+            current_ltp=ce_sq_ltp,
+            delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
+            entry_trigger=f"Aggressive market buy orders breach Call Wall (₹{call_wall:,.0f}) with positive CVD volume spike.",
+            spot_invalidation=ce_sq_inval_spot,
+            spot_invalidation_text=f"Failed breakout: Spot drops back below ₹{ce_sq_inval_spot:,.0f}",
+            target_1=ce_sq_tgt1,
+            target_1_spot=ce_sq_tgt1_spot,
+            target_2=ce_sq_tgt2,
+            target_2_spot=ce_sq_tgt2_spot,
+            stop_loss=ce_sq_sl,
+            risk_reward_ratio="1 : 3.5",
+            quality_score=ce_sq_score,
+            conviction_label=ce_sq_label,
+            conviction_color=ce_sq_color,
+            rationale=(
+                f"Positioned for convex gamma explosion. A high-volume breach of Call Wall ({call_wall:,.0f}) "
+                f"forces short call-dealers to aggressively buy futures to delta-hedge."
+            ),
+            catalyst_tags=["Dealer Short Covering", "Gamma Blast", "100%+ Multiplier"],
+            is_ws_live=ce_sq_ws,
+        )
+    )
+
+    # 4. CE ICEBERG ABSORPTION FADE
+    ce_ice_score, ce_ice_label, ce_ice_color = _compute_trade_score(
+        "CE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_ice_inval_spot = round(min(vwap_lower - (step * 0.25), spot - (step * 0.3)), 0)
+    ce_ice_tgt1_spot = round(session_vwap, 0)
+    ce_ice_tgt2_spot = round(max(vwap_upper, spot + step), 0)
+    ce_ice_sl = max(1.0, round(ce_atm_ltp * 0.80, 1))  # -20% ultra-tight stop
+    ce_ice_tgt1 = round(ce_atm_ltp * 1.40, 1)          # +40% (2.0R)
+    ce_ice_tgt2 = round(ce_atm_ltp * 1.90, 1)          # +90% (4.5R)
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="OrderFlow Iceberg Absorption Fade",
+            play_badge="ICEBERG FADE",
+            strike=ce_atm_k,
+            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            current_ltp=ce_atm_ltp,
+            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+            entry_trigger=f"Tape buyer absorption confirmed at VWAP lower band (₹{vwap_lower:,.0f}) with positive CVD divergence.",
+            spot_invalidation=ce_ice_inval_spot,
+            spot_invalidation_text=f"Spot breakdown below ₹{ce_ice_inval_spot:,.0f} (<15 pts risk buffer)",
+            target_1=ce_ice_tgt1,
+            target_1_spot=ce_ice_tgt1_spot,
+            target_2=ce_ice_tgt2,
+            target_2_spot=ce_ice_tgt2_spot,
+            stop_loss=ce_ice_sl,
+            risk_reward_ratio="1 : 4.5",
+            quality_score=ce_ice_score,
+            conviction_label=ce_ice_label,
+            conviction_color=ce_ice_color,
+            rationale=(
+                f"Institutional passive limit orders absorbing aggressive sellers at {vwap_lower:,.0f}. "
+                f"Asymmetric mean-reversion back towards Session VWAP ({session_vwap:,.0f})."
+            ),
+            catalyst_tags=["Iceberg Absorption", "Tape Divergence", "Ultra-Tight Stop"],
+            is_ws_live=ce_atm_ws,
+        )
+    )
+
+    # 5. CE 0DTE VANNA-CHARM THETA COMPRESSION
+    ce_vc_score, ce_vc_label, ce_vc_color = _compute_trade_score(
+        "CE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_vc_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_vc_inval_spot = round(call_wall + (step * 0.3), 0)
+    ce_vc_tgt1_spot = round(flip if flip < call_wall else session_vwap, 0)
+    ce_vc_tgt2_spot = round(session_vwap, 0)
+    ce_vc_sl = max(1.0, round(ce_vc_ltp * 0.65, 1))    # -35% risk
+    ce_vc_tgt1 = round(ce_vc_ltp * 1.30, 1)            # +30%
+    ce_vc_tgt2 = round(ce_vc_ltp * 1.60, 1)            # +60%
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="0DTE Vanna-Charm Theta Compression",
+            play_badge="VANNA-CHARM",
+            strike=ce_vanna_k,
+            option_symbol=f"{symbol} {int(ce_vanna_k)} CE",
+            current_ltp=ce_vc_ltp,
+            delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
+            entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with Charm acceleration locking pin near Flip (₹{flip:,.0f}).",
+            spot_invalidation=ce_vc_inval_spot,
+            spot_invalidation_text=f"Spot volatility breakout above ₹{ce_vc_inval_spot:,.0f}",
+            target_1=ce_vc_tgt1,
+            target_1_spot=ce_vc_tgt1_spot,
+            target_2=ce_vc_tgt2,
+            target_2_spot=ce_vc_tgt2_spot,
+            stop_loss=ce_vc_sl,
+            risk_reward_ratio="1 : 2.0",
+            quality_score=ce_vc_score,
+            conviction_label=ce_vc_label,
+            conviction_color=ce_vc_color,
+            rationale=(
+                f"Exploits late-cycle Charm compression (dDelta/dt). OTM call premium decays rapidly "
+                f"as spot remains pinned inside dealer inventory boundaries."
+            ),
+            catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
+            is_ws_live=ce_vc_ws,
+        )
+    )
+
+    # 6. CE VOLATILITY DISPERSION / LONG GAMMA
+    ce_vd_score, ce_vd_label, ce_vd_color = _compute_trade_score(
+        "CE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_vd_inval_spot = round(session_vwap - (step * 0.4), 0)
+    ce_vd_tgt1_spot = round(call_wall, 0)
+    ce_vd_tgt2_spot = round(call_wall + (2 * step), 0)
+    ce_vd_sl = max(1.0, round(ce_atm_ltp * 0.70, 1))   # -30% risk
+    ce_vd_tgt1 = round(ce_atm_ltp * 1.50, 1)           # +50% (1.67R)
+    ce_vd_tgt2 = round(ce_atm_ltp * 2.20, 1)           # +120% (4.0R)
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="Volatility Dispersion / Long Gamma",
+            play_badge="VOL DISPERSION",
+            strike=ce_atm_k,
+            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            current_ltp=ce_atm_ltp,
+            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+            entry_trigger=f"Volatility compression breakout above ₹{vwap_upper:,.0f} with surging market volume and expanding ATR.",
+            spot_invalidation=ce_vd_inval_spot,
+            spot_invalidation_text=f"Spot falls back into consolidation band below ₹{ce_vd_inval_spot:,.0f}",
+            target_1=ce_vd_tgt1,
+            target_1_spot=ce_vd_tgt1_spot,
+            target_2=ce_vd_tgt2,
+            target_2_spot=ce_vd_tgt2_spot,
+            stop_loss=ce_vd_sl,
+            risk_reward_ratio="1 : 4.0",
+            quality_score=ce_vd_score,
+            conviction_label=ce_vd_label,
+            conviction_color=ce_vd_color,
+            rationale=(
+                f"Pre-breakout long gamma positioning. Low implied volatility provides cheap option convexity; "
+                f"sudden volatility expansion creates non-linear premium surges."
+            ),
+            catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
+            is_ws_live=ce_atm_ws,
+        )
+    )
+
+    # 7. CE ZERO-COST RATIO RISK REVERSAL
+    ce_rr_score, ce_rr_label, ce_rr_color = _compute_trade_score(
+        "CE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    ce_rr_inval_spot = round(session_vwap - (step * 0.35), 0)
+    ce_rr_tgt1_spot = round(call_wall, 0)
+    ce_rr_tgt2_spot = round(call_wall + step, 0)
+    ce_rr_sl = max(1.0, round(ce_struct_ltp * 0.75, 1))  # -25% risk
+    ce_rr_tgt1 = round(ce_struct_ltp * 1.35, 1)          # +35%
+    ce_rr_tgt2 = round(ce_struct_ltp * 1.75, 1)          # +75%
+    ce_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="CE",
+            play_type="Zero-Cost Ratio Risk Reversal",
+            play_badge="RATIO REVERSAL",
+            strike=ce_struct_k,
+            option_symbol=f"{symbol} {int(ce_struct_k)} CE",
+            current_ltp=ce_struct_ltp,
+            delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
+            entry_trigger=f"Moderate upward drift targeting Call Wall (₹{call_wall:,.0f}) with positive institutional accumulation.",
+            spot_invalidation=ce_rr_inval_spot,
+            spot_invalidation_text=f"Spot invalidation below VWAP @ ₹{ce_rr_inval_spot:,.0f}",
+            target_1=ce_rr_tgt1,
+            target_1_spot=ce_rr_tgt1_spot,
+            target_2=ce_rr_tgt2,
+            target_2_spot=ce_rr_tgt2_spot,
+            stop_loss=ce_rr_sl,
+            risk_reward_ratio="1 : 3.0",
+            quality_score=ce_rr_score,
+            conviction_label=ce_rr_label,
+            conviction_color=ce_rr_color,
+            rationale=(
+                f"Synthetic ratio structure targeting Call Wall ({call_wall:,.0f}). "
+                f"Eliminates sideways theta drag while capturing directional upside."
+            ),
+            catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
+            is_ws_live=ce_struct_ws,
+        )
+    )
+
+
+    return ce_recs
+
+
+def _evaluate_pe_strategies(
+    symbol: str,
+    step: int,
+    spot: float,
+    chain_spot: float,
+    call_wall: float,
+    put_wall: float,
+    flip: float,
+    session_vwap: float,
+    vwap_upper: float,
+    vwap_lower: float,
+    bias_score: float,
+    sentinel_signals: Sequence[Any] | None,
+    pe_atm_k: float,
+    pe_struct_k: float,
+    pe_squeeze_k: float,
+    pe_vanna_k: float,
+    oi_strikes: Any,
+    contracts_df: Any,
+    oi_map: dict[float, dict],
+    contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
+) -> list[TradeIdea]:
+    """Evaluates 7 institutional Put candidate strategies in parallel."""
+    # =======================================================================
+    # PUT CANDIDATE STRATEGIES (7 Plays)
+    # =======================================================================
+    pe_recs: list[TradeIdea] = []
+
+    # Common chain quote lookups for Puts
+    pe_atm_ltp, pe_atm_delta, pe_atm_oi, pe_atm_doi, pe_atm_ws = _lookup_chain_data(
+        pe_atm_k, False, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    pe_struct_ltp, pe_struct_delta, pe_struct_oi, pe_struct_doi, pe_struct_ws = _lookup_chain_data(
+        pe_struct_k, False, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    pe_sq_ltp, pe_sq_delta, pe_sq_oi, pe_sq_doi, pe_sq_ws = _lookup_chain_data(
+        pe_squeeze_k, False, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+    pe_vc_ltp, pe_vc_delta, pe_vc_oi, pe_vc_doi, pe_vc_ws = _lookup_chain_data(
+        pe_vanna_k, False, oi_strikes, contracts_df, spot, step,
+        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
+    )
+
+    # 1. PE MOMENTUM
+    pe_atm_score, pe_atm_label, pe_atm_color = _compute_trade_score(
+        "PE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_atm_inval_spot = round(max(session_vwap + (step * 0.35), spot + (step * 0.6)), 0)
+    pe_atm_tgt1_spot = round(min(vwap_lower, spot - (step * 0.75)), 0)
+    pe_atm_tgt2_spot = round(put_wall, 0)
+    pe_atm_sl = max(1.0, round(pe_atm_ltp * 0.72, 1))
+    pe_atm_tgt1 = round(pe_atm_ltp * 1.35, 1)
+    pe_atm_tgt2 = round(pe_atm_ltp * 1.70, 1)
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="ATM Momentum Play",
+            play_badge="MOMENTUM",
+            strike=pe_atm_k,
+            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            current_ltp=pe_atm_ltp,
+            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+            entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
+            spot_invalidation=pe_atm_inval_spot,
+            spot_invalidation_text=f"Spot breakout above ₹{pe_atm_inval_spot:,.0f} (invalidates VWAP resistance)",
+            target_1=pe_atm_tgt1,
+            target_1_spot=pe_atm_tgt1_spot,
+            target_2=pe_atm_tgt2,
+            target_2_spot=pe_atm_tgt2_spot,
+            stop_loss=pe_atm_sl,
+            risk_reward_ratio="1 : 2.5",
+            quality_score=pe_atm_score,
+            conviction_label=pe_atm_label,
+            conviction_color=pe_atm_color,
+            rationale=(
+                f"Downside acceleration vehicle when spot trades below Session Equilibrium. "
+                f"Delta ~{pe_atm_delta:.2f} rapidly monetizes drops towards Put Wall ({put_wall:,.0f})."
+            ),
+            catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
+            is_ws_live=pe_atm_ws,
+        )
+    )
+
+    # 2. PE STRUCTURE
+    pe_struct_score, pe_struct_label, pe_struct_color = _compute_trade_score(
+        "PE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_struct_inval_spot = round(call_wall + (step * 0.3), 0)
+    pe_struct_tgt1_spot = round(flip if flip < spot else spot - step, 0)
+    pe_struct_tgt2_spot = round(put_wall, 0)
+    pe_struct_sl = max(1.0, round(pe_struct_ltp * 0.68, 1))
+    pe_struct_tgt1 = round(pe_struct_ltp * 1.45, 1)
+    pe_struct_tgt2 = round(pe_struct_ltp * 1.95, 1)
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="Institutional Structure Play",
+            play_badge="STRUCTURE",
+            strike=pe_struct_k,
+            option_symbol=f"{symbol} {int(pe_struct_k)} PE",
+            current_ltp=pe_struct_ltp,
+            delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
+            entry_trigger=f"Aggressive seller rejection at Call Wall (₹{call_wall:,.0f}) with seller delta absorption on the tape.",
+            spot_invalidation=pe_struct_inval_spot,
+            spot_invalidation_text=f"Structural breach above Call Wall @ ₹{pe_struct_inval_spot:,.0f}",
+            target_1=pe_struct_tgt1,
+            target_1_spot=pe_struct_tgt1_spot,
+            target_2=pe_struct_tgt2,
+            target_2_spot=pe_struct_tgt2_spot,
+            stop_loss=pe_struct_sl,
+            risk_reward_ratio="1 : 3.0",
+            quality_score=pe_struct_score,
+            conviction_label=pe_struct_label,
+            conviction_color=pe_struct_color,
+            rationale=(
+                f"Captures institutional rejection off Call Wall ({call_wall:,.0f}). "
+                f"Allows riding the rotation down towards equilibrium with strong risk containment."
+            ),
+            catalyst_tags=["Call Wall Rejection", "Short Buildup", "High Asymmetry"],
+            is_ws_live=pe_struct_ws,
+        )
+    )
+
+    # 3. PE GAMMA SQUEEZE
+    pe_sq_score, pe_sq_label, pe_sq_color = _compute_trade_score(
+        "PE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_sq_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_sq_inval_spot = round(put_wall + (step * 0.4), 0)
+    pe_sq_tgt1_spot = round(put_wall - step, 0)
+    pe_sq_tgt2_spot = round(put_wall - (2 * step), 0)
+    pe_sq_sl = max(1.0, round(pe_sq_ltp * 0.60, 1))
+    pe_sq_tgt1 = round(pe_sq_ltp * 1.60, 1)
+    pe_sq_tgt2 = round(pe_sq_ltp * 2.40, 1)
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="Gamma Squeeze Lotto Play",
+            play_badge="GAMMA SQUEEZE",
+            strike=pe_squeeze_k,
+            option_symbol=f"{symbol} {int(pe_squeeze_k)} PE",
+            current_ltp=pe_sq_ltp,
+            delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
+            entry_trigger=f"High-volume breakdown below Put Wall (₹{put_wall:,.0f}) with cascading negative market delta.",
+            spot_invalidation=pe_sq_inval_spot,
+            spot_invalidation_text=f"Trapdoor reversal: Spot recovers back above ₹{pe_sq_inval_spot:,.0f}",
+            target_1=pe_sq_tgt1,
+            target_1_spot=pe_sq_tgt1_spot,
+            target_2=pe_sq_tgt2,
+            target_2_spot=pe_sq_tgt2_spot,
+            stop_loss=pe_sq_sl,
+            risk_reward_ratio="1 : 3.5",
+            quality_score=pe_sq_score,
+            conviction_label=pe_sq_label,
+            conviction_color=pe_sq_color,
+            rationale=(
+                f"Trapdoor breakdown setup. If Put Wall ({put_wall:,.0f}) collapses, "
+                f"dealer gamma flips deeply negative, forcing panic short-hedging into the abyss."
+            ),
+            catalyst_tags=["Trapdoor Breakdown", "Dealer Panic Selling", "100%+ Multiplier"],
+            is_ws_live=pe_sq_ws,
+        )
+    )
+
+    # 4. PE ICEBERG ABSORPTION FADE
+    pe_ice_score, pe_ice_label, pe_ice_color = _compute_trade_score(
+        "PE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_ice_inval_spot = round(max(vwap_upper + (step * 0.25), spot + (step * 0.3)), 0)
+    pe_ice_tgt1_spot = round(session_vwap, 0)
+    pe_ice_tgt2_spot = round(min(vwap_lower, spot - step), 0)
+    pe_ice_sl = max(1.0, round(pe_atm_ltp * 0.80, 1))  # -20% ultra-tight stop
+    pe_ice_tgt1 = round(pe_atm_ltp * 1.40, 1)          # +40% (2.0R)
+    pe_ice_tgt2 = round(pe_atm_ltp * 1.90, 1)          # +90% (4.5R)
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="OrderFlow Iceberg Absorption Fade",
+            play_badge="ICEBERG FADE",
+            strike=pe_atm_k,
+            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            current_ltp=pe_atm_ltp,
+            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+            entry_trigger=f"Tape seller absorption confirmed at VWAP upper band (₹{vwap_upper:,.0f}) with negative CVD divergence.",
+            spot_invalidation=pe_ice_inval_spot,
+            spot_invalidation_text=f"Spot breakout above ₹{pe_ice_inval_spot:,.0f} (<15 pts risk buffer)",
+            target_1=pe_ice_tgt1,
+            target_1_spot=pe_ice_tgt1_spot,
+            target_2=pe_ice_tgt2,
+            target_2_spot=pe_ice_tgt2_spot,
+            stop_loss=pe_ice_sl,
+            risk_reward_ratio="1 : 4.5",
+            quality_score=pe_ice_score,
+            conviction_label=pe_ice_label,
+            conviction_color=pe_ice_color,
+            rationale=(
+                f"Passive limit sellers absorbing aggressive retail buying at {vwap_upper:,.0f}. "
+                f"High R:R rotation back toward Session VWAP ({session_vwap:,.0f})."
+            ),
+            catalyst_tags=["Seller Absorption", "Tape Exhaustion", "Ultra-Tight Stop"],
+            is_ws_live=pe_atm_ws,
+        )
+    )
+
+    # 5. PE 0DTE VANNA-CHARM THETA COMPRESSION
+    pe_vc_score, pe_vc_label, pe_vc_color = _compute_trade_score(
+        "PE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_vc_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_vc_inval_spot = round(put_wall - (step * 0.3), 0)
+    pe_vc_tgt1_spot = round(flip if flip > put_wall else session_vwap, 0)
+    pe_vc_tgt2_spot = round(session_vwap, 0)
+    pe_vc_sl = max(1.0, round(pe_vc_ltp * 0.65, 1))    # -35% risk
+    pe_vc_tgt1 = round(pe_vc_ltp * 1.30, 1)            # +30%
+    pe_vc_tgt2 = round(pe_vc_ltp * 1.60, 1)            # +60%
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="0DTE Vanna-Charm Theta Compression",
+            play_badge="VANNA-CHARM",
+            strike=pe_vanna_k,
+            option_symbol=f"{symbol} {int(pe_vanna_k)} PE",
+            current_ltp=pe_vc_ltp,
+            delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
+            entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with gamma decay locking pin near Flip (₹{flip:,.0f}).",
+            spot_invalidation=pe_vc_inval_spot,
+            spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
+            target_1=pe_vc_tgt1,
+            target_1_spot=pe_vc_tgt1_spot,
+            target_2=pe_vc_tgt2,
+            target_2_spot=pe_vc_tgt2_spot,
+            stop_loss=pe_vc_sl,
+            risk_reward_ratio="1 : 2.0",
+            quality_score=pe_vc_score,
+            conviction_label=pe_vc_label,
+            conviction_color=pe_vc_color,
+            rationale=(
+                f"Captures accelerated OTM put theta/charm decay. Dealer inventory dampens realized "
+                f"volatility, compressing premium into expiration."
+            ),
+            catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
+            is_ws_live=pe_vc_ws,
+        )
+    )
+
+    # 6. PE VOLATILITY DISPERSION / LONG GAMMA
+    pe_vd_score, pe_vd_label, pe_vd_color = _compute_trade_score(
+        "PE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_vd_inval_spot = round(session_vwap + (step * 0.4), 0)
+    pe_vd_tgt1_spot = round(put_wall, 0)
+    pe_vd_tgt2_spot = round(put_wall - (2 * step), 0)
+    pe_vd_sl = max(1.0, round(pe_atm_ltp * 0.70, 1))   # -30% risk
+    pe_vd_tgt1 = round(pe_atm_ltp * 1.50, 1)           # +50% (1.67R)
+    pe_vd_tgt2 = round(pe_atm_ltp * 2.20, 1)           # +120% (4.0R)
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="Volatility Dispersion / Long Gamma",
+            play_badge="VOL DISPERSION",
+            strike=pe_atm_k,
+            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            current_ltp=pe_atm_ltp,
+            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+            entry_trigger=f"Volatility compression breakdown below ₹{vwap_lower:,.0f} with surging volume and downside momentum.",
+            spot_invalidation=pe_vd_inval_spot,
+            spot_invalidation_text=f"Spot recovers back into consolidation band above ₹{pe_vd_inval_spot:,.0f}",
+            target_1=pe_vd_tgt1,
+            target_1_spot=pe_vd_tgt1_spot,
+            target_2=pe_vd_tgt2,
+            target_2_spot=pe_vd_tgt2_spot,
+            stop_loss=pe_vd_sl,
+            risk_reward_ratio="1 : 4.0",
+            quality_score=pe_vd_score,
+            conviction_label=pe_vd_label,
+            conviction_color=pe_vd_color,
+            rationale=(
+                f"Long gamma downside vehicle capitalizing on volatility regime shifts. In compressed markets, "
+                f"sudden put buying triggers rapid implied vol spikes."
+            ),
+            catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
+            is_ws_live=pe_atm_ws,
+        )
+    )
+
+    # 7. PE ZERO-COST RATIO RISK REVERSAL
+    pe_rr_score, pe_rr_label, pe_rr_color = _compute_trade_score(
+        "PE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+    )
+    pe_rr_inval_spot = round(session_vwap + (step * 0.35), 0)
+    pe_rr_tgt1_spot = round(put_wall, 0)
+    pe_rr_tgt2_spot = round(put_wall - step, 0)
+    pe_rr_sl = max(1.0, round(pe_struct_ltp * 0.75, 1))  # -25% risk
+    pe_rr_tgt1 = round(pe_struct_ltp * 1.35, 1)          # +35%
+    pe_rr_tgt2 = round(pe_struct_ltp * 1.75, 1)          # +75%
+    pe_recs.append(
+        TradeIdea(
+            symbol=symbol,
+            side="PE",
+            play_type="Zero-Cost Ratio Risk Reversal",
+            play_badge="RATIO REVERSAL",
+            strike=pe_struct_k,
+            option_symbol=f"{symbol} {int(pe_struct_k)} PE",
+            current_ltp=pe_struct_ltp,
+            delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
+            entry_trigger=f"Moderate downward drift targeting Put Wall (₹{put_wall:,.0f}) with steady distribution tape.",
+            spot_invalidation=pe_rr_inval_spot,
+            spot_invalidation_text=f"Spot invalidation above VWAP @ ₹{pe_rr_inval_spot:,.0f}",
+            target_1=pe_rr_tgt1,
+            target_1_spot=pe_rr_tgt1_spot,
+            target_2=pe_rr_tgt2,
+            target_2_spot=pe_rr_tgt2_spot,
+            stop_loss=pe_rr_sl,
+            risk_reward_ratio="1 : 3.0",
+            quality_score=pe_rr_score,
+            conviction_label=pe_rr_label,
+            conviction_color=pe_rr_color,
+            rationale=(
+                f"Synthetic ratio downside structure targeting Put Wall ({put_wall:,.0f}). "
+                f"Delivers high risk-adjusted return without severe chop decay."
+            ),
+            catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
+            is_ws_live=pe_struct_ws,
+        )
+    )
+
+
+    return pe_recs
+
+
 def generate_trade_recommendations(
     data: Any,
     bias_result: Any | None = None,
@@ -468,8 +1242,19 @@ def generate_trade_recommendations(
     sentinel_signals: Sequence[Any] | None = None,
     latest_bar: Any | None = None,
     spot_override: float | None = None,
+    min_score: int = 75,
+    **kwargs: Any,
 ) -> RecommendationBatch:
-    """Generates the Top 3 CE and Top 3 PE trade ideas using live market data.
+    """Generates institutional options recommendations for CE and PE, filtering for Score >= min_score (default 75).
+
+    Evaluates 7 institutional strategy playbooks per side:
+    1. MOMENTUM: ATM Momentum Play (Delta ~0.50)
+    2. STRUCTURE: Institutional Structure Play (Delta ~0.40)
+    3. GAMMA SQUEEZE: Gamma Squeeze / Breakdown Lotto (Delta ~0.28)
+    4. ICEBERG FADE: OrderFlow Iceberg Absorption Fade (Delta ~0.50)
+    5. VANNA-CHARM: 0DTE Vanna-Charm Theta Compression (Delta ~0.20)
+    6. VOL DISPERSION: Volatility Dispersion / Long Gamma Explosion (Delta ~0.50)
+    7. RATIO REVERSAL: Zero-Cost Ratio Risk Reversal (Delta ~0.40)
 
     Args:
         data: DashboardData instance containing levels, oi_strikes, contracts, etc.
@@ -478,9 +1263,11 @@ def generate_trade_recommendations(
         sentinel_signals: Recent OrderFlow Sentinel signals.
         latest_bar: Latest Sentinel bar (for VWAP and sigma bands).
         spot_override: Optional live spot quote override.
+        min_score: Minimum Quality Score filter threshold (default 75).
 
     Returns:
-        RecommendationBatch with 3 CE and 3 PE recommendations plus macro summary.
+        RecommendationBatch with filtered recommendations (Score >= min_score),
+        full candidate lists, and macro executive summary.
     """
     symbol = getattr(data, "symbol", "NIFTY") if data else "NIFTY"
     idx = config.get_index(symbol)
@@ -540,337 +1327,285 @@ def generate_trade_recommendations(
     # Base ATM strike
     atm_strike = _round_strike(spot, step)
 
-    # Pre-calculate all candidate recommendation strikes
+    # Pre-calculate candidate strikes across all 7 strategies
     ce_atm_k = atm_strike
     ce_struct_k = atm_strike + step
     ce_squeeze_k = call_wall if call_wall > spot else atm_strike + (2 * step)
+    ce_vanna_k = atm_strike + (2 * step)
 
     pe_atm_k = atm_strike
     pe_struct_k = atm_strike - step
     pe_squeeze_k = put_wall if put_wall < spot else atm_strike - (2 * step)
+    pe_vanna_k = atm_strike - (2 * step)
 
-    # Dynamically register all recommended option contracts into live Dhan WebSocket feed (0ms tick push)
+    # Deduplicated subscription registration into live Dhan WebSocket feed
     try:
         from app.ws_spot_feed import subscribe_options
-        all_rec_strikes = list({ce_atm_k, ce_struct_k, ce_squeeze_k, pe_atm_k, pe_struct_k, pe_squeeze_k})
-        subscribe_options(symbol, all_rec_strikes)
+        all_rec_strikes = [
+            ce_atm_k, ce_struct_k, ce_squeeze_k, ce_vanna_k,
+            pe_atm_k, pe_struct_k, pe_squeeze_k, pe_vanna_k,
+        ]
+        novel_strikes = [float(k) for k in set(all_rec_strikes) if (symbol, float(k)) not in _SUBSCRIBED_REC_STRIKES]
+        if novel_strikes:
+            subscribe_options(symbol, novel_strikes)
+            for k in novel_strikes:
+                _SUBSCRIBED_REC_STRIKES.add((symbol, float(k)))
     except Exception:
         pass
 
-    # -----------------------------------------------------------------------
-    # CALL RECOMMENDATIONS (Top 3 CE)
-    # -----------------------------------------------------------------------
-    ce_recs: list[TradeIdea] = []
-
-    # CE Play 1: ATM Momentum Play
-    ce_atm_ltp, ce_atm_delta, ce_atm_oi, ce_atm_doi, ce_atm_ws = _lookup_chain_data(
-        ce_atm_k, True, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    ce_atm_score, ce_atm_label, ce_atm_color = _compute_trade_score(
-        "CE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi
-    )
-    # Invalidation: Spot breakdown below VWAP -1σ or session VWAP
-    ce_atm_inval_spot = round(min(session_vwap - (step * 0.35), spot - (step * 0.6)), 0)
-    ce_atm_tgt1_spot = round(max(vwap_upper, spot + (step * 0.75)), 0)
-    ce_atm_tgt2_spot = round(call_wall, 0)
-    # Option pricing targets
-    ce_atm_sl = max(1.0, round(ce_atm_ltp * 0.72, 1))  # -28% risk
-    ce_atm_tgt1 = round(ce_atm_ltp * 1.35, 1)          # +35% (1.25R)
-    ce_atm_tgt2 = round(ce_atm_ltp * 1.70, 1)          # +70% (2.5R)
-
-    ce_recs.append(
-        TradeIdea(
+    # Concurrent strategy evaluation: evaluate CE and PE pipelines simultaneously in parallel threads
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        fut_ce = executor.submit(
+            _evaluate_ce_strategies,
             symbol=symbol,
-            side="CE",
-            play_type="ATM Momentum Play",
-            play_badge="MOMENTUM",
-            strike=ce_atm_k,
-            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
-            current_ltp=ce_atm_ltp,
-            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
-            entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
-            spot_invalidation=ce_atm_inval_spot,
-            spot_invalidation_text=f"Spot breakdown below ₹{ce_atm_inval_spot:,.0f} (invalidates VWAP support)",
-            target_1=ce_atm_tgt1,
-            target_1_spot=ce_atm_tgt1_spot,
-            target_2=ce_atm_tgt2,
-            target_2_spot=ce_atm_tgt2_spot,
-            stop_loss=ce_atm_sl,
-            risk_reward_ratio="1 : 2.5",
-            quality_score=ce_atm_score,
-            conviction_label=ce_atm_label,
-            conviction_color=ce_atm_color,
-            rationale=(
-                f"Capitalizes on pure delta momentum with {symbol} holding equilibrium. "
-                f"Delta ~{ce_atm_delta:.2f} provides rapid premium expansion with target towards Call Wall ({call_wall:,.0f})."
-            ),
-            catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
-            is_ws_live=ce_atm_ws,
+            step=step,
+            spot=spot,
+            chain_spot=chain_spot,
+            call_wall=call_wall,
+            put_wall=put_wall,
+            flip=flip,
+            session_vwap=session_vwap,
+            vwap_upper=vwap_upper,
+            vwap_lower=vwap_lower,
+            bias_score=bias_score,
+            sentinel_signals=sentinel_signals,
+            ce_atm_k=ce_atm_k,
+            ce_struct_k=ce_struct_k,
+            ce_squeeze_k=ce_squeeze_k,
+            ce_vanna_k=ce_vanna_k,
+            oi_strikes=oi_strikes,
+            contracts_df=contracts_df,
+            oi_map=oi_map,
+            contracts_map=contracts_map,
         )
-    )
-
-    # CE Play 2: Institutional Structure / Liquidity Play
-    ce_struct_ltp, ce_struct_delta, ce_struct_oi, ce_struct_doi, ce_struct_ws = _lookup_chain_data(
-        ce_struct_k, True, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    ce_struct_score, ce_struct_label, ce_struct_color = _compute_trade_score(
-        "CE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi
-    )
-    ce_struct_inval_spot = round(put_wall - (step * 0.3), 0)
-    ce_struct_tgt1_spot = round(flip if flip > spot else spot + step, 0)
-    ce_struct_tgt2_spot = round(call_wall, 0)
-    ce_struct_sl = max(1.0, round(ce_struct_ltp * 0.68, 1))  # -32% risk
-    ce_struct_tgt1 = round(ce_struct_ltp * 1.45, 1)          # +45% (1.4R)
-    ce_struct_tgt2 = round(ce_struct_ltp * 1.95, 1)          # +95% (3.0R)
-
-    ce_recs.append(
-        TradeIdea(
+        fut_pe = executor.submit(
+            _evaluate_pe_strategies,
             symbol=symbol,
-            side="CE",
-            play_type="Institutional Structure Play",
-            play_badge="STRUCTURE",
-            strike=ce_struct_k,
-            option_symbol=f"{symbol} {int(ce_struct_k)} CE",
-            current_ltp=ce_struct_ltp,
-            delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
-            entry_trigger=f"Passive buyer absorption confirmed at Put Wall (₹{put_wall:,.0f}) or breakout through Gamma Flip (₹{flip:,.0f}).",
-            spot_invalidation=ce_struct_inval_spot,
-            spot_invalidation_text=f"Structural breakdown below Put Wall @ ₹{ce_struct_inval_spot:,.0f}",
-            target_1=ce_struct_tgt1,
-            target_1_spot=ce_struct_tgt1_spot,
-            target_2=ce_struct_tgt2,
-            target_2_spot=ce_struct_tgt2_spot,
-            stop_loss=ce_struct_sl,
-            risk_reward_ratio="1 : 3.0",
-            quality_score=ce_struct_score,
-            conviction_label=ce_struct_label,
-            conviction_color=ce_struct_color,
-            rationale=(
-                f"Tied to institutional Put-writer defense at {put_wall:,.0f}. "
-                f"Offers high asymmetry as spot rotates back towards upper distribution."
-            ),
-            catalyst_tags=["OI Buildup Support", "Wall Reversal", "High Asymmetry"],
-            is_ws_live=ce_struct_ws,
+            step=step,
+            spot=spot,
+            chain_spot=chain_spot,
+            call_wall=call_wall,
+            put_wall=put_wall,
+            flip=flip,
+            session_vwap=session_vwap,
+            vwap_upper=vwap_upper,
+            vwap_lower=vwap_lower,
+            bias_score=bias_score,
+            sentinel_signals=sentinel_signals,
+            pe_atm_k=pe_atm_k,
+            pe_struct_k=pe_struct_k,
+            pe_squeeze_k=pe_squeeze_k,
+            pe_vanna_k=pe_vanna_k,
+            oi_strikes=oi_strikes,
+            contracts_df=contracts_df,
+            oi_map=oi_map,
+            contracts_map=contracts_map,
         )
-    )
+        ce_recs = fut_ce.result()
+        pe_recs = fut_pe.result()
 
-    # CE Play 3: Gamma Squeeze / Lotto Play
-    ce_sq_ltp, ce_sq_delta, ce_sq_oi, ce_sq_doi, ce_sq_ws = _lookup_chain_data(
-        ce_squeeze_k, True, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    ce_sq_score, ce_sq_label, ce_sq_color = _compute_trade_score(
-        "CE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_sq_doi
-    )
-    ce_sq_inval_spot = round(call_wall - (step * 0.4), 0)
-    ce_sq_tgt1_spot = round(call_wall + step, 0)
-    ce_sq_tgt2_spot = round(call_wall + (2 * step), 0)
-    ce_sq_sl = max(1.0, round(ce_sq_ltp * 0.60, 1))          # -40% risk
-    ce_sq_tgt1 = round(ce_sq_ltp * 1.60, 1)                  # +60% (1.5R)
-    ce_sq_tgt2 = round(ce_sq_ltp * 2.40, 1)                  # +140% (3.5R)
-
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="Gamma Squeeze Lotto Play",
-            play_badge="GAMMA SQUEEZE",
-            strike=ce_squeeze_k,
-            option_symbol=f"{symbol} {int(ce_squeeze_k)} CE",
-            current_ltp=ce_sq_ltp,
-            delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
-            entry_trigger=f"Aggressive market buy orders breach Call Wall (₹{call_wall:,.0f}) with positive CVD volume spike.",
-            spot_invalidation=ce_sq_inval_spot,
-            spot_invalidation_text=f"Failed breakout: Spot drops back below ₹{ce_sq_inval_spot:,.0f}",
-            target_1=ce_sq_tgt1,
-            target_1_spot=ce_sq_tgt1_spot,
-            target_2=ce_sq_tgt2,
-            target_2_spot=ce_sq_tgt2_spot,
-            stop_loss=ce_sq_sl,
-            risk_reward_ratio="1 : 3.5",
-            quality_score=ce_sq_score,
-            conviction_label=ce_sq_label,
-            conviction_color=ce_sq_color,
-            rationale=(
-                f"Positioned for convex gamma explosion. A high-volume breach of Call Wall ({call_wall:,.0f}) "
-                f"forces short call-dealers to aggressively buy futures to delta-hedge."
-            ),
-            catalyst_tags=["Dealer Short Covering", "Gamma Blast", "100%+ Multiplier"],
-            is_ws_live=ce_sq_ws,
-        )
-    )
-
-    # -----------------------------------------------------------------------
-    # PUT RECOMMENDATIONS (Top 3 PE)
-    # -----------------------------------------------------------------------
-    pe_recs: list[TradeIdea] = []
-
-    # PE Play 1: ATM Momentum Play
-    pe_atm_ltp, pe_atm_delta, pe_atm_oi, pe_atm_doi, pe_atm_ws = _lookup_chain_data(
-        pe_atm_k, False, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    pe_atm_score, pe_atm_label, pe_atm_color = _compute_trade_score(
-        "PE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi
-    )
-    pe_atm_inval_spot = round(max(session_vwap + (step * 0.35), spot + (step * 0.6)), 0)
-    pe_atm_tgt1_spot = round(min(vwap_lower, spot - (step * 0.75)), 0)
-    pe_atm_tgt2_spot = round(put_wall, 0)
-    pe_atm_sl = max(1.0, round(pe_atm_ltp * 0.72, 1))        # -28% risk
-    pe_atm_tgt1 = round(pe_atm_ltp * 1.35, 1)                # +35% (1.25R)
-    pe_atm_tgt2 = round(pe_atm_ltp * 1.70, 1)                # +70% (2.5R)
-
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="ATM Momentum Play",
-            play_badge="MOMENTUM",
-            strike=pe_atm_k,
-            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
-            current_ltp=pe_atm_ltp,
-            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
-            entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
-            spot_invalidation=pe_atm_inval_spot,
-            spot_invalidation_text=f"Spot breakout above ₹{pe_atm_inval_spot:,.0f} (invalidates VWAP resistance)",
-            target_1=pe_atm_tgt1,
-            target_1_spot=pe_atm_tgt1_spot,
-            target_2=pe_atm_tgt2,
-            target_2_spot=pe_atm_tgt2_spot,
-            stop_loss=pe_atm_sl,
-            risk_reward_ratio="1 : 2.5",
-            quality_score=pe_atm_score,
-            conviction_label=pe_atm_label,
-            conviction_color=pe_atm_color,
-            rationale=(
-                f"Downside acceleration vehicle when spot trades below Session Equilibrium. "
-                f"Delta ~{pe_atm_delta:.2f} rapidly monetizes drops towards Put Wall ({put_wall:,.0f})."
-            ),
-            catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
-            is_ws_live=pe_atm_ws,
-        )
-    )
-
-    # PE Play 2: Institutional Structure / Liquidity Play
-    pe_struct_ltp, pe_struct_delta, pe_struct_oi, pe_struct_doi, pe_struct_ws = _lookup_chain_data(
-        pe_struct_k, False, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    pe_struct_score, pe_struct_label, pe_struct_color = _compute_trade_score(
-        "PE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi
-    )
-    pe_struct_inval_spot = round(call_wall + (step * 0.3), 0)
-    pe_struct_tgt1_spot = round(flip if flip < spot else spot - step, 0)
-    pe_struct_tgt2_spot = round(put_wall, 0)
-    pe_struct_sl = max(1.0, round(pe_struct_ltp * 0.68, 1))  # -32% risk
-    pe_struct_tgt1 = round(pe_struct_ltp * 1.45, 1)          # +45% (1.4R)
-    pe_struct_tgt2 = round(pe_struct_ltp * 1.95, 1)          # +95% (3.0R)
-
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Institutional Structure Play",
-            play_badge="STRUCTURE",
-            strike=pe_struct_k,
-            option_symbol=f"{symbol} {int(pe_struct_k)} PE",
-            current_ltp=pe_struct_ltp,
-            delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
-            entry_trigger=f"Aggressive seller rejection at Call Wall (₹{call_wall:,.0f}) with seller delta absorption on the tape.",
-            spot_invalidation=pe_struct_inval_spot,
-            spot_invalidation_text=f"Structural breach above Call Wall @ ₹{pe_struct_inval_spot:,.0f}",
-            target_1=pe_struct_tgt1,
-            target_1_spot=pe_struct_tgt1_spot,
-            target_2=pe_struct_tgt2,
-            target_2_spot=pe_struct_tgt2_spot,
-            stop_loss=pe_struct_sl,
-            risk_reward_ratio="1 : 3.0",
-            quality_score=pe_struct_score,
-            conviction_label=pe_struct_label,
-            conviction_color=pe_struct_color,
-            rationale=(
-                f"Captures institutional rejection off Call Wall ({call_wall:,.0f}). "
-                f"Allows riding the rotation down towards equilibrium with strong risk containment."
-            ),
-            catalyst_tags=["Call Wall Rejection", "Short Buildup", "High Asymmetry"],
-            is_ws_live=pe_struct_ws,
-        )
-    )
-
-    # PE Play 3: Gamma Squeeze / Breakdown Lotto
-    pe_sq_ltp, pe_sq_delta, pe_sq_oi, pe_sq_doi, pe_sq_ws = _lookup_chain_data(
-        pe_squeeze_k, False, oi_strikes, contracts_df, spot, step,
-        oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
-    )
-    pe_sq_score, pe_sq_label, pe_sq_color = _compute_trade_score(
-        "PE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_sq_doi
-    )
-    pe_sq_inval_spot = round(put_wall + (step * 0.4), 0)
-    pe_sq_tgt1_spot = round(put_wall - step, 0)
-    pe_sq_tgt2_spot = round(put_wall - (2 * step), 0)
-    pe_sq_sl = max(1.0, round(pe_sq_ltp * 0.60, 1))          # -40% risk
-    pe_sq_tgt1 = round(pe_sq_ltp * 1.60, 1)                  # +60% (1.5R)
-    pe_sq_tgt2 = round(pe_sq_ltp * 2.40, 1)                  # +140% (3.5R)
-
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Gamma Squeeze Lotto Play",
-            play_badge="GAMMA SQUEEZE",
-            strike=pe_squeeze_k,
-            option_symbol=f"{symbol} {int(pe_squeeze_k)} PE",
-            current_ltp=pe_sq_ltp,
-            delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
-            entry_trigger=f"High-volume breakdown below Put Wall (₹{put_wall:,.0f}) with cascading negative market delta.",
-            spot_invalidation=pe_sq_inval_spot,
-            spot_invalidation_text=f"Trapdoor reversal: Spot recovers back above ₹{pe_sq_inval_spot:,.0f}",
-            target_1=pe_sq_tgt1,
-            target_1_spot=pe_sq_tgt1_spot,
-            target_2=pe_sq_tgt2,
-            target_2_spot=pe_sq_tgt2_spot,
-            stop_loss=pe_sq_sl,
-            risk_reward_ratio="1 : 3.5",
-            quality_score=pe_sq_score,
-            conviction_label=pe_sq_label,
-            conviction_color=pe_sq_color,
-            rationale=(
-                f"Trapdoor breakdown setup. If Put Wall ({put_wall:,.0f}) collapses, "
-                f"dealer gamma flips deeply negative, forcing panic short-hedging into the abyss."
-            ),
-            catalyst_tags=["Trapdoor Breakdown", "Dealer Panic Selling", "100%+ Multiplier"],
-        )
-    )
-
-    # 4. Attach default position sizing (₹5 Lakh capital, 1.5% risk)
+    # 4. Attach position sizing and persistent telemetry
     lot_size = int(getattr(idx, "lot_size", 65))
+    try:
+        import data.journal.recommendations_store as rec_store
+    except Exception:
+        rec_store = None
+
+    from datetime import datetime, timezone, timedelta
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
+
     for t in ce_recs + pe_recs:
         t.position_size = compute_position_size(t, account_capital=500_000.0, risk_pct=1.5, lot_size=lot_size)
+        t.rec_id = f"{symbol}_{t.side}_{int(t.strike)}_{t.play_badge}"
+        t.triggered_at = now_ist
+        t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
 
-    # 5. Synthesize top side and executive summary
-    avg_ce_score = sum(t.quality_score for t in ce_recs) / len(ce_recs)
-    avg_pe_score = sum(t.quality_score for t in pe_recs) / len(pe_recs)
+        # Generate score reason attribution
+        score_reasons = []
+        if t.side == "CE":
+            if spot > flip:
+                score_reasons.append("Positive gamma acceleration above Flip")
+            if bias_score > 1.5:
+                score_reasons.append(f"Directional bias ({bias_score:+.1f}) confirming upside")
+            if latest_bar and getattr(latest_bar, "delta_ratio", 0) > 0.10:
+                score_reasons.append("Buyer delta aggression")
+            if spot >= call_wall - 150:
+                score_reasons.append(f"Testing Call Wall {call_wall:,.0f}")
+        else:
+            if spot < flip:
+                score_reasons.append("Negative gamma acceleration below Flip")
+            if bias_score < -1.5:
+                score_reasons.append(f"Directional bias ({bias_score:+.1f}) confirming downside")
+            if latest_bar and getattr(latest_bar, "delta_ratio", 0) < -0.10:
+                score_reasons.append("Seller delta dominance")
+            if spot <= put_wall + 150:
+                score_reasons.append(f"Testing Put Wall {put_wall:,.0f}")
 
-    if avg_ce_score >= avg_pe_score + 10:
-        top_side = "CE"
-        exec_summary = (
-            f"Bullish conviction dominates ({avg_ce_score:.0f} vs {avg_pe_score:.0f} PE Score). "
-            f"Directional bias ({bias_score:+.1f}) and institutional flow favor Call upside towards {call_wall:,.0f}."
-        )
-    elif avg_pe_score >= avg_ce_score + 10:
-        top_side = "PE"
-        exec_summary = (
-            f"Bearish conviction dominates ({avg_pe_score:.0f} vs {avg_ce_score:.0f} CE Score). "
-            f"Directional bias ({bias_score:+.1f}) and seller pressure favor Put downside towards {put_wall:,.0f}."
-        )
+        t.score_reason = " · ".join(score_reasons) if score_reasons else "Aligned with institutional structure"
+
+        if rec_store:
+            try:
+                t.is_bookmarked = rec_store.is_bookmarked(t.rec_id)
+                rec_store.append_score_history(
+                    rec_id=t.rec_id,
+                    score=t.quality_score,
+                    current_spot=spot,
+                    current_ltp=t.current_ltp,
+                    reason=t.score_reason,
+                )
+                t.score_history = rec_store.get_score_history(t.rec_id, limit=10)
+                if len(t.score_history) >= 2:
+                    t.score_delta = t.score_history[-1].get("score", t.quality_score) - t.score_history[-2].get("score", t.quality_score)
+
+                # Persist recommendation
+                idea_payload = {
+                    "rec_id": t.rec_id,
+                    "symbol": t.symbol,
+                    "side": t.side,
+                    "strike": t.strike,
+                    "option_symbol": t.option_symbol,
+                    "play_type": t.play_type,
+                    "play_badge": t.play_badge,
+                    "triggered_at": t.triggered_at,
+                    "initial_spot": spot,
+                    "initial_ltp": t.current_ltp,
+                    "quality_score": t.quality_score,
+                    "conviction_tier": t.conviction_tier,
+                    "target_1": t.target_1,
+                    "target_1_spot": t.target_1_spot,
+                    "target_2": t.target_2,
+                    "target_2_spot": t.target_2_spot,
+                    "stop_loss": t.stop_loss,
+                    "spot_invalidation": t.spot_invalidation,
+                    "spot_invalidation_text": t.spot_invalidation_text,
+                    "risk_reward_ratio": t.risk_reward_ratio,
+                    "entry_trigger": t.entry_trigger,
+                    "rationale": t.rationale,
+                    "catalyst_tags": t.catalyst_tags,
+                    "is_bookmarked": 1 if t.is_bookmarked else 0,
+                }
+                rec_store.save_or_update_recommendation(idea_payload)
+
+                # Log point-in-time ML telemetry features
+                vanna_val = getattr(data, "vanna_now", None) if data else None
+                charm_val = getattr(data, "charm_now", None) if data else None
+                dte_val = getattr(data, "dte_now", 3.0) if data else 3.0
+                vix_obj = getattr(data, "india_vix", {}) if data else {}
+                vix_val = float(vix_obj.get("last")) if vix_obj and vix_obj.get("last") is not None else 13.5
+                raw_agg = getattr(data, "raw_agg", {}) if data else {}
+                pcr_val = float(raw_agg.get("pcr", 1.0)) if raw_agg else 1.0
+
+                ml_feat = {
+                    "sample_id": t.rec_id,
+                    "symbol": symbol,
+                    "triggered_at": t.triggered_at,
+                    "strategy_name": t.play_badge,
+                    "side": t.side,
+                    "strike": t.strike,
+                    "moneyness": round(t.strike / spot, 4),
+                    "delta": t.delta_approx,
+                    "entry_spot": spot,
+                    "entry_ltp": t.current_ltp,
+                    "quality_score": t.quality_score,
+                    "call_wall": call_wall,
+                    "put_wall": put_wall,
+                    "gamma_flip": flip,
+                    "dist_call_wall": abs(call_wall - spot),
+                    "dist_put_wall": abs(spot - put_wall),
+                    "dist_gamma_flip": abs(spot - flip),
+                    "vanna": vanna_val,
+                    "charm": charm_val,
+                    "dte": dte_val,
+                    "india_vix": vix_val,
+                    "pcr_oi": pcr_val,
+                    "session_vwap": session_vwap,
+                    "vwap_distance": spot - session_vwap,
+                    "bar_delta": getattr(latest_bar, "delta", 0.0) if latest_bar else 0.0,
+                    "cvd": getattr(latest_bar, "cvd", 0.0) if latest_bar else 0.0,
+                    "delta_ratio": getattr(latest_bar, "delta_ratio", 0.0) if latest_bar else 0.0,
+                    "bias_score": bias_score,
+                    "bias_regime": bias_regime,
+                    "risk_reward_num": float(t.risk_reward_ratio.split(":")[-1].strip()) if ":" in t.risk_reward_ratio else 2.5,
+                    "target_distance_pts": abs(t.target_1_spot - spot),
+                    "stop_distance_pts": abs(t.spot_invalidation - spot),
+                }
+                rec_store.log_ml_features(ml_feat)
+            except Exception as e:
+                pass
+
+    # 5. Sort candidates descending by quality score
+    all_ce_candidates = sorted(ce_recs, key=lambda x: x.quality_score, reverse=True)
+    all_pe_candidates = sorted(pe_recs, key=lambda x: x.quality_score, reverse=True)
+
+    # 6. Quality-Gate Partitioning (Score > 85 Higher Conviction, 75 <= Score <= 85 Lower Fallback)
+    higher_ce = [t for t in all_ce_candidates if t.quality_score > 85]
+    higher_pe = [t for t in all_pe_candidates if t.quality_score > 85]
+
+    lower_ce = [t for t in all_ce_candidates if 75 <= t.quality_score <= 85]
+    lower_pe = [t for t in all_pe_candidates if 75 <= t.quality_score <= 85]
+
+    # Display rule: Higher conviction if available; fallback to lower ONLY if zero higher conviction
+    if higher_ce:
+        display_ce = higher_ce
+        ce_fallback = False
+    elif lower_ce:
+        display_ce = lower_ce
+        ce_fallback = True
     else:
+        display_ce = []
+        ce_fallback = False
+
+    if higher_pe:
+        display_pe = higher_pe
+        pe_fallback = False
+    elif lower_pe:
+        display_pe = lower_pe
+        pe_fallback = True
+    else:
+        display_pe = []
+        pe_fallback = False
+
+    # Respect explicit custom min_score if specified (e.g. min_score=99 or min_score=0 in tests)
+    if min_score not in (75, 85):
+        qualified_ce = [t for t in all_ce_candidates if t.quality_score >= min_score]
+        qualified_pe = [t for t in all_pe_candidates if t.quality_score >= min_score]
+    else:
+        qualified_ce = display_ce
+        qualified_pe = display_pe
+
+    # Collect bookmarked recommendations
+    bookmarked = [t for t in all_ce_candidates + all_pe_candidates if t.is_bookmarked]
+
+    # 7. Synthesize top recommended side and executive summary
+    avg_ce_score = sum(t.quality_score for t in all_ce_candidates) / max(1, len(all_ce_candidates))
+    avg_pe_score = sum(t.quality_score for t in all_pe_candidates) / max(1, len(all_pe_candidates))
+
+    if qualified_ce and not qualified_pe:
+        top_side = "CE"
+        mode_txt = "Secondary fallback mode" if ce_fallback else "High-conviction (Score > 85)"
+        exec_summary = (
+            f"Bullish conviction dominates ({len(qualified_ce)} Call strategies · {mode_txt}). "
+            f"Directional bias ({bias_score:+.1f}) and buyer flow favor Call upside towards Call Wall ({call_wall:,.0f})."
+        )
+    elif qualified_pe and not qualified_ce:
+        top_side = "PE"
+        mode_txt = "Secondary fallback mode" if pe_fallback else "High-conviction (Score > 85)"
+        exec_summary = (
+            f"Bearish conviction dominates ({len(qualified_pe)} Put strategies · {mode_txt}). "
+            f"Directional bias ({bias_score:+.1f}) and seller pressure favor Put downside towards Put Wall ({put_wall:,.0f})."
+        )
+    elif qualified_ce and qualified_pe:
         top_side = "BOTH"
         exec_summary = (
-            f"Balanced regime (CE: {avg_ce_score:.0f} | PE: {avg_pe_score:.0f}). "
-            f"Market is range-bound between Put Wall ({put_wall:,.0f}) and Call Wall ({call_wall:,.0f}); "
-            f"trade reversals at boundaries or await momentum breakout above VWAP ({session_vwap:,.0f})."
+            f"Active two-way setups ({len(qualified_ce)} Calls, {len(qualified_pe)} Puts). "
+            f"Range boundaries and dispersion opportunities active between Put Wall ({put_wall:,.0f}) and Call Wall ({call_wall:,.0f})."
+        )
+    else:
+        top_side = "NEUTRAL"
+        exec_summary = (
+            f"Capital preservation mode: No option setups currently achieve the minimum Score ≥ 75 threshold. "
+            f"Market regime is choppy or directionally ambiguous (Bias: {bias_score:+.1f}, CE Avg: {avg_ce_score:.0f} | PE Avg: {avg_pe_score:.0f}). "
+            f"Stand aside or monitor watchlists below."
         )
 
     return RecommendationBatch(
@@ -882,8 +1617,19 @@ def generate_trade_recommendations(
         gamma_flip=flip,
         directional_bias_score=bias_score,
         bias_regime=bias_regime,
-        ce_recommendations=ce_recs,
-        pe_recommendations=pe_recs,
+        ce_recommendations=qualified_ce,
+        pe_recommendations=qualified_pe,
         top_recommended_side=top_side,
         executive_summary=exec_summary,
+        all_ce_candidates=all_ce_candidates,
+        all_pe_candidates=all_pe_candidates,
+        min_score_filter=min_score,
+        higher_ce_recommendations=higher_ce,
+        higher_pe_recommendations=higher_pe,
+        lower_ce_recommendations=lower_ce,
+        lower_pe_recommendations=lower_pe,
+        ce_fallback_active=ce_fallback,
+        pe_fallback_active=pe_fallback,
+        bookmarked_recommendations=bookmarked,
     )
+

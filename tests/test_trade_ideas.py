@@ -41,21 +41,36 @@ class MockDashboardData:
 
 def test_generate_recommendations_basic():
     data = MockDashboardData(spot=24500.0, symbol="NIFTY")
-    batch = generate_trade_recommendations(data)
+    batch = generate_trade_recommendations(data, min_score=75)
 
     assert batch.__class__.__name__ == "RecommendationBatch"
     assert batch.symbol == "NIFTY"
     assert batch.spot == 24500.0
-    assert len(batch.ce_recommendations) == 3
-    assert len(batch.pe_recommendations) == 3
+    assert batch.min_score_filter == 75
 
-    # Check play types
-    ce_badges = [t.play_badge for t in batch.ce_recommendations]
-    pe_badges = [t.play_badge for t in batch.pe_recommendations]
-    assert ce_badges == ["MOMENTUM", "STRUCTURE", "GAMMA SQUEEZE"]
-    assert pe_badges == ["MOMENTUM", "STRUCTURE", "GAMMA SQUEEZE"]
+    # Check that all 7 candidate strategies are evaluated for CE and PE
+    assert len(batch.all_ce_candidates) == 7
+    assert len(batch.all_pe_candidates) == 7
 
-    for t in batch.ce_recommendations + batch.pe_recommendations:
+    expected_badges = {"MOMENTUM", "STRUCTURE", "GAMMA SQUEEZE", "ICEBERG FADE", "VANNA-CHARM", "VOL DISPERSION", "RATIO REVERSAL"}
+    assert set(t.play_badge for t in batch.all_ce_candidates) == expected_badges
+    assert set(t.play_badge for t in batch.all_pe_candidates) == expected_badges
+
+    # Check that filtered recommendations only include setups with score >= 75
+    for t in batch.ce_recommendations:
+        assert t.quality_score >= 75
+        assert "HIGH CONVICTION" in t.conviction_label
+    for t in batch.pe_recommendations:
+        assert t.quality_score >= 75
+        assert "HIGH CONVICTION" in t.conviction_label
+
+    # Verify descending sort order by quality score
+    ce_scores = [t.quality_score for t in batch.ce_recommendations]
+    assert ce_scores == sorted(ce_scores, reverse=True)
+    pe_scores = [t.quality_score for t in batch.pe_recommendations]
+    assert pe_scores == sorted(pe_scores, reverse=True)
+
+    for t in batch.all_ce_candidates + batch.all_pe_candidates:
         assert t.__class__.__name__ == "TradeIdea"
         assert t.current_ltp > 0.0
         assert t.stop_loss < t.current_ltp
@@ -63,14 +78,15 @@ def test_generate_recommendations_basic():
         assert t.target_2 > t.target_1
         assert 0 <= t.quality_score <= 100
         assert len(t.rationale) > 10
+        assert len(t.entry_trigger) > 5
 
 
 def test_generate_recommendations_failsoft_empty_data():
-    batch = generate_trade_recommendations(None)
+    batch = generate_trade_recommendations(None, min_score=0)
     assert batch.symbol == "NIFTY"
-    assert len(batch.ce_recommendations) == 3
-    assert len(batch.pe_recommendations) == 3
-    for t in batch.ce_recommendations:
+    assert len(batch.all_ce_candidates) == 7
+    assert len(batch.all_pe_candidates) == 7
+    for t in batch.all_ce_candidates:
         assert t.current_ltp > 0.0
 
 
@@ -81,17 +97,36 @@ def test_generate_recommendations_bias_influence():
         score = 6.5
         regime = "Bullish"
 
-    batch_bull = generate_trade_recommendations(data, bias_result=MockBias())
+    batch_bull = generate_trade_recommendations(data, bias_result=MockBias(), min_score=0)
     
     class MockBearBias:
         score = -6.5
         regime = "Bearish"
 
-    batch_bear = generate_trade_recommendations(data, bias_result=MockBearBias())
+    batch_bear = generate_trade_recommendations(data, bias_result=MockBearBias(), min_score=0)
 
-    avg_bull_ce = sum(t.quality_score for t in batch_bull.ce_recommendations) / 3
-    avg_bear_ce = sum(t.quality_score for t in batch_bear.ce_recommendations) / 3
+    avg_bull_ce = sum(t.quality_score for t in batch_bull.all_ce_candidates) / 7
+    avg_bear_ce = sum(t.quality_score for t in batch_bear.all_ce_candidates) / 7
     assert avg_bull_ce > avg_bear_ce
+
+
+def test_generate_recommendations_score_filter():
+    data = MockDashboardData(spot=24500.0)
+    
+    # Threshold = 75: only >= 75
+    batch_75 = generate_trade_recommendations(data, min_score=75)
+    for t in batch_75.ce_recommendations + batch_75.pe_recommendations:
+        assert t.quality_score >= 75
+
+    # Threshold = 0: returns all 7
+    batch_0 = generate_trade_recommendations(data, min_score=0)
+    assert len(batch_0.ce_recommendations) == 7
+    assert len(batch_0.pe_recommendations) == 7
+
+    # Threshold = 99: empty if no setups reach 99
+    batch_99 = generate_trade_recommendations(data, min_score=99)
+    assert len(batch_99.ce_recommendations) == 0
+    assert "Capital preservation" in batch_99.executive_summary
 
 
 def test_position_sizing_basic():
@@ -239,6 +274,50 @@ def test_ws_option_tick_takes_priority(monkeypatch):
     assert is_ws is True
     assert ltp_ws == 142.5
     assert oi == 75000.0
+
+
+def test_higher_conviction_and_fallback_gating():
+    data = MockDashboardData(spot=24500.0)
+    batch = generate_trade_recommendations(data)
+
+    # Check that candidates have rec_id, triggered_at, and conviction_tier
+    for t in batch.all_ce_candidates + batch.all_pe_candidates:
+        assert t.rec_id != ""
+        assert t.triggered_at != ""
+        assert t.conviction_tier in ("HIGH", "MEDIUM", "LOW")
+
+    # If higher conviction (> 85) setups exist, fallback is False and all displayed have score > 85
+    if batch.higher_ce_recommendations:
+        assert batch.ce_fallback_active is False
+        for t in batch.ce_recommendations:
+            assert t.quality_score > 85
+    elif batch.lower_ce_recommendations:
+        # Fallback mode active: all displayed have 75 <= score <= 85
+        assert batch.ce_fallback_active is True
+        for t in batch.ce_recommendations:
+            assert 75 <= t.quality_score <= 85
+
+
+def test_bookmarking_and_recommendations_store():
+    import data.journal.recommendations_store as rs
+    data = MockDashboardData(spot=24500.0)
+    batch = generate_trade_recommendations(data)
+
+    if batch.all_ce_candidates:
+        sample = batch.all_ce_candidates[0]
+        # Toggle bookmark
+        new_state = rs.toggle_bookmark(sample.rec_id)
+        assert new_state is True
+        assert rs.is_bookmarked(sample.rec_id) is True
+
+        bm_list = rs.list_bookmarked_records("NIFTY")
+        assert any(r["rec_id"] == sample.rec_id for r in bm_list)
+
+        # Toggle bookmark off
+        off_state = rs.toggle_bookmark(sample.rec_id)
+        assert off_state is False
+        assert rs.is_bookmarked(sample.rec_id) is False
+
 
 
 
