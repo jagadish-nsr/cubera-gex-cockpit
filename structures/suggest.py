@@ -39,13 +39,59 @@ def suggest_structure(
     spread_width: int = 100,
     nearest_expiry=None,
     is_expiry_day: bool = False,
+    bias_score: float | None = None,
+    sentinel_signals: list[Any] | None = None,
 ) -> CandidateStructure:
-    """``vol_regime`` is the sign-free gauge tag: 'calm' (HIGH concentration / pinning),
-    'wild' (LOW / trending), or 'mid'/None (neutral / unclear -> wait)."""
-    cs = _base_structure(levels, vol_regime, lot_size, spread_width, nearest_expiry)
+    """Return the primary candidate structure (backwards-compatible)."""
+    return suggest_structures(
+        levels,
+        vol_regime,
+        lot_size=lot_size,
+        spread_width=spread_width,
+        nearest_expiry=nearest_expiry,
+        is_expiry_day=is_expiry_day,
+        bias_score=bias_score,
+        sentinel_signals=sentinel_signals,
+    )[0]
+
+
+def suggest_structures(
+    levels,
+    vol_regime,
+    lot_size: int = 65,
+    spread_width: int = 100,
+    nearest_expiry=None,
+    is_expiry_day: bool = False,
+    bias_score: float | None = None,
+    sentinel_signals: list[Any] | None = None,
+) -> list[CandidateStructure]:
+    """Return 1-2 candidate structures: primary + optional alternate structure."""
+    candidates = _base_structures(
+        levels, vol_regime, lot_size, spread_width, nearest_expiry, bias_score=bias_score
+    )
     if is_expiry_day:
-        cs.expiry_note = _expiry_note(vol_regime)
-    return cs
+        note = _expiry_note(vol_regime)
+        for cs in candidates:
+            cs.expiry_note = note
+
+    # Enrich with OrderFlow Sentinel signals if available
+    if sentinel_signals:
+        high_conf = [s for s in sentinel_signals if getattr(s, "score", 0) >= 65]
+        if high_conf:
+            top_sig = high_conf[0]
+            sig_name = getattr(top_sig, "type", "")
+            score = getattr(top_sig, "score", 0)
+            rvol = getattr(top_sig, "rvol_tod", 1.0)
+            for cs in candidates:
+                if "call" in cs.name.lower() and "BEAR" in sig_name:
+                    cs.rationale += f" [⚡ Confirmed by Sentinel: {sig_name} at Resistance (Score: {score}, RVol: {rvol:.1f}×)]"
+                elif "put" in cs.name.lower() and "BULL" in sig_name:
+                    cs.rationale += f" [⚡ Confirmed by Sentinel: {sig_name} at Support (Score: {score}, RVol: {rvol:.1f}×)]"
+                elif "condor" in cs.name.lower() and ("ABSORPTION" in sig_name or "EXHAUSTION" in sig_name):
+                    cs.rationale += f" [⚡ Confirmed by Sentinel: {sig_name} Pinning (Score: {score})]"
+
+    return candidates
+
 
 
 def _expiry_note(vol_regime) -> str:
@@ -62,13 +108,14 @@ def _expiry_note(vol_regime) -> str:
             "hard to trade. Best to wait.")
 
 
-def _base_structure(
+def _base_structures(
     levels,
     vol_regime,
     lot_size: int = 65,
     spread_width: int = 100,
     nearest_expiry=None,
-) -> CandidateStructure:
+    bias_score: float | None = None,
+) -> list[CandidateStructure]:
     exit_by = "exit at least 1 trading day before expiry" + (
         f" ({nearest_expiry})" if nearest_expiry else ""
     )
@@ -79,48 +126,104 @@ def _base_structure(
 
     # --- MID / unclear regime -> wait --------------------------------------
     if vol_regime not in ("calm", "wild"):
-        return CandidateStructure(
-            name="No trade — wait",
-            rationale="Neutral / unclear vol regime (MID concentration). De-size and wait for the "
-            "regime to pick a side before committing to a premium-selling or -buying structure.",
-            risk_note="—",
-            exit_by=exit_by,
-        )
+        return [
+            CandidateStructure(
+                name="No trade — wait",
+                rationale="Neutral / unclear vol regime (MID concentration). De-size and wait for the "
+                "regime to pick a side before committing to a premium-selling or -buying structure.",
+                risk_note="—",
+                exit_by=exit_by,
+            )
+        ]
 
     # --- CALM (high concentration / pinning) -> SELL premium, defined risk --
     if vol_regime == "calm":
         if pw <= spot <= cw:
-            legs = [
+            ic_legs = [
                 ("SELL", "C", cw), ("BUY", "C", cw + spread_width),
                 ("SELL", "P", pw), ("BUY", "P", pw - spread_width),
             ]
-            return CandidateStructure(
+            primary = CandidateStructure(
                 name="Iron condor (sell premium)",
-                legs=legs,
+                legs=ic_legs,
                 rationale=f"HIGH gamma concentration -> calm / range-bound between {pw:,} and "
                 f"{cw:,}. Sell premium with the short strikes just outside the walls; profit if "
-                "Nifty stays in the range (pinning favours premium sellers).",
-                risk_note=f"Defined risk per side ~ {risk_def} minus the credit you collect.",
+                "price stays in the range (pinning favours premium sellers).",
+                risk_note=f"Defined risk per side ~ {risk_def} minus the credit collected.",
                 exit_by=exit_by,
             )
-        return CandidateStructure(
-            name="Wait — no clean range setup",
-            rationale=f"Calm regime, but price is OUTSIDE the wall band ({pw:,}-{cw:,}). The "
-            "textbook condor isn't cleanly set up — wait for price to return into the range "
-            "before selling premium.",
-            risk_note="—",
-            exit_by=exit_by,
-        )
+
+            # Alternate: single-sided credit spread away from spot drift
+            mid = (pw + cw) / 2.0
+            if spot >= mid:
+                alt_legs = [("SELL", "C", cw), ("BUY", "C", cw + spread_width)]
+                alt_name = "Bear call spread (alt: sell upside wall)"
+                alt_rationale = (
+                    f"Alternative to condor: Spot ({spot:,.0f}) is trading in the upper half of the range. "
+                    f"Sell resistance at Call Wall {cw:,} with defined risk ({risk_def})."
+                )
+            else:
+                alt_legs = [("SELL", "P", pw), ("BUY", "P", pw - spread_width)]
+                alt_name = "Bull put spread (alt: sell downside floor)"
+                alt_rationale = (
+                    f"Alternative to condor: Spot ({spot:,.0f}) is trading in the lower half of the range. "
+                    f"Sell floor at Put Wall {pw:,} with defined risk ({risk_def})."
+                )
+
+            alt = CandidateStructure(
+                name=alt_name,
+                legs=alt_legs,
+                rationale=alt_rationale,
+                risk_note=f"Defined risk ~ {risk_def} minus credit collected.",
+                exit_by=exit_by,
+            )
+            return [primary, alt]
+
+        return [
+            CandidateStructure(
+                name="Wait — no clean range setup",
+                rationale=f"Calm regime, but price is OUTSIDE the wall band ({pw:,}-{cw:,}). The "
+                "textbook condor isn't cleanly set up — wait for price to return into the range "
+                "before selling premium.",
+                risk_note="—",
+                exit_by=exit_by,
+            )
+        ]
 
     # --- WILD (low concentration / trending) -> BUY convexity (direction not forecastable) --
-    return CandidateStructure(
+    strangle_legs = [("BUY", "C", cw), ("BUY", "P", pw)]
+    primary = CandidateStructure(
         name="Long strangle (buy premium, either way)",
-        legs=[("BUY", "C", cw), ("BUY", "P", pw)],
+        legs=strangle_legs,
         rationale=f"LOW gamma concentration -> wild / trending: a big move is likely but the "
         f"DIRECTION isn't forecastable. Buy a strangle at the walls ({pw:,} put / {cw:,} call) for "
-        "convexity — profit if Nifty breaks hard EITHER way; or wait for a CONFIRMED wall break "
-        "and buy a debit spread in that direction. Never SELL premium here.",
-        risk_note="Defined risk = the debit paid. Theta bleeds if it stays quiet — size SMALL; "
-        "exit on a clear break or by the cutoff.",
+        "convexity — profit if price breaks hard EITHER way.",
+        risk_note="Defined risk = debit paid. Theta bleeds if quiet — small size only.",
         exit_by=exit_by,
     )
+
+    # Alternate directional debit spread
+    bullish = (bias_score is not None and bias_score > 1.0) or (spot > (pw + cw) / 2.0)
+    if bullish:
+        alt_legs = [("BUY", "C", pw), ("SELL", "C", cw)]
+        alt_name = "Bull call debit spread (alt: momentum break)"
+        alt_rationale = (
+            f"Alternative to strangle: Upward positioning bias detected. Buy near Put Wall {pw:,} "
+            f"and cap at Call Wall {cw:,} for directional expansion."
+        )
+    else:
+        alt_legs = [("BUY", "P", cw), ("SELL", "P", pw)]
+        alt_name = "Bear put debit spread (alt: breakdown)"
+        alt_rationale = (
+            f"Alternative to strangle: Downward positioning bias detected. Buy near Call Wall {cw:,} "
+            f"and cap at Put Wall {pw:,} for directional breakdown."
+        )
+
+    alt = CandidateStructure(
+        name=alt_name,
+        legs=alt_legs,
+        rationale=alt_rationale,
+        risk_note="Defined risk = debit paid.",
+        exit_by=exit_by,
+    )
+    return [primary, alt]

@@ -80,10 +80,10 @@ def _sector_strip(data):
 
 def _v1_refresh(window: str, use_demo: bool, symbol: str):
     try:
-        # Tab 1 tracks origin/main — uses the US long_call_short_put convention
+        # Native Indian market mode: short_call_short_put
         st.session_state["_v1_data"] = load_dashboard(
             window=window, use_demo=use_demo, symbol=symbol,
-            sign_model="long_call_short_put",
+            sign_model="short_call_short_put",
         )
         st.session_state["_v1_err"] = None
     except Exception as e:  # noqa: BLE001 - shown to the user, last-good kept
@@ -176,7 +176,7 @@ def render_gex_v1_tab():
         live_fetcher.ensure(
             symbol, use_demo, live_source=None,
             interval_s=int(auto_mins * 60), lead_s=_FETCH_LEAD_S,
-            sign_model="long_call_short_put", window=window
+            sign_model="short_call_short_put", window=window
         )
 
     if refresh:

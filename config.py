@@ -40,9 +40,7 @@ class Index:
     band_pts: float    # per-strike OI band: keep strikes within ± this of spot
     exchange: str = "NSE"         # "NSE" (NFO) or "BSE" (BFO) — for expiry routing
     regime_proxy: str | None = None  # borrow this index's |vanna| regime.
-    #   SENSEX→NIFTY: SENSEX's own vanna doesn't grade its move cleanly
-    #   but NIFTY's does (1.73-1.87x, corr 0.988, verified 2026-07-18).
-    #   None = use the index's own vanna.
+    strike_step: int = 50         # standard strike interval (Nifty: 50, Bank Nifty: 100, Sensex: 100)
 
 
 # CONFIRMED 2026-07 (user-verified against broker):
@@ -56,9 +54,9 @@ class Index:
 #    SENSEX is Dhan-only (BSE). Its own vanna doesn't grade its move cleanly so it
 #    borrows NIFTY's vanna for the v1 regime gauge (regime_proxy="NIFTY").
 INDICES: dict[str, Index] = {
-    "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE"),
-    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30,  False, 4000, "NSE"),
-    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  6000, "BSE", regime_proxy="NIFTY"),
+    "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE", strike_step=50),
+    "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30,  False, 4000, "NSE", strike_step=100),
+    "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  6000, "BSE", regime_proxy="NIFTY", strike_step=100),
 }
 DEFAULT_INDEX = "NIFTY"
 
@@ -104,14 +102,10 @@ DHAN_ACCESS_TOKEN: str | None = os.environ.get("DHAN_ACCESS_TOKEN")
 
 
 # --- Dealer gamma sign convention -------------------------------------------
-# ⚠️ LEGACY FALLBACK ONLY — tabs now own their sign convention explicitly.
-#
-# Architecture: load_dashboard(sign_model=...) is the authoritative source.
-#   Tab 1 (origin/main mirror)   → sign_model="long_call_short_put"  (US convention)
-#   Tab 2 (India SCSP research)  → sign_model="short_call_short_put" (India: dealers short BOTH legs)
-#
-# This global is only used when sign_model is not passed (e.g. test helpers, scripts).
-# Both models must be supported by gex/core.py and gex/flip.py permanently.
+# Native Indian Market Mode: Indian index option participants and prop desks
+# are systematic net sellers of both legs (short_call_short_put / SCSP).
+# Calls and Puts are written heavily; Gamma Flip represents the Writer Equilibrium
+# (|Call GEX| == |Put GEX|).
 DEALER_SIGN_MODEL = os.environ.get("DEALER_SIGN_MODEL", "short_call_short_put")
 
 # --- Contract multiplier (default index lot size) ---------------------------
@@ -167,3 +161,23 @@ CASH_CLOSE_MIN = 15 * 60 + 30        # 15:30 continuous cash (CAS auction 15:15�
 # r and q are IMPLIED per-expiry from put-call parity off the same chain — no
 # Indian rate feed (MIBOR/T-bill) or dividend assumption needed.
 RISK_FREE_FALLBACK = None
+
+
+def is_market_open(now: datetime | None = None) -> bool:
+    """Return True if currently during live Indian market trading hours (09:15 to 15:30 IST on weekdays).
+
+    Outside of these hours, trading is closed and automatic polling/refresh should pause.
+    """
+    from datetime import datetime, timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if now is None:
+        now = datetime.now(ist)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=ist)
+    else:
+        now = now.astimezone(ist)
+
+    if now.weekday() >= 5:  # Saturday or Sunday
+        return False
+    t_min = now.hour * 60 + now.minute
+    return MARKET_OPEN_MIN <= t_min < CASH_CLOSE_MIN

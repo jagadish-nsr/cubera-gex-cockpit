@@ -51,3 +51,26 @@ def test_window_filter():
     assert monthly in kept
     assert (monthly + timedelta(days=40)) not in kept
     assert len(filter_expiry_window(df, "all", ref)) == 4
+
+
+def test_current_and_next_week_filter():
+    from data.expiry import second_weekly_expiry
+    ref = date(2026, 6, 1)  # Monday
+    w1 = next_weekly_expiry(ref)
+    w2 = second_weekly_expiry(ref)
+    m = next_monthly_expiry(ref)
+    df = pd.DataFrame({"expiry": [w1, w2, m]})
+
+    curr = filter_expiry_window(df, "current_week", ref)
+    assert len(curr) == 1
+    assert curr["expiry"].iloc[0] == w1
+
+    nxt = filter_expiry_window(df, "next_week", ref)
+    assert len(nxt) == 1
+    assert nxt["expiry"].iloc[0] == w2
+
+    # ISO date string filter
+    iso_w1 = filter_expiry_window(df, str(w1), ref)
+    assert len(iso_w1) == 1
+    assert iso_w1["expiry"].iloc[0] == w1
+

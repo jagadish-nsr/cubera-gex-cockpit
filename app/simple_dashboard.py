@@ -31,6 +31,10 @@ if str(ROOT) not in sys.path:
 
 import config  # noqa: E402
 from app.data_access import load_dashboard  # noqa: E402
+from app.spot_ticker import warmup_all  # noqa: E402
+
+# Pre-warm live WebSocket feed and background pollers for instant sub-second ticks
+warmup_all()
 
 st.set_page_config(page_title="Simple GEX", page_icon="⚡", layout="wide")
 
@@ -2385,15 +2389,16 @@ def _capture_futures_bg(symbol, source, fetched_at):
 
     def _run():
         try:
-            from app.futures_buildup import capture_futures_snapshot, futures_intraday_dir_for
+            from app.futures_buildup import (capture_futures_from_ws, capture_futures_snapshot,
+                                             futures_intraday_dir_for)
             from app.timeseries import in_nse_session
             if not in_nse_session(fetched_at):               # never write a frozen post-close row
                 return
             fdir = futures_intraday_dir_for(source)
             if dhan_feed:
-                from data.dhan_live import fetch_futures_dhan
-                capture_futures_snapshot(symbol, fetch_fn=fetch_futures_dhan,
-                                         parse_fn=lambda p, s: p, min_gap_minutes=3.0, directory=fdir)
+                # Primary: read directly from the WebSocket in-memory store — zero REST calls.
+                # capture_futures_from_ws() auto-falls-back to REST if the WS store is absent/stale.
+                capture_futures_from_ws(symbol, min_gap_minutes=3.0, directory=fdir)
             else:
                 capture_futures_snapshot(symbol, min_gap_minutes=3.0, directory=fdir)
         except Exception:  # noqa: BLE001 - capture is best-effort, never surfaces

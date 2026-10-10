@@ -23,7 +23,15 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-VALID_WINDOWS = {"0dte", "weekly", "monthly", "all", "0dte_to_next_monthly"}
+VALID_WINDOWS = {
+    "0dte",
+    "weekly",
+    "monthly",
+    "all",
+    "0dte_to_next_monthly",
+    "current_week",
+    "next_week",
+}
 
 # Monday=0 .. Sunday=6.
 NSE_WEEKLY_EXPIRY_WEEKDAY = 1   # Tuesday  — NSE Nifty / Bank Nifty
@@ -78,6 +86,12 @@ def next_monthly_expiry(ref: date, exchange: str = "NSE") -> date:
     return _holiday_roll(last_weekday_of_month(ny, nm, wd))
 
 
+def second_monthly_expiry(ref: date, exchange: str = "NSE") -> date:
+    """Second upcoming monthly expiry after ref, holiday-adjusted."""
+    m1 = next_monthly_expiry(ref, exchange)
+    return next_monthly_expiry(m1 + timedelta(days=5), exchange)
+
+
 def next_weekly_expiry(ref: date, exchange: str = "NSE") -> date:
     """Next weekly expiry weekday on or after ref, holiday-adjusted.
 
@@ -95,6 +109,12 @@ def next_weekly_expiry(ref: date, exchange: str = "NSE") -> date:
     return adjusted
 
 
+def second_weekly_expiry(ref: date, exchange: str = "NSE") -> date:
+    """Second upcoming weekly expiry after ref, holiday-adjusted."""
+    w1 = next_weekly_expiry(ref, exchange)
+    return next_weekly_expiry(w1 + timedelta(days=1), exchange)
+
+
 def describe_window(window: str, ref: date, exchange: str = "NSE",
                     has_weekly: bool = True) -> str:
     """Return a human-readable string describing the active expiry window.
@@ -104,41 +124,67 @@ def describe_window(window: str, ref: date, exchange: str = "NSE",
     """
     if window == "0dte":
         return f"0DTE → {ref.strftime('%a %d-%b-%Y')}"
-    elif window == "weekly":
+    elif window in ("weekly", "current_week"):
         exp = (next_weekly_expiry(ref, exchange) if has_weekly
                else next_monthly_expiry(ref, exchange))
         tag = "(collapsed to monthly — no weeklies)" if not has_weekly else ""
-        return f"weekly → {exp.strftime('%a %d-%b-%Y')} {tag}".strip()
+        prefix = "current week" if window == "current_week" else "weekly"
+        return f"{prefix} → {exp.strftime('%a %d-%b-%Y')} {tag}".strip()
+    elif window == "next_week":
+        exp = (second_weekly_expiry(ref, exchange) if has_weekly
+               else second_monthly_expiry(ref, exchange))
+        tag = "(next monthly — no weeklies)" if not has_weekly else ""
+        return f"next week → {exp.strftime('%a %d-%b-%Y')} {tag}".strip()
     elif window in ("monthly", "0dte_to_next_monthly"):
         exp = next_monthly_expiry(ref, exchange)
         return f"monthly → {exp.strftime('%a %d-%b-%Y')}"
     elif window == "all":
         return "all expiries"
-    return window
+    try:
+        d = date.fromisoformat(window)
+        return d.strftime('%a %d-%b-%Y')
+    except (ValueError, TypeError):
+        return window
 
 
 def filter_expiry_window(contracts, window: str, ref: date,
                          has_weekly: bool = True, exchange: str = "NSE"):
-    """Return only contracts whose expiry falls inside the named window.
+    """Return only contracts whose expiry falls inside the named window or matches the selected expiry.
 
     Mirrors the SPX adapter's interface so the rest of the engine is unchanged.
     `contracts` is a DataFrame with an 'expiry' (datetime.date) column.
 
     ``has_weekly=False`` (e.g. Bank Nifty, monthly-only since Nov-2024): the
-    "weekly" window collapses to the next MONTHLY expiry, since there is no weekly
-    Tuesday contract to bound it — without this the weekly window would silently
-    return an empty chain (the next weekly Tuesday has no Bank Nifty series).
+    "weekly" and "current_week" windows collapse to the next MONTHLY expiry,
+    and "next_week" collapses to the subsequent monthly expiry.
 
     ``exchange`` selects the expiry weekday convention (\"NSE\" = Tuesday,
     \"BSE\" = Thursday). Pass the Index.exchange value here.
     """
+    is_iso_date = False
+    target_date = None
     if window not in VALID_WINDOWS:
-        raise ValueError(f"unknown expiry window {window!r}; valid: {sorted(VALID_WINDOWS)}")
+        try:
+            target_date = date.fromisoformat(window)
+            is_iso_date = True
+        except (ValueError, TypeError):
+            raise ValueError(f"unknown expiry window {window!r}; valid: {sorted(VALID_WINDOWS)}")
+
     exp = contracts["expiry"]
-    if window == "all":
+    if is_iso_date:
+        mask = exp == target_date
+    elif window == "all":
         mask = exp >= ref
     elif window == "0dte":
         mask = exp == ref
+    elif window == "current_week":
+        target = (next_weekly_expiry(ref, exchange) if has_weekly
+                  else next_monthly_expiry(ref, exchange))
+        mask = exp == target
+    elif window == "next_week":
+        target = (second_weekly_expiry(ref, exchange) if has_weekly
+                  else second_monthly_expiry(ref, exchange))
+        mask = exp == target
     elif window == "weekly":
         end = (next_weekly_expiry(ref, exchange) if has_weekly
                else next_monthly_expiry(ref, exchange))

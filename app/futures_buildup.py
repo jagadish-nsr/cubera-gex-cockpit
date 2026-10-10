@@ -243,6 +243,49 @@ def capture_futures_snapshot(symbol: str = "NIFTY", now_utc: datetime | None = N
                                    symbol, min_gap_minutes, directory=directory)
 
 
+def capture_futures_from_ws(symbol: str = "NIFTY", now_utc: datetime | None = None,
+                             min_gap_minutes: float = 0.0,
+                             directory: Path | None = None,
+                             fetch_fn=None, parse_fn=None):
+    """Fast path: append an intraday futures snapshot directly from the WebSocket in-memory
+    store (``app.spot_ticker._STORE[symbol]["fut"]``) — **zero network calls**.
+
+    The WS feed (``app.ws_spot_feed``) already holds the near-month futures LTP, OI, volume and
+    expiry decoded from the Dhan binary packet; there is no need to re-fetch via REST.  Falls back
+    to ``capture_futures_snapshot()`` (the REST path) when the WS store is absent or stale (e.g.
+    outside market hours, or before the WS thread has warmed up).
+
+    Returns (path, written) or None — same contract as ``capture_futures_snapshot``."""
+    import time as _t
+    try:
+        from app.spot_ticker import _STORE as _spot_store, STALE_AFTER_S as _stale
+        _rec = _spot_store.get(symbol)
+        _ws_at = (_rec or {}).get("ws_at") or 0
+        _at = (_rec or {}).get("at") or 0
+        _fut = (_rec or {}).get("fut")
+        _fresh = (_t.time() - max(_ws_at, _at)) < _stale
+        if _fut and _fresh:
+            # In-memory store is fresh — write the snapshot without touching the network
+            now = now_utc or datetime.now(timezone.utc)
+            ist = now + timedelta(hours=5, minutes=30)
+            return append_futures_snapshot(
+                _fut, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                ist.strftime("%H:%M"), ist.strftime("%Y-%m-%d"),
+                symbol, min_gap_minutes, directory=directory,
+            )
+    except Exception:  # noqa: BLE001 - fast path failed; fall through to REST
+        pass
+    # WS store absent / stale → fall back to the regular REST-based snapshot
+    if fetch_fn is None and directory and "dhan" in str(directory).lower():
+        from data.dhan_live import fetch_futures_dhan
+        fetch_fn = fetch_futures_dhan
+        parse_fn = lambda p, s: p
+    return capture_futures_snapshot(symbol, now_utc=now_utc,
+                                    fetch_fn=fetch_fn, parse_fn=parse_fn,
+                                    min_gap_minutes=min_gap_minutes, directory=directory)
+
+
+
 def intraday_futures_buildup(day_df) -> dict | None:
     """Today's INTRADAY futures build-up from the first vs latest captured snapshot:
     ΔPrice (near-month) + ΔOI (aggregate, rollover-netted) + Δvolume over the session,

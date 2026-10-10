@@ -38,12 +38,13 @@ def gamma_flip_profile(
     contract_size: int = 100,
     grid_range: float = 0.10,
     grid_step: float = 0.0025,
-    dealer_sign_model: str = "long_call_short_put",
+    dealer_sign_model: str = "short_call_short_put",
 ) -> FlipResult:
     """contracts columns required: strike, type ("C"/"P"), oi, iv, T, r, q.
 
     iv = per-contract implied vol, T = years to expiry, r/q = parity-implied
     rate/div for that contract's expiry.
+    Defaults to Indian market mode: 'short_call_short_put'.
     """
     # Support long_call_short_put (US) and short_call_short_put (India)
     if dealer_sign_model not in {"long_call_short_put", "short_call_short_put"}:
@@ -72,12 +73,12 @@ def gamma_flip_profile(
     totals = np.empty(n_steps)
     for i, s_hyp in enumerate(grid):
         g = bs_gamma(s_hyp, K, T, iv, r, q)
-        if dealer_sign_model == "long_call_short_put":
-            # long call (+1), short put (-1)
-            sign = np.where(df["type"].to_numpy() == "C", 1.0, -1.0)
-        else: # short_call_short_put
-            # short call (-1), short put (-1)
-            sign = -1.0
+        # In both models, the zero-crossing (gamma flip) identifies the balance
+        # between call gamma and put gamma (|Call GEX| == |Put GEX|).
+        # In Indian market mode (short_call_short_put), where participants write both legs,
+        # this represents the Writer Imbalance Flip: above the flip, call writers face
+        # escalating gamma risk (upside squeeze); below, put writers face downside trapdoor risk.
+        sign = np.where(df["type"].to_numpy() == "C", 1.0, -1.0)
         gex = sign * g * oi * weight * contract_size * s_hyp * s_hyp * 0.01
         totals[i] = gex.sum()
 

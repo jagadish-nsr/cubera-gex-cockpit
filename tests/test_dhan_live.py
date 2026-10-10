@@ -8,6 +8,7 @@ import base64
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 
 import pytest
 
@@ -74,6 +75,7 @@ def test_fetch_chain_falls_through_to_source_selection(monkeypatch):
     class _Idx:
         symbol = "NIFTY"
         has_weekly = True
+    monkeypatch.setattr("app.spot_ticker._STORE", {})
     monkeypatch.setattr(dhan_live, "fetch_chain",
                         lambda sym, **k: {"records": {"data": [], "underlyingValue": 1.0}})
     monkeypatch.setattr(dhan_live, "fetch_index_ohlc", lambda sym, **k: {"high": 2, "low": 1})
@@ -97,8 +99,38 @@ def test_write_token_writes_secret(monkeypatch, tmp_path):
     monkeypatch.setattr("data.dhan.TOKEN_FILE", f)
     write_token("  abc.def.ghi  ")
     assert f.read_text(encoding="utf-8") == "abc.def.ghi"
+    assert os.environ.get("DHAN_ACCESS_TOKEN") == "abc.def.ghi"
     with pytest.raises(ValueError):
         write_token("   ")
+
+
+def test_fresh_file_token_overrides_expired_env_var(monkeypatch, tmp_path):
+    from data.dhan import _secret, token_status
+    # Expired token in env
+    exp_past = int(datetime.now(timezone.utc).timestamp()) - 3600
+    p_past = base64.urlsafe_b64encode(json.dumps({"exp": exp_past}).encode()).rstrip(b"=").decode()
+    tok_past = f"aGRy.{p_past}.sig"
+    monkeypatch.setenv("DHAN_ACCESS_TOKEN", tok_past)
+
+    # Valid fresh token in file
+    exp_future = int(datetime.now(timezone.utc).timestamp()) + 7200
+    p_future = base64.urlsafe_b64encode(json.dumps({"exp": exp_future}).encode()).rstrip(b"=").decode()
+    tok_future = f"aGRy.{p_future}.sig"
+
+    f = tmp_path / ".dhan_token"
+    f.write_text(tok_future, encoding="utf-8")
+    monkeypatch.setattr("data.dhan.TOKEN_FILE", f)
+    monkeypatch.setattr("data.dhan.ROOT", tmp_path.parent)
+
+    # Direct secret resolution must pick the fresh file token, not the expired env token
+    resolved = _secret("DHAN_ACCESS_TOKEN", str(f.name))
+    assert resolved == tok_future
+
+    # token_status must report active, not expired
+    status = token_status()
+    assert status["present"] is True
+    assert status["expired"] is False
+    assert status["hours_left"] > 1.5
 
 
 def test_backfill_resolves_bse_segment_for_sensex(monkeypatch):

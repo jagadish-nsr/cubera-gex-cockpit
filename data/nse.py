@@ -821,5 +821,5 @@ def _resolve_expiries(expiries: list | None, has_weekly: bool = True) -> list[st
     out, d = [], next_weekly_expiry(today)
     while d <= end:
         out.append(_nse_date(d))
-        d = d + timedelta(days=7)
+        d = next_weekly_expiry(d + timedelta(days=1))
     return out

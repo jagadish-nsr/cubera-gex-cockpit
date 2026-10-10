@@ -26,13 +26,14 @@ def per_strike_gex(
     contracts: pd.DataFrame,
     spot: float,
     contract_size: int = 100,
-    dealer_sign_model: str = "long_call_short_put",
+    dealer_sign_model: str = "short_call_short_put",
 ) -> pd.DataFrame:
     """Aggregate contract-level rows into per-strike call/put/net GEX.
 
     Returns a DataFrame: strike, call_gex, put_gex, net_gex (one row per strike,
     sorted by strike). Fails loud on an unknown sign model rather than silently
     applying the wrong gamma sign (CLAUDE.md #5/#6).
+    Defaults to Indian market mode: 'short_call_short_put'.
     """
     if dealer_sign_model not in _SUPPORTED_SIGN_MODELS:
         raise ValueError(
@@ -62,10 +63,10 @@ def per_strike_gex(
         call_gex=("_call", "sum"),
         put_gex=("_put", "sum"),
     )
-    # dealers SHORT put gamma -> negate
+    # dealers/writers SHORT put gamma -> negate
     grouped["put_gex"] = -grouped["put_gex"]
 
-    # For Indian markets where dealers are also short calls
+    # For Indian markets where dealers/writers are also short calls
     if dealer_sign_model == "short_call_short_put":
         grouped["call_gex"] = -grouped["call_gex"]
 
@@ -74,12 +75,13 @@ def per_strike_gex(
 
 
 def call_wall(per_strike: pd.DataFrame) -> float:
-    """Strike with the highest positive call GEX (resistance)."""
-    return float(per_strike.loc[per_strike["call_gex"].idxmax(), "strike"])
+    """Strike with the largest call GEX magnitude (call writer resistance wall)."""
+    idx = per_strike["call_gex"].abs().idxmax()
+    return float(per_strike.loc[idx, "strike"])
 
 
 def put_wall(per_strike: pd.DataFrame) -> float:
-    """Strike with the largest absolute put GEX (support if above flip)."""
+    """Strike with the largest absolute put GEX (put writer support wall)."""
     idx = per_strike["put_gex"].abs().idxmax()
     return float(per_strike.loc[idx, "strike"])
 

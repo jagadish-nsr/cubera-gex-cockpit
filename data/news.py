@@ -23,6 +23,7 @@ snapshot.
 
 from __future__ import annotations
 
+import threading
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -100,8 +101,41 @@ def _impact(title: str) -> int:
     return sum(w for kw, w in IMPACT_KEYWORDS.items() if kw in t)
 
 
+def classify_headline(title: str) -> tuple[str, str]:
+    """Classifies a headline into (category, sentiment). Pure heuristic."""
+    t = title.lower()
+
+    # Category classification
+    if any(k in t for k in ("war", "missile", "airstrike", "strike", "attack", "ceasefire", "invasion", "nuclear", "border", "military", "terror", "conflict", "sanction", "iran", "israel", "russia", "ukraine", "taiwan")):
+        cat = "Geopolitics"
+    elif any(k in t for k in ("crude", "oil", "brent", "wti", "opec", "gold", "gas", "petroleum")):
+        cat = "Energy & Crude"
+    elif any(k in t for k in ("rbi", "fed", "fomc", "rate cut", "rate hike", "inflation", "cpi", "gdp", "tariff", "budget", "rupee", "repo", "central bank", "deficit")):
+        cat = "Macro & Policy"
+    elif any(k in t for k in ("results", "profit", "q1", "q2", "q3", "q4", "revenue", "earnings", "acquisition", "merger", "dividend", "buyback", "ipo", "stake")):
+        cat = "Corporate & Earnings"
+    else:
+        cat = "Markets & Economy"
+
+    # Sentiment classification
+    bullish_kws = ("surge", "rally", "jump", "gain", "gains", "climb", "rise", "rises", "soar", "soars", "high", "record", "ease", "eases", "relief", "upbeat", "boost", "rebound", "positive", "advance", "advances")
+    bearish_kws = ("plunge", "drop", "drops", "fall", "falls", "tumble", "tumbles", "crash", "slump", "slide", "slides", "sink", "sinks", "fear", "war", "missile", "strike", "attack", "tension", "downgrade", "loss", "selloff", "sell-off", "rout", "drag", "bleeding")
+
+    bull_score = sum(1 for k in bullish_kws if k in t)
+    bear_score = sum(1 for k in bearish_kws if k in t)
+
+    if bull_score > bear_score:
+        sent = "BULLISH"
+    elif bear_score > bull_score:
+        sent = "BEARISH"
+    else:
+        sent = "NEUTRAL"
+
+    return cat, sent
+
+
 def score_news(items, now_utc: datetime, window_min: int = WINDOW_MIN) -> dict:
-    """Reduce (pubDate, title) items to {count, impact, top}. Counts ONLY items whose
+    """Reduce (pubDate, title) items to {count, impact, top, headlines}. Counts ONLY items whose
     pubDate is within the last ``window_min`` minutes (a *burst* of fresh news); an
     item with no pubDate can't be placed in time, so it's ignored for the count.
     ``impact`` sums the keyword weight of those fresh items; ``top`` is the
@@ -113,17 +147,69 @@ def score_news(items, now_utc: datetime, window_min: int = WINDOW_MIN) -> dict:
     fresh = [(pd, t) for (pd, t) in items if pd is not None and cutoff <= pd <= horizon]
     impact = sum(_impact(t) for _, t in fresh)
     top = max(fresh, key=lambda it: (_impact(it[1]), it[0]))[1] if fresh else ""
-    return {"count": len(fresh), "impact": impact, "top": top[:120]}
+
+    # Rich structured headline items for market intelligence & sectorial context
+    ist_tz = timezone(timedelta(hours=5, minutes=30))
+    dated_items = [it for it in items if it[0] is not None]
+
+    # Sort key: fresh items first (impact desc, then date desc), then other recent items
+    def _sort_key(it):
+        pd, t = it
+        is_f = 1 if (cutoff <= pd <= horizon) else 0
+        return (is_f, _impact(t), pd.timestamp() if pd else 0.0)
+
+    sorted_items = sorted(dated_items, key=_sort_key, reverse=True)
+    headlines: list[dict] = []
+    seen = set()
+    for pd, t in sorted_items:
+        t_clean = t.strip()
+        if not t_clean or t_clean in seen:
+            continue
+        seen.add(t_clean)
+        cat, sent = classify_headline(t_clean)
+        age_m = max(0, int((now_utc - pd).total_seconds() / 60))
+        ist_dt = pd.astimezone(ist_tz)
+        headlines.append({
+            "title": t_clean,
+            "pub_time_ist": ist_dt.strftime("%H:%M IST"),
+            "date_ist": ist_dt.strftime("%d-%b"),
+            "age_min": age_m,
+            "impact": _impact(t_clean),
+            "category": cat,
+            "sentiment": sent,
+            "is_fresh": (cutoff <= pd <= horizon),
+        })
+        if len(headlines) >= 15:
+            break
+
+    return {
+        "count": len(fresh),
+        "impact": impact,
+        "top": top[:120],
+        "headlines": headlines,
+    }
+
+
+_NEWS_CACHE: dict = {"at": 0.0, "data": None}
+_NEWS_LOCK = threading.Lock()
 
 
 def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
-               feed_urls=FEED_URLS) -> dict | None:
+               feed_urls=FEED_URLS, force: bool = False) -> dict | None:
     """Best-effort news-intensity for *now*: {count, impact, top} or None.
 
     Fail-soft (mirrors data/nse.fetch_india_vix): a single feed erroring is dropped
     and the rest still count; only if EVERY feed fails do we return None, so a news
     miss never breaks a GEX snapshot. ``top`` is the highest-impact fresh headline.
+    Cached in-memory with a 5-minute TTL to eliminate repetitive network latency.
     """
+    import time
+    global _NEWS_CACHE
+
+    now_t = time.time()
+    if not force and (now_t - _NEWS_CACHE["at"] < 300.0) and _NEWS_CACHE["data"] is not None:
+        return _NEWS_CACHE["data"]
+
     import requests
 
     now_utc = now_utc or datetime.now(timezone.utc)
@@ -143,6 +229,11 @@ def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
                 continue
         if not ok:
             return None
-        return score_news(items, now_utc)
+        res = score_news(items, now_utc)
+        with _NEWS_LOCK:
+            _NEWS_CACHE["at"] = now_t
+            _NEWS_CACHE["data"] = res
+        return res
     except Exception:  # noqa: BLE001 - fail soft; news is optional context
         return None
+

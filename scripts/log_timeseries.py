@@ -127,14 +127,14 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     # Index-futures intraday snapshot (SEPARATE live call; best-effort, never fatal).
     fut_tag = ""
     try:
-        from app.futures_buildup import capture_futures_snapshot, futures_intraday_dir_for
+        from app.futures_buildup import capture_futures_from_ws, futures_intraday_dir_for
         fdir = futures_intraday_dir_for(data.source)
         if str(data.source or "").lower().startswith("dhan"):   # Dhan-native futures quote
             from data.dhan_live import fetch_futures_dhan
-            got = capture_futures_snapshot(symbol=data.symbol, fetch_fn=fetch_futures_dhan,
-                                           parse_fn=lambda p, s: p, min_gap_minutes=min_gap, directory=fdir)
+            got = capture_futures_from_ws(symbol=data.symbol, fetch_fn=fetch_futures_dhan,
+                                          parse_fn=lambda p, s: p, min_gap_minutes=min_gap, directory=fdir)
         else:
-            got = capture_futures_snapshot(symbol=data.symbol, min_gap_minutes=min_gap, directory=fdir)
+            got = capture_futures_from_ws(symbol=data.symbol, min_gap_minutes=min_gap, directory=fdir)
         if got and got[1]:
             fut_tag = " +fut"
     except Exception:  # noqa: BLE001 - futures capture is optional context

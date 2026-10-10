@@ -42,57 +42,26 @@ _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
 # Base URL for the live option-chain endpoints (v2 REST)
 _DHAN_BASE_URL = "https://api.dhan.co/v2"
 
-# Security IDs for index underlyings (IDX_I segment)
-# NIFTY = 13, BANKNIFTY = 25 (same as DHAN_UNDERLYING above)
+# Security IDs for index underlyings (IDX_I segment for NSE, BSE_FNO for SENSEX)
+# NIFTY = 13, BANKNIFTY = 25, SENSEX = 51 (same as DHAN_UNDERLYING above)
 _DHAN_UNDERLYING_ID: dict[str, int] = {
     "NIFTY":     13,
     "BANKNIFTY": 25,
+    "SENSEX":    51,
 }
 
-# Exchange segment strings required by the Dhan option-chain endpoint
+# Exchange segment strings required by the Dhan OPTION CHAIN endpoint (/optionchain, /expirylist)
+# ALL index underlyings use IDX_I here — this is the UNDERLYING segment, not the options' trading
+# segment. BSE_FNO is the *trading* segment for placing BSE F&O orders, but the option chain
+# request uses the INDEX underlying segment (IDX_I) for every index, including SENSEX.
+# Verified from Dhan docs example: {UnderlyingScrip:13, UnderlyingSeg:"IDX_I"}
+# and from scrip master: SENSEX INDEX = scrip 51, segment I (= IDX_I), exchange BSE.
 _DHAN_EXCHANGE_SEGMENT: dict[str, str] = {
-    "NIFTY":     "IDX_I",   # NSE index segment
-    "BANKNIFTY": "IDX_I",   # NSE index segment
+    "NIFTY":     "IDX_I",    # NSE index underlying segment
+    "BANKNIFTY": "IDX_I",    # NSE index underlying segment
+    "SENSEX":    "IDX_I",    # BSE index underlying segment (NOT BSE_FNO — that's for orders/trading)
 }
 
-
-def _secret(env: str, fname: str) -> str | None:
-    v = os.environ.get(env)
-    if v:
-        return v.strip()
-    for p in (ROOT / "data" / fname, Path.home() / fname):
-        try:
-            if p.exists():
-                return p.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-    return None
-
-
-def _headers() -> dict:
-    token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
-    if not token:
-        raise RuntimeError("No Dhan access token — set env DHAN_ACCESS_TOKEN or create "
-                           "data/.dhan_token (gitignored) with the token from the Dhan platform.")
-    h = {"access-token": token, "Accept": "application/json", "Content-Type": "application/json"}
-    cid = _secret("DHAN_CLIENT_ID", ".dhan_client_id")
-    if cid:
-        h["client-id"] = cid
-    return h
-
-
-# --- token store (SEBI caps the access token at 24h; user re-pastes daily) -----------
-TOKEN_FILE = ROOT / "data" / ".dhan_token"          # gitignored secret; never commit / log
-
-
-def write_token(token: str) -> None:
-    """Persist a pasted Dhan access token to the gitignored ``data/.dhan_token``. The token is
-    a SECRET — this never logs it. Strips whitespace; refuses an empty string."""
-    tok = (token or "").strip()
-    if not tok:
-        raise ValueError("empty token")
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(tok, encoding="utf-8")
 
 
 def _jwt_exp(token: str):
@@ -112,12 +81,105 @@ def _jwt_exp(token: str):
         return None
 
 
+def _secret(env: str, fname: str) -> str | None:
+    from datetime import datetime, timezone
+    env_v = (os.environ.get(env) or "").strip() or None
+    file_v = None
+    candidate_paths = ([TOKEN_FILE] if fname == ".dhan_token" else []) + [ROOT / "data" / fname, Path.home() / fname]
+    for p in candidate_paths:
+        try:
+            if p.exists():
+                txt = p.read_text(encoding="utf-8").strip()
+                if txt:
+                    file_v = txt
+                    break
+        except OSError:
+            pass
+
+    if not env_v and not file_v:
+        return None
+    if env_v and not file_v:
+        return env_v
+    if file_v and not env_v:
+        return file_v
+
+    # Both env and file exist. For JWT access tokens, avoid shadowing a fresh file token with an expired env var.
+    if "TOKEN" in env:
+        now = datetime.now(timezone.utc)
+        exp_env = _jwt_exp(env_v)
+        exp_file = _jwt_exp(file_v)
+
+        # If env is expired but file is valid, use file and sync env
+        if exp_env and exp_env <= now and exp_file and exp_file > now:
+            os.environ[env] = file_v
+            return file_v
+
+        # If env is valid, respect env
+        if exp_env and exp_env > now:
+            return env_v
+
+        # If file is valid, use file
+        if exp_file and exp_file > now:
+            os.environ[env] = file_v
+            return file_v
+
+    return env_v or file_v
+
+
+def _headers() -> dict:
+    token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
+    if not token:
+        raise RuntimeError("No Dhan access token — set env DHAN_ACCESS_TOKEN or create "
+                           "data/.dhan_token (gitignored) with the token from the Dhan platform.")
+    h = {"access-token": token, "Accept": "application/json", "Content-Type": "application/json"}
+    cid = _secret("DHAN_CLIENT_ID", ".dhan_client_id")
+    if cid:
+        h["client-id"] = cid
+    return h
+
+
+# --- token store (SEBI caps the access token at 24h; user re-pastes daily) -----------
+TOKEN_FILE = ROOT / "data" / ".dhan_token"          # gitignored secret; never commit / log
+
+
+def write_token(token: str) -> None:
+    """Persist a pasted Dhan access token to the gitignored ``data/.dhan_token``,
+    update in-memory environment, and update ``.env`` if present. The token is
+    a SECRET — this never logs it. Strips whitespace; refuses an empty string."""
+    import re
+    tok = (token or "").strip()
+    if not tok:
+        raise ValueError("empty token")
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    TOKEN_FILE.write_text(tok, encoding="utf-8")
+
+    # Update in-memory environment and config immediately
+    os.environ["DHAN_ACCESS_TOKEN"] = tok
+    try:
+        import config
+        config.DHAN_ACCESS_TOKEN = tok
+    except Exception:
+        pass
+
+    # Update .env if present so process restarts and daemon reloads pick up the fresh token
+    dotenv_path = ROOT / ".env"
+    if dotenv_path.exists():
+        try:
+            content = dotenv_path.read_text(encoding="utf-8")
+            if re.search(r"^DHAN_ACCESS_TOKEN=.*", content, flags=re.MULTILINE):
+                content = re.sub(r"^DHAN_ACCESS_TOKEN=.*", f"DHAN_ACCESS_TOKEN={tok}", content, flags=re.MULTILINE)
+            else:
+                content += f"\nDHAN_ACCESS_TOKEN={tok}\n"
+            dotenv_path.write_text(content, encoding="utf-8")
+        except Exception:
+            pass
+
+
 def token_status() -> dict:
     """Non-secret status of the current Dhan token for the UI: whether one is present, where it
     came from (env/file), and — decoded from the JWT ``exp`` claim — whether it is still valid and
     for how long. NEVER returns the token itself. ``expired`` is None when expiry is unknowable."""
     from datetime import datetime, timezone
-    env = bool(os.environ.get("DHAN_ACCESS_TOKEN"))
     token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
     if not token:
         return {"present": False, "source": None, "exp": None, "hours_left": None, "expired": None}
@@ -126,9 +188,21 @@ def token_status() -> dict:
     if exp is not None:
         hours_left = (exp - datetime.now(timezone.utc)).total_seconds() / 3600.0
         expired = hours_left <= 0
-    return {"present": True, "source": "env" if env else "file",
-            "exp": exp.isoformat() if exp else None,
-            "hours_left": hours_left, "expired": expired}
+
+    file_match = False
+    if TOKEN_FILE.exists():
+        try:
+            file_match = (TOKEN_FILE.read_text(encoding="utf-8").strip() == token)
+        except OSError:
+            pass
+
+    return {
+        "present": True,
+        "source": "file" if file_match else "env",
+        "exp": exp.isoformat() if exp else None,
+        "hours_left": hours_left,
+        "expired": expired,
+    }
 
 
 def fetch_rolling_option(from_date: str, to_date: str, strike: str = "ATM",
@@ -290,15 +364,34 @@ _FUT_MAX_DAYS = 90               # charts/intraday hard cap (both window size an
 
 
 def load_scrip_master():
-    """The Dhan scrip master as a DataFrame (or None). Downloaded fresh; pass the result to
-    ``near_month_future_id(..., master=...)`` to resolve several symbols from ONE download."""
+    """The Dhan scrip master as a DataFrame (or None). Caches locally per day so subsequent
+    calls take <50ms instead of downloading 30MB every time."""
+    from datetime import date
+    from pathlib import Path
     import io
     import requests
     import pandas as pd
-    r = requests.get(_SCRIP_MASTER, timeout=90)
-    if r.status_code != 200:
-        return None
-    return pd.read_csv(io.BytesIO(r.content), low_memory=False)
+
+    cache_dir = Path("data/.cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today().isoformat()
+    cache_file = cache_dir / f"scrip_master_{today}.csv"
+
+    if cache_file.exists() and cache_file.stat().st_size > 1_000_000:
+        try:
+            return pd.read_csv(cache_file, low_memory=False)
+        except Exception:
+            pass
+
+    try:
+        r = requests.get(_SCRIP_MASTER, timeout=90)
+        if r.status_code == 200 and len(r.content) > 1_000_000:
+            cache_file.write_bytes(r.content)
+            return pd.read_csv(io.BytesIO(r.content), low_memory=False)
+    except Exception:
+        pass
+    return None
+
 
 
 def nearest_futures(symbol: str = "NIFTY", n: int = 2, master=None) -> list[dict]:

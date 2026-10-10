@@ -268,3 +268,71 @@ def test_futures_intraday_dir_source_routing(tmp_path, monkeypatch):
     df = load_futures_intraday_day("2026-07-17", "NIFTY", directory=dhan_dir)
     assert df is not None and len(df) == 1 and float(df.iloc[0]["agg_oi"]) == 1.2e7
     assert load_futures_intraday_day("2026-07-17", "NIFTY", directory=nse_dir) is None
+
+
+def test_capture_futures_from_ws_uses_in_memory_store(tmp_path, monkeypatch):
+    """capture_futures_from_ws writes snapshot directly from spot_ticker._STORE without network."""
+    import time
+    from datetime import datetime, timezone
+    import app.spot_ticker as st
+
+    test_store = {
+        "NIFTY": {
+            "fut": {
+                "symbol": "NIFTY",
+                "expiry": "2026-10-27",
+                "price": 24500.0,
+                "change": 50.0,
+                "oi": 8000000,
+                "volume": 900000,
+                "spot": 24450.0,
+            },
+            "ws_at": time.time(),
+            "at": time.time(),
+        }
+    }
+    monkeypatch.setattr(st, "_STORE", test_store)
+
+    now = datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc)
+    res = fb.capture_futures_from_ws("NIFTY", now_utc=now, min_gap_minutes=0.0, directory=tmp_path)
+    assert res is not None
+    path, written = res
+    assert written is True
+    assert path.exists()
+
+    df = fb.load_futures_intraday_day("2026-10-08", "NIFTY", directory=tmp_path)
+    assert df is not None
+    assert len(df) == 1
+    assert float(df.iloc[0]["price"]) == 24500.0
+    assert int(df.iloc[0]["oi"]) == 8000000
+
+
+def test_capture_futures_from_ws_falls_back_when_stale(tmp_path, monkeypatch):
+    """When WS store is stale or empty, capture_futures_from_ws falls back to REST path."""
+    import time
+    import app.spot_ticker as st
+
+    # Empty store
+    monkeypatch.setattr(st, "_STORE", {})
+
+    called = False
+
+    def dummy_fetch(sym):
+        nonlocal called
+        called = True
+        return {"symbol": sym, "price": 24600.0, "oi": 5000000, "volume": 100000}
+
+    def dummy_parse(p, sym):
+        return p
+
+    res = fb.capture_futures_from_ws(
+        "NIFTY",
+        min_gap_minutes=0.0,
+        directory=tmp_path,
+        fetch_fn=dummy_fetch,
+        parse_fn=dummy_parse,
+    )
+    assert called is True
+    assert res is not None
+    assert res[1] is True
+

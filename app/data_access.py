@@ -8,12 +8,38 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
+import time
+
+log = logging.getLogger(__name__)
 
 import config
 from data.expiry import filter_expiry_window
 from data.nse import from_nse_results
 from gex.levels import Levels, compute_levels
 from regime.classify import RegimeView, from_levels
+from resilience import (
+    get_circuit_breaker,
+    get_lkgs_manager,
+    apply_derivative_freeze,
+    get_adaptive_poller,
+    validate_snapshot,
+)
+
+import concurrent.futures as _cf
+import threading
+
+_EXECUTOR: _cf.ThreadPoolExecutor | None = None
+_EXECUTOR_LOCK = threading.Lock()
+
+
+def _get_executor() -> _cf.ThreadPoolExecutor:
+    global _EXECUTOR
+    with _EXECUTOR_LOCK:
+        if _EXECUTOR is None:
+            _EXECUTOR = _cf.ThreadPoolExecutor(max_workers=5, thread_name_prefix="gex_worker")
+        return _EXECUTOR
+
 
 WINDOW_CHOICES = ["0dte_to_next_monthly", "weekly", "0dte", "monthly", "all"]
 
@@ -42,31 +68,17 @@ class DashboardData:
     proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
     proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
     sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
-@dataclass
-class DashboardData:
-    levels: Levels
-    view: RegimeView
-    fetched_at: datetime
-    n_contracts: int
-    expiries: list
-    window: str
-    source: str
-    symbol: str = config.DEFAULT_INDEX   # which index this bundle is for
-    index_label: str = ""                # display name ("Nifty 50" / "Bank Nifty")
-    oi_volume: dict | None = None  # OI/ΔOI/volume aggregates (live NSE only)
-    oi_strikes: list | None = None  # per-strike OI/ΔOI within a band of spot (live NSE)
-    india_vix: dict | None = None  # {last, change, pct_change}; live NSE, best-effort
-    usdinr: dict | None = None     # {last, change, pct_change, as_of}; USD/INR future
-    news: dict | None = None       # {count, impact, top}; free RSS, best-effort
-    vanna_now: float | None = None  # live dealer-vanna exposure (cache units) for the regime gauge
-    charm_now: float | None = None  # live dealer-charm exposure (better vol metric at 0-DTE)
-    dte_now: float | None = None    # days to nearest expiry (picks vanna vs charm for the gauge)
-    day_ohlc: dict | None = None    # true index day OHLC {open,high,low,close,ltp} (Dhan feed only)
-    source_note: str | None = None  # human note when the feed fell back (e.g. Dhan token expired)
-    proxy_vanna: float | None = None  # live |vanna| of the regime-proxy index (SENSEX borrows NIFTY)
-    proxy_symbol: str | None = None   # which index the regime is borrowed from (None = own)
-    sectors: dict | None = None       # {rows:[{label,pct,last,group}], source} sector-rotation strip
     contracts: object = None           # options snapshot contracts DataFrame (v2 tab strike analysis)
+    is_degraded: bool = False          # IOAS §2.2 LKGS degraded flag
+    staleness_seconds: float = 0.0     # IOAS §2.2 staleness age
+    degraded_reason: str = ""          # IOAS §2.2 reason for degradation
+    derivatives_frozen: bool = False   # IOAS §2.2 derivative freeze flag
+    circuit_state: str = "CLOSED"      # IOAS §2.2 circuit breaker state
+
+    @property
+    def raw_agg(self) -> dict:
+        """Alias for oi_volume to preserve backward compatibility across all modules."""
+        return self.oi_volume or {}
 
 
 def _live_greeks(contracts, spot: float, lot: float) -> dict:
@@ -108,7 +120,7 @@ def _live_greeks(contracts, spot: float, lot: float) -> dict:
         return out
 
 
-def _fetch_live_chain(idx, live_source: str | None):
+def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = None):
     """Pull the LIVE chain as an NSE-shaped payload, honouring the Dhan-primary / NSE-backup
     policy (config.LIVE_SOURCE). Returns (payload, source, day_ohlc, note). Dhan failures (expired
     24h token, un-subscribed Data API, network, or a shape mismatch that makes the adapter raise)
@@ -124,35 +136,67 @@ def _fetch_live_chain(idx, live_source: str | None):
         if pref == "dhan" or has_token:
             try:
                 from data import dhan_live
-                payload = dhan_live.fetch_chain(idx.symbol)     # throttled, ≥3s/expiry
-                ohlc = dhan_live.fetch_index_ohlc(idx.symbol)   # true day OHLC, best-effort
+                payload = dhan_live.fetch_chain(idx.symbol, max_expiries=max_expiries)     # throttled, ≥3s/expiry
+                # Prefer the in-memory WS store (already updated sub-second by ws_spot_feed) to
+                # avoid a redundant /marketfeed/quote REST call on every chain refresh (~450ms + quota).
+                # Fall back to the REST endpoint only when the WS store is empty or stale.
+                try:
+                    from app.spot_ticker import _STORE as _spot_store, STALE_AFTER_S as _stale
+                    import time as _t
+                    _rec = _spot_store.get(idx.symbol)
+                    _ws_ohlc = _rec.get("ohlc") if _rec else None
+                    _ws_age = _t.time() - _rec.get("at", 0) if _rec else 9999
+                    ohlc = _ws_ohlc if (_ws_ohlc and _ws_age < _stale) else dhan_live.fetch_index_ohlc(idx.symbol)
+                except Exception:  # noqa: BLE001
+                    ohlc = dhan_live.fetch_index_ohlc(idx.symbol)
                 return payload, "dhan", ohlc, None
             except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
                 note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
         elif pref == "auto":
             note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
+
+    if idx.symbol == "SENSEX":
+        from data.demo import build_demo_payload
+        payload = build_demo_payload(symbol="SENSEX")
+        source = "demo-fallback (no Dhan token)"
+        note = "No Dhan token present — showing synthetic SENSEX demo data. Paste a Dhan access token to enable live BSE feed."
+        return payload, source, None, note
+
+
     payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
     source = "nse (Dhan fallback)" if note and "using NSE" in note and pref != "nse" else "nse"
     return payload, source, None, note
+
+
+_PROXY_VANNA_CACHE: dict = {}  # (symbol, sign_model) -> (ts, vanna)
 
 
 def _proxy_vanna(proxy_symbol: str, live_source: str | None,
                  sign_model: str | None = None) -> float | None:
     """Live dealer-|vanna| of a correlated proxy index (e.g. NIFTY for SENSEX), for a BORROWED
     regime read. One nearest-expiry chain (Dhan if a token is present, else NSE), snapshot ->
-    _live_greeks. Best-effort: None on ANY failure, so the regime just falls back to the index's
-    own vanna. See the SENSEX-vanna study (NIFTY vanna grades SENSEX's move; SENSEX's own does not)."""
+    _live_greeks. Cached for 60 seconds to eliminate redundant cross-symbol rate-limit queuing."""
+    now_t = time.time()
+    ckey = (proxy_symbol, sign_model)
+    if ckey in _PROXY_VANNA_CACHE:
+        ts, val = _PROXY_VANNA_CACHE[ckey]
+        if now_t - ts < 60.0:
+            return val
     try:
-        from data.nse import parse_nse_option_chain
         pidx = config.get_index(proxy_symbol)
+
+        from data.nse import parse_nse_option_chain
         pref = (live_source or config.LIVE_SOURCE or "auto").lower()
         has_token = bool(config.DHAN_CLIENT_ID and config.DHAN_ACCESS_TOKEN)
         if not has_token:
             from data.dhan import token_status
             has_token = bool(token_status().get("present"))
-        if pref in ("dhan", "auto") and has_token:
+
+        # If live_source is explicitly "dhan", use Dhan; otherwise prefer fast NSE
+        # to avoid starving the primary index's 3.1s rate gate
+        if pref == "dhan" and has_token:
             from data import dhan_live
-            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)  # nearest expiry is enough
+            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)
         else:
             from data.nse import fetch_chain as nse_fetch
             payload = nse_fetch(pidx.symbol, has_weekly=pidx.has_weekly)
@@ -162,7 +206,9 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
             dealer_sign_model=(sign_model or config.DEALER_SIGN_MODEL),
             fetched_at=datetime.now(timezone.utc), underlying=pidx.symbol,
         )
-        return _live_greeks(snap.contracts, float(spot), pidx.lot_size).get("vanna")
+        res = _live_greeks(snap.contracts, float(spot), pidx.lot_size).get("vanna")
+        _PROXY_VANNA_CACHE[ckey] = (now_t, res)
+        return res
     except Exception:  # noqa: BLE001 - borrowed regime is best-effort context
         return None
 
@@ -190,42 +236,123 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
     source_note = None
     proxy_vanna = None
 
-    if use_demo:
-        from data.demo import build_demo_rows
+    cb = get_circuit_breaker(idx.symbol)
+    lkgs = get_lkgs_manager()
 
-        rows, spot = build_demo_rows(fetched_at=fetched_at)
+    from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
+                          parse_nse_option_chain, per_strike_nearest_changes,
+                          per_strike_oi)
+
+    if use_demo:
+        from data.demo import build_demo_payload, build_demo_rows
+
+        rows, spot = build_demo_rows(fetched_at=fetched_at, symbol=idx.symbol)
         source = "DEMO-SYNTHETIC"
-        payload = None
-        india_vix = None
+        payload = build_demo_payload(symbol=idx.symbol, spot=spot, fetched_at=fetched_at)
+        india_vix = {"last": 13.5}
         usdinr = None
         news = None
         sectors = None
+
     else:
-        import concurrent.futures as _cf
+        # Check Circuit Breaker before making network calls
+        if not cb.can_execute():
+            deg_data, is_deg, stale_sec, reason = lkgs.get_degraded_snapshot(
+                idx.symbol,
+                reason=f"Circuit Breaker is {cb.state.value} ({cb.cooldown_remaining:.0f}s cooldown remaining)",
+            )
+            if deg_data is not None:
+                deg_data.circuit_state = cb.state.value
+                return apply_derivative_freeze(deg_data, force_freeze=True)
+
         from data.news import fetch_news
         from data.sectors import fetch_sector_snap
-        from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
-                              parse_nse_option_chain, per_strike_nearest_changes,
-                              per_strike_oi)
 
         usdinr = None          # USD/INR retired — Dhan has no live contract and it's unresearched
-        sectors = fetch_sector_snap()
         _dhan = _prefer_dhan(live_source)
         _nse_vix = None
         _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
-        with _cf.ThreadPoolExecutor(max_workers=3) as _ex:
-            _fx = {"news": _ex.submit(fetch_news)}
+
+        t_start = time.monotonic()
+        try:
+            _ex = _get_executor()
+            max_exps = (
+                1 if window in ("0dte", "current_week") else
+                (2 if window in ("next_week", "weekly", "monthly") else None)
+            )
+            _fx = {
+                "chain": _ex.submit(_fetch_live_chain, idx, live_source, max_expiries=max_exps),
+                "news": _ex.submit(fetch_news),
+                "sectors": _ex.submit(fetch_sector_snap, prefer_dhan=_dhan),
+            }
             if idx.regime_proxy:
                 _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source, _resolved_sign_model)
             if not _dhan:
                 from data.nse import fetch_india_vix as _nvx
                 _fx["vix"] = _ex.submit(_nvx)
-            payload, source, day_ohlc, source_note = _fetch_live_chain(idx, live_source)
+
+            payload, source, day_ohlc, source_note = _fx["chain"].result()
             rows, spot = parse_nse_option_chain(payload)
             news = _fx["news"].result()
+            sectors = _fx["sectors"].result()
             proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
             _nse_vix = _fx["vix"].result() if "vix" in _fx else None
-        india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
+            india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
+
+            # Record round-trip time in adaptive poller
+            rtt = time.monotonic() - t_start
+            get_adaptive_poller(idx.symbol).record_rtt(rtt)
+
+            # Pre-analytics validation gatekeeper (IOAS §2.3)
+            val_res = validate_snapshot(
+                idx.symbol,
+                spot=spot,
+                rows=rows,
+                prev_spot=lkgs.get_prev_spot(idx.symbol),
+                strike_step=getattr(idx, "strike_step", 50),
+            )
+            if not val_res.is_valid:
+                cb.record_failure(val_res.summary())
+                deg_data, is_deg, stale_sec, reason = lkgs.get_degraded_snapshot(
+                    idx.symbol,
+                    reason=f"Validation gatekeeper rejected snapshot: {val_res.summary()}",
+                )
+                if deg_data is not None:
+                    deg_data.circuit_state = cb.state.value
+                    return apply_derivative_freeze(deg_data, force_freeze=True)
+            else:
+                cb.record_success()
+
+        except Exception as exc:
+            cb.record_failure(str(exc))
+            deg_data, is_deg, stale_sec, reason = lkgs.get_degraded_snapshot(
+                idx.symbol,
+                reason=f"Live feed error: {exc}",
+            )
+            if deg_data is not None:
+                deg_data.circuit_state = cb.state.value
+                return apply_derivative_freeze(deg_data, force_freeze=True)
+
+            # Check on-disk cache for symbol
+            from pathlib import Path
+            import pickle
+            disk_snap = Path(f"data/journal/latest_snap_{idx.symbol}.pkl")
+            if disk_snap.exists():
+                try:
+                    with open(disk_snap, "rb") as f:
+                        cached_bundle = pickle.load(f)
+                    if cached_bundle is not None:
+                        cached_bundle.is_degraded = True
+                        cached_bundle.degraded_reason = f"Live feed error: {exc}. Loaded cached disk snapshot."
+                        return cached_bundle
+                except Exception:
+                    pass
+
+            if idx.symbol == "SENSEX":
+                log.warning("Falling back to synthetic demo bundle for SENSEX: %s", exc)
+                return load_dashboard(window=window, use_demo=True, symbol=idx.symbol, sign_model=sign_model)
+            raise
+
 
 
     _resolved_sign_model = sign_model or config.DEALER_SIGN_MODEL
@@ -235,7 +362,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         fetched_at=fetched_at, oi_timestamp=fetched_at, underlying=idx.symbol,
     )
     snap.contracts = filter_expiry_window(snap.contracts, window, fetched_at.date(),
-                                          has_weekly=idx.has_weekly)
+                                          has_weekly=idx.has_weekly, exchange=idx.exchange)
+
     snap.validate()
 
     levels = compute_levels(
@@ -273,7 +401,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["call_oi_near"] = c.get("call_oi_near")   # nearest-expiry abs OI (trailing windows)
             s["put_oi_near"] = c.get("put_oi_near")
     gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
-    return DashboardData(
+    bundle = DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         contracts=snap.contracts,
         n_contracts=len(snap.contracts), expiries=expiries, window=window, source=source,
@@ -283,4 +411,11 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         day_ohlc=day_ohlc, source_note=source_note,
         proxy_vanna=proxy_vanna, proxy_symbol=(idx.regime_proxy if proxy_vanna is not None else None),
         sectors=sectors,
+        is_degraded=False,
+        staleness_seconds=0.0,
+        degraded_reason="",
+        derivatives_frozen=False,
+        circuit_state=cb.state.value if not use_demo else "CLOSED",
     )
+    get_lkgs_manager().store(idx.symbol, bundle, fetched_at=fetched_at)
+    return bundle

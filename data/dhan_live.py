@@ -118,7 +118,14 @@ def _throttle() -> None:                            # back-compat shim for exist
 
 
 def _seg_scrip(symbol: str) -> tuple[str, int]:
+    # Dhan /optionchain API: UnderlyingSeg is ALWAYS IDX_I for index underlyings,
+    # regardless of whether the exchange is NSE (NIFTY/BANKNIFTY) or BSE (SENSEX).
+    # BSE_FNO is only the F&O *trading* segment for the option contracts themselves —
+    # NOT the underlying segment used in the /optionchain or /expirylist request.
+    # Verified: Dhan docs example uses {UnderlyingScrip:13, UnderlyingSeg:"IDX_I"};
+    # scrip master shows SENSEX index = scrip 51, segment I (= IDX_I).
     return IDX_SEG, _SCRIP.get(symbol.upper(), NIFTY_SCRIP)
+
 
 
 def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
@@ -167,7 +174,8 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
     collapses onto the last price AFTER the session, which is why a % change derived from it is
     only trustworthy while ``as_of`` is today.
     """
-    seg, scrip = _seg_scrip(symbol)          # seg is always IDX_I for the supported indices
+    seg = IDX_SEG          # index spot quotes (NIFTY 13, BANKNIFTY 25, SENSEX 51) are on IDX_I
+    scrip = _SCRIP.get(symbol.upper(), NIFTY_SCRIP)
     try:
         ids = [scrip] + ([DHAN_VIX_ID] if scrip != DHAN_VIX_ID else [])   # bundle VIX into one call
         r = _post("/marketfeed/quote", {seg: ids}, timeout)
@@ -254,11 +262,11 @@ def _option_contracts(symbol: str = "NIFTY", expiry_iso: str | None = None) -> d
         return c
     out = {"day": today, "seg": None, "expiry": None, "by_strike": {}}
     try:
-        import io
         import pandas as pd
-        import requests
-        from data.dhan import _SCRIP_MASTER
-        df = pd.read_csv(io.BytesIO(requests.get(_SCRIP_MASTER, timeout=90).content), low_memory=False)
+        from data.dhan import load_scrip_master
+        df = load_scrip_master()
+        if df is None:
+            return out
         o = df[df["SEM_INSTRUMENT_NAME"] == "OPTIDX"].copy()
         # the tradable name lives in SEM_CUSTOM_SYMBOL ("NIFTY 21 JUL 24200 CALL"); SM_SYMBOL_NAME
         # is blank for index options, so match on the custom symbol's leading token.
@@ -349,11 +357,11 @@ def _future_contracts(symbol: str = "NIFTY") -> dict:
         return c
     out = {"day": today, "seg": None, "ids": [], "near_expiry": None}
     try:
-        import io
+        from data.dhan import load_scrip_master
         import pandas as pd
-        import requests
-        from data.dhan import _SCRIP_MASTER
-        df = pd.read_csv(io.BytesIO(requests.get(_SCRIP_MASTER, timeout=90).content), low_memory=False)
+        df = load_scrip_master()
+        if df is None:
+            return out
         f = df[(df["SEM_INSTRUMENT_NAME"] == "FUTIDX")
                & (df["SEM_TRADING_SYMBOL"].astype(str).str.upper().str.startswith(symbol.upper() + "-"))].copy()
         f["exp"] = pd.to_datetime(f["SEM_EXPIRY_DATE"], errors="coerce")
@@ -362,9 +370,9 @@ def _future_contracts(symbol: str = "NIFTY") -> dict:
             out["seg"] = f"{str(f.iloc[0]['SEM_EXM_EXCH_ID']).upper()}_FNO"
             out["ids"] = [int(x) for x in f["SEM_SMST_SECURITY_ID"].tolist()][:3]
             out["near_expiry"] = f.iloc[0]["exp"].date().isoformat()
+            _FUT_CACHE[symbol] = out
     except Exception:  # noqa: BLE001
         pass
-    _FUT_CACHE[symbol] = out
     return out
 
 

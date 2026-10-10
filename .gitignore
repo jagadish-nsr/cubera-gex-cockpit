@@ -20,4 +20,8 @@ data/.dhan_client_id
 .DS_Store
 *.DS_Store
 logs/
+scratch/
+tests_artifacts/
+data/.cache/
+data/sentinel.db*
 

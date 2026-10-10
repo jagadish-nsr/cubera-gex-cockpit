@@ -45,9 +45,19 @@ def test_score_news_counts_fresh_and_picks_top():
     # missile(3) + strike(2) + border(2) dominate -> that is the top headline.
     assert "missile" in s["top"].lower()
     assert s["impact"] >= 7
+    assert "headlines" in s
+    assert len(s["headlines"]) >= 2
+    top_hl = s["headlines"][0]
+    assert top_hl["category"] == "Geopolitics"
+    assert top_hl["is_fresh"] is True
 
 
 def test_score_news_empty_when_all_stale():
     now = datetime(2026, 6, 13, 12, 0, tzinfo=timezone.utc)  # >25 min after all items
     s = score_news(parse_feed(FIXTURE), now, window_min=25)
-    assert s == {"count": 0, "impact": 0, "top": ""}
+    assert s["count"] == 0
+    assert s["impact"] == 0
+    assert s["top"] == ""
+    # Headlines are still accessible for market context
+    assert isinstance(s.get("headlines"), list)
+

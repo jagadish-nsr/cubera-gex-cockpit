@@ -58,3 +58,22 @@ def test_calm_outside_band_waits():
     L = _Levels(spot=23547, call_wall=24000, put_wall=23700)
     cs = suggest_structure(L, "calm", lot_size=65)
     assert cs.legs == [] and "wait" in cs.name.lower()
+
+
+def test_suggest_structures_multiple_options():
+    from structures.suggest import suggest_structures
+
+    # In calm regime with spot inside range: returns primary (condor) + alternate (credit spread)
+    L = _Levels(spot=23900, call_wall=24000, put_wall=23600)
+    candidates = suggest_structures(L, "calm", lot_size=65)
+    assert len(candidates) == 2
+    assert "condor" in candidates[0].name.lower()
+    assert "call spread" in candidates[1].name.lower()  # spot closer to call wall
+
+    # In wild regime: returns primary (strangle) + alternate (debit spread)
+    L_wild = _Levels(spot=23000, call_wall=23200, put_wall=22800)
+    wild_candidates = suggest_structures(L_wild, "wild", lot_size=65, bias_score=2.5)
+    assert len(wild_candidates) == 2
+    assert "strangle" in wild_candidates[0].name.lower()
+    assert "bull call" in wild_candidates[1].name.lower()  # positive bias score
+

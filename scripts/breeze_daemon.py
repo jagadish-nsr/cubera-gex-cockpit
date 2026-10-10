@@ -57,10 +57,11 @@ def run_daemon():
             window = config.EXPIRY_WINDOW_DEFAULT
             indices = list(config.INDICES.values())
 
-            # For Dhan adapter, skip SENSEX (not supported)
+            # For Dhan adapter, verify index is configured in Dhan scrip mappings
             if config.DATA_SOURCE == "dhan":
                 from data.dhan import _DHAN_UNDERLYING_ID as _dhan_ids
                 indices = [idx for idx in indices if idx.symbol in _dhan_ids]
+
 
             if session_expired:
                 # Back-off: wait for the user to update the token in the UI.
