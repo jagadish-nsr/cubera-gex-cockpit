@@ -2201,6 +2201,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                                 <span style="font-size:1.05rem">🌅</span>
                                 <b style="font-size:.92rem;color:#f59e0b">Pre-Bell Tactical Briefing</b>
                                 <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">Discovered {disc_time} IST</span>
+                                <a href="/?view=pre_post_market_guide" target="_blank" style="font-size:.70rem;color:var(--spark);text-decoration:none;background:rgba(56,189,248,.08);padding:1px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.25)">📖 Pre-Bell Guide ↗</a>
                             </div>
                             <div>{badge_html}</div>
                         </div>
@@ -6027,6 +6028,11 @@ DOCS_MAP = {
         "file": "docs/options-recommendation-strategies-guide.md",
         "badge": "Institutional Execution Engine",
     },
+    "pre_post_market_guide": {
+        "title": "🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide",
+        "file": "docs/pre-post-market-and-recommendations-guide.md",
+        "badge": "Pre-Bell Alpha & CAS 15:40",
+    },
 }
 
 
@@ -6447,6 +6453,8 @@ def main() -> None:
         st.markdown(
             '<div style="display:flex;flex-direction:column;gap:8px;font-size:.82rem;margin-top:8px">'
             '<a href="/?view=user_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📖 Master User Guide ↗</a>'
+            '<a href="/?view=pre_post_market_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🌅 Pre/Post-Market & Recs Guide ↗</a>'
+            '<a href="/?view=options_strategies_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎯 Options Strategies Guide ↗</a>'
             '<a href="/?view=orderflow_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">⚡ OrderFlow Signals Guide ↗</a>'
             '<a href="/?view=signal_efficiency_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📈 Signal Efficiency Guide ↗</a>'
             '<a href="/?view=gex_playbook" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🗺️ Indian GEX Playbook ↗</a>'

@@ -17,16 +17,22 @@ Access any of the specialized technical guides directly in your browser or click
    - Deep dive on all 7 institutional strategies: **MOMENTUM**, **STRUCTURE**, **GAMMA SQUEEZE**, **ICEBERG FADE**, **VANNA-CHARM**, **VOL DISPERSION**, and **RATIO REVERSAL**.
    - Comprehensive trigger mechanics, spot invalidation levels, target/stop pricing, and capital preservation filtering.
 
-3. **[⚡ OrderFlow Sentinel Stream Signals Guide](/?view=orderflow_guide)**
+3. **[🌅 Pre/Post-Market & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)**
+   - Microstructure guide covering the **Pre-Open Auction (09:00–09:15)**, 09:07:30 adaptive equilibrium discovery, and the 7-minute Pre-Bell Alpha Window.
+   - Synthetic pre-bell option MTM delta shock modeling and 6 opening gap classifications.
+   - Cash Closing Auction Session (CAS) 30-min VWAP settlement and F&O extended close (15:40 IST).
+   - Persistent bookmarked card lifecycle (active until user unpins or contract crosses expiry date).
+
+4. **[⚡ OrderFlow Sentinel Stream Signals Guide](/?view=orderflow_guide)**
    - Microstructure indicators: CVD, OrderFlow Delta, absorption, trapped buyers/sellers, and momentum divergence.
 
-4. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
+5. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
    - Theoretical mechanics of dealer positioning, gamma hedging, and Gamma Blast squeeze regimes.
 
-5. **[🧭 Participant Open Interest Guide](/?view=participant_guide)**
+6. **[🧭 Participant Open Interest Guide](/?view=participant_guide)**
    - Daily institutional positioning tracking FII, Proprietary Desk, and Client positioning drift.
 
-6. **[📈 Signal Efficiency & Edge Analytics](/?view=signal_efficiency_guide)**
+7. **[📈 Signal Efficiency & Edge Analytics](/?view=signal_efficiency_guide)**
    - Statistical performance verification, Maximum Favorable Excursion (MFE), and Maximum Adverse Excursion (MAE).
 
 ---
