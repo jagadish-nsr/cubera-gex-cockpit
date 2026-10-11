@@ -9,8 +9,20 @@ venv/
 # Large live snapshot captures
 data/fixtures/nse_nifty_*.json
 
-# session logs (personal data)
-data/journal/
+# session logs, databases, timeseries CSVs, and cache (personal/local runtime data)
+data/journal/**/*.csv
+data/journal/*.csv
+data/journal/**/*.db*
+data/journal/*.db*
+data/journal/*.log
+data/journal/sessions/
+data/journal/timeseries/
+data/journal/options_eod/
+data/journal/participant_oi/
+data/journal/holidays/
+data/journal/*.pkl
+data/journal/.*
+data/sentinel.db*
 
 # Dhan API credentials (never commit)
 data/.dhan_token

@@ -24,6 +24,7 @@ from __future__ import annotations
 import concurrent.futures
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
 from typing import Any, Sequence
 
 import config
@@ -547,6 +548,122 @@ def compute_position_size(
     )
 
 
+def _format_option_symbol(symbol: str, expiry_tag: str, strike: float, side: str) -> str:
+    """Format institutional option symbol e.g. 'NIFTY 13 OCT 22700 CE'."""
+    if expiry_tag:
+        return f"{symbol} {expiry_tag} {int(strike)} {side}"
+    return f"{symbol} {int(strike)} {side}"
+
+
+def _generate_strategy_score_reason(
+    idea: TradeIdea,
+    spot: float,
+    session_vwap: float,
+    vwap_upper: float,
+    vwap_lower: float,
+    call_wall: float,
+    put_wall: float,
+    flip: float,
+    bias_score: float,
+    latest_bar: Any | None = None,
+    sentinel_signals: Sequence[Any] | None = None,
+) -> str:
+    """Generate strategy-specific microstructure reasoning with precise data points."""
+    badge = (idea.play_badge or "").upper()
+    side = idea.side
+    reasons: list[str] = []
+
+    # 1. Strategy-specific edge & exact level data points
+    if "ICEBERG" in badge:
+        if side == "CE":
+            band_dist = spot - vwap_lower
+            reasons.append(f"VWAP lower band absorption (Spot ₹{spot:,.0f} vs -1σ band ₹{vwap_lower:,.0f}, {band_dist:+.0f} pts buffer)")
+            if latest_bar and getattr(latest_bar, "delta_ratio", 0) > 0.05:
+                reasons.append(f"Buyer tape absorption (Δ ratio {latest_bar.delta_ratio:+.2f})")
+            else:
+                reasons.append("Passive limit bids absorbing retail selling")
+        else:
+            band_dist = vwap_upper - spot
+            reasons.append(f"VWAP upper band absorption (Spot ₹{spot:,.0f} vs +1σ band ₹{vwap_upper:,.0f}, {band_dist:+.0f} pts buffer)")
+            if latest_bar and getattr(latest_bar, "delta_ratio", 0) < -0.05:
+                reasons.append(f"Seller tape absorption (Δ ratio {latest_bar.delta_ratio:+.2f})")
+            else:
+                reasons.append("Passive limit asks absorbing retail buying")
+
+    elif "GAMMA SQUEEZE" in badge:
+        wall = call_wall if side == "CE" else put_wall
+        dist = abs(spot - wall)
+        if side == "CE":
+            reasons.append(f"Testing Call Wall ₹{call_wall:,.0f} ({dist:,.0f} pts proximity)")
+            reasons.append("Short-gamma dealer acceleration forcing buy hedging")
+        else:
+            reasons.append(f"Trapdoor breakdown threshold at Put Wall ₹{put_wall:,.0f} ({dist:,.0f} pts proximity)")
+            reasons.append("Dealer negative gamma cascading panic sell hedging")
+
+    elif "MOMENTUM" in badge:
+        vwap_diff = spot - session_vwap
+        if side == "CE":
+            reasons.append(f"Holding above Session VWAP ₹{session_vwap:,.0f} ({vwap_diff:+.0f} pts)")
+            reasons.append(f"Delta velocity ({idea.delta_approx:+.2f}) monetizing upward momentum")
+        else:
+            reasons.append(f"Holding below Session VWAP ₹{session_vwap:,.0f} ({vwap_diff:+.0f} pts)")
+            reasons.append(f"Delta velocity ({idea.delta_approx:+.2f}) monetizing downward momentum")
+
+    elif "VANNA" in badge or "CHARM" in badge:
+        range_pts = abs(call_wall - put_wall)
+        flip_dist = abs(spot - flip)
+        reasons.append(f"Spot pinned in {range_pts:,.0f} pts range between walls (₹{put_wall:,.0f}–₹{call_wall:,.0f})")
+        reasons.append(f"Proximity to Gamma Flip ₹{flip:,.0f} ({flip_dist:,.0f} pts) accelerating 0DTE charm decay")
+
+    elif "VOL DISPERSION" in badge or "VOL" in badge:
+        comp_dist = abs(spot - session_vwap)
+        reasons.append(f"Volatility compression within {comp_dist:,.0f} pts of Session VWAP (₹{session_vwap:,.0f})")
+        reasons.append("Compression coiling for high-convexity long gamma expansion")
+
+    elif "RATIO" in badge:
+        target_wall = call_wall if side == "CE" else put_wall
+        wall_dist = abs(spot - target_wall)
+        reasons.append(f"Asymmetric drift targeting {'Call Wall' if side == 'CE' else 'Put Wall'} ₹{target_wall:,.0f} ({wall_dist:,.0f} pts away)")
+        reasons.append(f"Structured R:R ({idea.risk_reward_ratio}) eliminating sideways theta decay")
+
+    elif "STRUCTURE" in badge:
+        wall = call_wall if side == "CE" else put_wall
+        reasons.append(f"Institutional structure play off {'Call Wall' if side == 'CE' else 'Put Wall'} ₹{wall:,.0f}")
+        reasons.append(f"Convex risk profile ({idea.risk_reward_ratio}) riding institutional order flow")
+
+    else:
+        reasons.append(f"Aligned with {idea.play_type}")
+
+    # 2. Directional Bias Score with exact numeric reading
+    if side == "CE":
+        if bias_score >= 4.0:
+            reasons.append(f"Aggressive Bullish Bias ({bias_score:+.1f}/5.0)")
+        elif bias_score >= 1.5:
+            reasons.append(f"Directional Bias ({bias_score:+.1f}/5.0) confirming upside")
+        elif bias_score <= -1.5:
+            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/5.0)")
+        else:
+            reasons.append(f"Neutral Bias ({bias_score:+.1f}/5.0)")
+    else:
+        if bias_score <= -4.0:
+            reasons.append(f"Aggressive Bearish Bias ({bias_score:+.1f}/5.0)")
+        elif bias_score <= -1.5:
+            reasons.append(f"Directional Bias ({bias_score:+.1f}/5.0) confirming downside")
+        elif bias_score >= 1.5:
+            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/5.0)")
+        else:
+            reasons.append(f"Neutral Bias ({bias_score:+.1f}/5.0)")
+
+    # 3. Gamma Regime relative to Flip
+    if flip > 0:
+        if side == "CE" and spot > flip:
+            reasons.append(f"Positive gamma buffer (+{spot - flip:,.0f} pts above Flip)")
+        elif side == "PE" and spot < flip:
+            reasons.append(f"Negative gamma acceleration (-{flip - spot:,.0f} pts below Flip)")
+
+    return " · ".join(reasons)
+
+
 def _evaluate_ce_strategies(
     symbol: str,
     step: int,
@@ -568,6 +685,7 @@ def _evaluate_ce_strategies(
     contracts_df: Any,
     oi_map: dict[float, dict],
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
+    expiry_tag: str = "",
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Call candidate strategies in parallel."""
     # =======================================================================
@@ -611,7 +729,7 @@ def _evaluate_ce_strategies(
             play_type="ATM Momentum Play",
             play_badge="MOMENTUM",
             strike=ce_atm_k,
-            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
             current_ltp=ce_atm_ltp,
             delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
             entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
@@ -653,7 +771,7 @@ def _evaluate_ce_strategies(
             play_type="Institutional Structure Play",
             play_badge="STRUCTURE",
             strike=ce_struct_k,
-            option_symbol=f"{symbol} {int(ce_struct_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
             current_ltp=ce_struct_ltp,
             delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
             entry_trigger=f"Passive buyer absorption confirmed at Put Wall (₹{put_wall:,.0f}) or breakout through Gamma Flip (₹{flip:,.0f}).",
@@ -695,7 +813,7 @@ def _evaluate_ce_strategies(
             play_type="Gamma Squeeze Lotto Play",
             play_badge="GAMMA SQUEEZE",
             strike=ce_squeeze_k,
-            option_symbol=f"{symbol} {int(ce_squeeze_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_squeeze_k, "CE"),
             current_ltp=ce_sq_ltp,
             delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
             entry_trigger=f"Aggressive market buy orders breach Call Wall (₹{call_wall:,.0f}) with positive CVD volume spike.",
@@ -737,7 +855,7 @@ def _evaluate_ce_strategies(
             play_type="OrderFlow Iceberg Absorption Fade",
             play_badge="ICEBERG FADE",
             strike=ce_atm_k,
-            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
             current_ltp=ce_atm_ltp,
             delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
             entry_trigger=f"Tape buyer absorption confirmed at VWAP lower band (₹{vwap_lower:,.0f}) with positive CVD divergence.",
@@ -779,7 +897,7 @@ def _evaluate_ce_strategies(
             play_type="0DTE Vanna-Charm Theta Compression",
             play_badge="VANNA-CHARM",
             strike=ce_vanna_k,
-            option_symbol=f"{symbol} {int(ce_vanna_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
             current_ltp=ce_vc_ltp,
             delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
             entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with Charm acceleration locking pin near Flip (₹{flip:,.0f}).",
@@ -821,7 +939,7 @@ def _evaluate_ce_strategies(
             play_type="Volatility Dispersion / Long Gamma",
             play_badge="VOL DISPERSION",
             strike=ce_atm_k,
-            option_symbol=f"{symbol} {int(ce_atm_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
             current_ltp=ce_atm_ltp,
             delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
             entry_trigger=f"Volatility compression breakout above ₹{vwap_upper:,.0f} with surging market volume and expanding ATR.",
@@ -863,7 +981,7 @@ def _evaluate_ce_strategies(
             play_type="Zero-Cost Ratio Risk Reversal",
             play_badge="RATIO REVERSAL",
             strike=ce_struct_k,
-            option_symbol=f"{symbol} {int(ce_struct_k)} CE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
             current_ltp=ce_struct_ltp,
             delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
             entry_trigger=f"Moderate upward drift targeting Call Wall (₹{call_wall:,.0f}) with positive institutional accumulation.",
@@ -912,6 +1030,7 @@ def _evaluate_pe_strategies(
     contracts_df: Any,
     oi_map: dict[float, dict],
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
+    expiry_tag: str = "",
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Put candidate strategies in parallel."""
     # =======================================================================
@@ -955,7 +1074,7 @@ def _evaluate_pe_strategies(
             play_type="ATM Momentum Play",
             play_badge="MOMENTUM",
             strike=pe_atm_k,
-            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
             current_ltp=pe_atm_ltp,
             delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
             entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
@@ -997,7 +1116,7 @@ def _evaluate_pe_strategies(
             play_type="Institutional Structure Play",
             play_badge="STRUCTURE",
             strike=pe_struct_k,
-            option_symbol=f"{symbol} {int(pe_struct_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
             current_ltp=pe_struct_ltp,
             delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
             entry_trigger=f"Aggressive seller rejection at Call Wall (₹{call_wall:,.0f}) with seller delta absorption on the tape.",
@@ -1039,7 +1158,7 @@ def _evaluate_pe_strategies(
             play_type="Gamma Squeeze Lotto Play",
             play_badge="GAMMA SQUEEZE",
             strike=pe_squeeze_k,
-            option_symbol=f"{symbol} {int(pe_squeeze_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_squeeze_k, "PE"),
             current_ltp=pe_sq_ltp,
             delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
             entry_trigger=f"High-volume breakdown below Put Wall (₹{put_wall:,.0f}) with cascading negative market delta.",
@@ -1081,7 +1200,7 @@ def _evaluate_pe_strategies(
             play_type="OrderFlow Iceberg Absorption Fade",
             play_badge="ICEBERG FADE",
             strike=pe_atm_k,
-            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
             current_ltp=pe_atm_ltp,
             delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
             entry_trigger=f"Tape seller absorption confirmed at VWAP upper band (₹{vwap_upper:,.0f}) with negative CVD divergence.",
@@ -1123,7 +1242,7 @@ def _evaluate_pe_strategies(
             play_type="0DTE Vanna-Charm Theta Compression",
             play_badge="VANNA-CHARM",
             strike=pe_vanna_k,
-            option_symbol=f"{symbol} {int(pe_vanna_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
             current_ltp=pe_vc_ltp,
             delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
             entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with gamma decay locking pin near Flip (₹{flip:,.0f}).",
@@ -1165,7 +1284,7 @@ def _evaluate_pe_strategies(
             play_type="Volatility Dispersion / Long Gamma",
             play_badge="VOL DISPERSION",
             strike=pe_atm_k,
-            option_symbol=f"{symbol} {int(pe_atm_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
             current_ltp=pe_atm_ltp,
             delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
             entry_trigger=f"Volatility compression breakdown below ₹{vwap_lower:,.0f} with surging volume and downside momentum.",
@@ -1207,7 +1326,7 @@ def _evaluate_pe_strategies(
             play_type="Zero-Cost Ratio Risk Reversal",
             play_badge="RATIO REVERSAL",
             strike=pe_struct_k,
-            option_symbol=f"{symbol} {int(pe_struct_k)} PE",
+            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
             current_ltp=pe_struct_ltp,
             delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
             entry_trigger=f"Moderate downward drift targeting Put Wall (₹{put_wall:,.0f}) with steady distribution tape.",
@@ -1353,6 +1472,32 @@ def generate_trade_recommendations(
     except Exception:
         pass
 
+    # Resolve active expiry tag (e.g. '13 OCT')
+    expiry_tag = ""
+    try:
+        if contracts_df is not None and hasattr(contracts_df, "columns") and "expiry" in contracts_df.columns:
+            valid_exp = contracts_df["expiry"].dropna()
+            if not valid_exp.empty:
+                raw_exp = str(valid_exp.iloc[0]).strip()[:10]
+                dt = datetime.strptime(raw_exp, "%Y-%m-%d")
+                expiry_tag = dt.strftime("%d %b").upper()
+        if not expiry_tag and getattr(data, "expiries", None) and len(data.expiries) > 0:
+            exp_obj = data.expiries[0]
+            if hasattr(exp_obj, "strftime"):
+                expiry_tag = exp_obj.strftime("%d %b").upper()
+            else:
+                raw_exp = str(exp_obj)[:10]
+                dt = datetime.strptime(raw_exp, "%Y-%m-%d")
+                expiry_tag = dt.strftime("%d %b").upper()
+        if not expiry_tag:
+            from data.expiry import next_weekly_expiry, next_monthly_expiry
+            today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+            exch = getattr(idx, "exchange", "NSE")
+            exp_date = next_weekly_expiry(today_ist, exch) if getattr(idx, "has_weekly", True) else next_monthly_expiry(today_ist, exch)
+            expiry_tag = exp_date.strftime("%d %b").upper()
+    except Exception:
+        pass
+
     # Concurrent strategy evaluation: evaluate CE and PE pipelines simultaneously in parallel threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         fut_ce = executor.submit(
@@ -1377,6 +1522,7 @@ def generate_trade_recommendations(
             contracts_df=contracts_df,
             oi_map=oi_map,
             contracts_map=contracts_map,
+            expiry_tag=expiry_tag,
         )
         fut_pe = executor.submit(
             _evaluate_pe_strategies,
@@ -1400,6 +1546,7 @@ def generate_trade_recommendations(
             contracts_df=contracts_df,
             oi_map=oi_map,
             contracts_map=contracts_map,
+            expiry_tag=expiry_tag,
         )
         ce_recs = fut_ce.result()
         pe_recs = fut_pe.result()
@@ -1420,28 +1567,32 @@ def generate_trade_recommendations(
         t.triggered_at = now_ist
         t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
 
-        # Generate score reason attribution
-        score_reasons = []
-        if t.side == "CE":
-            if spot > flip:
-                score_reasons.append("Positive gamma acceleration above Flip")
-            if bias_score > 1.5:
-                score_reasons.append(f"Directional bias ({bias_score:+.1f}) confirming upside")
-            if latest_bar and getattr(latest_bar, "delta_ratio", 0) > 0.10:
-                score_reasons.append("Buyer delta aggression")
-            if spot >= call_wall - 150:
-                score_reasons.append(f"Testing Call Wall {call_wall:,.0f}")
-        else:
-            if spot < flip:
-                score_reasons.append("Negative gamma acceleration below Flip")
-            if bias_score < -1.5:
-                score_reasons.append(f"Directional bias ({bias_score:+.1f}) confirming downside")
-            if latest_bar and getattr(latest_bar, "delta_ratio", 0) < -0.10:
-                score_reasons.append("Seller delta dominance")
-            if spot <= put_wall + 150:
-                score_reasons.append(f"Testing Put Wall {put_wall:,.0f}")
+        # Generate strategy-specific microstructure reasoning with precise data points
+        t.score_reason = _generate_strategy_score_reason(
+            idea=t,
+            spot=spot,
+            session_vwap=session_vwap,
+            vwap_upper=vwap_upper,
+            vwap_lower=vwap_lower,
+            call_wall=call_wall,
+            put_wall=put_wall,
+            flip=flip,
+            bias_score=bias_score,
+            latest_bar=latest_bar,
+            sentinel_signals=sentinel_signals,
+        )
 
-        t.score_reason = " · ".join(score_reasons) if score_reasons else "Aligned with institutional structure"
+        factors = {
+            "bias_score": round(bias_score, 2),
+            "spot": round(spot, 1),
+            "session_vwap": round(session_vwap, 1),
+            "flip": round(flip, 1),
+            "call_wall": round(call_wall, 1),
+            "put_wall": round(put_wall, 1),
+            "delta_ratio": round(float(getattr(latest_bar, "delta_ratio", 0.0) or 0.0), 3) if latest_bar else 0.0,
+            "play_badge": t.play_badge,
+            "strike": t.strike,
+        }
 
         if rec_store:
             try:
@@ -1452,10 +1603,13 @@ def generate_trade_recommendations(
                     current_spot=spot,
                     current_ltp=t.current_ltp,
                     reason=t.score_reason,
+                    factors=factors,
                 )
                 t.score_history = rec_store.get_score_history(t.rec_id, limit=10)
                 if len(t.score_history) >= 2:
-                    t.score_delta = t.score_history[-1].get("score", t.quality_score) - t.score_history[-2].get("score", t.quality_score)
+                    t.score_delta = t.score_history[0].get("score_delta", t.score_history[0].get("score", t.quality_score) - t.score_history[1].get("score", t.quality_score))
+                elif len(t.score_history) == 1:
+                    t.score_delta = t.score_history[0].get("score_delta", 0)
 
                 # Persist recommendation
                 idea_payload = {
@@ -1484,7 +1638,9 @@ def generate_trade_recommendations(
                     "catalyst_tags": t.catalyst_tags,
                     "is_bookmarked": 1 if t.is_bookmarked else 0,
                 }
-                rec_store.save_or_update_recommendation(idea_payload)
+                saved_trig = rec_store.save_or_update_recommendation(idea_payload)
+                if saved_trig:
+                    t.triggered_at = saved_trig
 
                 # Log point-in-time ML telemetry features
                 vanna_val = getattr(data, "vanna_now", None) if data else None

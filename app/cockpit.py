@@ -519,9 +519,11 @@ header[data-testid="stHeader"]{background:transparent}
 }
 
 /* Recommendation Engine Cards */
+.rec-card,
+.ck.rec-card,
 .ck .rec-card{
   background:var(--surface);
-  border:1px solid var(--line);
+  border:2px solid var(--line);
   border-radius:10px;
   padding:14px 16px;
   margin-bottom:12px;
@@ -529,34 +531,156 @@ header[data-testid="stHeader"]{background:transparent}
   transition:all .18s ease;
   position:relative;
 }
+.rec-card:hover,
+.ck.rec-card:hover,
 .ck .rec-card:hover{
   transform:translateY(-2px);
-  box-shadow:0 6px 18px rgba(0,0,0,.12);
+  box-shadow:0 6px 18px rgba(0,0,0,.18);
 }
+.rec-card.ce,
+.ck.rec-card.ce,
 .ck .rec-card.ce{
-  border-left:4px solid var(--go);
+  border:2px solid #16a34a !important;
+  border-left:6px solid #16a34a !important;
+  box-shadow:0 2px 10px rgba(22,163,74,.15), var(--shadow) !important;
 }
+.rec-card.ce:hover,
+.ck.rec-card.ce:hover,
 .ck .rec-card.ce:hover{
-  border-color:var(--go);
+  border-color:#15803d !important;
+  border-left-color:#15803d !important;
+  box-shadow:0 4px 16px rgba(22,163,74,.25) !important;
 }
+.rec-card.pe,
+.ck.rec-card.pe,
 .ck .rec-card.pe{
-  border-left:4px solid var(--stop);
+  border:2px solid #dc2626 !important;
+  border-left:6px solid #dc2626 !important;
+  box-shadow:0 2px 10px rgba(220,38,38,.15), var(--shadow) !important;
 }
+.rec-card.pe:hover,
+.ck.rec-card.pe:hover,
 .ck .rec-card.pe:hover{
-  border-color:var(--stop);
+  border-color:#b91c1c !important;
+  border-left-color:#b91c1c !important;
+  box-shadow:0 4px 16px rgba(220,38,38,.25) !important;
 }
+.rec-card.bookmarked,
+.ck.rec-card.bookmarked,
 .ck .rec-card.bookmarked{
-  border-color:#eab308 !important;
-  box-shadow:0 0 14px rgba(234,179,8,.22), var(--shadow) !important;
+  border:2px solid #eab308 !important;
+  border-left:6px solid #eab308 !important;
+  box-shadow:0 0 16px rgba(234,179,8,.3), var(--shadow) !important;
 }
+.rec-card.event-tgt,
+.ck.rec-card.event-tgt,
 .ck .rec-card.event-tgt{
-  border-color:#10b981 !important;
-  box-shadow:0 0 14px rgba(16,185,129,.25), var(--shadow) !important;
+  border:2px solid #10b981 !important;
+  border-left:6px solid #10b981 !important;
+  box-shadow:0 0 16px rgba(16,185,129,.3), var(--shadow) !important;
 }
+.rec-card.event-sl,
+.ck.rec-card.event-sl,
 .ck .rec-card.event-sl{
-  border-color:#ef4444 !important;
-  box-shadow:0 0 14px rgba(239,68,68,.25), var(--shadow) !important;
+  border:2px solid #ef4444 !important;
+  border-left:6px solid #ef4444 !important;
+  box-shadow:0 0 16px rgba(239,68,68,.3), var(--shadow) !important;
 }
+@keyframes rec-new-blink {
+  0% { opacity: 1.0; transform: scale(1.0); }
+  50% { opacity: 0.22; transform: scale(0.95); }
+  100% { opacity: 1.0; transform: scale(1.0); }
+}
+.rec-badge-new,
+.ck .rec-badge-new{
+  display:inline-flex;
+  align-items:center;
+  background:#ef4444;
+  color:#ffffff;
+  font-size:.64rem;
+  font-weight:800;
+  letter-spacing:.06em;
+  padding:2px 7px;
+  border-radius:9999px;
+  animation:rec-new-blink 1.2s infinite ease-in-out;
+  box-shadow:0 0 8px rgba(239,68,68,.6);
+  vertical-align:middle;
+  margin-left:6px;
+}
+
+/* Conviction Trajectory Audit Compact Table */
+.ck-audit-table-wrap{
+  width:100%;
+  overflow-x:auto;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--surface);
+  box-shadow:0 1px 4px rgba(0,0,0,.06);
+  margin:6px 0 2px;
+}
+.ck-audit-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:.70rem;
+  line-height:1.35;
+  color:var(--ink);
+}
+.ck-audit-table th{
+  background:var(--surface-2);
+  color:var(--ink-mute);
+  font-weight:700;
+  text-transform:uppercase;
+  font-size:.64rem;
+  letter-spacing:.04em;
+  padding:6px 8px;
+  border-bottom:1px solid var(--line);
+  text-align:left;
+  white-space:nowrap;
+}
+.ck-audit-table td{
+  padding:6px 8px;
+  border-bottom:1px solid var(--line);
+  vertical-align:middle;
+}
+.ck-audit-table tr:last-child td{
+  border-bottom:none;
+}
+.ck-audit-table tr:hover{
+  background:rgba(148,163,184,.06);
+}
+.ck-audit-delta{
+  display:inline-block;
+  padding:1px 6px;
+  border-radius:4px;
+  font-weight:750;
+  font-size:.68rem;
+  font-family:var(--mono);
+  text-align:center;
+}
+.ck-audit-delta.pos{
+  color:#16a34a;
+  background:rgba(22,163,74,.12);
+  border:1px solid rgba(22,163,74,.3);
+}
+.ck-audit-delta.neg{
+  color:#ef4444;
+  background:rgba(239,68,68,.12);
+  border:1px solid rgba(239,68,68,.3);
+}
+.ck-audit-delta.zero{
+  color:var(--ink-mute);
+  background:var(--surface-2);
+  border:1px solid var(--line);
+}
+.ck-audit-score{
+  font-weight:800;
+  font-size:.74rem;
+  font-family:var(--mono);
+}
+.ck-audit-score.high{color:#16a34a}
+.ck-audit-score.med{color:#eab308}
+.ck-audit-score.low{color:#ef4444}
+
 .ck .rec-header{
   display:flex;
   justify-content:space-between;
@@ -1825,28 +1949,94 @@ def _toggle_rec_bookmark(rec_id: str) -> None:
     """Callback for toggling bookmark status on an option recommendation."""
     toggle_bookmark(rec_id)
     _REC_BATCH_CACHE.clear()
+    st.session_state["_rec_bookmark_sync_request"] = True
 
 
 def _render_rec_score_history_table(rec_id: str) -> None:
-    """Render historical score evolution trajectory for a recommendation card."""
+    """Render historical score evolution trajectory with compact typography and positive/negative color coding."""
     history = get_score_history(rec_id, limit=10)
     if not history:
         st.caption("No historical score updates logged yet for this setup.")
         return
-    rows_md = [
-        "| Recorded (IST) | Underlying Spot | Opt LTP | Conviction Score | Delta | Microstructure Reasoning |",
-        "|---|---|---|---|---|---|",
-    ]
+
+    # Ensure newest entries are strictly on top (latest first)
+    history = sorted(
+        history,
+        key=lambda x: (int(x.get("history_id") or 0), str(x.get("recorded_at") or "")),
+        reverse=True
+    )
+
+    table_rows = []
     for h in history:
         d_val = h.get("score_delta", 0)
-        d_str = f"+{d_val}" if d_val > 0 else str(d_val)
+        score_val = h.get("score", 0)
         spot_val = f"₹{h.get('current_spot', 0):,.1f}"
         ltp_val = f"₹{h.get('current_ltp', 0):,.1f}"
-        sc_val = f"<b>{h.get('score', 0)}/100</b>"
-        reason_val = h.get("reason", "Base model evaluation")
         ts_val = h.get("recorded_at", "")
-        rows_md.append(f"| {ts_val} | {spot_val} | {ltp_val} | {sc_val} | {d_str} | {reason_val} |")
-    st.markdown("\n".join(rows_md))
+        if len(ts_val) >= 19:
+            try:
+                date_part = ts_val[5:10]   # '10-10'
+                time_part = ts_val[11:19]  # '23:07:24'
+                ts_display = f"{date_part} {time_part}"
+            except Exception:
+                ts_display = ts_val
+        else:
+            ts_display = ts_val
+
+        # Score delta color coding
+        if d_val > 0:
+            d_html = f'<span class="ck-audit-delta pos">+{d_val}</span>'
+        elif d_val < 0:
+            d_html = f'<span class="ck-audit-delta neg">{d_val}</span>'
+        else:
+            d_html = '<span class="ck-audit-delta zero">0</span>'
+
+        # Conviction score color coding
+        if score_val >= 80:
+            sc_cls = "high"
+        elif score_val >= 75:
+            sc_cls = "med"
+        else:
+            sc_cls = "low"
+        score_html = f'<span class="ck-audit-score {sc_cls}">{score_val}/100</span>'
+
+        # Microstructure reasoning highlight
+        reason_val = h.get("reason", "Base model evaluation")
+        if "Conviction strengthened" in reason_val:
+            reason_val = reason_val.replace("Conviction strengthened", '<b style="color:#16a34a">Conviction strengthened</b>')
+        elif "Conviction faded" in reason_val:
+            reason_val = reason_val.replace("Conviction faded", '<b style="color:#ef4444">Conviction faded</b>')
+
+        reason_html = reason_val.replace(" · ", ' <span style="color:var(--ink-mute);opacity:0.65">·</span> ')
+
+        table_rows.append(
+            f'<tr>'
+            f'<td style="font-family:var(--mono);white-space:nowrap;color:var(--ink-mute);font-size:0.68rem">{ts_display}</td>'
+            f'<td style="font-family:var(--mono);white-space:nowrap;font-weight:600">{spot_val}</td>'
+            f'<td style="font-family:var(--mono);white-space:nowrap;font-weight:700;color:var(--ink)">{ltp_val}</td>'
+            f'<td style="text-align:center">{score_html}</td>'
+            f'<td style="text-align:center">{d_html}</td>'
+            f'<td style="font-size:0.70rem;line-height:1.35;color:var(--ink)">{reason_html}</td>'
+            f'</tr>'
+        )
+
+    tbody_html = "".join(table_rows)
+    table_html = (
+        f'<div class="ck-audit-table-wrap">'
+        f'<table class="ck-audit-table">'
+        f'<thead><tr>'
+        f'<th style="width:13%">Recorded</th>'
+        f'<th style="width:12%">Spot</th>'
+        f'<th style="width:11%">Opt LTP</th>'
+        f'<th style="width:14%;text-align:center">Score</th>'
+        f'<th style="width:10%;text-align:center">Delta</th>'
+        f'<th style="width:40%">Microstructure Reasoning</th>'
+        f'</tr></thead>'
+        f'<tbody>{tbody_html}</tbody>'
+        f'</table>'
+        f'</div>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
 def _process_unacknowledged_alerts() -> None:
@@ -1886,6 +2076,23 @@ def _process_unacknowledged_alerts() -> None:
     acknowledge_alerts([a["event_id"] for a in alerts])
 
 
+def _is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 300.0) -> bool:
+    """Return True if recommendation timestamp was within max_age_seconds (default 5 mins)."""
+    if not triggered_at_str or not isinstance(triggered_at_str, str):
+        return False
+    try:
+        from datetime import datetime, timezone, timedelta
+        clean_str = triggered_at_str.strip().replace("T", " ")[:19]
+        dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+        ist = timezone(timedelta(hours=5, minutes=30))
+        dt_ist = dt.replace(tzinfo=ist)
+        now_ist = datetime.now(ist)
+        diff_sec = (now_ist - dt_ist).total_seconds()
+        return 0 <= diff_sec <= max_age_seconds
+    except Exception:
+        return False
+
+
 def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIdea:
     """Reconstruct a TradeIdea instance from a SQLite recommendation record."""
     try:
@@ -1915,13 +2122,27 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIde
     c_label = "HIGHER CONVICTION (Grade A+)" if score > 85 else ("SECONDARY CONVICTION (Grade B+)" if score >= 75 else "WATCHLIST (Grade B)")
     c_color = "var(--go)" if score > 85 else ("var(--spark)" if score >= 75 else "var(--ink-mute)")
 
+    opt_sym = rec_dict.get("option_symbol", "")
+    if opt_sym:
+        parts = opt_sym.split()
+        if len(parts) == 3:
+            try:
+                from data.expiry import next_weekly_expiry
+                from datetime import datetime, timezone, timedelta
+                today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+                exp_date = next_weekly_expiry(today_ist, "NSE")
+                exp_tag = exp_date.strftime("%d %b").upper()
+                opt_sym = f"{parts[0]} {exp_tag} {parts[1]} {parts[2]}"
+            except Exception:
+                pass
+
     return TradeIdea(
         symbol=rec_dict.get("symbol", "NIFTY"),
         side=rec_dict.get("side", "CE"),
         play_type=rec_dict.get("play_type", "Strategy Setup"),
         play_badge=rec_dict.get("play_badge", "MOMENTUM"),
         strike=float(rec_dict.get("strike", 0)),
-        option_symbol=rec_dict.get("option_symbol", ""),
+        option_symbol=opt_sym,
         current_ltp=est_ltp,
         delta_approx=delta,
         entry_trigger=rec_dict.get("entry_trigger", payload.get("entry_trigger", "")),
@@ -2091,12 +2312,28 @@ def _render_single_recommendation_card(
         card_extra_cls += " event-sl"
 
     trig_time_str = idea.triggered_at if idea.triggered_at else "Live Cycle"
+    is_new = _is_recently_triggered(idea.triggered_at, max_age_seconds=300.0)
+    new_badge = '<span class="rec-badge-new">NEW</span>' if is_new else ""
+
+    # Ensure full option symbol with expiry
+    opt_symbol_display = idea.option_symbol
+    parts = opt_symbol_display.split()
+    if len(parts) == 3:
+        try:
+            from data.expiry import next_weekly_expiry
+            from datetime import datetime, timezone, timedelta
+            today_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+            exp_date = next_weekly_expiry(today_ist, "NSE")
+            exp_tag = exp_date.strftime("%d %b").upper()
+            opt_symbol_display = f"{parts[0]} {exp_tag} {parts[1]} {parts[2]}"
+        except Exception:
+            pass
 
     card_html = (
         f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
         f'{event_banner_html}'
         f'<div class="rec-header">'
-        f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>{bm_chip}'
+        f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>{new_badge}{bm_chip}'
         f'<span style="font-size:.72rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">Δ {idea.delta_approx:+.2f}</span>'
         f'<span style="font-size:.70rem;color:var(--ink-mute);margin-left:8px;font-family:var(--mono)">⏱️ {trig_time_str}</span>'
         f'</div>'
@@ -2105,7 +2342,7 @@ def _render_single_recommendation_card(
         f'</span>'
         f'</div>'
         f'<div class="rec-symbol-row">'
-        f'<span class="rec-symbol {side_cls}">{idea.option_symbol}</span>'
+        f'<span class="rec-symbol {side_cls}">{opt_symbol_display}</span>'
         f'<span class="rec-rr">R:R {idea.risk_reward_ratio}</span>'
         f'</div>'
         f'<div class="rec-px-row">'
@@ -2175,7 +2412,7 @@ def _render_single_recommendation_card(
         )
     with col_trade:
         if show_action_button:
-            strat_key = f"⚡ {idea.option_symbol} ({idea.play_badge})"
+            strat_key = f"⚡ {opt_symbol_display} ({idea.play_badge})"
             is_executed = st.session_state.get("just_opened_trade", {}).get("strategy") == strat_key
             btn_label = (
                 f"✅ Executed ({pos_size.suggested_lots} Lots)"
@@ -2192,7 +2429,7 @@ def _render_single_recommendation_card(
             )
 
     # Historical score audit trail expander
-    with st.expander(f"📈 Conviction Trajectory Audit ({idea.option_symbol} · Score {idea.quality_score})", expanded=False):
+    with st.expander(f"📈 Conviction Trajectory Audit ({opt_symbol_display} · Score {idea.quality_score})", expanded=False):
         _render_rec_score_history_table(idea.rec_id)
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
@@ -2250,6 +2487,9 @@ def _render_strategy_effectiveness_strip(symbol: str) -> None:
 
 def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None:
     """Render strictly bookmarked options recommendations in Tab 1 (Cockpit)."""
+    if st.session_state.pop("_rec_bookmark_sync_request", False):
+        st.rerun(scope="app")
+
     bookmarked_recs = list_bookmarked_records(symbol)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
@@ -2313,6 +2553,9 @@ _REC_BATCH_CACHE: dict = {}  # symbol -> (float_ts, spot, bias_score, batch)
 
 def _render_trade_recommendations(symbol: str, window: str) -> None:
     """Render High-Conviction Options Recommendations (Score > 85 with 75-85 fallback) and Strategy Effectiveness."""
+    if st.session_state.pop("_rec_bookmark_sync_request", False):
+        st.rerun(scope="app")
+
     # Process unacknowledged alerts & trigger audio chime
     _process_unacknowledged_alerts()
 
