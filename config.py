@@ -179,5 +179,14 @@ def is_market_open(now: datetime | None = None) -> bool:
 
     if now.weekday() >= 5:  # Saturday or Sunday
         return False
+
+    # Check NSE F&O trading holiday calendar
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(now.date()):
+            return False
+    except Exception:
+        pass
+
     t_min = now.hour * 60 + now.minute
     return MARKET_OPEN_MIN <= t_min < CASH_CLOSE_MIN

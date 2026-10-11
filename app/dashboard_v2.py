@@ -138,13 +138,8 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 """, unsafe_allow_html=True)
 
 def is_market_open():
-    """Return True if it is currently between 09:15 and 15:30 IST on a weekday."""
-    now = datetime.now(pytz.timezone(config.MARKET_TZ))
-    if now.weekday() >= 5:  # Saturday or Sunday
-        return False
-    
-    t_num = now.hour * 100 + now.minute
-    return 915 <= t_num < 1530
+    """Return True if it is currently between 09:15 and 15:30 IST on a non-holiday weekday."""
+    return config.is_market_open()
 
 
 

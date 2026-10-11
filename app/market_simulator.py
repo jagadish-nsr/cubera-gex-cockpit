@@ -558,7 +558,29 @@ def sync_sentinel_simulation(
         spots_at_steps = [24500.0]
 
     # Generate 1m bars from 09:15 up to upto_time
-    start_dt = datetime.now(IST).replace(hour=9, minute=15, second=0, microsecond=0)
+    now_ist = datetime.now(IST)
+    try:
+        from data.holidays import is_trading_day, roll_back_to_trading_day
+    except Exception:
+        def is_trading_day(d):
+            return d.weekday() < 5
+        def roll_back_to_trading_day(d):
+            while d.weekday() >= 5:
+                d -= timedelta(days=1)
+            return d
+
+    if source_type == "day" and target_id:
+        try:
+            d_part = datetime.strptime(str(target_id)[:10], "%Y-%m-%d").date()
+            ref_day = d_part
+        except Exception:
+            ref_day = now_ist.date()
+    else:
+        ref_day = now_ist.date()
+        if not is_trading_day(ref_day):  # Weekend or market holiday on weekday
+            ref_day = roll_back_to_trading_day(ref_day - timedelta(days=1))
+
+    start_dt = datetime(ref_day.year, ref_day.month, ref_day.day, 9, 15, tzinfo=IST)
     bars_1m = []
     tracker = SessionVWAPTracker()
     running_cvd = 0.0

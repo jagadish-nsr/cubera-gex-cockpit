@@ -36,7 +36,16 @@ def seed_sentinel_demo_if_needed(
     """Ensure at least 60 bars and active signals exist for the instrument with authentic IST timing."""
     ensure_sentinel_schema()
     now_ist = datetime.now(IST)
-    is_weekday = now_ist.weekday() < 5
+    try:
+        from data.holidays import is_trading_day, roll_back_to_trading_day
+        is_live_trading_day = is_trading_day(now_ist.date())
+    except Exception:
+        is_live_trading_day = now_ist.weekday() < 5
+        def roll_back_to_trading_day(d):
+            while d.weekday() >= 5:
+                d -= timedelta(days=1)
+            return d
+
     m_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
     m_close = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
 
@@ -46,9 +55,12 @@ def seed_sentinel_demo_if_needed(
         last_b = existing_1m[-1]
         # Check if bars are from a previous session or if price is disconnected from spot
         max_dev = 75.0 if "BANKNIFTY" in instrument_id else (100.0 if "SENSEX" in instrument_id else 25.0)
-        if is_weekday and (m_open <= now_ist <= m_close) and last_b.start_ts.date() != now_ist.date():
+        if is_live_trading_day and (m_open <= now_ist <= m_close) and last_b.start_ts.date() != now_ist.date():
             force = True
         elif abs(last_b.close - spot) > max_dev:
+            force = True
+        elif not is_trading_day(last_b.start_ts.date()):
+            # Exchange is closed on weekends and holidays; purge stale non-trading day bars
             force = True
 
     if len(existing_1m) >= 20 and len(existing_5m) >= 5 and not force:
@@ -64,21 +76,16 @@ def seed_sentinel_demo_if_needed(
             save_bar(b5)
         return
 
-    if is_weekday and (m_open <= now_ist <= m_close):
+    if is_live_trading_day and (m_open <= now_ist <= m_close):
         # Market open: 90 bars ending at the current minute
         end_time = now_ist.replace(second=0, microsecond=0)
     else:
-        # Market closed: anchor 90 bars to the closing hour (14:00 to 15:30 IST) of latest session
-        ref_day = now_ist.date()
-        if now_ist < m_open or not is_weekday:
-            days_back = 1
-            if now_ist.weekday() == 0:  # Monday morning -> Friday
-                days_back = 3
-            elif now_ist.weekday() == 6:  # Sunday -> Friday
-                days_back = 2
-            elif now_ist.weekday() == 5:  # Saturday -> Friday
-                days_back = 1
-            ref_day = ref_day - timedelta(days=days_back)
+        # Market closed (after hours, weekend, or holiday):
+        # Anchor 90 bars to the closing hour (14:00 to 15:30 IST) of latest completed trading session
+        if now_ist < m_open or not is_live_trading_day:
+            ref_day = roll_back_to_trading_day(now_ist.date() - timedelta(days=1))
+        else:
+            ref_day = now_ist.date()
         end_time = datetime(ref_day.year, ref_day.month, ref_day.day, 15, 30, tzinfo=IST)
 
     start_time = end_time - timedelta(minutes=90)

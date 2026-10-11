@@ -51,6 +51,34 @@ def test_is_market_open_weekends():
     assert config.is_market_open(dt_sun) is False
 
 
+def test_is_market_open_weekday_holidays():
+    # Friday, 2026-10-02 (Gandhi Jayanti) during trading hours -> Closed
+    dt_gandhi = datetime(2026, 10, 2, 11, 30, 0, tzinfo=IST)
+    assert config.is_market_open(dt_gandhi) is False
+
+    # Tuesday, 2026-10-20 (NSE Holiday) during trading hours -> Closed
+    dt_holiday_tue = datetime(2026, 10, 20, 11, 30, 0, tzinfo=IST)
+    assert config.is_market_open(dt_holiday_tue) is False
+
+
+def test_sentinel_seed_anchors_to_prior_trading_day_on_weekday_holiday():
+    from sentinel.feed.demo import seed_sentinel_demo_if_needed
+    from sentinel.storage.db import list_recent_bars
+
+    # Simulate running on Friday, 2026-10-02 (Gandhi Jayanti)
+    fake_holiday_now = datetime(2026, 10, 2, 11, 30, 0, tzinfo=IST)
+    with patch("sentinel.feed.demo.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_holiday_now
+        mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+        mock_dt.fromisoformat = datetime.fromisoformat
+        seed_sentinel_demo_if_needed("NIFTY-FUT", spot=22500.0, force=True)
+
+    bars = list_recent_bars("NIFTY-FUT", "1m", 5)
+    assert len(bars) > 0
+    # Must anchor to 2026-10-01 (Thursday, the preceding trading day before Gandhi Jayanti)
+    assert bars[-1].start_ts.strftime("%Y-%m-%d") == "2026-10-01"
+
+
 def test_step_sentinel_live_feed_pauses_after_hours():
     # Mock market closed
     with patch("config.is_market_open", return_value=False):
