@@ -309,12 +309,18 @@ def is_bookmarked(rec_id: str) -> bool:
 
 
 def list_bookmarked_records(symbol: str | None = None) -> list[dict]:
-    """Return all currently bookmarked recommendation records (from fast in-memory cache or DB)."""
+    """Return all currently bookmarked recommendation records that have not crossed their expiry date."""
     _prime_cache()
     with _BOOKMARK_CACHE_LOCK:
         records = list(_BOOKMARK_CACHE.values())
     if symbol and symbol.upper() != "ALL":
         records = [r for r in records if r.get("symbol", "").upper() == symbol.upper()]
+    # Keep bookmarked cards active until user explicitly unpins them OR contract crosses expiry date
+    try:
+        from data.pre_post_market import is_contract_expired
+        records = [r for r in records if not is_contract_expired(r)]
+    except Exception:
+        pass
     return records
 
 
