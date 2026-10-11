@@ -331,8 +331,20 @@ def append_score_history(
     current_ltp: float,
     reason: str,
     factors: dict | None = None,
+    force_record: bool = False,
 ) -> None:
-    """Append a score trajectory data point with reason explaining why conviction is increasing or fading."""
+    """Append a score trajectory data point with reason explaining why conviction is increasing or fading.
+
+    Suppresses entries outside active market hours and when spot & opt LTP have not changed from previous entry.
+    """
+    if not force_record:
+        try:
+            import config
+            if not config.is_market_open():
+                return
+        except Exception:
+            pass
+
     ensure_schema()
     now_ts = _now_ist_str()
 
@@ -346,6 +358,13 @@ def append_score_history(
             if int(score) == int(last["score"]):
                 # No change in score: do not append duplicate trajectory row
                 return
+
+            last_spot = float(last["current_spot"] or 0)
+            last_ltp = float(last["current_ltp"] or 0)
+            if not force_record and abs(current_spot - last_spot) < 0.05 and abs(current_ltp - last_ltp) < 0.05:
+                # No change in spot and opt LTP from previous entry: do not append duplicate trajectory row
+                return
+
             score_delta = int(score) - int(last["score"])
 
             # Attributing factors that strengthened or faded the score

@@ -2293,8 +2293,8 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
         log.debug(f"Pre/post market banner render error: {e}")
 
 
-def _is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 300.0) -> bool:
-    """Return True if recommendation timestamp was within max_age_seconds (default 5 mins)."""
+def _is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 600.0) -> bool:
+    """Return True if recommendation timestamp was within max_age_seconds (default 10 mins)."""
     if not triggered_at_str or not isinstance(triggered_at_str, str):
         return False
     try:
@@ -2529,7 +2529,7 @@ def _render_single_recommendation_card(
         card_extra_cls += " event-sl"
 
     trig_time_str = idea.triggered_at if idea.triggered_at else "Live Cycle"
-    is_new = _is_recently_triggered(idea.triggered_at, max_age_seconds=300.0)
+    is_new = _is_recently_triggered(idea.triggered_at, max_age_seconds=600.0)
     new_badge = '<span class="rec-badge-new">NEW</span>' if is_new else ""
 
     # Ensure full option symbol with expiry
@@ -2702,63 +2702,6 @@ def _render_strategy_effectiveness_strip(symbol: str) -> None:
             st.markdown("\n".join(strat_rows))
 
 
-def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None:
-    """Render strictly bookmarked options recommendations in Tab 1 (Cockpit)."""
-    if st.session_state.pop("_rec_bookmark_sync_request", False):
-        st.rerun(scope="app")
-
-    bookmarked_recs = list_bookmarked_records(symbol)
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    st.markdown(
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-        f'<span class="eyebrow" style="margin:0">★ Pinned Recommendations & Active Setups ({len(bookmarked_recs)})</span>'
-        '<span style="font-size:.72rem;color:var(--ink-mute)">Cockpit Watchlist · Preserved across scans</span>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    if not bookmarked_recs:
-        st.markdown(
-            '<div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 20px;text-align:center;margin-bottom:14px">'
-            '<div style="font-size:1.3rem;margin-bottom:6px">📌</div>'
-            '<div style="font-weight:700;font-size:.84rem;color:var(--ink)">No Pinned Recommendations in Cockpit</div>'
-            '<div style="font-size:.76rem;color:var(--ink-mute);max-width:540px;margin:4px auto 0;line-height:1.4">'
-            'Browse active Grade A+ setups in the <b>⚡ Trade Recommendations</b> tab and click <b>☆ Pin Card</b>. '
-            'Pinned setups are permanently tracked here with live MTM, invalidation alerts, and target triggers.'
-            '</div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    data, _ = _load_data(symbol, window)
-    iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else (float(getattr(data.levels, "spot", 24500.0)) if data and getattr(data, "levels", None) else 0.0)
-
-    col_c, col_p = st.columns(2, gap="medium")
-    ce_bms = [r for r in bookmarked_recs if r.get("side") == "CE"]
-    pe_bms = [r for r in bookmarked_recs if r.get("side") == "PE"]
-
-    with col_c:
-        st.markdown(f'<div style="font-weight:750;font-size:.84rem;color:var(--go);margin-bottom:6px">🟢 Pinned Calls ({len(ce_bms)})</div>', unsafe_allow_html=True)
-        for i, rec_dict in enumerate(ce_bms):
-            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"bm_ce_{i}", prefix="ck_bm",
-                current_spot=spot,
-            )
-
-    with col_p:
-        st.markdown(f'<div style="font-weight:750;font-size:.84rem;color:var(--stop);margin-bottom:6px">🔴 Pinned Puts ({len(pe_bms)})</div>', unsafe_allow_html=True)
-        for i, rec_dict in enumerate(pe_bms):
-            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"bm_pe_{i}", prefix="ck_bm",
-                current_spot=spot,
-            )
-
-
 @dataclass
 class _SimpleBias:
     score: float
@@ -2766,6 +2709,144 @@ class _SimpleBias:
 
 
 _REC_BATCH_CACHE: dict = {}  # symbol -> (float_ts, spot, bias_score, batch)
+
+
+def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
+    """Retrieve or generate active recommendation batch with TTL caching."""
+    if data is None or not getattr(data, "levels", None):
+        return None
+
+    bias_score = st.session_state.get(f"bias_score_{symbol}")
+    bias_res = None
+    if bias_score is not None:
+        bias_res = _SimpleBias(
+            score=float(bias_score),
+            regime="Bullish" if bias_score > 1.5 else ("Bearish" if bias_score < -1.5 else "Neutral")
+        )
+
+    sentinel_inst = f"{symbol}-FUT"
+    bars, recent_sigs, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="1m", limit=120)
+    latest_bar = bars[-1] if bars else None
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
+
+    now_t = time.time()
+    cached = _REC_BATCH_CACHE.get(symbol)
+    curr_bias_val = float(bias_score) if bias_score is not None else 0.0
+    if cached is not None:
+        c_ts, c_spot, c_bias, c_batch = cached
+        if (now_t - c_ts < 3.0) and abs(c_spot - spot) < 1.0 and abs(c_bias - curr_bias_val) < 0.01:
+            return c_batch
+
+    batch = generate_trade_recommendations(
+        data,
+        bias_result=bias_res,
+        sentinel_signals=recent_sigs,
+        latest_bar=latest_bar,
+        spot_override=spot,
+        min_score=75,
+    )
+    _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
+    return batch
+
+
+def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None:
+    """Render pinned and fresh active options recommendations in Tab 1 (Cockpit).
+
+    Pinned cards remain active permanently until user unpins or contract expires.
+    Fresh recommendations (< 10 mins) display here with a flashing NEW badge and auto-retire from Cockpit after 10 mins.
+    """
+    if st.session_state.pop("_rec_bookmark_sync_request", False):
+        st.rerun(scope="app")
+
+    bookmarked_recs = list_bookmarked_records(symbol)
+    data, _ = _load_data(symbol, window)
+
+    fresh_ideas: list[TradeIdea] = []
+    if data and getattr(data, "levels", None):
+        batch = _get_active_recommendation_batch(symbol, data)
+        if batch and getattr(batch, "all_recommendations", None):
+            bm_ids = {r.get("rec_id") for r in bookmarked_recs}
+            for idea in batch.all_recommendations:
+                # Fresh setup within 10 minutes (600s) not already in pinned cards
+                if idea.rec_id not in bm_ids and _is_recently_triggered(idea.triggered_at, max_age_seconds=600.0):
+                    fresh_ideas.append(idea)
+
+    total_cockpit_cards = len(bookmarked_recs) + len(fresh_ideas)
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    if total_cockpit_cards > 0:
+        pinned_count = len(bookmarked_recs)
+        fresh_count = len(fresh_ideas)
+        sub_desc = f"{pinned_count} Pinned · {fresh_count} Fresh (< 10m Flash)" if fresh_count else f"{pinned_count} Pinned Cards"
+        st.markdown(
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+            f'<span class="eyebrow" style="margin:0">★ Active Cockpit Recommendations ({total_cockpit_cards})</span>'
+            f'<span style="font-size:.72rem;color:var(--ink-mute)">{sub_desc}</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+            '<span class="eyebrow" style="margin:0">★ Active Cockpit Recommendations (0)</span>'
+            '<span style="font-size:.72rem;color:var(--ink-mute)">Cockpit Watchlist · Preserved across scans</span>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 20px;text-align:center;margin-bottom:14px">'
+            '<div style="font-size:1.3rem;margin-bottom:6px">📌</div>'
+            '<div style="font-weight:700;font-size:.84rem;color:var(--ink)">No Pinned or Fresh Setups in Cockpit</div>'
+            '<div style="font-size:.76rem;color:var(--ink-mute);max-width:540px;margin:4px auto 0;line-height:1.4">'
+            'Browse active Grade A+ setups in the <b>⚡ Trade Recommendations</b> tab and click <b>☆ Pin Card</b>. '
+            'Fresh recommendations generated within the last 10 minutes will also surface here automatically with a flashing <b>NEW</b> badge.'
+            '</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else (float(getattr(data.levels, "spot", 24500.0)) if data and getattr(data, "levels", None) else 0.0)
+
+    col_c, col_p = st.columns(2, gap="medium")
+    ce_bms = [r for r in bookmarked_recs if r.get("side") == "CE"]
+    pe_bms = [r for r in bookmarked_recs if r.get("side") == "PE"]
+    ce_fresh = [idea for idea in fresh_ideas if idea.side == "CE"]
+    pe_fresh = [idea for idea in fresh_ideas if idea.side == "PE"]
+
+    with col_c:
+        n_ce = len(ce_bms) + len(ce_fresh)
+        sub_ce = f"{len(ce_bms)} Pinned, {len(ce_fresh)} Fresh" if ce_fresh else f"{len(ce_bms)} Pinned"
+        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--go)">🟢 Calls ({n_ce})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_ce}</span></div>', unsafe_allow_html=True)
+        for i, rec_dict in enumerate(ce_bms):
+            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"bm_ce_{i}", prefix="ck_bm",
+                current_spot=spot,
+            )
+        for i, idea in enumerate(ce_fresh):
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"fresh_ce_{i}", prefix="ck_fresh",
+                current_spot=spot,
+            )
+
+    with col_p:
+        n_pe = len(pe_bms) + len(pe_fresh)
+        sub_pe = f"{len(pe_bms)} Pinned, {len(pe_fresh)} Fresh" if pe_fresh else f"{len(pe_bms)} Pinned"
+        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--stop)">🔴 Puts ({n_pe})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_pe}</span></div>', unsafe_allow_html=True)
+        for i, rec_dict in enumerate(pe_bms):
+            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"bm_pe_{i}", prefix="ck_bm",
+                current_spot=spot,
+            )
+        for i, idea in enumerate(pe_fresh):
+            _render_single_recommendation_card(
+                idea, symbol, data, key_suffix=f"fresh_pe_{i}", prefix="ck_fresh",
+                current_spot=spot,
+            )
 
 
 def _render_trade_recommendations(symbol: str, window: str) -> None:
@@ -2784,48 +2865,12 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
     # Render Pre-Bell Tactical Briefing or Post-Market Settlement Scorecard if active
     _render_pre_post_market_banner(symbol, data)
 
-    bias_score = st.session_state.get(f"bias_score_{symbol}")
-    bias_res = None
-    if bias_score is not None:
-        bias_res = _SimpleBias(
-            score=float(bias_score),
-            regime="Bullish" if bias_score > 1.5 else ("Bearish" if bias_score < -1.5 else "Neutral")
-        )
+    batch = _get_active_recommendation_batch(symbol, data)
+    if batch is None:
+        return
 
-    sentinel_inst = f"{symbol}-FUT"
-    bars, recent_sigs, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="1m", limit=120)
-    latest_bar = bars[-1] if bars else None
     iq = get_instant_quote(symbol)
     spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
-
-    # Smart in-memory TTL caching (3 seconds TTL, invalidated if spot moves >= 1.0 pt)
-    now_t = time.time()
-    cached = _REC_BATCH_CACHE.get(symbol)
-    curr_bias_val = float(bias_score) if bias_score is not None else 0.0
-    if cached is not None:
-        c_ts, c_spot, c_bias, c_batch = cached
-        if (now_t - c_ts < 3.0) and abs(c_spot - spot) < 1.0 and abs(c_bias - curr_bias_val) < 0.01:
-            batch = c_batch
-        else:
-            batch = generate_trade_recommendations(
-                data,
-                bias_result=bias_res,
-                sentinel_signals=recent_sigs,
-                latest_bar=latest_bar,
-                spot_override=spot,
-                min_score=75,
-            )
-            _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
-    else:
-        batch = generate_trade_recommendations(
-            data,
-            bias_result=bias_res,
-            sentinel_signals=recent_sigs,
-            latest_bar=latest_bar,
-            spot_override=spot,
-            min_score=75,
-        )
-        _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 

@@ -154,6 +154,58 @@ class TestPrePostMarket(unittest.TestCase):
         }
         self.assertFalse(is_contract_expired(rec_today, ref_date=ref_today))
 
+    @patch("config.is_market_open")
+    def test_score_history_market_hours_and_price_guards(self, mock_market_open):
+        import uuid
+        from data.journal.recommendations_store import append_score_history, get_score_history
+        test_rec_id = f"TEST_REC_GUARD_{uuid.uuid4().hex[:8]}"
+
+        # 1. Market closed: append should be completely suppressed
+        mock_market_open.return_value = False
+        append_score_history(
+            rec_id=test_rec_id, score=85, current_spot=22600.0, current_ltp=45.0, reason="Initial"
+        )
+        self.assertEqual(len(get_score_history(test_rec_id)), 0)
+
+        # 2. Market open: first entry writes
+        mock_market_open.return_value = True
+        append_score_history(
+            rec_id=test_rec_id, score=85, current_spot=22600.0, current_ltp=45.0, reason="Initial"
+        )
+        hist = get_score_history(test_rec_id)
+        self.assertEqual(len(hist), 1)
+
+        # 3. Score changes but spot & LTP unchanged: should be suppressed
+        append_score_history(
+            rec_id=test_rec_id, score=90, current_spot=22600.0, current_ltp=45.0, reason="Shift"
+        )
+        self.assertEqual(len(get_score_history(test_rec_id)), 1)
+
+        # 4. Score changes and price moves: should append new audit entry
+        append_score_history(
+            rec_id=test_rec_id, score=90, current_spot=22630.0, current_ltp=55.0, reason="Price moved"
+        )
+        hist2 = get_score_history(test_rec_id)
+        self.assertEqual(len(hist2), 2)
+        self.assertEqual(hist2[0]["score"], 90)
+
+    def test_is_recently_triggered_10m(self):
+        from app.cockpit import _is_recently_triggered
+        now_dt = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+
+        # 5 minutes ago (< 600s) -> True
+        dt_5m = (now_dt - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertTrue(_is_recently_triggered(dt_5m, max_age_seconds=600.0))
+
+        # 9 minutes ago (< 600s) -> True
+        dt_9m = (now_dt - timedelta(minutes=9)).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertTrue(_is_recently_triggered(dt_9m, max_age_seconds=600.0))
+
+        # 12 minutes ago (> 600s) -> False
+        dt_12m = (now_dt - timedelta(minutes=12)).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertFalse(_is_recently_triggered(dt_12m, max_age_seconds=600.0))
+
 
 if __name__ == "__main__":
     unittest.main()
+
