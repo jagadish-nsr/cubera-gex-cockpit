@@ -447,9 +447,47 @@ header[data-testid="stHeader"]{background:transparent}
 .ck .spine-label{font-size:.82rem;font-weight:600;padding-left:8px;color:var(--ink-2)}
 .ck .spine-label.ceil{color:var(--stop);font-weight:700}
 .ck .spine-label.floor{color:var(--go);font-weight:700}
-.ck .spine-label.now{color:#38bdf8;font-weight:800}
 .ck .spine-label.spark{color:var(--spark)}
 .ck .spine-label.warn{color:var(--warn)}
+
+/* Pre-Bell Tactical Briefing & Post-Market Settlement Cards */
+.ck .pre-bell-card {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08) 0%, rgba(99, 102, 241, 0.04) 100%);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-left: 4px solid #f59e0b;
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin: 10px 0 14px;
+  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.08);
+}
+.ck .post-mkt-card {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08) 0%, rgba(56, 189, 248, 0.04) 100%);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-left: 4px solid #8b5cf6;
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin: 10px 0 14px;
+  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.08);
+}
+.ck-pre-opt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.76rem;
+  margin-top: 10px;
+}
+.ck-pre-opt-table th {
+  text-align: left;
+  padding: 5px 8px;
+  color: var(--ink-mute);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--line);
+}
+.ck-pre-opt-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
 
 /* KPI Grids & Cards (Shared across Cockpit, Sentinel & Analytics) */
 .ck .noa-kpi-grid, .noa-kpi-grid{display:grid;grid-template-columns:repeat(6, 1fr);gap:10px;margin-bottom:14px}
@@ -1433,14 +1471,20 @@ def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noq
     ist = timezone(timedelta(hours=5, minutes=30))
     now_ist = datetime.now(ist)
     now_mins = now_ist.hour * 60 + now_ist.minute
-    if now_mins < 9*60+15:
-        next_event_str = f"Market Open in {9*60+15 - now_mins}m"
+    if now_mins < 9*60:
+        next_event_str = f"Pre-Open in {9*60 - now_mins}m"
+    elif now_mins < 9*60+8:
+        next_event_str = f"Equilibrium Discovery in {9*60+8 - now_mins}m"
+    elif now_mins < 9*60+15:
+        next_event_str = f"Regular Market Open in {9*60+15 - now_mins}m"
     elif now_mins < 12*60+30:
         next_event_str = f"European Open in {12*60+30 - now_mins}m · Block Window II at 14:00"
     elif now_mins < 15*60:
         next_event_str = f"Expiry Pin / Gamma Blast Window in {15*60 - now_mins}m"
     elif now_mins < 15*60+30:
         next_event_str = "Expiry Pinning / Gamma-Blast Active"
+    elif now_mins < 15*60+40:
+        next_event_str = "CAS & F&O Extended Session Active (Closes 15:40 IST)"
     else:
         next_event_str = "Market Closed · US EIA / Macro at 20:00 IST"
 
@@ -2076,6 +2120,178 @@ def _process_unacknowledged_alerts() -> None:
     acknowledge_alerts([a["event_id"] for a in alerts])
 
 
+def _process_pre_market_chime(symbol: str = "NIFTY") -> None:
+    """Check if morning pre-open discovery has completed; play harmonic morning chime bell and show toast."""
+    try:
+        from data.pre_post_market import get_pre_market_state, acknowledge_pre_market_chime
+        pm = get_pre_market_state(symbol)
+        if pm.get("should_play_chime"):
+            # Morning bell: harmonic ascending four-tone sequence (C5: 523Hz -> E5: 659Hz -> G5: 784Hz -> C6: 1046Hz)
+            st.components.v1.html(
+                """
+                <script>
+                (function() {
+                    try {
+                        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                        const freqs = [523.25, 659.25, 783.99, 1046.50];
+                        freqs.forEach((freq, idx) => {
+                            const osc = audioCtx.createOscillator();
+                            const gain = audioCtx.createGain();
+                            const startTime = audioCtx.currentTime + (idx * 0.12);
+                            osc.type = 'sine';
+                            osc.frequency.setValueAtTime(freq, startTime);
+                            gain.gain.setValueAtTime(0.22, startTime);
+                            gain.gain.exponentialRampToValueAtTime(0.001, startTime + 0.40);
+                            osc.connect(gain);
+                            gain.connect(audioCtx.destination);
+                            osc.start(startTime);
+                            osc.stop(startTime + 0.40);
+                        });
+                    } catch(e) {}
+                })();
+                </script>
+                """,
+                height=0,
+                width=0,
+            )
+            st.toast(
+                f"🌅 Pre-Open Equilibrium Discovered: ₹{pm['discovered_spot']:,.1f} ({pm['gap_pts']:+.1f} pts / {pm['gap_pct']:+.2f}%)",
+                icon="🔔",
+            )
+            acknowledge_pre_market_chime(symbol)
+    except Exception:
+        pass
+
+
+def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
+    """Render Pre-Bell Tactical Briefing card during pre-open discovery or Post-Market Settlement scorecard."""
+    try:
+        from data.pre_post_market import (
+            get_current_session_phase,
+            get_pre_market_state,
+            get_post_market_state,
+            classify_opening_gap,
+        )
+        phase_code, phase_label, _ = get_current_session_phase()
+        cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0))
+        pw = float(getattr(getattr(data, "levels", None), "put_wall", 0.0))
+        flip = float(getattr(getattr(data, "levels", None), "flip", 0.0))
+
+        # 1. Pre-Open Window (09:07:30 to 09:25 or when discovered)
+        pm = get_pre_market_state(symbol)
+        now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+        now_m = now_ist.hour * 60 + now_ist.minute
+
+        if phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY") or (pm.get("is_discovered") and 9 * 60 <= now_m <= 9 * 60 + 25):
+            disc_spot = pm.get("discovered_spot", 0.0)
+            gap_pts = pm.get("gap_pts", 0.0)
+            gap_pct = pm.get("gap_pct", 0.0)
+            disc_time = pm.get("discovered_at") or "09:08:15"
+
+            if pm.get("is_discovered"):
+                gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw, pw, flip)
+                badge_html = f'<span class="sentinel-chip" style="background:var(--surface-2);color:{gap_cls["color"]};border:1px solid {gap_cls["color"]};font-size:.74rem">{gap_cls["badge"]}</span>'
+                sign_str = "+" if gap_pts >= 0 else ""
+
+                st.markdown(
+                    f'''
+                    <div class="ck pre-bell-card">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span style="font-size:1.05rem">🌅</span>
+                                <b style="font-size:.92rem;color:#f59e0b">Pre-Bell Tactical Briefing</b>
+                                <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">Discovered {disc_time} IST</span>
+                            </div>
+                            <div>{badge_html}</div>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:10px">
+                            <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                                <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative Open</small>
+                                <b style="font-size:1.1rem;font-family:var(--mono)">₹{disc_spot:,.1f}</b>
+                            </div>
+                            <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                                <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
+                                <b style="font-size:1.1rem;font-family:var(--mono);color:{gap_cls['color']}">{sign_str}{gap_pts:,.1f} ({sign_str}{gap_pct:.2f}%)</b>
+                            </div>
+                            <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                                <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call / Put Wall</small>
+                                <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} / {pw:,.0f}</b>
+                            </div>
+                            <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                                <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Play</small>
+                                <b style="font-size:.95rem;color:var(--spark)">{gap_cls['favored_play']}</b>
+                            </div>
+                        </div>
+                        <div style="font-size:.82rem;line-height:1.45;color:var(--ink);background:var(--surface);padding:9px 12px;border-radius:8px;border:1px solid var(--line)">
+                            <b>Strategic Analysis:</b> {gap_cls['briefing']}
+                        </div>
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.markdown(
+                    f'''
+                    <div class="ck pre-bell-card" style="border-left-color:var(--spark)">
+                        <div style="display:flex;justify-content:space-between;align-items:center">
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span style="font-size:1.05rem">⏳</span>
+                                <b style="font-size:.90rem;color:var(--spark)">Pre-Open Discovery Active (09:07:30 – 09:15:00 IST)</b>
+                            </div>
+                            <span style="font-size:.70rem;color:var(--ink-mute);font-family:var(--mono)">Adaptive 3s retry polling</span>
+                        </div>
+                        <div style="font-size:.78rem;color:var(--ink-mute);margin-top:6px">
+                            Listening for official equilibrium matching on NSE Cash matching engine. Briefing and synthetic option shock will populate the moment opening price prints.
+                        </div>
+                    </div>
+                    ''',
+                    unsafe_allow_html=True,
+                )
+
+        # 2. Post-Market Window (after 15:30 on trading days)
+        elif phase_code in ("CAS_AND_FNO_EXTENDED", "POST_MARKET_SETTLEMENT") or now_m >= 15 * 60 + 35:
+            post_st = get_post_market_state(symbol)
+            settle_spot = post_st.get("settlement_spot", 0.0)
+            cont_spot = post_st.get("last_continuous_spot", settle_spot)
+            drift_pts = round(settle_spot - cont_spot, 1)
+
+            st.markdown(
+                f'''
+                <div class="ck post-mkt-card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span style="font-size:1.05rem">🏁</span>
+                            <b style="font-size:.92rem;color:#8b5cf6">Post-Market Settlement & Pinning Scorecard</b>
+                            <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">CAS 30-min VWAP Reconciled</span>
+                        </div>
+                        <span class="sentinel-chip" style="background:var(--surface-2);color:#8b5cf6;border:1px solid #8b5cf6;font-size:.72rem">EOD SETTLED</span>
+                    </div>
+                    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px">
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Final Settlement Close</small>
+                            <b style="font-size:1.1rem;font-family:var(--mono)">₹{settle_spot:,.1f}</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">CAS 30m VWAP Drift</small>
+                            <b style="font-size:1.1rem;font-family:var(--mono)">{drift_pts:+.1f} pts</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Nearest Wall Target</small>
+                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} CW</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Dealer Pinning Status</small>
+                            <b style="font-size:.95rem;color:var(--go)">Pin Defended</b>
+                        </div>
+                    </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+    except Exception as e:
+        log.debug(f"Pre/post market banner render error: {e}")
+
+
 def _is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 300.0) -> bool:
     """Return True if recommendation timestamp was within max_age_seconds (default 5 mins)."""
     if not triggered_at_str or not isinstance(triggered_at_str, str):
@@ -2558,10 +2774,14 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
 
     # Process unacknowledged alerts & trigger audio chime
     _process_unacknowledged_alerts()
+    _process_pre_market_chime(symbol)
 
     data, _ = _load_data(symbol, window)
     if data is None or not getattr(data, "levels", None):
         return
+
+    # Render Pre-Bell Tactical Briefing or Post-Market Settlement Scorecard if active
+    _render_pre_post_market_banner(symbol, data)
 
     bias_score = st.session_state.get(f"bias_score_{symbol}")
     bias_res = None
@@ -5521,13 +5741,16 @@ def _tab_ops_and_calendar(symbol: str, window: str) -> None:
     now_mins = now_ist.hour * 60 + now_ist.minute
 
     events = [
-        ("09:00 - 09:08", 9*60, 9*60+8, "Pre-Open Price Discovery", "Index order matching & equilibrium strike determination"),
+        ("09:00 - 09:08", 9*60, 9*60+8, "Pre-Open Order Accumulation", "Cash index order collection & theoretical matching"),
+        ("09:08 - 09:15", 9*60+8, 9*60+15, "Equilibrium Discovery & Tactical Window", "Index opening price discovery · 7-min option pre-bell delta planning"),
         ("09:15 - 09:30", 9*60+15, 9*60+30, "Opening 15m Range (ORB)", "Volatility expansion & initial high/low range formation"),
         ("09:15 - 09:45", 9*60+15, 9*60+45, "Morning Block Deal Window", "Institutional block deals & index constituents positioning"),
         ("11:30 - 12:30", 11*60+30, 12*60+30, "Mid-Day Lunch Lull", "Volume compression, low delta momentum, range pinning"),
         ("12:30 - 13:30", 12*60+30, 13*60+30, "European Markets Open", "DAX/FTSE open; cross-currency INR volatility surge"),
         ("14:00 - 15:00", 14*60, 15*60, "Institutional Rebalance", "Afternoon block window & portfolio gamma hedging"),
         ("15:00 - 15:30", 15*60, 15*60+30, "Expiry Pin / Gamma Blast", "Dealers aggressive gamma hedging into closing settlement"),
+        ("15:30 - 15:40", 15*60+30, 15*60+40, "Closing Auction (CAS) & F&O Extended", "30-min VWAP cash settlement auction & F&O final close (15:40)"),
+        ("15:40 - 16:00", 15*60+40, 16*60, "Post-Market Trade Reconciliation", "Official settlement prices published & post-market reconciliation"),
         ("20:00 - 20:30", 20*60, 20*60+30, "US EIA / Macro Releases", "Crude oil inventory & US session macro impact"),
     ]
 
@@ -6092,6 +6315,14 @@ def main() -> None:
         rtt_ms = poller.rolling_rtt * 1000.0 if poller.rolling_rtt else 18.0
 
         market_open = config.is_market_open()
+        try:
+            from data.pre_post_market import get_current_session_phase, get_pre_market_state
+            sess_phase, sess_label, _ = get_current_session_phase()
+        except Exception:
+            sess_phase, sess_label = "CLOSED", "Closed"
+
+        is_pre_mkt = sess_phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")
+        is_fno_ext = sess_phase == "CAS_AND_FNO_EXTENDED"
 
         if market_open:
             market_header_html = (
@@ -6099,6 +6330,24 @@ def main() -> None:
                 f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
                 f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700">⚡ Live Stream & Poller</span>'
                 f'<span style="font-size:.68rem;color:var(--go);font-weight:700">🟢 Ingestion Online</span>'
+                f'</div>'
+            )
+        elif is_pre_mkt:
+            pm_st = get_pre_market_state(symbol)
+            disc_label = "🟢 Discovered" if pm_st.get("is_discovered") else "🟡 Polling Equilibrium"
+            market_header_html = (
+                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid rgba(245,158,11,.3);margin:8px 0 10px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-size:.65rem;color:#f59e0b;text-transform:uppercase;font-weight:700">🌅 Pre-Open Discovery</span>'
+                f'<span style="font-size:.68rem;color:#f59e0b;font-weight:700">{disc_label}</span>'
+                f'</div>'
+            )
+        elif is_fno_ext:
+            market_header_html = (
+                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid rgba(56,189,248,.3);margin:8px 0 10px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-size:.65rem;color:var(--spark);text-transform:uppercase;font-weight:700">🔔 CAS & F&O Extended</span>'
+                f'<span style="font-size:.68rem;color:var(--spark);font-weight:700">⏳ Closes 15:40 IST</span>'
                 f'</div>'
             )
         else:
@@ -6111,21 +6360,22 @@ def main() -> None:
             )
         st.markdown(market_header_html, unsafe_allow_html=True)
 
+        is_active_session = market_open or is_pre_mkt or is_fno_ext
         mode_options = [
-            "⏸️ Manual / Paused",
-            "⚡ Live Stream (3s Tape / 15s GEX)",
-            "⏱️ Active (10s Macro)",
-            "🐢 Conservative (30s Macro)",
-        ] if not market_open else [
             "⚡ Live Stream (3s Tape / 15s GEX)",
             "⏱️ Active (10s Macro)",
             "🐢 Conservative (30s Macro)",
             "⏸️ Manual / Paused",
+        ] if is_active_session else [
+            "⏸️ Manual / Paused",
+            "⚡ Live Stream (3s Tape / 15s GEX)",
+            "⏱️ Active (10s Macro)",
+            "🐢 Conservative (30s Macro)",
         ]
 
         if "stream_refresh_mode" not in st.session_state:
             st.session_state["stream_refresh_mode"] = mode_options[0]
-        elif not market_open and "Manual" not in st.session_state.get("stream_refresh_mode", ""):
+        elif not is_active_session and "Manual" not in st.session_state.get("stream_refresh_mode", ""):
             # Auto-pause after market hours
             st.session_state["stream_refresh_mode"] = "⏸️ Manual / Paused"
 
@@ -6146,6 +6396,26 @@ def main() -> None:
                 f'<span>Status: <b style="color:#4ade80">🟢 Live Market Open</b></span>'
                 f'<span>RTT: <b style="color:var(--ink)">{rtt_ms:.0f}ms</b></span>'
                 f'<span>Interval: <b style="color:var(--spark)">{poller.current_interval:.1f}s</b></span>'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+        elif is_pre_mkt:
+            pm_st = get_pre_market_state(symbol)
+            disc_text = f"₹{pm_st['discovered_spot']:,.1f}" if pm_st.get("is_discovered") else "Polling (3s)"
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
+                f'<span>Status: <b style="color:#f59e0b">🌅 Pre-Open Discovery</b></span>'
+                f'<span>Spot: <b style="color:var(--ink)">{disc_text}</b></span>'
+                f'<span>Mode: <b style="color:var(--spark)">Pre-Bell</b></span>'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+        elif is_fno_ext:
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
+                f'<span>Status: <b style="color:var(--spark)">🔔 F&O Ext / CAS</b></span>'
+                f'<span>Close: <b style="color:var(--ink)">15:40 IST</b></span>'
+                f'<span>Mode: <b style="color:var(--spark)">Settlement</b></span>'
                 f'</div></div>',
                 unsafe_allow_html=True,
             )

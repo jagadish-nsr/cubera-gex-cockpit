@@ -235,12 +235,21 @@ def _loop(symbol: str, interval_s: float) -> None:
             time.sleep(WS_BACKOFF_S)
             continue
 
-        # 2. Back off when market is closed — prices don't change outside market hours
+        # 2. Back off when market is closed — EXCEPT during Pre-Open equilibrium discovery (09:07:30 to 09:15:00 IST)
         if not config.is_market_open():
-            rec = _STORE.get(symbol)
-            if rec and rec.get("ohlc"):
-                time.sleep(60.0)
-                continue
+            try:
+                from data.pre_post_market import get_current_session_phase
+                phase_code, _, _ = get_current_session_phase()
+            except Exception:
+                phase_code = "OFF_HOURS"
+
+            if phase_code != "PRE_MARKET_DISCOVERY":
+                rec = _STORE.get(symbol)
+                if rec and rec.get("ohlc"):
+                    time.sleep(60.0)
+                    continue
+            else:
+                interval_s = 3.0  # Adaptive 3s retry during pre-open discovery window
 
         ok = False
         try:
