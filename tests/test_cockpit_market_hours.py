@@ -28,9 +28,18 @@ def test_is_market_open_before_and_after_hours():
     dt_early = datetime(2026, 10, 6, 8, 45, 0, tzinfo=IST)
     assert config.is_market_open(dt_early) is False
 
-    # Tuesday at 15:30 IST (market close boundary) -> Closed
+    # Tuesday at 15:30 IST (market close boundary) -> Closed for continuous cash
     dt_close_boundary = datetime(2026, 10, 6, 15, 30, 0, tzinfo=IST)
     assert config.is_market_open(dt_close_boundary) is False
+
+    # Tuesday at 15:35 IST -> Open for F&O extended session, Closed for regular cash
+    dt_fno_ext = datetime(2026, 10, 6, 15, 35, 0, tzinfo=IST)
+    assert config.is_market_open(dt_fno_ext, include_fno_extended=False) is False
+    assert config.is_market_open(dt_fno_ext, include_fno_extended=True) is True
+
+    # Tuesday at 15:40 IST (F&O close boundary) -> Closed for both
+    dt_fno_close = datetime(2026, 10, 6, 15, 40, 0, tzinfo=IST)
+    assert config.is_market_open(dt_fno_close, include_fno_extended=True) is False
 
     # Tuesday at 16:15 IST (4:15 PM) -> Closed
     dt_late = datetime(2026, 10, 6, 16, 15, 0, tzinfo=IST)

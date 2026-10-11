@@ -340,7 +340,7 @@ def append_score_history(
     if not force_record:
         try:
             import config
-            if not config.is_market_open():
+            if not config.is_market_open(include_fno_extended=True):
                 return
         except Exception:
             pass
