@@ -5338,46 +5338,123 @@ def _render_market_intelligence(data, spot: float, spot_chg_pct: float = 0.0, sy
 
 def _render_analytics_guide() -> None:
     """Static Options Analytics Field Guide Expander — persistent across all polling cycles."""
-    with st.expander("📖 Options Analytics Guide: Buildup States, Parity Arbitrage & FII Drift (Click to Expand / Collapse)", expanded=False):
+    with st.expander("📖 Options Analytics Field Guide & Action Playbook: KPIs, GEX Anchors, Buildups & Parity (Click to Expand / Collapse)", expanded=False):
         st.markdown(
             '''
             <div style="font-size:.84rem;line-height:1.6">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <span style="font-weight:700;color:var(--ink)">IOAS v3.0 Deep Analytics Field Guide</span>
-                <a href="/?view=user_guide" target="_blank" style="font-size:.76rem;color:var(--spark);font-weight:700;text-decoration:none">Analytics Guide Section ↗</a>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;border-bottom:1px solid var(--line);padding-bottom:8px">
+                <div>
+                    <span style="font-weight:800;color:var(--ink);font-size:.95rem">IOAS v3.0 Quantitative Options Analytics System</span>
+                    <span style="font-size:.74rem;color:var(--ink-mute);margin-left:8px">Seller-Centric Microstructure (SCSP) · Indian Derivatives</span>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <a href="/?view=options_analytics_guide" target="_blank" style="font-size:.76rem;background:var(--surface-2);color:var(--spark);padding:4px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">🔬 Full Options Analytics Guide ↗</a>
+                    <a href="/?view=user_guide" target="_blank" style="font-size:.76rem;color:var(--ink-mute);padding:4px 8px;text-decoration:none">Master Docs ↗</a>
+                </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px">
-                    <b>📊 Strike Buildup Classification (4 Quadrants)</b><br>
+
+            <!-- Panel Map Grid -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+                <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
+                    <b style="color:var(--spark)">1. Executive KPIs & Directional Bias (Top Strip & Row 1 Left)</b><br>
                     <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b style="color:var(--go)">🟢 Long Buildup:</b> Price ↑, OI ↑ (Fresh aggressive buyers entering)<br>
-                    • <b style="color:var(--stop)">🔴 Short Buildup:</b> Price ↓, OI ↑ (Fresh aggressive sellers entering)<br>
-                    • <b style="color:var(--warn)">🟡 Short Covering:</b> Price ↑, OI ↓ (Shorts closing positions / squeeze fuel)<br>
-                    • <b style="color:var(--ink-mute)">🟠 Long Unwinding:</b> Price ↓, OI ↓ (Longs liquidating / stop runs)
+                    • <b>ATM IV & IV Rank:</b> Baseline pricing benchmark. IV Rank &lt; 20% favors debit spreads; &gt; 70% favors credit spreads.<br>
+                    • <b>PCR (OI):</b> &gt; 1.25 indicates strong put writing floor; &lt; 0.75 indicates heavy call writing ceiling.<br>
+                    • <b>IOAS Bias Score (-10 to +10):</b> Synthesizes 8 audited sub-signals: s₁ PCR Level, s₂ PCR Trend, s₃ IV Skew, s₄ Wall Proximity, s₅ Max Pain Gravitation, s₆ OI Velocity, s₇ Buildup Dominance, s₈ IV Rank.<br>
+                    • <i>Action:</i> Never enter naked shorts when Bias Score &gt; +3.5; never buy breakouts when Bias Score &lt; -3.5.
                     </span>
                 </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px">
-                    <b>⚖️ Put-Call Parity & Box Arbitrage</b><br>
+
+                <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
+                    <b style="color:var(--spark)">2. Key GEX Anchors & Strike Observations (Row 1 Right)</b><br>
                     <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Synthetic Future:</b> C - P + Strike. Compares pure option parity vs actual futures price.<br>
-                    • <b>Basis Spread:</b> Dislocation between actual future and synthetic future. Spreads exceeding ±15 pts highlight institutional pricing dislocations and box-spread arbitrage barriers.
+                    • <b>Call Wall (CW):</b> Maximum Call OI cluster. Primary institutional resistance ceiling.<br>
+                    • <b>Put Wall (PW):</b> Maximum Put OI cluster. Primary institutional support floor.<br>
+                    • <b>Max Pain (K*):</b> Strike minimizing total option payouts. Acts as gravitational magnet toward expiry.<br>
+                    • <b>Gamma Flip Level:</b> Boundary where market makers shift from stabilizing (buying dips) to accelerating (selling breaks).<br>
+                    • <i>Action:</i> Trade mean-reversion bounces off Walls; trade breakout Gamma Squeezes on 15m candle closes outside Walls.
                     </span>
                 </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px">
-                    <b>🧭 Participant OI & Multi-Day FII Drift</b><br>
+
+                <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
+                    <b style="color:var(--spark)">3. OI Distribution & Expected Move Range (Row 2)</b><br>
                     <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Client (Retail):</b> Net option writers & index futures buyers.<br>
-                    • <b>Pro (Prop Desks):</b> Intraday delta hedgers & market makers.<br>
-                    • <b>FII:</b> Directional market movers. Tracking 5-day net futures drift reveals institutional macro trend alignment.
+                    • <b>OI Bar Clusters (±4% Band):</b> Visualizes open interest towers (walls) and frictionless gaps (vacuum channels).<br>
+                    • <b>IV Model Move (±1σ):</b> Spot × IV × √(DTE / 365). Statistically encompasses 68.2% of expected distributions.<br>
+                    • <b>ATM Straddle Move:</b> Synthetic market consensus from ATM Call + ATM Put premium.<br>
+                    • <i>Action:</i> Credit sellers position short strikes outside Expected Move Low/High; buyers fade overextended moves beyond ±1.2σ.
                     </span>
                 </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px">
-                    <b>📈 25-Delta IV Skew & ATM Volatility</b><br>
+
+                <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
+                    <b style="color:var(--spark)">4. Strike Buildup Flow & IV Skew Curve (Row 3)</b><br>
                     <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Contango / Normal:</b> OTM Puts have moderate premium over OTM Calls.<br>
-                    • <b>Steep Put Skew:</b> Institutional downside crash hedging spike.<br>
-                    • <b>Call Skew (Inverted):</b> Aggressive retail call buying / squeeze anticipation.
+                    • <b style="color:var(--go)">🟢 Long Buildup:</b> Price ↑, OI ↑ (Aggressive buyers paying up)<br>
+                    • <b style="color:var(--stop)">🔴 Short Buildup:</b> Price ↓, OI ↑ (Aggressive writers building walls)<br>
+                    • <b style="color:var(--warn)">🟡 Short Covering:</b> Price ↑, OI ↓ (Trapped shorts covering / squeeze fuel)<br>
+                    • <b style="color:var(--ink-mute)">🟠 Long Unwinding:</b> Price ↓, OI ↓ (Long holders taking profit / stop cascades)<br>
+                    • <b>25Δ IV Skew:</b> Measures downside fear premium. Put IV &gt; Call IV is normal; Inversion signals call greed.<br>
+                    • <i>Action:</i> Look for Short Covering at support for rapid long scalps; align with the dominant buildup quadrant.
                     </span>
+                </div>
+
+                <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line);grid-column: span 2">
+                    <b style="color:var(--spark)">5. Active Divergences & Put-Call Parity Arbitrage (Row 4)</b><br>
+                    <span style="font-size:.78rem;color:var(--ink-mute)">
+                    • <b>Structural Divergences:</b> Early warning flags when price moves in opposition to open interest, PCR, or IV (e.g. Bear Trap when spot falls but put writing accelerates).<br>
+                    • <b>Synthetic Future (C - P + K):</b> Enforces no-arbitrage bounds against actual futures price.<br>
+                    • <b>Discrepancy &gt; ±15 pts:</b> Signifies institutional box-spread dislocations and pricing asymmetry across strikes.<br>
+                    • <i>Action:</i> When high-severity divergence is active, avoid initiating trend positions until divergence resolves.
+                    </span>
+                </div>
+            </div>
+
+            <!-- Decision Playbook Table -->
+            <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
+                <b style="color:var(--ink)">⚡ Trader Action Matrix: "If Metric X, Then Take Action Y"</b>
+                <div style="margin-top:6px;overflow-x:auto">
+                    <table style="width:100%;font-size:.76rem;border-collapse:collapse;color:var(--ink)">
+                        <thead>
+                            <tr style="border-bottom:1px solid var(--line);text-align:left;color:var(--ink-mute)">
+                                <th style="padding:4px 6px">Market Condition</th>
+                                <th style="padding:4px 6px">Observed Metrics</th>
+                                <th style="padding:4px 6px">Recommended Playbook</th>
+                                <th style="padding:4px 6px">Invalidation Stop</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr style="border-bottom:1px dashed var(--line)">
+                                <td style="padding:5px 6px"><b>Call Wall Defense</b></td>
+                                <td style="padding:5px 6px">Spot near Call Wall; Bias ≤ +1.0; Short Buildup on Call</td>
+                                <td style="padding:5px 6px"><span style="color:var(--stop);font-weight:700">Sell Bear Call Spread</span> / Buy Put Spread</td>
+                                <td style="padding:5px 6px">15m close above Call Wall</td>
+                            </tr>
+                            <tr style="border-bottom:1px dashed var(--line)">
+                                <td style="padding:5px 6px"><b>Gamma Breakout Squeeze</b></td>
+                                <td style="padding:5px 6px">15m close above Call Wall; PCR &gt; 1.25; Bias ≥ +3.5</td>
+                                <td style="padding:5px 6px"><span style="color:var(--go);font-weight:700">Buy Bull Call Spread</span> / Outright Call</td>
+                                <td style="padding:5px 6px">Spot falls back inside Call Wall</td>
+                            </tr>
+                            <tr style="border-bottom:1px dashed var(--line)">
+                                <td style="padding:5px 6px"><b>Put Wall Defense</b></td>
+                                <td style="padding:5px 6px">Spot near Put Wall; Bias ≥ -1.0; Short Buildup on Put</td>
+                                <td style="padding:5px 6px"><span style="color:var(--go);font-weight:700">Sell Bull Put Spread</span> / Buy Call Spread</td>
+                                <td style="padding:5px 6px">15m close below Put Wall</td>
+                            </tr>
+                            <tr style="border-bottom:1px dashed var(--line)">
+                                <td style="padding:5px 6px"><b>Put Wall Trapdoor Breakdown</b></td>
+                                <td style="padding:5px 6px">15m close below Put Wall; PCR &lt; 0.80; Bias ≤ -3.5</td>
+                                <td style="padding:5px 6px"><span style="color:var(--stop);font-weight:700">Buy Bear Put Spread</span> / Outright Put</td>
+                                <td style="padding:5px 6px">Spot recovers above Put Wall</td>
+                            </tr>
+                            <tr>
+                                <td style="padding:5px 6px"><b>0DTE Expiry Pinning</b></td>
+                                <td style="padding:5px 6px">Time &gt; 13:30 IST; Spot within 0.4% of Max Pain; Pin Score ≥ 80</td>
+                                <td style="padding:5px 6px"><span style="color:var(--spark);font-weight:700">Sell ATM Iron Butterfly</span> centered on Max Pain</td>
+                                <td style="padding:5px 6px">Spot breaks beyond ATM Straddle</td>
+                            </tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
             </div>
@@ -6100,32 +6177,32 @@ def _fragment_analytics_row1_static(symbol: str, window: str) -> None:
 
 @st.fragment(run_every=15)
 def _fragment_analytics_row2_live(symbol: str, window: str) -> None:
-    _render_analytics_oi_and_expected_move(symbol, window)
+    _render_analytics_row2_oi_expected_move(symbol, window)
 
 
 @st.fragment
 def _fragment_analytics_row2_static(symbol: str, window: str) -> None:
-    _render_analytics_oi_and_expected_move(symbol, window)
+    _render_analytics_row2_oi_expected_move(symbol, window)
 
 
 @st.fragment(run_every=15)
 def _fragment_analytics_row3_live(symbol: str, window: str) -> None:
-    _render_analytics_buildup_and_skew(symbol, window)
+    _render_analytics_row3_buildup_skew(symbol, window)
 
 
 @st.fragment
 def _fragment_analytics_row3_static(symbol: str, window: str) -> None:
-    _render_analytics_buildup_and_skew(symbol, window)
+    _render_analytics_row3_buildup_skew(symbol, window)
 
 
 @st.fragment(run_every=15)
 def _fragment_analytics_row4_live(symbol: str, window: str) -> None:
-    _render_analytics_divergences_and_parity(symbol, window)
+    _render_analytics_row4_divergences_parity(symbol, window)
 
 
 @st.fragment
 def _fragment_analytics_row4_static(symbol: str, window: str) -> None:
-    _render_analytics_divergences_and_parity(symbol, window)
+    _render_analytics_row4_divergences_parity(symbol, window)
 
 
 def _tab_analytics(symbol: str, window: str) -> None:
@@ -6953,6 +7030,11 @@ DOCS_MAP = {
         "file": "docs/pre-post-market-and-recommendations-guide.md",
         "badge": "Pre-Bell Alpha & CAS 15:40",
     },
+    "options_analytics_guide": {
+        "title": "🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)",
+        "file": "docs/options-analytics-guide.md",
+        "badge": "IOAS v3.0 Microstructure",
+    },
 }
 
 
@@ -7373,6 +7455,7 @@ def main() -> None:
         st.markdown(
             '<div style="display:flex;flex-direction:column;gap:8px;font-size:.82rem;margin-top:8px">'
             '<a href="/?view=user_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📖 Master User Guide ↗</a>'
+            '<a href="/?view=options_analytics_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🔬 Options Analytics Guide ↗</a>'
             '<a href="/?view=pre_post_market_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🌅 Pre/Post-Market & Recs Guide ↗</a>'
             '<a href="/?view=options_strategies_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎯 Options Strategies Guide ↗</a>'
             '<a href="/?view=orderflow_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">⚡ OrderFlow Signals Guide ↗</a>'
