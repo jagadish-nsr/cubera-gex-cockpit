@@ -3907,14 +3907,13 @@ def _calc_ema_series(candles: list[dict], period: int) -> list[dict]:
 
 def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[list[dict], list[dict]]:
     """Convert Bar and SentinelSignal models into TradingView Lightweight Charts JSON format in IST."""
-    IST_OFFSET_SEC = 19800  # 5h 30m offset so Lightweight Charts displays exact IST time on UTC axis
     candles = []
     for b in bars:
         dt = b.start_ts
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=IST_TZ)
         dt_ist = dt.astimezone(IST_TZ)
-        ist_epoch = int(dt_ist.timestamp()) + IST_OFFSET_SEC
+        ist_epoch = int(datetime(dt_ist.year, dt_ist.month, dt_ist.day, dt_ist.hour, dt_ist.minute, dt_ist.second, tzinfo=timezone.utc).timestamp())
         candles.append({
             "time": ist_epoch,
             "open": round(b.open, 2),
@@ -3938,9 +3937,9 @@ def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[lis
         for s in signals:
             s_dt = s.bar_start_ts
             if s_dt.tzinfo is None:
-                s_dt = s_dt.replace(tzinfo=timezone.utc)
+                s_dt = s_dt.replace(tzinfo=IST_TZ)
             s_dt_ist = s_dt.astimezone(IST_TZ)
-            sig_t = int(s_dt_ist.timestamp()) + IST_OFFSET_SEC
+            sig_t = int(datetime(s_dt_ist.year, s_dt_ist.month, s_dt_ist.day, s_dt_ist.hour, s_dt_ist.minute, s_dt_ist.second, tzinfo=timezone.utc).timestamp())
             if candle_times:
                 closest_t = min(candle_times, key=lambda t: abs(t - sig_t))
                 if abs(closest_t - sig_t) <= 180:
@@ -4024,6 +4023,8 @@ def _build_tv_lightweight_chart_html(
     background: rgba(15, 23, 42, 0.45);
     border-radius: 8px;
     border: 1px solid rgba(51, 65, 85, 0.35);
+    box-sizing: border-box;
+    overflow: hidden;
   }}
   #tv_chart_container {{
     width: 100%;
@@ -4077,7 +4078,7 @@ if (typeof LightweightCharts === 'undefined') {{
 
   const chart = LightweightCharts.createChart(container, {{
     width: container.clientWidth || 1050,
-    height: {height},
+    height: Math.max(280, {height} - 4),
     layout: {{
       background: {{ color: 'transparent' }},
       textColor: '#94a3b8',
@@ -4095,20 +4096,20 @@ if (typeof LightweightCharts === 'undefined') {{
       borderColor: 'rgba(51, 65, 85, 0.45)',
       autoScale: true,
       scaleMargins: {{
-        top: data.showCvd ? 0.14 : 0.18,
-        bottom: data.showCvd ? 0.42 : (data.showDelta ? 0.32 : 0.18),
+        top: data.showCvd ? 0.12 : 0.16,
+        bottom: data.showCvd ? 0.38 : (data.showDelta ? 0.28 : 0.16),
       }},
     }},
     handleScale: {{
       axisPressedMouseMove: {{
-        time: true,
+        time: false,
         price: true,
       }},
       axisDoubleClickReset: {{
-        time: true,
+        time: false,
         price: true,
       }},
-      mouseWheel: true,
+      mouseWheel: false,
       pinch: true,
     }},
     timeScale: {{
@@ -4116,8 +4117,17 @@ if (typeof LightweightCharts === 'undefined') {{
       timeVisible: true,
       secondsVisible: false,
       barSpacing: 9,
+      rightOffset: 3,
+      fixLeftEdge: false,
+      fixRightEdge: false,
       tickMarkFormatter: function(time, tickMarkType, locale) {{
-        const d = new Date(time * 1000);
+        let ts = typeof time === 'number' ? time : (time && time.timestamp ? time.timestamp : null);
+        if (ts === null) return null;
+        const d = new Date(ts * 1000);
+        if (tickMarkType <= 2) {{
+          const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+          return String(d.getUTCDate()).padStart(2, '0') + '-' + months[d.getUTCMonth()];
+        }}
         const hh = String(d.getUTCHours()).padStart(2, '0');
         const mm = String(d.getUTCMinutes()).padStart(2, '0');
         return hh + ':' + mm;
@@ -4125,13 +4135,17 @@ if (typeof LightweightCharts === 'undefined') {{
     }},
     localization: {{
       timeFormatter: function(ts) {{
-        const d = new Date(ts * 1000);
+        let t = typeof ts === 'number' ? ts : (ts && ts.timestamp ? ts.timestamp : null);
+        if (!t) return '';
+        const d = new Date(t * 1000);
         const hh = String(d.getUTCHours()).padStart(2, '0');
         const mm = String(d.getUTCMinutes()).padStart(2, '0');
         return hh + ':' + mm + ' IST';
       }},
       dateFormatter: function(ts) {{
-        const d = new Date(ts * 1000);
+        let t = typeof ts === 'number' ? ts : (ts && ts.timestamp ? ts.timestamp : null);
+        if (!t) return '';
+        const d = new Date(t * 1000);
         const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
         return String(d.getUTCDate()).padStart(2, '0') + '-' + months[d.getUTCMonth()];
       }}
@@ -4269,10 +4283,13 @@ if (typeof LightweightCharts === 'undefined') {{
   function updateLegend(c) {{
     if (!c) return;
     if (legTime && c.time) {{
-      const d = new Date(c.time * 1000);
-      const hh = String(d.getUTCHours()).padStart(2, '0');
-      const mm = String(d.getUTCMinutes()).padStart(2, '0');
-      legTime.textContent = hh + ':' + mm + ' IST';
+      let t = typeof c.time === 'number' ? c.time : (c.time && c.time.timestamp ? c.time.timestamp : null);
+      if (t) {{
+        const d = new Date(t * 1000);
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const mm = String(d.getUTCMinutes()).padStart(2, '0');
+        legTime.textContent = hh + ':' + mm + ' IST';
+      }}
     }}
     legOhlc.textContent = 'O:' + c.open.toFixed(1) + ' H:' + c.high.toFixed(1) + ' L:' + c.low.toFixed(1) + ' C:' + c.close.toFixed(1);
     if (legVwap && c.vwap) legVwap.textContent = 'VWAP:' + c.vwap.toFixed(1);
