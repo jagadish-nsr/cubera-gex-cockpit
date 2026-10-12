@@ -190,20 +190,20 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertEqual(hist2[0]["score"], 90)
 
     def test_is_recently_triggered_10m(self):
-        from app.cockpit import _is_recently_triggered
+        from data.pre_post_market import is_recently_triggered
         now_dt = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
         # 5 minutes ago (< 600s) -> True
         dt_5m = (now_dt - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        self.assertTrue(_is_recently_triggered(dt_5m, max_age_seconds=600.0))
+        self.assertTrue(is_recently_triggered(dt_5m, max_age_seconds=600.0))
 
         # 9 minutes ago (< 600s) -> True
         dt_9m = (now_dt - timedelta(minutes=9)).strftime("%Y-%m-%d %H:%M:%S")
-        self.assertTrue(_is_recently_triggered(dt_9m, max_age_seconds=600.0))
+        self.assertTrue(is_recently_triggered(dt_9m, max_age_seconds=600.0))
 
         # 12 minutes ago (> 600s) -> False
         dt_12m = (now_dt - timedelta(minutes=12)).strftime("%Y-%m-%d %H:%M:%S")
-        self.assertFalse(_is_recently_triggered(dt_12m, max_age_seconds=600.0))
+        self.assertFalse(is_recently_triggered(dt_12m, max_age_seconds=600.0))
 
 
 if __name__ == "__main__":

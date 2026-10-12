@@ -2765,9 +2765,12 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
     fresh_ideas: list[TradeIdea] = []
     if data and getattr(data, "levels", None):
         batch = _get_active_recommendation_batch(symbol, data)
-        if batch and getattr(batch, "all_recommendations", None):
+        batch_recs = []
+        if batch:
+            batch_recs = getattr(batch, "all_recommendations", None) or (getattr(batch, "ce_recommendations", []) + getattr(batch, "pe_recommendations", []))
+        if batch_recs:
             bm_ids = {r.get("rec_id") for r in bookmarked_recs}
-            for idea in batch.all_recommendations:
+            for idea in batch_recs:
                 # Fresh setup within 10 minutes (600s) not already in pinned cards
                 if idea.rec_id not in bm_ids and _is_recently_triggered(idea.triggered_at, max_age_seconds=600.0):
                     fresh_ideas.append(idea)

@@ -108,6 +108,11 @@ class RecommendationBatch:
     pe_fallback_active: bool = False
     bookmarked_recommendations: list[TradeIdea] = field(default_factory=list)
 
+    @property
+    def all_recommendations(self) -> list[TradeIdea]:
+        """Combined list of active CE and PE recommendations."""
+        return self.ce_recommendations + self.pe_recommendations
+
 
 def _round_strike(price: float, step: int) -> float:
     """Rounds price to nearest strike step."""

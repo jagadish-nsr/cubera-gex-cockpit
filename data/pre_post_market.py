@@ -399,3 +399,19 @@ def is_contract_expired(rec_dict: dict, ref_date: date | None = None) -> bool:
 
     # Default: not expired
     return False
+
+
+def is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 600.0) -> bool:
+    """Return True if recommendation timestamp was within max_age_seconds (default 10 mins)."""
+    if not triggered_at_str or not isinstance(triggered_at_str, str):
+        return False
+    try:
+        clean_str = triggered_at_str.strip().replace("T", " ")[:19]
+        dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+        dt_ist = dt.replace(tzinfo=IST)
+        now_ist = datetime.now(IST)
+        diff_sec = (now_ist - dt_ist).total_seconds()
+        return 0 <= diff_sec <= max_age_seconds
+    except Exception:
+        return False
+

@@ -200,14 +200,37 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
     with _WRITE_LOCK, _get_write_conn() as conn:
         existing = conn.execute(
-            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score FROM recommendation_records WHERE rec_id = ?",
+            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp FROM recommendation_records WHERE rec_id = ?",
             (rec_id,)
         ).fetchone()
 
         is_bm = existing["is_bookmarked"] if existing else int(idea_dict.get("is_bookmarked", 0))
         bm_at = existing["bookmarked_at"] if existing else idea_dict.get("bookmarked_at")
-        trig_at = existing["triggered_at"] if existing else idea_dict.get("triggered_at", _now_ist_str())
-        init_score = existing["initial_score"] if existing else idea_dict.get("quality_score", 0)
+
+        new_trig = idea_dict.get("triggered_at") or _now_ist_str()
+        if existing and existing["triggered_at"]:
+            existing_trig = str(existing["triggered_at"])
+            existing_date = existing_trig[:10]
+            current_date = str(new_trig)[:10]
+            is_fresh_day = (existing_date != current_date)
+            prev_score = int(existing["current_score"] or existing["initial_score"] or 0)
+            curr_score = int(idea_dict.get("quality_score", 0))
+            was_previously_sub_threshold = (prev_score < 75 and curr_score >= 75)
+            if is_fresh_day or was_previously_sub_threshold:
+                trig_at = new_trig
+                init_score = curr_score
+                init_spot = float(idea_dict.get("current_spot", idea_dict.get("initial_spot", 0)))
+                init_ltp = float(idea_dict.get("current_ltp", idea_dict.get("initial_ltp", 0)))
+            else:
+                trig_at = existing_trig
+                init_score = existing["initial_score"]
+                init_spot = float(existing["initial_spot"]) if existing["initial_spot"] is not None else float(idea_dict.get("initial_spot", 0))
+                init_ltp = float(existing["initial_ltp"]) if existing["initial_ltp"] is not None else float(idea_dict.get("initial_ltp", 0))
+        else:
+            trig_at = new_trig
+            init_score = idea_dict.get("quality_score", 0)
+            init_spot = float(idea_dict.get("initial_spot", idea_dict.get("current_spot", 0)))
+            init_ltp = float(idea_dict.get("initial_ltp", idea_dict.get("current_ltp", 0)))
 
         conn.execute("""
             INSERT INTO recommendation_records (
@@ -219,6 +242,10 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 status, payload_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(rec_id) DO UPDATE SET
+                triggered_at = excluded.triggered_at,
+                initial_score = excluded.initial_score,
+                initial_spot = excluded.initial_spot,
+                initial_ltp = excluded.initial_ltp,
                 option_symbol = excluded.option_symbol,
                 current_score = excluded.current_score,
                 conviction_tier = excluded.conviction_tier,
@@ -237,8 +264,8 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             idea_dict["play_type"],
             idea_dict["play_badge"],
             trig_at,
-            float(idea_dict.get("initial_spot", idea_dict.get("current_spot", 0))),
-            float(idea_dict.get("initial_ltp", idea_dict.get("current_ltp", 0))),
+            init_spot,
+            init_ltp,
             int(init_score),
             int(idea_dict.get("quality_score", 0)),
             idea_dict.get("conviction_tier", "HIGH"),

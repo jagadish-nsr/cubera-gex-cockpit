@@ -215,8 +215,9 @@ def test_batch_includes_position_sizes():
         assert t.position_size.max_risk_inr > 0
 
 
-def test_live_spot_delta_adjustment():
+def test_live_spot_delta_adjustment(monkeypatch):
     from analytics.trade_ideas import _lookup_chain_data
+    monkeypatch.setattr("app.spot_ticker.get_option_ws_quote", lambda *a, **k: None)
 
     # Chain snapshot at spot 24500: CE LTP=120, delta=0.50
     oi_map = {
