@@ -624,6 +624,29 @@ header[data-testid="stHeader"]{background:transparent}
   border-left:6px solid #ef4444 !important;
   box-shadow:0 0 16px rgba(239,68,68,.3), var(--shadow) !important;
 }
+.confluence-banner {
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.14), rgba(168, 85, 247, 0.10));
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  font-size: 0.74rem;
+  color: var(--spark);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.confluence-strat-tag {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.70rem;
+  font-weight: 700;
+  margin-left: 4px;
+  color: var(--ink);
+}
 @keyframes rec-new-blink {
   0% { opacity: 1.0; transform: scale(1.0); }
   50% { opacity: 0.22; transform: scale(0.95); }
@@ -2383,6 +2406,63 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIde
     )
 
 
+@dataclass
+class StrikeCluster:
+    symbol: str
+    side: str
+    strike: float
+    option_symbol: str
+    ideas: list[TradeIdea] = field(default_factory=list)
+
+    @property
+    def is_confluence(self) -> bool:
+        return len(self.ideas) > 1
+
+    @property
+    def max_score(self) -> int:
+        return max((i.quality_score for i in self.ideas), default=0)
+
+    @property
+    def is_bookmarked(self) -> bool:
+        return any(i.is_bookmarked for i in self.ideas)
+
+
+def _cluster_ideas_by_strike(ideas: list[TradeIdea]) -> list[StrikeCluster]:
+    """Group trade ideas by (symbol, side, strike) to consolidate multi-strategy confluence onto a single card."""
+    from collections import OrderedDict
+    groups: dict[tuple[str, str, float], list[TradeIdea]] = OrderedDict()
+    for idea in ideas:
+        key = (idea.symbol, idea.side, float(idea.strike))
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(idea)
+
+    clusters = []
+    for (sym, s_side, strk), idea_list in groups.items():
+        sorted_ideas = sorted(idea_list, key=lambda x: x.quality_score, reverse=True)
+        clusters.append(StrikeCluster(
+            symbol=sym,
+            side=s_side,
+            strike=strk,
+            option_symbol=sorted_ideas[0].option_symbol,
+            ideas=sorted_ideas,
+        ))
+    return sorted(clusters, key=lambda c: c.max_score, reverse=True)
+
+
+def _toggle_cluster_bookmarks(rec_ids: list[str]) -> None:
+    """Callback for synchronizing bookmark status on all recommendations in a strike cluster."""
+    any_bookmarked = any(is_bookmarked(rid) for rid in rec_ids)
+    for rid in rec_ids:
+        curr = is_bookmarked(rid)
+        if any_bookmarked and curr:
+            toggle_bookmark(rid)
+        elif not any_bookmarked and not curr:
+            toggle_bookmark(rid)
+    _REC_BATCH_CACHE.clear()
+    st.session_state["_rec_bookmark_sync_request"] = True
+
+
 def _render_single_recommendation_card(
     idea: TradeIdea,
     symbol: str,
@@ -2393,6 +2473,8 @@ def _render_single_recommendation_card(
     risk_pct: float = 1.5,
     current_spot: float = 0.0,
     show_action_button: bool = True,
+    extra_top_html: str = "",
+    cluster_rec_ids: list[str] | None = None,
 ) -> None:
     # Dynamically pull current sizing preferences from session state if updated in HUD
     raw_cap = st.session_state.get(f"sizer_cap_{symbol}", account_capital)
@@ -2516,7 +2598,8 @@ def _render_single_recommendation_card(
         delta_str = f' <span style="color:var(--stop);font-size:.70rem;font-weight:700">{idea.score_delta}</span>'
 
     # Bookmark styling & header chip
-    bm_active = idea.is_bookmarked
+    target_rec_ids = cluster_rec_ids if cluster_rec_ids else [idea.rec_id]
+    bm_active = any(is_bookmarked(rid) for rid in target_rec_ids) if cluster_rec_ids else (idea.is_bookmarked or is_bookmarked(idea.rec_id))
     bm_chip = (
         '<span style="background:rgba(234,179,8,.18);color:#eab308;border:1px solid rgba(234,179,8,.45);'
         'border-radius:4px;padding:1px 6px;font-size:.68rem;font-weight:750;margin-left:6px">★ PINNED</span>'
@@ -2548,6 +2631,7 @@ def _render_single_recommendation_card(
 
     card_html = (
         f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
+        f'{extra_top_html}'
         f'{event_banner_html}'
         f'<div class="rec-header">'
         f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>{new_badge}{bm_chip}'
@@ -2615,6 +2699,7 @@ def _render_single_recommendation_card(
     st.markdown(card_html, unsafe_allow_html=True)
 
     # Action Controls: Bookmark / Pin & 1-Click Paper-Trade
+    target_rec_ids = cluster_rec_ids if cluster_rec_ids else [idea.rec_id]
     col_bm, col_trade = st.columns([1, 2.8], gap="small")
     with col_bm:
         bm_label = "★ Pinned" if bm_active else "☆ Pin Card"
@@ -2624,8 +2709,8 @@ def _render_single_recommendation_card(
             use_container_width=True,
             type="primary" if bm_active else "secondary",
             help="Pin card to Cockpit tab so it stays active across scans",
-            on_click=_toggle_rec_bookmark,
-            args=(idea.rec_id,),
+            on_click=_toggle_cluster_bookmarks,
+            args=(target_rec_ids,),
         )
     with col_trade:
         if show_action_button:
@@ -2650,6 +2735,148 @@ def _render_single_recommendation_card(
         _render_rec_score_history_table(idea.rec_id)
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+
+def _render_recommendation_cluster_card(
+    cluster: StrikeCluster,
+    symbol: str,
+    data: Any,
+    key_suffix: str,
+    prefix: str = "ck",
+    account_capital: float = 500_000.0,
+    risk_pct: float = 1.5,
+    current_spot: float = 0.0,
+    show_action_button: bool = True,
+) -> None:
+    """Render a strike cluster card: single-strategy cards render standardly; multi-strategy clusters render with confluence selector & matrix."""
+    if not cluster.is_confluence:
+        _render_single_recommendation_card(
+            cluster.ideas[0], symbol, data, key_suffix=key_suffix, prefix=prefix,
+            account_capital=account_capital, risk_pct=risk_pct, current_spot=current_spot,
+            show_action_button=show_action_button,
+        )
+        return
+
+    # Multi-strategy confluence cluster:
+    # 1. Evaluate real-time lifecycle status of each strategy in the cluster
+    strat_status: dict[str, tuple[str, str, float]] = {}
+    active_ideas: list[TradeIdea] = []
+    dissolved_reasons: list[str] = []
+
+    for idea in cluster.ideas:
+        if current_spot > 0:
+            if idea.side == "CE":
+                inval_buffer = current_spot - idea.spot_invalidation
+                is_active = (current_spot >= idea.spot_invalidation)
+            else:
+                inval_buffer = idea.spot_invalidation - current_spot
+                is_active = (current_spot <= idea.spot_invalidation)
+        else:
+            inval_buffer = 0.0
+            is_active = True
+
+        score_faded = (idea.quality_score < 75)
+        if not is_active:
+            strat_status[idea.rec_id] = ("BREACHED", f"🛑 Inval Breached (-{abs(inval_buffer):,.0f} pts)", inval_buffer)
+            dissolved_reasons.append(f"<b>{idea.play_badge}</b> spot invalidation breached (₹{idea.spot_invalidation:,.0f})")
+        elif score_faded:
+            strat_status[idea.rec_id] = ("FADED", f"⚠️ Score Faded ({idea.quality_score}/100)", inval_buffer)
+            dissolved_reasons.append(f"<b>{idea.play_badge}</b> conviction faded ({idea.quality_score}/100)")
+        else:
+            buf_str = f"+{inval_buffer:,.0f} pts" if current_spot > 0 else "Active"
+            strat_status[idea.rec_id] = ("ACTIVE", f"🟢 Active ({buf_str})", inval_buffer)
+            active_ideas.append(idea)
+
+    # Confluence status banner
+    if len(active_ideas) > 1:
+        strat_badges_html = " + ".join([f'<span class="confluence-strat-tag">{i.play_badge}</span>' for i in active_ideas])
+        conf_banner = (
+            f'<div class="confluence-banner">'
+            f'<div>⚡ <b>{len(active_ideas)}x STRATEGY CONFLUENCE:</b> {strat_badges_html}</div>'
+            f'<span style="font-size:0.68rem;background:rgba(56,189,248,.2);padding:2px 6px;border-radius:4px;font-weight:750">Institutional Alignment</span>'
+            f'</div>'
+        )
+    elif len(active_ideas) == 1:
+        faded_txt = "; ".join(dissolved_reasons)
+        conf_banner = (
+            f'<div class="confluence-banner" style="border-color:rgba(234,179,8,.4);background:rgba(234,179,8,.08);color:#eab308">'
+            f'<div>⚠️ <b>Confluence Dissolved:</b> {faded_txt}. Remaining Active Thesis: <b>{active_ideas[0].play_badge}</b></div>'
+            f'<span style="font-size:0.68rem;background:rgba(234,179,8,.2);padding:2px 6px;border-radius:4px;font-weight:750">Partial Invalidation</span>'
+            f'</div>'
+        )
+    else:
+        conf_banner = (
+            f'<div class="confluence-banner" style="border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:var(--stop)">'
+            f'<div>🛑 <b>All Theses Invalidated:</b> Spot breached all contributing strategy stops.</div>'
+            f'<span style="font-size:0.68rem;background:rgba(239,68,68,.2);padding:2px 6px;border-radius:4px;font-weight:750">Invalidated Strike</span>'
+            f'</div>'
+        )
+
+    # Interactive strategy selector
+    st.markdown(
+        '<div style="font-size:.74rem;font-weight:700;color:var(--spark);margin-top:6px;margin-bottom:2px">'
+        'Select Strategy Thesis to Inspect & Execute:'
+        '</div>',
+        unsafe_allow_html=True
+    )
+    default_idea = active_ideas[0] if active_ideas else cluster.ideas[0]
+    sel_idx = cluster.ideas.index(default_idea) if default_idea in cluster.ideas else 0
+
+    selected_idea = st.radio(
+        "Strategy Thesis:",
+        cluster.ideas,
+        index=sel_idx,
+        format_func=lambda i: f"{'🟢' if strat_status.get(i.rec_id, ('', ''))[0] == 'ACTIVE' else '🛑'} {i.play_badge} (Score {i.quality_score}/100) — {strat_status.get(i.rec_id, ('', ''))[1]}",
+        horizontal=True,
+        key=f"cluster_sel_{prefix}_{cluster.side}_{int(cluster.strike)}_{key_suffix}_{symbol}",
+        label_visibility="collapsed",
+    )
+
+    # Comparative Strategy Matrix Table
+    matrix_rows = []
+    for i in cluster.ideas:
+        st_code, st_lbl, _ = strat_status.get(i.rec_id, ("ACTIVE", "Active", 0))
+        color = "var(--go)" if st_code == "ACTIVE" else "var(--stop)"
+        is_sel_row = (i.rec_id == selected_idea.rec_id)
+        row_bg = "background:rgba(56,189,248,.07);" if is_sel_row else ""
+        sel_marker = "👉 " if is_sel_row else ""
+        matrix_rows.append(
+            f'<tr style="{row_bg}border-bottom:1px solid var(--line)">'
+            f'<td style="padding:4px 8px;font-weight:700;color:var(--ink)">{sel_marker}{i.play_badge}</td>'
+            f'<td style="padding:4px 8px;color:{i.conviction_color};font-weight:700">{i.quality_score}/100</td>'
+            f'<td style="padding:4px 8px;color:var(--go);font-family:var(--mono)">₹{i.target_1:,.1f}</td>'
+            f'<td style="padding:4px 8px;color:var(--stop);font-family:var(--mono)">₹{i.stop_loss:,.1f}</td>'
+            f'<td style="padding:4px 8px;font-family:var(--mono)">₹{i.spot_invalidation:,.0f}</td>'
+            f'<td style="padding:4px 8px;font-weight:700;color:{color}">{st_lbl}</td>'
+            f'</tr>'
+        )
+    matrix_html = (
+        f'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px;margin:8px 0">'
+        f'<div style="font-size:.70rem;font-weight:700;color:var(--ink-mute);margin-bottom:4px;text-transform:uppercase">Confluence Strategy Matrix</div>'
+        f'<table style="width:100%;font-size:.72rem;border-collapse:collapse">'
+        f'<thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:left">'
+        f'<th style="padding:4px 8px">Strategy</th><th style="padding:4px 8px">Score</th><th style="padding:4px 8px">Tgt 1</th>'
+        f'<th style="padding:4px 8px">Opt SL</th><th style="padding:4px 8px">Spot Inval</th><th style="padding:4px 8px">Status</th>'
+        f'</tr></thead>'
+        f'<tbody>{"".join(matrix_rows)}</tbody>'
+        f'</table>'
+        f'</div>'
+    )
+
+    # Render selected idea card with confluence banner and matrix inserted
+    _render_single_recommendation_card(
+        selected_idea,
+        symbol,
+        data,
+        key_suffix=f"{key_suffix}_conf_{selected_idea.rec_id}",
+        prefix=prefix,
+        account_capital=account_capital,
+        risk_pct=risk_pct,
+        current_spot=current_spot,
+        show_action_button=show_action_button,
+        extra_top_html=conf_banner + matrix_html,
+        cluster_rec_ids=[i.rec_id for i in cluster.ideas],
+    )
 
 
 def _render_strategy_effectiveness_strip(symbol: str) -> None:
@@ -2819,35 +3046,55 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
     ce_fresh = [idea for idea in fresh_ideas if idea.side == "CE"]
     pe_fresh = [idea for idea in fresh_ideas if idea.side == "PE"]
 
+    ce_all_ideas: list[TradeIdea] = []
+    seen_ce_ids = set()
+    for rec_dict in ce_bms:
+        idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+        if idea.rec_id not in seen_ce_ids:
+            seen_ce_ids.add(idea.rec_id)
+            ce_all_ideas.append(idea)
+    for idea in ce_fresh:
+        if idea.rec_id not in seen_ce_ids:
+            seen_ce_ids.add(idea.rec_id)
+            ce_all_ideas.append(idea)
+    ce_clusters = _cluster_ideas_by_strike(ce_all_ideas)
+
+    pe_all_ideas: list[TradeIdea] = []
+    seen_pe_ids = set()
+    for rec_dict in pe_bms:
+        idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+        if idea.rec_id not in seen_pe_ids:
+            seen_pe_ids.add(idea.rec_id)
+            pe_all_ideas.append(idea)
+    for idea in pe_fresh:
+        if idea.rec_id not in seen_pe_ids:
+            seen_pe_ids.add(idea.rec_id)
+            pe_all_ideas.append(idea)
+    pe_clusters = _cluster_ideas_by_strike(pe_all_ideas)
+
     with col_c:
-        n_ce = len(ce_bms) + len(ce_fresh)
+        n_ce_cards = len(ce_clusters)
         sub_ce = f"{len(ce_bms)} Pinned, {len(ce_fresh)} Fresh" if ce_fresh else f"{len(ce_bms)} Pinned"
-        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--go)">🟢 Calls ({n_ce})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_ce}</span></div>', unsafe_allow_html=True)
-        for i, rec_dict in enumerate(ce_bms):
-            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"bm_ce_{i}", prefix="ck_bm",
-                current_spot=spot,
-            )
-        for i, idea in enumerate(ce_fresh):
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"fresh_ce_{i}", prefix="ck_fresh",
+        card_label = f"{n_ce_cards} Contract{'s' if n_ce_cards != 1 else ''}"
+        if len(ce_all_ideas) > n_ce_cards:
+            card_label += f" · {len(ce_all_ideas)} Setups"
+        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--go)">🟢 Calls ({card_label})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_ce}</span></div>', unsafe_allow_html=True)
+        for i, cluster in enumerate(ce_clusters):
+            _render_recommendation_cluster_card(
+                cluster, symbol, data, key_suffix=f"ck_ce_cl_{i}", prefix="ck_bm",
                 current_spot=spot,
             )
 
     with col_p:
-        n_pe = len(pe_bms) + len(pe_fresh)
+        n_pe_cards = len(pe_clusters)
         sub_pe = f"{len(pe_bms)} Pinned, {len(pe_fresh)} Fresh" if pe_fresh else f"{len(pe_bms)} Pinned"
-        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--stop)">🔴 Puts ({n_pe})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_pe}</span></div>', unsafe_allow_html=True)
-        for i, rec_dict in enumerate(pe_bms):
-            idea = _record_to_trade_idea(rec_dict, current_spot=spot)
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"bm_pe_{i}", prefix="ck_bm",
-                current_spot=spot,
-            )
-        for i, idea in enumerate(pe_fresh):
-            _render_single_recommendation_card(
-                idea, symbol, data, key_suffix=f"fresh_pe_{i}", prefix="ck_fresh",
+        card_label = f"{n_pe_cards} Contract{'s' if n_pe_cards != 1 else ''}"
+        if len(pe_all_ideas) > n_pe_cards:
+            card_label += f" · {len(pe_all_ideas)} Setups"
+        st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--stop)">🔴 Puts ({card_label})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_pe}</span></div>', unsafe_allow_html=True)
+        for i, cluster in enumerate(pe_clusters):
+            _render_recommendation_cluster_card(
+                cluster, symbol, data, key_suffix=f"ck_pe_cl_{i}", prefix="ck_bm",
                 current_spot=spot,
             )
 
@@ -2962,10 +3209,16 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
 
     # Left Column: CALLS (CE)
     with col_ce:
+        ce_clusters = _cluster_ideas_by_strike(batch.ce_recommendations)
+        total_ce_setups = len(batch.ce_recommendations)
+        ce_cnt_str = f"{len(ce_clusters)} Contract{'s' if len(ce_clusters) != 1 else ''}"
+        if total_ce_setups > len(ce_clusters):
+            ce_cnt_str += f" · {total_ce_setups} Setups"
+
         if getattr(batch, "ce_fallback_active", False):
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Calls (Score 75–85 · {len(batch.ce_recommendations)})</span>'
+                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Calls (Score 75–85 · {ce_cnt_str})</span>'
                 f'<span style="font-size:.70rem;color:#eab308;background:rgba(234,179,8,.12);padding:2px 6px;border-radius:4px">Fallback Tier</span>'
                 f'</div>'
                 f'<div style="font-size:.74rem;color:var(--ink-mute);margin-bottom:8px">'
@@ -2976,16 +3229,16 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         else:
             st.markdown(
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-                f'<span style="font-weight:750;font-size:.88rem;color:var(--go)">🟢 Higher Conviction Calls (Score > 85 · {len(batch.ce_recommendations)})</span>'
+                f'<span style="font-weight:750;font-size:.88rem;color:var(--go)">🟢 Higher Conviction Calls (Score > 85 · {ce_cnt_str})</span>'
                 '<span style="font-size:.72rem;color:var(--ink-mute)">Grade A+ Setups</span>'
                 '</div>',
                 unsafe_allow_html=True,
             )
 
-        if batch.ce_recommendations:
-            for i, idea in enumerate(batch.ce_recommendations):
-                _render_single_recommendation_card(
-                    idea, symbol, data, key_suffix=f"ce_{i}", prefix="ck",
+        if ce_clusters:
+            for i, cluster in enumerate(ce_clusters):
+                _render_recommendation_cluster_card(
+                    cluster, symbol, data, key_suffix=f"ce_cl_{i}", prefix="ck",
                     account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                 )
         else:
@@ -3000,10 +3253,16 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
 
     # Right Column: PUTS (PE)
     with col_pe:
+        pe_clusters = _cluster_ideas_by_strike(batch.pe_recommendations)
+        total_pe_setups = len(batch.pe_recommendations)
+        pe_cnt_str = f"{len(pe_clusters)} Contract{'s' if len(pe_clusters) != 1 else ''}"
+        if total_pe_setups > len(pe_clusters):
+            pe_cnt_str += f" · {total_pe_setups} Setups"
+
         if getattr(batch, "pe_fallback_active", False):
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Puts (Score 75–85 · {len(batch.pe_recommendations)})</span>'
+                f'<span style="font-weight:750;font-size:.88rem;color:#eab308">🟡 Secondary Conviction Puts (Score 75–85 · {pe_cnt_str})</span>'
                 f'<span style="font-size:.70rem;color:#eab308;background:rgba(234,179,8,.12);padding:2px 6px;border-radius:4px">Fallback Tier</span>'
                 f'</div>'
                 f'<div style="font-size:.74rem;color:var(--ink-mute);margin-bottom:8px">'
@@ -3014,16 +3273,16 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         else:
             st.markdown(
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-                f'<span style="font-weight:750;font-size:.88rem;color:var(--stop)">🔴 Higher Conviction Puts (Score > 85 · {len(batch.pe_recommendations)})</span>'
+                f'<span style="font-weight:750;font-size:.88rem;color:var(--stop)">🔴 Higher Conviction Puts (Score > 85 · {pe_cnt_str})</span>'
                 '<span style="font-size:.72rem;color:var(--ink-mute)">Grade A+ Setups</span>'
                 '</div>',
                 unsafe_allow_html=True,
             )
 
-        if batch.pe_recommendations:
-            for i, idea in enumerate(batch.pe_recommendations):
-                _render_single_recommendation_card(
-                    idea, symbol, data, key_suffix=f"pe_{i}", prefix="ck",
+        if pe_clusters:
+            for i, cluster in enumerate(pe_clusters):
+                _render_recommendation_cluster_card(
+                    cluster, symbol, data, key_suffix=f"pe_cl_{i}", prefix="ck",
                     account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                 )
         else:
@@ -3044,18 +3303,20 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
             st.caption("Strategies evaluated by the engine that did not meet the Quality Gates threshold (Score ≥ 75):")
             col_diag_ce, col_diag_pe = st.columns(2, gap="medium")
             with col_diag_ce:
+                unqual_ce_clusters = _cluster_ideas_by_strike(unqualified_ce)
                 st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--go);margin-bottom:6px">Call Candidates Under Review ({len(unqualified_ce)})</div>', unsafe_allow_html=True)
-                for j, c_idea in enumerate(unqualified_ce):
-                    _render_single_recommendation_card(
-                        c_idea, symbol, data, key_suffix=f"unqual_ce_{j}", prefix="ck_unq",
+                for j, cluster in enumerate(unqual_ce_clusters):
+                    _render_recommendation_cluster_card(
+                        cluster, symbol, data, key_suffix=f"unqual_ce_cl_{j}", prefix="ck_unq",
                         account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                         show_action_button=False,
                     )
             with col_diag_pe:
+                unqual_pe_clusters = _cluster_ideas_by_strike(unqualified_pe)
                 st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--stop);margin-bottom:6px">Put Candidates Under Review ({len(unqualified_pe)})</div>', unsafe_allow_html=True)
-                for j, p_idea in enumerate(unqualified_pe):
-                    _render_single_recommendation_card(
-                        p_idea, symbol, data, key_suffix=f"unqual_pe_{j}", prefix="ck_unq",
+                for j, cluster in enumerate(unqual_pe_clusters):
+                    _render_recommendation_cluster_card(
+                        cluster, symbol, data, key_suffix=f"unqual_pe_cl_{j}", prefix="ck_unq",
                         account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                         show_action_button=False,
                     )
