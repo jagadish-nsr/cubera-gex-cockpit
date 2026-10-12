@@ -4048,6 +4048,46 @@ def _build_tv_lightweight_chart_html(
     backdrop-filter: blur(6px);
     border: 1px solid rgba(51, 65, 85, 0.5);
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    max-width: calc(100% - 240px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }}
+  .tv-zoom-controls {{
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    z-index: 25;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(51, 65, 85, 0.5);
+    border-radius: 6px;
+    padding: 3px 6px;
+    backdrop-filter: blur(6px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  }}
+  .tv-zoom-btn {{
+    background: rgba(30, 41, 59, 0.6);
+    border: 1px solid rgba(51, 65, 85, 0.6);
+    color: #94a3b8;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-weight: 600;
+    line-height: 1.3;
+    transition: all 0.15s ease;
+  }}
+  .tv-zoom-btn:hover {{
+    background: rgba(56, 189, 248, 0.2);
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.5);
+  }}
+  .tv-zoom-btn:active {{
+    transform: scale(0.95);
   }}
 </style>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -4067,6 +4107,13 @@ if (typeof LightweightCharts === 'undefined') {{
     <span id="leg_delta">Δ: --</span>
     <span id="leg_cvd" style="color:#38bdf8">CVD: --</span>
   </div>
+  <div class="tv-zoom-controls" id="zoom_controls">
+    <button class="tv-zoom-btn" id="btn_zoom_in" title="Zoom In (Both Axes)">🔍 +</button>
+    <button class="tv-zoom-btn" id="btn_zoom_out" title="Zoom Out (Both Axes)">🔍 −</button>
+    <button class="tv-zoom-btn" id="btn_zoom_price" title="Reset / Auto Price Scale (Vertical)">↕ Price</button>
+    <button class="tv-zoom-btn" id="btn_zoom_time" title="Fit Content (Horizontal)">↔ Time</button>
+    <button class="tv-zoom-btn" id="btn_zoom_reset" title="Reset Both Axes">↺ Reset</button>
+  </div>
   <div id="tv_chart_container"></div>
 </div>
 <script>
@@ -4075,6 +4122,11 @@ if (typeof LightweightCharts === 'undefined') {{
   const data = {data_json};
 
   if (!container || !window.LightweightCharts) return;
+
+  let currentTopMargin = data.showCvd ? 0.12 : 0.16;
+  let currentBottomMargin = data.showCvd ? 0.38 : (data.showDelta ? 0.28 : 0.16);
+  const defaultTopMargin = currentTopMargin;
+  const defaultBottomMargin = currentBottomMargin;
 
   const chart = LightweightCharts.createChart(container, {{
     width: container.clientWidth || 1050,
@@ -4096,21 +4148,27 @@ if (typeof LightweightCharts === 'undefined') {{
       borderColor: 'rgba(51, 65, 85, 0.45)',
       autoScale: true,
       scaleMargins: {{
-        top: data.showCvd ? 0.12 : 0.16,
-        bottom: data.showCvd ? 0.38 : (data.showDelta ? 0.28 : 0.16),
+        top: currentTopMargin,
+        bottom: currentBottomMargin,
       }},
     }},
     handleScale: {{
       axisPressedMouseMove: {{
-        time: false,
+        time: true,
         price: true,
       }},
       axisDoubleClickReset: {{
-        time: false,
+        time: true,
         price: true,
       }},
-      mouseWheel: false,
+      mouseWheel: true,
       pinch: true,
+    }},
+    handleScroll: {{
+      mouseWheel: true,
+      pressedMouseMove: true,
+      horzTouchDrag: true,
+      vertTouchDrag: true,
     }},
     timeScale: {{
       borderColor: 'rgba(51, 65, 85, 0.45)',
@@ -4311,6 +4369,66 @@ if (typeof LightweightCharts === 'undefined') {{
   if (data.candles.length > 0) {{
     updateLegend(data.candles[data.candles.length - 1]);
   }}
+  function zoomPrice(factor) {{
+    currentTopMargin = Math.max(0.02, Math.min(0.40, currentTopMargin + (1 - factor) * 0.08));
+    currentBottomMargin = Math.max(0.05, Math.min(0.65, currentBottomMargin + (1 - factor) * 0.08));
+    chart.priceScale('right').applyOptions({{
+      autoScale: true,
+      scaleMargins: {{ top: currentTopMargin, bottom: currentBottomMargin }},
+    }});
+  }}
+
+  function zoomTime(factor) {{
+    const currentSpacing = chart.timeScale().options().barSpacing || 9;
+    const newSpacing = Math.max(2, Math.min(60, currentSpacing * factor));
+    chart.timeScale().applyOptions({{ barSpacing: newSpacing }});
+  }}
+
+  function zoomBoth(factor) {{
+    zoomTime(factor);
+    zoomPrice(factor);
+  }}
+
+  const btnZoomIn = document.getElementById('btn_zoom_in');
+  const btnZoomOut = document.getElementById('btn_zoom_out');
+  const btnZoomPrice = document.getElementById('btn_zoom_price');
+  const btnZoomTime = document.getElementById('btn_zoom_time');
+  const btnZoomReset = document.getElementById('btn_zoom_reset');
+
+  if (btnZoomIn) btnZoomIn.addEventListener('click', (e) => {{ e.preventDefault(); zoomBoth(1.3); }});
+  if (btnZoomOut) btnZoomOut.addEventListener('click', (e) => {{ e.preventDefault(); zoomBoth(0.77); }});
+  if (btnZoomPrice) btnZoomPrice.addEventListener('click', (e) => {{
+    e.preventDefault();
+    currentTopMargin = defaultTopMargin;
+    currentBottomMargin = defaultBottomMargin;
+    chart.priceScale('right').applyOptions({{
+      autoScale: true,
+      scaleMargins: {{ top: defaultTopMargin, bottom: defaultBottomMargin }},
+    }});
+  }});
+  if (btnZoomTime) btnZoomTime.addEventListener('click', (e) => {{
+    e.preventDefault();
+    chart.timeScale().fitContent();
+  }});
+  if (btnZoomReset) btnZoomReset.addEventListener('click', (e) => {{
+    e.preventDefault();
+    currentTopMargin = defaultTopMargin;
+    currentBottomMargin = defaultBottomMargin;
+    chart.priceScale('right').applyOptions({{
+      autoScale: true,
+      scaleMargins: {{ top: defaultTopMargin, bottom: defaultBottomMargin }},
+    }});
+    chart.timeScale().applyOptions({{ barSpacing: 9 }});
+    chart.timeScale().fitContent();
+  }});
+
+  container.addEventListener('wheel', (e) => {{
+    if (e.shiftKey) {{
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 0.85;
+      zoomPrice(factor);
+    }}
+  }}, {{ passive: false }});
 }})();
 </script>
 </body>
