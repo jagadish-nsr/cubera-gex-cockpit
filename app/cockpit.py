@@ -103,6 +103,7 @@ from resilience.adaptive_poller import get_adaptive_poller  # noqa: E402
 import resilience.lkgs as lkgs_mod  # noqa: E402
 importlib.reload(lkgs_mod)
 get_lkgs_manager = lkgs_mod.get_lkgs_manager
+from data.holidays import is_trading_day, roll_back_to_trading_day  # noqa: E402
 from app.spot_ticker import get_instant_quote, warmup_all  # noqa: E402
 from analytics.trade_ideas import (  # noqa: E402
     TradeIdea,
@@ -3295,31 +3296,7 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
                 unsafe_allow_html=True,
             )
 
-    # Lower-Conviction Watchlist Expander (< 75)
-    unqualified_ce = [c for c in batch.all_ce_candidates if c not in batch.ce_recommendations]
-    unqualified_pe = [p for p in batch.all_pe_candidates if p not in batch.pe_recommendations]
-    if unqualified_ce or unqualified_pe:
-        with st.expander("👁️ Lower-Conviction Watchlist (Score < 75 Strategies)", expanded=False):
-            st.caption("Strategies evaluated by the engine that did not meet the Quality Gates threshold (Score ≥ 75):")
-            col_diag_ce, col_diag_pe = st.columns(2, gap="medium")
-            with col_diag_ce:
-                unqual_ce_clusters = _cluster_ideas_by_strike(unqualified_ce)
-                st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--go);margin-bottom:6px">Call Candidates Under Review ({len(unqualified_ce)})</div>', unsafe_allow_html=True)
-                for j, cluster in enumerate(unqual_ce_clusters):
-                    _render_recommendation_cluster_card(
-                        cluster, symbol, data, key_suffix=f"unqual_ce_cl_{j}", prefix="ck_unq",
-                        account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
-                        show_action_button=False,
-                    )
-            with col_diag_pe:
-                unqual_pe_clusters = _cluster_ideas_by_strike(unqualified_pe)
-                st.markdown(f'<div style="font-size:.76rem;font-weight:700;color:var(--stop);margin-bottom:6px">Put Candidates Under Review ({len(unqualified_pe)})</div>', unsafe_allow_html=True)
-                for j, cluster in enumerate(unqual_pe_clusters):
-                    _render_recommendation_cluster_card(
-                        cluster, symbol, data, key_suffix=f"unqual_pe_cl_{j}", prefix="ck_unq",
-                        account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
-                        show_action_button=False,
-                    )
+
 
 
 @st.fragment(run_every=4)
@@ -4116,10 +4093,23 @@ if (typeof LightweightCharts === 'undefined') {{
     }},
     rightPriceScale: {{
       borderColor: 'rgba(51, 65, 85, 0.45)',
+      autoScale: true,
       scaleMargins: {{
-        top: 0.1,
-        bottom: 0.22,
+        top: data.showCvd ? 0.14 : 0.18,
+        bottom: data.showCvd ? 0.42 : (data.showDelta ? 0.32 : 0.18),
       }},
+    }},
+    handleScale: {{
+      axisPressedMouseMove: {{
+        time: true,
+        price: true,
+      }},
+      axisDoubleClickReset: {{
+        time: true,
+        price: true,
+      }},
+      mouseWheel: true,
+      pinch: true,
     }},
     timeScale: {{
       borderColor: 'rgba(51, 65, 85, 0.45)',
@@ -4236,7 +4226,7 @@ if (typeof LightweightCharts === 'undefined') {{
       priceScaleId: 'deltaScale',
     }});
     chart.priceScale('deltaScale').applyOptions({{
-      scaleMargins: {{ top: 0.82, bottom: 0 }},
+      scaleMargins: {{ top: 0.85, bottom: 0 }},
     }});
     deltaSeries.setData(data.candles.map(c => ({{
       time: c.time,
@@ -4253,7 +4243,7 @@ if (typeof LightweightCharts === 'undefined') {{
       title: 'CVD',
     }});
     chart.priceScale('cvdScale').applyOptions({{
-      scaleMargins: {{ top: 0.74, bottom: 0.02 }},
+      scaleMargins: {{ top: 0.70, bottom: 0.02 }},
     }});
     cvdSeries.setData(data.candles.map(c => ({{ time: c.time, value: c.cvd }})));
   }}
@@ -5206,148 +5196,13 @@ def _render_market_intelligence(data, spot: float, spot_chg_pct: float = 0.0, sy
 # ---------------------------------------------------------------------------
 
 
-def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
-    """Options Analytics — IOAS v3.0 §3.1–§3.4 (Balanced Multi-Panel Layout)."""
-    data, err = _load_data(symbol, window)
-    if data is None:
-        st.error(
-            f"⚠️ Could not load data for analytics ({symbol}): {err}",
-            icon="📡",
-        )
-        return
+# ---------------------------------------------------------------------------
+# Tab 3: Analytics (IOAS v3.0) — Decoupled Independent Cards
+# ---------------------------------------------------------------------------
 
-    levels = data.levels
-    iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
-    idx = config.get_index(symbol)
-    contracts_df = getattr(data, "contracts", None)
-    oi_strikes = getattr(data, "oi_strikes", None) or []
 
-    # --- Pull raw OI aggregates ---
-    pcr, call_doi, put_doi = _extract_pcr_and_oi(data)
-
-    # --- IV Skew ---
-    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
-    skew_25d = skew_result.get("skew_25d")
-    near_atm_iv = skew_result.get("near_atm_iv")
-
-    # --- India VIX from levels or live quote ---
-    india_vix = None
-    if iq and iq.get("vix") is not None:
-        vix_val = float(iq["vix"])
-        india_vix = {"last": vix_val, "pct_change": iq.get("vix_chg")}
-    else:
-        raw_vix = getattr(levels, "vix", None)
-        if raw_vix and not isinstance(raw_vix, dict):
-            india_vix = {"last": float(raw_vix)}
-        elif isinstance(raw_vix, dict):
-            india_vix = raw_vix
-        vix_val = float(india_vix["last"]) if (india_vix and india_vix.get("last")) else 13.20
-        if india_vix is None:
-            india_vix = {"last": vix_val}
-
-    # --- Structural Levels ---
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
-    call_wall = getattr(levels, "call_wall", None) or default_cw
-    put_wall = getattr(levels, "put_wall", None) or default_pw
-    max_pain = getattr(levels, "max_pain", None) or default_mp
-    gamma_flip = _extract_gamma_flip(levels, symbol)
-
-    # --- ATM IV & Expected Move ---
-    atm_iv = near_atm_iv
-    if atm_iv is None or atm_iv <= 0:
-        atm_iv = vix_val / 100.0 if vix_val > 0 else 0.13
-
-    dte = getattr(data, "dte_now", None)
-    if dte is not None and dte > 0:
-        t_years = max(float(dte), 0.5) / 365.0
-    else:
-        t_years = 1.0 / 52.0  # default ~1 week
-        if contracts_df is not None and hasattr(contracts_df, "empty") and not contracts_df.empty:
-            if "T" in contracts_df.columns:
-                valid_t = contracts_df["T"].dropna()
-                if not valid_t.empty and valid_t.min() > 0:
-                    t_years = float(valid_t.min())
-
-    iv_move = spot * atm_iv * math.sqrt(t_years)
-    iv_move_pct = (iv_move / spot) * 100.0 if spot > 0 else 0.0
-
-    # ATM Straddle cross-validation
-    straddle_move = None
-    if contracts_df is not None and hasattr(contracts_df, "empty") and not contracts_df.empty:
-        try:
-            df_c = contracts_df.copy()
-            df_c["dist"] = (df_c["strike"] - spot).abs()
-            nearest_strike = df_c.sort_values("dist").iloc[0]["strike"]
-            atm_contracts = df_c[df_c["strike"] == nearest_strike]
-            c_leg = atm_contracts[atm_contracts["type"].str.upper().str.startswith("C")]
-            p_leg = atm_contracts[atm_contracts["type"].str.upper().str.startswith("P")]
-
-            c_px = 0.0
-            p_px = 0.0
-            if not c_leg.empty:
-                for col in ["mid", "close", "last", "ltp"]:
-                    if col in c_leg.columns and not pd.isna(c_leg.iloc[0][col]) and float(c_leg.iloc[0][col]) > 0:
-                        c_px = float(c_leg.iloc[0][col])
-                        break
-            if not p_leg.empty:
-                for col in ["mid", "close", "last", "ltp"]:
-                    if col in p_leg.columns and not pd.isna(p_leg.iloc[0][col]) and float(p_leg.iloc[0][col]) > 0:
-                        p_px = float(p_leg.iloc[0][col])
-                        break
-            if c_px > 0 or p_px > 0:
-                straddle_move = c_px + p_px
-        except Exception:
-            straddle_move = None
-
-    if straddle_move is None or straddle_move <= 0:
-        straddle_move = 0.8 * iv_move
-
-    exp_low = spot - iv_move
-    exp_high = spot + iv_move
-
-    # Distance & Pin Score
-    cw_dist = (call_wall - spot) if (call_wall and spot) else 0.0
-    pw_dist = (spot - put_wall) if (put_wall and spot) else 0.0
-    mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
-    if max_pain and spot:
-        pct_dist = (mp_dist / spot) * 100.0
-        pin_score = max(10, min(100, int(100 - (pct_dist * 28))))
-    else:
-        pin_score = 68
-
-    iv_rank = min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0))
-
-    # --- Directional Bias Calculation ---
-    bias = compute_directional_bias(
-        spot=spot,
-        call_wall=call_wall,
-        put_wall=put_wall,
-        max_pain=max_pain,
-        pcr=pcr,
-        call_doi=call_doi,
-        put_doi=put_doi,
-        oi_strikes=oi_strikes,
-        india_vix=india_vix,
-        skew_25d=skew_25d,
-        near_atm_iv=near_atm_iv,
-    )
-    score = bias.score
-    pct = (score + 10) / 20 * 100
-    bar_cls = "bull" if score > 1.0 else "bear" if score < -1.0 else "neutral"
-    score_color = "var(--go)" if score > 1.0 else "var(--stop)" if score < -1.0 else "var(--ink-mute)"
-
-    # =======================================================================
-    # NOA Top KPI Strip (Preview Panel 1 Fidelity)
-    # =======================================================================
-    skew_label = skew_result.get("skew_label", "Contango (Normal)")
-    pcr_regime = "BULLISH" if pcr > 1.0 else "BEARISH"
-    pcr_reg_col = "var(--go)" if pcr > 1.0 else "var(--stop)"
-    vix_label = "Low Vol" if vix_val < 15 else "Elevated" if vix_val < 20 else "High Vol"
-
-    # Analytics Help & Interpretation Guide
+def _render_analytics_guide() -> None:
+    """Static Options Analytics Field Guide Expander — persistent across all polling cycles."""
     with st.expander("📖 Options Analytics Guide: Buildup States, Parity Arbitrage & FII Drift (Click to Expand / Collapse)", expanded=False):
         st.markdown(
             '''
@@ -5395,6 +5250,67 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
             unsafe_allow_html=True,
         )
 
+
+def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
+    """Card 0: NOA Top KPI Strip (Preview Panel 1 Fidelity)."""
+    data, err = _load_data(symbol, window)
+    if data is None or not getattr(data, "levels", None):
+        return
+
+    levels = data.levels
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    contracts_df = getattr(data, "contracts", None)
+    oi_strikes = getattr(data, "oi_strikes", None) or []
+
+    pcr, call_doi, put_doi = _extract_pcr_and_oi(data)
+    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
+    skew_25d = skew_result.get("skew_25d")
+    near_atm_iv = skew_result.get("near_atm_iv")
+
+    if iq and iq.get("vix") is not None:
+        vix_val = float(iq["vix"])
+    else:
+        raw_vix = getattr(levels, "vix", None)
+        vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
+    vix_label = "Low Vol" if vix_val < 15 else ("Elevated" if vix_val < 20 else "High Vol")
+
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
+    call_wall = getattr(levels, "call_wall", None) or default_cw
+    put_wall = getattr(levels, "put_wall", None) or default_pw
+    max_pain = getattr(levels, "max_pain", None) or default_mp
+
+    atm_iv = near_atm_iv or (vix_val / 100.0 if vix_val > 0 else 0.13)
+    iv_rank = min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0))
+
+    mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
+    if max_pain and spot:
+        pct_dist = (mp_dist / spot) * 100.0
+        pin_score = max(10, min(100, int(100 - (pct_dist * 28))))
+    else:
+        pin_score = 68
+
+    bias = compute_directional_bias(
+        spot=spot,
+        call_wall=call_wall,
+        put_wall=put_wall,
+        max_pain=max_pain,
+        pcr=pcr,
+        call_doi=call_doi,
+        put_doi=put_doi,
+        oi_strikes=oi_strikes,
+        india_vix={"last": vix_val},
+        skew_25d=skew_25d,
+        near_atm_iv=near_atm_iv,
+    )
+    score = bias.score
+    score_color = "var(--go)" if score > 1.0 else "var(--stop)" if score < -1.0 else "var(--ink-mute)"
+    skew_label = skew_result.get("skew_label", "Contango (Normal)")
+    pcr_regime = "BULLISH" if pcr > 1.0 else "BEARISH"
+    pcr_reg_col = "var(--go)" if pcr > 1.0 else "var(--stop)"
+
     st.markdown(
         f'<div class="ck">'
         f'<div class="noa-kpi-grid">'
@@ -5408,9 +5324,65 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
         unsafe_allow_html=True,
     )
 
-    # =======================================================================
-    # Row 1: Directional Bias Score (Left 50%) + Key Strike Observations (Right 50%)
-    # =======================================================================
+
+def _render_analytics_row1_bias_strikes(symbol: str, window: str) -> None:
+    """Card 1: Row 1 — Directional Bias Score (Left) + Key Strike Observations (Right)."""
+    data, err = _load_data(symbol, window)
+    if data is None or not getattr(data, "levels", None):
+        return
+
+    levels = data.levels
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    contracts_df = getattr(data, "contracts", None)
+    oi_strikes = getattr(data, "oi_strikes", None) or []
+
+    pcr, call_doi, put_doi = _extract_pcr_and_oi(data)
+    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
+    skew_25d = skew_result.get("skew_25d")
+    near_atm_iv = skew_result.get("near_atm_iv")
+
+    if iq and iq.get("vix") is not None:
+        vix_val = float(iq["vix"])
+    else:
+        raw_vix = getattr(levels, "vix", None)
+        vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
+
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
+    call_wall = getattr(levels, "call_wall", None) or default_cw
+    put_wall = getattr(levels, "put_wall", None) or default_pw
+    max_pain = getattr(levels, "max_pain", None) or default_mp
+    gamma_flip = _extract_gamma_flip(levels, symbol)
+
+    cw_dist = (call_wall - spot) if (call_wall and spot) else 0.0
+    pw_dist = (spot - put_wall) if (put_wall and spot) else 0.0
+    mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
+    if max_pain and spot:
+        pct_dist = (mp_dist / spot) * 100.0
+        pin_score = max(10, min(100, int(100 - (pct_dist * 28))))
+    else:
+        pin_score = 68
+
+    bias = compute_directional_bias(
+        spot=spot,
+        call_wall=call_wall,
+        put_wall=put_wall,
+        max_pain=max_pain,
+        pcr=pcr,
+        call_doi=call_doi,
+        put_doi=put_doi,
+        oi_strikes=oi_strikes,
+        india_vix={"last": vix_val},
+        skew_25d=skew_25d,
+        near_atm_iv=near_atm_iv,
+    )
+    score = bias.score
+    pct = (score + 10) / 20 * 100
+    bar_cls = "bull" if score > 1.0 else "bear" if score < -1.0 else "neutral"
+    score_color = "var(--go)" if score > 1.0 else "var(--stop)" if score < -1.0 else "var(--ink-mute)"
+
     col1_bias, col1_strikes = st.columns([1, 1], gap="medium")
 
     with col1_bias:
@@ -5492,9 +5464,81 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
         )
         st.markdown(strikes_card_html, unsafe_allow_html=True)
 
-    # =======================================================================
-    # Row 2: OI Distribution Chart (Left 60%) + Expected Move Range (Right 40%)
-    # =======================================================================
+
+def _render_analytics_row2_oi_expected_move(symbol: str, window: str) -> None:
+    """Card 2: Row 2 — OI Distribution Chart (Left 60%) + Expected Move Range (Right 40%)."""
+    data, err = _load_data(symbol, window)
+    if data is None or not getattr(data, "levels", None):
+        return
+
+    levels = data.levels
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    contracts_df = getattr(data, "contracts", None)
+    oi_strikes = getattr(data, "oi_strikes", None) or []
+
+    pcr, _, _ = _extract_pcr_and_oi(data)
+    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
+    near_atm_iv = skew_result.get("near_atm_iv")
+
+    if iq and iq.get("vix") is not None:
+        vix_val = float(iq["vix"])
+    else:
+        raw_vix = getattr(levels, "vix", None)
+        vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
+
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    call_wall = getattr(levels, "call_wall", None) or default_cw
+    put_wall = getattr(levels, "put_wall", None) or default_pw
+
+    atm_iv = near_atm_iv or (vix_val / 100.0 if vix_val > 0 else 0.13)
+    dte = getattr(data, "dte_now", None)
+    if dte is not None and dte > 0:
+        t_years = max(float(dte), 0.5) / 365.0
+    else:
+        t_years = 1.0 / 52.0
+        if contracts_df is not None and hasattr(contracts_df, "empty") and not contracts_df.empty:
+            if "T" in contracts_df.columns:
+                valid_t = contracts_df["T"].dropna()
+                if not valid_t.empty and valid_t.min() > 0:
+                    t_years = float(valid_t.min())
+
+    iv_move = spot * atm_iv * math.sqrt(t_years)
+    iv_move_pct = (iv_move / spot) * 100.0 if spot > 0 else 0.0
+
+    straddle_move = None
+    if contracts_df is not None and hasattr(contracts_df, "empty") and not contracts_df.empty:
+        try:
+            df_c = contracts_df.copy()
+            df_c["dist"] = (df_c["strike"] - spot).abs()
+            nearest_strike = df_c.sort_values("dist").iloc[0]["strike"]
+            atm_contracts = df_c[df_c["strike"] == nearest_strike]
+            c_leg = atm_contracts[atm_contracts["type"].str.upper().str.startswith("C")]
+            p_leg = atm_contracts[atm_contracts["type"].str.upper().str.startswith("P")]
+            c_px = 0.0
+            p_px = 0.0
+            if not c_leg.empty:
+                for col in ["mid", "close", "last", "ltp"]:
+                    if col in c_leg.columns and not pd.isna(c_leg.iloc[0][col]) and float(c_leg.iloc[0][col]) > 0:
+                        c_px = float(c_leg.iloc[0][col])
+                        break
+            if not p_leg.empty:
+                for col in ["mid", "close", "last", "ltp"]:
+                    if col in p_leg.columns and not pd.isna(p_leg.iloc[0][col]) and float(p_leg.iloc[0][col]) > 0:
+                        p_px = float(p_leg.iloc[0][col])
+                        break
+            if c_px > 0 or p_px > 0:
+                straddle_move = c_px + p_px
+        except Exception:
+            straddle_move = None
+
+    if straddle_move is None or straddle_move <= 0:
+        straddle_move = 0.8 * iv_move
+
+    exp_low = spot - iv_move
+    exp_high = spot + iv_move
+
     col2_oi, col2_exp = st.columns([6, 4], gap="medium")
 
     exp_tag_str = ""
@@ -5567,9 +5611,24 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
         )
         st.markdown(exp_card_html, unsafe_allow_html=True)
 
-    # =======================================================================
-    # Row 3: Strike Buildup Matrix (Left 50%) + IV Skew & Term Structure (Right 50%)
-    # =======================================================================
+
+def _render_analytics_row3_buildup_skew(symbol: str, window: str) -> None:
+    """Card 3: Row 3 — Strike Buildup Matrix (Left 50%) + IV Skew & Term Structure (Right 50%)."""
+    data, err = _load_data(symbol, window)
+    if data is None or not getattr(data, "levels", None):
+        return
+
+    levels = data.levels
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    contracts_df = getattr(data, "contracts", None)
+    oi_strikes = getattr(data, "oi_strikes", None) or []
+
+    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
+    near_atm_iv = skew_result.get("near_atm_iv")
+    vix_val = float(iq.get("vix") if iq and iq.get("vix") is not None else (getattr(levels, "vix", 13.20) or 13.20))
+    atm_iv = near_atm_iv or (vix_val / 100.0 if vix_val > 0 else 0.13)
+
     col3_buildup, col3_skew = st.columns([1, 1], gap="medium")
 
     with col3_buildup:
@@ -5708,9 +5767,27 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
         if sk_chart is not None:
             st.altair_chart(sk_chart, use_container_width=True)
 
-    # =======================================================================
-    # Row 4: Active Divergences (Left 50%) + Shift Events Log & Parity (Right 50%)
-    # =======================================================================
+
+def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
+    """Card 4: Row 4 — Active Divergences (Left 50%) + Intraday Shift Events & Parity Monitor (Right 50%)."""
+    data, err = _load_data(symbol, window)
+    if data is None or not getattr(data, "levels", None):
+        return
+
+    levels = data.levels
+    iq = get_instant_quote(symbol)
+    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    contracts_df = getattr(data, "contracts", None)
+
+    pcr, call_doi, put_doi = _extract_pcr_and_oi(data)
+    skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
+    near_atm_iv = skew_result.get("near_atm_iv")
+
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    call_wall = getattr(levels, "call_wall", None) or default_cw
+    put_wall = getattr(levels, "put_wall", None) or default_pw
+
     col4_div, col4_events = st.columns([1, 1], gap="medium")
 
     # Parity arb calculation
@@ -5790,12 +5867,24 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
         st.markdown(div_card_html, unsafe_allow_html=True)
 
     with col4_events:
-        today_ist = datetime.now(IST_TZ).strftime("%d-%b")
+        now_dt = datetime.now(IST_TZ)
+        trade_date = roll_back_to_trading_day(now_dt.date())
+        # If today is a trading day but market has not opened yet (before 09:15 IST), roll back to previous trading day
+        if is_trading_day(now_dt.date()) and (now_dt.hour < 9 or (now_dt.hour == 9 and now_dt.minute < 15)):
+            trade_date = roll_back_to_trading_day(now_dt.date() - timedelta(days=1))
+        today_ist = trade_date.strftime("%d-%b")
+
         shift_events = []
         if div_report.new_alerts:
             for a in div_report.new_alerts:
+                alert_time_str = f"{today_ist} {now_dt.strftime('%H:%M IST')}"
+                if hasattr(a, "detected_at") and a.detected_at:
+                    try:
+                        alert_time_str = _to_ist(datetime.fromisoformat(a.detected_at)).strftime("%d-%b %H:%M IST")
+                    except Exception:
+                        pass
                 shift_events.append({
-                    "time": datetime.now(IST_TZ).strftime("%d-%b %H:%M IST"),
+                    "time": alert_time_str,
                     "badge": a.type,
                     "badge_cls": "bear" if any(w in a.type for w in ["WALL", "DROP", "BREAK"]) else "bull",
                     "desc": f"{a.description} — {a.detail}",
@@ -5853,22 +5942,75 @@ def _render_analytics_content(symbol: str, window: str) -> None:  # noqa: C901
                 st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
 
 
+# --- Options Analytics Independent Fragments ---
 @st.fragment(run_every=15)
-def _fragment_analytics_live(symbol: str, window: str) -> None:
-    _render_analytics_content(symbol, window)
+def _fragment_analytics_kpi_live(symbol: str, window: str) -> None:
+    _render_analytics_kpi_strip(symbol, window)
 
 
 @st.fragment
-def _fragment_analytics_static(symbol: str, window: str) -> None:
-    _render_analytics_content(symbol, window)
+def _fragment_analytics_kpi_static(symbol: str, window: str) -> None:
+    _render_analytics_kpi_strip(symbol, window)
+
+
+@st.fragment(run_every=15)
+def _fragment_analytics_row1_live(symbol: str, window: str) -> None:
+    _render_analytics_row1_bias_strikes(symbol, window)
+
+
+@st.fragment
+def _fragment_analytics_row1_static(symbol: str, window: str) -> None:
+    _render_analytics_row1_bias_strikes(symbol, window)
+
+
+@st.fragment(run_every=15)
+def _fragment_analytics_row2_live(symbol: str, window: str) -> None:
+    _render_analytics_oi_and_expected_move(symbol, window)
+
+
+@st.fragment
+def _fragment_analytics_row2_static(symbol: str, window: str) -> None:
+    _render_analytics_oi_and_expected_move(symbol, window)
+
+
+@st.fragment(run_every=15)
+def _fragment_analytics_row3_live(symbol: str, window: str) -> None:
+    _render_analytics_buildup_and_skew(symbol, window)
+
+
+@st.fragment
+def _fragment_analytics_row3_static(symbol: str, window: str) -> None:
+    _render_analytics_buildup_and_skew(symbol, window)
+
+
+@st.fragment(run_every=15)
+def _fragment_analytics_row4_live(symbol: str, window: str) -> None:
+    _render_analytics_divergences_and_parity(symbol, window)
+
+
+@st.fragment
+def _fragment_analytics_row4_static(symbol: str, window: str) -> None:
+    _render_analytics_divergences_and_parity(symbol, window)
 
 
 def _tab_analytics(symbol: str, window: str) -> None:
-    """Options Analytics — IOAS v3.0 §3.1–§3.4 (Balanced Multi-Panel Layout)."""
+    """Options Analytics — IOAS v3.0 §3.1–§3.4 (Balanced Multi-Panel Layout with Independent Cards)."""
+    # 1. Static Guide (never re-renders or collapses on data updates)
+    _render_analytics_guide()
+
+    # 2. Independent Card Fragments (each card updates on its own without whole-page refresh)
     if _is_stream_live():
-        _fragment_analytics_live(symbol, window)
+        _fragment_analytics_kpi_live(symbol, window)
+        _fragment_analytics_row1_live(symbol, window)
+        _fragment_analytics_row2_live(symbol, window)
+        _fragment_analytics_row3_live(symbol, window)
+        _fragment_analytics_row4_live(symbol, window)
     else:
-        _fragment_analytics_static(symbol, window)
+        _fragment_analytics_kpi_static(symbol, window)
+        _fragment_analytics_row1_static(symbol, window)
+        _fragment_analytics_row2_static(symbol, window)
+        _fragment_analytics_row3_static(symbol, window)
+        _fragment_analytics_row4_static(symbol, window)
 
 
 def _render_market_intelligence_tab_content(symbol: str, window: str) -> None:
