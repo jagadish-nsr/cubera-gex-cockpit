@@ -4182,8 +4182,15 @@ def _render_sentinel_tape_content(symbol: str, inst_id: str, spot: float, cw: fl
 
 
 @st.fragment(run_every=3)
-def _fragment_sentinel_tape_live(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0) -> None:
+def _fragment_sentinel_tape_live(symbol: str, window: str, inst_id: str) -> None:
     """Fast-lane live fragment auto-updating every 3 seconds without full page reload."""
+    data, _ = _load_data(symbol, window)
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
+    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
+    gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
+
     iq = get_instant_quote(symbol)
     cur_spot = iq["spot"]
     cur_fut = iq.get("fut_px") or cur_spot
@@ -4235,7 +4242,7 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     )
     # Auto-refresh fast-lane fragment ONLY when market is open AND Live Stream mode is selected
     if market_open and "Live Stream" in refresh_mode:
-        _fragment_sentinel_tape_live(symbol, inst_id, cw, pw, gamma_flip=gamma_flip)
+        _fragment_sentinel_tape_live(symbol, window, inst_id)
     else:
         _render_sentinel_tape_content(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip)
 

@@ -62,6 +62,25 @@ def seed_sentinel_demo_if_needed(
         elif not is_trading_day(last_b.start_ts.date()):
             # Exchange is closed on weekends and holidays; purge stale non-trading day bars
             force = True
+        else:
+            # Check if active Call Wall or Put Wall has shifted vs existing signals
+            existing_sigs = list_recent_signals(instrument_id, limit=5)
+            import re
+            for sig in existing_sigs:
+                if "Put Wall " in sig.insight_text:
+                    m = re.search(r"Put Wall ([\d,]+)", sig.insight_text)
+                    if m:
+                        pw_in_sig = float(m.group(1).replace(",", ""))
+                        if abs(pw_in_sig - put_wall) >= 25.0:
+                            force = True
+                            break
+                if "Call Wall " in sig.insight_text:
+                    m = re.search(r"Call Wall ([\d,]+)", sig.insight_text)
+                    if m:
+                        cw_in_sig = float(m.group(1).replace(",", ""))
+                        if abs(cw_in_sig - call_wall) >= 25.0:
+                            force = True
+                            break
 
     if len(existing_1m) >= 20 and len(existing_5m) >= 5 and not force:
         return
@@ -270,6 +289,7 @@ class SentinelLiveFeedEngine:
         self._vwap_trackers: dict[str, SessionVWAPTracker] = {}
         self._last_tick_time: dict[str, float] = {}
         self._bars_since_signal: dict[str, int] = {}
+        self._last_walls: dict[str, tuple[float, float]] = {}
 
     def step(
         self,
@@ -296,7 +316,15 @@ class SentinelLiveFeedEngine:
                 return
             latest = recent_1m[-1]
             max_dev = 75.0 if "BANKNIFTY" in instrument_id else (100.0 if "SENSEX" in instrument_id else 25.0)
-            if abs(latest.close - spot) > max_dev:
+
+            # Detect if GEX walls have shifted intraday
+            prev_walls = self._last_walls.get(instrument_id)
+            walls_shifted = prev_walls is not None and (
+                abs(prev_walls[0] - call_wall) >= 25.0 or abs(prev_walls[1] - put_wall) >= 25.0
+            )
+            self._last_walls[instrument_id] = (call_wall, put_wall)
+
+            if abs(latest.close - spot) > max_dev or walls_shifted:
                 seed_sentinel_demo_if_needed(instrument_id, spot=spot, call_wall=call_wall, put_wall=put_wall, force=True)
                 recent_1m = list_recent_bars(instrument_id, timeframe="1m", limit=3)
                 if not recent_1m:
