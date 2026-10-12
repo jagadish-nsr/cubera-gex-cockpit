@@ -3668,11 +3668,17 @@ def _calc_ema_series(candles: list[dict], period: int) -> list[dict]:
 
 
 def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[list[dict], list[dict]]:
-    """Convert Bar and SentinelSignal models into TradingView Lightweight Charts JSON format."""
+    """Convert Bar and SentinelSignal models into TradingView Lightweight Charts JSON format in IST."""
+    IST_OFFSET_SEC = 19800  # 5h 30m offset so Lightweight Charts displays exact IST time on UTC axis
     candles = []
     for b in bars:
+        dt = b.start_ts
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_ist = dt.astimezone(IST_TZ)
+        ist_epoch = int(dt_ist.timestamp()) + IST_OFFSET_SEC
         candles.append({
-            "time": int(b.start_ts.timestamp()),
+            "time": ist_epoch,
             "open": round(b.open, 2),
             "high": round(b.high, 2),
             "low": round(b.low, 2),
@@ -3692,7 +3698,11 @@ def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[lis
     if signals:
         candle_times = {c["time"] for c in candles}
         for s in signals:
-            sig_t = int(s.bar_start_ts.timestamp())
+            s_dt = s.bar_start_ts
+            if s_dt.tzinfo is None:
+                s_dt = s_dt.replace(tzinfo=timezone.utc)
+            s_dt_ist = s_dt.astimezone(IST_TZ)
+            sig_t = int(s_dt_ist.timestamp()) + IST_OFFSET_SEC
             if candle_times:
                 closest_t = min(candle_times, key=lambda t: abs(t - sig_t))
                 if abs(closest_t - sig_t) <= 180:
@@ -3812,6 +3822,7 @@ if (typeof LightweightCharts === 'undefined') {{
 <div id="tv_chart_wrapper">
   <div class="tv-legend" id="legend">
     <span id="leg_sym" style="font-weight:700;color:#38bdf8">{symbol}</span>
+    <span id="leg_time" style="color:#94a3b8;font-family:monospace;font-size:0.75rem">--:-- IST</span>
     <span id="leg_ohlc">O: -- H: -- L: -- C: --</span>
     <span id="leg_vwap" style="color:#c084fc">VWAP: --</span>
     <span id="leg_delta">Δ: --</span>
@@ -3854,15 +3865,24 @@ if (typeof LightweightCharts === 'undefined') {{
       timeVisible: true,
       secondsVisible: false,
       barSpacing: 9,
+      tickMarkFormatter: function(time, tickMarkType, locale) {{
+        const d = new Date(time * 1000);
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const mm = String(d.getUTCMinutes()).padStart(2, '0');
+        return hh + ':' + mm;
+      }},
     }},
     localization: {{
       timeFormatter: function(ts) {{
         const d = new Date(ts * 1000);
-        return d.toLocaleTimeString('en-IN', {{ hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }});
+        const hh = String(d.getUTCHours()).padStart(2, '0');
+        const mm = String(d.getUTCMinutes()).padStart(2, '0');
+        return hh + ':' + mm + ' IST';
       }},
       dateFormatter: function(ts) {{
         const d = new Date(ts * 1000);
-        return d.toLocaleDateString('en-IN', {{ day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }});
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        return String(d.getUTCDate()).padStart(2, '0') + '-' + months[d.getUTCMonth()];
       }}
     }}
   }});
@@ -3989,6 +4009,7 @@ if (typeof LightweightCharts === 'undefined') {{
   const candleMap = {{}};
   data.candles.forEach(c => {{ candleMap[c.time] = c; }});
 
+  const legTime = document.getElementById('leg_time');
   const legOhlc = document.getElementById('leg_ohlc');
   const legVwap = document.getElementById('leg_vwap');
   const legDelta = document.getElementById('leg_delta');
@@ -3996,6 +4017,12 @@ if (typeof LightweightCharts === 'undefined') {{
 
   function updateLegend(c) {{
     if (!c) return;
+    if (legTime && c.time) {{
+      const d = new Date(c.time * 1000);
+      const hh = String(d.getUTCHours()).padStart(2, '0');
+      const mm = String(d.getUTCMinutes()).padStart(2, '0');
+      legTime.textContent = hh + ':' + mm + ' IST';
+    }}
     legOhlc.textContent = 'O:' + c.open.toFixed(1) + ' H:' + c.high.toFixed(1) + ' L:' + c.low.toFixed(1) + ' C:' + c.close.toFixed(1);
     if (legVwap && c.vwap) legVwap.textContent = 'VWAP:' + c.vwap.toFixed(1);
     if (legDelta && c.delta !== undefined) legDelta.textContent = 'Δ:' + (c.delta >= 0 ? '+' : '') + Math.round(c.delta).toLocaleString();
