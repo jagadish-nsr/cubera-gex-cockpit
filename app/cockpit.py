@@ -3142,8 +3142,8 @@ def _get_cached_sentinel_data(inst_id: str, timeframe: str = "1m", limit: int = 
         return hit[1], hit[2], hit[3]
 
     bars = list_recent_bars(inst_id, timeframe=timeframe, limit=limit)
-    signals = list_recent_signals(inst_id, limit=40)
-    outcomes = list_recent_outcomes(inst_id, limit=40)
+    signals = list_recent_signals(inst_id, limit=100)
+    outcomes = list_recent_outcomes(inst_id, limit=100)
     _SENTINEL_DATA_CACHE[ckey] = (now, bars, signals, outcomes)
     return bars, signals, outcomes
 

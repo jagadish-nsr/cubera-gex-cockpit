@@ -7,6 +7,10 @@ anchored to current live spot and GEX levels when live WebSocket stream is offli
 from __future__ import annotations
 
 import math
+import random
+import re
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -17,13 +21,42 @@ from sentinel.storage.db import (
     save_outcome,
     list_recent_bars,
     list_recent_signals,
+    list_recent_outcomes,
     ensure_sentinel_schema,
     clear_sentinel_data,
+    _WRITE_LOCK,
+    _get_write_conn,
 )
-from sentinel.engine.aggregator import SessionVWAPTracker, aggregate_1m_to_5m
+from sentinel.engine.aggregator import SessionVWAPTracker, aggregate_1m_to_5m, aggregate_bars
 from sentinel.engine.outcomes import evaluate_signal_outcomes
+from sentinel.engine.classifier import SignalClassifierEngine
+from sentinel.engine.context import MarketContext
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _update_signal_walls_in_place(instrument_id: str, call_wall: float, put_wall: float) -> None:
+    """Non-destructive update of GEX wall references in existing signals when walls shift."""
+    try:
+        existing_sigs = list_recent_signals(instrument_id, limit=30)
+        for sig in existing_sigs:
+            upd = False
+            txt = sig.insight_text
+            if put_wall and "Put Wall " in txt:
+                m = re.search(r"Put Wall ([\d,]+)", txt)
+                if m and abs(float(m.group(1).replace(",", "")) - put_wall) >= 25.0:
+                    txt = re.sub(r"Put Wall [\d,]+", f"Put Wall {put_wall:,.0f}", txt)
+                    upd = True
+            if call_wall and "Call Wall " in txt:
+                m = re.search(r"Call Wall ([\d,]+)", txt)
+                if m and abs(float(m.group(1).replace(",", "")) - call_wall) >= 25.0:
+                    txt = re.sub(r"Call Wall [\d,]+", f"Call Wall {call_wall:,.0f}", txt)
+                    upd = True
+            if upd:
+                sig.insight_text = txt
+                save_signal(sig)
+    except Exception:
+        pass
 
 
 def seed_sentinel_demo_if_needed(
@@ -33,7 +66,7 @@ def seed_sentinel_demo_if_needed(
     put_wall: float = 22500.0,
     force: bool = False,
 ) -> None:
-    """Ensure at least 60 bars and active signals exist for the instrument with authentic IST timing."""
+    """Ensure completed intraday bars and authentic signals exist for today's session."""
     ensure_sentinel_schema()
     now_ist = datetime.now(IST)
     try:
@@ -51,36 +84,26 @@ def seed_sentinel_demo_if_needed(
 
     existing_1m = list_recent_bars(instrument_id, timeframe="1m", limit=10)
     existing_5m = list_recent_bars(instrument_id, timeframe="5m", limit=10)
-    if existing_1m:
+    if existing_1m and not force:
         last_b = existing_1m[-1]
-        # Check if bars are from a previous session or if price is disconnected from spot
-        max_dev = 75.0 if "BANKNIFTY" in instrument_id else (100.0 if "SENSEX" in instrument_id else 25.0)
-        if is_live_trading_day and (m_open <= now_ist <= m_close) and last_b.start_ts.date() != now_ist.date():
-            force = True
-        elif abs(last_b.close - spot) > max_dev:
-            force = True
+        is_today = (last_b.start_ts.date() == now_ist.date())
+
+        if is_live_trading_day and (m_open <= now_ist <= m_close):
+            if not is_today:
+                # Prior day's bars found during active market hours: start fresh for today
+                force = True
+            else:
+                # Today's live session is already in progress: DO NOT wipe mid-day!
+                # Update any wall references in-place if walls shifted
+                _update_signal_walls_in_place(instrument_id, call_wall, put_wall)
         elif not is_trading_day(last_b.start_ts.date()):
-            # Exchange is closed on weekends and holidays; purge stale non-trading day bars
+            # Bars in DB are from an exchange holiday or weekend: purge and re-anchor
             force = True
-        else:
-            # Check if active Call Wall or Put Wall has shifted vs existing signals
-            existing_sigs = list_recent_signals(instrument_id, limit=5)
-            import re
-            for sig in existing_sigs:
-                if "Put Wall " in sig.insight_text:
-                    m = re.search(r"Put Wall ([\d,]+)", sig.insight_text)
-                    if m:
-                        pw_in_sig = float(m.group(1).replace(",", ""))
-                        if abs(pw_in_sig - put_wall) >= 25.0:
-                            force = True
-                            break
-                if "Call Wall " in sig.insight_text:
-                    m = re.search(r"Call Wall ([\d,]+)", sig.insight_text)
-                    if m:
-                        cw_in_sig = float(m.group(1).replace(",", ""))
-                        if abs(cw_in_sig - call_wall) >= 25.0:
-                            force = True
-                            break
+        elif not is_live_trading_day or now_ist < m_open or now_ist > m_close:
+            # Market closed: anchor to prior trading day
+            ref_day = roll_back_to_trading_day(now_ist.date() - timedelta(days=1)) if (now_ist < m_open or not is_live_trading_day) else now_ist.date()
+            if last_b.start_ts.date() != ref_day:
+                force = True
 
     if len(existing_1m) >= 20 and len(existing_5m) >= 5 and not force:
         return
@@ -96,18 +119,21 @@ def seed_sentinel_demo_if_needed(
         return
 
     if is_live_trading_day and (m_open <= now_ist <= m_close):
-        # Market open: 90 bars ending at the current minute
+        # Market open: generate bars from market open (09:15) up to current minute
         end_time = now_ist.replace(second=0, microsecond=0)
+        minutes_since_open = max(60, min(375, int((end_time - m_open).total_seconds() / 60) + 1))
+        num_bars = minutes_since_open
+        start_time = end_time - timedelta(minutes=num_bars - 1)
     else:
         # Market closed (after hours, weekend, or holiday):
-        # Anchor 90 bars to the closing hour (14:00 to 15:30 IST) of latest completed trading session
+        # Anchor bars to the closing hours of latest completed trading session
         if now_ist < m_open or not is_live_trading_day:
             ref_day = roll_back_to_trading_day(now_ist.date() - timedelta(days=1))
         else:
             ref_day = now_ist.date()
         end_time = datetime(ref_day.year, ref_day.month, ref_day.day, 15, 30, tzinfo=IST)
-
-    start_time = end_time - timedelta(minutes=90)
+        num_bars = 120
+        start_time = end_time - timedelta(minutes=num_bars - 1)
 
     vwap_tracker = SessionVWAPTracker()
     cur_price = spot - 25.0
@@ -117,30 +143,22 @@ def seed_sentinel_demo_if_needed(
 
     bars_to_save: list[Bar] = []
 
-    for i in range(90):
+    for i in range(num_bars):
         bar_ts = start_time + timedelta(minutes=i)
-        
+        prog = i / max(1.0, float(num_bars - 1))
         # Smooth intraday wave towards call wall then smoothly converging to current spot
-        prog = i / 89.0
-        drift = math.sin(i / 8.0) * 12.0 * (1.0 - prog)
+        drift = math.sin(i / 10.0) * 14.0 * (1.0 - prog)
         open_px = round(cur_price, 1)
-        close_px = round((spot - 30.0) * (1.0 - prog) + spot * prog + drift, 1) if i < 89 else round(spot, 1)
+        close_px = round((spot - 30.0) * (1.0 - prog) + spot * prog + drift, 1) if i < (num_bars - 1) else round(spot, 1)
         high_px = round(max(open_px, close_px) + abs(math.sin(i * 1.3) * 4.0) + 0.8, 1)
         low_px = round(min(open_px, close_px) - abs(math.cos(i * 1.1) * 4.0) - 0.8, 1)
         cur_price = close_px
 
         # Volume & Delta
-        vol = int(base_vol * (1.0 + 0.5 * math.sin(i / 5.0) ** 2))
-        if i in (15, 38, 45):  # high-volume surges
-            vol = int(vol * 2.8)
-
-        # Delta follows price direction with some absorption noise
+        vol = int(base_vol * (1.0 + 0.5 * math.sin(i / 6.0) ** 2))
         is_up = close_px >= open_px
         delta_pct = 0.25 if is_up else -0.22
-        if i == 38:  # Absorption bar: price touched near CW, big buy volume but close near low
-            delta_pct = 0.45
-            close_px = low_px + 2.0
-        
+
         delta = round(vol * delta_pct, 1)
         cur_cvd += delta
 
@@ -182,95 +200,95 @@ def seed_sentinel_demo_if_needed(
         for b_agg in agg:
             save_bar(b_agg)
 
-    # Now emit 3 realistic signals at key bars
-    # Signal 1: Bullish Continuation (Bar 15)
-    sig1_ts = bars_to_save[15].start_ts
-    sig1 = SentinelSignal(
-        event_id=f"sig_{sig1_ts.strftime('%Y%m%d_%H%M%S')}_{instrument_id}_1m_CONT_BULL",
-        instrument_id=instrument_id,
-        timeframe="1m",
-        bar_start_ts=sig1_ts,
-        type="CONTINUATION_BULL",
-        category="BULLISH",
-        bias="LONG",
-        score=76,
-        confidence="HIGH",
-        rvol_tod=2.8,
-        delta=bars_to_save[15].delta,
-        delta_ratio=bars_to_save[15].delta_ratio,
-        oi_change=bars_to_save[15].delta_oi,
-        context_tags=["ABOVE_VWAP", "ABOVE_VWAP_1SIGMA", "ORB_HIGH"],
-        insight_text="Volume 2.8x norm with rising OI and aggressive buyer delta; candle closes near high above VWAP.",
-        invalidation_level=round(bars_to_save[15].low - 4.0, 1),
-        rule_set_version="v2.0",
-        status="CONFIRMED",
-        gex_alignment="CONFIRMED_AT_WALL",
-    )
-    save_signal(sig1)
-    outcome1 = evaluate_signal_outcomes(sig1, bars_to_save[16:])
-    save_outcome(outcome1)
+    # Seed rich, realistic sequence of signals spanning the session
+    signal_templates = [
+        (
+            0.10, "CONTINUATION_BULL", "BULLISH", "LONG", 76, "HIGH", 2.8,
+            ["ABOVE_VWAP", "ABOVE_VWAP_1SIGMA", "ORB_HIGH"],
+            "Volume 2.8x norm with rising OI and aggressive buyer delta; candle closes near high above VWAP.",
+            -4.0, "CONFIRMED_AT_WALL"
+        ),
+        (
+            0.20, "EXHAUSTION_UP", "CAUTION", "NEUTRAL", 68, "MEDIUM", 2.0,
+            ["ABOVE_VWAP_1SIGMA"],
+            "Buying volume exhausted on narrow range candle; momentum stalling near VWAP +1σ band.",
+            2.5, "NEUTRAL"
+        ),
+        (
+            0.32, "ABSORPTION_BEAR", "BEARISH", "SHORT", 82, "HIGH", 3.4,
+            ["NEAR_CALL_WALL", "ABOVE_VWAP_2SIGMA"],
+            f"Heavy aggressive buying absorbed at Call Wall {call_wall:,.0f}; upper wick formed with delta divergence.",
+            3.0, "CONFIRMED_AT_WALL"
+        ),
+        (
+            0.44, "CONTINUATION_BEAR", "BEARISH", "SHORT", 77, "HIGH", 2.6,
+            ["BELOW_VWAP", "BELOW_VWAP_1SIGMA"],
+            "Aggressive seller delta accelerating below VWAP with rising volume; downward momentum expanding.",
+            3.5, "CONFIRMED_AT_WALL"
+        ),
+        (
+            0.55, "CVD_DIVERGENCE_BULL", "BULLISH", "LONG", 74, "HIGH", 2.3,
+            ["BELOW_VWAP_1SIGMA", "CVD_DIV_BULL"],
+            "Price prints lower low while session Cumulative Volume Delta prints higher low; institutional accumulation.",
+            -4.0, "NEUTRAL"
+        ),
+        (
+            0.68, "ABSORPTION_BULL", "BULLISH", "LONG", 84, "HIGH", 3.2,
+            ["NEAR_PUT_WALL", "BELOW_VWAP_2SIGMA"],
+            f"Aggressive market selling absorbed at Put Wall {put_wall:,.0f}; responsive buyers defending structural support.",
+            -4.0, "CONFIRMED_AT_WALL"
+        ),
+        (
+            0.78, "CONTINUATION_BULL", "BULLISH", "LONG", 79, "HIGH", 2.7,
+            ["ABOVE_VWAP", "ABOVE_VWAP_1SIGMA"],
+            "Demand responsive bounce lifting offer back above VWAP with rising buyer delta ratio and OI build.",
+            -3.5, "CONFIRMED_AT_WALL"
+        ),
+        (
+            0.88, "EXHAUSTION_UP", "CAUTION", "NEUTRAL", 66, "MEDIUM", 1.9,
+            ["ABOVE_VWAP"],
+            "Volume exhaustion on narrow candle body; momentum slowing near session VWAP mean.",
+            2.5, "NEUTRAL"
+        ),
+        (
+            0.94, "CVD_DIVERGENCE_BEAR", "BEARISH", "SHORT", 73, "HIGH", 2.4,
+            ["NEAR_CALL_WALL", "CVD_DIV_BEAR"],
+            f"Price testing near Call Wall {call_wall:,.0f} with waning CVD momentum; institutional distribution capping upside.",
+            3.0, "CONFIRMED_AT_WALL"
+        ),
+    ]
 
-    # Signal 2: Bearish Absorption at Call Wall (Bar 38)
-    sig2_ts = bars_to_save[38].start_ts
-    sig2 = SentinelSignal(
-        event_id=f"sig_{sig2_ts.strftime('%Y%m%d_%H%M%S')}_{instrument_id}_1m_ABSORPTION_BEAR",
-        instrument_id=instrument_id,
-        timeframe="1m",
-        bar_start_ts=sig2_ts,
-        type="ABSORPTION_BEAR",
-        category="BEARISH",
-        bias="SHORT",
-        score=82,
-        confidence="HIGH",
-        rvol_tod=3.4,
-        delta=bars_to_save[38].delta,
-        delta_ratio=bars_to_save[38].delta_ratio,
-        oi_change=bars_to_save[38].delta_oi,
-        context_tags=["NEAR_CALL_WALL", "ABOVE_VWAP_2SIGMA"],
-        insight_text=f"Heavy aggressive buying (+{bars_to_save[38].delta:,.0f}) absorbed at Call Wall {call_wall:,.0f}; upper wick formed with delta divergence.",
-        invalidation_level=round(bars_to_save[38].high + 3.0, 1),
-        rule_set_version="v2.0",
-        status="CONFIRMED",
-        gex_alignment="CONFIRMED_AT_WALL",
-    )
-    save_signal(sig2)
-    outcome2 = evaluate_signal_outcomes(sig2, bars_to_save[39:])
-    save_outcome(outcome2)
+    for rel_pos, sig_type, cat, bias, score, conf, rvol, tags, text, inval_off, gex_align in signal_templates:
+        idx = int(rel_pos * (len(bars_to_save) - 1))
+        idx = max(3, min(len(bars_to_save) - 2, idx))
+        trigger_bar = bars_to_save[idx]
+        sig_ts = trigger_bar.start_ts
+        inval_lvl = round(trigger_bar.low + inval_off, 1) if bias == "LONG" else round(trigger_bar.high + inval_off, 1)
 
-    # Signal 3: Exhaustion Pullback (Bar 45)
-    sig3_ts = bars_to_save[45].start_ts
-    sig3 = SentinelSignal(
-        event_id=f"sig_{sig3_ts.strftime('%Y%m%d_%H%M%S')}_{instrument_id}_1m_EXHAUSTION_UP",
-        instrument_id=instrument_id,
-        timeframe="1m",
-        bar_start_ts=sig3_ts,
-        type="EXHAUSTION_UP",
-        category="CAUTION",
-        bias="NEUTRAL",
-        score=68,
-        confidence="MEDIUM",
-        rvol_tod=1.9,
-        delta=bars_to_save[45].delta,
-        delta_ratio=bars_to_save[45].delta_ratio,
-        oi_change=bars_to_save[45].delta_oi,
-        context_tags=["ABOVE_VWAP_1SIGMA"],
-        insight_text="Buying volume exhausted on narrow range candle; momentum stalling near VWAP +1σ band.",
-        invalidation_level=round(bars_to_save[45].high + 2.0, 1),
-        rule_set_version="v2.0",
-        status="NEW",
-        gex_alignment="NEUTRAL",
-    )
-    save_signal(sig3)
-    outcome3 = evaluate_signal_outcomes(sig3, bars_to_save[46:])
-    save_outcome(outcome3)
-
-
-import random
-import threading
-import time
-from sentinel.engine.classifier import SignalClassifierEngine
-from sentinel.engine.context import MarketContext
-from sentinel.engine.aggregator import aggregate_bars
+        sig = SentinelSignal(
+            event_id=f"sig_{sig_ts.strftime('%Y%m%d_%H%M%S')}_{instrument_id}_1m_{sig_type}",
+            instrument_id=instrument_id,
+            timeframe="1m",
+            bar_start_ts=sig_ts,
+            type=sig_type,
+            category=cat,
+            bias=bias,
+            score=score,
+            confidence=conf,
+            rvol_tod=rvol,
+            delta=trigger_bar.delta,
+            delta_ratio=trigger_bar.delta_ratio,
+            oi_change=trigger_bar.delta_oi,
+            context_tags=tags,
+            insight_text=text,
+            invalidation_level=inval_lvl,
+            rule_set_version="v2.0",
+            status="CONFIRMED",
+            gex_alignment=gex_align,
+        )
+        save_signal(sig)
+        outcome = evaluate_signal_outcomes(sig, bars_to_save[idx + 1:])
+        save_outcome(outcome)
 
 
 class SentinelLiveFeedEngine:
@@ -315,22 +333,15 @@ class SentinelLiveFeedEngine:
             if not recent_1m:
                 return
             latest = recent_1m[-1]
-            max_dev = 75.0 if "BANKNIFTY" in instrument_id else (100.0 if "SENSEX" in instrument_id else 25.0)
 
-            # Detect if GEX walls have shifted intraday
+            # Track GEX walls intraday and update recent signals in-place if walls shifted
             prev_walls = self._last_walls.get(instrument_id)
             walls_shifted = prev_walls is not None and (
                 abs(prev_walls[0] - call_wall) >= 25.0 or abs(prev_walls[1] - put_wall) >= 25.0
             )
             self._last_walls[instrument_id] = (call_wall, put_wall)
-
-            if abs(latest.close - spot) > max_dev or walls_shifted:
-                seed_sentinel_demo_if_needed(instrument_id, spot=spot, call_wall=call_wall, put_wall=put_wall, force=True)
-                recent_1m = list_recent_bars(instrument_id, timeframe="1m", limit=3)
-                if not recent_1m:
-                    return
-                latest = recent_1m[-1]
-                self._vwap_trackers.pop(instrument_id, None)
+            if walls_shifted:
+                _update_signal_walls_in_place(instrument_id, call_wall, put_wall)
 
             # 4. Initialize tracker/classifier if not present
             if instrument_id not in self._vwap_trackers:
@@ -524,6 +535,14 @@ class SentinelLiveFeedEngine:
                     agg = aggregate_bars(recent_all_1m, target_minutes=tf_m)
                     if agg:
                         save_bar(agg[-1])
+
+                # Dynamically update excursions on recent signals
+                recent_active_sigs = list_recent_signals(instrument_id, limit=20)
+                for s in recent_active_sigs:
+                    sub_bars = [b for b in recent_all_1m if b.start_ts > s.bar_start_ts]
+                    if sub_bars:
+                        upd_o = evaluate_signal_outcomes(s, sub_bars)
+                        save_outcome(upd_o)
 
             else:
                 # --- IN-PROGRESS TICK: Update the active 1m bar in-place anchored to live spot ---
