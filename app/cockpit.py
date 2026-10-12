@@ -3650,46 +3650,484 @@ def _render_sentinel_chart(
     )
 
 
-@st.fragment
-def _fragment_profile_full_orderflow(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0) -> None:
-    """Full OrderFlow Profile Fragment: Complete institutional view with all overlays and subplots."""
-    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe="1m", limit=120)
+def _calc_ema_series(candles: list[dict], period: int) -> list[dict]:
+    """Calculate Exponential Moving Average series for Lightweight Charts."""
+    if not candles:
+        return []
+    k = 2.0 / (period + 1.0)
+    res = []
+    prev = None
+    for c in candles:
+        p = c["close"]
+        if prev is None:
+            prev = p
+        else:
+            prev = (p * k) + (prev * (1.0 - k))
+        res.append({"time": c["time"], "value": round(prev, 2)})
+    return res
+
+
+def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[list[dict], list[dict]]:
+    """Convert Bar and SentinelSignal models into TradingView Lightweight Charts JSON format."""
+    candles = []
+    for b in bars:
+        candles.append({
+            "time": int(b.start_ts.timestamp()),
+            "open": round(b.open, 2),
+            "high": round(b.high, 2),
+            "low": round(b.low, 2),
+            "close": round(b.close, 2),
+            "volume": int(b.volume_units),
+            "delta": round(b.delta, 1),
+            "cvd": round(b.cvd, 1),
+            "vwap": round(b.vwap, 2),
+            "up1": round(b.vwap_sigma_1, 2),
+            "up2": round(b.vwap_sigma_2, 2),
+            "dn1": round(b.vwap_lower_1, 2),
+            "dn2": round(b.vwap_lower_2, 2),
+        })
+    candles.sort(key=lambda c: c["time"])
+
+    markers = []
+    if signals:
+        candle_times = {c["time"] for c in candles}
+        for s in signals:
+            sig_t = int(s.bar_start_ts.timestamp())
+            if candle_times:
+                closest_t = min(candle_times, key=lambda t: abs(t - sig_t))
+                if abs(closest_t - sig_t) <= 180:
+                    sig_t = closest_t
+            pos = "belowBar" if s.bias == "LONG" else "aboveBar"
+            col = "#10b981" if s.category == "BULLISH" else ("#ef4444" if s.category == "BEARISH" else "#f59e0b")
+            shp = "arrowUp" if s.bias == "LONG" else ("arrowDown" if s.bias == "SHORT" else "circle")
+            markers.append({
+                "time": sig_t,
+                "position": pos,
+                "color": col,
+                "shape": shp,
+                "text": f"{s.type} ({s.score})",
+            })
+        markers.sort(key=lambda m: m["time"])
+
+    return candles, markers
+
+
+def _build_tv_lightweight_chart_html(
+    bars: list,
+    call_wall: float = 0.0,
+    put_wall: float = 0.0,
+    gamma_flip: float = 0.0,
+    signals: list | None = None,
+    profile: str = "⚡ Full OrderFlow",
+    chart_style: str = "Candlesticks",
+    symbol: str = "NIFTY",
+    height: int = 400,
+) -> str:
+    """Build self-contained TradingView Lightweight Charts HTML/JS component."""
+    candles, markers = _prepare_tv_chart_data(bars, signals)
+    ema9 = _calc_ema_series(candles, 9) if profile in ("📈 Trend Follower", "⚡ Full OrderFlow") else []
+    ema21 = _calc_ema_series(candles, 21) if profile in ("📈 Trend Follower", "⚡ Full OrderFlow") else []
+
+    show_vwap = profile in ("⚡ Full OrderFlow", "🌊 CVD Focus", "📈 Trend Follower")
+    show_bands = profile in ("⚡ Full OrderFlow", "📈 Trend Follower")
+    show_ema = profile in ("📈 Trend Follower",)
+    show_delta = profile in ("⚡ Full OrderFlow", "📈 Trend Follower")
+    show_cvd = profile in ("⚡ Full OrderFlow", "🌊 CVD Focus")
+    show_walls = True
+
+    chart_payload = {
+        "candles": candles,
+        "markers": markers,
+        "ema9": ema9,
+        "ema21": ema21,
+        "cw": call_wall,
+        "pw": put_wall,
+        "flip": gamma_flip,
+        "showVwap": show_vwap,
+        "showBands": show_bands,
+        "showEma": show_ema,
+        "showDelta": show_delta,
+        "showCvd": show_cvd,
+        "showWalls": show_walls,
+        "chartStyle": chart_style,
+        "symbol": symbol,
+    }
+
+    data_json = json.dumps(chart_payload)
+
+    html_code = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body {{
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    background-color: transparent;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }}
+  #tv_chart_wrapper {{
+    position: relative;
+    width: 100%;
+    height: {height}px;
+    background: rgba(15, 23, 42, 0.45);
+    border-radius: 8px;
+    border: 1px solid rgba(51, 65, 85, 0.35);
+  }}
+  #tv_chart_container {{
+    width: 100%;
+    height: 100%;
+  }}
+  .tv-legend {{
+    position: absolute;
+    top: 8px;
+    left: 12px;
+    z-index: 20;
+    font-size: 11px;
+    color: #94a3b8;
+    background: rgba(15, 23, 42, 0.85);
+    padding: 4px 10px;
+    border-radius: 6px;
+    pointer-events: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(51, 65, 85, 0.5);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+  }}
+</style>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+if (typeof LightweightCharts === 'undefined') {{
+  document.write('<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"><\\/script>');
+}}
+</script>
+</head>
+<body>
+<div id="tv_chart_wrapper">
+  <div class="tv-legend" id="legend">
+    <span id="leg_sym" style="font-weight:700;color:#38bdf8">{symbol}</span>
+    <span id="leg_ohlc">O: -- H: -- L: -- C: --</span>
+    <span id="leg_vwap" style="color:#c084fc">VWAP: --</span>
+    <span id="leg_delta">Δ: --</span>
+    <span id="leg_cvd" style="color:#38bdf8">CVD: --</span>
+  </div>
+  <div id="tv_chart_container"></div>
+</div>
+<script>
+(function() {{
+  const container = document.getElementById('tv_chart_container');
+  const data = {data_json};
+
+  if (!container || !window.LightweightCharts) return;
+
+  const chart = LightweightCharts.createChart(container, {{
+    width: container.clientWidth || 1050,
+    height: {height},
+    layout: {{
+      background: {{ color: 'transparent' }},
+      textColor: '#94a3b8',
+      fontSize: 11,
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    }},
+    grid: {{
+      vertLines: {{ color: 'rgba(51, 65, 85, 0.22)' }},
+      horzLines: {{ color: 'rgba(51, 65, 85, 0.22)' }},
+    }},
+    crosshair: {{
+      mode: LightweightCharts.CrosshairMode.Normal,
+    }},
+    rightPriceScale: {{
+      borderColor: 'rgba(51, 65, 85, 0.45)',
+      scaleMargins: {{
+        top: 0.1,
+        bottom: 0.22,
+      }},
+    }},
+    timeScale: {{
+      borderColor: 'rgba(51, 65, 85, 0.45)',
+      timeVisible: true,
+      secondsVisible: false,
+      barSpacing: 9,
+    }},
+    localization: {{
+      timeFormatter: function(ts) {{
+        const d = new Date(ts * 1000);
+        return d.toLocaleTimeString('en-IN', {{ hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }});
+      }},
+      dateFormatter: function(ts) {{
+        const d = new Date(ts * 1000);
+        return d.toLocaleDateString('en-IN', {{ day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' }});
+      }}
+    }}
+  }});
+
+  let mainSeries;
+  if (data.chartStyle === 'Area / Line') {{
+    mainSeries = chart.addAreaSeries({{
+      topColor: 'rgba(16, 185, 129, 0.4)',
+      bottomColor: 'rgba(16, 185, 129, 0.0)',
+      lineColor: '#10b981',
+      lineWidth: 2,
+    }});
+    mainSeries.setData(data.candles.map(c => ({{ time: c.time, value: c.close }})));
+  }} else {{
+    mainSeries = chart.addCandlestickSeries({{
+      upColor: '#10b981',
+      downColor: '#ef4444',
+      borderVisible: false,
+      wickUpColor: '#10b981',
+      wickDownColor: '#ef4444',
+    }});
+    mainSeries.setData(data.candles.map(c => ({{
+      time: c.time, open: c.open, high: c.high, low: c.low, close: c.close
+    }})));
+  }}
+
+  if (data.showWalls) {{
+    if (data.cw && data.cw > 0) {{
+      mainSeries.createPriceLine({{
+        price: data.cw,
+        color: '#ef4444',
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'Call Wall ' + Math.round(data.cw).toLocaleString(),
+      }});
+    }}
+    if (data.pw && data.pw > 0) {{
+      mainSeries.createPriceLine({{
+        price: data.pw,
+        color: '#10b981',
+        lineWidth: 2,
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: 'Put Wall ' + Math.round(data.pw).toLocaleString(),
+      }});
+    }}
+    if (data.flip && data.flip > 0) {{
+      mainSeries.createPriceLine({{
+        price: data.flip,
+        color: '#f59e0b',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        axisLabelVisible: true,
+        title: 'Gamma Flip ' + Math.round(data.flip).toLocaleString(),
+      }});
+    }}
+  }}
+
+  if (data.showVwap) {{
+    const vwapSeries = chart.addLineSeries({{
+      color: '#a855f7',
+      lineWidth: 2,
+      title: 'VWAP',
+    }});
+    vwapSeries.setData(data.candles.map(c => ({{ time: c.time, value: c.vwap }})));
+
+    if (data.showBands) {{
+      const up1 = chart.addLineSeries({{ color: 'rgba(168, 85, 247, 0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }});
+      const dn1 = chart.addLineSeries({{ color: 'rgba(168, 85, 247, 0.5)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed }});
+      const up2 = chart.addLineSeries({{ color: 'rgba(168, 85, 247, 0.28)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted }});
+      const dn2 = chart.addLineSeries({{ color: 'rgba(168, 85, 247, 0.28)', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted }});
+      up1.setData(data.candles.map(c => ({{ time: c.time, value: c.up1 }})));
+      dn1.setData(data.candles.map(c => ({{ time: c.time, value: c.dn1 }})));
+      up2.setData(data.candles.map(c => ({{ time: c.time, value: c.up2 }})));
+      dn2.setData(data.candles.map(c => ({{ time: c.time, value: c.dn2 }})));
+    }}
+  }}
+
+  if (data.showEma && data.ema9 && data.ema21 && data.ema9.length) {{
+    const ema9Series = chart.addLineSeries({{ color: '#eab308', lineWidth: 1.5, title: 'EMA 9' }});
+    const ema21Series = chart.addLineSeries({{ color: '#3b82f6', lineWidth: 1.5, title: 'EMA 21' }});
+    ema9Series.setData(data.ema9);
+    ema21Series.setData(data.ema21);
+  }}
+
+  if (data.showDelta) {{
+    const deltaSeries = chart.addHistogramSeries({{
+      priceFormat: {{ type: 'volume' }},
+      priceScaleId: 'deltaScale',
+    }});
+    chart.priceScale('deltaScale').applyOptions({{
+      scaleMargins: {{ top: 0.82, bottom: 0 }},
+    }});
+    deltaSeries.setData(data.candles.map(c => ({{
+      time: c.time,
+      value: Math.abs(c.delta),
+      color: c.delta >= 0 ? 'rgba(16, 185, 129, 0.65)' : 'rgba(239, 68, 68, 0.65)'
+    }})));
+  }}
+
+  if (data.showCvd) {{
+    const cvdSeries = chart.addLineSeries({{
+      color: '#38bdf8',
+      lineWidth: 2,
+      priceScaleId: 'cvdScale',
+      title: 'CVD',
+    }});
+    chart.priceScale('cvdScale').applyOptions({{
+      scaleMargins: {{ top: 0.74, bottom: 0.02 }},
+    }});
+    cvdSeries.setData(data.candles.map(c => ({{ time: c.time, value: c.cvd }})));
+  }}
+
+  if (data.markers && data.markers.length > 0) {{
+    const sortedMarkers = data.markers.slice().sort((a, b) => a.time - b.time);
+    mainSeries.setMarkers(sortedMarkers);
+  }}
+
+  window.addEventListener('resize', () => {{
+    chart.applyOptions({{ width: container.clientWidth }});
+  }});
+
+  const candleMap = {{}};
+  data.candles.forEach(c => {{ candleMap[c.time] = c; }});
+
+  const legOhlc = document.getElementById('leg_ohlc');
+  const legVwap = document.getElementById('leg_vwap');
+  const legDelta = document.getElementById('leg_delta');
+  const legCvd = document.getElementById('leg_cvd');
+
+  function updateLegend(c) {{
+    if (!c) return;
+    legOhlc.textContent = 'O:' + c.open.toFixed(1) + ' H:' + c.high.toFixed(1) + ' L:' + c.low.toFixed(1) + ' C:' + c.close.toFixed(1);
+    if (legVwap && c.vwap) legVwap.textContent = 'VWAP:' + c.vwap.toFixed(1);
+    if (legDelta && c.delta !== undefined) legDelta.textContent = 'Δ:' + (c.delta >= 0 ? '+' : '') + Math.round(c.delta).toLocaleString();
+    if (legCvd && c.cvd !== undefined) legCvd.textContent = 'CVD:' + (c.cvd >= 0 ? '+' : '') + Math.round(c.cvd).toLocaleString();
+  }}
+
+  chart.subscribeCrosshairMove(param => {{
+    if (!param.time || !param.seriesData.get(mainSeries)) {{
+      const last = data.candles[data.candles.length - 1];
+      updateLegend(last);
+      return;
+    }}
+    const val = param.seriesData.get(mainSeries);
+    const c = candleMap[param.time] || val;
+    updateLegend(c);
+  }});
+
+  if (data.candles.length > 0) {{
+    updateLegend(data.candles[data.candles.length - 1]);
+  }}
+}})();
+</script>
+</body>
+</html>"""
+    return html_code
+
+
+def _render_tv_lightweight_chart(
+    bars: list,
+    call_wall: float = 0.0,
+    put_wall: float = 0.0,
+    gamma_flip: float = 0.0,
+    signals: list | None = None,
+    profile: str = "⚡ Full OrderFlow",
+    chart_style: str = "Candlesticks",
+    symbol: str = "NIFTY",
+    height: int = 400,
+) -> None:
+    """Render high-performance TradingView Lightweight Chart canvas inside Streamlit."""
+    import streamlit.components.v1 as components
+    html = _build_tv_lightweight_chart_html(
+        bars=bars,
+        call_wall=call_wall,
+        put_wall=put_wall,
+        gamma_flip=gamma_flip,
+        signals=signals,
+        profile=profile,
+        chart_style=chart_style,
+        symbol=symbol,
+        height=height,
+    )
+    components.html(html, height=height + 20, scrolling=False)
+
+
+def _render_profile_content(
+    profile_name: str,
+    symbol: str,
+    inst_id: str,
+    cw: float,
+    pw: float,
+    gamma_flip: float = 0.0,
+    ref_px: float = 0.0,
+    timeframe: str = "1m",
+) -> None:
+    """Renderer for chart profile presets with choice of TradingView Lightweight Charts or Altair."""
+    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=120)
     lookback_map = {"30 Bars": 30, "60 Bars": 60, "90 Bars": 90, "120 Bars": 120, "All Bars": len(bars)}
 
-    c_info, c_lb, c_st, c_ref = st.columns([3, 1, 1, 1])
+    desc_map = {
+        "⚡ Full OrderFlow": "Candlesticks, VWAP envelopes, 9/21 ribbon + CVD and Delta subplots.",
+        "🎯 Pure Price": "Clean candlesticks auto-scaled directly to price action with GEX walls.",
+        "🌊 CVD Focus": "Candlesticks + VWAP benchmark with magnified Cumulative Delta and 9-EMA.",
+        "📈 Trend Follower": "VWAP, ±1σ/±2σ bands & 9/21 EMA ribbon paired with Delta Volume.",
+    }
+
+    prof_key = profile_name.split()[-1].lower()
+
+    c_info, c_lb, c_st, c_eng, c_ref = st.columns([3, 1, 1, 1, 1])
     with c_info:
         st.markdown(
-            "<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
-            "<b>⚡ Full OrderFlow:</b> Candlesticks, VWAP envelopes, 9/21 ribbon + CVD and Delta subplots."
-            "</div>",
+            f"<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
+            f"<b>{profile_name}:</b> {desc_map.get(profile_name, '')}"
+            f"</div>",
             unsafe_allow_html=True,
         )
     with c_lb:
-        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_full_{symbol}", index=1, label_visibility="collapsed")
+        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_{prof_key}_{symbol}", index=1, label_visibility="collapsed")
     with c_st:
-        style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_full_{symbol}", index=0, label_visibility="collapsed")
+        style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
+    with c_eng:
+        engine = st.selectbox("Engine", ["⚡ TradingView (Canvas)", "📊 Altair (Analytic)"], key=f"eng_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
     with c_ref:
-        if st.button("🔄 Refresh", key=f"btn_full_{symbol}", use_container_width=True):
+        if st.button("🔄 Refresh", key=f"btn_{prof_key}_{symbol}", use_container_width=True):
             st.rerun(scope="fragment")
 
     target_limit = lookback_map.get(lb, 60)
     bars_to_render = bars[-target_limit:] if bars else []
 
-    _render_sentinel_chart(
-        bars_to_render,
-        call_wall=cw,
-        put_wall=pw,
-        gamma_flip=gamma_flip,
-        signals=signals,
-        show_cvd=True,
-        show_delta=True,
-        show_vwap=True,
-        show_bands=True,
-        show_walls=True,
-        show_ema=True,
-        chart_style=style,
-        main_height=280,
-    )
+    if "TradingView" in engine:
+        _render_tv_lightweight_chart(
+            bars=bars_to_render,
+            call_wall=cw,
+            put_wall=pw,
+            gamma_flip=gamma_flip,
+            signals=signals,
+            profile=profile_name,
+            chart_style=style,
+            symbol=symbol,
+            height=390,
+        )
+    else:
+        show_cvd = profile_name in ("⚡ Full OrderFlow", "🌊 CVD Focus")
+        show_delta = profile_name in ("⚡ Full OrderFlow", "📈 Trend Follower")
+        show_vwap = profile_name in ("⚡ Full OrderFlow", "🌊 CVD Focus", "📈 Trend Follower")
+        show_bands = profile_name in ("⚡ Full OrderFlow", "📈 Trend Follower")
+        show_walls = True
+        show_ema = profile_name in ("⚡ Full OrderFlow", "📈 Trend Follower")
+        _render_sentinel_chart(
+            bars_to_render,
+            call_wall=cw,
+            put_wall=pw,
+            gamma_flip=gamma_flip,
+            signals=signals,
+            show_cvd=show_cvd,
+            show_delta=show_delta,
+            show_vwap=show_vwap,
+            show_bands=show_bands,
+            show_walls=show_walls,
+            show_ema=show_ema,
+            chart_style=style,
+            main_height=320,
+        )
 
     legend_items = [
         '<span>🟣 <b>VWAP:</b> Session Mean</span>',
@@ -3707,168 +4145,335 @@ def _fragment_profile_full_orderflow(symbol: str, inst_id: str, cw: float, pw: f
 
 
 @st.fragment
-def _fragment_profile_pure_price(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0) -> None:
-    """Pure Price Profile Fragment: 100% focused on clean price candlesticks & immediate GEX bounds."""
-    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe="1m", limit=120)
-    lookback_map = {"30 Bars": 30, "60 Bars": 60, "90 Bars": 90, "120 Bars": 120, "All Bars": len(bars)}
-
-    c_info, c_lb, c_st, c_ref = st.columns([3, 1, 1, 1])
-    with c_info:
-        st.markdown(
-            "<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
-            "<b>🎯 Pure Price:</b> Clean candlesticks auto-scaled directly to price action with GEX walls."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with c_lb:
-        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_pure_{symbol}", index=1, label_visibility="collapsed")
-    with c_st:
-        style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_pure_{symbol}", index=0, label_visibility="collapsed")
-    with c_ref:
-        if st.button("🔄 Refresh", key=f"btn_pure_{symbol}", use_container_width=True):
-            st.rerun(scope="fragment")
-
-    target_limit = lookback_map.get(lb, 60)
-    bars_to_render = bars[-target_limit:] if bars else []
-
-    _render_sentinel_chart(
-        bars_to_render,
-        call_wall=cw,
-        put_wall=pw,
-        gamma_flip=gamma_flip,
-        signals=signals,
-        show_cvd=False,
-        show_delta=False,
-        show_vwap=False,
-        show_bands=False,
-        show_walls=True,
-        show_ema=False,
-        chart_style=style,
-        main_height=380,
-    )
-
-    legend_items = [
-        f'<span>🟥 <b>Call Wall ({cw:,.0f}):</b> Major Ceiling</span>',
-        f'<span>🟩 <b>Put Wall ({pw:,.0f}):</b> Major Floor</span>',
-    ]
-    if gamma_flip and gamma_flip > 0:
-        legend_items.append(f'<span>🟨 <b>Gamma Flip ({gamma_flip:,.0f}):</b> Equilibrium</span>')
-    legend_html = f'<div style="font-size:.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:6px">{"".join(legend_items)}</div>'
-    st.markdown(legend_html, unsafe_allow_html=True)
+def _fragment_profile_full_orderflow(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0, timeframe: str = "1m") -> None:
+    _render_profile_content("⚡ Full OrderFlow", symbol, inst_id, cw, pw, gamma_flip, ref_px, timeframe)
 
 
 @st.fragment
-def _fragment_profile_cvd_focus(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0) -> None:
-    """CVD Focus Profile Fragment: Candlesticks + VWAP Benchmark with high-resolution CVD subplot."""
-    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe="1m", limit=120)
-    lookback_map = {"30 Bars": 30, "60 Bars": 60, "90 Bars": 90, "120 Bars": 120, "All Bars": len(bars)}
-
-    c_info, c_lb, c_st, c_ref = st.columns([3, 1, 1, 1])
-    with c_info:
-        st.markdown(
-            "<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
-            "<b>🌊 CVD Focus:</b> Candlesticks + VWAP benchmark with magnified Cumulative Delta and 9-EMA."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with c_lb:
-        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_cvd_{symbol}", index=1, label_visibility="collapsed")
-    with c_st:
-        style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_cvd_{symbol}", index=0, label_visibility="collapsed")
-    with c_ref:
-        if st.button("🔄 Refresh", key=f"btn_cvd_{symbol}", use_container_width=True):
-            st.rerun(scope="fragment")
-
-    target_limit = lookback_map.get(lb, 60)
-    bars_to_render = bars[-target_limit:] if bars else []
-
-    _render_sentinel_chart(
-        bars_to_render,
-        call_wall=cw,
-        put_wall=pw,
-        gamma_flip=gamma_flip,
-        signals=signals,
-        show_cvd=True,
-        show_delta=False,
-        show_vwap=True,
-        show_bands=False,
-        show_walls=True,
-        show_ema=False,
-        chart_style=style,
-        main_height=300,
-    )
-
-    legend_items = [
-        '<span>🟣 <b>VWAP:</b> Session Mean</span>',
-        '<span>🌊 <b>CVD:</b> Cumulative Vol Delta</span>',
-        '<span>🟡 <b>CVD 9-EMA:</b> Momentum Guide</span>',
-        f'<span>🟥 <b>Call Wall ({cw:,.0f})</b></span>',
-        f'<span>🟩 <b>Put Wall ({pw:,.0f})</b></span>',
-    ]
-    if gamma_flip and gamma_flip > 0:
-        legend_items.append(f'<span>🟨 <b>Gamma Flip ({gamma_flip:,.0f})</b></span>')
-    legend_html = f'<div style="font-size:.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:6px">{"".join(legend_items)}</div>'
-    st.markdown(legend_html, unsafe_allow_html=True)
+def _fragment_profile_pure_price(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0, timeframe: str = "1m") -> None:
+    _render_profile_content("🎯 Pure Price", symbol, inst_id, cw, pw, gamma_flip, ref_px, timeframe)
 
 
 @st.fragment
-def _fragment_profile_trend_follower(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0) -> None:
-    """Trend Follower Profile Fragment: VWAP bands + 9/21 ribbon + Delta Volume."""
-    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe="1m", limit=120)
-    lookback_map = {"30 Bars": 30, "60 Bars": 60, "90 Bars": 90, "120 Bars": 120, "All Bars": len(bars)}
+def _fragment_profile_cvd_focus(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0, timeframe: str = "1m") -> None:
+    _render_profile_content("🌊 CVD Focus", symbol, inst_id, cw, pw, gamma_flip, ref_px, timeframe)
 
-    c_info, c_lb, c_st, c_ref = st.columns([3, 1, 1, 1])
-    with c_info:
-        st.markdown(
-            "<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
-            "<b>📈 Trend Follower:</b> VWAP, ±1σ/±2σ bands & 9/21 EMA ribbon paired with Delta Volume."
-            "</div>",
-            unsafe_allow_html=True,
-        )
-    with c_lb:
-        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_trend_{symbol}", index=1, label_visibility="collapsed")
-    with c_st:
-        style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_trend_{symbol}", index=0, label_visibility="collapsed")
-    with c_ref:
-        if st.button("🔄 Refresh", key=f"btn_trend_{symbol}", use_container_width=True):
-            st.rerun(scope="fragment")
 
-    target_limit = lookback_map.get(lb, 60)
-    bars_to_render = bars[-target_limit:] if bars else []
+@st.fragment
+def _fragment_profile_trend_follower(symbol: str, inst_id: str, cw: float, pw: float, gamma_flip: float = 0.0, ref_px: float = 0.0, timeframe: str = "1m") -> None:
+    _render_profile_content("📈 Trend Follower", symbol, inst_id, cw, pw, gamma_flip, ref_px, timeframe)
 
-    _render_sentinel_chart(
-        bars_to_render,
-        call_wall=cw,
-        put_wall=pw,
-        gamma_flip=gamma_flip,
-        signals=signals,
-        show_cvd=False,
-        show_delta=True,
-        show_vwap=True,
-        show_bands=True,
-        show_walls=True,
-        show_ema=True,
-        chart_style=style,
-        main_height=320,
+
+# ---------------------------------------------------------------------------
+# Decoupled Independent Sentinel Fragments
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every=3)
+def _fragment_sentinel_kpi_strip(symbol: str, inst_id: str, timeframe: str, ref_px: float, cw: float, pw: float) -> None:
+    """Card 1: Microstructure KPI strip auto-updating every 3 seconds independently."""
+    if config.is_market_open():
+        step_sentinel_live_feed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
+
+    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=10)
+    latest_bar = bars[-1] if bars else None
+    if not latest_bar:
+        return
+
+    cvd_val = latest_bar.cvd
+    cvd_dir = "Bullish (+)" if cvd_val > 0 else "Bearish (-)"
+    cvd_cls = "up" if cvd_val > 0 else "dn"
+    cvd_chip = "bull" if cvd_val > 0 else "bear"
+    vwap_diff = latest_bar.close - latest_bar.vwap
+    vwap_pct = (vwap_diff / latest_bar.vwap) * 100.0
+    vwap_str = f"{'+' if vwap_diff >= 0 else ''}{vwap_diff:.1f} pts ({vwap_pct:+.2f}%)"
+
+    latest_sig = signals[0] if signals else None
+    rvol_val = getattr(latest_sig, "rvol_tod", 1.0) if latest_sig else 1.0
+    delta_val = getattr(latest_bar, "delta", 0.0)
+    delta_ratio = getattr(latest_bar, "delta_ratio", 0.0)
+
+    if rvol_val >= 2.0:
+        regime_label = "VOLUME CLIMAX"
+        regime_color = "var(--warn)"
+    elif abs(delta_ratio) >= 0.20 or abs(delta_val) > 5000:
+        regime_label = "HEAVY AGGRESSION"
+        regime_color = "var(--go)" if delta_val > 0 else "var(--stop)"
+    else:
+        regime_label = "BALANCED AUCTION"
+        regime_color = "var(--spark)"
+
+    top_score = max([s.score for s in signals], default=0)
+    lbl_inst = f"🚀 {symbol} Futures ({timeframe})" if inst_id.endswith("-FUT") else f"📈 {symbol} Spot ({timeframe})"
+
+    st.markdown(
+        f'<div class="ck"><div class="sentinel-kpi-grid">'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>{lbl_inst}</small>'
+        f'<b>₹{latest_bar.close:,.1f}</b>'
+        f'<span>Vol: {latest_bar.volume_units:,} · Δ {latest_bar.delta:+,.0f}</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Session CVD</small>'
+        f'<b class="spot-chg {cvd_cls}">{cvd_val:+,.0f}</b>'
+        f'<span class="sentinel-chip {cvd_chip}">{cvd_dir}</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Benchmark VWAP</small>'
+        f'<b style="color:var(--spark)">₹{latest_bar.vwap:,.1f}</b>'
+        f'<span>{vwap_str}</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Microstructure Regime</small>'
+        f'<b style="color:{regime_color}">{regime_label}</b>'
+        f'<span>RVol: {rvol_val:.1f}× · Δ {delta_ratio*100:+.0f}%</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Sentinel Stream</small>'
+        f'<b style="color:var(--ink)">{len(signals)} Active</b>'
+        f'<span>Top Score: <b style="color:var(--spark)">{top_score}/100</b></span>'
+        f'</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
     )
 
-    legend_items = [
-        '<span>🟣 <b>VWAP:</b> Session Mean</span>',
-        '<span>🟣 <b>±1σ & ±2σ:</b> Envelopes</span>',
-        '<span>🟡 <b>EMA 9 & 21 Ribbon</b></span>',
-        f'<span>🟥 <b>Call Wall ({cw:,.0f})</b></span>',
-        f'<span>🟩 <b>Put Wall ({pw:,.0f})</b></span>',
-        '<span>📊 <b>Δ Vol:</b> Bar Aggression</span>',
-    ]
-    if gamma_flip and gamma_flip > 0:
-        legend_items.append(f'<span>🟨 <b>Gamma Flip ({gamma_flip:,.0f})</b></span>')
-    legend_html = f'<div style="font-size:.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:6px">{"".join(legend_items)}</div>'
-    st.markdown(legend_html, unsafe_allow_html=True)
+
+@st.fragment
+def _fragment_sentinel_chart_card(
+    symbol: str,
+    inst_id: str,
+    spot: float,
+    cw: float,
+    pw: float,
+    gamma_flip: float = 0.0,
+    timeframe: str = "1m",
+) -> None:
+    """Card 2: Candlestick & CVD Chart rendered independently with TradingView Lightweight Charts."""
+    bars, _, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=120)
+    first_dt = _to_ist(bars[0].start_ts).strftime("%d-%b-%Y") if bars else ""
+    date_badge = f' · <span style="color:var(--spark)">{first_dt}</span>' if first_dt else ""
+
+    st.markdown(
+        f'<div class="ck card"><div class="card-body">'
+        f'<div class="eyebrow">Candlestick Tape & OrderFlow CVD{date_badge}</div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_full, tab_pure, tab_cvd, tab_trend = st.tabs([
+        "⚡ Full OrderFlow",
+        "🎯 Pure Price",
+        "🌊 CVD Focus",
+        "📈 Trend Follower",
+    ])
+
+    with tab_full:
+        _fragment_profile_full_orderflow(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot, timeframe=timeframe)
+    with tab_pure:
+        _fragment_profile_pure_price(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot, timeframe=timeframe)
+    with tab_cvd:
+        _fragment_profile_cvd_focus(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot, timeframe=timeframe)
+    with tab_trend:
+        _fragment_profile_trend_follower(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot, timeframe=timeframe)
+
+    with st.expander("📖 Visual Guide: How to Read Candlestick Tape, Delta & OrderFlow CVD (Click to Expand / Collapse)", expanded=False):
+        st.markdown(
+            f'''
+            <div style="font-size:.84rem;line-height:1.6">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                <span style="font-weight:700;color:var(--ink)">OrderFlow Sentinel Chart Visual Cheat Sheet</span>
+                <a href="/?view=orderflow_guide" target="_blank" style="font-size:.76rem;color:var(--spark);font-weight:700;text-decoration:none">Full Signals Manual ↗</a>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid var(--spark)">
+                    <b style="color:var(--spark)">🕯️ 1. Candlestick Tape & GEX Boundaries</b><br>
+                    <span style="font-size:.78rem;color:var(--ink-mute)">
+                    • <b>Price Candlesticks:</b> Green body = Buyers closed higher; Red body = Sellers closed lower.<br>
+                    • <b>GEX Call Wall (🟥):</b> Ceiling where Call Writers defend credit spreads. High-volume breach = Gamma Blast squeeze.<br>
+                    • <b>GEX Put Wall (🟩):</b> Major floor where Put Writers absorb selloffs. Breakdown = Trapdoor panic delta-hedging.<br>
+                    • <b>Gamma Flip (🟨):</b> Equilibrium balance. Above = Call-Writer dominance. Below = Put-Writer dominance.<br>
+                    • <b>VWAP (🟣) & Shaded Value Area:</b> Session mean price. The shaded envelope (±1σ) holds ~68% of volume; ±2σ marks statistical exhaustion.
+                    </span>
+                </div>
+                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid var(--go)">
+                    <b style="color:var(--go)">📊 2. Bar Delta (Δ Vol) & Absorption Secret</b><br>
+                    <span style="font-size:.78rem;color:var(--ink-mute)">
+                    • <b>Delta (Δ):</b> Net aggressive market buys (at Ask) minus aggressive market sells (at Bid).<br>
+                    • <b>Green Bar (Δ > 0):</b> Net aggressive market buyers lifting the offer.<br>
+                    • <b>Red Bar (Δ < 0):</b> Net aggressive market sellers dumping at the bid.<br>
+                    • <b>🛡️ Passive Absorption (The Holy Grail):</b> When a candle closes <b>GREEN</b> but has a <b>RED Delta bar</b>, passive institutional limit buyers completely absorbed market sell dumping! Expect a powerful bounce.
+                    </span>
+                </div>
+                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid #2563eb">
+                    <b style="color:#2563eb">🌊 3. Cumulative Volume Delta (CVD)</b><br>
+                    <span style="font-size:.78rem;color:var(--ink-mute)">
+                    • <b>What it is:</b> The running session total of all aggressive buyer volume minus aggressive seller volume.<br>
+                    • <b>Dashed Zero Line:</b> Above 0 = Net Buyer Session; Below 0 = Net Seller Session.<br>
+                    • <b>Blue Line & Shading:</b> Real-time session delta accumulation.<br>
+                    • <b>🟡 Orange Dotted Line (CVD 9-EMA):</b> Momentum direction. When blue CVD crosses above the orange EMA line, buying momentum is accelerating.
+                    </span>
+                </div>
+                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid #f59e0b">
+                    <b style="color:#f59e0b">🎯 4. The High-Win-Rate CVD Setups</b><br>
+                    <span style="font-size:.78rem;color:var(--ink-mute)">
+                    • <b>🟢 Bullish CVD Divergence (Long Setup):</b> Price makes a <i>Lower Low</i>, but CVD makes a <i>Higher Low</i>. Aggressive sellers exhausted; passive limit accumulation underway. Enter Long; Stop below bar low.<br>
+                    • <b>🔴 Bearish CVD Divergence (Short Setup):</b> Price makes a <i>Higher High</i>, but CVD makes a <i>Lower High</i>. Aggressive buyers exhausted; passive limit selling dumping into retail FOMO. Enter Short; Stop above bar high.<br>
+                    • <b>🚀 Impulse Continuation:</b> Price and CVD break out together in the same direction above/below VWAP.
+                    </span>
+                </div>
+            </div>
+            </div>
+            ''',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
 
-def _render_sentinel_tape_content(symbol: str, inst_id: str, spot: float, cw: float, pw: float, gamma_flip: float = 0.0) -> None:
-    """Internal renderer for the OrderFlow Sentinel live tape and charts."""
-    # Top Controls Bar
+@st.fragment(run_every=5)
+def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -> None:
+    """Card 3: Live OrderFlow Stream rendered independently; displays latest 5 chronologically with scrollable full ledger."""
+    _, signals, outcomes = _get_cached_sentinel_data(inst_id, timeframe="1m", limit=120)
+    outcomes_map = {o.event_id: o for o in outcomes}
+
+    # Filter signals
+    filtered_signals = signals
+    if sig_filter == "High Confidence (Score ≥ 70)":
+        filtered_signals = [s for s in signals if s.score >= 70]
+    elif sig_filter == "Bullish":
+        filtered_signals = [s for s in signals if s.category == "BULLISH"]
+    elif sig_filter == "Bearish":
+        filtered_signals = [s for s in signals if s.category == "BEARISH"]
+    elif sig_filter == "Caution":
+        filtered_signals = [s for s in signals if s.category == "CAUTION"]
+
+    # Sort chronologically newest first
+    filtered_signals = sorted(filtered_signals, key=lambda s: s.bar_start_ts, reverse=True)
+
+    market_open = config.is_market_open()
+    if market_open:
+        feed_badge = '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#0f9d6b;box-shadow:0 0 6px #0f9d6b" title="Live Stream Active"></span>'
+        stream_title = "⚡ Live OrderFlow Stream"
+    else:
+        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.12);color:#ef4444;font-weight:700;border:1px solid rgba(239,68,68,0.25)" title="Market Closed · Manual Refresh">Market Closed · Manual</span>'
+        stream_title = "⚡ OrderFlow Stream"
+
+    st.markdown(
+        '<div class="ck card" style="margin-top:16px"><div class="card-body">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+        f'<div class="eyebrow" style="margin:0;display:flex;align-items:center;gap:6px">'
+        f'<span>{stream_title}</span>'
+        f'{feed_badge}'
+        f'<span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">({len(filtered_signals)} Signals · Latest 5 Shown / Scroll Below for Full Events)</span>'
+        f'</div>'
+        f'<a href="/?view=orderflow_guide" target="_blank" style="font-size:.72rem;color:var(--spark);font-weight:700;text-decoration:none">📖 Signal Guide ↗</a>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not filtered_signals:
+        st.info("No signals match the current filter.")
+        st.markdown('</div></div>', unsafe_allow_html=True)
+        return
+
+    def _render_sig_card_html(sig: Any, is_latest: bool = False) -> str:
+        cat_cls = "bull" if sig.category == "BULLISH" else ("bear" if sig.category == "BEARISH" else "warn")
+        cat_ico = "🟢" if sig.category == "BULLISH" else ("🔴" if sig.category == "BEARISH" else "⚠️")
+        ts_str = _to_ist(sig.bar_start_ts).strftime("%d-%b %H:%M:%S IST")
+
+        out_chip = ""
+        out = outcomes_map.get(sig.event_id)
+        if out:
+            if out.target_hit:
+                out_chip = f'<div class="outcome-badge win">🎯 Target 1R Reached (+{out.mfe_pts:.1f} pts)</div>'
+            elif out.stopped_out:
+                out_chip = f'<div class="outcome-badge stop">🛑 Stopped Out (-{out.mae_pts:.1f} pts)</div>'
+            else:
+                out_chip = f'<div class="outcome-badge">⏳ MFE: +{out.mfe_pts:.1f} pts | MAE: -{out.mae_pts:.1f} pts</div>'
+
+        tags_html = " ".join([f'<span class="ck tag mute">{t}</span>' for t in sig.context_tags])
+        inval_dir = "below" if sig.bias == "LONG" else "above"
+        new_pill = '<span style="font-size:0.65rem;background:var(--spark);color:#fff;padding:2px 5px;border-radius:4px;font-weight:700;margin-left:4px">NEW</span>' if is_latest else ''
+
+        return (
+            f'<div class="ck sig-card {cat_cls}">'
+            f'<div class="sig-card-hdr">'
+            f'<div><span class="sentinel-chip {cat_cls}">{cat_ico} {sig.category}</span> {new_pill}'
+            f'<span style="font-size:.76rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">📅 {ts_str}</span></div>'
+            f'<span class="sig-score-pill">Score: <b>{sig.score}/100</b></span>'
+            f'</div>'
+            f'<div class="sig-type">{sig.type}</div>'
+            f'<div class="sig-metrics">'
+            f'<div><span>RVol</span><b>{sig.rvol_tod:.1f}×</b></div>'
+            f'<div><span>Delta</span><b>{sig.delta:+,.0f}</b></div>'
+            f'<div><span>ΔOI</span><b>{sig.oi_change:+,}</b></div>'
+            f'</div>'
+            f'<div class="sig-insight">💡 {sig.insight_text}</div>'
+            f'<div class="sig-inval">🛑 Invalidation: candle closes {inval_dir} <b>{sig.invalidation_level:,.1f}</b></div>'
+            f'<div style="margin-top:6px">{tags_html}</div>'
+            f'{out_chip}'
+            f'</div>'
+        )
+
+    # 1. Latest 5 Signals Shown Upfront Chronologically
+    latest_5 = filtered_signals[:5]
+    latest_5_html = "".join([_render_sig_card_html(s, is_latest=(idx == 0)) for idx, s in enumerate(latest_5)])
+
+    st.markdown(
+        f'<div style="margin-bottom:12px">'
+        f'<div style="font-size:0.75rem;font-weight:700;color:var(--spark);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.04em">⚡ Latest Active Signals (Most Recent {len(latest_5)})</div>'
+        f'<div class="ck sig-feed" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:12px">'
+        f'{latest_5_html}'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 2. Scrollable Container for Full Session Events (if > 5)
+    if len(filtered_signals) > 5:
+        all_cards_html = "".join([_render_sig_card_html(s) for s in filtered_signals])
+        st.markdown(
+            f'<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
+            f'<div style="font-size:0.8rem;font-weight:700;color:var(--ink)">📜 Full Session Signal Ledger (All {len(filtered_signals)} Events)</div>'
+            f'<span style="font-size:0.72rem;color:var(--ink-mute)">Scrollable container · Full session chronological history</span>'
+            f'</div>'
+            f'<div class="ck sig-feed sig-feed-scroll" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:10px;max-height:480px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px">'
+            f'{all_cards_html}'
+            f'</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
+
+def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
+    """OrderFlow Sentinel v2.0 — Screen 2 Live Tape & Microstructure with Decoupled Independent Cards."""
+    data, _ = _load_data(symbol, window)
+    default_spot = 72880.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22680.0)
+    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
+    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    iq = get_instant_quote(symbol)
+    if iq.get("is_live"):
+        spot = iq["spot"]
+        fut_px = iq.get("fut_px") or spot
+    elif data and getattr(data, "levels", None) and getattr(data.levels, "spot", None):
+        spot = float(data.levels.spot)
+        fut_px = float(iq.get("fut_px") or spot)
+    else:
+        spot = iq.get("spot", default_spot)
+        fut_px = float(iq.get("fut_px") or (spot + 25.0))
+
+    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
+    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
+    gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
+
+    inst_id = f"{symbol}-FUT"
+    ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
+
+    # Ensure demo flow is seeded
+    seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
+
+    # 1. Static Top Controls Bar
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 3, 2])
     with ctrl_col1:
         timeframe = st.selectbox("Timeframe:", ["1m", "3m", "5m", "15m"], index=0, key=f"tf_{symbol}")
@@ -3882,74 +4487,13 @@ def _render_sentinel_tape_content(symbol: str, inst_id: str, spot: float, cw: fl
     with ctrl_col3:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
         if st.button("⚡ Re-Seed Flow", key=f"btn_reseed_{symbol}", use_container_width=True):
-            seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw, force=True)
+            seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
             st.rerun()
 
-    bars, signals, outcomes = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=120)
-    outcomes_map = {o.event_id: o for o in outcomes}
+    # 2. Independent Card 1: Microstructure KPI Strip (auto-updates every 3s independently)
+    _fragment_sentinel_kpi_strip(symbol, inst_id, timeframe, ref_px, cw, pw)
 
-    # Microstructure KPI strip
-    latest_bar = bars[-1] if bars else None
-    if latest_bar:
-        cvd_val = latest_bar.cvd
-        cvd_dir = "Bullish (+)" if cvd_val > 0 else "Bearish (-)"
-        cvd_cls = "up" if cvd_val > 0 else "dn"
-        cvd_chip = "bull" if cvd_val > 0 else "bear"
-        vwap_diff = latest_bar.close - latest_bar.vwap
-        vwap_pct = (vwap_diff / latest_bar.vwap) * 100.0
-        vwap_str = f"{'+' if vwap_diff >= 0 else ''}{vwap_diff:.1f} pts ({vwap_pct:+.2f}%)"
-
-        # Microstructure aggression regime calculation
-        latest_sig = signals[0] if signals else None
-        rvol_val = getattr(latest_sig, "rvol_tod", 1.0) if latest_sig else 1.0
-        delta_val = getattr(latest_bar, "delta", 0.0)
-        delta_ratio = getattr(latest_bar, "delta_ratio", 0.0)
-
-        if rvol_val >= 2.0:
-            regime_label = "VOLUME CLIMAX"
-            regime_color = "var(--warn)"
-        elif abs(delta_ratio) >= 0.20 or abs(delta_val) > 5000:
-            regime_label = "HEAVY AGGRESSION"
-            regime_color = "var(--go)" if delta_val > 0 else "var(--stop)"
-        else:
-            regime_label = "BALANCED AUCTION"
-            regime_color = "var(--spark)"
-
-        top_score = max([s.score for s in signals], default=0)
-
-        lbl_inst = f"🚀 {symbol} Futures ({timeframe})" if inst_id.endswith("-FUT") else f"📈 {symbol} Spot ({timeframe})"
-        st.markdown(
-            f'<div class="ck"><div class="sentinel-kpi-grid">'
-            f'<div class="sentinel-kpi-card">'
-            f'<small>{lbl_inst}</small>'
-            f'<b>₹{latest_bar.close:,.1f}</b>'
-            f'<span>Vol: {latest_bar.volume_units:,} · Δ {latest_bar.delta:+,.0f}</span>'
-            f'</div>'
-            f'<div class="sentinel-kpi-card">'
-            f'<small>Session CVD</small>'
-            f'<b class="spot-chg {cvd_cls}">{cvd_val:+,.0f}</b>'
-            f'<span class="sentinel-chip {cvd_chip}">{cvd_dir}</span>'
-            f'</div>'
-            f'<div class="sentinel-kpi-card">'
-            f'<small>Benchmark VWAP</small>'
-            f'<b style="color:var(--spark)">₹{latest_bar.vwap:,.1f}</b>'
-            f'<span>{vwap_str}</span>'
-            f'</div>'
-            f'<div class="sentinel-kpi-card">'
-            f'<small>Microstructure Regime</small>'
-            f'<b style="color:{regime_color}">{regime_label}</b>'
-            f'<span>RVol: {rvol_val:.1f}× · Δ {delta_ratio*100:+.0f}%</span>'
-            f'</div>'
-            f'<div class="sentinel-kpi-card">'
-            f'<small>Sentinel Stream</small>'
-            f'<b style="color:var(--ink)">{len(signals)} Active</b>'
-            f'<span>Top Score: <b style="color:var(--spark)">{top_score}/100</b></span>'
-            f'</div>'
-            f'</div></div>',
-            unsafe_allow_html=True,
-        )
-
-    # OrderFlow Signals Field Guide Expander
+    # 3. Static OrderFlow Signals Taxonomy Field Guide
     with st.expander("📖 OrderFlow Stream Signals Guide & Reference Manual (Click to Expand / Collapse)", expanded=False):
         st.markdown(
             f'''
@@ -4012,239 +4556,11 @@ def _render_sentinel_tape_content(symbol: str, inst_id: str, spot: float, cw: fl
             unsafe_allow_html=True,
         )
 
-    # Filter signals
-    filtered_signals = signals
-    if sig_filter == "High Confidence (Score ≥ 70)":
-        filtered_signals = [s for s in signals if s.score >= 70]
-    elif sig_filter == "Bullish":
-        filtered_signals = [s for s in signals if s.category == "BULLISH"]
-    elif sig_filter == "Bearish":
-        filtered_signals = [s for s in signals if s.category == "BEARISH"]
-    elif sig_filter == "Caution":
-        filtered_signals = [s for s in signals if s.category == "CAUTION"]
+    # 4. Independent Card 2: Candlestick & CVD Chart Card (TradingView Lightweight Charts)
+    _fragment_sentinel_chart_card(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip, timeframe=timeframe)
 
-    # 1. Full-Width Candlestick Tape & OrderFlow CVD Card
-    first_dt = _to_ist(bars[0].start_ts).strftime("%d-%b-%Y") if bars else ""
-    date_badge = f' · <span style="color:var(--spark)">{first_dt}</span>' if first_dt else ""
-    st.markdown(
-        f'<div class="ck card"><div class="card-body">'
-        f'<div class="eyebrow">Candlestick Tape & OrderFlow CVD{date_badge}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Profile Presets with Native Tabs — each profile is an independent fragment
-    tab_pure, tab_cvd, tab_full, tab_trend = st.tabs([
-        "🎯 Pure Price",
-        "🌊 CVD Focus",
-        "⚡ Full OrderFlow",
-        "📈 Trend Follower",
-    ])
-
-    with tab_pure:
-        _fragment_profile_pure_price(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot)
-    with tab_cvd:
-        _fragment_profile_cvd_focus(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot)
-    with tab_full:
-        _fragment_profile_full_orderflow(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot)
-    with tab_trend:
-        _fragment_profile_trend_follower(symbol, inst_id, cw, pw, gamma_flip=gamma_flip, ref_px=spot)
-
-    # Visual Field Guide & Cheat Sheet Expander (Positioned directly below chart)
-    with st.expander("📖 Visual Guide: How to Read Candlestick Tape, Delta & OrderFlow CVD (Click to Expand / Collapse)", expanded=False):
-        st.markdown(
-            f'''
-            <div style="font-size:.84rem;line-height:1.6">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                <span style="font-weight:700;color:var(--ink)">OrderFlow Sentinel Chart Visual Cheat Sheet</span>
-                <a href="/?view=orderflow_guide" target="_blank" style="font-size:.76rem;color:var(--spark);font-weight:700;text-decoration:none">Full Signals Manual ↗</a>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid var(--spark)">
-                    <b style="color:var(--spark)">🕯️ 1. Candlestick Tape & GEX Boundaries</b><br>
-                    <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Price Candlesticks:</b> Green body = Buyers closed higher; Red body = Sellers closed lower.<br>
-                    • <b>GEX Call Wall (🟥):</b> Ceiling where Call Writers defend credit spreads. High-volume breach = Gamma Blast squeeze.<br>
-                    • <b>GEX Put Wall (🟩):</b> Major floor where Put Writers absorb selloffs. Breakdown = Trapdoor panic delta-hedging.<br>
-                    • <b>Gamma Flip (🟨):</b> Equilibrium balance. Above = Call-Writer dominance. Below = Put-Writer dominance.<br>
-                    • <b>VWAP (🟣) & Shaded Value Area:</b> Session mean price. The shaded envelope (±1σ) holds ~68% of volume; ±2σ marks statistical exhaustion.
-                    </span>
-                </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid var(--go)">
-                    <b style="color:var(--go)">📊 2. Bar Delta (Δ Vol) & Absorption Secret</b><br>
-                    <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Delta (Δ):</b> Net aggressive market buys (at Ask) minus aggressive market sells (at Bid).<br>
-                    • <b>Green Bar (Δ > 0):</b> Net aggressive market buyers lifting the offer.<br>
-                    • <b>Red Bar (Δ < 0):</b> Net aggressive market sellers dumping at the bid.<br>
-                    • <b>🛡️ Passive Absorption (The Holy Grail):</b> When a candle closes <b>GREEN</b> but has a <b>RED Delta bar</b>, passive institutional limit buyers completely absorbed market sell dumping! Expect a powerful bounce.
-                    </span>
-                </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid #2563eb">
-                    <b style="color:#2563eb">🌊 3. Cumulative Volume Delta (CVD)</b><br>
-                    <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>What it is:</b> The running session total of all aggressive buyer volume minus aggressive seller volume.<br>
-                    • <b>Dashed Zero Line:</b> Above 0 = Net Buyer Session; Below 0 = Net Seller Session.<br>
-                    • <b>Blue Line & Shading:</b> Real-time session delta accumulation.<br>
-                    • <b>🟡 Orange Dotted Line (CVD 9-EMA):</b> Momentum direction. When blue CVD crosses above the orange EMA line, buying momentum is accelerating.
-                    </span>
-                </div>
-                <div style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border-left:3px solid #f59e0b">
-                    <b style="color:#f59e0b">🎯 4. The High-Win-Rate CVD Setups</b><br>
-                    <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>🟢 Bullish CVD Divergence (Long Setup):</b> Price makes a <i>Lower Low</i>, but CVD makes a <i>Higher Low</i>. Aggressive sellers exhausted; passive limit accumulation underway. Enter Long; Stop below bar low.<br>
-                    • <b>🔴 Bearish CVD Divergence (Short Setup):</b> Price makes a <i>Higher High</i>, but CVD makes a <i>Lower High</i>. Aggressive buyers exhausted; passive limit selling dumping into retail FOMO. Enter Short; Stop above bar high.<br>
-                    • <b>🚀 Impulse Continuation:</b> Price and CVD break out together in the same direction above/below VWAP.
-                    </span>
-                </div>
-            </div>
-            </div>
-            ''',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-    # 2. Full-Width OrderFlow Stream (Positioned Directly Below Charts)
-    market_open = config.is_market_open()
-    if market_open:
-        feed_badge = '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#0f9d6b;box-shadow:0 0 6px #0f9d6b" title="Live Stream Active"></span>'
-        stream_title = "⚡ Live OrderFlow Stream"
-    else:
-        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.12);color:#ef4444;font-weight:700;border:1px solid rgba(239,68,68,0.25)" title="Market Closed · Manual Refresh">Market Closed · Manual</span>'
-        stream_title = "⚡ OrderFlow Stream"
-
-    st.markdown(
-        '<div class="ck card" style="margin-top:16px"><div class="card-body">'
-        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
-        f'<div class="eyebrow" style="margin:0;display:flex;align-items:center;gap:6px">'
-        f'<span>{stream_title}</span>'
-        f'{feed_badge}'
-        f'<span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">({len(filtered_signals)} Signals)</span>'
-        f'</div>'
-        f'<a href="/?view=orderflow_guide" target="_blank" style="font-size:.72rem;color:var(--spark);font-weight:700;text-decoration:none">📖 Signal Guide ↗</a>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    if not filtered_signals:
-        st.info("No signals match the current filter.")
-    else:
-        sig_cards_html = []
-        for sig in filtered_signals:
-            cat_cls = "bull" if sig.category == "BULLISH" else ("bear" if sig.category == "BEARISH" else "warn")
-            cat_ico = "🟢" if sig.category == "BULLISH" else ("🔴" if sig.category == "BEARISH" else "⚠️")
-            ts_str = _to_ist(sig.bar_start_ts).strftime("%d-%b %H:%M:%S IST")
-
-            # Outcome chip
-            out_chip = ""
-            out = outcomes_map.get(sig.event_id)
-            if out:
-                if out.target_hit:
-                    out_chip = f'<div class="outcome-badge win">🎯 Target 1R Reached (+{out.mfe_pts:.1f} pts)</div>'
-                elif out.stopped_out:
-                    out_chip = f'<div class="outcome-badge stop">🛑 Stopped Out (-{out.mae_pts:.1f} pts)</div>'
-                else:
-                    out_chip = f'<div class="outcome-badge">⏳ MFE: +{out.mfe_pts:.1f} pts | MAE: -{out.mae_pts:.1f} pts</div>'
-
-            tags_html = " ".join([f'<span class="ck tag mute">{t}</span>' for t in sig.context_tags])
-            inval_dir = "below" if sig.bias == "LONG" else "above"
-
-            sig_card_html = (
-                f'<div class="ck sig-card {cat_cls}">'
-                f'<div class="sig-card-hdr">'
-                f'<div><span class="sentinel-chip {cat_cls}">{cat_ico} {sig.category}</span> '
-                f'<span style="font-size:.76rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">📅 {ts_str}</span></div>'
-                f'<span class="sig-score-pill">Score: <b>{sig.score}/100</b></span>'
-                f'</div>'
-                f'<div class="sig-type">{sig.type}</div>'
-                f'<div class="sig-metrics">'
-                f'<div><span>RVol</span><b>{sig.rvol_tod:.1f}×</b></div>'
-                f'<div><span>Delta</span><b>{sig.delta:+,.0f}</b></div>'
-                f'<div><span>ΔOI</span><b>{sig.oi_change:+,}</b></div>'
-                f'</div>'
-
-                f'<div class="sig-insight">💡 {sig.insight_text}</div>'
-                f'<div class="sig-inval">🛑 Invalidation: candle closes {inval_dir} <b>{sig.invalidation_level:,.1f}</b></div>'
-                f'<div style="margin-top:6px">{tags_html}</div>'
-                f'{out_chip}'
-                f'</div>'
-            )
-            sig_cards_html.append(sig_card_html)
-
-        cards_body = "".join(sig_cards_html)
-        st.markdown(
-            f'<div class="ck sig-feed sig-feed-scroll" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:12px;max-height:440px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px">'
-            f'{cards_body}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-    st.markdown('</div></div>', unsafe_allow_html=True)
-
-
-@st.fragment(run_every=3)
-def _fragment_sentinel_tape_live(symbol: str, window: str, inst_id: str) -> None:
-    """Fast-lane live fragment auto-updating every 3 seconds without full page reload."""
-    data, _ = _load_data(symbol, window)
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
-    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
-    gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
-
-    iq = get_instant_quote(symbol)
-    cur_spot = iq["spot"]
-    cur_fut = iq.get("fut_px") or cur_spot
-    ref_px = cur_fut if inst_id.endswith("-FUT") else cur_spot
-    step_sentinel_live_feed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
-    _render_sentinel_tape_content(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip)
-
-
-@st.fragment
-def _fragment_sentinel_tape_static(symbol: str, inst_id: str, ref_px: float, cw: float, pw: float, gamma_flip: float = 0.0) -> None:
-    """Static fragment ensuring profile switching, filters and toggles execute locally in <5ms without full page reload."""
-    _render_sentinel_tape_content(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip)
-
-
-def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
-    """OrderFlow Sentinel v2.0 — Screen 2 Live Tape & Microstructure."""
-    data, _ = _load_data(symbol, window)
-    default_spot = 72880.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22680.0)
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    iq = get_instant_quote(symbol)
-    if iq.get("is_live"):
-        spot = iq["spot"]
-        fut_px = iq.get("fut_px") or spot
-    elif data and getattr(data, "levels", None) and getattr(data.levels, "spot", None):
-        spot = float(data.levels.spot)
-        fut_px = float(iq.get("fut_px") or spot)
-    else:
-        spot = iq.get("spot", default_spot)
-        fut_px = float(iq.get("fut_px") or (spot + 25.0))
-
-    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
-    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
-    gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
-
-    inst_id = f"{symbol}-FUT"
-    ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
-    market_open = config.is_market_open()
-
-    # Seed demo flow if empty or deviated
-    seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
-    if market_open:
-        step_sentinel_live_feed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
-
-    # Route to live fragment or static based on market hours and sidebar stream mode
-    refresh_mode = st.session_state.get(
-        "stream_refresh_mode",
-        "⚡ Live Stream (3s Tape / 15s GEX)" if market_open else "⏸️ Manual / Paused",
-    )
-    # Auto-refresh fast-lane fragment ONLY when market is open AND Live Stream mode is selected
-    if market_open and "Live Stream" in refresh_mode:
-        _fragment_sentinel_tape_live(symbol, window, inst_id)
-    else:
-        _render_sentinel_tape_content(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip)
+    # 5. Independent Card 3: Live OrderFlow Stream Card (auto-updates every 5s independently)
+    _fragment_sentinel_stream_card(symbol, inst_id, sig_filter)
 
 
 
