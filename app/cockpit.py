@@ -4356,13 +4356,14 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
         feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.12);color:#ef4444;font-weight:700;border:1px solid rgba(239,68,68,0.25)" title="Market Closed · Manual Refresh">Market Closed · Manual</span>'
         stream_title = "⚡ OrderFlow Stream"
 
+    scroll_hint = "Scroll for older events" if len(filtered_signals) > 5 else "All session events visible"
     st.markdown(
         '<div class="ck card" style="margin-top:16px"><div class="card-body">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
         f'<div class="eyebrow" style="margin:0;display:flex;align-items:center;gap:6px">'
         f'<span>{stream_title}</span>'
         f'{feed_badge}'
-        f'<span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">({len(filtered_signals)} Signals · Latest 5 Shown / Scroll Below for Full Events)</span>'
+        f'<span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">({len(filtered_signals)} Signals · 5 Visible · {scroll_hint})</span>'
         f'</div>'
         f'<a href="/?view=orderflow_guide" target="_blank" style="font-size:.72rem;color:var(--spark);font-weight:700;text-decoration:none">📖 Signal Guide ↗</a>'
         f'</div>',
@@ -4394,7 +4395,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
         new_pill = '<span style="font-size:0.65rem;background:var(--spark);color:#fff;padding:2px 5px;border-radius:4px;font-weight:700;margin-left:4px">NEW</span>' if is_latest else ''
 
         return (
-            f'<div class="ck sig-card {cat_cls}">'
+            f'<div class="ck sig-card {cat_cls}" style="width:100%;box-sizing:border-box">'
             f'<div class="sig-card-hdr">'
             f'<div><span class="sentinel-chip {cat_cls}">{cat_ico} {sig.category}</span> {new_pill}'
             f'<span style="font-size:.76rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">📅 {ts_str}</span></div>'
@@ -4413,35 +4414,18 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
             f'</div>'
         )
 
-    # 1. Latest 5 Signals Shown Upfront Chronologically
-    latest_5 = filtered_signals[:5]
-    latest_5_html = "".join([_render_sig_card_html(s, is_latest=(idx == 0)) for idx, s in enumerate(latest_5)])
+    # Unified single column: chronologically newest first, framed to display 5 cards with vertical scroll for remaining old events
+    all_cards_html = "".join([
+        _render_sig_card_html(s, is_latest=(idx == 0))
+        for idx, s in enumerate(filtered_signals)
+    ])
 
     st.markdown(
-        f'<div style="margin-bottom:12px">'
-        f'<div style="font-size:0.75rem;font-weight:700;color:var(--spark);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.04em">⚡ Latest Active Signals (Most Recent {len(latest_5)})</div>'
-        f'<div class="ck sig-feed" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:12px">'
-        f'{latest_5_html}'
-        f'</div>'
+        f'<div class="ck sig-feed" style="display:flex;flex-direction:column;gap:10px;max-height:680px;overflow-y:auto;overscroll-behavior:contain;padding-right:8px">'
+        f'{all_cards_html}'
         f'</div>',
         unsafe_allow_html=True,
     )
-
-    # 2. Scrollable Container for Full Session Events (if > 5)
-    if len(filtered_signals) > 5:
-        all_cards_html = "".join([_render_sig_card_html(s) for s in filtered_signals])
-        st.markdown(
-            f'<div style="border-top:1px solid var(--line);padding-top:14px;margin-top:14px">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">'
-            f'<div style="font-size:0.8rem;font-weight:700;color:var(--ink)">📜 Full Session Signal Ledger (All {len(filtered_signals)} Events)</div>'
-            f'<span style="font-size:0.72rem;color:var(--ink-mute)">Scrollable container · Full session chronological history</span>'
-            f'</div>'
-            f'<div class="ck sig-feed sig-feed-scroll" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(360px, 1fr));gap:10px;max-height:480px;overflow-y:auto;overscroll-behavior:contain;padding-right:6px">'
-            f'{all_cards_html}'
-            f'</div>'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
 
     st.markdown('</div></div>', unsafe_allow_html=True)
 
