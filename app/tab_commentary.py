@@ -5,10 +5,17 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from typing import Any
+import importlib
 import streamlit as st
 
+import commentary.storage.db as _comm_db
+try:
+    importlib.reload(_comm_db)
+except Exception:
+    pass
+
 from commentary.config_loader import get_commentary_config
-from commentary.storage.db import get_recent_commentary_entries, get_pinned_commentary_cache
+from commentary.storage.db import get_recent_commentary_entries, get_pinned_commentary_cache, clear_commentary_cache
 from commentary.story_state import StoryStateManager
 from commentary.narrator.verifier import verify_commentary
 
@@ -212,6 +219,7 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
         )
     with col_refresh:
         if st.button("🔄 Refresh Stream", use_container_width=True, key="commentary_refresh_btn"):
+            clear_commentary_cache()
             st.rerun(scope="fragment")
 
     # 3. Pinned Recommendations Mini-Commentary Strip
