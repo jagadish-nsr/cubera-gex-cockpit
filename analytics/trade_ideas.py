@@ -202,12 +202,13 @@ def _reprice_trade_idea_targets(
     """
     is_call = side.upper() == "CE"
     opt_type = "CE" if is_call else "PE"
-    safe_ltp = max(float(current_ltp), 1.0)
-    safe_spot = max(float(spot), 100.0)
-    safe_k = max(float(strike), 100.0)
+    safe_ltp = max(float(current_ltp or 0.0), 1.0)
+    safe_spot = max(float(spot or 0.0), 100.0)
+    safe_k = max(float(strike or 0.0), 100.0)
 
     # 1. Base time to expiry in annual fraction
-    T_entry = max(float(dte_days) / 365.0, 1.0 / (365.0 * 6.25 * 60.0))
+    safe_dte = float(dte_days if dte_days is not None else 3.0)
+    T_entry = max(safe_dte / 365.0, 1.0 / (365.0 * 6.25 * 60.0))
 
     # 2. Estimate or solve entry IV
     iv_now = None
@@ -219,7 +220,7 @@ def _reprice_trade_idea_targets(
             iv_now = None
 
     if iv_now is None or iv_now <= 0.02 or math.isnan(iv_now):
-        iv_now = float(atm_iv if atm_iv > 0.02 else 0.14)
+        iv_now = float(atm_iv if (atm_iv is not None and atm_iv > 0.02) else 0.14)
 
     # 3. Horizon time decrements
     dt_annual = horizon_minutes / (365.0 * 6.25 * 60.0)
@@ -1770,26 +1771,33 @@ def generate_trade_recommendations(
 
     # 1. Resolve core levels
     levels = getattr(data, "levels", None) if data else None
-    chain_spot = float(getattr(levels, "spot", 0.0)) if levels else 0.0
+    raw_spot = getattr(levels, "spot", None) if levels else None
+    chain_spot = float(raw_spot) if raw_spot is not None else 0.0
     spot = spot_override or (chain_spot if chain_spot > 0 else 24500.0)
     if chain_spot <= 0.0:
         chain_spot = spot
-    call_wall = float(getattr(levels, "call_wall", _round_strike(spot + 2 * step, step))) if levels else _round_strike(spot + 2 * step, step)
-    put_wall = float(getattr(levels, "put_wall", _round_strike(spot - 2 * step, step))) if levels else _round_strike(spot - 2 * step, step)
-    flip = float(getattr(levels, "flip", spot)) if levels and getattr(levels, "flip", None) else spot
+    raw_cw = getattr(levels, "call_wall", None) if levels else None
+    call_wall = float(raw_cw if raw_cw is not None else _round_strike(spot + 2 * step, step))
+    raw_pw = getattr(levels, "put_wall", None) if levels else None
+    put_wall = float(raw_pw if raw_pw is not None else _round_strike(spot - 2 * step, step))
+    raw_flip = getattr(levels, "flip", None) if levels else None
+    flip = float(raw_flip if raw_flip is not None else spot)
 
     # 2. Resolve VWAP & Sigma Envelopes
     if latest_bar and getattr(latest_bar, "vwap", None) and latest_bar.vwap > 0:
         session_vwap = float(latest_bar.vwap)
-        vwap_upper = float(getattr(latest_bar, "vwap_sigma_1", session_vwap + step * 0.7))
-        vwap_lower = float(getattr(latest_bar, "vwap_lower_1", session_vwap - step * 0.7))
+        raw_vu = getattr(latest_bar, "vwap_sigma_1", None)
+        vwap_upper = float(raw_vu if raw_vu is not None else (session_vwap + step * 0.7))
+        raw_vl = getattr(latest_bar, "vwap_lower_1", None)
+        vwap_lower = float(raw_vl if raw_vl is not None else (session_vwap - step * 0.7))
     else:
         session_vwap = spot
         vwap_upper = spot + step * 0.75
         vwap_lower = spot - step * 0.75
 
     # 3. Resolve Directional Bias
-    bias_score = float(getattr(bias_result, "score", 0.0)) if bias_result else 0.0
+    raw_score = getattr(bias_result, "score", None) if bias_result else None
+    bias_score = float(raw_score if raw_score is not None else 0.0)
     bias_regime = str(getattr(bias_result, "regime", "Neutral")) if bias_result else "Neutral"
 
     # Extract strike data structures & pre-index for sub-millisecond O(1) lookups
@@ -1800,7 +1808,9 @@ def generate_trade_recommendations(
     if oi_strikes:
         for s in oi_strikes:
             try:
-                oi_map[float(s.get("strike", 0.0))] = s
+                stk_raw = s.get("strike", 0.0)
+                if stk_raw is not None:
+                    oi_map[float(stk_raw)] = s
             except Exception:
                 continue
 
@@ -1810,7 +1820,7 @@ def generate_trade_recommendations(
             if hasattr(contracts_df, "itertuples"):
                 for row in contracts_df.itertuples(index=False):
                     r_type = "C" if str(getattr(row, "type", "")).upper().startswith("C") else "P"
-                    r_strike = float(getattr(row, "strike", 0.0))
+                    r_strike = float(getattr(row, "strike", 0.0) or 0.0)
                     r_ltp = float(getattr(row, "ltp", 0.0) or getattr(row, "mid", 0.0) or 0.0)
                     r_delta = float(getattr(row, "delta", 0.0) or 0.0)
                     r_oi = float(getattr(row, "oi", 0.0) or 0.0)
@@ -1874,15 +1884,20 @@ def generate_trade_recommendations(
     except Exception:
         pass
 
-    dte_days = float(getattr(data, "dte_now", 3.0) if data else 3.0)
-    atm_iv = float(getattr(levels, "atm_iv", 0.14) if levels else 0.14)
+    raw_dte = getattr(data, "dte_now", None) if data else None
+    dte_days = float(raw_dte if raw_dte is not None else 3.0)
+    raw_iv = getattr(levels, "atm_iv", None) if levels else None
+    atm_iv = float(raw_iv if raw_iv is not None else 0.14)
 
     # Extract Target Engine Scenario Set (Dirichlet distribution over Bull, Base, Bear)
     scenario_set = None
     try:
         from target_engine.features import extract_features
         from target_engine.scenarios import score_scenarios
-        fut_val = float(getattr(data, "fut_price", spot) or spot) if data else spot
+        raw_fut = getattr(data, "fut_price", None) if data else None
+        fut_val = float(raw_fut if raw_fut is not None else spot)
+        raw_mp = getattr(levels, "max_pain", None) if levels else None
+        max_pain_val = float(raw_mp if raw_mp is not None else spot)
         fv = extract_features(
             spot=spot,
             fut=fut_val,
@@ -1890,7 +1905,7 @@ def generate_trade_recommendations(
             expiry=expiry_tag or "2026-10-15",
             contracts_df=contracts_df,
             vwap=session_vwap,
-            max_pain=float(getattr(levels, "max_pain", spot)) if levels else spot,
+            max_pain=max_pain_val,
         )
         scenario_set = score_scenarios(fv)
     except Exception:
@@ -2062,11 +2077,12 @@ def generate_trade_recommendations(
                 # Log point-in-time ML telemetry features
                 vanna_val = getattr(data, "vanna_now", None) if data else None
                 charm_val = getattr(data, "charm_now", None) if data else None
-                dte_val = getattr(data, "dte_now", 3.0) if data else 3.0
+                raw_dte_val = getattr(data, "dte_now", None) if data else None
+                dte_val = float(raw_dte_val if raw_dte_val is not None else 3.0)
                 vix_obj = getattr(data, "india_vix", {}) if data else {}
                 vix_val = float(vix_obj.get("last")) if vix_obj and vix_obj.get("last") is not None else 13.5
                 raw_agg = getattr(data, "raw_agg", {}) if data else {}
-                pcr_val = float(raw_agg.get("pcr", 1.0)) if raw_agg else 1.0
+                pcr_val = float(raw_agg.get("pcr")) if raw_agg and raw_agg.get("pcr") is not None else 1.0
 
                 ml_feat = {
                     "sample_id": t.rec_id,

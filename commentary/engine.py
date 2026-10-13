@@ -71,13 +71,13 @@ class SessionCommentaryEngine:
 
         # 1. Extract true market levels
         levels = data.levels
-        spot = float(getattr(levels, "spot", 22600.0))
-        prev_close = float(getattr(levels, "prev_close", 0) or spot)
-        atm_iv = float(getattr(levels, "atm_iv", 0) or 0.14)
-        call_wall = float(getattr(levels, "call_wall", spot + 100))
-        put_wall = float(getattr(levels, "put_wall", spot - 100))
-        flip = float(getattr(levels, "flip", spot))
-        max_pain = float(getattr(levels, "max_pain", spot))
+        spot = float(getattr(levels, "spot", None) or 22600.0)
+        prev_close = float(getattr(levels, "prev_close", None) or spot)
+        atm_iv = float(getattr(levels, "atm_iv", None) or 0.14)
+        call_wall = float(getattr(levels, "call_wall", None) or (spot + 100))
+        put_wall = float(getattr(levels, "put_wall", None) or (spot - 100))
+        flip = float(getattr(levels, "flip", None) or spot)
+        max_pain = float(getattr(levels, "max_pain", None) or spot)
         net_gex_sign = int(getattr(levels, "net_gex_sign", 1 if spot >= flip else -1))
 
         # Get pinned recommendations

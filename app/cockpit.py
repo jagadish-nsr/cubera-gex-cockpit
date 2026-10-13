@@ -1037,6 +1037,9 @@ def _load_data(symbol: str, window: str, force: bool = False):
             cached = _DASH_CACHE.get(ckey)
         if cached is not None:
             ts, d, err = cached
+            # Off market hours: return cached session snapshot immediately without background network fetches
+            if not config.is_market_open():
+                return d, err
             # If fresh (<30s), return immediately
             if now_t - ts < _CACHE_TTL_SECONDS:
                 return d, err
@@ -1333,7 +1336,7 @@ def _execute_1click_paper_trade(cs, symbol: str, data) -> None:
     try:
         levels_snap = asdict(data.levels)
     except Exception:
-        levels_snap = {"symbol": symbol, "spot": float(getattr(data.levels, "spot", 0))}
+        levels_snap = {"symbol": symbol, "spot": float(getattr(getattr(data, "levels", None), "spot", 0) or 0)}
 
     try:
         regime_snap = asdict(data.view)
@@ -1344,7 +1347,7 @@ def _execute_1click_paper_trade(cs, symbol: str, data) -> None:
         symbol=symbol,
         strategy_name=cs.name,
         legs=legs_dicts,
-        entry_spot=float(getattr(data.levels, "spot", 0)),
+        entry_spot=float(getattr(getattr(data, "levels", None), "spot", 0) or 0),
         entry_levels=levels_snap,
         entry_regime=regime_snap,
         entry_net_premium=net_premium,
@@ -1795,7 +1798,8 @@ def _render_cockpit_ladder_and_playbook(symbol: str, window: str) -> None:
     levels = data.levels
     view = data.view
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
+    raw_spot = getattr(levels, "spot", None) if levels else None
+    spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_spot if raw_spot is not None else 24500.0)
     idx = config.get_index(symbol)
     vol_regime = getattr(view, "mode_label", "mid").lower() if view else "mid"
     vol_regime_key = "calm" if ("calm" in vol_regime or "range" in vol_regime) else ("wild" if ("wild" in vol_regime or "trend" in vol_regime) else "mid")
@@ -1993,7 +1997,7 @@ def _execute_recommendation_trade(idea: Any, symbol: str, data: Any, lots: int =
     try:
         levels_snap = asdict(data.levels)
     except Exception:
-        levels_snap = {"symbol": symbol, "spot": float(getattr(data.levels, "spot", 0))}
+        levels_snap = {"symbol": symbol, "spot": float(getattr(getattr(data, "levels", None), "spot", 0) or 0)}
 
     try:
         regime_snap = asdict(data.view)
@@ -2008,7 +2012,7 @@ def _execute_recommendation_trade(idea: Any, symbol: str, data: Any, lots: int =
         symbol=symbol,
         strategy_name=f"⚡ {idea.option_symbol} ({idea.play_badge})",
         legs=[leg_dict],
-        entry_spot=float(getattr(data.levels, "spot", 0)),
+        entry_spot=float(getattr(getattr(data, "levels", None), "spot", 0) or 0),
         entry_levels=levels_snap,
         entry_regime=regime_snap,
         entry_net_premium=-leg_ltp,  # Buying option = debit
@@ -2218,9 +2222,9 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
             calculate_pre_market_option_shocks,
         )
         phase_code, phase_label, _ = get_current_session_phase()
-        cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0))
-        pw = float(getattr(getattr(data, "levels", None), "put_wall", 0.0))
-        flip = float(getattr(getattr(data, "levels", None), "flip", 0.0))
+        cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0) or 0.0)
+        pw = float(getattr(getattr(data, "levels", None), "put_wall", 0.0) or 0.0)
+        flip = float(getattr(getattr(data, "levels", None), "flip", 0.0) or 0.0)
 
         # 1. Pre-Open Window (09:07:30 to 09:25 or when discovered)
         pm = get_pre_market_state(symbol)
@@ -2238,13 +2242,14 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                 badge_html = f'<span class="sentinel-chip" style="background:var(--surface-2);color:{gap_cls["color"]};border:1px solid {gap_cls["color"]};font-size:.74rem">{gap_cls["badge"]}</span>'
                 sign_str = "+" if gap_pts >= 0 else ""
 
+                raw_dte = getattr(data, "dte_now", None) if data else None
                 shocks = calculate_pre_market_option_shocks(
                     discovered_spot=disc_spot,
                     prev_close=float(pm.get("prev_close") or (disc_spot - gap_pts)),
                     contracts_df=getattr(data, "contracts", None),
                     symbol=symbol,
-                    dte_days=float(getattr(data, "dte_now", 3.0) if data else 3.0),
-                    atm_iv=float(getattr(getattr(data, "levels", None), "atm_iv", 0.14) or 0.14),
+                    dte_days=float(raw_dte if raw_dte is not None else 3.0),
+                    atm_iv=float(getattr(getattr(data, "levels", None), "atm_iv", None) or 0.14),
                 )
                 atm_k = shocks["atm_strike"]
                 stk_step = 50 if symbol.upper() == "NIFTY" else 100
@@ -3097,12 +3102,13 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     bars, recent_sigs, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="1m", limit=120)
     latest_bar = bars[-1] if bars else None
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
-    # Pre-market equilibrium anchoring: anchor spot to discovered equilibrium price if discovered today
+    raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
+    spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_lvl_spot if raw_lvl_spot is not None else 24500.0)
+    # Pre-market equilibrium anchoring: anchor spot to discovered equilibrium price only during pre-market session
     try:
         from data.pre_post_market import get_pre_market_state
         pm_disc = get_pre_market_state(symbol)
-        if pm_disc.get("is_discovered") and float(pm_disc.get("discovered_spot", 0)) > 0:
+        if pm_disc.get("is_pre_market") and pm_disc.get("is_discovered") and float(pm_disc.get("discovered_spot", 0)) > 0:
             spot = float(pm_disc["discovered_spot"])
     except Exception:
         pass
@@ -3192,7 +3198,8 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
         return
 
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else (float(getattr(data.levels, "spot", 24500.0)) if data and getattr(data, "levels", None) else 0.0)
+    raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
+    spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_lvl_spot if raw_lvl_spot is not None else 24500.0)
 
     col_c, col_p = st.columns(2, gap="medium")
     ce_bms = [r for r in bookmarked_recs if r.get("side") == "CE"]
@@ -3274,7 +3281,8 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
         return
 
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
+    raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
+    spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_lvl_spot if raw_lvl_spot is not None else 24500.0)
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -4068,11 +4076,15 @@ def _calc_ema_series(candles: list[dict], period: int) -> list[dict]:
 def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[list[dict], list[dict]]:
     """Convert Bar and SentinelSignal models into TradingView Lightweight Charts JSON format in IST."""
     candles = []
+    now_ist = datetime.now(IST_TZ)
+    now_cutoff = now_ist + timedelta(minutes=2)
     for b in bars:
         dt = b.start_ts
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=IST_TZ)
         dt_ist = dt.astimezone(IST_TZ)
+        if dt_ist > now_cutoff:
+            continue
         ist_epoch = int(datetime(dt_ist.year, dt_ist.month, dt_ist.day, dt_ist.hour, dt_ist.minute, dt_ist.second, tzinfo=timezone.utc).timestamp())
         candles.append({
             "time": ist_epoch,
@@ -4089,21 +4101,30 @@ def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[lis
             "dn1": round(b.vwap_lower_1, 2),
             "dn2": round(b.vwap_lower_2, 2),
         })
-    candles.sort(key=lambda c: c["time"])
+
+    # Strict deduplication on time keeping latest update (Lightweight Charts strict requirement)
+    seen_candles = {}
+    for c in candles:
+        seen_candles[c["time"]] = c
+    candles = sorted(seen_candles.values(), key=lambda c: c["time"])
 
     markers = []
-    if signals:
+    if signals and candles:
         candle_times = {c["time"] for c in candles}
         for s in signals:
             s_dt = s.bar_start_ts
             if s_dt.tzinfo is None:
                 s_dt = s_dt.replace(tzinfo=IST_TZ)
             s_dt_ist = s_dt.astimezone(IST_TZ)
+            if s_dt_ist > now_cutoff:
+                continue
             sig_t = int(datetime(s_dt_ist.year, s_dt_ist.month, s_dt_ist.day, s_dt_ist.hour, s_dt_ist.minute, s_dt_ist.second, tzinfo=timezone.utc).timestamp())
             if candle_times:
                 closest_t = min(candle_times, key=lambda t: abs(t - sig_t))
                 if abs(closest_t - sig_t) <= 180:
                     sig_t = closest_t
+                else:
+                    continue
             pos = "belowBar" if s.bias == "LONG" else "aboveBar"
             col = "#10b981" if s.category == "BULLISH" else ("#ef4444" if s.category == "BEARISH" else "#f59e0b")
             shp = "arrowUp" if s.bias == "LONG" else ("arrowDown" if s.bias == "SHORT" else "circle")
@@ -4114,7 +4135,10 @@ def _prepare_tv_chart_data(bars: list, signals: list | None = None) -> tuple[lis
                 "shape": shp,
                 "text": f"{s.type} ({s.score})",
             })
-        markers.sort(key=lambda m: m["time"])
+        seen_markers = {}
+        for m in markers:
+            seen_markers[(m["time"], m["text"])] = m
+        markers = sorted(seen_markers.values(), key=lambda m: m["time"])
 
     return candles, markers
 
