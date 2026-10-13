@@ -453,3 +453,104 @@ def test_scenario_confluence_scoring():
         None, 1000, scenario_set=None
     )
     assert score_pe_counter < score_pe_base
+
+
+def test_compute_trend_context():
+    from analytics.trade_ideas import compute_trend_context
+
+    class MockBar:
+        def __init__(self, close, high, low):
+            self.close = close
+            self.high = high
+            self.low = low
+
+    # 1. Bullish sequence where close rises steadily
+    bull_bars = [MockBar(close=24500 + i * 5, high=24500 + i * 5 + 4, low=24500 + i * 5 - 3) for i in range(25)]
+    ctx_bull = compute_trend_context(bull_bars)
+    assert ctx_bull["ema_trend"] == "BULLISH"
+    assert ctx_bull["ema9"] is not None
+    assert ctx_bull["ema21"] is not None
+    assert ctx_bull["ema9"] > ctx_bull["ema21"]
+    assert ctx_bull["atr"] > 0
+
+    # 2. Bearish sequence where close falls steadily
+    bear_bars = [MockBar(close=24600 - i * 5, high=24600 - i * 5 + 3, low=24600 - i * 5 - 4) for i in range(25)]
+    ctx_bear = compute_trend_context(bear_bars)
+    assert ctx_bear["ema_trend"] == "BEARISH"
+    assert ctx_bear["ema9"] < ctx_bear["ema21"]
+
+    # 3. Empty or short bars fallback safely
+    ctx_empty = compute_trend_context([])
+    assert ctx_empty["ema_trend"] == "NEUTRAL"
+    assert ctx_empty["atr"] == 35.0
+
+
+def test_ema_trend_influence_on_trade_score():
+    from analytics.trade_ideas import _compute_trade_score
+
+    # CE Momentum with Bullish EMA trend vs Bearish EMA trend
+    score_ce_bull, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, ema_trend="BULLISH"
+    )
+    score_ce_bear, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, ema_trend="BEARISH"
+    )
+    # Bullish trend boosts CE momentum (+8 vs -12 penalty, 20 pts diff)
+    assert score_ce_bull > score_ce_bear
+    assert (score_ce_bull - score_ce_bear) == 20
+
+    # PE Momentum with Bearish EMA trend vs Bullish EMA trend
+    score_pe_bear, _, _ = _compute_trade_score(
+        "PE", "ATM Momentum", -2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, ema_trend="BEARISH"
+    )
+    score_pe_bull, _, _ = _compute_trade_score(
+        "PE", "ATM Momentum", -2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, ema_trend="BULLISH"
+    )
+    assert score_pe_bear > score_pe_bull
+    assert (score_pe_bear - score_pe_bull) == 20
+
+
+def test_continuous_sigmoid_vwap_no_cliff_oscillation():
+    from analytics.trade_ideas import _compute_trade_score
+
+    vwap = 24500.0
+    # Micro-tick below VWAP vs micro-tick above VWAP (0.10 pt tick across VWAP)
+    spot_below = vwap - 0.05
+    spot_above = vwap + 0.05
+
+    score_below, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 2.0, spot_below, vwap, 24700.0, 24300.0,
+        None, 1000, atr=35.0
+    )
+    score_above, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 2.0, spot_above, vwap, 24700.0, 24300.0,
+        None, 1000, atr=35.0
+    )
+
+    # In old binary scoring, crossing VWAP caused a 20-point cliff jump (-8 to +12).
+    # With continuous sigmoid scoring, a 0.10 pt tick moves the score by <= 1 pt.
+    diff = abs(score_above - score_below)
+    assert diff <= 1, f"Expected smooth continuous transition near VWAP, got swing of {diff} pts"
+
+
+def test_structural_atr_invalidation_widening():
+    from analytics.trade_ideas import generate_trade_recommendations
+    from tests.test_trade_ideas import MockDashboardData
+
+    spot = 24500.0
+    data = MockDashboardData(spot=spot)
+    batch = generate_trade_recommendations(data, min_score=0)
+
+    for rec in batch.all_ce_candidates:
+        inval_dist = abs(spot - rec.spot_invalidation)
+        # Structural invalidation must sit outside the normal 15-25 pt 5m noise band
+        assert inval_dist >= 30.0, f"{rec.play_badge} CE invalidation {rec.spot_invalidation} is only {inval_dist} pts away"
+
+    for rec in batch.all_pe_candidates:
+        inval_dist = abs(spot - rec.spot_invalidation)
+        assert inval_dist >= 30.0, f"{rec.play_badge} PE invalidation {rec.spot_invalidation} is only {inval_dist} pts away"
+

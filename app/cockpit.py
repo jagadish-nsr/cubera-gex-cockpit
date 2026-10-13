@@ -3100,7 +3100,8 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
 
     sentinel_inst = f"{symbol}-FUT"
     bars, recent_sigs, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="1m", limit=120)
-    latest_bar = bars[-1] if bars else None
+    bars_5m, _, _ = _get_cached_sentinel_data(sentinel_inst, timeframe="5m", limit=60)
+    latest_bar = bars[-1] if bars else (bars_5m[-1] if bars_5m else None)
     iq = get_instant_quote(symbol)
     raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
     spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_lvl_spot if raw_lvl_spot is not None else 24500.0)
@@ -3117,12 +3118,13 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     cached = _REC_BATCH_CACHE.get(symbol)
     curr_bias_val = float(bias_score) if bias_score is not None else 0.0
     step = 50.0 if "NIFTY" in symbol and "BANK" not in symbol else 100.0
-    spot_thresh = step * 0.15  # 7.5 pts on NIFTY, 15.0 pts on BANKNIFTY
+    spot_thresh = step * 0.35  # ~17.5 pts on NIFTY, 35.0 pts on BANKNIFTY
     if cached is not None:
         c_ts, c_spot, c_bias, c_batch = cached
-        # Debounce: if under 2.5s, reuse cache unconditionally to eliminate micro-tick thrash;
-        # if under 6.0s, reuse if spot move is within strike threshold and bias is stable
-        if (now_t - c_ts < 2.5) or ((now_t - c_ts < 6.0) and abs(c_spot - spot) < spot_thresh and abs(c_bias - curr_bias_val) < 0.05):
+        # Debounce: retain recommendation batch for 20s unconditionally to allow
+        # human review and eliminate flickering; or up to 60s if spot move is within
+        # structural noise threshold (17.5 pts on NIFTY) and bias is stable
+        if (now_t - c_ts < 20.0) or ((now_t - c_ts < 60.0) and abs(c_spot - spot) < spot_thresh and abs(c_bias - curr_bias_val) < 0.15):
             return c_batch
 
     batch = generate_trade_recommendations(
@@ -3130,6 +3132,7 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
         bias_result=bias_res,
         sentinel_signals=recent_sigs,
         latest_bar=latest_bar,
+        sentinel_bars=bars_5m or bars,
         spot_override=spot,
         min_score=75,
     )
