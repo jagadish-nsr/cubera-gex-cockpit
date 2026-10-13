@@ -975,11 +975,21 @@ except Exception:
 IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 
-def _to_ist(dt: datetime) -> datetime:
+def _to_ist(dt: datetime | str | None) -> datetime:
     """Ensure datetime is displayed in Indian Standard Time (IST, UTC+05:30)."""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(IST_TZ)
+    if dt is None:
+        return datetime.now(IST_TZ)
+    if isinstance(dt, str):
+        try:
+            cleaned = dt.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+        except Exception:
+            return datetime.now(IST_TZ)
+    if dt.tzinfo is not None:
+        return dt.astimezone(IST_TZ)
+    if dt.hour < 7:
+        return dt.replace(tzinfo=timezone.utc).astimezone(IST_TZ)
+    return dt.replace(tzinfo=IST_TZ)
 
 
 def _ist_now() -> str:

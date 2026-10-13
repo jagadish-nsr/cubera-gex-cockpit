@@ -139,11 +139,13 @@ def ensure_commentary_schema() -> None:
 def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None:
     """Persist commentary entry and attached suggestion bites in a single WAL transaction."""
     ensure_commentary_schema()
+    from commentary.models import to_ist
+    entry_ts_str = to_ist(entry.ts).isoformat()
     bites_data = [
         {
             "id": b.id,
             "entry_id": entry.id,
-            "ts": b.ts.isoformat(),
+            "ts": to_ist(b.ts).isoformat(),
             "type": b.type,
             "headline": b.headline,
             "action_frame": b.action_frame,
@@ -167,7 +169,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
             """,
             (
                 entry.id,
-                entry.ts.isoformat(),
+                entry_ts_str,
                 symbol.upper(),
                 entry.phase,
                 entry.headline,
@@ -192,7 +194,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
                 (
                     b.id,
                     entry.id,
-                    b.ts.isoformat(),
+                    to_ist(b.ts).isoformat(),
                     symbol.upper(),
                     b.type,
                     b.headline,
@@ -202,7 +204,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
                     json.dumps(b.condition),
                     json.dumps(b.badge),
                     b.state,
-                    b.resolved_ts.isoformat() if b.resolved_ts else None,
+                    to_ist(b.resolved_ts).isoformat() if b.resolved_ts else None,
                     json.dumps(b.outcome) if b.outcome else None,
                     b.pinned_rec_id,
                 ),
@@ -211,7 +213,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
     # Update in-memory cache
     cached_entry = {
         "entry_id": entry.id,
-        "ts": entry.ts.isoformat(),
+        "ts": entry_ts_str,
         "symbol": symbol.upper(),
         "phase": entry.phase,
         "headline": entry.headline,
@@ -232,6 +234,7 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
     """Retrieve recent commentary entries with low-latency cache backed by SQLite WAL."""
     global _CACHE_INITIALIZED, _CACHE_SYNC_TS
     ensure_commentary_schema()
+    from commentary.models import to_ist
 
     now_t = time.time()
     with _CACHE_LOCK:
@@ -255,6 +258,13 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
             for r in rows:
                 try:
                     bites_list = json.loads(r["bites_json"])
+                    for b in bites_list:
+                        if "ts" in b:
+                            b["ts"] = to_ist(b["ts"]).isoformat()
+                        if b.get("valid_until"):
+                            b["valid_until"] = to_ist(b["valid_until"]).isoformat()
+                        if b.get("resolved_ts"):
+                            b["resolved_ts"] = to_ist(b["resolved_ts"]).isoformat()
                 except Exception:
                     bites_list = []
                 try:
@@ -272,7 +282,7 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
 
                 entries.append({
                     "entry_id": r["entry_id"],
-                    "ts": r["ts"],
+                    "ts": to_ist(r["ts"]).isoformat(),
                     "symbol": r["symbol"],
                     "phase": r["phase"],
                     "headline": r["headline"],

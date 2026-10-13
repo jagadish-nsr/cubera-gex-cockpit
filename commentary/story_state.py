@@ -19,7 +19,9 @@ class StoryStateManager:
 
     def determine_phase(self, ts: datetime) -> str:
         """Map datetime to configured intraday trading session phase."""
-        t_str = ts.strftime("%H:%M")
+        from commentary.models import to_ist
+        ts_ist = to_ist(ts)
+        t_str = ts_ist.strftime("%H:%M")
         for p in self.phases_cfg:
             start = p.get("start", "09:00")
             end = p.get("end", "15:30")
@@ -31,7 +33,9 @@ class StoryStateManager:
 
     def update_phase(self, ts: datetime) -> str:
         """Update current story phase."""
-        phase = self.determine_phase(ts)
+        from commentary.models import to_ist
+        ts_ist = to_ist(ts)
+        phase = self.determine_phase(ts_ist)
         self.state.phase = phase
         return phase
 

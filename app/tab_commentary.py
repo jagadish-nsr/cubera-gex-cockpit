@@ -28,20 +28,10 @@ IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 def _format_time_ist(ts_str: str) -> str:
     """Format timestamp string into readable IST time (HH:MM:SS AM/PM IST)."""
     try:
-        cleaned_ts = ts_str.replace("Z", "+00:00")
-        dt_obj = dt.datetime.fromisoformat(cleaned_ts)
-        if dt_obj.tzinfo is not None:
-            dt_obj = dt_obj.astimezone(IST)
-        else:
-            # If naive datetime during trading session (01:00 - 11:00 UTC),
-            # convert from UTC to IST if hour < 7
-            if dt_obj.hour < 7:
-                dt_obj = dt_obj.replace(tzinfo=dt.timezone.utc).astimezone(IST)
-            else:
-                dt_obj = dt_obj.replace(tzinfo=IST)
-        return dt_obj.strftime("%I:%M:%S %p IST")
+        from commentary.models import to_ist
+        return to_ist(ts_str).strftime("%I:%M:%S %p IST")
     except Exception:
-        return ts_str
+        return str(ts_str)
 
 
 @st.fragment
@@ -50,6 +40,17 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
     
     Prevents full-app reruns and guarantees non-blocking, zero-latency updates.
     """
+    # 0. Sync fresh commentary storage definitions and flush stale cache
+    try:
+        import importlib
+        import commentary.storage.db as comm_db
+        import commentary.engine as comm_eng
+        importlib.reload(comm_db)
+        importlib.reload(comm_eng)
+        comm_db.clear_commentary_cache()
+    except Exception:
+        pass
+
     # 1. Evaluate Live Commentary against actual market ticks & GEX levels
     try:
         live_data = data

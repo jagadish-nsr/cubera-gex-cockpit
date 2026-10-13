@@ -9,6 +9,39 @@ from typing import Any, Sequence
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
+def to_ist(ts: datetime | str | None) -> datetime:
+    """Ensure datetime is strictly in Indian Standard Time (IST, UTC+05:30).
+    
+    Robustly handles:
+    - datetime objects with tzinfo (converts to IST)
+    - timezone-naive datetime objects (if market session UTC hour < 7, converts UTC->IST; otherwise localizes to IST)
+    - ISO strings (with Z, +00:00, or naive)
+    """
+    if ts is None:
+        return datetime.now(IST)
+    if isinstance(ts, str):
+        try:
+            cleaned = ts.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(cleaned)
+        except Exception:
+            return datetime.now(IST)
+    else:
+        dt = ts
+
+    if dt.tzinfo is not None:
+        return dt.astimezone(IST)
+
+    # Naive datetime during market session:
+    if dt.hour < 7:
+        return dt.replace(tzinfo=timezone.utc).astimezone(IST)
+    return dt.replace(tzinfo=IST)
+
+
+def now_ist() -> datetime:
+    """Return current timestamp strictly localized in IST."""
+    return datetime.now(IST)
+
+
 class PointInTimeViolation(Exception):
     """Raised when an operation attempts to access data beyond the declared timestamp."""
     pass
@@ -37,11 +70,15 @@ class PointInTimeView:
     pinned_recommendations: list[dict[str, Any]] = field(default_factory=list)
     extra_facts: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.as_of = to_ist(self.as_of)
+
     def validate_timestamp(self, ts: datetime) -> None:
         """Enforce strict point-in-time guard."""
-        if ts > self.as_of:
+        ts_ist = to_ist(ts)
+        if ts_ist > self.as_of:
             raise PointInTimeViolation(
-                f"Look-ahead violation: accessed data timestamp {ts} is after as_of {self.as_of}"
+                f"Look-ahead violation: accessed data timestamp {ts_ist} is after as_of {self.as_of}"
             )
 
     @property
@@ -63,6 +100,9 @@ class Event:
     magnitude_sigma: float                  # Regime-normalized displacement in sigma units
     quality_flags: list[str] = field(default_factory=list)
     related_ids: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "ts", to_ist(self.ts))
 
 
 @dataclass
@@ -96,6 +136,13 @@ class SuggestionBite:
     outcome: dict[str, Any] | None = None
     pinned_rec_id: str | None = None        # Set if linked to an active pinned recommendation
 
+    def __post_init__(self) -> None:
+        self.ts = to_ist(self.ts)
+        if self.valid_until:
+            self.valid_until = to_ist(self.valid_until)
+        if self.resolved_ts:
+            self.resolved_ts = to_ist(self.resolved_ts)
+
 
 @dataclass
 class StoryState:
@@ -128,3 +175,6 @@ class CommentaryEntry:
     template_fallback: bool = True
     tags: list[str] = field(default_factory=list)
     facts: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.ts = to_ist(self.ts)
