@@ -47,6 +47,25 @@ class LiveSentinelManager:
         self._prev_cum_vol: dict[str, int] = {}
         self._last_tick_time: dict[str, float] = {}
 
+    @staticmethod
+    def _normalize_tick_time(ltt: int | None, now_ist: datetime) -> datetime:
+        """Normalize Dhan LTT timestamp by subtracting the 19,800s IST offset if present."""
+        if not ltt or ltt <= 0:
+            return now_ist
+        now_epoch = time.time()
+        # Dhan encodes LTT with +5h30m (19,800s) added relative to true UTC epoch
+        if abs(ltt - (now_epoch + 19800)) < 7200:
+            true_utc_epoch = ltt - 19800
+        elif abs(ltt - now_epoch) < 7200:
+            true_utc_epoch = ltt
+        else:
+            return now_ist
+        dt = datetime.fromtimestamp(true_utc_epoch, tz=timezone.utc).astimezone(IST)
+        # Never allow tick time to be in the future beyond 60s
+        if dt > now_ist + timedelta(seconds=60):
+            return now_ist
+        return dt
+
     def sync_live_session(
         self,
         instrument_id: str,
@@ -66,6 +85,12 @@ class LiveSentinelManager:
         # Throttle sync calls to once every 60 seconds unless forced
         if not force and (now_epoch - last_sync) < 60.0:
             return False
+
+        import config
+        # Off market hours: do not poll Dhan API unless explicitly forced and no bars exist
+        if not config.is_market_open():
+            if not force or list_recent_bars(instrument_id, limit=5):
+                return False
 
         with _LOCK:
             self._last_synced_time[instrument_id] = now_epoch
@@ -124,6 +149,8 @@ class LiveSentinelManager:
                     oi = int(row.get("oi", 0) or 0)
                     ts_epoch = float(row["timestamp"])
                     bar_dt = datetime.fromtimestamp(ts_epoch, tz=timezone.utc).astimezone(IST)
+                    if bar_dt > datetime.now(IST) + timedelta(minutes=2):
+                        continue
 
                     # Estimate buyer/seller volume from candle structure & price delta
                     typical_price = (h + l + c) / 3.0
@@ -220,7 +247,7 @@ class LiveSentinelManager:
 
         now_ist = datetime.now(IST)
         ltt = pkt.get("ltt")
-        tick_dt = datetime.fromtimestamp(ltt, tz=timezone.utc).astimezone(IST) if ltt else now_ist
+        tick_dt = self._normalize_tick_time(ltt, now_ist)
 
         cum_vol = pkt.get("volume")
         vol_delta = 1

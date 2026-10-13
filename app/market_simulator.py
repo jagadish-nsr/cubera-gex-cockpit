@@ -577,7 +577,8 @@ def sync_sentinel_simulation(
             ref_day = now_ist.date()
     else:
         ref_day = now_ist.date()
-        if not is_trading_day(ref_day):  # Weekend or market holiday on weekday
+        from datetime import time as dt_time
+        if not is_trading_day(ref_day) or now_ist.time() < dt_time(9, 15):  # Weekend, holiday, or before market open
             ref_day = roll_back_to_trading_day(ref_day - timedelta(days=1))
 
     start_dt = datetime(ref_day.year, ref_day.month, ref_day.day, 9, 15, tzinfo=IST)

@@ -45,6 +45,22 @@ class Tick:
     feed_code: int = CODE_QUOTE
 
 
+_IST_OFFSET_S = 19800
+
+
+def _normalize_ltt_utc(ltt_sec: int, now_utc: datetime) -> datetime:
+    if not ltt_sec or ltt_sec <= 0:
+        return now_utc
+    now_epoch = now_utc.timestamp()
+    if abs(ltt_sec - (now_epoch + _IST_OFFSET_S)) < 7200:
+        true_utc_epoch = ltt_sec - _IST_OFFSET_S
+    elif abs(ltt_sec - now_epoch) < 7200:
+        true_utc_epoch = ltt_sec
+    else:
+        return now_utc
+    return datetime.fromtimestamp(true_utc_epoch, tz=timezone.utc)
+
+
 def parse_dhan_binary_packet(data: bytes) -> Tick | None:
     """Parse a single DhanHQ little-endian binary packet into a Tick.
 
@@ -62,7 +78,7 @@ def parse_dhan_binary_packet(data: bytes) -> Tick | None:
         if feed_code == CODE_TICKER and len(data) >= 16:
             # Ticker: LTP (f), LTT (I)
             ltp, ltt_sec = struct.unpack_from("<fI", data, 8)
-            ltt_dt = datetime.fromtimestamp(ltt_sec, tz=timezone.utc) if ltt_sec > 0 else now_utc
+            ltt_dt = _normalize_ltt_utc(ltt_sec, now_utc)
             return Tick(
                 security_id=security_id,
                 exchange_segment=exchange_segment,
@@ -77,7 +93,7 @@ def parse_dhan_binary_packet(data: bytes) -> Tick | None:
             ltp, ltq, ltt_sec, avg_px, vol, buy_qty, sell_qty, o, h, l, c = struct.unpack_from(
                 "<fIIfIddffff", data, 8
             )
-            ltt_dt = datetime.fromtimestamp(ltt_sec, tz=timezone.utc) if ltt_sec > 0 else now_utc
+            ltt_dt = _normalize_ltt_utc(ltt_sec, now_utc)
             return Tick(
                 security_id=security_id,
                 exchange_segment=exchange_segment,

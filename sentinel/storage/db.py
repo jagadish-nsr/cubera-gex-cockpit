@@ -14,9 +14,11 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
+
+IST = timezone(timedelta(hours=5, minutes=30))
 
 from sentinel.models import Bar, SentinelSignal, SignalOutcome
 
@@ -183,12 +185,13 @@ def save_signal(sig: SentinelSignal) -> None:
 def list_recent_bars(instrument_id: str, timeframe: str = "1m", limit: int = 120) -> list[Bar]:
     """Retrieve recent bars in chronological order (oldest first)."""
     conn = _get_read_conn()
+    now_max = (datetime.now(IST) + timedelta(minutes=2)).isoformat()
     try:
         rows = conn.execute("""
             SELECT * FROM sentinel_bars
-            WHERE instrument_id = ? AND timeframe = ?
+            WHERE instrument_id = ? AND timeframe = ? AND start_ts <= ?
             ORDER BY start_ts DESC LIMIT ?
-        """, (instrument_id, timeframe, limit)).fetchall()
+        """, (instrument_id, timeframe, now_max, limit)).fetchall()
         bars = []
         for r in reversed(rows):
             bars.append(Bar(
@@ -394,5 +397,20 @@ def purge_old_sentinel_data(
             }
         finally:
             conn.close()
+
+
+def purge_future_anomaly_bars() -> int:
+    """Purge any bars or signals with timestamps in the future beyond 2 minutes."""
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        now_max = (datetime.now(IST) + timedelta(minutes=2)).isoformat()
+        try:
+            c1 = conn.execute("DELETE FROM sentinel_bars WHERE start_ts > ?", (now_max,)).rowcount
+            c2 = conn.execute("DELETE FROM sentinel_signals WHERE bar_start_ts > ?", (now_max,)).rowcount
+            conn.commit()
+            return c1 + c2
+        finally:
+            conn.close()
+
 
 
