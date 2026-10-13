@@ -302,10 +302,25 @@ def toggle_bookmark(rec_id: str) -> bool:
     ensure_schema()
     _prime_cache()
 
+    try:
+        from analytics.trade_ideas import flush_telemetry
+        flush_telemetry(rec_id=rec_id, timeout=0.5)
+    except Exception:
+        pass
+
     with _WRITE_LOCK, _get_write_conn() as conn:
         row = conn.execute("SELECT is_bookmarked FROM recommendation_records WHERE rec_id = ?", (rec_id,)).fetchone()
         if not row:
-            return False
+            symbol_guess = rec_id.split("_")[0] if "_" in rec_id else "NIFTY"
+            now_ts = _now_ist_str()
+            conn.execute(
+                "INSERT INTO recommendation_records (rec_id, symbol, is_bookmarked, bookmarked_at) VALUES (?, ?, 1, ?)",
+                (rec_id, symbol_guess, now_ts)
+            )
+            conn.commit()
+            with _BOOKMARK_CACHE_LOCK:
+                _BOOKMARK_CACHE[rec_id] = {"rec_id": rec_id, "symbol": symbol_guess, "is_bookmarked": 1, "bookmarked_at": now_ts}
+            return True
 
         curr_bm = int(row["is_bookmarked"])
         new_bm = 0 if curr_bm else 1

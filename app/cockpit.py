@@ -3041,9 +3041,13 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     now_t = time.time()
     cached = _REC_BATCH_CACHE.get(symbol)
     curr_bias_val = float(bias_score) if bias_score is not None else 0.0
+    step = 50.0 if "NIFTY" in symbol and "BANK" not in symbol else 100.0
+    spot_thresh = step * 0.15  # 7.5 pts on NIFTY, 15.0 pts on BANKNIFTY
     if cached is not None:
         c_ts, c_spot, c_bias, c_batch = cached
-        if (now_t - c_ts < 3.0) and abs(c_spot - spot) < 1.0 and abs(c_bias - curr_bias_val) < 0.01:
+        # Debounce: if under 2.5s, reuse cache unconditionally to eliminate micro-tick thrash;
+        # if under 6.0s, reuse if spot move is within strike threshold and bias is stable
+        if (now_t - c_ts < 2.5) or ((now_t - c_ts < 6.0) and abs(c_spot - spot) < spot_thresh and abs(c_bias - curr_bias_val) < 0.05):
             return c_batch
 
     batch = generate_trade_recommendations(
@@ -3397,6 +3401,13 @@ def _fragment_cockpit_bookmarked_live(symbol: str, window: str) -> None:
 @st.fragment
 def _fragment_cockpit_bookmarked_static(symbol: str, window: str) -> None:
     _render_cockpit_bookmarked_recommendations(symbol, window)
+
+
+@st.fragment
+def _tab_target_engine(symbol: str, window: str) -> None:
+    """Tab 1: Target Engine — Scenario & Repricing Suite."""
+    data, _ = _load_data(symbol, window)
+    render_target_engine_tab(symbol, window, data=data)
 
 
 def _tab_trade_recommendations(symbol: str, window: str) -> None:
@@ -4938,6 +4949,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
     st.markdown('</div></div>', unsafe_allow_html=True)
 
 
+@st.fragment
 def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     """OrderFlow Sentinel v2.0 — Screen 2 Live Tape & Microstructure with Decoupled Independent Cards."""
     data, _ = _load_data(symbol, window)
@@ -5056,6 +5068,7 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
 
 
 
+@st.fragment
 def _tab_signal_efficiency(symbol: str) -> None:
     """Dedicated Tab: OrderFlow Sentinel Signal Efficiency Analytics & Backtesting."""
     _render_signal_efficiency_section(symbol)
@@ -6489,6 +6502,7 @@ def _fragment_journal_positions_static(symbol: str) -> None:
     _render_journal_open_positions_table(symbol)
 
 
+@st.fragment
 def _tab_journal(symbol: str) -> None:
     # --- Open positions ---
     open_trades = journal_store.list_open_trades(symbol=symbol if symbol != "ALL" else None)
@@ -6855,6 +6869,7 @@ def _fragment_ops_static(symbol: str) -> None:
 # Tab 6: Ops & Calendar (Screen 6)
 # ---------------------------------------------------------------------------
 
+@st.fragment
 def _tab_ops_and_calendar(symbol: str, window: str) -> None:
     """Screen 6: Event Calendar, Replay & System Health."""
     st.markdown('<div class="ck">', unsafe_allow_html=True)
@@ -7714,7 +7729,7 @@ def main() -> None:
         _tab_cockpit(symbol, window)
 
     with tabs[1]:
-        render_target_engine_tab(symbol, window)
+        _tab_target_engine(symbol, window)
 
     with tabs[2]:
         _tab_trade_recommendations(symbol, window)

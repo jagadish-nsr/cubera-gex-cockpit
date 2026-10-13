@@ -6,23 +6,24 @@ ranked trade candidates, explain drawers, and what-if repricing calculator.
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-import importlib
-import target_engine.selector as te_selector_mod
-importlib.reload(te_selector_mod)
-import target_engine.runner as te_runner_mod
-importlib.reload(te_runner_mod)
-run_target_engine = te_runner_mod.run_target_engine
-
+from target_engine.runner import run_target_engine
 from app.data_access import load_dashboard
 from target_engine.pricer import reprice, greek_attribution, greeks, price
 from target_engine.time_utils import calculate_fractional_t, calculate_horizon_t, to_ist
 
+# In-memory TTL cache for runner results: (symbol, window, horizon, mode) -> (ts, spot, result)
+_TE_RUNNER_CACHE: dict[tuple, tuple[float, float, Any]] = {}
 
-def render_target_engine_tab(symbol: str, window: str):
+
+@st.fragment
+def render_target_engine_tab(symbol: str, window: str, data: Any = None):
     """Main entrypoint for rendering the Target Engine tab in the Cockpit."""
     st.markdown("""
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -62,20 +63,30 @@ def render_target_engine_tab(symbol: str, window: str):
     with col_c3:
         st.caption("Auto-refreshes with live chain updates. All numbers explainable via the Diagnostics drawer below.")
 
-    # 2. Fetch live dashboard snapshot
-    with st.spinner("Executing Target Engine pipeline..."):
+    # 2. Fetch live dashboard snapshot (fast Stale-While-Revalidate without blocking spinners)
+    dash = data
+    if dash is None:
         try:
-            dash = load_dashboard(window=window, symbol=symbol, live_source="dhan")
-        except Exception as exc:
-            st.error(f"Failed to fetch market data: {exc}")
-            return
+            from app.cockpit import _load_data
+            dash, _ = _load_data(symbol, window)
+        except Exception:
+            dash = load_dashboard(window=window, symbol=symbol)
 
-    if not dash or not dash.levels:
+    if not dash or not getattr(dash, "levels", None):
         st.warning("No market data available for Target Engine.")
         return
 
-    # 3. Execute runner pipeline
-    res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_opt, persist=False)
+    # 3. Execute runner pipeline with 8s TTL cache for instant What-If slider adjustments
+    now_t = time.time()
+    spot_val = float(dash.levels.spot)
+    cache_key = (symbol, window, horizon_opt, model_mode)
+    cached_entry = _TE_RUNNER_CACHE.get(cache_key)
+
+    if cached_entry and (now_t - cached_entry[0] < 8.0) and abs(cached_entry[1] - spot_val) < 2.0:
+        res = cached_entry[2]
+    else:
+        res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_opt, persist=False)
+        _TE_RUNNER_CACHE[cache_key] = (now_t, spot_val, res)
     sc_set = res.scenario_set
     targets = res.underlying_targets
     iv_fcs = res.iv_forecasts
@@ -276,17 +287,17 @@ def render_target_engine_tab(symbol: str, window: str):
         new_iv = max(0.04, base_iv + (iv_shift_pts / 100.0))
 
         p_curr = price(base_fut, sel_strike, T_now, base_iv, 0.065, sel_type)
-        p_re为其 = price(new_fut, sel_strike, T_future, new_iv, 0.065, sel_type)
+        p_repriced = price(new_fut, sel_strike, T_future, new_iv, 0.065, sel_type)
         attr = greek_attribution(base_fut, new_fut, base_iv, new_iv, T_now, T_future, sel_strike, 0.065, sel_type)
 
         wi_res1, wi_res2, wi_res3, wi_res4 = st.columns(4)
         with wi_res1:
             st.metric("Current Premium", f"₹{p_curr:.2f}")
         with wi_res2:
-            st.metric("Repriced Premium", f"₹{p_re为其:.2f}", delta=f"{p_re为其 - p_curr:+.2f} pts")
+            st.metric("Repriced Premium", f"₹{p_repriced:.2f}", delta=f"{p_repriced - p_curr:+.2f} pts")
         with wi_res3:
             lot_sz = 65 if "NIFTY" in symbol else 30
-            st.metric("PnL per Lot", f"₹{(p_re为其 - p_curr) * lot_sz:+,.0f}")
+            st.metric("PnL per Lot", f"₹{(p_repriced - p_curr) * lot_sz:+,.0f}")
         with wi_res4:
             st.metric("Greek Residual", f"{attr.residual:+.2f} pts", help="Approximation error from non-linearities/gamma/vanna")
 

@@ -22,6 +22,7 @@ Preserves pure analytical and recommendation logic, unit-testable offline withou
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -31,6 +32,23 @@ import config
 
 # Deduplication cache for WebSocket option strike subscriptions: (symbol, strike)
 _SUBSCRIBED_REC_STRIKES: set[tuple[str, float]] = set()
+
+# Background persistence executor to avoid blocking Streamlit rendering loop with SQLite writes
+_BG_PERSIST_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="rec_persist")
+_PENDING_PERSIST_FUTURES: list[concurrent.futures.Future] = []
+_MEM_SCORE_HISTORY: dict[str, list[dict]] = {}
+
+
+def flush_telemetry(rec_id: str | None = None, timeout: float = 1.0) -> None:
+    """Flush pending asynchronous SQLite persistence writes for recommendations and telemetry."""
+    global _PENDING_PERSIST_FUTURES
+    pending = [f for f in _PENDING_PERSIST_FUTURES if not f.done()]
+    if pending:
+        try:
+            concurrent.futures.wait(pending, timeout=timeout)
+        except Exception:
+            pass
+    _PENDING_PERSIST_FUTURES = [f for f in _PENDING_PERSIST_FUTURES if not f.done()]
 
 
 
@@ -238,13 +256,18 @@ def _reprice_trade_idea_targets(
         tgt2_calc = safe_ltp * 1.70
         sl_calc = safe_ltp * 0.72
 
-    # Enforce strict monotonicity and minimum buffers:
-    tgt1_opt = max(round(tgt1_calc, 1), round(safe_ltp * 1.15, 1))
-    tgt2_opt = max(round(tgt2_calc, 1), round(tgt1_opt * 1.15, 1), round(safe_ltp * 1.35, 1))
-    sl_opt = min(round(sl_calc, 1), round(safe_ltp * 0.85, 1))
-    sl_opt = max(0.5, sl_opt)
-    if sl_opt >= safe_ltp:
-        sl_opt = max(0.5, round(safe_ltp * 0.75, 1))
+    # Enforce strict monotonicity and minimum buffers against actual entry LTP:
+    actual_ltp = max(0.05, float(current_ltp))
+    tgt1_opt = max(round(tgt1_calc, 1), round(safe_ltp * 1.15, 1), round(actual_ltp * 1.15, 2))
+    tgt2_opt = max(round(tgt2_calc, 1), round(tgt1_opt * 1.15, 1), round(safe_ltp * 1.35, 1), round(actual_ltp * 1.35, 2))
+    sl_opt = min(round(sl_calc, 1), round(safe_ltp * 0.85, 1), round(actual_ltp * 0.85, 2))
+    if sl_opt >= actual_ltp:
+        sl_opt = round(actual_ltp * 0.72, 2)
+    sl_opt = max(0.05, min(sl_opt, round(actual_ltp - 0.05, 2) if actual_ltp > 0.15 else round(actual_ltp * 0.70, 2)))
+    if tgt1_opt <= actual_ltp:
+        tgt1_opt = round(actual_ltp * 1.25, 2)
+    if tgt2_opt <= tgt1_opt:
+        tgt2_opt = round(tgt1_opt * 1.25, 2)
 
     # 6. Touch Probabilities via Reflection Principle
     try:
@@ -1942,6 +1965,7 @@ def generate_trade_recommendations(
     from datetime import datetime, timezone, timedelta
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
 
+    persist_items: list[tuple[dict, dict, dict]] = []
     for t in ce_recs + pe_recs:
         t.position_size = compute_position_size(t, account_capital=500_000.0, risk_pct=1.5, lot_size=lot_size)
         t.rec_id = f"{symbol}_{t.side}_{int(t.strike)}_{t.play_badge}"
@@ -1978,21 +2002,36 @@ def generate_trade_recommendations(
         if rec_store:
             try:
                 t.is_bookmarked = rec_store.is_bookmarked(t.rec_id)
-                rec_store.append_score_history(
-                    rec_id=t.rec_id,
-                    score=t.quality_score,
-                    current_spot=spot,
-                    current_ltp=t.current_ltp,
-                    reason=t.score_reason,
-                    factors=factors,
-                )
-                t.score_history = rec_store.get_score_history(t.rec_id, limit=10)
-                if len(t.score_history) >= 2:
-                    t.score_delta = t.score_history[0].get("score_delta", t.score_history[0].get("score", t.quality_score) - t.score_history[1].get("score", t.quality_score))
-                elif len(t.score_history) == 1:
-                    t.score_delta = t.score_history[0].get("score_delta", 0)
 
-                # Persist recommendation
+                # In-memory score evolution (instant 0ms without blocking SQLite queries)
+                hist = _MEM_SCORE_HISTORY.get(t.rec_id)
+                if not hist:
+                    try:
+                        db_hist = rec_store.get_score_history(t.rec_id, limit=5)
+                        hist = list(db_hist) if db_hist else []
+                    except Exception:
+                        hist = []
+                    _MEM_SCORE_HISTORY[t.rec_id] = hist
+
+                prev_score = hist[0].get("score", t.quality_score) if hist else t.quality_score
+                delta = t.quality_score - prev_score
+                t.score_delta = delta
+
+                if not hist or hist[0].get("score") != t.quality_score or abs(float(hist[0].get("current_spot") or 0) - spot) > 1.0:
+                    entry = {
+                        "score": t.quality_score,
+                        "score_delta": delta,
+                        "current_spot": spot,
+                        "current_ltp": t.current_ltp,
+                        "reason": t.score_reason,
+                        "factors_json": json.dumps(factors),
+                    }
+                    hist.insert(0, entry)
+                    _MEM_SCORE_HISTORY[t.rec_id] = hist[:10]
+
+                t.score_history = _MEM_SCORE_HISTORY[t.rec_id]
+
+                # Prepare persistence payloads for background execution
                 idea_payload = {
                     "rec_id": t.rec_id,
                     "symbol": t.symbol,
@@ -2019,9 +2058,6 @@ def generate_trade_recommendations(
                     "catalyst_tags": t.catalyst_tags,
                     "is_bookmarked": 1 if t.is_bookmarked else 0,
                 }
-                saved_trig = rec_store.save_or_update_recommendation(idea_payload)
-                if saved_trig:
-                    t.triggered_at = saved_trig
 
                 # Log point-in-time ML telemetry features
                 vanna_val = getattr(data, "vanna_now", None) if data else None
@@ -2066,9 +2102,38 @@ def generate_trade_recommendations(
                     "target_distance_pts": abs(t.target_1_spot - spot),
                     "stop_distance_pts": abs(t.spot_invalidation - spot),
                 }
-                rec_store.log_ml_features(ml_feat)
-            except Exception as e:
+
+                hist_item = {
+                    "rec_id": t.rec_id,
+                    "score": t.quality_score,
+                    "current_spot": spot,
+                    "current_ltp": t.current_ltp,
+                    "reason": t.score_reason,
+                    "factors": factors,
+                }
+
+                persist_items.append((idea_payload, ml_feat, hist_item))
+            except Exception:
                 pass
+
+    # Asynchronous non-blocking background flush of SQLite persistence and ML telemetry
+    if persist_items and rec_store:
+        def _persist_worker(items=persist_items, store=rec_store):
+            for payload, mlf, h_item in items:
+                try:
+                    store.save_or_update_recommendation(payload)
+                    if mlf:
+                        store.log_ml_features(mlf)
+                    if h_item:
+                        store.append_score_history(**h_item)
+                except Exception:
+                    pass
+
+        try:
+            fut = _BG_PERSIST_EXECUTOR.submit(_persist_worker)
+            _PENDING_PERSIST_FUTURES.append(fut)
+        except Exception:
+            pass
 
     # 5. Sort candidates descending by quality score and Net EV points
     all_ce_candidates = sorted(ce_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
