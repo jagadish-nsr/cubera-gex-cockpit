@@ -28,8 +28,19 @@ IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 def _format_time_ist(ts_str: str) -> str:
     """Format timestamp string into readable IST time (HH:MM:SS AM/PM IST)."""
     try:
-        from commentary.models import to_ist
-        return to_ist(ts_str).strftime("%I:%M:%S %p IST")
+        try:
+            from commentary.models import to_ist
+            dt_ist = to_ist(ts_str)
+        except Exception:
+            cleaned = str(ts_str).replace("Z", "+00:00")
+            dt_obj = dt.datetime.fromisoformat(cleaned)
+            if dt_obj.tzinfo is not None:
+                dt_ist = dt_obj.astimezone(IST)
+            elif dt_obj.hour < 7:
+                dt_ist = dt_obj.replace(tzinfo=dt.timezone.utc).astimezone(IST)
+            else:
+                dt_ist = dt_obj.replace(tzinfo=IST)
+        return dt_ist.strftime("%I:%M:%S %p IST")
     except Exception:
         return str(ts_str)
 
@@ -43,8 +54,10 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
     # 0. Sync fresh commentary storage definitions and flush stale cache
     try:
         import importlib
+        import commentary.models as comm_models
         import commentary.storage.db as comm_db
         import commentary.engine as comm_eng
+        importlib.reload(comm_models)
         importlib.reload(comm_db)
         importlib.reload(comm_eng)
         comm_db.clear_commentary_cache()

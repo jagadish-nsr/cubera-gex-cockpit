@@ -12,6 +12,25 @@ from pathlib import Path
 from typing import Any
 
 from commentary.models import CommentaryEntry, SuggestionBite, Event
+try:
+    from commentary.models import to_ist
+except Exception:
+    def to_ist(ts: Any) -> datetime:
+        if ts is None:
+            return datetime.now(IST)
+        if isinstance(ts, str):
+            try:
+                cleaned = ts.replace("Z", "+00:00")
+                dt = datetime.fromisoformat(cleaned)
+            except Exception:
+                return datetime.now(IST)
+        else:
+            dt = ts
+        if dt.tzinfo is not None:
+            return dt.astimezone(IST)
+        if dt.hour < 7:
+            return dt.replace(tzinfo=timezone.utc).astimezone(IST)
+        return dt.replace(tzinfo=IST)
 
 log = logging.getLogger(__name__)
 

@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 from typing import Any
 
 from commentary.config_loader import load_commentary_config
 from commentary.models import CommentaryEntry, Event, StoryState
+try:
+    from commentary.models import to_ist
+except Exception:
+    _IST = timezone(timedelta(hours=5, minutes=30))
+    def to_ist(ts: Any) -> datetime:
+        if ts is None: return datetime.now(_IST)
+        if isinstance(ts, str):
+            try: dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except Exception: return datetime.now(_IST)
+        else: dt = ts
+        if dt.tzinfo is not None: return dt.astimezone(_IST)
+        if dt.hour < 7: return dt.replace(tzinfo=timezone.utc).astimezone(_IST)
+        return dt.replace(tzinfo=_IST)
 
 
 class StoryStateManager:
