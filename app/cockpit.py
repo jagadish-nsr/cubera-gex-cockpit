@@ -4249,6 +4249,20 @@ def _build_tv_lightweight_chart_html(
   .tv-zoom-btn:active {{
     transform: scale(0.95);
   }}
+  #tv_chart_wrapper:fullscreen {{
+    width: 100vw !important;
+    height: 100vh !important;
+    background: #090d16 !important;
+    padding: 12px 18px !important;
+    box-sizing: border-box !important;
+  }}
+  #tv_chart_wrapper:-webkit-full-screen {{
+    width: 100vw !important;
+    height: 100vh !important;
+    background: #090d16 !important;
+    padding: 12px 18px !important;
+    box-sizing: border-box !important;
+  }}
 </style>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
@@ -4273,6 +4287,7 @@ if (typeof LightweightCharts === 'undefined') {{
     <button class="tv-zoom-btn" id="btn_zoom_price" title="Reset / Auto Price Scale (Vertical)">↕ Price</button>
     <button class="tv-zoom-btn" id="btn_zoom_time" title="Fit Content (Horizontal)">↔ Time</button>
     <button class="tv-zoom-btn" id="btn_zoom_reset" title="Reset Both Axes">↺ Reset</button>
+    <button class="tv-zoom-btn" id="btn_fullscreen" title="Maximize Fullscreen (Native Monitor)">⛶ Maximize</button>
   </div>
   <div id="tv_chart_container"></div>
 </div>
@@ -4582,6 +4597,48 @@ if (typeof LightweightCharts === 'undefined') {{
     chart.timeScale().fitContent();
   }});
 
+  const btnFullscreen = document.getElementById('btn_fullscreen');
+  if (btnFullscreen) {{
+    btnFullscreen.addEventListener('click', (e) => {{
+      e.preventDefault();
+      const wrap = document.getElementById('tv_chart_wrapper');
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {{
+        if (wrap.requestFullscreen) {{
+          wrap.requestFullscreen();
+        }} else if (wrap.webkitRequestFullscreen) {{
+          wrap.webkitRequestFullscreen();
+        }}
+      }} else {{
+        if (document.exitFullscreen) {{
+          document.exitFullscreen();
+        }} else if (document.webkitExitFullscreen) {{
+          document.webkitExitFullscreen();
+        }}
+      }}
+    }});
+
+    function handleFsChange() {{
+      const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      if (isFs) {{
+        chart.applyOptions({{
+          width: window.innerWidth - 36,
+          height: window.innerHeight - 56,
+        }});
+        btnFullscreen.textContent = '✖ Exit';
+      }} else {{
+        chart.applyOptions({{
+          width: container.clientWidth || 1050,
+          height: Math.max(280, {height} - 4),
+        }});
+        btnFullscreen.textContent = '⛶ Maximize';
+      }}
+      chart.timeScale().fitContent();
+    }}
+
+    document.addEventListener('fullscreenchange', handleFsChange);
+    document.addEventListener('webkitfullscreenchange', handleFsChange);
+  }}
+
   container.addEventListener('wheel', (e) => {{
     if (e.shiftKey) {{
       e.preventDefault();
@@ -4646,23 +4703,41 @@ def _render_profile_content(
 
     prof_key = profile_name.split()[-1].lower()
 
-    c_info, c_lb, c_st, c_eng, c_ref = st.columns([3, 1, 1, 1, 1])
+    c_info, c_lb, c_ht, c_st, c_eng, c_pop, c_ref = st.columns([2.8, 1.1, 1.2, 1.1, 1.2, 0.9, 0.7])
     with c_info:
         st.markdown(
-            f"<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:4px'>"
+            f"<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:6px'>"
             f"<b>{profile_name}:</b> {desc_map.get(profile_name, '')}"
             f"</div>",
             unsafe_allow_html=True,
         )
     with c_lb:
         lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_{prof_key}_{symbol}", index=1, label_visibility="collapsed")
+    with c_ht:
+        ht_val = st.selectbox("Height", ["Expanded (620px)", "Deep (820px)", "Compact (460px)"], key=f"ht_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
     with c_st:
         style = st.selectbox("Style", ["Candlesticks", "Area / Line"], key=f"st_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
     with c_eng:
         engine = st.selectbox("Engine", ["⚡ TradingView (Canvas)", "📊 Altair (Analytic)"], key=f"eng_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
+    with c_pop:
+        st.markdown(
+            f'<a href="/?view=orderflow_chart&symbol={symbol}&timeframe={timeframe}&profile={prof_key}" target="_blank" '
+            f'title="Open in dedicated new window" '
+            f'style="display:flex;align-items:center;justify-content:center;height:38px;background:var(--surface-2);'
+            f'color:var(--spark);border:1px solid var(--line);border-radius:6px;text-decoration:none;font-size:0.75rem;'
+            f'font-weight:700;white-space:nowrap;padding:0 6px;">↗ Pop Out</a>',
+            unsafe_allow_html=True,
+        )
     with c_ref:
-        if st.button("🔄 Refresh", key=f"btn_{prof_key}_{symbol}", use_container_width=True):
+        if st.button("🔄", key=f"btn_{prof_key}_{symbol}", help="Refresh chart fragment", use_container_width=True):
             st.rerun(scope="fragment")
+
+    height_map = {
+        "Expanded (620px)": 620,
+        "Deep (820px)": 820,
+        "Compact (460px)": 460,
+    }
+    chart_h = height_map.get(ht_val, 620)
 
     target_limit = lookback_map.get(lb, 60)
     bars_to_render = bars[-target_limit:] if bars else []
@@ -4677,7 +4752,7 @@ def _render_profile_content(
             profile=profile_name,
             chart_style=style,
             symbol=symbol,
-            height=390,
+            height=chart_h,
         )
     else:
         show_cvd = profile_name in ("⚡ Full OrderFlow", "🌊 CVD Focus")
@@ -4699,7 +4774,7 @@ def _render_profile_content(
             show_walls=show_walls,
             show_ema=show_ema,
             chart_style=style,
-            main_height=320,
+            main_height=max(320, chart_h - 100),
         )
 
     legend_items = [
@@ -4827,7 +4902,12 @@ def _fragment_sentinel_chart_card(
 
     st.markdown(
         f'<div class="ck card"><div class="card-body">'
-        f'<div class="eyebrow">Candlestick Tape & OrderFlow CVD{date_badge}</div>',
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
+        f'<div class="eyebrow" style="margin:0">Candlestick Tape & OrderFlow CVD{date_badge}</div>'
+        f'<a href="/?view=orderflow_chart&symbol={symbol}&timeframe={timeframe}" target="_blank" '
+        f'style="font-size:0.75rem;color:var(--spark);font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:4px">'
+        f'↗ Open Full-Window Canvas</a>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -7485,15 +7565,73 @@ def _render_sidebar_token_manager() -> None:
         log.warning("Could not render sidebar Dhan token manager: %s", e)
 
 
+def _render_standalone_orderflow_page() -> None:
+    """Dedicated full-window Standalone OrderFlow & CVD Canvas."""
+    symbol = (st.query_params.get("symbol") or "NIFTY").upper()
+    if symbol not in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        symbol = "NIFTY"
+    timeframe = st.query_params.get("timeframe") or "1m"
+
+    iq = get_instant_quote(symbol) or {}
+    spot = float(iq.get("spot", 0.0) or 22500.0)
+    fut_px = float(iq.get("fut_px", 0.0) or spot)
+
+    data, _ = _load_data(symbol, window="0dte_to_next_monthly")
+    default_cw = 22600.0 if symbol == "NIFTY" else (50000.0 if symbol == "BANKNIFTY" else 75000.0)
+    default_pw = 22500.0 if symbol == "NIFTY" else (49500.0 if symbol == "BANKNIFTY" else 74500.0)
+    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
+    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
+    gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
+    inst_id = f"{symbol}-FUT"
+    ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
+
+    # Ensure live intraday flow is synced
+    sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+
+    # Top Navigation Banner
+    col_sym, col_tf, col_nav = st.columns([4, 2, 2])
+    with col_sym:
+        sym_options = ["NIFTY", "BANKNIFTY", "SENSEX"]
+        s_idx = sym_options.index(symbol) if symbol in sym_options else 0
+        new_sym = st.selectbox("Symbol:", sym_options, index=s_idx, key="standalone_sym_select", horizontal=True)
+        if new_sym != symbol:
+            st.query_params["symbol"] = new_sym
+            st.rerun()
+    with col_tf:
+        tf_options = ["1m", "3m", "5m", "15m"]
+        t_idx = tf_options.index(timeframe) if timeframe in tf_options else 0
+        new_tf = st.selectbox("Timeframe:", tf_options, index=t_idx, key="standalone_tf_select", horizontal=True)
+        if new_tf != timeframe:
+            st.query_params["timeframe"] = new_tf
+            st.rerun()
+    with col_nav:
+        st.markdown(
+            f'<div style="text-align:right;padding-top:18px">'
+            f'<a href="/?symbol={symbol}" target="_self" '
+            f'style="background:var(--spark);color:#fff;padding:8px 16px;border-radius:6px;font-size:0.80rem;font-weight:700;text-decoration:none">'
+            f'← Return to Cockpit</a></div>',
+            unsafe_allow_html=True,
+        )
+
+    # Microstructure KPI summary strip
+    _fragment_sentinel_kpi_strip(symbol, inst_id, timeframe, ref_px, cw, pw)
+
+    # Standalone Canvas card
+    _fragment_sentinel_chart_card(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip, timeframe=timeframe)
+
+
 # ---------------------------------------------------------------------------
 # Main app layout
 # ---------------------------------------------------------------------------
 
 def main() -> None:
 
-    # 0. Check if a documentation page is requested via URL query params
+    # 0. Check if a standalone view or documentation page is requested via URL query params
     view_param = st.query_params.get("view")
     if view_param:
+        if view_param in ("orderflow_chart", "sentinel_chart"):
+            _render_standalone_orderflow_page()
+            return
         _render_documentation_page(view_param)
         return
 
