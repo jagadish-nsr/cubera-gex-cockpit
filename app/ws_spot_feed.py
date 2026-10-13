@@ -333,6 +333,13 @@ def _run(symbols: tuple[str, ...]) -> None:
                     except Exception:
                         pass
 
+        import config
+        if not config.is_market_open():
+            _STATUS["ws_connected"] = False
+            _STATUS["ws_error"] = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+            _STOP.wait(15)
+            continue
+
         try:
             from data.dhan import _secret
             token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
@@ -380,6 +387,9 @@ def _run(symbols: tuple[str, ...]) -> None:
 
         try:
             while not _STOP.is_set():
+                if not config.is_market_open():
+                    _STATUS["ws_error"] = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+                    break
                 # Process dynamic option subscriptions queued from the UI / analytics
                 if _PENDING_OPT_SUBS:
                     with _OPT_MAP_LOCK:

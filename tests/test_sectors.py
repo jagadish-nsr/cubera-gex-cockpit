@@ -138,6 +138,8 @@ def test_snap_never_blocks_the_caller(monkeypatch):
         return [{"label": "A", "pct": 1.0, "last": 1, "group": "sector", "weight": 30.0}]
 
     monkeypatch.setattr(sec, "fetch_sectors_nse", _slow)
+    import config
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: True)
     t0 = time.time()
     assert sec.fetch_sector_snap() is None            # nothing cached yet, and it did NOT wait
     assert (time.time() - t0) < 0.15

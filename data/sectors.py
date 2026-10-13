@@ -188,6 +188,15 @@ def _pull(prefer_dhan: bool = False, session=None) -> bool:
             return False
         rows.sort(key=lambda r: (r["pct"] is None, -(r["pct"] or 0.0)))   # leaders first
         _cache.update(at=time.time(), rows=rows, src=src)
+        try:
+            from pathlib import Path
+            import json
+            cache_file = Path("data/.cache/last_sector_snap.json")
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump({"rows": rows, "source": src}, f)
+        except Exception:
+            pass
         return True
     finally:
         _refreshing = False
@@ -204,6 +213,25 @@ def fetch_sector_snap(prefer_dhan: bool = False, session=None, blocking: bool = 
 
     ``blocking=True`` forces a synchronous pull (tests / scripts)."""
     global _refreshing
+    import config
+    # Off market hours: do not make API calls for sector snapshot unless blocking=True (tests/scripts)
+    if not config.is_market_open() and not blocking:
+        if _cache["rows"] is None:
+            from pathlib import Path
+            import json
+            cache_file = Path("data/.cache/last_sector_snap.json")
+            if cache_file.exists():
+                try:
+                    with open(cache_file, "r") as f:
+                        cached_data = json.load(f)
+                    if cached_data and "rows" in cached_data:
+                        _cache.update(at=time.time(), rows=cached_data["rows"], src=cached_data.get("source", "cached"))
+                except Exception:
+                    pass
+        if _cache["rows"] is None:
+            return None
+        return {"rows": _cache["rows"], "source": _cache["src"], "weights_as_of": WEIGHTS_AS_OF}
+
     stale = (time.time() - _cache["at"]) >= _TTL_S
     if blocking:
         _pull(prefer_dhan, session)

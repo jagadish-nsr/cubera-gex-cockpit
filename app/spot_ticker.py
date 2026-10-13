@@ -244,10 +244,8 @@ def _loop(symbol: str, interval_s: float) -> None:
                 phase_code = "OFF_HOURS"
 
             if phase_code != "PRE_MARKET_DISCOVERY":
-                rec = _STORE.get(symbol)
-                if rec and rec.get("ohlc"):
-                    time.sleep(60.0)
-                    continue
+                time.sleep(30.0)
+                continue
             else:
                 interval_s = 3.0  # Adaptive 3s retry during pre-open discovery window
 

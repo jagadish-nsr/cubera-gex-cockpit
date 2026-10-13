@@ -163,11 +163,11 @@ CASH_CLOSE_MIN = 15 * 60 + 30        # 15:30 continuous cash (CAS auction 15:15â
 RISK_FREE_FALLBACK = None
 
 
-def is_market_open(now: datetime | None = None, include_fno_extended: bool = False) -> bool:
+def is_market_open(now: datetime | None = None, include_fno_extended: bool = True) -> bool:
     """Return True if currently during live Indian market trading hours.
 
-    If include_fno_extended=True, trading extends until 15:40 IST (derivatives closing window).
-    Otherwise returns True for regular continuous cash trading (09:15 to 15:30 IST).
+    By default, include_fno_extended=True enforces FnO trading hours (09:15 AM to 03:40 PM IST).
+    If include_fno_extended=False, checks continuous cash trading (09:15 AM to 03:30 PM IST).
     """
     from datetime import datetime, timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))

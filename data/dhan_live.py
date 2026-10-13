@@ -138,12 +138,33 @@ def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
 
 def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20) -> list[str]:
     """Upcoming expiries (YYYY-MM-DD, ascending) for the index, or [] on any soft failure."""
+    import config
+    import json
+    from pathlib import Path
+    cache_exps = Path(f"data/.cache/last_exps_{symbol.upper()}.json")
+    if not config.is_market_open() and cache_exps.exists():
+        try:
+            with open(cache_exps, "r") as f:
+                cached = json.load(f)
+            if cached and isinstance(cached, list):
+                return cached
+        except Exception:
+            pass
+
     seg, scrip = _seg_scrip(symbol)
     try:
         r = _post("/optionchain/expirylist", {"UnderlyingScrip": scrip, "UnderlyingSeg": seg}, timeout)
         if not r.ok:
             return []
-        return sorted((r.json() or {}).get("data") or [])
+        res = sorted((r.json() or {}).get("data") or [])
+        if res:
+            try:
+                cache_exps.parent.mkdir(parents=True, exist_ok=True)
+                with open(cache_exps, "w") as f:
+                    json.dump(res, f)
+            except Exception:
+                pass
+        return res
     except Exception:  # noqa: BLE001
         return []
 
@@ -174,6 +195,19 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
     collapses onto the last price AFTER the session, which is why a % change derived from it is
     only trustworthy while ``as_of`` is today.
     """
+    import config
+    import json
+    from pathlib import Path
+    cache_ohlc = Path(f"data/.cache/last_ohlc_{symbol.upper()}.json")
+    if not config.is_market_open() and cache_ohlc.exists():
+        try:
+            with open(cache_ohlc, "r") as f:
+                cached = json.load(f)
+            if cached and isinstance(cached, dict):
+                return cached
+        except Exception:
+            pass
+
     seg = IDX_SEG          # index spot quotes (NIFTY 13, BANKNIFTY 25, SENSEX 51) are on IDX_I
     scrip = _SCRIP.get(symbol.upper(), NIFTY_SCRIP)
     try:
@@ -195,6 +229,13 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
         ts = _trade_time(cell)
         out["as_of"] = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else None
         out["vix"] = _vix_from_cell(seg_d.get(str(DHAN_VIX_ID)))          # India VIX, same quote
+        if out and out.get("ltp"):
+            try:
+                cache_ohlc.parent.mkdir(parents=True, exist_ok=True)
+                with open(cache_ohlc, "w") as f:
+                    json.dump(out, f)
+            except Exception:
+                pass
         return out
     except Exception:  # noqa: BLE001
         return None
@@ -477,6 +518,19 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
     otherwise starve a 10s beat to ~20s.
 
     RAISES on no usable data so ``data_access`` falls back to NSE."""
+    import config
+    import json
+    from pathlib import Path
+    cache_file = Path(f"data/.cache/last_chain_{symbol.upper()}.json")
+    if not config.is_market_open() and cache_file.exists():
+        try:
+            with open(cache_file, "r") as f:
+                cached = json.load(f)
+            if cached and "records" in cached:
+                return cached
+        except Exception:
+            pass
+
     seg, scrip = _seg_scrip(symbol)
     exps = expiries or _window_expiries(symbol, max_expiries)
     if not exps:
@@ -499,7 +553,14 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
             errors.append(f"{e}: {type(ex).__name__} {str(ex)[:120]}")
     if not merged or spot is None:
         raise RuntimeError(f"Dhan chain produced no data. errors: {errors or 'empty'}")
-    return {"records": {"data": merged, "underlyingValue": spot}}
+    res = {"records": {"data": merged, "underlyingValue": spot}}
+    try:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(res, f)
+    except Exception:
+        pass
+    return res
 
 
 def _window_expiries(symbol: str, max_expiries: int | None) -> list[str]:
