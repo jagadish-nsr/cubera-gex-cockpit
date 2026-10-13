@@ -13,7 +13,12 @@ from commentary.storage.db import (
 from commentary.detectors.pinned import _PINNED_COMMENTARY_CACHE
 
 
-def test_storage_schema_and_save_entry(tmp_path):
+def test_storage_schema_and_save_entry(tmp_path, monkeypatch):
+    test_db = tmp_path / "commentary_test.db"
+    import commentary.storage.db as comm_db
+    monkeypatch.setattr(comm_db, "_DB_PATH", test_db)
+    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", [])
+    monkeypatch.setattr(comm_db, "_CACHE_INITIALIZED", False)
     ensure_commentary_schema()
     now = dt.datetime.now(dt.timezone.utc)
 

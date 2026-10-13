@@ -62,6 +62,7 @@ def ensure_commentary_schema() -> None:
             verified INTEGER DEFAULT 1,
             bites_json TEXT NOT NULL,
             tags_json TEXT NOT NULL,
+            facts_json TEXT DEFAULT '{}',
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
 
@@ -118,6 +119,10 @@ def ensure_commentary_schema() -> None:
             PRIMARY KEY(session_date, symbol)
         );
         """)
+        try:
+            conn.execute("ALTER TABLE commentary_entries ADD COLUMN facts_json TEXT DEFAULT '{}'")
+        except Exception:
+            pass
 
 
 def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None:
@@ -140,13 +145,14 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
         }
         for b in entry.bites
     ]
+    facts_dict = getattr(entry, "facts", {}) or {}
 
     with _WRITE_LOCK, _get_write_conn() as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO commentary_entries
-            (entry_id, ts, symbol, phase, headline, body, event_ids_json, verified, bites_json, tags_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (entry_id, ts, symbol, phase, headline, body, event_ids_json, verified, bites_json, tags_json, facts_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 entry.id,
@@ -159,6 +165,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
                 1 if entry.verified else 0,
                 json.dumps(bites_data),
                 json.dumps(entry.tags),
+                json.dumps(facts_dict),
             ),
         )
 
@@ -202,6 +209,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
         "verified": entry.verified,
         "bites": bites_data,
         "tags": entry.tags,
+        "facts": facts_dict,
     }
     with _CACHE_LOCK:
         _RECENT_ENTRIES_CACHE.insert(0, cached_entry)
@@ -245,6 +253,10 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
                     tags = json.loads(r["tags_json"])
                 except Exception:
                     tags = []
+                try:
+                    facts_dict = json.loads(r["facts_json"]) if "facts_json" in r.keys() and r["facts_json"] else {}
+                except Exception:
+                    facts_dict = {}
 
                 entries.append({
                     "entry_id": r["entry_id"],
@@ -257,6 +269,7 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
                     "verified": bool(r["verified"]),
                     "bites": bites_list,
                     "tags": tags,
+                    "facts": facts_dict,
                 })
 
             with _CACHE_LOCK:

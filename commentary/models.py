@@ -127,3 +127,4 @@ class CommentaryEntry:
     verified: bool = True
     template_fallback: bool = True
     tags: list[str] = field(default_factory=list)
+    facts: dict[str, Any] = field(default_factory=dict)
