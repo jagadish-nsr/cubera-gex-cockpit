@@ -139,3 +139,28 @@ def test_prefill_journal_stages_state():
         assert session_state["prefill_symbol"] == "NIFTY"
         assert len(session_state["prefill_legs"]) == 4
         assert session_state["active_tab"] == "📓 Journal"
+
+
+def test_record_to_trade_idea_live_option_pricing():
+    """Verify that _record_to_trade_idea looks up real option chain prices instead of decaying to 0.5."""
+    from app.cockpit import _record_to_trade_idea
+    rec_dict = {
+        "rec_id": "NIFTY_CE_22600_VOL DISPERSION",
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 22600.0,
+        "option_symbol": "NIFTY 22600 CE",
+        "initial_spot": 22593.2,
+        "initial_ltp": 18.9,
+    }
+    contracts_df = pd.DataFrame([
+        {"strike": 22600.0, "type": "C", "mid": 23.2, "delta": 0.36, "oi": 1000, "doi": 100},
+        {"strike": 22600.0, "type": "P", "mid": 115.0, "delta": -0.64, "oi": 1000, "doi": 100},
+    ])
+    data = DummyData(contracts=contracts_df)
+
+    idea = _record_to_trade_idea(rec_dict, current_spot=22462.85, data=data)
+    # The real price in the chain is 23.2, not clamped to 0.5
+    assert idea.current_ltp == 23.2
+    assert idea.delta_approx == 0.36
+

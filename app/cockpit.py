@@ -2391,8 +2391,8 @@ def _is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 600.0
         return False
 
 
-def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIdea:
-    """Reconstruct a TradeIdea instance from a SQLite recommendation record."""
+def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0, data: Any = None) -> TradeIdea:
+    """Reconstruct a TradeIdea instance from a SQLite recommendation record with live option chain pricing."""
     try:
         payload = json.loads(rec_dict.get("payload_json") or "{}")
     except Exception:
@@ -2407,14 +2407,57 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIde
     elif not isinstance(tags, list):
         tags = payload.get("catalyst_tags", [])
 
-    ltp = float(rec_dict.get("initial_ltp", payload.get("current_ltp", 100.0)))
-    delta = float(payload.get("delta_approx", 0.5 if rec_dict.get("side") == "CE" else -0.5))
-    init_spot = float(rec_dict.get("initial_spot", current_spot))
-    if current_spot > 0 and init_spot > 0:
-        spot_diff = current_spot - init_spot
-        est_ltp = max(0.5, ltp + (spot_diff * delta))
+    side = rec_dict.get("side", "CE").upper()
+    strike = float(rec_dict.get("strike", 0))
+    is_call = (side == "CE")
+    sym = rec_dict.get("symbol", "NIFTY")
+
+    # 1. Primary path: Lookup live traded/mid price from current option chain or WebSocket
+    live_ltp = 0.0
+    live_delta = 0.0
+    is_ws_live = False
+    if data and strike > 0:
+        try:
+            from analytics.trade_ideas import _lookup_chain_data
+            oi_strikes = getattr(data, "oi_strikes", None)
+            contracts_df = getattr(data, "contracts", None)
+            step = 50 if sym == "NIFTY" else 100
+            l_px, l_d, _, _, ws = _lookup_chain_data(
+                strike, is_call, oi_strikes, contracts_df, current_spot, step, symbol=sym
+            )
+            if l_px > 0.0:
+                live_ltp = l_px
+                live_delta = l_d
+                is_ws_live = ws
+        except Exception:
+            pass
+
+    if live_ltp > 0.0:
+        est_ltp = live_ltp
+        delta = live_delta if live_delta != 0.0 else float(payload.get("delta_approx", 0.5 if is_call else -0.5))
     else:
-        est_ltp = ltp
+        # 2. Secondary fallback path: MTM adjustment with intrinsic value and Black-Scholes floor
+        ltp = float(rec_dict.get("initial_ltp", payload.get("current_ltp", 100.0)))
+        delta = float(payload.get("delta_approx", 0.5 if is_call else -0.5))
+        init_spot = float(rec_dict.get("initial_spot", current_spot))
+        intrinsic = max(0.0, current_spot - strike) if is_call else max(0.0, strike - current_spot)
+
+        if current_spot > 0 and init_spot > 0:
+            spot_diff = current_spot - init_spot
+            linear_ltp = ltp + (spot_diff * delta)
+            if linear_ltp <= 0.5:
+                # Naive linear subtraction drops negative for large adverse spot moves;
+                # Fallback to Black-Scholes estimate + intrinsic value
+                try:
+                    from analytics.trade_ideas import _approx_bs_price_and_delta
+                    bs_px, bs_d = _approx_bs_price_and_delta(current_spot, strike, is_call)
+                    est_ltp = max(round(bs_px, 1), round(intrinsic + 0.5, 1), 0.5)
+                except Exception:
+                    est_ltp = max(round(intrinsic + 0.5, 1), 0.5)
+            else:
+                est_ltp = max(round(linear_ltp, 1), round(intrinsic + 0.5, 1), 0.5)
+        else:
+            est_ltp = max(ltp, round(intrinsic + 0.5, 1), 0.5)
 
     score = int(rec_dict.get("current_score", payload.get("quality_score", 85)))
     c_label = "HIGHER CONVICTION (Grade A+)" if score > 85 else ("SECONDARY CONVICTION (Grade B+)" if score >= 75 else "WATCHLIST (Grade B)")
@@ -2461,6 +2504,7 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0) -> TradeIde
         triggered_at=rec_dict.get("triggered_at", ""),
         conviction_tier=rec_dict.get("conviction_tier", "HIGH"),
         is_bookmarked=True,
+        is_ws_live=is_ws_live,
     )
 
 
@@ -3144,7 +3188,7 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
     ce_all_ideas: list[TradeIdea] = []
     seen_ce_ids = set()
     for rec_dict in ce_bms:
-        idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+        idea = _record_to_trade_idea(rec_dict, current_spot=spot, data=data)
         if idea.rec_id not in seen_ce_ids:
             seen_ce_ids.add(idea.rec_id)
             ce_all_ideas.append(idea)
@@ -3157,7 +3201,7 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
     pe_all_ideas: list[TradeIdea] = []
     seen_pe_ids = set()
     for rec_dict in pe_bms:
-        idea = _record_to_trade_idea(rec_dict, current_spot=spot)
+        idea = _record_to_trade_idea(rec_dict, current_spot=spot, data=data)
         if idea.rec_id not in seen_pe_ids:
             seen_pe_ids.add(idea.rec_id)
             pe_all_ideas.append(idea)
