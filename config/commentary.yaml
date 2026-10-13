@@ -1,0 +1,115 @@
+# config/commentary.yaml — Central configuration for Session Commentary Engine & Suggestion Bites.
+# All thresholds, cooldowns, budgets, weights, and forbidden phrases are declared here.
+
+session:
+  open: "09:15"
+  close: "15:30"
+  tz: "Asia/Kolkata"
+  phases:
+    - name: "pre_open"
+      start: "09:00"
+      end: "09:15"
+    - name: "opening_15m"
+      start: "09:15"
+      end: "09:30"
+    - name: "morning"
+      start: "09:30"
+      end: "11:30"
+    - name: "midday"
+      start: "11:30"
+      end: "13:30"
+    - name: "afternoon"
+      start: "13:30"
+      end: "15:00"
+    - name: "closing_30m"
+      start: "15:00"
+      end: "15:30"
+
+budget:
+  max_entries_per_day: 15
+  min_gap_minutes: 8
+  max_actionable_bites_per_day: 3
+  max_bites_per_entry: 2
+
+significance:
+  publish_threshold: 0.60
+  time_of_day_multipliers:
+    opening_15m: 1.25
+    closing_30m: 1.20
+    midday: 0.85
+  confluence_window_minutes: 6
+
+detectors:
+  gap:
+    min_gap_sigma: 0.35
+    cooldown_minutes: 30
+  walls:
+    wall_test_sigma_band: 0.10
+    oi_shift_min_pct: 12.0
+    cooldown_minutes: 15
+  institutional_footprint:
+    vol_spike_ratio: 2.0
+    depth_imbalance_ratio: 2.5
+    cooldown_minutes: 20
+  divergences:
+    window_bars: 6
+    confirmations_required: 2
+    cooldown_minutes: 20
+  impulse:
+    speed_sigma: 1.0
+    vol_burst_mult: 2.2
+    cooldown_minutes: 15
+  news:
+    match_window_before_min: 10
+    match_window_after_min: 3
+    relevance_threshold: 4
+  volatility:
+    iv_spike_pct: 15.0
+    vix_surge_pct: 5.0
+    cooldown_minutes: 20
+  expiry:
+    max_pain_pin_sigma: 0.15
+    unwind_oi_drop_pct: 20.0
+    cooldown_minutes: 15
+  session_structure:
+    orb_window_minutes: 15
+    cooldown_minutes: 15
+  pinned:
+    target_approach_pct: 10.0
+    invalidation_band_pts: 15.0
+    score_shift_threshold: 5
+    cooldown_minutes: 15
+
+bites:
+  enabled_types:
+    - "WATCH"
+    - "PREPARE"
+    - "ACT-IF"
+    - "MANAGE"
+    - "STAND-ASIDE"
+    - "HEDGE"
+  mode: "shadow"                    # "shadow" | "live"
+  allow_actionable_when_uncalibrated: false
+  min_shadow_sessions_for_promotion: 20
+  min_expectancy_after_costs: 0.25  # In R units
+  forbidden_phrases:
+    - "sure shot"
+    - "guaranteed"
+    - "can't lose"
+    - "buy now"
+    - "sell now"
+    - "risk-free"
+    - "easy money"
+    - "hurry"
+    - "last chance"
+
+narrator:
+  max_words_per_entry: 60
+  temperature: 0.2
+  fallback_to_template_on_error: true
+  enable_llm_enhancement: false     # Can be toggled on when external provider is configured
+
+profile:
+  capital: 500000.0
+  max_risk_pct: 1.5
+  allowed_structures: "defined_risk_only"

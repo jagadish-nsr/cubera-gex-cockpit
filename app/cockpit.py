@@ -125,6 +125,8 @@ from data.journal.recommendations_store import (  # noqa: E402
     acknowledge_alerts,
     get_strategy_effectiveness_metrics,
 )
+from app.tab_commentary import render_commentary_tab
+from commentary.storage.db import get_pinned_commentary_cache
 
 
 log = logging.getLogger(__name__)
@@ -2692,6 +2694,13 @@ def _render_single_recommendation_card(
     p_sl_html = f'<span style="font-size:.60rem;background:rgba(239,68,68,.15);color:var(--stop);padding:1px 5px;border-radius:3px;font-weight:700;display:inline-block;margin-top:2px">P(SL) {p_sl:.0%}</span>' if p_sl > 0 else ""
     ev_html = f'<span style="font-size:.60rem;background:rgba(56,189,248,.15);color:var(--spark);padding:1px 5px;border-radius:3px;font-weight:700;display:inline-block;margin-top:2px">EV {net_ev:+.1f} pts</span>' if net_ev != 0.0 else ""
 
+    pinned_commentary_note = get_pinned_commentary_cache().get(idea.rec_id, "")
+    commentary_chip_html = (
+        f'<div style="margin-top:6px;padding:6px 10px;background:rgba(245,158,11,0.08);'
+        f'border-left:3px solid #f59e0b;border-radius:4px;font-size:0.74rem;color:var(--ink)">'
+        f'🎙️ <b>Session Commentary:</b> {pinned_commentary_note}</div>'
+    ) if pinned_commentary_note else ""
+
     card_html = (
         f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
         f'{extra_top_html}'
@@ -2759,6 +2768,7 @@ def _render_single_recommendation_card(
         f'</div>'
         f'</div>'
         f'<div class="rec-rationale">{idea.rationale}</div>'
+        f'{commentary_chip_html}'
         f'<div class="rec-tags">{tags_html}</div>'
         f'</div>'
     )
@@ -7722,6 +7732,7 @@ def main() -> None:
         "📓 Journal",
         "📊 Scorecard",
         "⚙️ Ops & Calendar",
+        "🎙️ Session Commentary",
     ]
     tabs = st.tabs(tab_labels)
 
@@ -7754,6 +7765,9 @@ def main() -> None:
 
     with tabs[9]:
         _tab_ops_and_calendar(symbol, window)
+
+    with tabs[10]:
+        render_commentary_tab(symbol, window)
 
     st.markdown('</div>', unsafe_allow_html=True)  # close .ck
 
