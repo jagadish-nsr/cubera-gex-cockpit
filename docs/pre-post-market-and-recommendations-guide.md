@@ -117,24 +117,31 @@ The engine compares the discovered opening price ($S_{\text{disc}}$) against str
 └──────────────────────────┴───────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
-#### B. Synthetic Pre-Bell Option MTM Shock Modeling
-Because option contracts cannot trade until 09:15, traders often enter the open blind to expected option prices. The Cockpit calculates synthetic opening option prices using Taylor-expansion Delta-Gamma adjustments:
+#### B. Target Engine Black-76 Pre-Bell Option Shock Modeling
+Because option contracts cannot trade until 09:15, traders often enter the open blind to expected option prices. The Cockpit calculates exact synthetic opening option prices using the **Target Engine Black-76 Analytical Forward Pricing Engine** (`calculate_pre_market_option_shocks` in `data/pre_post_market.py`):
 
-$$\Delta S = S_{\text{disc}} - S_{\text{prev}}$$
+1. **ATM and Strike Selection**:
+   The engine identifies the newly discovered ATM strike $K_{\text{atm}} = \operatorname{round}(S_{\text{disc}} / \text{step}) \times \text{step}$ and selects seven strikes spanning $K_{\text{atm}} \pm 3 \times \text{step}$.
 
-$$\text{Shock}_{\text{model}} = \left(\Delta \cdot \Delta S\right) \pm \left(\frac{1}{2}\Gamma \cdot (\Delta S)^2\right)$$
+2. **Analytical Forward Pricing**:
+   For each call and put contract:
+   - Evaluates previous theoretical price $V_{\text{prev}} = \text{price}(F = S_{\text{prev}}, K, T = \text{DTE}/365, \sigma = \sigma_{\text{atm}})$.
+   - Evaluates synthetic opening price $V_{\text{open}} = \text{price}(F = S_{\text{disc}}, K, T = \text{DTE}/365, \sigma = \sigma_{\text{atm}})$.
+   - Calculates estimated point shock $\Delta V = V_{\text{open}} - V_{\text{prev}}$ and projected opening percentage change $\Delta V / V_{\text{prev}} \times 100$.
 
-$$\text{LTP}_{\text{est}} = \max\left(\text{LTP}_{\text{prev}} + \text{Shock}_{\text{model}}, \text{Intrinsic Floor}\right)$$
+3. **ATM Straddle Shock % (Expansion vs. Crush)**:
+   Measures the net percentage change in the ATM straddle premium $(V_{\text{atm,CE}} + V_{\text{atm,PE}})$:
+   $$\text{Straddle Shock \%} = \frac{(V_{\text{open,CE}} + V_{\text{open,PE}}) - (V_{\text{prev,CE}} + V_{\text{prev,PE}})}{V_{\text{prev,CE}} + V_{\text{prev,PE}}} \times 100$$
+   - **Straddle Expansion ($> +5\%$)**: Significant gap up or gap down driving gamma expansion across both wings.
+   - **Straddle Crush ($< -5\%$)**: Flat auction open resulting in immediate overnight theta crush.
 
-Where:
-- $\text{Intrinsic Floor}_{\text{CE}} = \max(0, S_{\text{disc}} - K) + 0.50$
-- $\text{Intrinsic Floor}_{\text{PE}} = \max(0, K - S_{\text{disc}}) + 0.50$
-- $\Gamma_{\text{est}} \approx 0.0015$ (near-the-money gamma curvature coefficient)
+4. **Interactive Display Matrix**:
+   Rendered in the Pre-Market Briefing card in the Cockpit banner:
+   - ATM Straddle expansion/crush chip.
+   - 7-strike projected opening matrix showing Contract, Prev Close, Projected Open, Shock Pts, and Shock %.
 
-This yields a pre-bell tactical pricing matrix displayed directly in the Cockpit banner:
-- Expected Opening Premium ($\text{₹}$)
-- Expected Absolute Change ($\text{₹}$)
-- Expected Percentage Jump ($\%$)
+5. **Recommendation Anchoring**:
+   The active recommendation batch automatically anchors spot triggers and invalidations to the 09:08 discovered price, ensuring tactical preparedness before the 09:15 bell rings.
 
 ---
 

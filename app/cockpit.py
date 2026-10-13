@@ -60,6 +60,8 @@ import app.data_access as da_mod  # noqa: E402
 importlib.reload(da_mod)
 load_dashboard = da_mod.load_dashboard
 
+from app.tab_target_engine import render_target_engine_tab  # noqa: E402
+
 import data.expiry as expiry_mod  # noqa: E402
 importlib.reload(expiry_mod)
 
@@ -84,6 +86,7 @@ step_sentinel_live_feed = sentinel_demo_mod.step_sentinel_live_feed
 import sentinel.engine.efficiency as sentinel_eff_mod  # noqa: E402
 importlib.reload(sentinel_eff_mod)
 compute_signal_efficiency = sentinel_eff_mod.compute_signal_efficiency
+calculate_model_calibration_and_expectancy = sentinel_eff_mod.calculate_model_calibration_and_expectancy
 purge_old_sentinel_data = sentinel_db_mod.purge_old_sentinel_data
 
 
@@ -2195,6 +2198,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
             get_pre_market_state,
             get_post_market_state,
             classify_opening_gap,
+            calculate_pre_market_option_shocks,
         )
         phase_code, phase_label, _ = get_current_session_phase()
         cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0))
@@ -2216,6 +2220,56 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                 gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw, pw, flip)
                 badge_html = f'<span class="sentinel-chip" style="background:var(--surface-2);color:{gap_cls["color"]};border:1px solid {gap_cls["color"]};font-size:.74rem">{gap_cls["badge"]}</span>'
                 sign_str = "+" if gap_pts >= 0 else ""
+
+                shocks = calculate_pre_market_option_shocks(
+                    discovered_spot=disc_spot,
+                    prev_close=float(pm.get("prev_close") or (disc_spot - gap_pts)),
+                    contracts_df=getattr(data, "contracts", None),
+                    symbol=symbol,
+                    dte_days=float(getattr(data, "dte_now", 3.0) if data else 3.0),
+                    atm_iv=float(getattr(getattr(data, "levels", None), "atm_iv", 0.14) or 0.14),
+                )
+                atm_k = shocks["atm_strike"]
+                stk_step = 50 if symbol.upper() == "NIFTY" else 100
+                disp_strikes = [atm_k + i * stk_step for i in range(-2, 3)]
+                shock_rows = []
+                for sk in disp_strikes:
+                    c_inf = next((x for x in shocks["projected_strikes"] if x["strike"] == sk and x["side"] == "CE"), None)
+                    p_inf = next((x for x in shocks["projected_strikes"] if x["strike"] == sk and x["side"] == "PE"), None)
+                    if c_inf and p_inf:
+                        c_clr = "var(--go)" if c_inf["shock_pts"] >= 0 else "var(--stop)"
+                        p_clr = "var(--go)" if p_inf["shock_pts"] >= 0 else "var(--stop)"
+                        is_atm_r = (sk == atm_k)
+                        r_bg = "background:rgba(56,189,248,.07);" if is_atm_r else ""
+                        atm_tag = " <span style='font-size:.58rem;background:var(--spark);color:#000;padding:1px 3px;border-radius:3px;font-weight:800'>ATM</span>" if is_atm_r else ""
+                        shock_rows.append(
+                            f'<tr style="{r_bg}border-bottom:1px solid var(--line);text-align:center">'
+                            f'<td style="padding:3px 6px;color:var(--ink-mute);font-family:var(--mono)">₹{c_inf["prev_ltp"]:,.1f}</td>'
+                            f'<td style="padding:3px 6px;color:var(--go);font-weight:700;font-family:var(--mono)">₹{c_inf["projected_open_ltp"]:,.1f}</td>'
+                            f'<td style="padding:3px 6px;color:{c_clr};font-weight:700">{c_inf["shock_pct"]:+.0f}%</td>'
+                            f'<td style="padding:3px 6px;font-weight:800;color:var(--ink);font-family:var(--mono)">{sk:,.0f}{atm_tag}</td>'
+                            f'<td style="padding:3px 6px;color:var(--ink-mute);font-family:var(--mono)">₹{p_inf["prev_ltp"]:,.1f}</td>'
+                            f'<td style="padding:3px 6px;color:var(--stop);font-weight:700;font-family:var(--mono)">₹{p_inf["projected_open_ltp"]:,.1f}</td>'
+                            f'<td style="padding:3px 6px;color:{p_clr};font-weight:700">{p_inf["shock_pct"]:+.0f}%</td>'
+                            f'</tr>'
+                        )
+                straddle_clr = "var(--go)" if shocks["straddle_shock_pct"] >= 0 else "var(--stop)"
+                shocks_matrix_html = (
+                    f'<div style="margin-top:10px;background:var(--surface);padding:8px 10px;border-radius:8px;border:1px solid var(--line)">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                    f'<span style="font-size:.70rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>'
+                    f'<span style="font-size:.68rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 6px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹{shocks["atm_straddle_prev"]:,.1f} → <b>₹{shocks["atm_straddle_projected"]:,.1f}</b> (<span style="color:{straddle_clr};font-weight:700">{shocks["straddle_shock_pct"]:+.1f}%</span>)</span>'
+                    f'</div>'
+                    f'<table style="width:100%;font-size:.70rem;border-collapse:collapse">'
+                    f'<thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:center">'
+                    f'<th style="padding:3px">CE Prev</th><th style="padding:3px">CE Proj</th><th style="padding:3px">CE Δ</th>'
+                    f'<th style="padding:3px">Strike</th>'
+                    f'<th style="padding:3px">PE Prev</th><th style="padding:3px">PE Proj</th><th style="padding:3px">PE Δ</th>'
+                    f'</tr></thead>'
+                    f'<tbody>{"".join(shock_rows)}</tbody>'
+                    f'</table>'
+                    f'</div>'
+                )
 
                 st.markdown(
                     f'''
@@ -2250,6 +2304,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                         <div style="font-size:.82rem;line-height:1.45;color:var(--ink);background:var(--surface);padding:9px 12px;border-radius:8px;border:1px solid var(--line)">
                             <b>Strategic Analysis:</b> {gap_cls['briefing']}
                         </div>
+                        {shocks_matrix_html}
                     </div>
                     ''',
                     unsafe_allow_html=True,
@@ -2630,6 +2685,13 @@ def _render_single_recommendation_card(
         except Exception:
             pass
 
+    p_t1 = getattr(idea, "p_touch_target_1", 0.0)
+    p_sl = getattr(idea, "p_touch_sl", 0.0)
+    net_ev = getattr(idea, "net_ev_pts", 0.0)
+    p_t1_html = f'<span style="font-size:.60rem;background:rgba(34,197,94,.15);color:var(--go);padding:1px 5px;border-radius:3px;font-weight:700;display:inline-block;margin-top:2px">P(Touch) {p_t1:.0%}</span>' if p_t1 > 0 else ""
+    p_sl_html = f'<span style="font-size:.60rem;background:rgba(239,68,68,.15);color:var(--stop);padding:1px 5px;border-radius:3px;font-weight:700;display:inline-block;margin-top:2px">P(SL) {p_sl:.0%}</span>' if p_sl > 0 else ""
+    ev_html = f'<span style="font-size:.60rem;background:rgba(56,189,248,.15);color:var(--spark);padding:1px 5px;border-radius:3px;font-weight:700;display:inline-block;margin-top:2px">EV {net_ev:+.1f} pts</span>' if net_ev != 0.0 else ""
+
     card_html = (
         f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
         f'{extra_top_html}'
@@ -2673,12 +2735,14 @@ def _render_single_recommendation_card(
         f'<span style="font-size:.66rem;color:{inval_grid_color};font-weight:600;display:block;margin-top:2px">{inval_grid_sub}</span>'
         f'<span style="font-size:.66rem;color:var(--stop);display:block;margin-top:2px">Opt SL: ₹{idea.stop_loss:,.1f}</span>'
         f'<span style="font-size:.62rem;color:var(--ink-mute);display:block;margin-top:2px">Max Risk -₹{pos_size.max_risk_inr:,.0f} ({sl_pct:+.0f}%)</span>'
+        f'{p_sl_html}'
         f'</div>'
         f'<div class="rec-lvl-item">'
         f'<small>Target 1</small>'
         f'<b style="color:var(--go)">₹{idea.target_1:,.1f}</b>'
         f'<span style="font-size:.66rem;color:var(--go);display:block;margin-top:2px">+₹{pos_size.target_1_pnl_inr:,.0f} ({tgt1_pct:+.0f}%)</span>'
         f'<span style="font-size:.62rem;color:var(--ink-mute);display:block;margin-top:2px">Spot ₹{idea.target_1_spot:,.0f}{dist_t1_str}</span>'
+        f'{p_t1_html}'
         f'</div>'
         f'<div class="rec-lvl-item">'
         f'<small>Target 2</small>'
@@ -2691,6 +2755,7 @@ def _render_single_recommendation_card(
         f'<b style="color:var(--spark)">{idea.risk_reward_ratio}</b>'
         f'<span style="font-size:.66rem;color:var(--ink-mute);display:block;margin-top:2px">Quality {idea.quality_score}/100</span>'
         f'<span style="font-size:.62rem;color:var(--ink-mute);display:block;margin-top:2px">{idea.conviction_label}</span>'
+        f'{ev_html}'
         f'</div>'
         f'</div>'
         f'<div class="rec-rationale">{idea.rationale}</div>'
@@ -2841,6 +2906,10 @@ def _render_recommendation_cluster_card(
         is_sel_row = (i.rec_id == selected_idea.rec_id)
         row_bg = "background:rgba(56,189,248,.07);" if is_sel_row else ""
         sel_marker = "👉 " if is_sel_row else ""
+        pt1_val = getattr(i, "p_touch_target_1", 0.0)
+        ev_val = getattr(i, "net_ev_pts", 0.0)
+        pt1_str = f"{pt1_val:.0%}" if pt1_val > 0 else "—"
+        ev_str = f"{ev_val:+.1f}" if ev_val != 0.0 else "—"
         matrix_rows.append(
             f'<tr style="{row_bg}border-bottom:1px solid var(--line)">'
             f'<td style="padding:4px 8px;font-weight:700;color:var(--ink)">{sel_marker}{i.play_badge}</td>'
@@ -2848,16 +2917,19 @@ def _render_recommendation_cluster_card(
             f'<td style="padding:4px 8px;color:var(--go);font-family:var(--mono)">₹{i.target_1:,.1f}</td>'
             f'<td style="padding:4px 8px;color:var(--stop);font-family:var(--mono)">₹{i.stop_loss:,.1f}</td>'
             f'<td style="padding:4px 8px;font-family:var(--mono)">₹{i.spot_invalidation:,.0f}</td>'
+            f'<td style="padding:4px 8px;color:var(--go);font-weight:700">{pt1_str}</td>'
+            f'<td style="padding:4px 8px;color:var(--spark);font-weight:700">{ev_str}</td>'
             f'<td style="padding:4px 8px;font-weight:700;color:{color}">{st_lbl}</td>'
             f'</tr>'
         )
     matrix_html = (
         f'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px;margin:8px 0">'
-        f'<div style="font-size:.70rem;font-weight:700;color:var(--ink-mute);margin-bottom:4px;text-transform:uppercase">Confluence Strategy Matrix</div>'
+        f'<div style="font-size:.70rem;font-weight:700;color:var(--ink-mute);margin-bottom:4px;text-transform:uppercase">Confluence Strategy Matrix (Target Engine Repriced)</div>'
         f'<table style="width:100%;font-size:.72rem;border-collapse:collapse">'
         f'<thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:left">'
         f'<th style="padding:4px 8px">Strategy</th><th style="padding:4px 8px">Score</th><th style="padding:4px 8px">Tgt 1</th>'
-        f'<th style="padding:4px 8px">Opt SL</th><th style="padding:4px 8px">Spot Inval</th><th style="padding:4px 8px">Status</th>'
+        f'<th style="padding:4px 8px">Opt SL</th><th style="padding:4px 8px">Spot Inval</th><th style="padding:4px 8px">P(Tgt)</th>'
+        f'<th style="padding:4px 8px">Net EV</th><th style="padding:4px 8px">Status</th>'
         f'</tr></thead>'
         f'<tbody>{"".join(matrix_rows)}</tbody>'
         f'</table>'
@@ -2957,6 +3029,14 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     latest_bar = bars[-1] if bars else None
     iq = get_instant_quote(symbol)
     spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(getattr(data.levels, "spot", 24500.0))
+    # Pre-market equilibrium anchoring: anchor spot to discovered equilibrium price if discovered today
+    try:
+        from data.pre_post_market import get_pre_market_state
+        pm_disc = get_pre_market_state(symbol)
+        if pm_disc.get("is_discovered") and float(pm_disc.get("discovered_spot", 0)) > 0:
+            spot = float(pm_disc["discovered_spot"])
+    except Exception:
+        pass
 
     now_t = time.time()
     cached = _REC_BATCH_CACHE.get(symbol)
@@ -4807,6 +4887,20 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
         inval_dir = "below" if sig.bias == "LONG" else "above"
         new_pill = '<span style="font-size:0.65rem;background:var(--spark);color:#fff;padding:2px 5px;border-radius:4px;font-weight:700;margin-left:4px">NEW</span>' if is_latest else ''
 
+        opt_play_chip = ""
+        if sig.invalidation_level > 0:
+            step = 50 if "NIFTY" in sig.instrument_id else 100
+            opt_k = round(sig.invalidation_level / step) * step
+            opt_side = "CE" if sig.bias == "LONG" else "PE"
+            opt_play_chip = (
+                f'<div style="font-size:.70rem;background:rgba(56,189,248,.08);color:var(--spark);'
+                f'padding:3px 7px;border-radius:4px;border:1px solid rgba(56,189,248,.25);margin-top:5px;'
+                f'display:flex;justify-content:space-between;align-items:center">'
+                f'<span>🎯 <b>Option Play:</b> {int(opt_k)} {opt_side}</span>'
+                f'<span>Stop: ₹{sig.invalidation_level:,.0f}</span>'
+                f'</div>'
+            )
+
         return (
             f'<div class="ck sig-card {cat_cls}" style="width:100%;box-sizing:border-box">'
             f'<div class="sig-card-hdr">'
@@ -4822,6 +4916,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
             f'</div>'
             f'<div class="sig-insight">💡 {sig.insight_text}</div>'
             f'<div class="sig-inval">🛑 Invalidation: candle closes {inval_dir} <b>{sig.invalidation_level:,.1f}</b></div>'
+            f'{opt_play_chip}'
             f'<div style="margin-top:6px">{tags_html}</div>'
             f'{out_chip}'
             f'</div>'
@@ -4961,14 +5056,9 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
 
 
 
-@st.fragment
-def _fragment_signal_efficiency(symbol: str) -> None:
-    _render_signal_efficiency_section(symbol)
-
-
 def _tab_signal_efficiency(symbol: str) -> None:
     """Dedicated Tab: OrderFlow Sentinel Signal Efficiency Analytics & Backtesting."""
-    _fragment_signal_efficiency(symbol)
+    _render_signal_efficiency_section(symbol)
 
 
 def _render_signal_efficiency_section(symbol: str) -> None:
@@ -5033,8 +5123,13 @@ def _render_signal_efficiency_section(symbol: str) -> None:
         unsafe_allow_html=True,
     )
 
-    # Sub-tabs: Timeline vs Category Breakdowns vs Forward Return Expectancy
-    sub_t1, sub_t2, sub_t3 = st.tabs(["📅 Efficiency Timeline", "🏷️ Breakdowns (Type & GEX)", "⏱️ Return Expectancy"])
+    # Sub-tabs: Timeline vs Category Breakdowns vs Forward Return Expectancy vs Model Calibration & Options
+    sub_t1, sub_t2, sub_t3, sub_t4 = st.tabs([
+        "📅 Efficiency Timeline",
+        "🏷️ Breakdowns (Type & GEX)",
+        "⏱️ Return Expectancy",
+        "🎯 Model Calibration & Options Expectancy",
+    ])
 
     with sub_t1:
         if eff_report.timeline:
@@ -5103,6 +5198,89 @@ def _render_signal_efficiency_section(symbol: str) -> None:
             for k, v in exp_data.items()
         ])
         st.bar_chart(exp_df.set_index("Horizon"), height=180, use_container_width=True)
+
+    with sub_t4:
+        st.markdown("**🎯 Target Engine Model Calibration & Options Expectancy Curve**")
+        st.caption("Quantitative reflection-principle calibration alpha ($Empirical\\,Hit\\,Rate - Theoretical\\,P(touch)$) & Black-76 forward repricing.")
+
+        data_eff, _ = _load_data(symbol, "ALL")
+        iq_eff = get_instant_quote(symbol)
+        default_spot = 72880.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22680.0)
+        eff_spot = iq_eff.get("spot") or (float(data_eff.levels.spot) if data_eff and getattr(data_eff, "levels", None) and getattr(data_eff.levels, "spot", None) else default_spot)
+        eff_iv = getattr(getattr(data_eff, "regime", None), "atm_iv", 0.14) if data_eff else 0.14
+        eff_dte = getattr(getattr(data_eff, "regime", None), "dte_days", 5.0) if data_eff else 5.0
+
+        calib = calculate_model_calibration_and_expectancy(eff_report, spot=eff_spot, atm_iv=eff_iv, dte_days=eff_dte)
+
+        calib_color = "var(--go)" if calib["calibration_alpha"] >= 0 else "var(--stop)"
+        calib_sign = "+" if calib["calibration_alpha"] >= 0 else ""
+
+        st.markdown(
+            f'<div class="ck sc-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">'
+            f'<div class="sc-card"><small>Empirical Hit Rate</small>'
+            f'<b>{calib["empirical_hit_rate"]:.1f}%</b><span>evaluated outcomes</span></div>'
+            f'<div class="sc-card"><small>Theoretical P(touch)</small>'
+            f'<b>{calib["theoretical_p_touch"]:.1f}%</b><span>reflection diffusion</span></div>'
+            f'<div class="sc-card"><small>Calibration Alpha</small>'
+            f'<b style="color:{calib_color}">{calib_sign}{calib["calibration_alpha"]:.1f}%</b><span>model edge over Brownian</span></div>'
+            f'<div class="sc-card"><small>ATM Benchmark</small>'
+            f'<b>{calib["atm_strike"]} CE</b><span>₹{calib["atm_call_entry"]:.1f} entry</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            st.markdown("**Calibration Alpha by Signal Type**")
+            if calib["by_type_calibration"]:
+                c_rows = [
+                    {
+                        "Signal Type": r["label"],
+                        "Count": r["count"],
+                        "Empirical Hit": f"{r['empirical_hit']:.1f}%",
+                        "Theoretical P": f"{r['theoretical_p']:.1f}%",
+                        "Calibration Alpha": f"{r['alpha']:+.1f}%",
+                    }
+                    for r in calib["by_type_calibration"]
+                ]
+                st.dataframe(pd.DataFrame(c_rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No type calibration available.")
+
+        with col_c2:
+            st.markdown("**Calibration Alpha by GEX Wall Alignment**")
+            if calib["by_alignment_calibration"]:
+                ca_rows = [
+                    {
+                        "Alignment": r["label"],
+                        "Count": r["count"],
+                        "Empirical Hit": f"{r['empirical_hit']:.1f}%",
+                        "Theoretical P": f"{r['theoretical_p']:.1f}%",
+                        "Calibration Alpha": f"{r['alpha']:+.1f}%",
+                    }
+                    for r in calib["by_alignment_calibration"]
+                ]
+                st.dataframe(pd.DataFrame(ca_rows), use_container_width=True, hide_index=True)
+            else:
+                st.caption("No alignment calibration available.")
+
+        st.markdown("**Black-76 Repriced ATM Option Expectancy Curve (+1m to +30m)**")
+        if calib["options_expectancy_curve"]:
+            opt_rows = [
+                {
+                    "Horizon": r["horizon"],
+                    "Index Ret (pts)": f"{r['index_ret_pts']:+.1f}",
+                    "Option Target": f"₹{r['opt_target']:.1f}",
+                    "Option Ret (pts)": f"{r['opt_ret_pts']:+.1f}",
+                    "Option Ret (%)": f"{r['opt_ret_pct']:+.1f}%",
+                    "Delta PnL": f"{r['delta_pnl']:+.1f}",
+                    "Theta Decay": f"{r['theta_pnl']:+.1f}",
+                }
+                for r in calib["options_expectancy_curve"]
+            ]
+            st.dataframe(pd.DataFrame(opt_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No options curve data.")
 
     # Maintenance & Retention Expander
     with st.expander("⚙️ SQLite Storage & Retention Maintenance"):
@@ -7035,6 +7213,11 @@ DOCS_MAP = {
         "file": "docs/options-analytics-guide.md",
         "badge": "IOAS v3.0 Microstructure",
     },
+    "target_engine_guide": {
+        "title": "🎯 Target Engine — Scenario & Repricing Suite Technical Guide",
+        "file": "docs/target-engine-guide.md",
+        "badge": "Target Engine v1.0",
+    },
 }
 
 
@@ -7455,6 +7638,7 @@ def main() -> None:
         st.markdown(
             '<div style="display:flex;flex-direction:column;gap:8px;font-size:.82rem;margin-top:8px">'
             '<a href="/?view=user_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📖 Master User Guide ↗</a>'
+            '<a href="/?view=target_engine_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎯 Target Engine Guide ↗</a>'
             '<a href="/?view=options_analytics_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🔬 Options Analytics Guide ↗</a>'
             '<a href="/?view=pre_post_market_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🌅 Pre/Post-Market & Recs Guide ↗</a>'
             '<a href="/?view=options_strategies_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎯 Options Strategies Guide ↗</a>'
@@ -7514,6 +7698,7 @@ def main() -> None:
             pass
     tab_labels = [
         "🗺️ Cockpit",
+        "🎯 Target Engine",
         "⚡ Trade Recommendations",
         "⚡ Sentinel Tape",
         "🎯 Signal Efficiency",
@@ -7529,27 +7714,30 @@ def main() -> None:
         _tab_cockpit(symbol, window)
 
     with tabs[1]:
-        _tab_trade_recommendations(symbol, window)
+        render_target_engine_tab(symbol, window)
 
     with tabs[2]:
-        _tab_sentinel_tape(symbol, window)
+        _tab_trade_recommendations(symbol, window)
 
     with tabs[3]:
-        _tab_signal_efficiency(symbol)
+        _tab_sentinel_tape(symbol, window)
 
     with tabs[4]:
-        _tab_market_intelligence(symbol, window)
+        _tab_signal_efficiency(symbol)
 
     with tabs[5]:
-        _tab_analytics(symbol, window)
+        _tab_market_intelligence(symbol, window)
 
     with tabs[6]:
-        _tab_journal(symbol)
+        _tab_analytics(symbol, window)
 
     with tabs[7]:
-        _tab_scorecard(symbol)
+        _tab_journal(symbol)
 
     with tabs[8]:
+        _tab_scorecard(symbol)
+
+    with tabs[9]:
         _tab_ops_and_calendar(symbol, window)
 
     st.markdown('</div>', unsafe_allow_html=True)  # close .ck

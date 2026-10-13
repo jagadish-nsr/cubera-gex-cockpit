@@ -58,10 +58,11 @@ Exploits pure delta acceleration when price holds intraday equilibrium (Session 
 - **Spot Invalidation**: 
   - CE: Spot drops below $\min(\text{VWAP} - 0.35\cdot\text{step}, S - 0.6\cdot\text{step})$.
   - PE: Spot climbs above $\max(\text{VWAP} + 0.35\cdot\text{step}, S + 0.6\cdot\text{step})$.
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-28\%$ from entry LTP ($0.72 \times \text{LTP}$).
-  - **Target 1**: $+35\%$ from entry LTP ($1.35 \times \text{LTP}$, $1.25\text{R}$).
-  - **Target 2**: $+70\%$ from entry LTP ($1.70 \times \text{LTP}$, $2.5\text{R}$).
+- **Option Price Targets & Stop Loss (Target Engine Repriced)**:
+  - **Dynamic Calculation**: Evaluated via **Target Engine Black-76 analytical forward repricing** (`_reprice_trade_idea_targets` in `analytics/trade_ideas.py`).
+  - **Stop Loss ($V_{\text{sl}}$)**: Modeled by repricing the option contract at the exact **Spot Invalidation** level under adverse IV shock $\sigma_{\text{sl}}$ and holding horizon time decay $T_{\text{sl}}$.
+  - **Target 1 ($V_{\text{tgt1}}$) & Target 2 ($V_{\text{tgt2}}$)**: Repriced at the primary session target level and secondary momentum expansion level.
+  - *Legacy Baseline Benchmark*: Prior to Target Engine integration, the heuristic baseline assumed approximately $-28\%$ from entry LTP ($0.72 \times \text{LTP}$) for stops, $+35\%$ for Target 1 ($1.35 \times \text{LTP}$), and $+70\%$ for Target 2 ($1.70 \times \text{LTP}$). Today, exact prices and Net EV are dynamically calibrated to live volatility and the underlying invalidation boundary.
 
 ---
 
@@ -223,6 +224,39 @@ Synthetic 1x2 ratio structure where buying 1 near-money option is funded by the 
 - **Entry Trigger (PE)**: Moderate downward drift with steady seller distribution targeting the Put Wall.
 - **Spot Invalidation**: Spot reversal across VWAP by $>0.35 \times \text{step}$.
 - **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-25\%$ from entry LTP ($0.75 \times \text{LTP}$).
-  - **Target 1**: $+35\%$ from entry LTP ($1.35 \times \text{LTP}$, at Wall).
-  - **Target 2**: $+75\%$ from entry LTP ($1.75 \times \text{LTP}$, beyond Wall).
+  - **Stop Loss**: Calibrated by Target Engine Black-76 repricing at Spot Invalidation.
+  - **Target 1**: Repriced at primary wall rotation barrier.
+  - **Target 2**: Repriced at secondary volatility expansion move.
+
+---
+
+## Part 2: Target Engine Quantitative Repricing Architecture
+
+In the latest release, the Recommendations Engine has been upgraded from crude static heuristic multipliers (`* 1.35`, `* 0.72`) to the **Target Engine Quantitative Suite**:
+
+### 1. Black-76 Forward Pricing & Repricing
+Every trade recommendation computes `Target 1`, `Target 2`, and `Stop Loss` using analytical Black-76 forward pricing:
+- **Baseline Pricing**: Initial option entry premium $V_0$ is derived from current underlying spot/futures $F_0$, strike $K$, annualized time to expiry $T_0$, and ATM implied volatility $\sigma_{\text{atm}}$.
+- **Forward Invalidation & Target Repricing**:
+  - **Target 1 Premium ($V_{\text{tgt1}}$)**: Repriced at $F = \text{Target Spot 1}$, $T = T_0 - \Delta t$, and $\sigma = \text{Forecast IV}$.
+  - **Target 2 Premium ($V_{\text{tgt2}}$)**: Repriced at $F = \text{Target Spot 2}$ under scenario volatility expansion/compression.
+  - **Stop Loss Premium ($V_{\text{sl}}$)**: Repriced at $F = \text{Spot Invalidation Level}$.
+
+### 2. Reflection-Principle Barrier Touch Probabilities
+Rather than assuming a static $50/50$ coin-flip, the engine computes closed-form touch probabilities using the Brownian reflection principle:
+$$P(\text{touch target 1}) = 2 \cdot \left[ 1 - \Phi\left( \frac{|\text{Target 1} - \text{Spot}|}{\sigma_h} \right) \right]$$
+$$P(\text{touch SL}) = 2 \cdot \left[ 1 - \Phi\left( \frac{|\text{Spot Invalidation} - \text{Spot}|}{\sigma_h} \right) \right]$$
+where $\sigma_h = \text{Spot} \cdot \sigma_{\text{atm}} \cdot \sqrt{h / (375 \times 252)}$ is the 1-SD horizon expected move.
+
+### 3. Probability-Weighted Net Expected Value (Net EV)
+Displayed on every recommendation card and the Confluence Strategy Matrix:
+$$\text{Net EV (pts)} = \left[ P(\text{target 1}) \times (V_{\text{tgt1}} - V_0) \right] - \left[ P(\text{SL}) \times (V_0 - V_{\text{sl}}) \right]$$
+A trade is only considered institutional Grade A if $\text{Net EV} > 0$, guaranteeing positive mathematical expectancy over repeated executions.
+
+### 4. Greek Attribution Decomposition
+Every repriced target decomposes expected return into:
+- **Delta PnL**: Linear underlying index follow-through ($\Delta \cdot \Delta F$).
+- **Gamma PnL**: Convexity acceleration on momentum expansion ($\frac{1}{2}\Gamma (\Delta F)^2$).
+- **Vega PnL**: Impact of IV forecast shifts ($\mathcal{V} \cdot \Delta\sigma$).
+- **Theta Bleed**: Expected time decay over the holding horizon ($\Theta \cdot \Delta t$).
+

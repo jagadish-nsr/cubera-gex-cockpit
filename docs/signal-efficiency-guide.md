@@ -102,7 +102,38 @@ The analytics engine dissects signal efficiency across two critical dimensions:
 
 ---
 
-## 5. SQLite Data Storage & Retention Housekeeping
+## 5. Target Engine Model Calibration & Options Expectancy Curve
+
+Sub-Tab 4 (**🎯 Model Calibration & Options Expectancy**) integrates the **Target Engine Quantitative Suite** directly into the Signal Efficiency interface, bridging empirical orderflow statistics with theoretical derivative pricing models:
+
+### 5.1 Theoretical Calibration Alpha
+Rather than simply celebrating an empirical win rate, Calibration Alpha asks: **Did this signal actually outperform pure Gaussian random walk diffusion?**
+- **Theoretical Touch Probability ($P_{\text{touch}}$):**
+  Uses the Target Engine's reflection principle:
+  $$P(\text{touch}) = 2 \cdot \left[ 1 - \Phi\left( \frac{\text{Target Distance}}{\sigma_h} \right) \right]$$
+  where $\sigma_h = \text{Spot} \cdot \sigma_{\text{atm}} \cdot \sqrt{30 / (375 \times 252)}$ is the 30-minute horizon expected move.
+- **Calibration Alpha Formulation:**
+  $$\text{Calibration Alpha (\%)} = \text{Empirical Hit Rate (\%)} - \text{Theoretical } P(\text{touch}) (\%)$$
+  - **$\text{Calibration Alpha} \ge +5.0\%$ (Green 🟢):** Strong model alpha. The orderflow trigger produces genuine directional drift well beyond random diffusion.
+  - **$-5.0\% < \text{Calibration Alpha} < +5.0\%$ (Amber 🟡):** Neutral. Performance aligns closely with theoretical random walk.
+  - **$\text{Calibration Alpha} \le -5.0\%$ (Red 🔴):** Model drag. Signals suffer from adverse selection or late entry execution.
+
+### 5.2 Calibration Breakdowns
+The tab breaks down Calibration Alpha across:
+1. **Signal Type:** Reveals which setups (`CONTINUATION_BULL`, `ABSORPTION_BEAR`, etc.) deliver true statistical edge over diffusion.
+2. **GEX Wall Alignment:** Demonstrates the substantial alpha boost achieved when orderflow signals trigger at confirmed GEX walls (`CONFIRMED_AT_WALL`) versus in open neutral space (`NEUTRAL`).
+
+### 5.3 Black-76 Repriced ATM Option Expectancy Curve (+1m to +30m)
+Underlying index forward point returns are repriced into actual ATM option contract performance:
+- Evaluates entry price $V_0$ at the benchmark ATM strike.
+- Reprices forward price $V_t$ at $+1\text{m}, +3\text{m}, +5\text{m}, +15\text{m},$ and $+30\text{m}$ using Black-76 forward pricing with elapsed theta time decay.
+- Decomposes option PnL into:
+  - **Delta PnL:** $\Delta \cdot \Delta F$ (underlying directional capture).
+  - **Theta Decay Bleed:** Calendar time erosion over the holding window.
+
+---
+
+## 6. SQLite Data Storage & Retention Housekeeping
 
 All bars, signals, and outcome records are stored in [`data/sentinel.db`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/sentinel.db).
 
@@ -112,7 +143,7 @@ All bars, signals, and outcome records are stored in [`data/sentinel.db`](file:/
 * **Signals & Outcomes (`sentinel_signals`, `signal_outcomes`):** **365 calendar days**.
 
 ### Maintenance Action:
-You can execute automated retention cleanup anytime via the **`⚙️ SQLite Storage & Retention Maintenance`** expander in Tab 2, or programmatically via:
+You can execute automated retention cleanup anytime via the **`⚙️ SQLite Storage & Retention Maintenance`** expander in the tab, or programmatically via:
 ```python
 from sentinel.storage.db import purge_old_sentinel_data
 pruned_counts = purge_old_sentinel_data(bars_1m_days=60, bars_5m_days=180, signals_days=365)
@@ -121,8 +152,10 @@ print(pruned_counts)
 
 ---
 
-## 6. Practical Trading Rules & Guidelines
+## 7. Practical Trading Rules & Guidelines
 
 1. **The 30-Signal Threshold:** Never alter rule sets or sizing based on fewer than 30 evaluated signals in a single category. Small samples are dominated by transient market chop.
 2. **Edge Ratio Cutoff:** If a signal type drops below **$1.10\times$ Edge Ratio** over a rolling 4-week window, downgrade its category to *CAUTION* or require secondary confirmation (e.g., higher score threshold $\ge 80$).
 3. **Invalidation Honesty:** If your average MAE consistently matches or exceeds the invalidation distance, entries are lagging the market. Seek earlier entry triggers or wait for pullbacks to VWAP.
+4. **Calibration Discipline:** Discard or demote setups that exhibit negative Calibration Alpha, even if their nominal win rate appears acceptable.
+

@@ -20,14 +20,45 @@ log = logging.getLogger(__name__)
 def evaluate_signal_outcomes(
     signal: SentinelSignal,
     subsequent_bars: list[Bar],
-    risk_pts: float = 25.0,
+    risk_pts: float | None = None,
+    target_pts: float | None = None,
+    call_wall: float = 0.0,
+    put_wall: float = 0.0,
+    sigma_h: float | None = None,
 ) -> SignalOutcome:
-    """Evaluate forward return and excursions of a signal across subsequent bars."""
-    entry_price = signal.invalidation_level + (risk_pts if signal.bias == "LONG" else -risk_pts)
-    # If invalidation is below entry (LONG), entry ~ invalidation + risk
-    # Or fallback to close of trigger bar if known
+    """Evaluate forward return and excursions of a signal across subsequent bars with dynamic vol & wall targets."""
+    inst = str(signal.instrument_id).upper()
+
+    # 1. Dynamic risk points
+    if risk_pts is None or risk_pts <= 0:
+        if "SENSEX" in inst:
+            base_risk = 75.0
+        elif "BANKNIFTY" in inst:
+            base_risk = 50.0
+        else:
+            base_risk = 25.0
+        risk_pts = base_risk
+
     is_long = signal.bias == "LONG"
-    target_1r = entry_price + (risk_pts if is_long else -risk_pts)
+    if signal.invalidation_level > 0:
+        entry_price = signal.invalidation_level + (risk_pts if is_long else -risk_pts)
+    else:
+        entry_price = subsequent_bars[0].open if subsequent_bars else 22600.0
+
+    # 2. Dynamic target points (Structural Wall & Realized Vol calibrated)
+    if target_pts is None or target_pts <= 0:
+        if is_long and call_wall > entry_price:
+            dist_w = call_wall - entry_price
+            target_pts = min(dist_w, max(risk_pts * 1.5, 30.0))
+        elif (not is_long) and put_wall > 0 and put_wall < entry_price:
+            dist_w = entry_price - put_wall
+            target_pts = min(dist_w, max(risk_pts * 1.5, 30.0))
+        elif sigma_h and sigma_h > 0:
+            target_pts = max(0.6 * sigma_h, risk_pts * 1.5)
+        else:
+            target_pts = max(risk_pts * 1.5, 30.0)
+
+    target_price = entry_price + (target_pts if is_long else -target_pts)
 
     mfe = 0.0
     mae = 0.0
@@ -46,7 +77,7 @@ def evaluate_signal_outcomes(
             adv = entry_price - bar.low
             if bar.low <= signal.invalidation_level:
                 stopped = True
-            if bar.high >= target_1r:
+            if bar.high >= target_price:
                 target_hit = True
             cur_ret = bar.close - entry_price
         else:
@@ -54,7 +85,7 @@ def evaluate_signal_outcomes(
             adv = bar.high - entry_price
             if bar.high >= signal.invalidation_level:
                 stopped = True
-            if bar.low <= target_1r:
+            if bar.low <= target_price:
                 target_hit = True
             cur_ret = entry_price - bar.close
 

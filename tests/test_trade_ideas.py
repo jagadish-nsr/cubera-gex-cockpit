@@ -320,5 +320,136 @@ def test_bookmarking_and_recommendations_store():
         assert rs.is_bookmarked(sample.rec_id) is False
 
 
+def test_target_engine_reprice_and_probabilities():
+    data = MockDashboardData(spot=24500.0)
+    batch = generate_trade_recommendations(data, min_score=0)
+
+    for idea in batch.all_ce_candidates + batch.all_pe_candidates:
+        assert 0.0 < idea.p_touch_target_1 < 1.0
+        assert 0.0 < idea.p_touch_sl < 1.0
+        assert isinstance(idea.net_ev_pts, float)
+        assert isinstance(idea.greek_attribution, dict)
+        assert "delta_pnl" in idea.greek_attribution
+        assert idea.target_1 > idea.current_ltp
+        assert idea.target_2 > idea.target_1
+        assert idea.stop_loss < idea.current_ltp
+        assert "1 :" in idea.risk_reward_ratio
 
 
+def test_delta_window_strike_selection():
+    from analytics.trade_ideas import _select_strike_by_delta_window
+
+    contracts_map = {
+        ("C", 24450.0): (150.0, 0.62, 10000, 1000),
+        ("C", 24500.0): (110.0, 0.51, 20000, 2000),
+        ("C", 24550.0): (75.0, 0.39, 30000, 3000),
+        ("C", 24600.0): (45.0, 0.27, 40000, 4000),
+        ("C", 24650.0): (25.0, 0.18, 50000, 5000),
+        ("P", 24500.0): (105.0, -0.49, 20000, 2000),
+        ("P", 24450.0): (70.0, -0.38, 30000, 3000),
+        ("P", 24400.0): (40.0, -0.26, 40000, 4000),
+        ("P", 24350.0): (20.0, -0.17, 50000, 5000),
+    }
+
+    # Calls
+    k_atm_c = _select_strike_by_delta_window(0.50, True, 24500.0, contracts_map, 50)
+    assert k_atm_c == 24500.0  # 0.51 is closest to 0.50
+
+    k_struct_c = _select_strike_by_delta_window(0.40, True, 24550.0, contracts_map, 50)
+    assert k_struct_c == 24550.0  # 0.39 is closest to 0.40
+
+    k_sq_c = _select_strike_by_delta_window(0.28, True, 24600.0, contracts_map, 50)
+    assert k_sq_c == 24600.0  # 0.27 is closest to 0.28
+
+    k_vc_c = _select_strike_by_delta_window(0.20, True, 24650.0, contracts_map, 50)
+    assert k_vc_c == 24650.0  # 0.18 is closest to 0.20
+
+    # Puts
+    k_atm_p = _select_strike_by_delta_window(0.50, False, 24500.0, contracts_map, 50)
+    assert k_atm_p == 24500.0  # |-0.49| = 0.49 closest to 0.50
+
+    k_struct_p = _select_strike_by_delta_window(0.40, False, 24450.0, contracts_map, 50)
+    assert k_struct_p == 24450.0  # |-0.38| = 0.38 closest to 0.40
+
+    k_sq_p = _select_strike_by_delta_window(0.28, False, 24400.0, contracts_map, 50)
+    assert k_sq_p == 24400.0  # |-0.26| = 0.26 closest to 0.28
+
+
+def test_ev_quality_gating():
+    from analytics.trade_ideas import _apply_ev_quality_gate
+
+    # Case 1: Negative EV setup with high raw score (e.g. 88)
+    # Must be clamped to max 74 (Grade B+), never reaching Grade A/A+
+    adj_score, label, color = _apply_ev_quality_gate(88, ev=-2.5, pt1=0.35)
+    assert adj_score == 74
+    assert "TACTICAL OPPORTUNITY (Grade B+)" in label
+
+    # Case 2: Zero EV setup
+    adj_score2, label2, _ = _apply_ev_quality_gate(80, ev=0.0, pt1=0.40)
+    assert adj_score2 == 74
+    assert "TACTICAL OPPORTUNITY (Grade B+)" in label2
+
+    # Case 3: Strong positive EV setup (EV >= 5.0, pt1 >= 0.45, raw score >= 75)
+    # Must receive conviction bonus (+4 pts)
+    adj_score3, label3, _ = _apply_ev_quality_gate(78, ev=8.2, pt1=0.52)
+    assert adj_score3 == 82
+    assert "HIGH CONVICTION (Grade A+)" in label3
+
+    # Case 4: Moderate positive EV setup (EV = 2.0)
+    # Retains raw score without bonus or penalty
+    adj_score4, label4, _ = _apply_ev_quality_gate(76, ev=2.0, pt1=0.40)
+    assert adj_score4 == 76
+    assert "HIGH CONVICTION (Grade A)" in label4
+
+
+def test_volatility_horizon_scaling():
+    from analytics.trade_ideas import _calc_horizon_sigma
+
+    spot = 24500.0
+    eff_iv = 0.14
+    step = 50
+
+    # 30 min vs 90 min: sigma must grow with square root of horizon
+    sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
+    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+
+    assert sigma_90 > sigma_30
+    ratio = sigma_90 / sigma_30
+    # sqrt(90 / 30) = sqrt(3) ~ 1.732
+    import pytest
+    assert ratio == pytest.approx(1.732, rel=0.05)
+
+
+def test_scenario_confluence_scoring():
+    from analytics.trade_ideas import _compute_trade_score
+
+    class MockScenarioSet:
+        dominant_scenario = "bull"
+        no_edge = False
+
+        def get_prob(self, name: str) -> float:
+            return 0.55 if name == "bull" else 0.20
+
+    scen = MockScenarioSet()
+
+    # Call trade score aligned with Bull dominant scenario
+    score_ce_aligned, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 3.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, scenario_set=scen
+    )
+    score_ce_base, _, _ = _compute_trade_score(
+        "CE", "ATM Momentum", 3.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, scenario_set=None
+    )
+    assert score_ce_aligned > score_ce_base
+
+    # Put trade score counter to Bull dominant scenario
+    score_pe_counter, _, _ = _compute_trade_score(
+        "PE", "ATM Momentum", -3.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, scenario_set=scen
+    )
+    score_pe_base, _, _ = _compute_trade_score(
+        "PE", "ATM Momentum", -3.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        None, 1000, scenario_set=None
+    )
+    assert score_pe_counter < score_pe_base

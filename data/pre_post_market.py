@@ -307,6 +307,137 @@ def estimate_pre_bell_option_ltps(
     return results
 
 
+def calculate_pre_market_option_shocks(
+    discovered_spot: float,
+    prev_close: float,
+    contracts_df: Any = None,
+    symbol: str = "NIFTY",
+    dte_days: float = 3.0,
+    atm_iv: float = 0.14,
+) -> dict:
+    """Calculate institutional pre-market option repricing and straddle shocks using Black-76.
+
+    Reprices candidate strikes around ATM at the discovered opening equilibrium price S_disc,
+    accounting for gap jump volatility adjustment, delta/gamma expansion, and theta overnight decay.
+    """
+    from target_engine.pricer import reprice, greeks
+    from target_engine.iv_forecast import forecast_iv
+
+    sym_u = symbol.upper()
+    step = 50 if sym_u == "NIFTY" else (100 if sym_u in ("BANKNIFTY", "SENSEX") else 50)
+    gap_pts = round(discovered_spot - prev_close, 2)
+    gap_pct = round((gap_pts / prev_close) * 100.0, 2) if prev_close > 0 else 0.0
+
+    T_prev = max(float(dte_days) / 365.0, 1.0 / 365.0)
+    # Overnight decay ~ 0.5 trading day
+    T_open = max(1e-4, T_prev - (0.5 / 252.0))
+
+    atm_k = round(discovered_spot / step) * step
+    strikes = [atm_k + i * step for i in range(-3, 4)]
+
+    # Overnight gap jump vol adjustment
+    move_pct = gap_pts / prev_close if prev_close > 0 else 0.0
+    try:
+        iv_proj_ce = forecast_iv("bull" if gap_pts > 0 else "bear", 15, atm_iv, spot_move_pct=move_pct).sigma_target
+        iv_proj_pe = forecast_iv("bear" if gap_pts < 0 else "bull", 15, atm_iv, spot_move_pct=move_pct).sigma_target
+    except Exception:
+        iv_proj_ce = atm_iv
+        iv_proj_pe = atm_iv
+
+    projected_strikes = []
+    atm_ce_prev = 0.0
+    atm_ce_proj = 0.0
+    atm_pe_prev = 0.0
+    atm_pe_proj = 0.0
+
+    # Build contracts lookup if available
+    contracts_map: dict[tuple[str, float], float] = {}
+    if contracts_df is not None and hasattr(contracts_df, "itertuples"):
+        for row in contracts_df.itertuples(index=False):
+            t = "CE" if str(getattr(row, "type", "")).upper().startswith("C") else "PE"
+            k = float(getattr(row, "strike", 0.0))
+            px = float(getattr(row, "close", 0.0) or getattr(row, "ltp", 0.0) or 0.0)
+            contracts_map[(t, k)] = px
+
+    for k in strikes:
+        for opt in ("CE", "PE"):
+            # 1. Previous close price
+            prev_px = contracts_map.get((opt, k), 0.0)
+            if prev_px <= 0.0:
+                prev_px = reprice(prev_close, k, T_prev, atm_iv, r=0.065, option_type=opt)
+
+            # 2. Projected opening price
+            iv_opt = iv_proj_ce if opt == "CE" else iv_proj_pe
+            proj_px = reprice(discovered_spot, k, T_open, iv_opt, r=0.065, option_type=opt)
+
+            # Intrinsic floor
+            intrinsic = max(0.0, (discovered_spot - k) if opt == "CE" else (k - discovered_spot))
+            proj_px = max(proj_px, intrinsic)
+
+            prev_px = max(round(prev_px, 1), 0.5)
+            proj_px = max(round(proj_px, 1), 0.5)
+            shock_pts = round(proj_px - prev_px, 1)
+            shock_pct = round((shock_pts / prev_px) * 100.0, 1) if prev_px > 0 else 0.0
+
+            opt_greeks = greeks(discovered_spot, k, T_open, iv_opt, r=0.065, option_type=opt)
+
+            item = {
+                "strike": k,
+                "side": opt,
+                "prev_ltp": prev_px,
+                "projected_open_ltp": proj_px,
+                "shock_pts": shock_pts,
+                "shock_pct": shock_pct,
+                "delta": round(opt_greeks.delta, 2),
+                "is_atm": (k == atm_k),
+            }
+            projected_strikes.append(item)
+
+            if k == atm_k:
+                if opt == "CE":
+                    atm_ce_prev = prev_px
+                    atm_ce_proj = proj_px
+                else:
+                    atm_pe_prev = prev_px
+                    atm_pe_proj = proj_px
+
+    straddle_prev = round(atm_ce_prev + atm_pe_prev, 1)
+    straddle_proj = round(atm_ce_proj + atm_pe_proj, 1)
+    straddle_shock_pct = round(((straddle_proj - straddle_prev) / straddle_prev) * 100.0, 1) if straddle_prev > 0 else 0.0
+
+    if gap_pts > 0:
+        ce_pct = ((atm_ce_proj - atm_ce_prev) / max(atm_ce_prev, 1.0)) * 100.0
+        pe_pct = ((atm_pe_proj - atm_pe_prev) / max(atm_pe_prev, 1.0)) * 100.0
+        narrative = (
+            f"Pre-open gap-up of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) induces {ce_pct:+.0f}% "
+            f"expansion on ATM {atm_k:,.0f} CE, while ATM PE deflates {pe_pct:+.0f}%. "
+            f"Straddle moves {straddle_shock_pct:+.1f}%."
+        )
+    elif gap_pts < 0:
+        ce_pct = ((atm_ce_proj - atm_ce_prev) / max(atm_ce_prev, 1.0)) * 100.0
+        pe_pct = ((atm_pe_proj - atm_pe_prev) / max(atm_pe_prev, 1.0)) * 100.0
+        narrative = (
+            f"Pre-open gap-down of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) triggers {pe_pct:+.0f}% "
+            f"surge in ATM {atm_k:,.0f} PE, with Call crush of {ce_pct:+.0f}%. "
+            f"Straddle moves {straddle_shock_pct:+.1f}%."
+        )
+    else:
+        narrative = "Balanced auction discovery with flat overnight straddle delta impact."
+
+    return {
+        "discovered_spot": discovered_spot,
+        "prev_close": prev_close,
+        "gap_pts": gap_pts,
+        "gap_pct": gap_pct,
+        "atm_strike": atm_k,
+        "projected_strikes": projected_strikes,
+        "atm_straddle_prev": straddle_prev,
+        "atm_straddle_projected": straddle_proj,
+        "straddle_shock_pct": straddle_shock_pct,
+        "narrative": narrative,
+    }
+
+
 def get_post_market_state(
     symbol: str = "NIFTY",
     force_refresh: bool = False,

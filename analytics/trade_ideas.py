@@ -81,6 +81,10 @@ class TradeIdea:
     score_delta: int = 0               # Real-time score delta
     score_reason: str = ""             # Explanation for why score is increasing or fading
     score_history: list[dict] = field(default_factory=list)  # Historical data points
+    p_touch_target_1: float = 0.0      # Reflection principle probability of touching Target 1
+    p_touch_sl: float = 0.0            # Reflection principle probability of touching Stop Loss
+    net_ev_pts: float = 0.0            # Probability-weighted Net EV in option points (minus costs)
+    greek_attribution: dict = field(default_factory=dict) # Greek decomposition {delta, gamma, vega, theta}
 
 
 @dataclass
@@ -158,6 +162,130 @@ def _approx_bs_price_and_delta(
     except Exception:
         intrinsic = max(0.0, spot - strike if is_call else strike - spot)
         return max(intrinsic + 15.0, 25.0), 0.50 if is_call else -0.50
+
+
+def _reprice_trade_idea_targets(
+    side: str,
+    strike: float,
+    current_ltp: float,
+    spot: float,
+    inval_spot: float,
+    tgt1_spot: float,
+    tgt2_spot: float,
+    dte_days: float = 3.0,
+    atm_iv: float = 0.14,
+    horizon_minutes: int = 45,
+    step: int = 50,
+) -> tuple[float, float, float, float, float, float, str, dict]:
+    """Calculate Target 1, Target 2, Stop Loss, touch probabilities, and EV using Black-76 and Target Engine.
+
+    Returns:
+        (sl_opt, tgt1_opt, tgt2_opt, p_touch_tgt1, p_touch_sl, net_ev_pts, rr_str, greek_attr_dict)
+    """
+    is_call = side.upper() == "CE"
+    opt_type = "CE" if is_call else "PE"
+    safe_ltp = max(float(current_ltp), 1.0)
+    safe_spot = max(float(spot), 100.0)
+    safe_k = max(float(strike), 100.0)
+
+    # 1. Base time to expiry in annual fraction
+    T_entry = max(float(dte_days) / 365.0, 1.0 / (365.0 * 6.25 * 60.0))
+
+    # 2. Estimate or solve entry IV
+    iv_now = None
+    if safe_ltp > 0.0:
+        try:
+            from target_engine.pricer import implied_volatility
+            iv_now = implied_volatility(safe_spot, safe_k, T_entry, safe_ltp, r=0.065, option_type=opt_type)
+        except Exception:
+            iv_now = None
+
+    if iv_now is None or iv_now <= 0.02 or math.isnan(iv_now):
+        iv_now = float(atm_iv if atm_iv > 0.02 else 0.14)
+
+    # 3. Horizon time decrements
+    dt_annual = horizon_minutes / (365.0 * 6.25 * 60.0)
+    T_tgt1 = max(1e-4, T_entry - dt_annual)
+    T_tgt2 = max(1e-4, T_entry - (dt_annual * 1.5))
+    T_sl = max(1e-4, T_entry - (dt_annual * 0.5))
+
+    # 4. Forecasted IVs for scenarios
+    try:
+        from target_engine.iv_forecast import forecast_iv
+        scen_fwd = "bull" if is_call else "bear"
+        scen_adv = "bear" if is_call else "bull"
+
+        move1_pct = (tgt1_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+        move2_pct = (tgt2_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+        move_sl_pct = (inval_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+
+        iv_f_tgt1 = forecast_iv(scen_fwd, horizon_minutes, iv_now, spot_move_pct=move1_pct).sigma_target
+        iv_f_tgt2 = forecast_iv(scen_fwd, horizon_minutes * 2, iv_now, spot_move_pct=move2_pct).sigma_target
+        iv_f_sl = forecast_iv(scen_adv, int(horizon_minutes * 0.5), iv_now, spot_move_pct=move_sl_pct).sigma_target
+    except Exception:
+        iv_f_tgt1 = iv_now
+        iv_f_tgt2 = iv_now
+        iv_f_sl = iv_now
+
+    # 5. Black-76 Repricing
+    try:
+        from target_engine.pricer import reprice
+        tgt1_calc = reprice(tgt1_spot, safe_k, T_tgt1, iv_f_tgt1, r=0.065, option_type=opt_type)
+        tgt2_calc = reprice(tgt2_spot, safe_k, T_tgt2, iv_f_tgt2, r=0.065, option_type=opt_type)
+        sl_calc = reprice(inval_spot, safe_k, T_sl, iv_f_sl, r=0.065, option_type=opt_type)
+    except Exception:
+        tgt1_calc = safe_ltp * 1.35
+        tgt2_calc = safe_ltp * 1.70
+        sl_calc = safe_ltp * 0.72
+
+    # Enforce strict monotonicity and minimum buffers:
+    tgt1_opt = max(round(tgt1_calc, 1), round(safe_ltp * 1.15, 1))
+    tgt2_opt = max(round(tgt2_calc, 1), round(tgt1_opt * 1.15, 1), round(safe_ltp * 1.35, 1))
+    sl_opt = min(round(sl_calc, 1), round(safe_ltp * 0.85, 1))
+    sl_opt = max(0.5, sl_opt)
+    if sl_opt >= safe_ltp:
+        sl_opt = max(0.5, round(safe_ltp * 0.75, 1))
+
+    # 6. Touch Probabilities via Reflection Principle
+    try:
+        from target_engine.levels import compute_touch_probability
+        sigma_h = max(1.0, safe_spot * iv_now * math.sqrt(horizon_minutes / (365.0 * 6.25 * 60.0)))
+        p_touch_tgt1 = compute_touch_probability(distance=abs(tgt1_spot - safe_spot), sigma_h=sigma_h)
+        p_touch_sl = compute_touch_probability(distance=abs(inval_spot - safe_spot), sigma_h=sigma_h)
+    except Exception:
+        p_touch_tgt1 = 0.52
+        p_touch_sl = 0.38
+
+    # 7. Probability-weighted Net EV and Risk:Reward
+    gain_t1 = max(0.1, tgt1_opt - safe_ltp)
+    loss_sl = max(0.1, safe_ltp - sl_opt)
+    cost_pts = 0.8
+    net_ev = round((p_touch_tgt1 * gain_t1) - (p_touch_sl * loss_sl) - cost_pts, 1)
+
+    rr_ratio = round(gain_t1 / loss_sl, 1)
+    rr_str = f"1 : {rr_ratio}"
+
+    # 8. Greek Attribution Decomposition
+    attr_dict = {}
+    try:
+        from target_engine.pricer import greek_attribution
+        ga = greek_attribution(
+            F_entry=safe_spot, F_target=tgt1_spot,
+            sigma_entry=iv_now, sigma_target=iv_f_tgt1,
+            T_entry=T_entry, T_target=T_tgt1,
+            K=safe_k, r=0.065, option_type=opt_type
+        )
+        attr_dict = {
+            "delta_pnl": round(ga.delta_pnl, 2),
+            "gamma_pnl": round(ga.gamma_pnl, 2),
+            "vega_pnl": round(ga.vega_pnl, 2),
+            "theta_pnl": round(ga.theta_pnl, 2),
+            "total_pnl": round(ga.total_pnl, 2),
+        }
+    except Exception:
+        attr_dict = {"delta_pnl": round(gain_t1 * 0.7, 2), "theta_pnl": -round(gain_t1 * 0.1, 2)}
+
+    return (sl_opt, tgt1_opt, tgt2_opt, p_touch_tgt1, p_touch_sl, net_ev, rr_str, attr_dict)
 
 
 def _lookup_chain_data(
@@ -287,6 +415,36 @@ def _lookup_chain_data(
     return round(ltp, 1), round(delta, 2), oi, doi, is_ws_live
 
 
+def _select_strike_by_delta_window(
+    target_delta: float,
+    is_call: bool,
+    fallback_strike: float,
+    contracts_map: dict[tuple[str, float], tuple[float, float, float, float]] | None,
+    step: int,
+) -> float:
+    """Select the strike in the option chain whose delta is closest to target_delta within +/- 2 steps."""
+    if not contracts_map:
+        return float(fallback_strike)
+
+    c_type = "C" if is_call else "P"
+    min_k = fallback_strike - (2.5 * step)
+    max_k = fallback_strike + (2.5 * step)
+
+    best_strike = float(fallback_strike)
+    min_diff = 999.0
+
+    for (r_type, r_strike), (_, r_delta, _, _) in contracts_map.items():
+        if r_type == c_type and min_k <= r_strike <= max_k:
+            abs_delta = abs(float(r_delta))
+            if 0.05 <= abs_delta <= 0.95:
+                diff = abs(abs_delta - target_delta)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_strike = float(r_strike)
+
+    return best_strike
+
+
 def _compute_trade_score(
     side: str,
     play_type: str,
@@ -300,6 +458,7 @@ def _compute_trade_score(
     vwap_upper: float = 0.0,
     vwap_lower: float = 0.0,
     flip: float = 0.0,
+    scenario_set: Any | None = None,
 ) -> tuple[int, str, str]:
     """Calculates Trade Quality Score (0-100), Conviction Label, and Badge Color."""
     score = 55
@@ -432,6 +591,36 @@ def _compute_trade_score(
                 score += 14
             elif bias_score < -4.0:
                 score += 6
+
+    # 6. Target Engine Scenario Confluence (Weight: ±12 pts)
+    if scenario_set is not None:
+        try:
+            p_bull = float(scenario_set.get_prob("bull")) if hasattr(scenario_set, "get_prob") else 0.33
+            p_base = float(scenario_set.get_prob("base")) if hasattr(scenario_set, "get_prob") else 0.34
+            p_bear = float(scenario_set.get_prob("bear")) if hasattr(scenario_set, "get_prob") else 0.33
+            dom_scen = getattr(scenario_set, "dominant_scenario", "base")
+            no_edge = getattr(scenario_set, "no_edge", False)
+
+            if no_edge or p_base >= 0.45:
+                # Range dominance / pinning edge
+                if "VANNA" in pt_upper or "CHARM" in pt_upper or "ICEBERG" in pt_upper:
+                    score += 10  # Range-pinning setups thrive in base regime
+                elif "MOMENTUM" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+                    score -= 8   # Breakouts fail in range-dominant regimes
+            else:
+                # Confirmed directional edge
+                if side == "CE":
+                    if dom_scen == "bull" or p_bull >= 0.45:
+                        score += 10
+                    elif dom_scen == "bear" or p_bear >= 0.45:
+                        score -= 10
+                else:  # PE
+                    if dom_scen == "bear" or p_bear >= 0.45:
+                        score += 10
+                    elif dom_scen == "bull" or p_bull >= 0.45:
+                        score -= 10
+        except Exception:
+            pass
 
     # Clamp to [15, 95]
     score = max(15, min(95, score))
@@ -669,6 +858,51 @@ def _generate_strategy_score_reason(
     return " · ".join(reasons)
 
 
+def _calc_horizon_sigma(spot: float, eff_iv: float, horizon_minutes: float, step: int) -> float:
+    """Computes intraday expected move sigma_h = max(step * 0.5, spot * eff_iv * sqrt(h / 94500)).
+
+    Calibrated to Indian market trading hours (375 intraday minutes per day, 252 trading days/year = 94,500 mins).
+    """
+    ann_factor = 1.0 / math.sqrt(252.0 * 375.0)
+    raw_sigma = spot * eff_iv * ann_factor * math.sqrt(horizon_minutes)
+    return max(step * 0.5, raw_sigma)
+
+
+def _apply_ev_quality_gate(
+    score: int,
+    ev: float,
+    pt1: float,
+) -> tuple[int, str, str]:
+    """Enforces Net EV quality gating:
+    - If EV <= 0.0: negative edge setup. Clamp score to max 74 (Grade B+ max), preventing Grade A/A+ promotion.
+    - If EV >= 5.0 and pt1 >= 0.45 and initial score >= 75: strong statistical edge. Award +4 conviction bonus (capped at 98).
+    Returns (adjusted_score, conviction_label, conviction_color).
+    """
+    adj_score = score
+    if ev <= 0.0:
+        adj_score = min(score, 74)
+    elif ev >= 5.0 and pt1 >= 0.45 and score >= 75:
+        adj_score = min(98, score + 4)
+
+    if adj_score >= 80:
+        label = "HIGH CONVICTION (Grade A+)"
+        color = "var(--go)"
+    elif adj_score >= 75:
+        label = "HIGH CONVICTION (Grade A)"
+        color = "var(--go)"
+    elif adj_score >= 65:
+        label = "TACTICAL OPPORTUNITY (Grade B+)"
+        color = "var(--spark)"
+    elif adj_score >= 50:
+        label = "COUNTER-TREND / SPECULATIVE (Grade C)"
+        color = "#f59e0b"
+    else:
+        label = "LOW PROBABILITY / AVOID"
+        color = "var(--stop)"
+
+    return adj_score, label, color
+
+
 def _evaluate_ce_strategies(
     symbol: str,
     step: int,
@@ -691,12 +925,16 @@ def _evaluate_ce_strategies(
     oi_map: dict[float, dict],
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
     expiry_tag: str = "",
+    dte_days: float = 3.0,
+    atm_iv: float = 0.14,
+    scenario_set: Any | None = None,
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Call candidate strategies in parallel."""
     # =======================================================================
     # CALL CANDIDATE STRATEGIES (7 Plays)
     # =======================================================================
     ce_recs: list[TradeIdea] = []
+    eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
 
     # Common chain quote lookups for Calls
     ce_atm_ltp, ce_atm_delta, ce_atm_oi, ce_atm_doi, ce_atm_ws = _lookup_chain_data(
@@ -716,17 +954,21 @@ def _evaluate_ce_strategies(
         oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
     )
 
-    # 1. CE MOMENTUM
-    ce_atm_score, ce_atm_label, ce_atm_color = _compute_trade_score(
+    # 1. CE MOMENTUM (h = 45 min)
+    sigma_45 = _calc_horizon_sigma(spot, eff_iv, 45.0, step)
+    ce_atm_score, _, _ = _compute_trade_score(
         "CE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_atm_inval_spot = round(min(session_vwap - (step * 0.35), spot - (step * 0.6)), 0)
-    ce_atm_tgt1_spot = round(max(vwap_upper, spot + (step * 0.75)), 0)
-    ce_atm_tgt2_spot = round(call_wall, 0)
-    ce_atm_sl = max(1.0, round(ce_atm_ltp * 0.72, 1))
-    ce_atm_tgt1 = round(ce_atm_ltp * 1.35, 1)
-    ce_atm_tgt2 = round(ce_atm_ltp * 1.70, 1)
+    ce_atm_inval_spot = round(min(session_vwap - (step * 0.35), spot - (sigma_45 * 0.75)), 0)
+    ce_atm_tgt1_spot = round(max(vwap_upper, spot + sigma_45), 0)
+    ce_atm_tgt2_spot = round(max(call_wall, ce_atm_tgt1_spot + sigma_45), 0)
+    ce_atm_sl, ce_atm_tgt1, ce_atm_tgt2, ce_atm_pt1, ce_atm_psl, ce_atm_ev, ce_atm_rr, ce_atm_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
+        inval_spot=ce_atm_inval_spot, tgt1_spot=ce_atm_tgt1_spot, tgt2_spot=ce_atm_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=45, step=step,
+    )
+    ce_atm_score, ce_atm_label, ce_atm_color = _apply_ev_quality_gate(ce_atm_score, ce_atm_ev, ce_atm_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -745,7 +987,7 @@ def _evaluate_ce_strategies(
             target_2=ce_atm_tgt2,
             target_2_spot=ce_atm_tgt2_spot,
             stop_loss=ce_atm_sl,
-            risk_reward_ratio="1 : 2.5",
+            risk_reward_ratio=ce_atm_rr,
             quality_score=ce_atm_score,
             conviction_label=ce_atm_label,
             conviction_color=ce_atm_color,
@@ -755,20 +997,28 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
             is_ws_live=ce_atm_ws,
+            p_touch_target_1=ce_atm_pt1,
+            p_touch_sl=ce_atm_psl,
+            net_ev_pts=ce_atm_ev,
+            greek_attribution=ce_atm_attr,
         )
     )
 
-    # 2. CE STRUCTURE
-    ce_struct_score, ce_struct_label, ce_struct_color = _compute_trade_score(
+    # 2. CE STRUCTURE (h = 75 min)
+    sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
+    ce_struct_score, _, _ = _compute_trade_score(
         "CE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_struct_inval_spot = round(put_wall - (step * 0.3), 0)
-    ce_struct_tgt1_spot = round(flip if flip > spot else spot + step, 0)
-    ce_struct_tgt2_spot = round(call_wall, 0)
-    ce_struct_sl = max(1.0, round(ce_struct_ltp * 0.68, 1))
-    ce_struct_tgt1 = round(ce_struct_ltp * 1.45, 1)
-    ce_struct_tgt2 = round(ce_struct_ltp * 1.95, 1)
+    ce_struct_inval_spot = round(min(put_wall - (sigma_75 * 0.4), spot - (sigma_75 * 0.6)), 0)
+    ce_struct_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + sigma_75), 0)
+    ce_struct_tgt2_spot = round(max(call_wall, ce_struct_tgt1_spot + sigma_75), 0)
+    ce_struct_sl, ce_struct_tgt1, ce_struct_tgt2, ce_struct_pt1, ce_struct_psl, ce_struct_ev, ce_struct_rr, ce_struct_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_struct_k, current_ltp=ce_struct_ltp, spot=spot,
+        inval_spot=ce_struct_inval_spot, tgt1_spot=ce_struct_tgt1_spot, tgt2_spot=ce_struct_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=75, step=step,
+    )
+    ce_struct_score, ce_struct_label, ce_struct_color = _apply_ev_quality_gate(ce_struct_score, ce_struct_ev, ce_struct_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -787,7 +1037,7 @@ def _evaluate_ce_strategies(
             target_2=ce_struct_tgt2,
             target_2_spot=ce_struct_tgt2_spot,
             stop_loss=ce_struct_sl,
-            risk_reward_ratio="1 : 3.0",
+            risk_reward_ratio=ce_struct_rr,
             quality_score=ce_struct_score,
             conviction_label=ce_struct_label,
             conviction_color=ce_struct_color,
@@ -797,20 +1047,28 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["OI Buildup Support", "Wall Reversal", "High Asymmetry"],
             is_ws_live=ce_struct_ws,
+            p_touch_target_1=ce_struct_pt1,
+            p_touch_sl=ce_struct_psl,
+            net_ev_pts=ce_struct_ev,
+            greek_attribution=ce_struct_attr,
         )
     )
 
-    # 3. CE GAMMA SQUEEZE
-    ce_sq_score, ce_sq_label, ce_sq_color = _compute_trade_score(
+    # 3. CE GAMMA SQUEEZE (h = 30 min)
+    sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
+    ce_sq_score, _, _ = _compute_trade_score(
         "CE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_sq_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_sq_inval_spot = round(call_wall - (step * 0.4), 0)
-    ce_sq_tgt1_spot = round(call_wall + step, 0)
-    ce_sq_tgt2_spot = round(call_wall + (2 * step), 0)
-    ce_sq_sl = max(1.0, round(ce_sq_ltp * 0.60, 1))
-    ce_sq_tgt1 = round(ce_sq_ltp * 1.60, 1)
-    ce_sq_tgt2 = round(ce_sq_ltp * 2.40, 1)
+    ce_sq_inval_spot = round(min(call_wall - (sigma_30 * 0.5), spot - (sigma_30 * 0.6)), 0)
+    ce_sq_tgt1_spot = round(max(call_wall + sigma_30, spot + sigma_30), 0)
+    ce_sq_tgt2_spot = round(ce_sq_tgt1_spot + sigma_30, 0)
+    ce_sq_sl, ce_sq_tgt1, ce_sq_tgt2, ce_sq_pt1, ce_sq_psl, ce_sq_ev, ce_sq_rr, ce_sq_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_squeeze_k, current_ltp=ce_sq_ltp, spot=spot,
+        inval_spot=ce_sq_inval_spot, tgt1_spot=ce_sq_tgt1_spot, tgt2_spot=ce_sq_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
+    )
+    ce_sq_score, ce_sq_label, ce_sq_color = _apply_ev_quality_gate(ce_sq_score, ce_sq_ev, ce_sq_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -829,7 +1087,7 @@ def _evaluate_ce_strategies(
             target_2=ce_sq_tgt2,
             target_2_spot=ce_sq_tgt2_spot,
             stop_loss=ce_sq_sl,
-            risk_reward_ratio="1 : 3.5",
+            risk_reward_ratio=ce_sq_rr,
             quality_score=ce_sq_score,
             conviction_label=ce_sq_label,
             conviction_color=ce_sq_color,
@@ -839,20 +1097,27 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["Dealer Short Covering", "Gamma Blast", "100%+ Multiplier"],
             is_ws_live=ce_sq_ws,
+            p_touch_target_1=ce_sq_pt1,
+            p_touch_sl=ce_sq_psl,
+            net_ev_pts=ce_sq_ev,
+            greek_attribution=ce_sq_attr,
         )
     )
 
-    # 4. CE ICEBERG ABSORPTION FADE
-    ce_ice_score, ce_ice_label, ce_ice_color = _compute_trade_score(
+    # 4. CE ICEBERG ABSORPTION FADE (h = 30 min)
+    ce_ice_score, _, _ = _compute_trade_score(
         "CE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_ice_inval_spot = round(min(vwap_lower - (step * 0.25), spot - (step * 0.3)), 0)
-    ce_ice_tgt1_spot = round(session_vwap, 0)
-    ce_ice_tgt2_spot = round(max(vwap_upper, spot + step), 0)
-    ce_ice_sl = max(1.0, round(ce_atm_ltp * 0.80, 1))  # -20% ultra-tight stop
-    ce_ice_tgt1 = round(ce_atm_ltp * 1.40, 1)          # +40% (2.0R)
-    ce_ice_tgt2 = round(ce_atm_ltp * 1.90, 1)          # +90% (4.5R)
+    ce_ice_inval_spot = round(min(vwap_lower - (sigma_30 * 0.35), spot - (sigma_30 * 0.4)), 0)
+    ce_ice_tgt1_spot = round(max(session_vwap, spot + (sigma_30 * 0.75)), 0)
+    ce_ice_tgt2_spot = round(max(vwap_upper, ce_ice_tgt1_spot + (sigma_30 * 0.75)), 0)
+    ce_ice_sl, ce_ice_tgt1, ce_ice_tgt2, ce_ice_pt1, ce_ice_psl, ce_ice_ev, ce_ice_rr, ce_ice_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
+        inval_spot=ce_ice_inval_spot, tgt1_spot=ce_ice_tgt1_spot, tgt2_spot=ce_ice_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
+    )
+    ce_ice_score, ce_ice_label, ce_ice_color = _apply_ev_quality_gate(ce_ice_score, ce_ice_ev, ce_ice_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -871,7 +1136,7 @@ def _evaluate_ce_strategies(
             target_2=ce_ice_tgt2,
             target_2_spot=ce_ice_tgt2_spot,
             stop_loss=ce_ice_sl,
-            risk_reward_ratio="1 : 4.5",
+            risk_reward_ratio=ce_ice_rr,
             quality_score=ce_ice_score,
             conviction_label=ce_ice_label,
             conviction_color=ce_ice_color,
@@ -881,20 +1146,28 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["Iceberg Absorption", "Tape Divergence", "Ultra-Tight Stop"],
             is_ws_live=ce_atm_ws,
+            p_touch_target_1=ce_ice_pt1,
+            p_touch_sl=ce_ice_psl,
+            net_ev_pts=ce_ice_ev,
+            greek_attribution=ce_ice_attr,
         )
     )
 
-    # 5. CE 0DTE VANNA-CHARM THETA COMPRESSION
-    ce_vc_score, ce_vc_label, ce_vc_color = _compute_trade_score(
+    # 5. CE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
+    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+    ce_vc_score, _, _ = _compute_trade_score(
         "CE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_vc_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_vc_inval_spot = round(call_wall + (step * 0.3), 0)
-    ce_vc_tgt1_spot = round(flip if flip < call_wall else session_vwap, 0)
-    ce_vc_tgt2_spot = round(session_vwap, 0)
-    ce_vc_sl = max(1.0, round(ce_vc_ltp * 0.65, 1))    # -35% risk
-    ce_vc_tgt1 = round(ce_vc_ltp * 1.30, 1)            # +30%
-    ce_vc_tgt2 = round(ce_vc_ltp * 1.60, 1)            # +60%
+    ce_vc_inval_spot = round(spot - (sigma_90 * 0.45), 0)
+    ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
+    ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
+    ce_vc_sl, ce_vc_tgt1, ce_vc_tgt2, ce_vc_pt1, ce_vc_psl, ce_vc_ev, ce_vc_rr, ce_vc_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_vanna_k, current_ltp=ce_vc_ltp, spot=spot,
+        inval_spot=ce_vc_inval_spot, tgt1_spot=ce_vc_tgt1_spot, tgt2_spot=ce_vc_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
+    )
+    ce_vc_score, ce_vc_label, ce_vc_color = _apply_ev_quality_gate(ce_vc_score, ce_vc_ev, ce_vc_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -907,13 +1180,13 @@ def _evaluate_ce_strategies(
             delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
             entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with Charm acceleration locking pin near Flip (₹{flip:,.0f}).",
             spot_invalidation=ce_vc_inval_spot,
-            spot_invalidation_text=f"Spot volatility breakout above ₹{ce_vc_inval_spot:,.0f}",
+            spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
             target_1=ce_vc_tgt1,
             target_1_spot=ce_vc_tgt1_spot,
             target_2=ce_vc_tgt2,
             target_2_spot=ce_vc_tgt2_spot,
             stop_loss=ce_vc_sl,
-            risk_reward_ratio="1 : 2.0",
+            risk_reward_ratio=ce_vc_rr,
             quality_score=ce_vc_score,
             conviction_label=ce_vc_label,
             conviction_color=ce_vc_color,
@@ -923,20 +1196,28 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
             is_ws_live=ce_vc_ws,
+            p_touch_target_1=ce_vc_pt1,
+            p_touch_sl=ce_vc_psl,
+            net_ev_pts=ce_vc_ev,
+            greek_attribution=ce_vc_attr,
         )
     )
 
-    # 6. CE VOLATILITY DISPERSION / LONG GAMMA
-    ce_vd_score, ce_vd_label, ce_vd_color = _compute_trade_score(
+    # 6. CE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
+    sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
+    ce_vd_score, _, _ = _compute_trade_score(
         "CE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_vd_inval_spot = round(session_vwap - (step * 0.4), 0)
-    ce_vd_tgt1_spot = round(call_wall, 0)
-    ce_vd_tgt2_spot = round(call_wall + (2 * step), 0)
-    ce_vd_sl = max(1.0, round(ce_atm_ltp * 0.70, 1))   # -30% risk
-    ce_vd_tgt1 = round(ce_atm_ltp * 1.50, 1)           # +50% (1.67R)
-    ce_vd_tgt2 = round(ce_atm_ltp * 2.20, 1)           # +120% (4.0R)
+    ce_vd_inval_spot = round(min(session_vwap - (sigma_60 * 0.5), spot - (sigma_60 * 0.6)), 0)
+    ce_vd_tgt1_spot = round(max(call_wall, spot + (sigma_60 * 1.2)), 0)
+    ce_vd_tgt2_spot = round(max(ce_vd_tgt1_spot + step, spot + (sigma_60 * 2.2)), 0)
+    ce_vd_sl, ce_vd_tgt1, ce_vd_tgt2, ce_vd_pt1, ce_vd_psl, ce_vd_ev, ce_vd_rr, ce_vd_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
+        inval_spot=ce_vd_inval_spot, tgt1_spot=ce_vd_tgt1_spot, tgt2_spot=ce_vd_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=60, step=step,
+    )
+    ce_vd_score, ce_vd_label, ce_vd_color = _apply_ev_quality_gate(ce_vd_score, ce_vd_ev, ce_vd_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -955,7 +1236,7 @@ def _evaluate_ce_strategies(
             target_2=ce_vd_tgt2,
             target_2_spot=ce_vd_tgt2_spot,
             stop_loss=ce_vd_sl,
-            risk_reward_ratio="1 : 4.0",
+            risk_reward_ratio=ce_vd_rr,
             quality_score=ce_vd_score,
             conviction_label=ce_vd_label,
             conviction_color=ce_vd_color,
@@ -965,20 +1246,27 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
             is_ws_live=ce_atm_ws,
+            p_touch_target_1=ce_vd_pt1,
+            p_touch_sl=ce_vd_psl,
+            net_ev_pts=ce_vd_ev,
+            greek_attribution=ce_vd_attr,
         )
     )
 
-    # 7. CE ZERO-COST RATIO RISK REVERSAL
-    ce_rr_score, ce_rr_label, ce_rr_color = _compute_trade_score(
+    # 7. CE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
+    ce_rr_score, _, _ = _compute_trade_score(
         "CE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    ce_rr_inval_spot = round(session_vwap - (step * 0.35), 0)
-    ce_rr_tgt1_spot = round(call_wall, 0)
-    ce_rr_tgt2_spot = round(call_wall + step, 0)
-    ce_rr_sl = max(1.0, round(ce_struct_ltp * 0.75, 1))  # -25% risk
-    ce_rr_tgt1 = round(ce_struct_ltp * 1.35, 1)          # +35%
-    ce_rr_tgt2 = round(ce_struct_ltp * 1.75, 1)          # +75%
+    ce_rr_inval_spot = round(min(session_vwap - (sigma_90 * 0.45), spot - (sigma_90 * 0.5)), 0)
+    ce_rr_tgt1_spot = round(max(call_wall, spot + sigma_90), 0)
+    ce_rr_tgt2_spot = round(max(ce_rr_tgt1_spot + step, spot + (sigma_90 * 1.8)), 0)
+    ce_rr_sl, ce_rr_tgt1, ce_rr_tgt2, ce_rr_pt1, ce_rr_psl, ce_rr_ev, ce_rr_rr, ce_rr_attr = _reprice_trade_idea_targets(
+        side="CE", strike=ce_struct_k, current_ltp=ce_struct_ltp, spot=spot,
+        inval_spot=ce_rr_inval_spot, tgt1_spot=ce_rr_tgt1_spot, tgt2_spot=ce_rr_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
+    )
+    ce_rr_score, ce_rr_label, ce_rr_color = _apply_ev_quality_gate(ce_rr_score, ce_rr_ev, ce_rr_pt1)
     ce_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -997,7 +1285,7 @@ def _evaluate_ce_strategies(
             target_2=ce_rr_tgt2,
             target_2_spot=ce_rr_tgt2_spot,
             stop_loss=ce_rr_sl,
-            risk_reward_ratio="1 : 3.0",
+            risk_reward_ratio=ce_rr_rr,
             quality_score=ce_rr_score,
             conviction_label=ce_rr_label,
             conviction_color=ce_rr_color,
@@ -1007,9 +1295,12 @@ def _evaluate_ce_strategies(
             ),
             catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
             is_ws_live=ce_struct_ws,
+            p_touch_target_1=ce_rr_pt1,
+            p_touch_sl=ce_rr_psl,
+            net_ev_pts=ce_rr_ev,
+            greek_attribution=ce_rr_attr,
         )
     )
-
 
     return ce_recs
 
@@ -1036,12 +1327,16 @@ def _evaluate_pe_strategies(
     oi_map: dict[float, dict],
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
     expiry_tag: str = "",
+    dte_days: float = 3.0,
+    atm_iv: float = 0.14,
+    scenario_set: Any | None = None,
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Put candidate strategies in parallel."""
     # =======================================================================
     # PUT CANDIDATE STRATEGIES (7 Plays)
     # =======================================================================
     pe_recs: list[TradeIdea] = []
+    eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
 
     # Common chain quote lookups for Puts
     pe_atm_ltp, pe_atm_delta, pe_atm_oi, pe_atm_doi, pe_atm_ws = _lookup_chain_data(
@@ -1061,17 +1356,21 @@ def _evaluate_pe_strategies(
         oi_map=oi_map, contracts_map=contracts_map, chain_spot=chain_spot, symbol=symbol
     )
 
-    # 1. PE MOMENTUM
-    pe_atm_score, pe_atm_label, pe_atm_color = _compute_trade_score(
+    # 1. PE MOMENTUM (h = 45 min)
+    sigma_45 = _calc_horizon_sigma(spot, eff_iv, 45.0, step)
+    pe_atm_score, _, _ = _compute_trade_score(
         "PE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_atm_inval_spot = round(max(session_vwap + (step * 0.35), spot + (step * 0.6)), 0)
-    pe_atm_tgt1_spot = round(min(vwap_lower, spot - (step * 0.75)), 0)
-    pe_atm_tgt2_spot = round(put_wall, 0)
-    pe_atm_sl = max(1.0, round(pe_atm_ltp * 0.72, 1))
-    pe_atm_tgt1 = round(pe_atm_ltp * 1.35, 1)
-    pe_atm_tgt2 = round(pe_atm_ltp * 1.70, 1)
+    pe_atm_inval_spot = round(max(session_vwap + (step * 0.35), spot + (sigma_45 * 0.75)), 0)
+    pe_atm_tgt1_spot = round(min(vwap_lower, spot - sigma_45), 0)
+    pe_atm_tgt2_spot = round(min(put_wall, pe_atm_tgt1_spot - sigma_45), 0)
+    pe_atm_sl, pe_atm_tgt1, pe_atm_tgt2, pe_atm_pt1, pe_atm_psl, pe_atm_ev, pe_atm_rr, pe_atm_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
+        inval_spot=pe_atm_inval_spot, tgt1_spot=pe_atm_tgt1_spot, tgt2_spot=pe_atm_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=45, step=step,
+    )
+    pe_atm_score, pe_atm_label, pe_atm_color = _apply_ev_quality_gate(pe_atm_score, pe_atm_ev, pe_atm_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1090,7 +1389,7 @@ def _evaluate_pe_strategies(
             target_2=pe_atm_tgt2,
             target_2_spot=pe_atm_tgt2_spot,
             stop_loss=pe_atm_sl,
-            risk_reward_ratio="1 : 2.5",
+            risk_reward_ratio=pe_atm_rr,
             quality_score=pe_atm_score,
             conviction_label=pe_atm_label,
             conviction_color=pe_atm_color,
@@ -1100,20 +1399,28 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
             is_ws_live=pe_atm_ws,
+            p_touch_target_1=pe_atm_pt1,
+            p_touch_sl=pe_atm_psl,
+            net_ev_pts=pe_atm_ev,
+            greek_attribution=pe_atm_attr,
         )
     )
 
-    # 2. PE STRUCTURE
-    pe_struct_score, pe_struct_label, pe_struct_color = _compute_trade_score(
+    # 2. PE STRUCTURE (h = 75 min)
+    sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
+    pe_struct_score, _, _ = _compute_trade_score(
         "PE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_struct_inval_spot = round(call_wall + (step * 0.3), 0)
-    pe_struct_tgt1_spot = round(flip if flip < spot else spot - step, 0)
-    pe_struct_tgt2_spot = round(put_wall, 0)
-    pe_struct_sl = max(1.0, round(pe_struct_ltp * 0.68, 1))
-    pe_struct_tgt1 = round(pe_struct_ltp * 1.45, 1)
-    pe_struct_tgt2 = round(pe_struct_ltp * 1.95, 1)
+    pe_struct_inval_spot = round(max(call_wall + (sigma_75 * 0.4), spot + (sigma_75 * 0.6)), 0)
+    pe_struct_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - sigma_75), 0)
+    pe_struct_tgt2_spot = round(min(put_wall, pe_struct_tgt1_spot - sigma_75), 0)
+    pe_struct_sl, pe_struct_tgt1, pe_struct_tgt2, pe_struct_pt1, pe_struct_psl, pe_struct_ev, pe_struct_rr, pe_struct_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_struct_k, current_ltp=pe_struct_ltp, spot=spot,
+        inval_spot=pe_struct_inval_spot, tgt1_spot=pe_struct_tgt1_spot, tgt2_spot=pe_struct_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=75, step=step,
+    )
+    pe_struct_score, pe_struct_label, pe_struct_color = _apply_ev_quality_gate(pe_struct_score, pe_struct_ev, pe_struct_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1132,7 +1439,7 @@ def _evaluate_pe_strategies(
             target_2=pe_struct_tgt2,
             target_2_spot=pe_struct_tgt2_spot,
             stop_loss=pe_struct_sl,
-            risk_reward_ratio="1 : 3.0",
+            risk_reward_ratio=pe_struct_rr,
             quality_score=pe_struct_score,
             conviction_label=pe_struct_label,
             conviction_color=pe_struct_color,
@@ -1142,20 +1449,28 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Call Wall Rejection", "Short Buildup", "High Asymmetry"],
             is_ws_live=pe_struct_ws,
+            p_touch_target_1=pe_struct_pt1,
+            p_touch_sl=pe_struct_psl,
+            net_ev_pts=pe_struct_ev,
+            greek_attribution=pe_struct_attr,
         )
     )
 
-    # 3. PE GAMMA SQUEEZE
-    pe_sq_score, pe_sq_label, pe_sq_color = _compute_trade_score(
+    # 3. PE GAMMA SQUEEZE (h = 30 min)
+    sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
+    pe_sq_score, _, _ = _compute_trade_score(
         "PE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_sq_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_sq_inval_spot = round(put_wall + (step * 0.4), 0)
-    pe_sq_tgt1_spot = round(put_wall - step, 0)
-    pe_sq_tgt2_spot = round(put_wall - (2 * step), 0)
-    pe_sq_sl = max(1.0, round(pe_sq_ltp * 0.60, 1))
-    pe_sq_tgt1 = round(pe_sq_ltp * 1.60, 1)
-    pe_sq_tgt2 = round(pe_sq_ltp * 2.40, 1)
+    pe_sq_inval_spot = round(max(put_wall + (sigma_30 * 0.5), spot + (sigma_30 * 0.6)), 0)
+    pe_sq_tgt1_spot = round(min(put_wall - sigma_30, spot - sigma_30), 0)
+    pe_sq_tgt2_spot = round(pe_sq_tgt1_spot - sigma_30, 0)
+    pe_sq_sl, pe_sq_tgt1, pe_sq_tgt2, pe_sq_pt1, pe_sq_psl, pe_sq_ev, pe_sq_rr, pe_sq_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_squeeze_k, current_ltp=pe_sq_ltp, spot=spot,
+        inval_spot=pe_sq_inval_spot, tgt1_spot=pe_sq_tgt1_spot, tgt2_spot=pe_sq_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
+    )
+    pe_sq_score, pe_sq_label, pe_sq_color = _apply_ev_quality_gate(pe_sq_score, pe_sq_ev, pe_sq_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1174,7 +1489,7 @@ def _evaluate_pe_strategies(
             target_2=pe_sq_tgt2,
             target_2_spot=pe_sq_tgt2_spot,
             stop_loss=pe_sq_sl,
-            risk_reward_ratio="1 : 3.5",
+            risk_reward_ratio=pe_sq_rr,
             quality_score=pe_sq_score,
             conviction_label=pe_sq_label,
             conviction_color=pe_sq_color,
@@ -1184,20 +1499,27 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Trapdoor Breakdown", "Dealer Panic Selling", "100%+ Multiplier"],
             is_ws_live=pe_sq_ws,
+            p_touch_target_1=pe_sq_pt1,
+            p_touch_sl=pe_sq_psl,
+            net_ev_pts=pe_sq_ev,
+            greek_attribution=pe_sq_attr,
         )
     )
 
-    # 4. PE ICEBERG ABSORPTION FADE
-    pe_ice_score, pe_ice_label, pe_ice_color = _compute_trade_score(
+    # 4. PE ICEBERG ABSORPTION FADE (h = 30 min)
+    pe_ice_score, _, _ = _compute_trade_score(
         "PE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_ice_inval_spot = round(max(vwap_upper + (step * 0.25), spot + (step * 0.3)), 0)
-    pe_ice_tgt1_spot = round(session_vwap, 0)
-    pe_ice_tgt2_spot = round(min(vwap_lower, spot - step), 0)
-    pe_ice_sl = max(1.0, round(pe_atm_ltp * 0.80, 1))  # -20% ultra-tight stop
-    pe_ice_tgt1 = round(pe_atm_ltp * 1.40, 1)          # +40% (2.0R)
-    pe_ice_tgt2 = round(pe_atm_ltp * 1.90, 1)          # +90% (4.5R)
+    pe_ice_inval_spot = round(max(vwap_upper + (sigma_30 * 0.35), spot + (sigma_30 * 0.4)), 0)
+    pe_ice_tgt1_spot = round(min(session_vwap, spot - (sigma_30 * 0.75)), 0)
+    pe_ice_tgt2_spot = round(min(vwap_lower, pe_ice_tgt1_spot - (sigma_30 * 0.75)), 0)
+    pe_ice_sl, pe_ice_tgt1, pe_ice_tgt2, pe_ice_pt1, pe_ice_psl, pe_ice_ev, pe_ice_rr, pe_ice_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
+        inval_spot=pe_ice_inval_spot, tgt1_spot=pe_ice_tgt1_spot, tgt2_spot=pe_ice_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
+    )
+    pe_ice_score, pe_ice_label, pe_ice_color = _apply_ev_quality_gate(pe_ice_score, pe_ice_ev, pe_ice_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1216,7 +1538,7 @@ def _evaluate_pe_strategies(
             target_2=pe_ice_tgt2,
             target_2_spot=pe_ice_tgt2_spot,
             stop_loss=pe_ice_sl,
-            risk_reward_ratio="1 : 4.5",
+            risk_reward_ratio=pe_ice_rr,
             quality_score=pe_ice_score,
             conviction_label=pe_ice_label,
             conviction_color=pe_ice_color,
@@ -1226,20 +1548,28 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Seller Absorption", "Tape Exhaustion", "Ultra-Tight Stop"],
             is_ws_live=pe_atm_ws,
+            p_touch_target_1=pe_ice_pt1,
+            p_touch_sl=pe_ice_psl,
+            net_ev_pts=pe_ice_ev,
+            greek_attribution=pe_ice_attr,
         )
     )
 
-    # 5. PE 0DTE VANNA-CHARM THETA COMPRESSION
-    pe_vc_score, pe_vc_label, pe_vc_color = _compute_trade_score(
+    # 5. PE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
+    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+    pe_vc_score, _, _ = _compute_trade_score(
         "PE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_vc_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_vc_inval_spot = round(put_wall - (step * 0.3), 0)
-    pe_vc_tgt1_spot = round(flip if flip > put_wall else session_vwap, 0)
-    pe_vc_tgt2_spot = round(session_vwap, 0)
-    pe_vc_sl = max(1.0, round(pe_vc_ltp * 0.65, 1))    # -35% risk
-    pe_vc_tgt1 = round(pe_vc_ltp * 1.30, 1)            # +30%
-    pe_vc_tgt2 = round(pe_vc_ltp * 1.60, 1)            # +60%
+    pe_vc_inval_spot = round(spot + (sigma_90 * 0.45), 0)
+    pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
+    pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
+    pe_vc_sl, pe_vc_tgt1, pe_vc_tgt2, pe_vc_pt1, pe_vc_psl, pe_vc_ev, pe_vc_rr, pe_vc_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_vanna_k, current_ltp=pe_vc_ltp, spot=spot,
+        inval_spot=pe_vc_inval_spot, tgt1_spot=pe_vc_tgt1_spot, tgt2_spot=pe_vc_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
+    )
+    pe_vc_score, pe_vc_label, pe_vc_color = _apply_ev_quality_gate(pe_vc_score, pe_vc_ev, pe_vc_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1258,7 +1588,7 @@ def _evaluate_pe_strategies(
             target_2=pe_vc_tgt2,
             target_2_spot=pe_vc_tgt2_spot,
             stop_loss=pe_vc_sl,
-            risk_reward_ratio="1 : 2.0",
+            risk_reward_ratio=pe_vc_rr,
             quality_score=pe_vc_score,
             conviction_label=pe_vc_label,
             conviction_color=pe_vc_color,
@@ -1268,20 +1598,28 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
             is_ws_live=pe_vc_ws,
+            p_touch_target_1=pe_vc_pt1,
+            p_touch_sl=pe_vc_psl,
+            net_ev_pts=pe_vc_ev,
+            greek_attribution=pe_vc_attr,
         )
     )
 
-    # 6. PE VOLATILITY DISPERSION / LONG GAMMA
-    pe_vd_score, pe_vd_label, pe_vd_color = _compute_trade_score(
+    # 6. PE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
+    sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
+    pe_vd_score, _, _ = _compute_trade_score(
         "PE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_vd_inval_spot = round(session_vwap + (step * 0.4), 0)
-    pe_vd_tgt1_spot = round(put_wall, 0)
-    pe_vd_tgt2_spot = round(put_wall - (2 * step), 0)
-    pe_vd_sl = max(1.0, round(pe_atm_ltp * 0.70, 1))   # -30% risk
-    pe_vd_tgt1 = round(pe_atm_ltp * 1.50, 1)           # +50% (1.67R)
-    pe_vd_tgt2 = round(pe_atm_ltp * 2.20, 1)           # +120% (4.0R)
+    pe_vd_inval_spot = round(max(session_vwap + (sigma_60 * 0.5), spot + (sigma_60 * 0.6)), 0)
+    pe_vd_tgt1_spot = round(min(put_wall, spot - (sigma_60 * 1.2)), 0)
+    pe_vd_tgt2_spot = round(min(pe_vd_tgt1_spot - step, spot - (sigma_60 * 2.2)), 0)
+    pe_vd_sl, pe_vd_tgt1, pe_vd_tgt2, pe_vd_pt1, pe_vd_psl, pe_vd_ev, pe_vd_rr, pe_vd_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
+        inval_spot=pe_vd_inval_spot, tgt1_spot=pe_vd_tgt1_spot, tgt2_spot=pe_vd_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=60, step=step,
+    )
+    pe_vd_score, pe_vd_label, pe_vd_color = _apply_ev_quality_gate(pe_vd_score, pe_vd_ev, pe_vd_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1300,7 +1638,7 @@ def _evaluate_pe_strategies(
             target_2=pe_vd_tgt2,
             target_2_spot=pe_vd_tgt2_spot,
             stop_loss=pe_vd_sl,
-            risk_reward_ratio="1 : 4.0",
+            risk_reward_ratio=pe_vd_rr,
             quality_score=pe_vd_score,
             conviction_label=pe_vd_label,
             conviction_color=pe_vd_color,
@@ -1310,20 +1648,27 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
             is_ws_live=pe_atm_ws,
+            p_touch_target_1=pe_vd_pt1,
+            p_touch_sl=pe_vd_psl,
+            net_ev_pts=pe_vd_ev,
+            greek_attribution=pe_vd_attr,
         )
     )
 
-    # 7. PE ZERO-COST RATIO RISK REVERSAL
-    pe_rr_score, pe_rr_label, pe_rr_color = _compute_trade_score(
+    # 7. PE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
+    pe_rr_score, _, _ = _compute_trade_score(
         "PE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip
+        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set
     )
-    pe_rr_inval_spot = round(session_vwap + (step * 0.35), 0)
-    pe_rr_tgt1_spot = round(put_wall, 0)
-    pe_rr_tgt2_spot = round(put_wall - step, 0)
-    pe_rr_sl = max(1.0, round(pe_struct_ltp * 0.75, 1))  # -25% risk
-    pe_rr_tgt1 = round(pe_struct_ltp * 1.35, 1)          # +35%
-    pe_rr_tgt2 = round(pe_struct_ltp * 1.75, 1)          # +75%
+    pe_rr_inval_spot = round(max(session_vwap + (sigma_90 * 0.45), spot + (sigma_90 * 0.5)), 0)
+    pe_rr_tgt1_spot = round(min(put_wall, spot - sigma_90), 0)
+    pe_rr_tgt2_spot = round(min(pe_rr_tgt1_spot - step, spot - (sigma_90 * 1.8)), 0)
+    pe_rr_sl, pe_rr_tgt1, pe_rr_tgt2, pe_rr_pt1, pe_rr_psl, pe_rr_ev, pe_rr_rr, pe_rr_attr = _reprice_trade_idea_targets(
+        side="PE", strike=pe_struct_k, current_ltp=pe_struct_ltp, spot=spot,
+        inval_spot=pe_rr_inval_spot, tgt1_spot=pe_rr_tgt1_spot, tgt2_spot=pe_rr_tgt2_spot,
+        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
+    )
+    pe_rr_score, pe_rr_label, pe_rr_color = _apply_ev_quality_gate(pe_rr_score, pe_rr_ev, pe_rr_pt1)
     pe_recs.append(
         TradeIdea(
             symbol=symbol,
@@ -1342,7 +1687,7 @@ def _evaluate_pe_strategies(
             target_2=pe_rr_tgt2,
             target_2_spot=pe_rr_tgt2_spot,
             stop_loss=pe_rr_sl,
-            risk_reward_ratio="1 : 3.0",
+            risk_reward_ratio=pe_rr_rr,
             quality_score=pe_rr_score,
             conviction_label=pe_rr_label,
             conviction_color=pe_rr_color,
@@ -1352,9 +1697,12 @@ def _evaluate_pe_strategies(
             ),
             catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
             is_ws_live=pe_struct_ws,
+            p_touch_target_1=pe_rr_pt1,
+            p_touch_sl=pe_rr_psl,
+            net_ev_pts=pe_rr_ev,
+            greek_attribution=pe_rr_attr,
         )
     )
-
 
     return pe_recs
 
@@ -1451,16 +1799,16 @@ def generate_trade_recommendations(
     # Base ATM strike
     atm_strike = _round_strike(spot, step)
 
-    # Pre-calculate candidate strikes across all 7 strategies
-    ce_atm_k = atm_strike
-    ce_struct_k = atm_strike + step
-    ce_squeeze_k = call_wall if call_wall > spot else atm_strike + (2 * step)
-    ce_vanna_k = atm_strike + (2 * step)
+    # Pre-calculate candidate strikes across all 7 strategies via Delta Window selection
+    ce_atm_k = _select_strike_by_delta_window(0.50, True, atm_strike, contracts_map, step)
+    ce_struct_k = _select_strike_by_delta_window(0.40, True, atm_strike + step, contracts_map, step)
+    ce_squeeze_k = call_wall if call_wall > spot else _select_strike_by_delta_window(0.28, True, atm_strike + (2 * step), contracts_map, step)
+    ce_vanna_k = _select_strike_by_delta_window(0.20, True, atm_strike + (2 * step), contracts_map, step)
 
-    pe_atm_k = atm_strike
-    pe_struct_k = atm_strike - step
-    pe_squeeze_k = put_wall if put_wall < spot else atm_strike - (2 * step)
-    pe_vanna_k = atm_strike - (2 * step)
+    pe_atm_k = _select_strike_by_delta_window(0.50, False, atm_strike, contracts_map, step)
+    pe_struct_k = _select_strike_by_delta_window(0.40, False, atm_strike - step, contracts_map, step)
+    pe_squeeze_k = put_wall if put_wall < spot else _select_strike_by_delta_window(0.28, False, atm_strike - (2 * step), contracts_map, step)
+    pe_vanna_k = _select_strike_by_delta_window(0.20, False, atm_strike - (2 * step), contracts_map, step)
 
     # Deduplicated subscription registration into live Dhan WebSocket feed
     try:
@@ -1503,6 +1851,28 @@ def generate_trade_recommendations(
     except Exception:
         pass
 
+    dte_days = float(getattr(data, "dte_now", 3.0) if data else 3.0)
+    atm_iv = float(getattr(levels, "atm_iv", 0.14) if levels else 0.14)
+
+    # Extract Target Engine Scenario Set (Dirichlet distribution over Bull, Base, Bear)
+    scenario_set = None
+    try:
+        from target_engine.features import extract_features
+        from target_engine.scenarios import score_scenarios
+        fut_val = float(getattr(data, "fut_price", spot) or spot) if data else spot
+        fv = extract_features(
+            spot=spot,
+            fut=fut_val,
+            atm_iv=atm_iv,
+            expiry=expiry_tag or "2026-10-15",
+            contracts_df=contracts_df,
+            vwap=session_vwap,
+            max_pain=float(getattr(levels, "max_pain", spot)) if levels else spot,
+        )
+        scenario_set = score_scenarios(fv)
+    except Exception:
+        scenario_set = None
+
     # Concurrent strategy evaluation: evaluate CE and PE pipelines simultaneously in parallel threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         fut_ce = executor.submit(
@@ -1528,6 +1898,9 @@ def generate_trade_recommendations(
             oi_map=oi_map,
             contracts_map=contracts_map,
             expiry_tag=expiry_tag,
+            dte_days=dte_days,
+            atm_iv=atm_iv,
+            scenario_set=scenario_set,
         )
         fut_pe = executor.submit(
             _evaluate_pe_strategies,
@@ -1552,6 +1925,9 @@ def generate_trade_recommendations(
             oi_map=oi_map,
             contracts_map=contracts_map,
             expiry_tag=expiry_tag,
+            dte_days=dte_days,
+            atm_iv=atm_iv,
+            scenario_set=scenario_set,
         )
         ce_recs = fut_ce.result()
         pe_recs = fut_pe.result()
@@ -1694,9 +2070,9 @@ def generate_trade_recommendations(
             except Exception as e:
                 pass
 
-    # 5. Sort candidates descending by quality score
-    all_ce_candidates = sorted(ce_recs, key=lambda x: x.quality_score, reverse=True)
-    all_pe_candidates = sorted(pe_recs, key=lambda x: x.quality_score, reverse=True)
+    # 5. Sort candidates descending by quality score and Net EV points
+    all_ce_candidates = sorted(ce_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
+    all_pe_candidates = sorted(pe_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
 
     # 6. Quality-Gate Partitioning (Score > 85 Higher Conviction, 75 <= Score <= 85 Lower Fallback)
     higher_ce = [t for t in all_ce_candidates if t.quality_score > 85]

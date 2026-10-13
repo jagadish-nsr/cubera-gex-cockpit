@@ -9,6 +9,7 @@ from unittest.mock import patch
 from data.pre_post_market import (
     IST,
     acknowledge_pre_market_chime,
+    calculate_pre_market_option_shocks,
     classify_opening_gap,
     estimate_pre_bell_option_ltps,
     get_current_session_phase,
@@ -126,6 +127,27 @@ class TestPrePostMarket(unittest.TestCase):
         pe_shock = shocks[1]
         self.assertLess(pe_shock["est_open_ltp"], 50.0)
         self.assertLess(pe_shock["chg_ltp"], 0)
+
+    def test_calculate_pre_market_option_shocks(self):
+        # Gap up +100 pts: 22500 -> 22600
+        res = calculate_pre_market_option_shocks(
+            discovered_spot=22600.0,
+            prev_close=22500.0,
+            symbol="NIFTY",
+            dte_days=3.0,
+            atm_iv=0.14,
+        )
+        self.assertEqual(res["gap_pts"], 100.0)
+        self.assertEqual(res["atm_strike"], 22600.0)
+        self.assertGreater(len(res["projected_strikes"]), 6)
+        self.assertGreater(res["atm_straddle_projected"], 0.0)
+        self.assertIn("expansion", res["narrative"].lower())
+
+        # Check ATM CE gained value and ATM PE lost value
+        atm_ce = [s for s in res["projected_strikes"] if s["strike"] == 22600.0 and s["side"] == "CE"][0]
+        atm_pe = [s for s in res["projected_strikes"] if s["strike"] == 22600.0 and s["side"] == "PE"][0]
+        self.assertGreater(atm_ce["shock_pts"], 0.0)
+        self.assertLess(atm_pe["shock_pts"], 0.0)
 
     def test_is_contract_expired(self):
         ref_today = date(2026, 10, 11)

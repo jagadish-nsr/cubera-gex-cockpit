@@ -138,3 +138,48 @@ def test_purge_old_sentinel_data():
     assert "bars_5m" in res
     assert "signals" in res
     assert "outcomes" in res
+
+
+def test_calculate_model_calibration_and_expectancy():
+    """Verify Target Engine calibration alpha and Black-76 options expectancy curve calculations."""
+    from sentinel.engine.efficiency import calculate_model_calibration_and_expectancy, SignalEfficiencyReport, CategoryBreakdown
+
+    rep = SignalEfficiencyReport(
+        instrument_id="NIFTY-FUT",
+        period_type="daily",
+        total_signals=10,
+        overall_hit_rate=65.0,
+        overall_stop_rate=35.0,
+        overall_avg_mfe=38.0,
+        overall_avg_mae=20.0,
+        overall_edge_ratio=1.9,
+        expectancy_curve={"+1m": 4.0, "+3m": 8.0, "+5m": 12.0, "+15m": 18.0, "+30m": 25.0},
+        by_type=[
+            CategoryBreakdown(label="CONTINUATION_BULL", total_signals=5, target_hits=4, hit_rate_pct=80.0, avg_mfe_pts=45.0, avg_mae_pts=15.0, edge_ratio=3.0)
+        ],
+        by_alignment=[
+            CategoryBreakdown(label="CONFIRMED_AT_WALL", total_signals=6, target_hits=5, hit_rate_pct=83.3, avg_mfe_pts=42.0, avg_mae_pts=16.0, edge_ratio=2.6)
+        ],
+    )
+
+    calib = calculate_model_calibration_and_expectancy(rep, spot=24000.0, atm_iv=0.14, dte_days=5.0)
+
+    assert "sigma_h" in calib
+    assert calib["sigma_h"] > 0
+    assert "theoretical_p_touch" in calib
+    assert 0 < calib["theoretical_p_touch"] < 100
+    assert "calibration_alpha" in calib
+    assert calib["atm_strike"] == 24000
+    assert calib["atm_call_entry"] > 0
+
+    assert len(calib["by_type_calibration"]) == 1
+    assert calib["by_type_calibration"][0]["label"] == "CONTINUATION_BULL"
+    assert "alpha" in calib["by_type_calibration"][0]
+
+    assert len(calib["options_expectancy_curve"]) == 5
+    first_pt = calib["options_expectancy_curve"][0]
+    assert first_pt["horizon"] == "+1m"
+    assert first_pt["index_ret_pts"] == 4.0
+    assert first_pt["opt_ret_pts"] > 0
+    assert first_pt["delta_pnl"] == 2.0  # 0.5 * 4.0
+

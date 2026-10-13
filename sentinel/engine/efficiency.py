@@ -280,3 +280,106 @@ def compute_signal_efficiency(
 
     finally:
         conn.close()
+
+
+def calculate_model_calibration_and_expectancy(
+    eff_report: SignalEfficiencyReport,
+    spot: float = 24000.0,
+    atm_iv: float = 0.14,
+    dte_days: float = 5.0,
+    horizon_minutes: int = 30,
+) -> dict[str, Any]:
+    """Calculate theoretical calibration alpha and Black-76 options expectancy curve.
+
+    Bridges OrderFlow Sentinel empirical results with Target Engine quantitative models:
+      1. Compares empirical win/hit rates against theoretical reflection-principle P(touch).
+         Calibration Alpha = Empirical Hit Rate % - Theoretical P(touch) %.
+      2. Reprices forward returns into ATM options price/percentage returns and Greeks attribution.
+    """
+    import math
+    from target_engine.levels import compute_touch_probability
+    from target_engine.pricer import price, reprice
+    from target_engine.time_utils import get_horizon_annual_duration
+
+    eff_iv = max(atm_iv, 0.05) if atm_iv > 0 else 0.14
+    h_years = get_horizon_annual_duration(horizon_minutes)
+    sigma_h = max(spot * eff_iv * math.sqrt(h_years), 15.0)
+
+    # 1. Overall model calibration
+    target_dist = max(eff_report.overall_avg_mfe, 25.0)
+    theo_p_touch = compute_touch_probability(target_dist, sigma_h) * 100.0
+    calib_alpha = round(eff_report.overall_hit_rate - theo_p_touch, 1)
+
+    # 2. Breakdowns calibration
+    by_type_calib = []
+    for item in eff_report.by_type:
+        d = max(item.avg_mfe_pts, 15.0)
+        p = compute_touch_probability(d, sigma_h) * 100.0
+        by_type_calib.append({
+            "label": item.label,
+            "count": item.total_signals,
+            "empirical_hit": item.hit_rate_pct,
+            "theoretical_p": round(p, 1),
+            "alpha": round(item.hit_rate_pct - p, 1),
+        })
+
+    by_align_calib = []
+    for item in eff_report.by_alignment:
+        d = max(item.avg_mfe_pts, 15.0)
+        p = compute_touch_probability(d, sigma_h) * 100.0
+        by_align_calib.append({
+            "label": item.label,
+            "count": item.total_signals,
+            "empirical_hit": item.hit_rate_pct,
+            "theoretical_p": round(p, 1),
+            "alpha": round(item.hit_rate_pct - p, 1),
+        })
+
+    # 3. Black-76 Options Expectancy Curve
+    step = 50.0 if "NIFTY" in eff_report.instrument_id else 100.0
+    atm_strike = round(spot / step) * step
+    t0 = max(dte_days, 0.1) / 365.0
+    p0_ce = price(F=spot, K=atm_strike, T=t0, sigma=eff_iv, r=0.065, option_type="CE")
+    p0_pe = price(F=spot, K=atm_strike, T=t0, sigma=eff_iv, r=0.065, option_type="PE")
+
+    options_curve = []
+    for h_label, idx_pts in eff_report.expectancy_curve.items():
+        try:
+            m_min = int(h_label.replace("+", "").replace("m", ""))
+        except ValueError:
+            m_min = 5
+
+        t_h = max(1e-4, t0 - (m_min / (375.0 * 252.0)))
+        f_h = spot + idx_pts
+
+        ph_ce = reprice(F_new=f_h, K=atm_strike, T_new=t_h, sigma_new=eff_iv, r=0.065, option_type="CE")
+        pnl_pts = ph_ce - p0_ce
+        pnl_pct = (pnl_pts / p0_ce * 100.0) if p0_ce > 0 else 0.0
+        delta_contrib = 0.50 * idx_pts
+        decay_contrib = pnl_pts - delta_contrib
+
+        options_curve.append({
+            "horizon": h_label,
+            "index_ret_pts": round(idx_pts, 1),
+            "opt_entry": round(p0_ce, 1),
+            "opt_target": round(ph_ce, 1),
+            "opt_ret_pts": round(pnl_pts, 1),
+            "opt_ret_pct": round(pnl_pct, 1),
+            "delta_pnl": round(delta_contrib, 1),
+            "theta_pnl": round(decay_contrib, 1),
+        })
+
+    return {
+        "sigma_h": round(sigma_h, 1),
+        "target_dist": round(target_dist, 1),
+        "theoretical_p_touch": round(theo_p_touch, 1),
+        "empirical_hit_rate": round(eff_report.overall_hit_rate, 1),
+        "calibration_alpha": calib_alpha,
+        "atm_strike": int(atm_strike),
+        "atm_call_entry": round(p0_ce, 1),
+        "atm_put_entry": round(p0_pe, 1),
+        "by_type_calibration": by_type_calib,
+        "by_alignment_calibration": by_align_calib,
+        "options_expectancy_curve": options_curve,
+    }
+
