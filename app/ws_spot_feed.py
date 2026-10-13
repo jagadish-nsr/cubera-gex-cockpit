@@ -288,6 +288,13 @@ def _handle_fut_tick(pkt: dict, fut_map: dict[int, dict]) -> None:
     _STATUS["ws_symbol_ticks"][f"{sym}-FUT"] = _STATUS["ws_symbol_ticks"].get(f"{sym}-FUT", 0) + 1
     _STATUS["last_tick_epoch"] = int(time.time())
 
+    # Forward live tick directly to OrderFlow Sentinel
+    try:
+        from sentinel.feed.live import push_live_tick_to_sentinel
+        push_live_tick_to_sentinel(pkt, sym)
+    except Exception:
+        pass
+
 
 def _handle_opt_tick(pkt: dict, info: dict) -> None:
     """Push an option contract tick into spot_ticker._STORE_OPTIONS."""

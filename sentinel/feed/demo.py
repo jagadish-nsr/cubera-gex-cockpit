@@ -82,6 +82,16 @@ def seed_sentinel_demo_if_needed(
     m_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
     m_close = now_ist.replace(hour=15, minute=40, second=0, microsecond=0)
 
+    # STRICT GUARD: If market is live and not explicitly forced in Replay Mode, delegate to genuine live sync!
+    if is_live_trading_day and (m_open <= now_ist <= m_close) and not force:
+        try:
+            from sentinel.feed.live import sync_live_sentinel_if_needed
+            sym = instrument_id.replace("-FUT", "")
+            sync_live_sentinel_if_needed(instrument_id, symbol=sym, call_wall=call_wall, put_wall=put_wall)
+            return
+        except Exception as exc:
+            log.warning("Live sentinel sync delegation failed: %s", exc)
+
     existing_1m = list_recent_bars(instrument_id, timeframe="1m", limit=10)
     existing_5m = list_recent_bars(instrument_id, timeframe="5m", limit=10)
     if existing_1m and not force:
@@ -601,13 +611,9 @@ def step_sentinel_live_feed(
     put_wall: float = 22500.0,
     force: bool = False,
 ):
-    """Public helper to advance simulated live order flow feed by one step during market hours."""
-    try:
-        import config
-        if not config.is_market_open() and not force:
-            return
-    except Exception:
-        pass
+    """Advance simulated order flow feed. Prohibited during live sessions unless explicitly forced (Replay Mode)."""
+    if not force:
+        return
     _live_feed_engine.step(instrument_id, spot=spot, call_wall=call_wall, put_wall=put_wall)
 
 

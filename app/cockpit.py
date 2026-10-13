@@ -78,6 +78,11 @@ from sentinel.storage.db import (  # noqa: E402
 )
 import sentinel.engine.aggregator as sentinel_agg_mod  # noqa: E402
 importlib.reload(sentinel_agg_mod)
+import sentinel.feed.live as sentinel_live_mod  # noqa: E402
+importlib.reload(sentinel_live_mod)
+sync_live_sentinel_if_needed = sentinel_live_mod.sync_live_sentinel_if_needed
+push_live_tick_to_sentinel = sentinel_live_mod.push_live_tick_to_sentinel
+
 import sentinel.feed.demo as sentinel_demo_mod  # noqa: E402
 importlib.reload(sentinel_demo_mod)
 seed_sentinel_demo_if_needed = sentinel_demo_mod.seed_sentinel_demo_if_needed
@@ -4739,7 +4744,7 @@ def _fragment_profile_trend_follower(symbol: str, inst_id: str, cw: float, pw: f
 @st.fragment(run_every=3)
 def _fragment_sentinel_kpi_strip(symbol: str, inst_id: str, timeframe: str, ref_px: float, cw: float, pw: float) -> None:
     """Card 1: Microstructure KPI strip auto-updating every 3 seconds independently."""
-    if config.is_market_open():
+    if st.session_state.get("replay_mode_active"):
         step_sentinel_live_feed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
 
     bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=10)
@@ -4916,12 +4921,20 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
     # Sort chronologically newest first
     filtered_signals = sorted(filtered_signals, key=lambda s: s.bar_start_ts, reverse=True)
 
+    from app.ws_spot_feed import is_ws_live
     market_open = config.is_market_open()
-    if market_open:
-        feed_badge = '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#0f9d6b;box-shadow:0 0 6px #0f9d6b" title="Live Stream Active"></span>'
+    ws_alive = is_ws_live()
+    if st.session_state.get("replay_mode_active"):
+        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.12);color:#d97706;font-weight:700;border:1px solid rgba(245,158,11,0.25)" title="Simulation / Replay Mode">Replay Mode</span>'
+        stream_title = "⚡ Replay OrderFlow Stream"
+    elif market_open and ws_alive:
+        feed_badge = '<span style="display:inline-flex;align-items:center;gap:4px;font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(15,157,107,0.12);color:#0f9d6b;font-weight:700;border:1px solid rgba(15,157,107,0.25)"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#0f9d6b;box-shadow:0 0 6px #0f9d6b"></span> Dhan WS Live</span>'
+        stream_title = "⚡ Live OrderFlow Stream"
+    elif market_open:
+        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(15,157,107,0.08);color:#0f9d6b;font-weight:700;border:1px solid rgba(15,157,107,0.2)">Intraday Synced</span>'
         stream_title = "⚡ Live OrderFlow Stream"
     else:
-        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.12);color:#ef4444;font-weight:700;border:1px solid rgba(239,68,68,0.25)" title="Market Closed · Manual Refresh">Market Closed · Manual</span>'
+        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(239,68,68,0.12);color:#ef4444;font-weight:700;border:1px solid rgba(239,68,68,0.25)" title="Market Closed">Market Closed</span>'
         stream_title = "⚡ OrderFlow Stream"
 
     scroll_hint = "Scroll for older events" if len(filtered_signals) > 5 else "All session events visible"
@@ -5038,8 +5051,11 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     inst_id = f"{symbol}-FUT"
     ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
 
-    # Ensure demo flow is seeded
-    seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
+    # In Replay Mode, seed simulated flow; in Live Mode, sync genuine intraday bars from Dhan
+    if st.session_state.get("replay_mode_active"):
+        seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
+    else:
+        sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
 
     # 1. Static Top Controls Bar
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 3, 2])
@@ -5054,8 +5070,12 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
         )
     with ctrl_col3:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        if st.button("⚡ Re-Seed Flow", key=f"btn_reseed_{symbol}", use_container_width=True):
-            seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
+        btn_label = "⚡ Re-Seed Flow" if st.session_state.get("replay_mode_active") else "🔄 Sync Live Flow"
+        if st.button(btn_label, key=f"btn_reseed_{symbol}", use_container_width=True):
+            if st.session_state.get("replay_mode_active"):
+                seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
+            else:
+                sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw, force=True)
             st.rerun()
 
     # 2. Independent Card 1: Microstructure KPI Strip (auto-updates every 3s independently)
