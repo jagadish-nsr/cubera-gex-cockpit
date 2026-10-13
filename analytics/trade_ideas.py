@@ -26,6 +26,8 @@ import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
+import threading
+import time
 from typing import Any, Sequence
 
 import config
@@ -103,6 +105,11 @@ class TradeIdea:
     p_touch_sl: float = 0.0            # Reflection principle probability of touching Stop Loss
     net_ev_pts: float = 0.0            # Probability-weighted Net EV in option points (minus costs)
     greek_attribution: dict = field(default_factory=dict) # Greek decomposition {delta, gamma, vega, theta}
+    spread_alternative: dict | None = None   # Defined-risk vertical spread alternative
+    latch_state: str = "QUALIFIED"           # "QUALIFIED" | "ACTIVE" | "TARGET_HIT" | "INVALIDATED" | "DEGRADED"
+    adx_5m: float = 20.0                     # 5m ADX reading
+    adx_regime: str = "NEUTRAL"              # "TRENDING" | "CHOP" | "NEUTRAL"
+    cvd_divergence: str = "NONE"             # "BULLISH" | "BEARISH" | "NONE"
 
 
 @dataclass
@@ -469,8 +476,157 @@ def _select_strike_by_delta_window(
     return best_strike
 
 
-def compute_trend_context(bars: Sequence[Any] | None, default_step: float = 50.0) -> dict[str, Any]:
-    """Extract EMA-9, EMA-21 trend alignment and ATR from Sentinel bars."""
+def _get_bar_num(b: Any, key: str, default: float = 0.0) -> float:
+    if isinstance(b, dict):
+        v = b.get(key)
+        return float(v) if v is not None else default
+    v = getattr(b, key, None)
+    return float(v) if v is not None else default
+
+
+def compute_adx(bars: Sequence[Any] | None, period: int = 14) -> tuple[float, str]:
+    """Compute Average Directional Index (ADX) over bars (Wilder's standard).
+    Returns (adx_value, regime) where regime is 'CHOP' (ADX < 20), 'TRENDING' (ADX > 25), or 'NEUTRAL'.
+    """
+    if not bars or len(bars) < max(period + 2, 8):
+        return 20.0, "NEUTRAL"
+
+    tr_list = []
+    plus_dm = []
+    minus_dm = []
+
+    for i in range(1, len(bars)):
+        try:
+            h = _get_bar_num(bars[i], "high")
+            l = _get_bar_num(bars[i], "low")
+            prev_h = _get_bar_num(bars[i - 1], "high")
+            prev_l = _get_bar_num(bars[i - 1], "low")
+            prev_c = _get_bar_num(bars[i - 1], "close")
+
+            if h <= 0 or l <= 0 or prev_h <= 0 or prev_l <= 0 or prev_c <= 0:
+                continue
+
+            tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+            up_move = h - prev_h
+            down_move = prev_l - l
+
+            p_dm = up_move if (up_move > down_move and up_move > 0) else 0.0
+            m_dm = down_move if (down_move > up_move and down_move > 0) else 0.0
+
+            tr_list.append(tr)
+            plus_dm.append(p_dm)
+            minus_dm.append(m_dm)
+        except Exception:
+            continue
+
+    eff_period = min(period, max(5, len(tr_list)))
+    if len(tr_list) < eff_period:
+        return 20.0, "NEUTRAL"
+
+    smooth_tr = sum(tr_list[:eff_period])
+    smooth_p_dm = sum(plus_dm[:eff_period])
+    smooth_m_dm = sum(minus_dm[:eff_period])
+
+    dx_list = []
+    for i in range(eff_period, len(tr_list)):
+        smooth_tr = smooth_tr - (smooth_tr / eff_period) + tr_list[i]
+        smooth_p_dm = smooth_p_dm - (smooth_p_dm / eff_period) + plus_dm[i]
+        smooth_m_dm = smooth_m_dm - (smooth_m_dm / eff_period) + minus_dm[i]
+
+        if smooth_tr > 0:
+            plus_di = 100.0 * (smooth_p_dm / smooth_tr)
+            minus_di = 100.0 * (smooth_m_dm / smooth_tr)
+            di_sum = plus_di + minus_di
+            dx = 100.0 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0.0
+            dx_list.append(dx)
+
+    if not dx_list:
+        if smooth_tr > 0:
+            plus_di = 100.0 * (smooth_p_dm / smooth_tr)
+            minus_di = 100.0 * (smooth_m_dm / smooth_tr)
+            di_sum = plus_di + minus_di
+            dx = 100.0 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 20.0
+            dx_list.append(dx)
+        else:
+            return 20.0, "NEUTRAL"
+
+    adx = sum(dx_list[-min(len(dx_list), eff_period):]) / min(len(dx_list), eff_period)
+    adx = round(adx, 1)
+
+    if adx < 20.0:
+        regime = "CHOP"
+    elif adx > 25.0:
+        regime = "TRENDING"
+    else:
+        regime = "NEUTRAL"
+
+    return adx, regime
+
+
+def compute_cvd_divergence(bars: Sequence[Any] | None, atr: float = 35.0) -> str:
+    """Detects price vs CVD slope divergence over recent 10-15 bars.
+    Returns: 'BEARISH' (Price up / CVD down), 'BULLISH' (Price down / CVD up), or 'NONE'.
+    """
+    if not bars or len(bars) < 4:
+        return "NONE"
+
+    recent = bars[-min(len(bars), 14):]
+    closes = []
+    cvds = []
+    cum_delta = 0.0
+    for b in recent:
+        try:
+            c = _get_bar_num(b, "close")
+            if isinstance(b, dict) and "cvd" in b:
+                cvd = float(b["cvd"])
+            elif not isinstance(b, dict) and getattr(b, "cvd", None) is not None:
+                cvd = float(getattr(b, "cvd"))
+            else:
+                d = _get_bar_num(b, "delta", 0.0)
+                cum_delta += d
+                cvd = cum_delta
+
+            if c > 0:
+                closes.append(c)
+                cvds.append(cvd)
+        except Exception:
+            continue
+
+    if len(closes) < 4 or len(cvds) < 4:
+        return "NONE"
+
+    price_delta = closes[-1] - closes[0]
+    cvd_delta = cvds[-1] - cvds[0]
+
+    min_p_move = max(5.0, atr * 0.20)
+    # Bearish divergence: price up but CVD down (institutional absorption)
+    if price_delta > min_p_move and cvd_delta < 0:
+        return "BEARISH"
+    # Bullish divergence: price down but CVD up (institutional accumulation)
+    elif price_delta < -min_p_move and cvd_delta > 0:
+        return "BULLISH"
+
+    return "NONE"
+
+
+def is_lunch_hour_chop(latest_bar: Any | None = None) -> bool:
+    """Checks if current time is within 11:30 - 13:30 IST and volume is dry."""
+    from datetime import datetime, timezone, timedelta
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    mins = now_ist.hour * 60 + now_ist.minute
+    # 11:30 IST is 690 mins from midnight, 13:30 IST is 810 mins
+    if 690 <= mins <= 810:
+        rvol = float(getattr(latest_bar, "rvol_tod", 0.5) or 0.5) if latest_bar else 0.5
+        return rvol < 0.70
+    return False
+
+
+def compute_trend_context(
+    bars: Sequence[Any] | None,
+    default_step: float = 50.0,
+    latest_bar: Any | None = None,
+) -> dict[str, Any]:
+    """Extract EMA-9, EMA-21 trend alignment, ATR, ADX, and CVD divergence from Sentinel bars."""
     fallback_atr = max(30.0, default_step * 0.7)
     if not bars or len(bars) < 2:
         return {
@@ -478,6 +634,10 @@ def compute_trend_context(bars: Sequence[Any] | None, default_step: float = 50.0
             "ema21": None,
             "ema_trend": "NEUTRAL",
             "atr": fallback_atr,
+            "adx": 20.0,
+            "adx_regime": "NEUTRAL",
+            "cvd_divergence": "NONE",
+            "is_lunch_chop": is_lunch_hour_chop(latest_bar),
         }
 
     # 1. Compute ATR over available bars (up to 14 periods)
@@ -504,12 +664,25 @@ def compute_trend_context(bars: Sequence[Any] | None, default_step: float = 50.0
         except Exception:
             continue
 
+    # 3. Compute ADX and regime
+    adx_val, adx_regime = compute_adx(bars, period=14)
+
+    # 4. Compute CVD divergence
+    cvd_div = compute_cvd_divergence(bars, atr=atr_val)
+
+    # 5. Check lunch hour
+    lunch_chop = is_lunch_hour_chop(latest_bar or bars[-1])
+
     if len(closes) < 9:
         return {
             "ema9": None,
             "ema21": None,
             "ema_trend": "NEUTRAL",
             "atr": round(atr_val, 2),
+            "adx": adx_val,
+            "adx_regime": adx_regime,
+            "cvd_divergence": cvd_div,
+            "is_lunch_chop": lunch_chop,
         }
 
     def _calc_ema(series: list[float], span: int) -> float:
@@ -537,7 +710,314 @@ def compute_trend_context(bars: Sequence[Any] | None, default_step: float = 50.0
         "ema21": round(ema21, 2),
         "ema_trend": trend,
         "atr": round(atr_val, 2),
+        "adx": adx_val,
+        "adx_regime": adx_regime,
+        "cvd_divergence": cvd_div,
+        "is_lunch_chop": lunch_chop,
     }
+
+
+def compute_sector_breadth_context(sector_rows: list[dict] | None = None) -> dict[str, Any]:
+    """Evaluates Nifty sector breadth alignment across key heavyweights (Bank, IT, Energy/Oil)."""
+    rows = sector_rows
+    if rows is None:
+        try:
+            from data.sectors import fetch_sector_snap
+            snap = fetch_sector_snap(blocking=False)
+            if snap and isinstance(snap, dict):
+                rows = snap.get("rows")
+        except Exception:
+            rows = None
+
+    if not rows:
+        return {"breadth": "NEUTRAL", "bull_count": 0, "bear_count": 0, "summary": ""}
+
+    bank_pct = None
+    it_pct = None
+    energy_pct = None
+
+    for r in rows:
+        lbl = str(r.get("label") or r.get("sector") or r.get("symbol") or "").upper()
+        pct = r.get("pct") if r.get("pct") is not None else r.get("change_pct")
+        if pct is None:
+            continue
+        try:
+            f_pct = float(pct)
+        except (ValueError, TypeError):
+            continue
+
+        if "BANK" in lbl and bank_pct is None:
+            bank_pct = f_pct
+        elif "IT" in lbl and it_pct is None:
+            it_pct = f_pct
+        elif ("ENERGY" in lbl or "OIL" in lbl) and energy_pct is None:
+            energy_pct = f_pct
+
+    bull_count = 0
+    bear_count = 0
+    checked = []
+
+    for name, val in [("Bank", bank_pct), ("IT", it_pct), ("Energy", energy_pct)]:
+        if val is not None:
+            checked.append(f"{name} {val:+.2f}%")
+            if val > 0.05:
+                bull_count += 1
+            elif val < -0.05:
+                bear_count += 1
+
+    summary_str = ", ".join(checked)
+    if bull_count >= 2:
+        breadth = "BULLISH"
+    elif bear_count >= 2:
+        breadth = "BEARISH"
+    else:
+        breadth = "NEUTRAL"
+
+    return {
+        "breadth": breadth,
+        "bull_count": bull_count,
+        "bear_count": bear_count,
+        "summary": summary_str,
+    }
+
+
+def compute_fii_positioning_context() -> dict[str, Any]:
+    """Reads latest captured FII index futures positioning from participant OI journal."""
+    try:
+        from app.participant_oi import latest_available
+        latest = latest_available()
+        if not latest:
+            return {"fii_bias": "NEUTRAL", "net_fut": 0, "date": ""}
+        date_ist, parsed = latest
+        fii_data = (parsed or {}).get("FII", {})
+        fl = fii_data.get("fut_long") or 0
+        fs = fii_data.get("fut_short") or 0
+        net_fut = int(fl) - int(fs)
+
+        if net_fut > 15_000:
+            bias = "BULLISH"
+        elif net_fut < -15_000:
+            bias = "BEARISH"
+        else:
+            bias = "NEUTRAL"
+
+        return {
+            "fii_bias": bias,
+            "net_fut": net_fut,
+            "date": date_ist,
+        }
+    except Exception:
+        return {"fii_bias": "NEUTRAL", "net_fut": 0, "date": ""}
+
+
+def _build_spread_alternative(
+    idea: TradeIdea,
+    contracts_map: dict[tuple[str, float], tuple[float, float, float, float]] | None,
+    step: int,
+    eff_iv: float = 0.14,
+) -> dict[str, Any] | None:
+    """Build a defined-risk vertical spread alternative to reduce theta decay and delta risk."""
+    try:
+        is_call = (idea.side == "CE")
+        buy_strike = float(idea.strike)
+
+        if is_call:
+            sell_strike = buy_strike + step
+            spread_name = "Bull Call Spread"
+        else:
+            sell_strike = buy_strike - step
+            spread_name = "Bear Put Spread"
+
+        buy_ltp = float(idea.current_ltp)
+        if buy_ltp <= 0.0:
+            return None
+
+        c_flag = "C" if is_call else "P"
+        sell_ltp = 0.0
+        if contracts_map:
+            entry = contracts_map.get((c_flag, sell_strike))
+            if entry and entry[0] > 0:
+                sell_ltp = float(entry[0])
+
+        if sell_ltp <= 0.0:
+            px, _ = _approx_bs_price_and_delta(spot=buy_strike, strike=sell_strike, is_call=is_call, iv=eff_iv)
+            sell_ltp = max(0.5, round(px, 1))
+
+        if sell_ltp >= buy_ltp:
+            sell_ltp = round(buy_ltp * 0.55, 1)
+
+        net_debit = max(1.0, round(buy_ltp - sell_ltp, 1))
+        spread_width = float(step)
+        max_profit = max(0.5, round(spread_width - net_debit, 1))
+        max_loss = net_debit
+
+        if is_call:
+            breakeven = round(buy_strike + net_debit, 1)
+        else:
+            breakeven = round(buy_strike - net_debit, 1)
+
+        rr_ratio = f"1 : {max_profit / max_loss:.2f}" if max_loss > 0 else "1 : 1.5"
+
+        return {
+            "spread_name": spread_name,
+            "buy_leg": f"{idea.symbol} {int(buy_strike)} {c_flag}E @ ₹{buy_ltp:,.1f}",
+            "sell_leg": f"{idea.symbol} {int(sell_strike)} {c_flag}E @ ₹{sell_ltp:,.1f}",
+            "long_leg": f"{idea.symbol} {int(buy_strike)} {c_flag}E @ ₹{buy_ltp:,.1f}",
+            "short_leg": f"{idea.symbol} {int(sell_strike)} {c_flag}E @ ₹{sell_ltp:,.1f}",
+            "buy_strike": buy_strike,
+            "sell_strike": sell_strike,
+            "long_strike": buy_strike,
+            "short_strike": sell_strike,
+            "net_cost": net_debit,
+            "net_debit": net_debit,
+            "max_profit": max_profit,
+            "max_loss": max_loss,
+            "breakeven_spot": breakeven,
+            "risk_reward": rr_ratio,
+            "rr_ratio": rr_ratio,
+            "spread_type": "VERTICAL_DEBIT",
+        }
+    except Exception:
+        return None
+
+
+class RecommendationLatchManager:
+    """Latch active recommendations across evaluation cycles.
+    Prevents recommendations from appearing and vanishing rapidly due to minor micro-tick fluctuations.
+    """
+    def __init__(self, dwell_lease_s: float = 90.0):
+        self._latched: dict[str, dict[str, Any]] = {}
+        self.dwell_lease_s = dwell_lease_s
+        self._lock = threading.Lock()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._latched.clear()
+
+    def process_and_latch(
+        self,
+        symbol: str,
+        current_spot: float,
+        candidates: list[TradeIdea],
+        min_score: int = 75,
+    ) -> list[TradeIdea]:
+        now = time.time()
+        with self._lock:
+            # Clean up stale latched records (> 1 hour old or from another symbol)
+            to_remove = [
+                k for k, v in self._latched.items()
+                if v.get("symbol") == symbol and (now - v.get("last_seen_ts", now) > 3600.0)
+            ]
+            for k in to_remove:
+                self._latched.pop(k, None)
+
+            for idea in candidates:
+                rec_id = idea.rec_id or f"{symbol}_{idea.side}_{int(idea.strike)}_{idea.play_badge}"
+                entry = self._latched.get(rec_id)
+
+                # Check spot boundary
+                inval_breached = False
+                target_hit = False
+                if current_spot > 0:
+                    if idea.side == "CE":
+                        inval_breached = (current_spot < idea.spot_invalidation)
+                        target_hit = (current_spot >= idea.target_1_spot)
+                    else:
+                        inval_breached = (current_spot > idea.spot_invalidation)
+                        target_hit = (current_spot <= idea.target_1_spot)
+
+                if inval_breached:
+                    idea.latch_state = "INVALIDATED"
+                    if entry:
+                        entry["latch_state"] = "INVALIDATED"
+                    continue
+
+                if target_hit:
+                    idea.latch_state = "TARGET_HIT"
+                    if entry:
+                        entry["latch_state"] = "TARGET_HIT"
+                    continue
+
+                if entry is not None:
+                    first_ts = entry.get("first_qualified_ts", now)
+                    initial_score = entry.get("initial_score", 75)
+                    if idea.quality_score >= min_score:
+                        entry["last_seen_ts"] = now
+                        entry["last_score"] = idea.quality_score
+                        entry["latch_state"] = "ACTIVE"
+                        idea.latch_state = "ACTIVE"
+                    elif (now - first_ts < self.dwell_lease_s) and idea.quality_score >= 65 and min_score <= initial_score:
+                        entry["last_seen_ts"] = now
+                        idea.latch_state = "ACTIVE"
+                    else:
+                        entry["latch_state"] = "DEGRADED"
+                        idea.latch_state = "DEGRADED"
+                else:
+                    if idea.quality_score >= min_score:
+                        idea.latch_state = "ACTIVE"
+                        self._latched[rec_id] = {
+                            "symbol": symbol,
+                            "first_qualified_ts": now,
+                            "last_seen_ts": now,
+                            "initial_score": idea.quality_score,
+                            "last_score": idea.quality_score,
+                            "latch_state": "ACTIVE",
+                        }
+                    else:
+                        idea.latch_state = "QUALIFIED" if idea.quality_score >= 65 else "DEGRADED"
+
+        return candidates
+
+
+_LATCH_MANAGER = RecommendationLatchManager()
+
+
+def clear_latch_manager() -> None:
+    """Reset the latch manager cache for testing and session isolation."""
+    _LATCH_MANAGER.clear()
+
+
+def _enrich_trade_idea(
+    idea: TradeIdea,
+    contracts_map: dict | None,
+    step: int,
+    eff_iv: float,
+    adx_5m: float,
+    adx_regime: str,
+    cvd_divergence: str,
+    sector_breadth: str,
+    fii_macro_bias: str,
+    is_lunch_chop: bool,
+) -> None:
+    """Enrich TradeIdea with regime indicators, contextual catalyst tags, and defined-risk spread alternative."""
+    idea.adx_5m = adx_5m
+    idea.adx_regime = adx_regime
+    idea.cvd_divergence = cvd_divergence
+
+    if adx_regime == "TRENDING" and idea.play_badge in ("MOMENTUM", "STRUCTURE"):
+        idea.catalyst_tags.append(f"ADX Trending ({adx_5m:.0f})")
+    elif adx_regime == "CHOP" and idea.play_badge in ("ICEBERG FADE", "VANNA-CHARM"):
+        idea.catalyst_tags.append("ADX Range Pinning")
+
+    if cvd_divergence == "BULLISH" and idea.side == "CE":
+        idea.catalyst_tags.append("Bullish CVD Div")
+    elif cvd_divergence == "BEARISH" and idea.side == "PE":
+        idea.catalyst_tags.append("Bearish CVD Div")
+
+    if sector_breadth == "BULLISH" and idea.side == "CE":
+        idea.catalyst_tags.append("Sector Breadth (+)")
+    elif sector_breadth == "BEARISH" and idea.side == "PE":
+        idea.catalyst_tags.append("Sector Breadth (-)")
+
+    if fii_macro_bias == "BULLISH" and idea.side == "CE":
+        idea.catalyst_tags.append("FII Net Long")
+    elif fii_macro_bias == "BEARISH" and idea.side == "PE":
+        idea.catalyst_tags.append("FII Net Short")
+
+    if is_lunch_chop and idea.play_badge in ("MOMENTUM", "GAMMA SQUEEZE"):
+        idea.catalyst_tags.append("Lunch Chop Caution")
+
+    idea.spread_alternative = _build_spread_alternative(idea, contracts_map, step, eff_iv)
 
 
 def _compute_trade_score(
@@ -556,6 +1036,13 @@ def _compute_trade_score(
     scenario_set: Any | None = None,
     ema_trend: str | None = None,
     atr: float | None = None,
+    adx_regime: str | None = None,
+    adx_val: float | None = None,
+    cvd_divergence: str | None = None,
+    is_lunch_chop: bool = False,
+    sector_breadth: str | None = None,
+    fii_macro_bias: str | None = None,
+    atm_iv: float | None = None,
 ) -> tuple[int, str, str]:
     """Calculates Trade Quality Score (0-100), Conviction Label, and Badge Color."""
     score = 55
@@ -754,6 +1241,80 @@ def _compute_trade_score(
                         score -= 10
         except Exception:
             pass
+
+    # 7. ADX Regime Gate (Weight: ±10 pts)
+    # ADX < 20 indicates sideways chop where momentum false breakouts thrive.
+    # ADX > 25 confirms sustained directional trend follow-through.
+    if adx_regime:
+        a_reg = str(adx_regime).upper()
+        if a_reg == "CHOP":
+            if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+                score -= 10  # Penalize breakouts in low-ADX range bound chop
+            elif "ICEBERG" in pt_upper or "VANNA" in pt_upper or "CHARM" in pt_upper or "VOL DISPERSION" in pt_upper:
+                score += 6   # Mean-reversion / fade edge thrives in chop
+        elif a_reg == "TRENDING":
+            if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper:
+                score += 8   # Trend follow-through confirmed by ADX > 25
+            elif "ICEBERG" in pt_upper or "VANNA" in pt_upper:
+                score -= 8   # Fading strong trends is high-risk
+
+    # 8. Time-of-Day / RVOL Lunch Hour Filter (Weight: -10 pts)
+    if is_lunch_chop:
+        if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+            score -= 10  # Suppress naked momentum during 11:30-13:30 low-volume theta bleed
+
+    # 9. OrderFlow CVD Slope Divergence Filter (Weight: ±8 pts)
+    if cvd_divergence:
+        c_div = str(cvd_divergence).upper()
+        if c_div == "BEARISH":
+            if side == "CE":
+                score -= 8
+            else:
+                score += 8
+        elif c_div == "BULLISH":
+            if side == "CE":
+                score += 8
+            else:
+                score -= 8
+
+    # 10. Sector Breadth Alignment (Weight: ±6 pts)
+    if sector_breadth:
+        b_reg = str(sector_breadth).upper()
+        if b_reg == "BULLISH":
+            if side == "CE":
+                score += 6
+            else:
+                score -= 6
+        elif b_reg == "BEARISH":
+            if side == "PE":
+                score += 6
+            else:
+                score -= 6
+
+    # 11. FII Net Futures Position (T-1) Macro Filter (Weight: ±5 pts)
+    if fii_macro_bias:
+        f_reg = str(fii_macro_bias).upper()
+        if f_reg == "BULLISH":
+            if side == "CE":
+                score += 5
+            else:
+                score -= 5
+        elif f_reg == "BEARISH":
+            if side == "PE":
+                score += 5
+            else:
+                score -= 5
+
+    # 12. Intraday IV Percentile / Crush Gate (Weight: ±6 pts)
+    if atm_iv is not None and atm_iv > 0:
+        if atm_iv < 0.115:
+            if "MOMENTUM" in pt_upper or "VOL DISPERSION" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+                score += 4
+        elif atm_iv > 0.165:
+            if "MOMENTUM" in pt_upper:
+                score -= 6
+            elif "VANNA" in pt_upper or "CHARM" in pt_upper or "ICEBERG" in pt_upper:
+                score += 5
 
     # Clamp to [15, 95]
     score = max(15, min(95, score))
@@ -988,6 +1549,20 @@ def _generate_strategy_score_reason(
         elif side == "PE" and spot < flip:
             reasons.append(f"Negative gamma acceleration (-{flip - spot:,.0f} pts below Flip)")
 
+    # 4. Regime Confluence Context
+    adx_reg = getattr(idea, "adx_regime", "NEUTRAL")
+    adx_v = getattr(idea, "adx_5m", 20.0)
+    if adx_reg == "CHOP":
+        reasons.append(f"Range-bound regime (5m ADX {adx_v:.0f} < 20)")
+    elif adx_reg == "TRENDING":
+        reasons.append(f"Strong trend regime (5m ADX {adx_v:.0f} > 25)")
+
+    cvd_div = getattr(idea, "cvd_divergence", "NONE")
+    if cvd_div == "BULLISH":
+        reasons.append("Bullish CVD divergence (buyer delta absorption)")
+    elif cvd_div == "BEARISH":
+        reasons.append("Bearish CVD divergence (seller delta absorption)")
+
     return " · ".join(reasons)
 
 
@@ -1063,6 +1638,12 @@ def _evaluate_ce_strategies(
     scenario_set: Any | None = None,
     ema_trend: str = "NEUTRAL",
     eff_atr: float = 35.0,
+    adx_regime: str = "NEUTRAL",
+    adx_val: float = 20.0,
+    cvd_divergence: str = "NONE",
+    is_lunch_chop: bool = False,
+    sector_breadth: str = "NEUTRAL",
+    fii_macro_bias: str = "NEUTRAL",
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Call candidate strategies in parallel."""
     # =======================================================================
@@ -1071,6 +1652,32 @@ def _evaluate_ce_strategies(
     ce_recs: list[TradeIdea] = []
     eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
     trend_tag = f" · 5m Trend: {ema_trend.title()} (EMA 9 vs 21)" if ema_trend != "NEUTRAL" else ""
+
+    def _score(play_type: str, leg_doi: float) -> tuple[int, str, str]:
+        return _compute_trade_score(
+            side="CE",
+            play_type=play_type,
+            bias_score=bias_score,
+            spot=spot,
+            vwap=session_vwap,
+            call_wall=call_wall,
+            put_wall=put_wall,
+            sentinel_signals=sentinel_signals,
+            leg_doi=leg_doi,
+            vwap_upper=vwap_upper,
+            vwap_lower=vwap_lower,
+            flip=flip,
+            scenario_set=scenario_set,
+            ema_trend=ema_trend,
+            atr=eff_atr,
+            adx_regime=adx_regime,
+            adx_val=adx_val,
+            cvd_divergence=cvd_divergence,
+            is_lunch_chop=is_lunch_chop,
+            sector_breadth=sector_breadth,
+            fii_macro_bias=fii_macro_bias,
+            atm_iv=atm_iv,
+        )
 
     # Common chain quote lookups for Calls
     ce_atm_ltp, ce_atm_delta, ce_atm_oi, ce_atm_doi, ce_atm_ws = _lookup_chain_data(
@@ -1092,11 +1699,7 @@ def _evaluate_ce_strategies(
 
     # 1. CE MOMENTUM (h = 45 min)
     sigma_45 = _calc_horizon_sigma(spot, eff_iv, 45.0, step)
-    ce_atm_score, _, _ = _compute_trade_score(
-        "CE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_atm_score, _, _ = _score("ATM Momentum", ce_atm_doi)
     ce_atm_inval_spot = round(min(session_vwap - (eff_atr * 0.9), spot - max(eff_atr * 1.3, step * 0.8)), 0)
     ce_atm_tgt1_spot = round(max(vwap_upper, spot + sigma_45), 0)
     ce_atm_tgt2_spot = round(max(call_wall, ce_atm_tgt1_spot + sigma_45), 0)
@@ -1143,11 +1746,7 @@ def _evaluate_ce_strategies(
 
     # 2. CE STRUCTURE (h = 75 min)
     sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
-    ce_struct_score, _, _ = _compute_trade_score(
-        "CE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_struct_score, _, _ = _score("Institutional Structure", ce_struct_doi)
     ce_struct_inval_spot = round(min(put_wall - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_75 * 0.8, eff_atr * 1.4)), 0)
     ce_struct_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + sigma_75), 0)
     ce_struct_tgt2_spot = round(max(call_wall, ce_struct_tgt1_spot + sigma_75), 0)
@@ -1194,11 +1793,7 @@ def _evaluate_ce_strategies(
 
     # 3. CE GAMMA SQUEEZE (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
-    ce_sq_score, _, _ = _compute_trade_score(
-        "CE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_sq_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_sq_score, _, _ = _score("Gamma Squeeze Lotto", ce_sq_doi)
     ce_sq_inval_spot = round(min(call_wall - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     ce_sq_tgt1_spot = round(max(call_wall + sigma_30, spot + sigma_30), 0)
     ce_sq_tgt2_spot = round(ce_sq_tgt1_spot + sigma_30, 0)
@@ -1244,11 +1839,7 @@ def _evaluate_ce_strategies(
     )
 
     # 4. CE ICEBERG ABSORPTION FADE (h = 30 min)
-    ce_ice_score, _, _ = _compute_trade_score(
-        "CE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_ice_score, _, _ = _score("OrderFlow Iceberg Absorption Fade", ce_atm_doi)
     ce_ice_inval_spot = round(min(vwap_lower - max(eff_atr * 0.6, step * 0.5), spot - max(eff_atr * 0.9, step * 0.6)), 0)
     ce_ice_tgt1_spot = round(max(session_vwap, spot + (sigma_30 * 0.75)), 0)
     ce_ice_tgt2_spot = round(max(vwap_upper, ce_ice_tgt1_spot + (sigma_30 * 0.75)), 0)
@@ -1295,11 +1886,7 @@ def _evaluate_ce_strategies(
 
     # 5. CE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
     sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-    ce_vc_score, _, _ = _compute_trade_score(
-        "CE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_vc_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", ce_vc_doi)
     ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
     ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
     ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
@@ -1346,11 +1933,7 @@ def _evaluate_ce_strategies(
 
     # 6. CE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
-    ce_vd_score, _, _ = _compute_trade_score(
-        "CE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_vd_score, _, _ = _score("Volatility Dispersion / Long Gamma", ce_atm_doi)
     ce_vd_inval_spot = round(min(session_vwap - max(eff_atr * 0.8, step * 0.6), spot - max(sigma_60 * 0.8, eff_atr * 1.3)), 0)
     ce_vd_tgt1_spot = round(max(call_wall, spot + (sigma_60 * 1.2)), 0)
     ce_vd_tgt2_spot = round(max(ce_vd_tgt1_spot + step, spot + (sigma_60 * 2.2)), 0)
@@ -1396,11 +1979,7 @@ def _evaluate_ce_strategies(
     )
 
     # 7. CE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
-    ce_rr_score, _, _ = _compute_trade_score(
-        "CE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, ce_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    ce_rr_score, _, _ = _score("Zero-Cost Ratio Risk Reversal", ce_struct_doi)
     ce_rr_inval_spot = round(min(session_vwap - max(eff_atr * 0.8, step * 0.6), spot - max(sigma_90 * 0.8, eff_atr * 1.3)), 0)
     ce_rr_tgt1_spot = round(max(call_wall, spot + sigma_90), 0)
     ce_rr_tgt2_spot = round(max(ce_rr_tgt1_spot + step, spot + (sigma_90 * 1.8)), 0)
@@ -1445,6 +2024,20 @@ def _evaluate_ce_strategies(
         )
     )
 
+    for idea in ce_recs:
+        _enrich_trade_idea(
+            idea,
+            contracts_map=contracts_map,
+            step=step,
+            eff_iv=eff_iv,
+            adx_5m=adx_val,
+            adx_regime=adx_regime,
+            cvd_divergence=cvd_divergence,
+            sector_breadth=sector_breadth,
+            fii_macro_bias=fii_macro_bias,
+            is_lunch_chop=is_lunch_chop,
+        )
+
     return ce_recs
 
 
@@ -1475,6 +2068,12 @@ def _evaluate_pe_strategies(
     scenario_set: Any | None = None,
     ema_trend: str = "NEUTRAL",
     eff_atr: float = 35.0,
+    adx_regime: str = "NEUTRAL",
+    adx_val: float = 20.0,
+    cvd_divergence: str = "NONE",
+    is_lunch_chop: bool = False,
+    sector_breadth: str = "NEUTRAL",
+    fii_macro_bias: str = "NEUTRAL",
 ) -> list[TradeIdea]:
     """Evaluates 7 institutional Put candidate strategies in parallel."""
     # =======================================================================
@@ -1483,6 +2082,32 @@ def _evaluate_pe_strategies(
     pe_recs: list[TradeIdea] = []
     eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
     trend_tag = f" · 5m Trend: {ema_trend.title()} (EMA 9 vs 21)" if ema_trend != "NEUTRAL" else ""
+
+    def _score(play_type: str, leg_doi: float) -> tuple[int, str, str]:
+        return _compute_trade_score(
+            side="PE",
+            play_type=play_type,
+            bias_score=bias_score,
+            spot=spot,
+            vwap=session_vwap,
+            call_wall=call_wall,
+            put_wall=put_wall,
+            sentinel_signals=sentinel_signals,
+            leg_doi=leg_doi,
+            vwap_upper=vwap_upper,
+            vwap_lower=vwap_lower,
+            flip=flip,
+            scenario_set=scenario_set,
+            ema_trend=ema_trend,
+            atr=eff_atr,
+            adx_regime=adx_regime,
+            adx_val=adx_val,
+            cvd_divergence=cvd_divergence,
+            is_lunch_chop=is_lunch_chop,
+            sector_breadth=sector_breadth,
+            fii_macro_bias=fii_macro_bias,
+            atm_iv=atm_iv,
+        )
 
     # Common chain quote lookups for Puts
     pe_atm_ltp, pe_atm_delta, pe_atm_oi, pe_atm_doi, pe_atm_ws = _lookup_chain_data(
@@ -1504,11 +2129,7 @@ def _evaluate_pe_strategies(
 
     # 1. PE MOMENTUM (h = 45 min)
     sigma_45 = _calc_horizon_sigma(spot, eff_iv, 45.0, step)
-    pe_atm_score, _, _ = _compute_trade_score(
-        "PE", "ATM Momentum", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_atm_score, _, _ = _score("ATM Momentum", pe_atm_doi)
     pe_atm_inval_spot = round(max(session_vwap + (eff_atr * 0.9), spot + max(eff_atr * 1.3, step * 0.8)), 0)
     pe_atm_tgt1_spot = round(min(vwap_lower, spot - sigma_45), 0)
     pe_atm_tgt2_spot = round(min(put_wall, pe_atm_tgt1_spot - sigma_45), 0)
@@ -1555,11 +2176,7 @@ def _evaluate_pe_strategies(
 
     # 2. PE STRUCTURE (h = 75 min)
     sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
-    pe_struct_score, _, _ = _compute_trade_score(
-        "PE", "Institutional Structure", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_struct_score, _, _ = _score("Institutional Structure", pe_struct_doi)
     pe_struct_inval_spot = round(max(call_wall + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_75 * 0.8, eff_atr * 1.4)), 0)
     pe_struct_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - sigma_75), 0)
     pe_struct_tgt2_spot = round(min(put_wall, pe_struct_tgt1_spot - sigma_75), 0)
@@ -1606,11 +2223,7 @@ def _evaluate_pe_strategies(
 
     # 3. PE GAMMA SQUEEZE (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
-    pe_sq_score, _, _ = _compute_trade_score(
-        "PE", "Gamma Squeeze Lotto", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_sq_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_sq_score, _, _ = _score("Gamma Squeeze Lotto", pe_sq_doi)
     pe_sq_inval_spot = round(max(put_wall + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     pe_sq_tgt1_spot = round(min(put_wall - sigma_30, spot - sigma_30), 0)
     pe_sq_tgt2_spot = round(pe_sq_tgt1_spot - sigma_30, 0)
@@ -1656,11 +2269,7 @@ def _evaluate_pe_strategies(
     )
 
     # 4. PE ICEBERG ABSORPTION FADE (h = 30 min)
-    pe_ice_score, _, _ = _compute_trade_score(
-        "PE", "OrderFlow Iceberg Absorption Fade", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_ice_score, _, _ = _score("OrderFlow Iceberg Absorption Fade", pe_atm_doi)
     pe_ice_inval_spot = round(max(vwap_upper + max(eff_atr * 0.6, step * 0.5), spot + max(eff_atr * 0.9, step * 0.6)), 0)
     pe_ice_tgt1_spot = round(min(session_vwap, spot - (sigma_30 * 0.75)), 0)
     pe_ice_tgt2_spot = round(min(vwap_lower, pe_ice_tgt1_spot - (sigma_30 * 0.75)), 0)
@@ -1707,11 +2316,7 @@ def _evaluate_pe_strategies(
 
     # 5. PE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
     sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-    pe_vc_score, _, _ = _compute_trade_score(
-        "PE", "0DTE Vanna-Charm Theta Compression", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_vc_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", pe_vc_doi)
     pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
     pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
     pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
@@ -1758,11 +2363,7 @@ def _evaluate_pe_strategies(
 
     # 6. PE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
-    pe_vd_score, _, _ = _compute_trade_score(
-        "PE", "Volatility Dispersion / Long Gamma", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_atm_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_vd_score, _, _ = _score("Volatility Dispersion / Long Gamma", pe_atm_doi)
     pe_vd_inval_spot = round(max(session_vwap + max(eff_atr * 0.8, step * 0.6), spot + max(sigma_60 * 0.8, eff_atr * 1.3)), 0)
     pe_vd_tgt1_spot = round(min(put_wall, spot - (sigma_60 * 1.2)), 0)
     pe_vd_tgt2_spot = round(min(pe_vd_tgt1_spot - step, spot - (sigma_60 * 2.2)), 0)
@@ -1808,11 +2409,7 @@ def _evaluate_pe_strategies(
     )
 
     # 7. PE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
-    pe_rr_score, _, _ = _compute_trade_score(
-        "PE", "Zero-Cost Ratio Risk Reversal", bias_score, spot, session_vwap, call_wall, put_wall, sentinel_signals, pe_struct_doi,
-        vwap_upper=vwap_upper, vwap_lower=vwap_lower, flip=flip, scenario_set=scenario_set,
-        ema_trend=ema_trend, atr=eff_atr,
-    )
+    pe_rr_score, _, _ = _score("Zero-Cost Ratio Risk Reversal", pe_struct_doi)
     pe_rr_inval_spot = round(max(session_vwap + max(eff_atr * 0.8, step * 0.6), spot + max(sigma_90 * 0.8, eff_atr * 1.3)), 0)
     pe_rr_tgt1_spot = round(min(put_wall, spot - sigma_90), 0)
     pe_rr_tgt2_spot = round(min(pe_rr_tgt1_spot - step, spot - (sigma_90 * 1.8)), 0)
@@ -1856,6 +2453,20 @@ def _evaluate_pe_strategies(
             greek_attribution=pe_rr_attr,
         )
     )
+
+    for idea in pe_recs:
+        _enrich_trade_idea(
+            idea,
+            contracts_map=contracts_map,
+            step=step,
+            eff_iv=eff_iv,
+            adx_5m=adx_val,
+            adx_regime=adx_regime,
+            cvd_divergence=cvd_divergence,
+            sector_breadth=sector_breadth,
+            fii_macro_bias=fii_macro_bias,
+            is_lunch_chop=is_lunch_chop,
+        )
 
     return pe_recs
 
@@ -2041,11 +2652,31 @@ def generate_trade_recommendations(
     except Exception:
         scenario_set = None
 
-    # Resolve Trend Context (EMA-9, EMA-21 cross and 5m ATR)
+    # Resolve Trend Context (EMA-9, EMA-21 cross, 5m ATR, ADX, CVD divergence, Lunch chop)
     bars_for_trend = sentinel_bars if sentinel_bars else ([latest_bar] if latest_bar else None)
-    trend_ctx = compute_trend_context(bars_for_trend, default_step=float(step))
+    trend_ctx = compute_trend_context(bars_for_trend, default_step=float(step), latest_bar=latest_bar)
     ema_trend = trend_ctx.get("ema_trend", "NEUTRAL")
     eff_atr = float(trend_ctx.get("atr", step * 0.7))
+    adx_val = float(trend_ctx.get("adx", 20.0))
+    adx_regime = str(trend_ctx.get("adx_regime", "NEUTRAL"))
+    cvd_div = str(trend_ctx.get("cvd_divergence", "NONE"))
+    if cvd_div == "NONE" and sentinel_signals:
+        for sig in sentinel_signals[:4]:
+            stype = str(getattr(sig, "type", "")).upper()
+            if "CVD_DIVERGENCE_BULL" in stype:
+                cvd_div = "BULLISH"
+                break
+            elif "CVD_DIVERGENCE_BEAR" in stype:
+                cvd_div = "BEARISH"
+                break
+    is_lunch = bool(trend_ctx.get("is_lunch_chop", False))
+
+    sector_rows = kwargs.get("sector_rows")
+    breadth_ctx = compute_sector_breadth_context(sector_rows)
+    sec_breadth = breadth_ctx.get("breadth", "NEUTRAL")
+
+    fii_ctx = compute_fii_positioning_context()
+    fii_bias = fii_ctx.get("fii_bias", "NEUTRAL")
 
     # Concurrent strategy evaluation: evaluate CE and PE pipelines simultaneously in parallel threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -2077,6 +2708,12 @@ def generate_trade_recommendations(
             scenario_set=scenario_set,
             ema_trend=ema_trend,
             eff_atr=eff_atr,
+            adx_regime=adx_regime,
+            adx_val=adx_val,
+            cvd_divergence=cvd_div,
+            is_lunch_chop=is_lunch,
+            sector_breadth=sec_breadth,
+            fii_macro_bias=fii_bias,
         )
         fut_pe = executor.submit(
             _evaluate_pe_strategies,
@@ -2106,6 +2743,12 @@ def generate_trade_recommendations(
             scenario_set=scenario_set,
             ema_trend=ema_trend,
             eff_atr=eff_atr,
+            adx_regime=adx_regime,
+            adx_val=adx_val,
+            cvd_divergence=cvd_div,
+            is_lunch_chop=is_lunch,
+            sector_breadth=sec_breadth,
+            fii_macro_bias=fii_bias,
         )
         ce_recs = fut_ce.result()
         pe_recs = fut_pe.result()
@@ -2291,7 +2934,9 @@ def generate_trade_recommendations(
         except Exception:
             pass
 
-    # 5. Sort candidates descending by quality score and Net EV points
+    # 5. Process signal latching to eliminate card flickering/vanishing
+    _LATCH_MANAGER.process_and_latch(symbol, spot, ce_recs + pe_recs, min_score=min_score)
+
     all_ce_candidates = sorted(ce_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
     all_pe_candidates = sorted(pe_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
 
@@ -2331,6 +2976,10 @@ def generate_trade_recommendations(
         qualified_ce = display_ce
         qualified_pe = display_pe
 
+    # Filter out invalidated setups from active display
+    qualified_ce = [t for t in qualified_ce if t.latch_state != "INVALIDATED"]
+    qualified_pe = [t for t in qualified_pe if t.latch_state != "INVALIDATED"]
+
     # Collect bookmarked recommendations
     bookmarked = [t for t in all_ce_candidates + all_pe_candidates if t.is_bookmarked]
 
@@ -2338,32 +2987,45 @@ def generate_trade_recommendations(
     avg_ce_score = sum(t.quality_score for t in all_ce_candidates) / max(1, len(all_ce_candidates))
     avg_pe_score = sum(t.quality_score for t in all_pe_candidates) / max(1, len(all_pe_candidates))
 
+    regime_notes = []
+    if adx_regime == "CHOP":
+        regime_notes.append("Range chop (ADX < 20) — mean-reversion & spreads favored")
+    elif adx_regime == "TRENDING":
+        regime_notes.append("Directional trend (ADX > 25) — momentum favored")
+    if sec_breadth != "NEUTRAL":
+        regime_notes.append(f"Sector breadth: {sec_breadth.title()}")
+    if fii_bias != "NEUTRAL":
+        regime_notes.append(f"FII macro: {fii_bias.title()}")
+    if is_lunch:
+        regime_notes.append("Lunch-hour low RVOL window")
+    reg_suffix = f" [{' · '.join(regime_notes)}]" if regime_notes else ""
+
     if qualified_ce and not qualified_pe:
         top_side = "CE"
         mode_txt = "Secondary fallback mode" if ce_fallback else "High-conviction (Score > 85)"
         exec_summary = (
             f"Bullish conviction dominates ({len(qualified_ce)} Call strategies · {mode_txt}). "
-            f"Directional bias ({bias_score:+.1f}) and buyer flow favor Call upside towards Call Wall ({call_wall:,.0f})."
+            f"Directional bias ({bias_score:+.1f}) and buyer flow favor Call upside towards Call Wall ({call_wall:,.0f}).{reg_suffix}"
         )
     elif qualified_pe and not qualified_ce:
         top_side = "PE"
         mode_txt = "Secondary fallback mode" if pe_fallback else "High-conviction (Score > 85)"
         exec_summary = (
             f"Bearish conviction dominates ({len(qualified_pe)} Put strategies · {mode_txt}). "
-            f"Directional bias ({bias_score:+.1f}) and seller pressure favor Put downside towards Put Wall ({put_wall:,.0f})."
+            f"Directional bias ({bias_score:+.1f}) and seller pressure favor Put downside towards Put Wall ({put_wall:,.0f}).{reg_suffix}"
         )
     elif qualified_ce and qualified_pe:
         top_side = "BOTH"
         exec_summary = (
             f"Active two-way setups ({len(qualified_ce)} Calls, {len(qualified_pe)} Puts). "
-            f"Range boundaries and dispersion opportunities active between Put Wall ({put_wall:,.0f}) and Call Wall ({call_wall:,.0f})."
+            f"Range boundaries and dispersion opportunities active between Put Wall ({put_wall:,.0f}) and Call Wall ({call_wall:,.0f}).{reg_suffix}"
         )
     else:
         top_side = "NEUTRAL"
         exec_summary = (
             f"Capital preservation mode: No option setups currently achieve the minimum Score ≥ 75 threshold. "
             f"Market regime is choppy or directionally ambiguous (Bias: {bias_score:+.1f}, CE Avg: {avg_ce_score:.0f} | PE Avg: {avg_pe_score:.0f}). "
-            f"Stand aside or monitor watchlists below."
+            f"Stand aside or monitor watchlists below.{reg_suffix}"
         )
 
     return RecommendationBatch(

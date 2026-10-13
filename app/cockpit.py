@@ -2624,7 +2624,18 @@ def _render_single_recommendation_card(
         lot_size=idx.lot_size,
     )
     side_cls = "ce" if idea.side == "CE" else "pe"
-    tags_html = "".join([f'<span class="rec-tag">{t}</span>' for t in idea.catalyst_tags])
+    extra_tags = []
+    adx_reg = getattr(idea, "adx_regime", "NEUTRAL")
+    adx_val = getattr(idea, "adx_5m", 0.0)
+    if adx_reg in ("CHOP", "TRENDING"):
+        extra_tags.append(f'<span class="rec-tag" style="background:rgba(99,102,241,.12);color:#818cf8;border:1px solid rgba(99,102,241,.25)">ADX {adx_reg} ({adx_val:.0f})</span>')
+    cvd_div = getattr(idea, "cvd_divergence", "NONE")
+    if cvd_div in ("BULLISH_ABSORPTION", "BEARISH_ABSORPTION"):
+        extra_tags.append(f'<span class="rec-tag" style="background:rgba(168,85,247,.12);color:#c084fc;border:1px solid rgba(168,85,247,.25)">CVD {cvd_div.replace("_", " ")}</span>')
+    latch_st = getattr(idea, "latch_state", "QUALIFIED")
+    if latch_st == "ACTIVE":
+        extra_tags.append('<span class="rec-tag" style="background:rgba(34,197,94,.12);color:var(--go);border:1px solid rgba(34,197,94,.25)">🔒 LATCHED</span>')
+    tags_html = "".join([f'<span class="rec-tag">{t}</span>' for t in idea.catalyst_tags] + extra_tags)
 
     # Percentage moves
     tgt1_pct = round(((idea.target_1 - idea.current_ltp) / idea.current_ltp) * 100.0, 1) if idea.current_ltp > 0 else 0
@@ -2765,6 +2776,31 @@ def _render_single_recommendation_card(
         f'🎙️ <b>Session Commentary:</b> {pinned_commentary_note}</div>'
     ) if pinned_commentary_note else ""
 
+    spread_alt = getattr(idea, "spread_alternative", None)
+    spread_html = ""
+    if spread_alt and isinstance(spread_alt, dict):
+        sp_name = spread_alt.get("spread_name", "Vertical Spread")
+        sp_long = spread_alt.get("long_leg", "")
+        sp_short = spread_alt.get("short_leg", "")
+        sp_debit = float(spread_alt.get("net_debit", 0.0))
+        sp_prof = float(spread_alt.get("max_profit", 0.0))
+        sp_loss = float(spread_alt.get("max_loss", 0.0))
+        sp_rr = spread_alt.get("rr_ratio", "1:1")
+        sp_be = float(spread_alt.get("breakeven_spot", 0.0))
+        spread_html = (
+            f'<div style="margin-top:6px;padding:6px 10px;background:rgba(56,189,248,0.06);'
+            f'border:1px solid rgba(56,189,248,0.25);border-radius:6px;font-size:0.72rem">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">'
+            f'<span style="font-weight:700;color:var(--spark)">🛡️ Defined-Risk Spread: {sp_name}</span>'
+            f'<span style="font-family:var(--mono);color:var(--ink-mute)">Net Debit ₹{sp_debit:,.1f} · R:R {sp_rr}</span>'
+            f'</div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono)">'
+            f'<span>{sp_long} / {sp_short}</span>'
+            f'<span>Max Gain +₹{sp_prof:,.1f} · Max Risk -₹{sp_loss:,.1f} · B/E Spot ₹{sp_be:,.0f}</span>'
+            f'</div>'
+            f'</div>'
+        )
+
     card_html = (
         f'<div class="ck rec-card {side_cls}{card_extra_cls}">'
         f'{extra_top_html}'
@@ -2833,6 +2869,7 @@ def _render_single_recommendation_card(
         f'</div>'
         f'<div class="rec-rationale">{idea.rationale}</div>'
         f'{commentary_chip_html}'
+        f'{spread_html}'
         f'<div class="rec-tags">{tags_html}</div>'
         f'</div>'
     )
@@ -3127,6 +3164,13 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
         if (now_t - c_ts < 20.0) or ((now_t - c_ts < 60.0) and abs(c_spot - spot) < spot_thresh and abs(c_bias - curr_bias_val) < 0.15):
             return c_batch
 
+    sec_rows = None
+    try:
+        from data.sectors import fetch_sector_snap
+        sec_rows = fetch_sector_snap(blocking=False)
+    except Exception:
+        pass
+
     batch = generate_trade_recommendations(
         data,
         bias_result=bias_res,
@@ -3134,6 +3178,7 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
         latest_bar=latest_bar,
         sentinel_bars=bars_5m or bars,
         spot_override=spot,
+        sector_rows=sec_rows,
         min_score=75,
     )
     _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)

@@ -554,3 +554,255 @@ def test_structural_atr_invalidation_widening():
         inval_dist = abs(spot - rec.spot_invalidation)
         assert inval_dist >= 30.0, f"{rec.play_badge} PE invalidation {rec.spot_invalidation} is only {inval_dist} pts away"
 
+
+def test_compute_adx_regimes():
+    from analytics.trade_ideas import compute_adx
+
+    # 1. Insufficient bars -> fallback neutral
+    adx_val, regime = compute_adx([])
+    assert adx_val == 20.0
+    assert regime == "NEUTRAL"
+
+    # 2. Strong uptrend: consecutive expanding higher highs and higher lows
+    trending_bars = []
+    base_p = 24000.0
+    for i in range(30):
+        h = base_p + i * 20.0 + 15.0
+        l = base_p + i * 20.0 - 5.0
+        c = base_p + i * 20.0 + 10.0
+        trending_bars.append({"high": h, "low": l, "close": c})
+
+    adx_trend, regime_trend = compute_adx(trending_bars, period=14)
+    assert adx_trend >= 25.0
+    assert regime_trend == "TRENDING"
+
+    # 3. Choppy range-bound oscillation
+    chop_bars = []
+    for i in range(40):
+        offset = 5.0 if i % 2 == 0 else -5.0
+        chop_bars.append({
+            "high": 24500.0 + offset + 2.0,
+            "low": 24500.0 + offset - 2.0,
+            "close": 24500.0 + offset,
+        })
+    adx_chop, regime_chop = compute_adx(chop_bars, period=14)
+    assert adx_chop < 20.0
+    assert regime_chop == "CHOP"
+
+
+def test_compute_cvd_divergence():
+    from analytics.trade_ideas import compute_cvd_divergence
+
+    # Insufficient bars
+    assert compute_cvd_divergence([]) == "NONE"
+
+    # Bullish Absorption: Price makes lower low, but cumulative delta makes higher low
+    bullish_bars = [
+        {"close": 24500.0, "delta": 100},
+        {"close": 24480.0, "delta": -50},
+        {"close": 24460.0, "delta": 300},  # Price down, CVD aggressive absorption
+        {"close": 24450.0, "delta": 400},
+        {"close": 24440.0, "delta": 500},
+    ]
+    assert compute_cvd_divergence(bullish_bars) == "BULLISH"
+
+    # Bearish Absorption: Price makes higher high, but cumulative delta makes lower low / heavy selling
+    bearish_bars = [
+        {"close": 24400.0, "delta": -100},
+        {"close": 24450.0, "delta": -200},
+        {"close": 24480.0, "delta": -400},
+        {"close": 24510.0, "delta": -600},
+        {"close": 24530.0, "delta": -800},
+    ]
+    assert compute_cvd_divergence(bearish_bars) == "BEARISH"
+
+
+def test_compute_sector_breadth_context():
+    from analytics.trade_ideas import compute_sector_breadth_context
+
+    # None or empty rows
+    ctx = compute_sector_breadth_context(None)
+    assert ctx["breadth"] == "NEUTRAL"
+
+    # Bullish aligned: Banking, IT, Energy all positive
+    bull_rows = [
+        {"sector": "NIFTY BANK", "change_pct": 1.15},
+        {"sector": "NIFTY IT", "change_pct": 0.85},
+        {"sector": "NIFTY OIL & GAS", "change_pct": 0.60},
+    ]
+    ctx_bull = compute_sector_breadth_context(bull_rows)
+    assert ctx_bull["breadth"] == "BULLISH"
+    assert ctx_bull["bull_count"] >= 2
+
+    # Bearish aligned: Heavy negative breadth
+    bear_rows = [
+        {"sector": "NIFTY BANK", "change_pct": -1.25},
+        {"sector": "NIFTY IT", "change_pct": -0.70},
+        {"sector": "NIFTY OIL & GAS", "change_pct": -0.90},
+    ]
+    ctx_bear = compute_sector_breadth_context(bear_rows)
+    assert ctx_bear["breadth"] == "BEARISH"
+    assert ctx_bear["bear_count"] >= 2
+
+
+def test_compute_fii_positioning_context(monkeypatch):
+    import analytics.trade_ideas as ti
+
+    # Heavy long FII futures
+    monkeypatch.setattr(
+        "app.participant_oi.latest_available",
+        lambda: ("2026-10-10", {"FII": {"fut_long": 100000, "fut_short": 40000}}),
+    )
+    ctx_long = ti.compute_fii_positioning_context()
+    assert ctx_long["fii_bias"] == "BULLISH"
+    assert ctx_long["net_fut"] == 60000
+
+    # Heavy short FII futures
+    monkeypatch.setattr(
+        "app.participant_oi.latest_available",
+        lambda: ("2026-10-10", {"FII": {"fut_long": 20000, "fut_short": 80000}}),
+    )
+    ctx_short = ti.compute_fii_positioning_context()
+    assert ctx_short["fii_bias"] == "BEARISH"
+    assert ctx_short["net_fut"] == -60000
+
+
+def test_build_spread_alternative():
+    from analytics.trade_ideas import _build_spread_alternative, TradeIdea
+
+    idea_ce = TradeIdea(
+        symbol="NIFTY",
+        side="CE",
+        play_type="ATM Momentum Play",
+        play_badge="MOMENTUM",
+        strike=24500.0,
+        option_symbol="NIFTY 24500 CE",
+        current_ltp=120.0,
+        delta_approx=0.50,
+        entry_trigger="Breakout",
+        spot_invalidation=24450.0,
+        spot_invalidation_text="Below 24450",
+        target_1=160.0,
+        target_1_spot=24600.0,
+        target_2=200.0,
+        target_2_spot=24700.0,
+        stop_loss=80.0,
+        risk_reward_ratio="1 : 2.0",
+        quality_score=80,
+        conviction_label="High",
+        conviction_color="#22c55e",
+        rationale="Strong momentum",
+        rec_id="NIFTY_CE_24500_MOMENTUM",
+    )
+
+    contracts_map = {
+        ("C", 24550.0): (70.0, 0.40, 24500.0, 100.0),
+        ("P", 24450.0): (65.0, -0.40, 24500.0, 100.0),
+    }
+
+    # Bull Call Spread
+    spread_ce = _build_spread_alternative(idea=idea_ce, contracts_map=contracts_map, step=50)
+    assert spread_ce is not None
+    assert spread_ce["spread_name"] == "Bull Call Spread"
+    assert spread_ce["buy_strike"] == 24500.0
+    assert spread_ce["sell_strike"] == 24550.0
+    assert spread_ce["net_debit"] == 50.0  # 120 - 70
+    assert spread_ce["breakeven_spot"] == 24550.0
+
+    # Bear Put Spread
+    idea_pe = TradeIdea(
+        symbol="NIFTY",
+        side="PE",
+        play_type="ATM Momentum Play",
+        play_badge="MOMENTUM",
+        strike=24500.0,
+        option_symbol="NIFTY 24500 PE",
+        current_ltp=110.0,
+        delta_approx=-0.50,
+        entry_trigger="Breakdown",
+        spot_invalidation=24550.0,
+        spot_invalidation_text="Above 24550",
+        target_1=150.0,
+        target_1_spot=24400.0,
+        target_2=190.0,
+        target_2_spot=24300.0,
+        stop_loss=70.0,
+        risk_reward_ratio="1 : 2.0",
+        quality_score=80,
+        conviction_label="High",
+        conviction_color="#ef4444",
+        rationale="Strong momentum",
+        rec_id="NIFTY_PE_24500_MOMENTUM",
+    )
+    spread_pe = _build_spread_alternative(idea=idea_pe, contracts_map=contracts_map, step=50)
+    assert spread_pe is not None
+    assert spread_pe["spread_name"] == "Bear Put Spread"
+    assert spread_pe["buy_strike"] == 24500.0
+    assert spread_pe["sell_strike"] == 24450.0
+    assert spread_pe["net_debit"] == 45.0  # 110 - 65
+    assert spread_pe["breakeven_spot"] == 24455.0  # 24500 - 45
+
+
+def test_recommendation_latch_manager():
+    from analytics.trade_ideas import RecommendationLatchManager, TradeIdea
+
+    manager = RecommendationLatchManager(dwell_lease_s=90.0)
+    idea = TradeIdea(
+        symbol="NIFTY",
+        side="CE",
+        play_type="ATM Momentum Play",
+        play_badge="MOMENTUM",
+        strike=24500.0,
+        option_symbol="NIFTY 24500 CE",
+        current_ltp=100.0,
+        delta_approx=0.50,
+        target_1=140.0,
+        target_2=180.0,
+        stop_loss=75.0,
+        risk_reward_ratio="1:2.0",
+        conviction_label="High",
+        conviction_color="#22c55e",
+        quality_score=80,
+        spot_invalidation=24450.0,
+        target_1_spot=24600.0,
+        target_2_spot=24700.0,
+        entry_trigger="Breakout",
+        spot_invalidation_text="Below 24450",
+        rationale="Strong momentum",
+        rec_id="NIFTY_CE_24500_MOMENTUM",
+    )
+
+    # 1. First evaluation: qualifies & becomes ACTIVE
+    processed = manager.process_and_latch("NIFTY", 24500.0, [idea], min_score=75)
+    assert processed[0].latch_state == "ACTIVE"
+
+    # 2. Tick noise: quality score temporarily dips to 70 (>= 65), stays ACTIVE within lease
+    idea.quality_score = 70
+    processed = manager.process_and_latch("NIFTY", 24500.0, [idea], min_score=75)
+    assert processed[0].latch_state == "ACTIVE"
+
+    # 3. Instant Invalidation on spot breach (spot drops below 24450 for CE)
+    processed = manager.process_and_latch("NIFTY", 24430.0, [idea], min_score=75)
+    assert processed[0].latch_state == "INVALIDATED"
+
+    # 4. Target Hit (spot rallies to target 1 spot 24620 >= 24600)
+    idea.spot_invalidation = 24400.0  # reset inval
+    processed = manager.process_and_latch("NIFTY", 24620.0, [idea], min_score=75)
+    assert processed[0].latch_state == "TARGET_HIT"
+
+
+def test_batch_includes_phase_2_and_3_enrichments():
+    from analytics.trade_ideas import generate_trade_recommendations
+    from tests.test_trade_ideas import MockDashboardData
+
+    data = MockDashboardData(spot=24500.0)
+    batch = generate_trade_recommendations(data, min_score=0)
+
+    top_ce = batch.all_ce_candidates[0]
+    assert top_ce.spread_alternative is not None
+    assert "spread_name" in top_ce.spread_alternative
+    assert top_ce.adx_regime in ("CHOP", "TRENDING", "NEUTRAL")
+    assert top_ce.cvd_divergence in ("BULLISH_ABSORPTION", "BEARISH_ABSORPTION", "NONE")
+    assert top_ce.latch_state in ("ACTIVE", "QUALIFIED", "TARGET_HIT", "INVALIDATED", "DEGRADED")
+
+
