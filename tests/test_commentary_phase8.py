@@ -60,6 +60,7 @@ def test_storage_schema_and_save_entry(tmp_path, monkeypatch):
     assert found["headline"] == "Call Wall Tested at 24,800"
     assert len(found["bites"]) == 1
     assert found["bites"][0]["pinned_rec_id"] == "REC-TEST-123"
+    comm_db.clear_commentary_cache()
 
 
 def test_pinned_commentary_cache():

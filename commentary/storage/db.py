@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,16 @@ IST = timezone(timedelta(hours=5, minutes=30))
 _RECENT_ENTRIES_CACHE: list[dict[str, Any]] = []
 _CACHE_LOCK = threading.Lock()
 _CACHE_INITIALIZED = False
+_CACHE_SYNC_TS = 0.0
+
+
+def clear_commentary_cache() -> None:
+    """Force flush in-memory commentary cache so next read syncs from SQLite."""
+    global _CACHE_INITIALIZED, _CACHE_SYNC_TS
+    with _CACHE_LOCK:
+        _RECENT_ENTRIES_CACHE.clear()
+        _CACHE_INITIALIZED = False
+        _CACHE_SYNC_TS = 0.0
 
 
 def _now_ist_str() -> str:
@@ -218,12 +229,13 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
 
 
 def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> list[dict[str, Any]]:
-    """Retrieve recent commentary entries with zero disk latency from memory cache, falling back to SQLite."""
-    global _CACHE_INITIALIZED
+    """Retrieve recent commentary entries with low-latency cache backed by SQLite WAL."""
+    global _CACHE_INITIALIZED, _CACHE_SYNC_TS
     ensure_commentary_schema()
 
+    now_t = time.time()
     with _CACHE_LOCK:
-        if _CACHE_INITIALIZED and _RECENT_ENTRIES_CACHE:
+        if _CACHE_INITIALIZED and (now_t - _CACHE_SYNC_TS < 3.0) and _RECENT_ENTRIES_CACHE:
             filtered = [e for e in _RECENT_ENTRIES_CACHE if e.get("symbol", "").upper() == symbol.upper()]
             return filtered[:limit]
 
@@ -276,6 +288,7 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
                 _RECENT_ENTRIES_CACHE.clear()
                 _RECENT_ENTRIES_CACHE.extend(entries)
                 _CACHE_INITIALIZED = True
+                _CACHE_SYNC_TS = time.time()
 
             return entries
     except Exception as exc:
