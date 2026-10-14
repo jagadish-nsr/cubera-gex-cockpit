@@ -47,15 +47,21 @@ def latest(symbol: str) -> dict | None:
 
 def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     """Compile a complete instant market quote dictionary without blocking."""
-    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
-    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
+    snap = None
+    if not ohlc or not ohlc.get("ltp"):
+        try:
+            from data.market_snapshot import get_snapshot
+            snap = get_snapshot(symbol)
+        except Exception:
+            pass
 
-    spot = float(ohlc.get("ltp") or fallback_spot) if ohlc else fallback_spot
-    prev_close = float(ohlc.get("prev_close") or spot) if ohlc else spot
-    open_px = float(ohlc.get("open") or spot) if ohlc else spot
-    high_px = float(ohlc.get("high") or spot) if ohlc else spot
-    low_px = float(ohlc.get("low") or spot) if ohlc else spot
-    as_of = ohlc.get("as_of") if ohlc else None
+    snap_spot = float(snap.get("spot", 0.0)) if snap else 0.0
+    spot = float(ohlc.get("ltp")) if (ohlc and ohlc.get("ltp")) else snap_spot
+    prev_close = float(ohlc.get("prev_close")) if (ohlc and ohlc.get("prev_close")) else float(snap.get("prev_close", spot) if snap else spot)
+    open_px = float(ohlc.get("open")) if (ohlc and ohlc.get("open")) else float(snap.get("open", spot) if snap else spot)
+    high_px = float(ohlc.get("high")) if (ohlc and ohlc.get("high")) else float(snap.get("high", spot) if snap else spot)
+    low_px = float(ohlc.get("low")) if (ohlc and ohlc.get("low")) else float(snap.get("low", spot) if snap else spot)
+    as_of = (ohlc.get("as_of") if ohlc else None) or (snap.get("as_of") if snap else None)
 
     # Exchange net change vs previous close
     if prev_close > 0:
@@ -139,10 +145,18 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
         return rec["quote"]
 
     ohlc = rec.get("ohlc") if rec else None
+    if ohlc is None:
+        try:
+            from data.dhan_live import fetch_index_ohlc
+            ohlc = fetch_index_ohlc(symbol)
+        except Exception:
+            pass
     fut = rec.get("fut") if rec else None
     quote = _compile_quote(symbol, ohlc, fut)
     if rec:
         rec["quote"] = quote
+        if ohlc:
+            rec["ohlc"] = ohlc
     else:
         _STORE[symbol] = {"ohlc": ohlc, "fut": fut, "quote": quote, "at": now, "err": None}
     return quote
@@ -170,9 +184,23 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
     if changed:
         rec["ws_at"] = now
         rec["at"] = now
-        rec["err"] = None
-        # Recompile the display quote so get_instant_quote() sees fresh values immediately
         rec["quote"] = _compile_quote(symbol, rec.get("ohlc"), rec.get("fut"))
+        try:
+            from data.market_snapshot import save_snapshot
+            q = rec["quote"]
+            save_snapshot(
+                symbol,
+                spot=q.get("spot"),
+                prev_close=q.get("prev_close"),
+                open_px=q.get("open"),
+                high=q.get("high"),
+                low=q.get("low"),
+                vix=q.get("vix"),
+                as_of=q.get("as_of"),
+                source="ws-tick",
+            )
+        except Exception:
+            pass
 
 
 def _ws_is_live_for(symbol: str, max_silence_s: float = 10.0) -> bool:
@@ -230,6 +258,23 @@ def _loop(symbol: str, interval_s: float) -> None:
     from data.dhan_live import fetch_index_ohlc, fetch_futures_dhan
     import config
     while True:
+        # Hydrate _STORE from authentic offline snapshot if currently empty
+        if not _STORE.get(symbol) or not (_STORE[symbol].get("ohlc")):
+            try:
+                d_init = fetch_index_ohlc(symbol)
+                if d_init and d_init.get("ltp") is not None:
+                    q_init = _compile_quote(symbol, d_init, None)
+                    _STORE[symbol] = {
+                        "ohlc": d_init,
+                        "fut": None,
+                        "quote": q_init,
+                        "at": time.time(),
+                        "ws_at": None,
+                        "err": None,
+                    }
+            except Exception:
+                pass
+
         # 1. Back off REST polling when the WebSocket feed is actively providing live ticks
         if _ws_is_live_for(symbol, max_silence_s=10.0):
             time.sleep(WS_BACKOFF_S)

@@ -1067,7 +1067,22 @@ def _load_data(symbol: str, window: str, force: bool = False):
             _DASH_CACHE[ckey] = (time.time(), data, None)
         return data, None
     except Exception as exc:  # noqa: BLE001
-        log.warning("load_dashboard failed for %s: %s — attempting demo fallback", symbol, exc)
+        log.warning("load_dashboard failed for %s: %s", symbol, exc)
+        try:
+            from resilience.lkgs import get_lkgs_manager
+            lkgs = get_lkgs_manager()
+            deg_data, is_deg, stale_sec, reason = lkgs.get_degraded_snapshot(
+                symbol,
+                reason=f"Offline / Market Closed ({exc})",
+            )
+            if deg_data is not None:
+                err_msg = f"Session Closed ({exc}). Serving last validated snapshot."
+                with _DASH_LOCK:
+                    _DASH_CACHE[ckey] = (time.time(), deg_data, err_msg)
+                return deg_data, err_msg
+        except Exception:
+            pass
+
         try:
             data = load_dashboard(symbol=symbol, window=window, use_demo=True)
             err_msg = f"Live feed unavailable ({exc}). Displaying offline demo data."
@@ -1113,11 +1128,18 @@ def _extract_pcr_and_oi(data) -> tuple[float, float | None, float | None]:
 
 
 def _extract_gamma_flip(levels, symbol: str) -> float:
-    """Safely extract the zero-crossing Gamma Flip level with correct per-symbol defaults."""
-    default_flips = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
-    fallback = default_flips.get(symbol.upper(), 24800.0)
+    """Safely extract the zero-crossing Gamma Flip level with authentic persistent snapshot defaults."""
     flip = getattr(levels, "flip", None) or getattr(levels, "gamma_flip", None)
-    return float(flip) if flip and flip > 0 else fallback
+    if flip and float(flip) > 0:
+        return float(flip)
+    try:
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(symbol)
+        if snap and snap.get("gamma_flip"):
+            return float(snap["gamma_flip"])
+    except Exception:
+        pass
+    return float(getattr(levels, "spot", 0.0) or 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -1454,8 +1476,11 @@ def _render_cockpit_simulator_bar(symbol: str, window: str) -> None:
         rep_label = f"Historical Day {st.session_state.get('replay_historical_day', 'Captured')}"
 
     iq = get_instant_quote(symbol)
-    fallback_anchor = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
-    spot_val = float(iq.get("spot", fallback_anchor) if iq else fallback_anchor)
+    spot_val = float(iq.get("spot", 0.0) if iq else 0.0)
+    if not spot_val:
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(symbol)
+        spot_val = float(snap.get("spot", 0.0) if snap else 0.0)
 
     st.markdown(
         f'<div class="ck banner unval" style="background:#fff4e5;border-color:#f0a83a;color:#8a4b08;'
@@ -1572,12 +1597,11 @@ def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noq
     pcr_color = "var(--go)" if pcr_val > 1.05 else ("var(--stop)" if pcr_val < 0.85 else "var(--ink-mute)")
     pcr_text = "Bullish Put Writing" if pcr_val > 1.1 else ("Bearish Call Writing" if pcr_val < 0.85 else "Neutral Balanced")
 
-    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
-    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
-    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
-    cw_val = getattr(levels, "call_wall", None) or default_cw
-    pw_val = getattr(levels, "put_wall", None) or default_pw
-    mp_val = getattr(levels, "max_pain", None) or default_mp
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    cw_val = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    pw_val = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
+    mp_val = getattr(levels, "max_pain", None) or float(snap.get("max_pain", 0.0))
     flip_val = _extract_gamma_flip(levels, symbol)
 
     try:
@@ -1728,14 +1752,12 @@ def _fragment_cockpit_kpis_static(symbol: str, window: str) -> None:
 
 def _render_cockpit_guide_expander(symbol: str = "NIFTY", levels=None) -> None:
     """Cockpit Help & Reference Guide Expander."""
-    default_flips = {"NIFTY": 22130.0, "BANKNIFTY": 54800.0, "SENSEX": 72200.0}
-    default_cws = {"NIFTY": 22500.0, "BANKNIFTY": 55500.0, "SENSEX": 73000.0}
-    default_pws = {"NIFTY": 22000.0, "BANKNIFTY": 54000.0, "SENSEX": 71500.0}
-
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
     sym_u = symbol.upper()
-    cw = getattr(levels, "call_wall", None) or default_cws.get(sym_u, 22500.0)
-    pw = getattr(levels, "put_wall", None) or default_pws.get(sym_u, 22000.0)
-    flip = _extract_gamma_flip(levels, symbol) if levels else default_flips.get(sym_u, 22130.0)
+    cw = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    pw = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
+    flip = _extract_gamma_flip(levels, symbol)
 
     with st.expander("📖 Cockpit Guide: GEX Levels, Directional Bias & Candidate Structures (Click to Expand / Collapse)", expanded=False):
         st.markdown(
@@ -3149,14 +3171,17 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     latest_bar = bars[-1] if bars else (bars_5m[-1] if bars_5m else None)
     iq = get_instant_quote(symbol)
     raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
-    fallback_anchor = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
     # Check if instant quote is genuinely live, otherwise prioritize raw_lvl_spot from option chain
     if iq and iq.get("is_live") and float(iq.get("spot", 0)) > 0:
         spot = float(iq["spot"])
     elif raw_lvl_spot is not None and float(raw_lvl_spot) > 0:
         spot = float(raw_lvl_spot)
+    elif iq and float(iq.get("spot", 0)) > 0:
+        spot = float(iq["spot"])
     else:
-        spot = float(iq.get("spot", fallback_anchor) if iq else fallback_anchor)
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(symbol)
+        spot = float(snap.get("spot", 0.0) if snap else 0.0)
     # Pre-market equilibrium anchoring: anchor spot to discovered equilibrium price only during pre-market session
     try:
         from data.pre_post_market import get_pre_market_state
@@ -5210,9 +5235,12 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
 def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     """OrderFlow Sentinel v2.0 — Screen 2 Live Tape & Microstructure with Decoupled Independent Cards."""
     data, _ = _load_data(symbol, window)
-    default_spot = 72880.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22680.0)
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    snap_spot = float(snap.get("spot", 0.0))
+    snap_cw = float(snap.get("call_wall", 0.0)) or (snap_spot + 100.0)
+    snap_pw = float(snap.get("put_wall", 0.0)) or (snap_spot - 100.0)
+
     iq = get_instant_quote(symbol)
     if iq.get("is_live"):
         spot = iq["spot"]
@@ -5221,11 +5249,11 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
         spot = float(data.levels.spot)
         fut_px = float(iq.get("fut_px") or spot)
     else:
-        spot = iq.get("spot", default_spot)
+        spot = iq.get("spot", snap_spot)
         fut_px = float(iq.get("fut_px") or (spot + 25.0))
 
-    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
-    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
+    cw = getattr(getattr(data, "levels", None), "call_wall", snap_cw) if data else snap_cw
+    pw = getattr(getattr(data, "levels", None), "put_wall", snap_pw) if data else snap_pw
     gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
 
     inst_id = f"{symbol}-FUT"
@@ -5942,12 +5970,11 @@ def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
         vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
     vix_label = "Low Vol" if vix_val < 15 else ("Elevated" if vix_val < 20 else "High Vol")
 
-    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
-    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
-    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
-    call_wall = getattr(levels, "call_wall", None) or default_cw
-    put_wall = getattr(levels, "put_wall", None) or default_pw
-    max_pain = getattr(levels, "max_pain", None) or default_mp
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    call_wall = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    put_wall = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
+    max_pain = getattr(levels, "max_pain", None) or float(snap.get("max_pain", 0.0))
 
     atm_iv = near_atm_iv or (vix_val / 100.0 if vix_val > 0 else 0.13)
     iv_rank = min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0))
@@ -6015,12 +6042,11 @@ def _render_analytics_row1_bias_strikes(symbol: str, window: str) -> None:
         raw_vix = getattr(levels, "vix", None)
         vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
 
-    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
-    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
-    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
-    call_wall = getattr(levels, "call_wall", None) or default_cw
-    put_wall = getattr(levels, "put_wall", None) or default_pw
-    max_pain = getattr(levels, "max_pain", None) or default_mp
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    call_wall = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    put_wall = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
+    max_pain = getattr(levels, "max_pain", None) or float(snap.get("max_pain", 0.0))
     gamma_flip = _extract_gamma_flip(levels, symbol)
 
     cw_dist = (call_wall - spot) if (call_wall and spot) else 0.0
@@ -6154,10 +6180,10 @@ def _render_analytics_row2_oi_expected_move(symbol: str, window: str) -> None:
         raw_vix = getattr(levels, "vix", None)
         vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
 
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    call_wall = getattr(levels, "call_wall", None) or default_cw
-    put_wall = getattr(levels, "put_wall", None) or default_pw
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    call_wall = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    put_wall = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
 
     atm_iv = near_atm_iv or (vix_val / 100.0 if vix_val > 0 else 0.13)
     dte = getattr(data, "dte_now", None)
@@ -6450,10 +6476,10 @@ def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
     skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
     near_atm_iv = skew_result.get("near_atm_iv")
 
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    call_wall = getattr(levels, "call_wall", None) or default_cw
-    put_wall = getattr(levels, "put_wall", None) or default_pw
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    call_wall = getattr(levels, "call_wall", None) or float(snap.get("call_wall", 0.0))
+    put_wall = getattr(levels, "put_wall", None) or float(snap.get("put_wall", 0.0))
 
     col4_div, col4_events = st.columns([1, 1], gap="medium")
 
@@ -7673,15 +7699,17 @@ def _render_standalone_orderflow_page() -> None:
     timeframe = st.query_params.get("timeframe") or "1m"
 
     iq = get_instant_quote(symbol) or {}
-    default_spot = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
-    spot = float(iq.get("spot", 0.0) or default_spot)
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    snap_spot = float(snap.get("spot", 0.0))
+    snap_cw = float(snap.get("call_wall", 0.0)) or (snap_spot + 100.0)
+    snap_pw = float(snap.get("put_wall", 0.0)) or (snap_spot - 100.0)
+    spot = float(iq.get("spot", 0.0) or snap_spot)
     fut_px = float(iq.get("fut_px", 0.0) or spot)
 
     data, _ = _load_data(symbol, window="0dte_to_next_monthly")
-    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
-    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
-    cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
-    pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
+    cw = getattr(getattr(data, "levels", None), "call_wall", snap_cw) if data else snap_cw
+    pw = getattr(getattr(data, "levels", None), "put_wall", snap_pw) if data else snap_pw
     gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)
     inst_id = f"{symbol}-FUT"
     ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot

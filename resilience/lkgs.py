@@ -46,6 +46,32 @@ class LKGSManager:
             if spot and spot > 0:
                 self._prev_spot[sym] = float(spot)
             log.debug("LKGS[%s]: Stored new valid snapshot as of %s", sym, ts.isoformat())
+            try:
+                data_src = str(getattr(data, "source", "") or "").lower()
+                if not any(k in data_src for k in ("demo", "synthetic", "mock", "test")):
+                    from data.market_snapshot import save_snapshot
+                    lvls = getattr(data, "levels", None)
+                    if lvls and getattr(lvls, "spot", None):
+                        vix_val = None
+                        raw_vix = getattr(lvls, "vix", None)
+                        if isinstance(raw_vix, dict):
+                            vix_val = raw_vix.get("last")
+                        elif isinstance(raw_vix, (int, float)):
+                            vix_val = float(raw_vix)
+                        save_snapshot(
+                            symbol=sym,
+                            spot=getattr(lvls, "spot", None),
+                            call_wall=getattr(lvls, "call_wall", None),
+                            put_wall=getattr(lvls, "put_wall", None),
+                            gamma_flip=getattr(lvls, "flip", None) or getattr(lvls, "gamma_flip", None),
+                            max_pain=getattr(lvls, "max_pain", None),
+                            net_gex=getattr(lvls, "total_net_gex", None),
+                            vix=vix_val,
+                            as_of=ts.isoformat(),
+                            source="lkgs-store",
+                        )
+            except Exception:
+                pass
 
     def get_prev_spot(self, symbol: str) -> float | None:
         """Get previous known spot for validation checks."""

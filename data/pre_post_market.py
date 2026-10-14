@@ -104,9 +104,11 @@ def get_pre_market_state(
 
     phase_code, phase_label, _ = get_current_session_phase(now_ist)
 
-    # Defaults
-    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
-    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
+    # Load authentic session snapshot
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    fallback_spot = float(snap.get("spot") or snap.get("prev_close") or 0.0)
+    prev_close_val = float(snap.get("prev_close") or fallback_spot)
 
     state = {
         "symbol": symbol.upper(),
@@ -116,7 +118,7 @@ def get_pre_market_state(
         "is_pre_market": phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY"),
         "is_discovered": False,
         "discovered_spot": fallback_spot,
-        "prev_close": fallback_spot,
+        "prev_close": prev_close_val,
         "gap_pts": 0.0,
         "gap_pct": 0.0,
         "discovered_at": None,
@@ -452,8 +454,9 @@ def get_post_market_state(
         if cached and cached.get("date") == today_str and not force_refresh:
             return cached
 
-    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
-    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    fallback_spot = float(snap.get("spot") or snap.get("prev_close") or 0.0)
 
     # In continuous or pre-market hours, post-market is not yet reached
     t_min = now_ist.hour * 60 + now_ist.minute
