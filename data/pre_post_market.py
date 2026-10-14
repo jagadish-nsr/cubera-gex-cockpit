@@ -518,7 +518,7 @@ def is_contract_expired(rec_dict: dict, ref_date: date | None = None) -> bool:
             pass
 
     # 2. Extract from option symbol string: e.g. "NIFTY 13 OCT 22700 CE" or "NIFTY26OCT22700CE"
-    opt_sym = str(rec_dict.get("option_symbol") or payload.get("option_symbol") or "")
+    opt_sym = str(rec_dict.get("option_symbol") or rec_dict.get("symbol") or payload.get("option_symbol") or payload.get("symbol") or "")
     parts = opt_sym.split()
     if len(parts) >= 3:
         # Format: "NIFTY 13 OCT 22700 CE"

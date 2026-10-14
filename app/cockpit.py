@@ -3608,8 +3608,12 @@ def _tab_cockpit(symbol: str, window: str) -> None:
     else:
         _fragment_cockpit_kpis_static(symbol, window)
 
-    # 3. Cockpit Guide (static reference expander)
+    # 2.5. Pre-Open Tactical Briefing / Post-Market Settlement Card & Chime
     data, _ = _load_data(symbol, window)
+    _process_pre_market_chime(symbol)
+    _render_pre_post_market_banner(symbol, data)
+
+    # 3. Cockpit Guide (static reference expander)
     _render_cockpit_guide_expander(symbol, levels=getattr(data, "levels", None) if data else None)
 
     # 4. Strategic Playbook & GEX Ladder (15s pulse)
