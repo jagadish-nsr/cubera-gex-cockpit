@@ -47,8 +47,8 @@ def latest(symbol: str) -> dict | None:
 
 def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     """Compile a complete instant market quote dictionary without blocking."""
-    default_spots = {"NIFTY": 22603.05, "BANKNIFTY": 55055.55, "SENSEX": 72638.70}
-    fallback_spot = default_spots.get(symbol.upper(), 22600.0)
+    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
+    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
 
     spot = float(ohlc.get("ltp") or fallback_spot) if ohlc else fallback_spot
     prev_close = float(ohlc.get("prev_close") or spot) if ohlc else spot

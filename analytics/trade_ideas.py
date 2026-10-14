@@ -235,7 +235,18 @@ def _reprice_trade_idea_targets(
     T_tgt2 = max(1e-4, T_entry - (dt_annual * 1.5))
     T_sl = max(1e-4, T_entry - (dt_annual * 0.5))
 
-    # 4. Forecasted IVs for scenarios
+    # 4. Spot Target Sanity Clamping: Prevent extreme spot projections from data mismatch
+    max_spot_reach = max(step * 5.0, 300.0)  # max ~300 pts on NIFTY, 600 pts on BANKNIFTY
+    if is_call:
+        tgt1_spot = min(tgt1_spot, safe_spot + max_spot_reach)
+        tgt2_spot = min(tgt2_spot, safe_spot + (max_spot_reach * 1.5))
+        inval_spot = max(inval_spot, safe_spot - max_spot_reach)
+    else:
+        tgt1_spot = max(tgt1_spot, safe_spot - max_spot_reach)
+        tgt2_spot = max(tgt2_spot, safe_spot - (max_spot_reach * 1.5))
+        inval_spot = min(inval_spot, safe_spot + max_spot_reach)
+
+    # 5. Forecasted IVs for scenarios
     try:
         from target_engine.iv_forecast import forecast_iv
         scen_fwd = "bull" if is_call else "bear"
@@ -253,7 +264,7 @@ def _reprice_trade_idea_targets(
         iv_f_tgt2 = iv_now
         iv_f_sl = iv_now
 
-    # 5. Black-76 Repricing
+    # 6. Black-76 Repricing
     try:
         from target_engine.pricer import reprice
         tgt1_calc = reprice(tgt1_spot, safe_k, T_tgt1, iv_f_tgt1, r=0.065, option_type=opt_type)
@@ -268,6 +279,13 @@ def _reprice_trade_idea_targets(
     actual_ltp = max(0.05, float(current_ltp))
     tgt1_opt = max(round(tgt1_calc, 1), round(safe_ltp * 1.15, 1), round(actual_ltp * 1.15, 2))
     tgt2_opt = max(round(tgt2_calc, 1), round(tgt1_opt * 1.15, 1), round(safe_ltp * 1.35, 1), round(actual_ltp * 1.35, 2))
+    
+    # Cap target prices to realistic intraday multiples (max 4.0x entry for T1, 6.5x for T2)
+    max_t1_mult = round(actual_ltp * 4.0, 1)
+    max_t2_mult = round(actual_ltp * 6.5, 1)
+    tgt1_opt = min(tgt1_opt, max_t1_mult)
+    tgt2_opt = min(tgt2_opt, max_t2_mult)
+
     sl_opt = min(round(sl_calc, 1), round(safe_ltp * 0.85, 1), round(actual_ltp * 0.85, 2))
     if sl_opt >= actual_ltp:
         sl_opt = round(actual_ltp * 0.72, 2)
@@ -720,6 +738,8 @@ def compute_trend_context(
 def compute_sector_breadth_context(sector_rows: list[dict] | None = None) -> dict[str, Any]:
     """Evaluates Nifty sector breadth alignment across key heavyweights (Bank, IT, Energy/Oil)."""
     rows = sector_rows
+    if isinstance(rows, dict):
+        rows = rows.get("rows")
     if rows is None:
         try:
             from data.sectors import fetch_sector_snap
@@ -729,7 +749,7 @@ def compute_sector_breadth_context(sector_rows: list[dict] | None = None) -> dic
         except Exception:
             rows = None
 
-    if not rows:
+    if not rows or not isinstance(rows, list):
         return {"breadth": "NEUTRAL", "bull_count": 0, "bear_count": 0, "summary": ""}
 
     bank_pct = None

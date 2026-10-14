@@ -3141,7 +3141,14 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     latest_bar = bars[-1] if bars else (bars_5m[-1] if bars_5m else None)
     iq = get_instant_quote(symbol)
     raw_lvl_spot = getattr(getattr(data, "levels", None), "spot", None) if data else None
-    spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_lvl_spot if raw_lvl_spot is not None else 24500.0)
+    fallback_anchor = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
+    # Check if instant quote is genuinely live, otherwise prioritize raw_lvl_spot from option chain
+    if iq and iq.get("is_live") and float(iq.get("spot", 0)) > 0:
+        spot = float(iq["spot"])
+    elif raw_lvl_spot is not None and float(raw_lvl_spot) > 0:
+        spot = float(raw_lvl_spot)
+    else:
+        spot = float(iq.get("spot", fallback_anchor) if iq else fallback_anchor)
     # Pre-market equilibrium anchoring: anchor spot to discovered equilibrium price only during pre-market session
     try:
         from data.pre_post_market import get_pre_market_state
