@@ -1114,8 +1114,8 @@ def _extract_pcr_and_oi(data) -> tuple[float, float | None, float | None]:
 
 def _extract_gamma_flip(levels, symbol: str) -> float:
     """Safely extract the zero-crossing Gamma Flip level with correct per-symbol defaults."""
-    default_flips = {"NIFTY": 22600.0, "BANKNIFTY": 55200.0, "SENSEX": 72550.0}
-    fallback = default_flips.get(symbol.upper(), 22600.0)
+    default_flips = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
+    fallback = default_flips.get(symbol.upper(), 24800.0)
     flip = getattr(levels, "flip", None) or getattr(levels, "gamma_flip", None)
     return float(flip) if flip and flip > 0 else fallback
 
@@ -1454,7 +1454,8 @@ def _render_cockpit_simulator_bar(symbol: str, window: str) -> None:
         rep_label = f"Historical Day {st.session_state.get('replay_historical_day', 'Captured')}"
 
     iq = get_instant_quote(symbol)
-    spot_val = iq.get("spot", 22603.0)
+    fallback_anchor = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
+    spot_val = float(iq.get("spot", fallback_anchor) if iq else fallback_anchor)
 
     st.markdown(
         f'<div class="ck banner unval" style="background:#fff4e5;border-color:#f0a83a;color:#8a4b08;'
@@ -1571,9 +1572,9 @@ def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noq
     pcr_color = "var(--go)" if pcr_val > 1.05 else ("var(--stop)" if pcr_val < 0.85 else "var(--ink-mute)")
     pcr_text = "Bullish Put Writing" if pcr_val > 1.1 else ("Bearish Call Writing" if pcr_val < 0.85 else "Neutral Balanced")
 
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
+    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
+    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
+    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
     cw_val = getattr(levels, "call_wall", None) or default_cw
     pw_val = getattr(levels, "put_wall", None) or default_pw
     mp_val = getattr(levels, "max_pain", None) or default_mp
@@ -3127,6 +3128,13 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     if data is None or not getattr(data, "levels", None):
         return None
 
+    # Off-market hours: APIs are paused. Do not synthesize fresh trade ideas without live market data.
+    if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
+        cached = _REC_BATCH_CACHE.get(symbol)
+        if cached is not None:
+            return cached[3]
+        return None
+
     bias_score = st.session_state.get(f"bias_score_{symbol}")
     bias_res = None
     if bias_score is not None:
@@ -3333,6 +3341,19 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
 
     batch = _get_active_recommendation_batch(symbol, data)
     if batch is None:
+        if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
+            st.markdown(
+                '<div class="ck card" style="padding:28px 24px;text-align:center;margin-top:10px">'
+                '<div style="font-size:1.6rem;margin-bottom:8px">🌙</div>'
+                '<b style="font-size:.95rem;color:var(--ink)">Session Closed · Off-Market Hours</b>'
+                '<p style="font-size:.78rem;color:var(--ink-mute);margin:6px auto 0;max-width:540px">'
+                'Broker API polling and NSE live feeds are paused after market hours. '
+                'Real-time intraday option recommendations, gamma breakout triggers, and Sentinel MTM tracking '
+                'run strictly during active trading hours (09:15 – 15:30 IST) or when Replay Mode is enabled.'
+                '</p></div>',
+                unsafe_allow_html=True,
+            )
+            _render_strategy_effectiveness_strip(symbol)
         return
 
     iq = get_instant_quote(symbol)
@@ -5921,9 +5942,9 @@ def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
         vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
     vix_label = "Low Vol" if vix_val < 15 else ("Elevated" if vix_val < 20 else "High Vol")
 
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
+    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
+    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
+    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
     call_wall = getattr(levels, "call_wall", None) or default_cw
     put_wall = getattr(levels, "put_wall", None) or default_pw
     max_pain = getattr(levels, "max_pain", None) or default_mp
@@ -5994,9 +6015,9 @@ def _render_analytics_row1_bias_strikes(symbol: str, window: str) -> None:
         raw_vix = getattr(levels, "vix", None)
         vix_val = float(raw_vix.get("last") if isinstance(raw_vix, dict) else (raw_vix or 13.20))
 
-    default_cw = 73000.0 if symbol == "SENSEX" else (55500.0 if symbol == "BANKNIFTY" else 22800.0)
-    default_pw = 72500.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 22500.0)
-    default_mp = 72600.0 if symbol == "SENSEX" else (55250.0 if symbol == "BANKNIFTY" else 22600.0)
+    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
+    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
+    default_mp = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
     call_wall = getattr(levels, "call_wall", None) or default_cw
     put_wall = getattr(levels, "put_wall", None) or default_pw
     max_pain = getattr(levels, "max_pain", None) or default_mp
@@ -7652,12 +7673,13 @@ def _render_standalone_orderflow_page() -> None:
     timeframe = st.query_params.get("timeframe") or "1m"
 
     iq = get_instant_quote(symbol) or {}
-    spot = float(iq.get("spot", 0.0) or 22500.0)
+    default_spot = 81000.0 if symbol == "SENSEX" else (51500.0 if symbol == "BANKNIFTY" else 24800.0)
+    spot = float(iq.get("spot", 0.0) or default_spot)
     fut_px = float(iq.get("fut_px", 0.0) or spot)
 
     data, _ = _load_data(symbol, window="0dte_to_next_monthly")
-    default_cw = 22600.0 if symbol == "NIFTY" else (50000.0 if symbol == "BANKNIFTY" else 75000.0)
-    default_pw = 22500.0 if symbol == "NIFTY" else (49500.0 if symbol == "BANKNIFTY" else 74500.0)
+    default_cw = 81500.0 if symbol == "SENSEX" else (52000.0 if symbol == "BANKNIFTY" else 25000.0)
+    default_pw = 80500.0 if symbol == "SENSEX" else (51000.0 if symbol == "BANKNIFTY" else 24600.0)
     cw = getattr(getattr(data, "levels", None), "call_wall", default_cw) if data else default_cw
     pw = getattr(getattr(data, "levels", None), "put_wall", default_pw) if data else default_pw
     gamma_flip = _extract_gamma_flip(getattr(data, "levels", None), symbol)

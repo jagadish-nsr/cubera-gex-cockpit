@@ -105,8 +105,8 @@ def get_pre_market_state(
     phase_code, phase_label, _ = get_current_session_phase(now_ist)
 
     # Defaults
-    default_spots = {"NIFTY": 22603.05, "BANKNIFTY": 55055.55, "SENSEX": 72638.70}
-    fallback_spot = default_spots.get(symbol.upper(), 22600.0)
+    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
+    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
 
     state = {
         "symbol": symbol.upper(),
@@ -452,8 +452,8 @@ def get_post_market_state(
         if cached and cached.get("date") == today_str and not force_refresh:
             return cached
 
-    default_spots = {"NIFTY": 22603.05, "BANKNIFTY": 55055.55, "SENSEX": 72638.70}
-    fallback_spot = default_spots.get(symbol.upper(), 22600.0)
+    default_spots = {"NIFTY": 24800.0, "BANKNIFTY": 51500.0, "SENSEX": 81000.0}
+    fallback_spot = default_spots.get(symbol.upper(), 24800.0)
 
     # In continuous or pre-market hours, post-market is not yet reached
     t_min = now_ist.hour * 60 + now_ist.minute

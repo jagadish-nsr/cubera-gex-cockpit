@@ -806,3 +806,52 @@ def test_batch_includes_phase_2_and_3_enrichments():
     assert top_ce.latch_state in ("ACTIVE", "QUALIFIED", "TARGET_HIT", "INVALIDATED", "DEGRADED")
 
 
+def test_target_bounds_and_realistic_rr():
+    """Verify that target option pricing and R:R ratios are bounded within realistic intraday limits."""
+    # Build a scenario with large spot to call wall distance (e.g. 2000 pts)
+    rows = [
+        {"strike": 22700.0, "type": "C", "mid": 73.3, "delta": 0.45, "oi": 1000000, "doi": 50000},
+        {"strike": 22700.0, "type": "P", "mid": 80.0, "delta": -0.55, "oi": 1000000, "doi": 50000},
+    ]
+    df = pd.DataFrame(rows)
+    levels = _mock_levels(spot=22650.0, cw=24600.0, pw=22500.0, flip=22650.0)
+    data = MockDashboardData(spot=22650.0, symbol="NIFTY")
+    data.levels = levels
+    data.contracts = df
+
+    batch = generate_trade_recommendations(data, min_score=0)
+    assert batch is not None
+    for idea in batch.all_recommendations:
+        # T1 must not exceed 4x entry premium
+        assert idea.target_1 <= idea.current_ltp * 4.05
+        # T2 must not exceed 6.5x entry premium
+        assert idea.target_2 <= idea.current_ltp * 6.55
+        # R:R must be realistic (< 20.0, not 172.7!)
+        rr_val = float(idea.risk_reward_ratio.split(":")[-1].strip())
+        assert rr_val < 20.0
+
+
+def test_off_market_hours_recommendation_gating(monkeypatch):
+    """Verify that recommendation generation is gated off outside market hours."""
+    from unittest.mock import patch
+    import config
+    from app.cockpit import _get_active_recommendation_batch, _REC_BATCH_CACHE
+
+    _REC_BATCH_CACHE.clear()
+    monkeypatch.setattr(config, "is_market_open", lambda: False)
+
+    data = MockDashboardData(spot=24500.0, symbol="NIFTY")
+    session_state = {"replay_mode_active": False}
+
+    with patch("streamlit.session_state", session_state):
+        # When market is closed and no cache exists, must return None without generating
+        batch = _get_active_recommendation_batch("NIFTY", data)
+        assert batch is None
+        assert "NIFTY" not in _REC_BATCH_CACHE
+
+        # When in replay mode, generation is allowed
+        session_state["replay_mode_active"] = True
+        batch_replay = _get_active_recommendation_batch("NIFTY", data)
+        assert batch_replay is not None
+
+
