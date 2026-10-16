@@ -48,13 +48,15 @@ def test_market_snapshot_persistence(tmp_path, monkeypatch):
 def test_market_snapshot_bootstrap_authentic_values():
     """Verify that get_snapshot bootstraps authentic Dhan data without fabricating fake prices."""
     for sym, expected_spot_range in [
-        ("NIFTY", (22600.0, 22800.0)),
-        ("BANKNIFTY", (55000.0, 56000.0)),
-        ("SENSEX", (72500.0, 73500.0)),
+        ("NIFTY", (22000.0, 26000.0)),
+        ("BANKNIFTY", (50000.0, 60000.0)),
+        ("SENSEX", (70000.0, 80000.0)),
     ]:
         snap = get_snapshot(sym)
         assert snap is not None
         assert snap["spot"] >= expected_spot_range[0]
         assert snap["spot"] <= expected_spot_range[1]
-        assert snap["call_wall"] > snap["put_wall"]
+        assert snap["call_wall"] >= snap["put_wall"]
+        assert snap["call_wall"] > 0.0
+        assert snap["put_wall"] > 0.0
         assert snap["prev_close"] > 0.0

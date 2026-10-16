@@ -13,9 +13,15 @@ from data.pre_post_market import (
     classify_opening_gap,
     estimate_pre_bell_option_ltps,
     get_current_session_phase,
+    get_persisted_auction_record,
     get_post_market_state,
     get_pre_market_state,
+    init_pre_post_db,
     is_contract_expired,
+    save_option_shocks,
+    save_post_market_state,
+    save_pre_market_state,
+    update_gap_fill_status,
 )
 
 
@@ -226,6 +232,84 @@ class TestPrePostMarket(unittest.TestCase):
         # 12 minutes ago (> 600s) -> False
         dt_12m = (now_dt - timedelta(minutes=12)).strftime("%Y-%m-%d %H:%M:%S")
         self.assertFalse(is_recently_triggered(dt_12m, max_age_seconds=600.0))
+
+    def test_pre_post_market_sqlite_persistence_and_hydration(self):
+        test_sym = "TEST_NIFTY"
+        test_date = "2026-10-15"
+
+        init_pre_post_db()
+
+        # 1. Save Pre-Market discovery
+        sample_state = {
+            "symbol": test_sym,
+            "date": test_date,
+            "phase_code": "REGULAR_SESSION",
+            "is_discovered": True,
+            "discovered_spot": 25150.0,
+            "prev_close": 25000.0,
+            "gap_pts": 150.0,
+            "gap_pct": 0.60,
+            "gap_regime": "GAP_UP_RUNAWAY",
+            "regime_badge": "🚀 GAP & GO (BULLISH)",
+            "regime_color": "var(--go)",
+            "regime_briefing": "Strong gap up test.",
+            "favored_play": "CE MOMENTUM",
+            "gap_fill_status": "UNFILLED",
+            "discovered_at": "09:08:12",
+            "status_text": "Equilibrium Discovered: ₹25,150.0",
+        }
+        sample_shocks = {
+            "straddle_shock_pct": 8.5,
+            "atm_straddle_prev": 320.0,
+            "atm_straddle_projected": 347.2,
+            "projected_strikes": [
+                {"strike": 25150.0, "side": "CE", "prev_ltp": 160.0, "projected_open_ltp": 210.0, "shock_pts": 50.0, "shock_pct": 31.2},
+                {"strike": 25150.0, "side": "PE", "prev_ltp": 160.0, "projected_open_ltp": 137.2, "shock_pts": -22.8, "shock_pct": -14.2},
+            ],
+        }
+
+        save_pre_market_state(test_sym, sample_state, sample_shocks)
+
+        # 2. Retrieve persisted record
+        rec = get_persisted_auction_record(test_sym, test_date)
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["symbol"], test_sym)
+        self.assertEqual(rec["discovered_spot"], 25150.0)
+        self.assertEqual(rec["gap_pts"], 150.0)
+        self.assertEqual(rec["gap_regime"], "GAP_UP_RUNAWAY")
+        self.assertEqual(rec["gap_fill_status"], "UNFILLED")
+        self.assertEqual(rec["straddle_shock_pct"], 8.5)
+        self.assertEqual(len(rec["projected_strikes"]), 2)
+
+        # 3. Dynamic Gap Fill Update
+        update_gap_fill_status(test_sym, "FILLED", test_date)
+        rec2 = get_persisted_auction_record(test_sym, test_date)
+        self.assertEqual(rec2["gap_fill_status"], "FILLED")
+
+        # 4. Save Post-Market Settlement
+        post_state = {
+            "symbol": test_sym,
+            "date": test_date,
+            "settlement_spot": 25180.0,
+            "last_continuous_spot": 25175.0,
+            "settlement_divergence_pts": 5.0,
+            "pin_efficiency_pct": 98.0,
+            "pin_target_wall": "25200 CW",
+            "settled_at": "15:40:00",
+            "closing_cvd": 45000.0,
+            "orderflow_bias": "Institutional Net Buyers (+)",
+            "status_text": "Session Concluded",
+        }
+        save_post_market_state(test_sym, post_state)
+
+        rec3 = get_persisted_auction_record(test_sym, test_date)
+        self.assertEqual(rec3["post_market_settled"], 1)
+        self.assertEqual(rec3["settlement_spot"], 25180.0)
+        self.assertEqual(rec3["closing_cvd"], 45000.0)
+        self.assertEqual(rec3["pin_efficiency_pct"], 98.0)
+        # Pre-market data must still be intact
+        self.assertEqual(rec3["discovered_spot"], 25150.0)
+        self.assertEqual(rec3["gap_fill_status"], "FILLED")
 
 
 if __name__ == "__main__":
