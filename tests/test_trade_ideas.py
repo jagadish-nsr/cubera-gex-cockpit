@@ -775,20 +775,62 @@ def test_recommendation_latch_manager():
     # 1. First evaluation: qualifies & becomes ACTIVE
     processed = manager.process_and_latch("NIFTY", 24500.0, [idea], min_score=75)
     assert processed[0].latch_state == "ACTIVE"
+    assert processed[0].first_active_ts > 0
+    assert processed[0].last_active_ts > 0
+    assert "Active" in processed[0].time_since_active_label
 
     # 2. Tick noise: quality score temporarily dips to 70 (>= 65), stays ACTIVE within lease
     idea.quality_score = 70
     processed = manager.process_and_latch("NIFTY", 24500.0, [idea], min_score=75)
     assert processed[0].latch_state == "ACTIVE"
+    assert "Active" in processed[0].time_since_active_label
 
     # 3. Instant Invalidation on spot breach (spot drops below 24450 for CE)
     processed = manager.process_and_latch("NIFTY", 24430.0, [idea], min_score=75)
     assert processed[0].latch_state == "INVALIDATED"
+    assert "Inval" in processed[0].time_since_active_label
 
     # 4. Target Hit (spot rallies to target 1 spot 24620 >= 24600)
     idea.spot_invalidation = 24400.0  # reset inval
     processed = manager.process_and_latch("NIFTY", 24620.0, [idea], min_score=75)
     assert processed[0].latch_state == "TARGET_HIT"
+    assert "Target Hit" in processed[0].time_since_active_label
+
+
+def test_format_time_since_active():
+    from analytics.trade_ideas import format_time_since_active
+    from app.cockpit import format_time_since_active as cockpit_format
+    assert cockpit_format is format_time_since_active
+
+    t_ref = 1700000000.0
+
+    # 1. Active: 45s
+    txt, col, _ = format_time_since_active("ACTIVE", last_active_ts=t_ref - 45, first_active_ts=t_ref - 45, now_ts=t_ref)
+    assert "45s" in txt
+    assert "Active" in txt
+
+    # 2. Active: 2m 15s
+    txt, col, _ = format_time_since_active("ACTIVE", last_active_ts=t_ref - 135, first_active_ts=t_ref - 135, now_ts=t_ref)
+    assert "2m 15s" in txt
+
+    # 3. Target Hit: 30s ago
+    txt, col, _ = format_time_since_active("TARGET_HIT", last_active_ts=t_ref - 30, now_ts=t_ref)
+    assert "Target Hit" in txt
+    assert "30s ago" in txt
+
+    # 4. Inval: 1m ago
+    txt, col, _ = format_time_since_active("INVALIDATED", last_active_ts=t_ref - 90, now_ts=t_ref)
+    assert "Inval" in txt
+    assert "1m ago" in txt
+
+    # 5. Degraded / Qualified with past active
+    txt, col, _ = format_time_since_active("DEGRADED", last_active_ts=t_ref - 150, now_ts=t_ref)
+    assert "Last Active" in txt
+    assert "2m 30s ago" in txt
+
+    # 6. Never active
+    txt, col, _ = format_time_since_active("QUALIFIED", last_active_ts=0.0, now_ts=t_ref)
+    assert "Pending Active" in txt
 
 
 def test_batch_includes_phase_2_and_3_enrichments():
