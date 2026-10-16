@@ -287,3 +287,74 @@ class TestTimeUtils:
 
         assert horizon_end == exp_dt
         assert remaining_t <= 1e-5
+
+
+class TestTargetSLRepricing:
+    """Test Target and Stop Loss option repricing across arbitrary expiries."""
+
+    def test_target_and_sl_option_repricing_ce(self):
+        base_fut = 25000.0
+        strike = 25100.0
+        now = datetime(2026, 10, 15, 10, 0, 0)
+        # Weekly expiry 1 week out
+        weekly_expiry = "2026-10-22"
+        T_now = calculate_fractional_t(now, weekly_expiry)
+        assert T_now > 0.01
+
+        # Current live premium & strike IV
+        strike_iv = 0.165
+        p_entry = price(base_fut, strike, T_now, strike_iv, 0.065, "CE")
+        assert p_entry > 0
+
+        # Target move: Spot +100 pts, 60 mins holding time, mild vol compression (-0.5% IV)
+        target_spot = base_fut + 100.0
+        _, T_target = calculate_horizon_t(now, 60, weekly_expiry)
+        target_iv = strike_iv - 0.005
+        p_target = price(target_spot, strike, T_target, target_iv, 0.065, "CE")
+
+        # Stop loss move: Spot -50 pts, 60 mins holding time, vol shock (+1.0% IV)
+        sl_spot = base_fut - 50.0
+        _, T_sl = calculate_horizon_t(now, 60, weekly_expiry)
+        sl_iv = strike_iv + 0.010
+        p_sl = price(sl_spot, strike, T_sl, sl_iv, 0.065, "CE")
+
+        # Gain and loss assertions
+        gain_pts = p_target - p_entry
+        loss_pts = p_entry - p_sl
+        assert gain_pts > 0
+        assert loss_pts > 0
+
+        # Risk-to-Reward ratio
+        rr = gain_pts / loss_pts
+        assert rr > 1.0
+
+        # Greek attribution
+        attr_tgt = greek_attribution(base_fut, target_spot, strike_iv, target_iv, T_now, T_target, strike, 0.065, "CE")
+        assert attr_tgt.delta_pnl > 0
+        assert attr_tgt.theta_pnl < 0
+        assert math.isclose(attr_tgt.total_modeled_pnl + attr_tgt.residual, gain_pts, abs_tol=1e-5)
+
+    def test_nearby_21_strike_band_and_manual_entry(self):
+        # 50 strikes spaced by 50 pts
+        chain_strikes = [23000 + i * 50 for i in range(50)]
+        spot = 24263.0
+        atm_strike = min(chain_strikes, key=lambda k: abs(k - spot))
+        assert atm_strike == 24250
+
+        atm_idx = chain_strikes.index(atm_strike)
+        start_idx = max(0, atm_idx - 10)
+        end_idx = min(len(chain_strikes), atm_idx + 11)
+        nearby_21 = chain_strikes[start_idx:end_idx]
+
+        # Must have exactly 21 strikes (10 below, 1 ATM, 10 above)
+        assert len(nearby_21) == 21
+        assert nearby_21[10] == atm_strike
+        assert nearby_21[0] == atm_strike - 10 * 50
+        assert nearby_21[-1] == atm_strike + 10 * 50
+
+        # Custom strike manual entry outside 21 band
+        custom_strike = 25500
+        assert custom_strike not in nearby_21
+        # Manual strike pricing works identically
+        p_custom = price(spot, custom_strike, 10.0 / 365.0, 0.15, 0.065, "CE")
+        assert p_custom > 0
