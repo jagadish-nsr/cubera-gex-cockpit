@@ -23,6 +23,7 @@ class WallGexShiftDetector(BaseDetector):
         self._prev_flip: float | None = None
         self._prev_gex_sign: int | None = None
         self._tested_walls: set[float] = set()
+        self._broken_walls: set[float] = set()
 
     def detect(self, pit_view: PointInTimeView, state: StoryState) -> list[Event]:
         events: list[Event] = []
@@ -107,7 +108,8 @@ class WallGexShiftDetector(BaseDetector):
         if cw > 0:
             dist_cw = cw - spot
             if dist_cw < -5.0:  # Spot closed above Call Wall
-                if not self.is_cooling_down(pit_view.as_of, level=cw):
+                if cw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=cw):
+                    self._broken_walls.add(cw)
                     self.mark_fired(pit_view.as_of, level=cw)
                     events.append(
                         Event(
@@ -118,25 +120,30 @@ class WallGexShiftDetector(BaseDetector):
                             magnitude_sigma=1.1,
                         )
                     )
-            elif abs(dist_cw) <= test_band_pts and cw not in self._tested_walls:
-                if not self.is_cooling_down(pit_view.as_of, level=cw):
-                    self._tested_walls.add(cw)
-                    self.mark_fired(pit_view.as_of, level=cw)
-                    events.append(
-                        Event(
-                            id=f"evt_{int(pit_view.as_of.timestamp())}_CW_TEST",
-                            ts=pit_view.as_of,
-                            type="WALL_TEST",
-                            facts={"wall_type": "CALL_WALL", "strike": cw, "spot": spot, "dist_pts": round(abs(dist_cw), 1)},
-                            magnitude_sigma=0.6,
+            else:
+                if dist_cw > 15.0:
+                    self._broken_walls.discard(cw)
+
+                if abs(dist_cw) <= test_band_pts and cw not in self._tested_walls:
+                    if not self.is_cooling_down(pit_view.as_of, level=cw):
+                        self._tested_walls.add(cw)
+                        self.mark_fired(pit_view.as_of, level=cw)
+                        events.append(
+                            Event(
+                                id=f"evt_{int(pit_view.as_of.timestamp())}_CW_TEST",
+                                ts=pit_view.as_of,
+                                type="WALL_TEST",
+                                facts={"wall_type": "CALL_WALL", "strike": cw, "spot": spot, "dist_pts": round(abs(dist_cw), 1)},
+                                magnitude_sigma=0.6,
+                            )
                         )
-                    )
 
         # Put Wall Test / Break
         if pw > 0:
             dist_pw = spot - pw
             if dist_pw < -5.0:  # Spot closed below Put Wall
-                if not self.is_cooling_down(pit_view.as_of, level=pw):
+                if pw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=pw):
+                    self._broken_walls.add(pw)
                     self.mark_fired(pit_view.as_of, level=pw)
                     events.append(
                         Event(
@@ -147,19 +154,23 @@ class WallGexShiftDetector(BaseDetector):
                             magnitude_sigma=1.1,
                         )
                     )
-            elif abs(dist_pw) <= test_band_pts and pw not in self._tested_walls:
-                if not self.is_cooling_down(pit_view.as_of, level=pw):
-                    self._tested_walls.add(pw)
-                    self.mark_fired(pit_view.as_of, level=pw)
-                    events.append(
-                        Event(
-                            id=f"evt_{int(pit_view.as_of.timestamp())}_PW_TEST",
-                            ts=pit_view.as_of,
-                            type="WALL_TEST",
-                            facts={"wall_type": "PUT_WALL", "strike": pw, "spot": spot, "dist_pts": round(abs(dist_pw), 1)},
-                            magnitude_sigma=0.6,
+            else:
+                if dist_pw > 15.0:
+                    self._broken_walls.discard(pw)
+
+                if abs(dist_pw) <= test_band_pts and pw not in self._tested_walls:
+                    if not self.is_cooling_down(pit_view.as_of, level=pw):
+                        self._tested_walls.add(pw)
+                        self.mark_fired(pit_view.as_of, level=pw)
+                        events.append(
+                            Event(
+                                id=f"evt_{int(pit_view.as_of.timestamp())}_PW_TEST",
+                                ts=pit_view.as_of,
+                                type="WALL_TEST",
+                                facts={"wall_type": "PUT_WALL", "strike": pw, "spot": spot, "dist_pts": round(abs(dist_pw), 1)},
+                                magnitude_sigma=0.6,
+                            )
                         )
-                    )
 
         # Update cache tracking
         self._prev_call_wall = cw

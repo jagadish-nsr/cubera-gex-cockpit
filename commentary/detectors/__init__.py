@@ -13,6 +13,11 @@ from commentary.detectors.expiry import ExpiryDynamicsDetector
 from commentary.detectors.footprint import InstitutionalFootprintDetector
 from commentary.detectors.news import NewsCatalystDetector
 from commentary.detectors.pinned import PinnedPositionDetector
+from commentary.detectors.secondary_walls import SecondaryWallDetector
+from commentary.detectors.pcr_flow import PcrFlowDetector
+from commentary.detectors.vwap_dynamics import VwapDynamicsDetector
+from commentary.detectors.sector_breadth import SectorBreadthDetector
+from commentary.detectors.straddle_decay import StraddleDecayDetector
 
 __all__ = [
     "BaseDetector",
@@ -26,4 +31,9 @@ __all__ = [
     "InstitutionalFootprintDetector",
     "NewsCatalystDetector",
     "PinnedPositionDetector",
+    "SecondaryWallDetector",
+    "PcrFlowDetector",
+    "VwapDynamicsDetector",
+    "SectorBreadthDetector",
+    "StraddleDecayDetector",
 ]

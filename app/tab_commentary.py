@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 from typing import Any
 import importlib
+import textwrap
 import streamlit as st
 
 import commentary.storage.db as _comm_db
@@ -18,28 +19,23 @@ from commentary.config_loader import get_commentary_config
 from commentary.storage.db import get_recent_commentary_entries, get_pinned_commentary_cache, clear_commentary_cache
 from commentary.story_state import StoryStateManager
 from commentary.narrator.verifier import verify_commentary
+import commentary.narrator.templates as _narr_templates
+try:
+    importlib.reload(_narr_templates)
+except Exception:
+    pass
+from commentary.narrator.templates import format_story_entry, render_bite_template, extract_topic_header
+from commentary.models import to_ist
 
 logger = logging.getLogger(__name__)
-
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
 
-def _format_time_ist(ts_str: str) -> str:
-    """Format timestamp string into readable IST time (HH:MM:SS AM/PM IST)."""
+def _format_time_ist(ts_str: Any) -> str:
+    """Format timestamp into readable IST time (HH:MM:SS AM/PM IST)."""
     try:
-        try:
-            from commentary.models import to_ist
-            dt_ist = to_ist(ts_str)
-        except Exception:
-            cleaned = str(ts_str).replace("Z", "+00:00")
-            dt_obj = dt.datetime.fromisoformat(cleaned)
-            if dt_obj.tzinfo is not None:
-                dt_ist = dt_obj.astimezone(IST)
-            elif dt_obj.hour < 7:
-                dt_ist = dt_obj.replace(tzinfo=dt.timezone.utc).astimezone(IST)
-            else:
-                dt_ist = dt_obj.replace(tzinfo=IST)
+        dt_ist = to_ist(ts_str)
         return dt_ist.strftime("%I:%M:%S %p IST")
     except Exception:
         return str(ts_str)
@@ -47,23 +43,10 @@ def _format_time_ist(ts_str: str) -> str:
 
 @st.fragment
 def render_commentary_tab(symbol: str, window: str = "current_week", data: Any | None = None) -> None:
-    """Render Session Commentary & Suggestion Bites tab within an isolated Streamlit fragment.
+    """Render Session Commentary & Suggestion Bites in a clean, freeflowing storytelling stream.
     
     Prevents full-app reruns and guarantees non-blocking, zero-latency updates.
     """
-    # 0. Sync fresh commentary storage definitions and flush stale cache
-    try:
-        import importlib
-        import commentary.models as comm_models
-        import commentary.storage.db as comm_db
-        import commentary.engine as comm_eng
-        importlib.reload(comm_models)
-        importlib.reload(comm_db)
-        importlib.reload(comm_eng)
-        comm_db.clear_commentary_cache()
-    except Exception:
-        pass
-
     # 1. Evaluate Live Commentary against actual market ticks & GEX levels
     try:
         live_data = data
@@ -76,7 +59,10 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
                 valid_win = window if window in ["current_week", "weekly", "next_week", "monthly", "all", "0dte"] else "current_week"
                 live_data = load_dashboard(symbol=symbol, window=valid_win)
         
-        if live_data is not None:
+        # Only run live detector evaluation during live market hours or replay simulation.
+        # In Mode 2 (Offline Auto-Switch), remain in read-only review of the recorded session.
+        from app.cockpit import is_live_session
+        if is_live_session() and live_data is not None:
             from commentary.engine import get_session_commentary_engine
             engine = get_session_commentary_engine(symbol)
             recent_existing = get_recent_commentary_entries(symbol, limit=1)
@@ -91,133 +77,177 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
 
     # Story State Manager for Intraday Phase
     story_mgr = StoryStateManager()
-    now_ist = dt.datetime.now(dt.timezone(dt.timedelta(hours=5, minutes=30)))
+    now_ist = dt.datetime.now(IST)
     phase_name = story_mgr.determine_phase(now_ist).replace("_", " ").title()
 
-    # CSS Styling for Premium Commentary Feed
+    # 1. Header with Symbol, Phase & Engine Mode
+    mode_badge = "🟢 LIVE" if mode == "LIVE" else f"🛡️ {mode} MODE ({bites_cfg.get('min_shadow_sessions_for_promotion', 20)} Session Gating)"
+    col_hdr_left, col_hdr_right = st.columns([3, 1])
+    with col_hdr_left:
+        st.markdown(f"#### 🎙️ {symbol} Session Narrative & Suggestion Bites `⏱️ {phase_name.upper()}`")
+    with col_hdr_right:
+        st.markdown(
+            textwrap.dedent("""
+            <div style="text-align:right">
+                <a href="/?view=session_commentary_guide" target="_blank" style="font-size:.76rem;background:var(--surface-2);color:var(--spark);padding:4px 8px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">📖 Commentary Guide ↗</a>
+            </div>
+            """).strip(),
+            unsafe_allow_html=True,
+        )
+
+    # Inject Vibrant Modern CSS for Session Commentary
     st.markdown(
-        """
+        textwrap.dedent("""
         <style>
-        .commentary-header {
+        .comm-stream-wrap {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: var(--surface-1);
-            border: 1px solid var(--line);
-            border-radius: 10px;
-            padding: 14px 18px;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 6px;
             margin-bottom: 16px;
         }
-        .phase-chip {
-            background: rgba(59, 130, 246, 0.12);
-            color: #3b82f6;
-            font-size: 0.78rem;
-            font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(59, 130, 246, 0.25);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .mode-chip {
-            background: rgba(245, 158, 11, 0.12);
-            color: #f59e0b;
-            font-size: 0.76rem;
-            font-weight: 700;
-            padding: 4px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(245, 158, 11, 0.25);
-        }
-        .mode-chip.live {
-            background: rgba(34, 197, 94, 0.12);
-            color: #22c55e;
-            border-color: rgba(34, 197, 94, 0.25);
-        }
-        .commentary-card {
-            background: var(--surface-1);
+        .comm-card {
+            background: linear-gradient(135deg, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0.005) 100%);
             border: 1px solid var(--line);
             border-radius: 10px;
-            padding: 16px 18px;
-            margin-bottom: 14px;
-            transition: border-color 0.15s ease;
+            padding: 13px 17px;
+            transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
         }
-        .commentary-card:hover {
-            border-color: var(--primary, #3b82f6);
+        .comm-card:hover {
+            border-color: rgba(56, 189, 248, 0.35);
+            box-shadow: 0 4px 18px -4px rgba(0, 0, 0, 0.4);
+            transform: translateY(-1px);
         }
-        .entry-top-bar {
+        .comm-card-bullish {
+            border-left: 4px solid #10b981;
+            background: linear-gradient(90deg, rgba(16, 185, 129, 0.09) 0%, rgba(16, 185, 129, 0.01) 100%);
+        }
+        .comm-card-bearish {
+            border-left: 4px solid #ef4444;
+            background: linear-gradient(90deg, rgba(239, 68, 68, 0.09) 0%, rgba(239, 68, 68, 0.01) 100%);
+        }
+        .comm-card-wall {
+            border-left: 4px solid #a855f7;
+            background: linear-gradient(90deg, rgba(168, 85, 247, 0.09) 0%, rgba(168, 85, 247, 0.01) 100%);
+        }
+        .comm-card-warning {
+            border-left: 4px solid #f59e0b;
+            background: linear-gradient(90deg, rgba(245, 158, 11, 0.09) 0%, rgba(245, 158, 11, 0.01) 100%);
+        }
+        .comm-card-impulse {
+            border-left: 4px solid #0ea5e9;
+            background: linear-gradient(90deg, rgba(14, 165, 233, 0.09) 0%, rgba(14, 165, 233, 0.01) 100%);
+        }
+        .comm-meta-row {
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            margin-bottom: 8px;
+            gap: 8px;
+            margin-bottom: 7px;
+            flex-wrap: wrap;
         }
-        .entry-headline {
-            font-size: 1.05rem;
-            font-weight: 750;
-            color: var(--ink);
-            margin-bottom: 6px;
-            line-height: 1.35;
-        }
-        .entry-body {
-            font-size: 0.88rem;
-            color: var(--ink-secondary, #94a3b8);
-            line-height: 1.5;
-            margin-bottom: 12px;
-        }
-        .bite-chip {
-            background: var(--surface-2, #1e293b);
-            border: 1px solid var(--line);
-            border-radius: 8px;
-            padding: 10px 14px;
-            margin-top: 10px;
-        }
-        .bite-badge {
-            font-size: 0.72rem;
-            font-weight: 750;
+        .comm-time-badge {
+            font-family: var(--mono);
+            font-size: 0.74rem;
+            font-weight: 700;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.28);
             padding: 2px 8px;
+            border-radius: 5px;
+        }
+        .comm-topic-badge {
+            font-size: 0.73rem;
+            font-weight: 800;
+            padding: 2px 8px;
+            border-radius: 5px;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+        }
+        .topic-bullish {
+            background: rgba(16, 185, 129, 0.14);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.35);
+        }
+        .topic-bearish {
+            background: rgba(239, 68, 68, 0.14);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.35);
+        }
+        .topic-wall {
+            background: rgba(168, 85, 247, 0.14);
+            color: #c084fc;
+            border: 1px solid rgba(168, 85, 247, 0.35);
+        }
+        .topic-warning {
+            background: rgba(245, 158, 11, 0.14);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.35);
+        }
+        .topic-impulse {
+            background: rgba(14, 165, 233, 0.14);
+            color: #38bdf8;
+            border: 1px solid rgba(14, 165, 233, 0.35);
+        }
+        .comm-body {
+            font-size: 0.90rem;
+            line-height: 1.6;
+            color: var(--ink);
+        }
+        .comm-bite-box {
+            margin-top: 8px;
+            padding: 7px 12px;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.22);
+            border: 1px dashed rgba(255, 255, 255, 0.14);
+            font-size: 0.82rem;
+            line-height: 1.5;
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .comm-bite-pill {
+            font-size: 0.70rem;
+            font-weight: 800;
+            padding: 2px 7px;
             border-radius: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            display: inline-block;
-            margin-right: 6px;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
         }
-        .badge-act-if { background: rgba(34, 197, 94, 0.18); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.3); }
-        .badge-prepare { background: rgba(59, 130, 246, 0.18); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3); }
-        .badge-watch { background: rgba(148, 163, 184, 0.18); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }
-        .badge-manage { background: rgba(245, 158, 11, 0.18); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); }
-        .badge-stand-aside { background: rgba(239, 68, 68, 0.18); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .badge-hedge { background: rgba(168, 85, 247, 0.18); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.3); }
-        .pinned-note-box {
-            background: rgba(245, 158, 11, 0.08);
-            border-left: 3px solid #f59e0b;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 0.82rem;
-            color: var(--ink);
-            margin-top: 8px;
+        .bite-watch {
+            background: rgba(245, 158, 11, 0.22);
+            color: #fbbf24;
+            border: 1px solid rgba(245, 158, 11, 0.45);
+        }
+        .bite-prepare {
+            background: rgba(56, 189, 248, 0.22);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.45);
+        }
+        .bite-actif {
+            background: rgba(99, 102, 241, 0.22);
+            color: #a5b4fc;
+            border: 1px solid rgba(99, 102, 241, 0.45);
+        }
+        .bite-triggered {
+            background: rgba(16, 185, 129, 0.22);
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.45);
+        }
+        .bite-manage {
+            background: rgba(168, 85, 247, 0.22);
+            color: #c084fc;
+            border: 1px solid rgba(168, 85, 247, 0.45);
+        }
+        .bite-standaside {
+            background: rgba(148, 163, 184, 0.22);
+            color: #cbd5e1;
+            border: 1px solid rgba(148, 163, 184, 0.45);
         }
         </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # 1. Header with Phase, Thesis & Mode
-    mode_class = "live" if mode == "LIVE" else "shadow"
-    st.markdown(
-        f"""
-        <div class="commentary-header">
-            <div>
-                <span class="phase-chip">⏱️ {phase_name}</span>
-                <span style="font-weight: 700; font-size: 0.95rem; margin-left: 10px; color: var(--ink)">
-                    {symbol} Session Narrative & Tactical Bites
-                </span>
-            </div>
-            <div>
-                <span class="mode-chip {mode_class}">
-                    🛡️ {mode} MODE ({bites_cfg.get('min_shadow_sessions_for_promotion', 20)} Session Gating)
-                </span>
-            </div>
-        </div>
-        """,
+        """).strip(),
         unsafe_allow_html=True,
     )
 
@@ -236,28 +266,52 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
             clear_commentary_cache()
             st.rerun(scope="fragment")
 
-    # 3. Pinned Recommendations Mini-Commentary Strip
+    # 3. Pinned Recommendations Alert Strip
     pinned_cache = get_pinned_commentary_cache()
     if pinned_cache:
-        st.markdown(
-            '<div style="font-size:0.80rem;font-weight:700;color:var(--ink-mute);margin-bottom:6px">'
-            '📌 ACTIVE PINNED RECOMMENDATIONS REAL-TIME COMMENTARY'
-            '</div>',
-            unsafe_allow_html=True,
-        )
         for rec_id, note in pinned_cache.items():
-            st.markdown(
-                f"""
-                <div class="pinned-note-box">
-                    <b>{rec_id}:</b> {note}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+            st.info(f"📌 **Pinned {rec_id} Update**: {note}")
 
-    # 4. Fetch Entries
-    entries = get_recent_commentary_entries(symbol, limit=40)
+    # 4. Resolve Active Session Date (Strictly single trading day: current day if live/today, or last trading day)
+    from data.holidays import is_trading_day, roll_back_to_trading_day
+    from data.pre_post_market import render_pre_market_commentary_card, render_post_market_commentary_card
+
+    today_str = now_ist.strftime("%Y-%m-%d")
+    raw_entries = get_recent_commentary_entries(symbol, limit=100)
+    available_dates = sorted(list({to_ist(e["ts"]).strftime("%Y-%m-%d") for e in raw_entries if e.get("ts")}), reverse=True)
+
+    if is_trading_day(now_ist.date()) and (today_str in available_dates or now_ist.hour >= 9):
+        active_session_date = today_str
+        date_badge_text = f"📅 Today ({now_ist.strftime('%d %b %Y')})"
+    elif available_dates:
+        active_session_date = available_dates[0]
+        try:
+            d_obj = dt.datetime.strptime(active_session_date, "%Y-%m-%d")
+            date_badge_text = f"📅 Session: {d_obj.strftime('%d %b %Y')} (Last Trading Day)"
+        except Exception:
+            date_badge_text = f"📅 Session: {active_session_date}"
+    else:
+        prev_d = roll_back_to_trading_day(now_ist.date() - dt.timedelta(days=1))
+        active_session_date = prev_d.strftime("%Y-%m-%d")
+        date_badge_text = f"📅 Session: {prev_d.strftime('%d %b %Y')} (Last Trading Day)"
+
+    # Render Pre-Market Tactical Baseline at the TOP (Morning Anchor)
+    render_pre_market_commentary_card(symbol, live_data, session_date=active_session_date)
+
+    # 5. Fetch Entries strictly for active single trading session date
+    entries = [e for e in raw_entries if to_ist(e.get("ts")).strftime("%Y-%m-%d") == active_session_date]
+
+    # If commentary is sparse (< 5 entries), automatically synthesize the full session narrative from timeseries and microstructure feeds
+    if len(entries) < 5:
+        try:
+            from commentary.engine import get_session_commentary_engine
+            engine = get_session_commentary_engine(symbol)
+            synth = engine.synthesize_session_narrative(symbol, active_session_date)
+            if synth:
+                raw_entries = get_recent_commentary_entries(symbol, limit=100)
+                entries = [e for e in raw_entries if to_ist(e.get("ts")).strftime("%Y-%m-%d") == active_session_date]
+        except Exception as e:
+            logger.warning("Session commentary synthesis error: %s", e)
 
     # Apply Filter
     if filter_opt == "Actionable Bites Only":
@@ -266,152 +320,95 @@ def render_commentary_tab(symbol: str, window: str = "current_week", data: Any |
         entries = [e for e in entries if any(b.get("pinned_rec_id") for b in e.get("bites", []))]
 
     if not entries:
-        st.markdown(
-            """
-            <div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:10px;padding:32px 20px;text-align:center;margin-top:14px">
-                <div style="font-size:1.8rem;margin-bottom:8px">🎙️</div>
-                <div style="font-weight:700;font-size:0.95rem;color:var(--ink)">Awaiting High-Significance Session Events</div>
-                <div style="font-size:0.82rem;color:var(--ink-mute);max-width:540px;margin:6px auto 0;line-height:1.4">
-                    The Session Commentary Engine is listening across GEX walls, Sentinel footprint absorption,
-                    divergences, and open structure. Verified narrative updates and suggestion bites will stream here as significant developments unfold.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.info(
+            f"🎙️ **Awaiting High-Significance Session Events ({date_badge_text})** — The Session Commentary Engine "
+            f"is listening across GEX walls, Sentinel footprint absorption, divergences, and opening structure. "
+            f"Verified narrative updates and suggestion bites will stream here as significant developments unfold."
         )
+        # Render Post-Market Settlement & Pinning Scorecard at the BOTTOM
+        render_post_market_commentary_card(symbol, live_data, session_date=active_session_date)
         return
 
-    # 5. Render Feed Cards
-    for entry in entries:
-        time_str = _format_time_ist(entry["ts"])
+    # Deduplicate consecutive identical notifications
+    clean_entries: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+    for e in entries:
+        t_key = f"{e.get('headline', '')}_{e.get('body', '')[:35]}"
+        if t_key not in seen_texts:
+            seen_texts.add(t_key)
+            clean_entries.append(e)
+
+    # Sort chronological for freeflowing story reading (earliest morning at top, latest at bottom)
+    chronological_entries = list(reversed(clean_entries))
+
+    # Helper function to render a single colorful card
+    def _render_colorful_card(entry: dict[str, Any]) -> str:
+        dt_ist = to_ist(entry.get("ts"))
+        time_str = dt_ist.strftime("%d %b · %H:%M IST")
+
+        raw_hl = entry.get("headline", "")
+        topic = extract_topic_header(raw_hl, entry)
+
+        raw_body = entry.get("body", "")
+        body = str(raw_body).strip()
+        if body.lower().startswith(topic.lower()):
+            body = body[len(topic):].lstrip(": -—.,").strip()
+        if body and not body.endswith((".", "!", "?")):
+            body += "."
+
+        # Color themes by event archetype
+        hl_lower = (str(raw_hl) + " " + str(topic)).lower()
+        if any(k in hl_lower for k in ["gap-up", "high break", "target hit", "bull", "rally", "call squeeze", "reclaim"]):
+            card_cls, topic_cls, icon = "comm-card-bullish", "topic-bullish", "🟢"
+        elif any(k in hl_lower for k in ["gap-down", "low break", "invalidation", "bear", "selloff", "put breakdown", "loss"]):
+            card_cls, topic_cls, icon = "comm-card-bearish", "topic-bearish", "🔴"
+        elif any(k in hl_lower for k in ["call wall", "put wall", "wall test", "wall break", "wall migrat", "gamma flip", "gex", "max pain"]):
+            card_cls, topic_cls, icon = "comm-card-wall", "topic-wall", "🟣"
+        elif any(k in hl_lower for k in ["divergence", "footprint", "absorption", "warning", "unwind", "decay"]):
+            card_cls, topic_cls, icon = "comm-card-warning", "topic-warning", "⚡"
+        else:
+            card_cls, topic_cls, icon = "comm-card-impulse", "topic-impulse", "🌊"
+
+        # Bites
         bites = entry.get("bites", [])
-
-        st.markdown(
-            f"""
-            <div class="commentary-card">
-                <div class="entry-top-bar">
-                    <div>
-                        <span style="font-size:0.76rem;color:var(--ink-mute);font-family:var(--mono)">⏱️ {time_str}</span>
-                        <span style="font-size:0.74rem;color:var(--ink-mute);margin-left:8px;text-transform:uppercase">· {entry.get('phase', 'session').replace('_', ' ')}</span>
-                    </div>
-                    <div>
-                        <span style="font-size:0.72rem;color:#22c55e;font-weight:700">✓ Fact Verified</span>
-                    </div>
-                </div>
-                <div class="entry-headline">{entry["headline"]}</div>
-                <div class="entry-body">{entry["body"]}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Render Bites inside card if present
+        bite_html = ""
         if bites:
-            for b in bites:
-                b_type = b.get("type", "WATCH")
-                badge_cls = f"badge-{b_type.lower()}"
-                levels = b.get("levels", {})
-                risk = b.get("risk", {})
-                trig = levels.get("trigger", 0.0)
-                inval = levels.get("invalidation", 0.0)
-                tgt = levels.get("target", 0.0)
-                rr = risk.get("rr", 2.0)
-                max_loss = risk.get("max_loss_per_lot", 0.0)
+            b = bites[0]
+            b_type = (b.get("type", "WATCH") if isinstance(b, dict) else getattr(b, "type", "WATCH")).upper()
+            b_text = render_bite_template(b)
+            if b_text.startswith("Bite:"):
+                b_text = b_text[5:].strip()
+            if b_text.startswith(b_type):
+                b_text = b_text[len(b_type):].lstrip(": .—").strip()
 
-                st.markdown(
-                    f"""
-                    <div class="bite-chip">
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                            <div>
-                                <span class="bite-badge {badge_cls}">{b_type}</span>
-                                <span style="font-weight:750;font-size:0.86rem;color:var(--ink)">{b.get('headline', '')}</span>
-                            </div>
-                            <span style="font-size:0.70rem;color:var(--ink-mute);font-family:var(--mono)">R:R {rr:.1f} · Risk ₹{max_loss:,.0f}</span>
-                        </div>
-                        <div style="font-size:0.80rem;color:var(--ink);margin-bottom:6px">
-                            <b>Action Frame:</b> {b.get('action_frame', '')}
-                        </div>
-                        <div style="display:flex;gap:16px;font-size:0.75rem;font-family:var(--mono);color:var(--ink-mute)">
-                            <span>Trigger: <b>₹{trig:,.0f}</b></span>
-                            <span>Invalidation: <b style="color:#ef4444">₹{inval:,.0f}</b></span>
-                            <span>Target: <b style="color:#22c55e">₹{tgt:,.0f}</b></span>
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            pill_map = {
+                "WATCH": "bite-watch",
+                "PREPARE": "bite-prepare",
+                "ACT-IF": "bite-actif",
+                "TRIGGERED": "bite-triggered",
+                "MANAGE": "bite-manage",
+                "STAND-ASIDE": "bite-standaside",
+                "HEDGE": "bite-watch",
+            }
+            b_cls = pill_map.get(b_type, "bite-watch")
+            bite_html = f'<div class="comm-bite-box"><span class="comm-bite-pill {b_cls}">💡 BITE: {b_type}</span><span style="color:var(--ink);font-weight:500">{b_text}</span></div>'
 
-        # "Why this?" Fact Verifier Drawer & Human-Readable Audit
-        with st.expander("🔍 Why this? (Fact Verifier & Ground Truth)", expanded=False):
-            facts = entry.get("facts", {})
-            event_ids = entry.get("event_ids", [])
-            tags = entry.get("tags", [])
-            phase_disp = entry.get("phase", "session").replace("_", " ").title()
+        return f'<div class="comm-card {card_cls}"><div class="comm-meta-row"><span class="comm-time-badge">⏱️ {time_str}</span><span class="comm-topic-badge {topic_cls}">{icon} {topic.upper()}</span></div><div class="comm-body">{body}</div>{bite_html}</div>'
 
-            spot_val = facts.get("spot")
-            cw_val = facts.get("call_wall")
-            pw_val = facts.get("put_wall")
-            flip_val = facts.get("gamma_flip")
-            exp_move = facts.get("expected_move")
+    # 6. Render Colorful Freeflowing Storytelling Stream (Chronological Order)
+    cards_html_list = []
+    for entry in chronological_entries:
+        cards_html_list.append(_render_colorful_card(entry))
 
-            spot_str = f"₹{spot_val:,.1f}" if spot_val is not None else "Live Spot"
-            cw_str = f"₹{cw_val:,.0f}" if cw_val is not None else "—"
-            pw_str = f"₹{pw_val:,.0f}" if pw_val is not None else "—"
-            flip_str = f"₹{flip_val:,.0f}" if flip_val is not None else "—"
-            exp_str = f"±{exp_move:.0f} pts" if exp_move is not None else "—"
+    cards_stream = "".join(cards_html_list)
+    st.markdown(
+        textwrap.dedent(f"""
+        <div class="comm-stream-wrap">
+            {cards_stream}
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
 
-            primary_tag = tags[0] if tags else "MARKET_STRUCTURE"
-            tag_label = primary_tag.replace("_", " ").title()
-
-            st.markdown(
-                f"""
-                <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:4px 0 10px">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.1rem">🛡️</span>
-                            <span style="font-weight:750;font-size:0.86rem;color:var(--ink)">Ground-Truth Fact Verification Engine</span>
-                        </div>
-                        <span style="background:rgba(34,197,94,0.14);color:#22c55e;font-size:0.72rem;font-weight:750;padding:3px 9px;border-radius:6px;border:1px solid rgba(34,197,94,0.25)">
-                            ✓ 100% Exchange Verified
-                        </span>
-                    </div>
-                    <div style="font-size:0.80rem;color:var(--ink-mute);line-height:1.45;margin-bottom:12px">
-                        Every level, strike, and directional claim in this commentary was verified against actual NSE option chain ticks and GEX model outputs. Speculations and hallucinations are strictly blocked.
-                    </div>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:10px;background:var(--surface-1);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:6px">
-                        <div>
-                            <div style="font-size:0.67rem;color:var(--ink-mute);text-transform:uppercase;font-weight:600">Session Phase</div>
-                            <div style="font-weight:700;font-size:0.82rem;color:var(--ink)">{phase_disp}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.67rem;color:var(--ink-mute);text-transform:uppercase;font-weight:600">Spot at Snapshot</div>
-                            <div style="font-weight:700;font-size:0.82rem;color:var(--ink);font-family:var(--mono)">{spot_str}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.67rem;color:var(--ink-mute);text-transform:uppercase;font-weight:600">Call Wall / Put Wall</div>
-                            <div style="font-weight:700;font-size:0.82rem;color:var(--ink);font-family:var(--mono)">{cw_str} / {pw_str}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.67rem;color:var(--ink-mute);text-transform:uppercase;font-weight:600">Gamma Flip · 1D Move</div>
-                            <div style="font-weight:700;font-size:0.82rem;color:var(--ink);font-family:var(--mono)">{flip_str} · {exp_str}</div>
-                        </div>
-                        <div>
-                            <div style="font-size:0.67rem;color:var(--ink-mute);text-transform:uppercase;font-weight:600">Primary Detector</div>
-                            <div style="font-weight:750;font-size:0.82rem;color:var(--spark)">{tag_label}</div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            # Technical Diagnostics Collapsible Sub-Expander
-            with st.expander("⚙️ Technical Audit Payload (JSON)", expanded=False):
-                st.json({
-                    "entry_id": entry["entry_id"],
-                    "phase": entry["phase"],
-                    "verified": entry.get("verified", True),
-                    "tags": tags,
-                    "event_ids": event_ids,
-                    "facts": facts,
-                })
+    # 7. Post-Market Settlement & Pinning Scorecard at the BOTTOM (Chronological Day Conclusion)
+    render_post_market_commentary_card(symbol, live_data, session_date=active_session_date)

@@ -26,13 +26,13 @@ session:
       end: "15:30"
 
 budget:
-  max_entries_per_day: 15
-  min_gap_minutes: 8
-  max_actionable_bites_per_day: 3
+  max_entries_per_day: 30
+  min_gap_minutes: 5
+  max_actionable_bites_per_day: 6
   max_bites_per_entry: 2
 
 significance:
-  publish_threshold: 0.60
+  publish_threshold: 0.40
   time_of_day_multipliers:
     opening_15m: 1.25
     closing_30m: 1.20
@@ -47,6 +47,22 @@ detectors:
     wall_test_sigma_band: 0.10
     oi_shift_min_pct: 12.0
     cooldown_minutes: 15
+  secondary_walls:
+    test_band_pts: 15.0
+    cooldown_minutes: 15
+  pcr_flow:
+    min_pcr_delta: 0.10
+    cooldown_minutes: 20
+  vwap_dynamics:
+    defense_band_pts: 12.0
+    extension_mult: 0.70
+    cooldown_minutes: 15
+  sector_breadth:
+    lead_threshold_pct: 1.0
+    cooldown_minutes: 30
+  straddle_decay:
+    squeeze_band_pts: 35.0
+    cooldown_minutes: 30
   institutional_footprint:
     vol_spike_ratio: 2.0
     depth_imbalance_ratio: 2.5
