@@ -163,6 +163,28 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
 
 
 
+_LAST_SNAPSHOT_SAVE: dict[str, float] = {}
+_SNAPSHOT_SAVE_INTERVAL_S = 15.0
+
+
+def _bg_save_snapshot(symbol: str, q: dict) -> None:
+    try:
+        from data.market_snapshot import save_snapshot
+        save_snapshot(
+            symbol,
+            spot=q.get("spot"),
+            prev_close=q.get("prev_close"),
+            open_px=q.get("open"),
+            high=q.get("high"),
+            low=q.get("low"),
+            vix=q.get("vix"),
+            as_of=q.get("as_of"),
+            source="ws-tick",
+        )
+    except Exception:
+        pass
+
+
 def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None) -> None:
     """Called by ``app.ws_spot_feed`` on every decoded WebSocket tick.  Never blocks.
 
@@ -185,22 +207,12 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
         rec["ws_at"] = now
         rec["at"] = now
         rec["quote"] = _compile_quote(symbol, rec.get("ohlc"), rec.get("fut"))
-        try:
-            from data.market_snapshot import save_snapshot
+
+        # Throttle SQLite snapshot persistence: at most once per 15s in background
+        if now - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S:
+            _LAST_SNAPSHOT_SAVE[symbol] = now
             q = rec["quote"]
-            save_snapshot(
-                symbol,
-                spot=q.get("spot"),
-                prev_close=q.get("prev_close"),
-                open_px=q.get("open"),
-                high=q.get("high"),
-                low=q.get("low"),
-                vix=q.get("vix"),
-                as_of=q.get("as_of"),
-                source="ws-tick",
-            )
-        except Exception:
-            pass
+            threading.Thread(target=_bg_save_snapshot, args=(symbol, q), daemon=True, name=f"snap-{symbol}").start()
 
 
 def _ws_is_live_for(symbol: str, max_silence_s: float = 10.0) -> bool:
@@ -302,7 +314,7 @@ def _loop(symbol: str, interval_s: float) -> None:
                 # Only overwrite if WS hasn't updated more recently
                 rec = _STORE.get(symbol)
                 ws_at = (rec or {}).get("ws_at") or 0
-                if time.time() - ws_at >= WS_BACKOFF_S:  # WS went quiet — take REST values
+                if time.time() - ws_at >= 10.0:  # WS went quiet — take REST values immediately
                     q = _compile_quote(symbol, d, fd)
                     _STORE[symbol] = {
                         "ohlc": d,

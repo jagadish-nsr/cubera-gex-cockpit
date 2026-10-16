@@ -145,12 +145,14 @@ def _decode_quote(frame: bytes) -> dict | None:
         out: dict = {"code": code, "security_id": sec}
         if len(frame) >= 12:
             out["ltp"] = struct.unpack_from("<f", frame, 8)[0]
-        if code == _RESP_QUOTE and len(frame) >= 50:
-            # ltq @12 (h=int16), ltt @14, atp @18, volume @22, sell_qty @26, buy_qty @30
             out["ltq"] = struct.unpack_from("<h", frame, 12)[0]
             out["ltt"] = struct.unpack_from("<i", frame, 14)[0]
             out["atp"] = struct.unpack_from("<f", frame, 18)[0]
             out["volume"] = struct.unpack_from("<i", frame, 22)[0]
+            out["sell_qty"] = struct.unpack_from("<i", frame, 26)[0]
+            out["buy_qty"] = struct.unpack_from("<i", frame, 30)[0]
+            tot_depth = out["buy_qty"] + out["sell_qty"]
+            out["depth_imbalance"] = round((out["buy_qty"] - out["sell_qty"]) / max(1, tot_depth), 4) if tot_depth > 0 else 0.0
             # OHLC: open @34, close(prev_close) @38, high @42, low @46
             out["open"], out["prev_close"], out["high"], out["low"] = struct.unpack_from("<4f", frame, 34)
         return out
@@ -237,16 +239,26 @@ def _handle_spot_tick(pkt: dict, spot_ids: dict[str, int]) -> None:
     if sym is None:
         return
 
+    existing_ohlc = (_st._STORE.get(sym) or {}).get("ohlc") or {}
+    prev_close = pkt.get("prev_close") or existing_ohlc.get("prev_close")
+    open_px = pkt.get("open") or existing_ohlc.get("open")
+    high_px = pkt.get("high") or existing_ohlc.get("high")
+    low_px = pkt.get("low") or existing_ohlc.get("low")
+
+    if high_px is not None and ltp > high_px:
+        high_px = ltp
+    if low_px is not None and ltp < low_px:
+        low_px = ltp
+
     ohlc = {
         "ltp":        ltp,
-        "open":       pkt.get("open") or ltp,
-        "high":       pkt.get("high") or ltp,
-        "low":        pkt.get("low") or ltp,
-        "prev_close": pkt.get("prev_close") or ltp,
+        "open":       open_px or ltp,
+        "high":       high_px or ltp,
+        "low":        low_px or ltp,
+        "prev_close": prev_close or ltp,
         "as_of":      datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
     }
     # Preserve existing VIX so it's not wiped on next spot tick
-    existing_ohlc = (_st._STORE.get(sym) or {}).get("ohlc") or {}
     if existing_ohlc.get("vix"):
         ohlc["vix"] = existing_ohlc["vix"]
 
@@ -269,19 +281,22 @@ def _handle_fut_tick(pkt: dict, fut_map: dict[int, dict]) -> None:
         return
 
     sym = info["symbol"]
-    existing_ohlc = (_st._STORE.get(sym) or {}).get("ohlc") or {}
+    existing_rec = _st._STORE.get(sym) or {}
+    existing_ohlc = existing_rec.get("ohlc") or {}
+    existing_fut = existing_rec.get("fut") or {}
     spot = existing_ohlc.get("ltp") or ltp
 
-    fut_open = pkt.get("open") or ltp
+    fut_open = pkt.get("open") or existing_fut.get("open") or ltp
     chg = (ltp - fut_open) if fut_open else 0.0
 
     fut = {
         "symbol":  sym,
         "expiry":  info["expiry"],
         "price":   ltp,
+        "open":    fut_open,
         "change":  chg,
-        "oi":      pkt.get("oi"),
-        "volume":  pkt.get("volume"),
+        "oi":      pkt.get("oi") or existing_fut.get("oi"),
+        "volume":  pkt.get("volume") or existing_fut.get("volume"),
         "spot":    spot,
     }
     _st.push_ws_tick(sym, fut=fut)

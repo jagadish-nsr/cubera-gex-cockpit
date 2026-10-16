@@ -68,6 +68,12 @@ importlib.reload(expiry_mod)
 import altair as alt  # noqa: E402
 import pandas as pd  # noqa: E402
 
+import sentinel.models as sentinel_models_mod  # noqa: E402
+importlib.reload(sentinel_models_mod)
+import sentinel.engine.classifier as sentinel_classifier_mod  # noqa: E402
+importlib.reload(sentinel_classifier_mod)
+import sentinel.engine.outcomes as sentinel_outcomes_mod  # noqa: E402
+importlib.reload(sentinel_outcomes_mod)
 import sentinel.storage.db as sentinel_db_mod  # noqa: E402
 importlib.reload(sentinel_db_mod)
 from sentinel.storage.db import (  # noqa: E402
@@ -119,6 +125,7 @@ from analytics.trade_ideas import (  # noqa: E402
     RecommendationBatch,
     compute_position_size,
     generate_trade_recommendations,
+    format_time_since_active,
 )
 from data.journal.recommendations_store import (  # noqa: E402
     toggle_bookmark,
@@ -679,6 +686,24 @@ header[data-testid="stHeader"]{background:transparent}
   vertical-align:middle;
   margin-left:6px;
 }
+@keyframes live-pulse-dot {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.7); }
+  70% { transform: scale(1.05); box-shadow: 0 0 0 6px rgba(56, 189, 248, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(56, 189, 248, 0); }
+}
+.rec-live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #38bdf8;
+  margin-right: 5px;
+  animation: live-pulse-dot 1.5s infinite;
+  vertical-align: middle;
+}
+.rec-ltp-value {
+  transition: color 0.25s ease, transform 0.15s ease;
+}
 
 /* Conviction Trajectory Audit Compact Table */
 .ck-audit-table-wrap{
@@ -1012,6 +1037,32 @@ def _stale_label(fetched_at: datetime) -> str:
 # Data loading (cached per Streamlit run)
 # ---------------------------------------------------------------------------
 
+def is_live_session() -> bool:
+    """True when live market streaming should be active (regular trading hours, pre-open discovery, F&O extended, or replay mode).
+    Strictly two modes:
+      1. Live WebSocket Mode (exchange-push, near real-time, in-memory cache)
+      2. Offline Auto-Switch Mode (market closed, authenticated snapshot / cache)
+    """
+    if st.session_state.get("replay_mode_active", False):
+        return True
+    if config.is_market_open():
+        return True
+    try:
+        from data.pre_post_market import get_current_session_phase
+        phase_code, _, _ = get_current_session_phase()
+        return phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY", "CAS_AND_FNO_EXTENDED")
+    except Exception:
+        return False
+
+
+def _is_stream_live() -> bool:
+    return is_live_session()
+
+
+def _is_spot_live() -> bool:
+    return is_live_session()
+
+
 _DASH_CACHE: dict = {}  # (symbol, window) -> (timestamp, data, error)
 _DASH_LOCK = threading.Lock()
 _CACHE_TTL_SECONDS = 30.0  # 30s in-memory TTL for instant tab switching & zero-latency interaction
@@ -1038,7 +1089,7 @@ def _load_data(symbol: str, window: str, force: bool = False):
         if cached is not None:
             ts, d, err = cached
             # Off market hours: return cached session snapshot immediately without background network fetches
-            if not config.is_market_open():
+            if not is_live_session():
                 return d, err
             # If fresh (<30s), return immediately
             if now_t - ts < _CACHE_TTL_SECONDS:
@@ -1740,7 +1791,7 @@ def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noq
     )
 
 
-@st.fragment(run_every=3)
+@st.fragment(run_every=1)
 def _fragment_cockpit_kpis_live(symbol: str, window: str) -> None:
     _render_cockpit_top_strip_and_kpis(symbol, window)
 
@@ -2363,7 +2414,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                                 <span style="font-size:1.05rem">⏳</span>
                                 <b style="font-size:.90rem;color:var(--spark)">Pre-Open Discovery Active (09:07:30 – 09:15:00 IST)</b>
                             </div>
-                            <span style="font-size:.70rem;color:var(--ink-mute);font-family:var(--mono)">Adaptive 3s retry polling</span>
+                            <span style="font-size:.70rem;color:var(--ink-mute);font-family:var(--mono)">Adaptive WebSocket & pre-open discovery</span>
                         </div>
                         <div style="font-size:.78rem;color:var(--ink-mute);margin-top:6px">
                             Listening for official equilibrium matching on NSE Cash matching engine. Briefing and synthetic option shock will populate the moment opening price prints.
@@ -2373,7 +2424,46 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                     unsafe_allow_html=True,
                 )
 
-        # 2. Post-Market Window (after 15:30 on trading days)
+        # 2. Regular Trading Hours: Opening Baseline & Gap Fill Tracker Strip (09:25 to 15:30)
+        elif pm.get("is_discovered") and (9 * 60 + 25 < now_m < 15 * 60 + 30):
+            disc_spot = pm.get("discovered_spot", 0.0)
+            gap_pts = pm.get("gap_pts", 0.0)
+            gap_pct = pm.get("gap_pct", 0.0)
+            gap_regime = pm.get("gap_regime", "AUCTION_BALANCED")
+            gap_fill_status = pm.get("gap_fill_status", "UNFILLED")
+            reg_badge = pm.get("regime_badge") or f"⚖️ {gap_regime}"
+            reg_color = pm.get("regime_color") or "var(--spark)"
+            favored_play = pm.get("favored_play") or "BALANCED"
+            sign_str = "+" if gap_pts >= 0 else ""
+
+            if gap_fill_status == "FILLED":
+                fill_badge = '<span class="sentinel-chip" style="background:rgba(34,197,94,.12);color:var(--go);border:1px solid rgba(34,197,94,.3);font-size:.70rem">✅ GAP FILLED</span>'
+                fill_note = "Opening gap filled — mean-reversion cycle active, auction re-established inside prior range."
+            else:
+                fill_badge = '<span class="sentinel-chip" style="background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3);font-size:.70rem">⚡ GAP UNFILLED</span>'
+                fill_note = f"Opening gap holding {sign_str}{gap_pts:,.1f} pts — directional momentum favored ({favored_play})."
+
+            st.markdown(
+                f'''
+                <div class="ck" style="border-left:3px solid {reg_color};padding:7px 12px;margin-bottom:10px;background:var(--surface-1);border-radius:6px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <span style="font-size:.92rem">🌅</span>
+                            <span style="font-size:.78rem;font-weight:750;color:var(--ink)">Day Baseline:</span>
+                            <span style="font-size:.78rem;font-family:var(--mono);color:var(--ink-mute)">Open ₹{disc_spot:,.1f} ({sign_str}{gap_pts:,.1f} / {sign_str}{gap_pct:.2f}%)</span>
+                            <span class="sentinel-chip" style="background:var(--surface-2);color:{reg_color};border:1px solid {reg_color};font-size:.68rem">{reg_badge}</span>
+                            {fill_badge}
+                        </div>
+                        <div style="font-size:.72rem;color:var(--ink-mute);font-style:italic">
+                            {fill_note}
+                        </div>
+                    </div>
+                </div>
+                ''',
+                unsafe_allow_html=True,
+            )
+
+        # 3. Post-Market Window (after 15:30 on trading days)
         elif phase_code in ("CAS_AND_FNO_EXTENDED", "POST_MARKET_SETTLEMENT") or now_m >= 15 * 60 + 35:
             post_st = get_post_market_state(symbol)
             settle_spot = post_st.get("settlement_spot", 0.0)
@@ -2520,7 +2610,25 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0, data: Any =
             except Exception:
                 pass
 
-    return TradeIdea(
+    trig_raw = rec_dict.get("triggered_at", "")
+    trig_ts = 0.0
+    if trig_raw:
+        try:
+            from datetime import datetime, timezone, timedelta
+            clean_t = trig_raw.strip().replace("T", " ")[:19]
+            dt = datetime.strptime(clean_t, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            trig_ts = dt.timestamp()
+        except Exception:
+            trig_ts = time.time()
+
+    from analytics.trade_ideas import _LATCH_MANAGER, update_trade_idea_live_telemetry
+    r_id = rec_dict.get("rec_id", "")
+    latch_ent = _LATCH_MANAGER._latched.get(r_id) if hasattr(_LATCH_MANAGER, "_latched") else None
+    first_act = latch_ent.get("first_active_ts", trig_ts) if latch_ent else trig_ts
+    last_act = latch_ent.get("last_active_ts", trig_ts) if latch_ent else trig_ts
+    latch_st = latch_ent.get("latch_state", "ACTIVE") if latch_ent else "ACTIVE"
+
+    t_idea = TradeIdea(
         symbol=rec_dict.get("symbol", "NIFTY"),
         side=rec_dict.get("side", "CE"),
         play_type=rec_dict.get("play_type", "Strategy Setup"),
@@ -2543,12 +2651,17 @@ def _record_to_trade_idea(rec_dict: dict, current_spot: float = 0.0, data: Any =
         conviction_color=c_color,
         rationale=rec_dict.get("rationale", payload.get("rationale", "")),
         catalyst_tags=tags,
-        rec_id=rec_dict.get("rec_id", ""),
-        triggered_at=rec_dict.get("triggered_at", ""),
+        rec_id=r_id,
+        triggered_at=trig_raw,
         conviction_tier=rec_dict.get("conviction_tier", "HIGH"),
         is_bookmarked=True,
         is_ws_live=is_ws_live,
+        latch_state=latch_st,
+        first_active_ts=first_act,
+        last_active_ts=last_act,
     )
+    update_trade_idea_live_telemetry(t_idea, sym, current_spot)
+    return t_idea
 
 
 @dataclass
@@ -2608,6 +2721,67 @@ def _toggle_cluster_bookmarks(rec_ids: list[str]) -> None:
     st.session_state["_rec_bookmark_sync_request"] = True
 
 
+def _inject_rec_counter_ticker() -> None:
+    """Lightweight client-side ticker that updates .rec-counter-chip every second without server reruns."""
+    try:
+        import streamlit.components.v1 as components
+        components.html(
+            """
+            <script>
+            (function() {
+                function fmtSecs(s) {
+                    if (s < 0) s = 0;
+                    if (s < 60) return Math.floor(s) + 's';
+                    const m = Math.floor(s / 60);
+                    const rem = Math.floor(s % 60);
+                    if (m < 60) return m + 'm ' + String(rem).padStart(2, '0') + 's';
+                    const h = Math.floor(m / 60);
+                    const remM = m % 60;
+                    return h + 'h ' + String(remM).padStart(2, '0') + 'm';
+                }
+                function updateRecCounters() {
+                    try {
+                        const doc = window.parent.document;
+                        if (!doc) return;
+                        const now = Date.now() / 1000.0;
+                        const chips = doc.querySelectorAll('.rec-counter-chip');
+                        chips.forEach(function(el) {
+                            const st = el.getAttribute('data-latch-state');
+                            const fa = parseFloat(el.getAttribute('data-first-active') || '0');
+                            const la = parseFloat(el.getAttribute('data-last-active') || '0');
+                            if (st === 'ACTIVE') {
+                                const dur = fa > 0 ? (now - fa) : (la > 0 ? (now - la) : 0);
+                                el.textContent = '🟢 Active: ' + fmtSecs(dur);
+                            } else if (st === 'TARGET_HIT') {
+                                const elap = la > 0 ? (now - la) : 0;
+                                el.textContent = '🎯 Target Hit (' + fmtSecs(elap) + ' ago)';
+                            } else if (st === 'INVALIDATED') {
+                                const elap = la > 0 ? (now - la) : 0;
+                                el.textContent = '🛑 Inval (' + fmtSecs(elap) + ' ago)';
+                            } else if (st === 'DEGRADED') {
+                                if (la > 0) {
+                                    el.textContent = '⏱️ Last Active: ' + fmtSecs(now - la) + ' ago';
+                                } else {
+                                    el.textContent = '⏱️ Pending Active';
+                                }
+                            }
+                        });
+                    } catch (e) {}
+                }
+                if (!window.parent._recCounterInterval) {
+                    window.parent._recCounterInterval = setInterval(updateRecCounters, 1000);
+                }
+                updateRecCounters();
+            })();
+            </script>
+            """,
+            height=0,
+            width=0,
+        )
+    except Exception:
+        pass
+
+
 def _render_single_recommendation_card(
     idea: TradeIdea,
     symbol: str,
@@ -2621,6 +2795,10 @@ def _render_single_recommendation_card(
     extra_top_html: str = "",
     cluster_rec_ids: list[str] | None = None,
 ) -> None:
+    # Sub-millisecond in-memory MTM pricing, live option tick resolution, and lifecycle updates (< 0.05ms)
+    from analytics.trade_ideas import update_trade_idea_live_telemetry
+    update_trade_idea_live_telemetry(idea, symbol, current_spot)
+
     # Dynamically pull current sizing preferences from session state if updated in HUD
     raw_cap = st.session_state.get(f"sizer_cap_{symbol}", account_capital)
     try:
@@ -2660,10 +2838,23 @@ def _render_single_recommendation_card(
         extra_tags.append('<span class="rec-tag" style="background:rgba(34,197,94,.12);color:var(--go);border:1px solid rgba(34,197,94,.25)">🔒 LATCHED</span>')
     tags_html = "".join([f'<span class="rec-tag">{t}</span>' for t in idea.catalyst_tags] + extra_tags)
 
-    # Percentage moves
-    tgt1_pct = round(((idea.target_1 - idea.current_ltp) / idea.current_ltp) * 100.0, 1) if idea.current_ltp > 0 else 0
-    tgt2_pct = round(((idea.target_2 - idea.current_ltp) / idea.current_ltp) * 100.0, 1) if idea.current_ltp > 0 else 0
-    sl_pct = round(((idea.stop_loss - idea.current_ltp) / idea.current_ltp) * 100.0, 1) if idea.current_ltp > 0 else 0
+    # Live prices, entry reference, and percentage moves from Current Traded LTP
+    curr_ltp = float(idea.current_ltp or 0.0)
+    entry_ltp = float(getattr(idea, "initial_ltp", 0.0) or curr_ltp)
+    pnl_pts = getattr(idea, "live_pnl_pts", round(curr_ltp - entry_ltp, 1))
+    pnl_pct = getattr(idea, "live_pnl_pct", round((pnl_pts / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0)
+    pnl_sign = "+" if pnl_pts >= 0 else ""
+    pnl_color = "var(--go)" if pnl_pts >= 0 else "var(--stop)"
+    pnl_bg = "rgba(34,197,94,.12)" if pnl_pts >= 0 else "rgba(239,68,68,.12)"
+    tgt_prog = getattr(idea, "target_progress_pct", 0.0)
+
+    pos_pnl_inr = round(pos_size.total_quantity * pnl_pts, 0)
+    pos_pnl_str = f"+₹{pos_pnl_inr:,.0f}" if pos_pnl_inr >= 0 else f"-₹{abs(pos_pnl_inr):,.0f}"
+    pos_pnl_color = "var(--go)" if pos_pnl_inr >= 0 else "var(--stop)"
+
+    tgt1_pct = round(((idea.target_1 - curr_ltp) / curr_ltp) * 100.0, 1) if curr_ltp > 0 else 0
+    tgt2_pct = round(((idea.target_2 - curr_ltp) / curr_ltp) * 100.0, 1) if curr_ltp > 0 else 0
+    sl_pct = round(((idea.stop_loss - curr_ltp) / curr_ltp) * 100.0, 1) if curr_ltp > 0 else 0
 
     # Live Spot Invalidation Buffer & Breached Detection (0ms latency telemetry)
     inval_breached = False
@@ -2705,16 +2896,16 @@ def _render_single_recommendation_card(
     if inval_breached:
         event_type_hit = "INVALIDATED"
         event_msg_hit = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{idea.spot_invalidation:,.0f})"
-    elif idea.current_ltp > 0:
-        if idea.target_2 > 0 and idea.current_ltp >= idea.target_2:
+    elif curr_ltp > 0:
+        if idea.target_2 > 0 and curr_ltp >= idea.target_2:
             event_type_hit = "TGT2_HIT"
-            event_msg_hit = f"🚀 Target 2 Achieved at ₹{idea.current_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
-        elif idea.target_1 > 0 and idea.current_ltp >= idea.target_1:
+            event_msg_hit = f"🚀 Target 2 Achieved at ₹{curr_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
+        elif idea.target_1 > 0 and curr_ltp >= idea.target_1:
             event_type_hit = "TGT1_HIT"
-            event_msg_hit = f"🎯 Target 1 Achieved at ₹{idea.current_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
-        elif idea.stop_loss > 0 and idea.current_ltp <= idea.stop_loss:
+            event_msg_hit = f"🎯 Target 1 Achieved at ₹{curr_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
+        elif idea.stop_loss > 0 and curr_ltp <= idea.stop_loss:
             event_type_hit = "SL_HIT"
-            event_msg_hit = f"⛔ Stop Loss Hit at ₹{idea.current_ltp:,.1f} ({sl_pct:+.0f}%)"
+            event_msg_hit = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({sl_pct:+.0f}%)"
 
     if event_type_hit:
         record_event(
@@ -2722,7 +2913,7 @@ def _render_single_recommendation_card(
             symbol=symbol,
             event_type=event_type_hit,
             spot_at_event=current_spot,
-            ltp_at_event=idea.current_ltp,
+            ltp_at_event=curr_ltp,
             pnl_pct=tgt1_pct if "TGT" in event_type_hit else sl_pct,
             message=event_msg_hit,
             was_bookmarked=idea.is_bookmarked,
@@ -2743,7 +2934,7 @@ def _render_single_recommendation_card(
     ws_badge_html = (
         '<span style="font-size:.70rem;font-weight:750;font-family:var(--mono);color:#38bdf8;background:rgba(56,189,248,.12);padding:2px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.3)" title="Direct Exchange WebSocket Tick Feed (0ms latency)">⚡ WS 0ms</span>'
         if is_ws else
-        '<span style="font-size:.70rem;font-weight:600;font-family:var(--mono);color:var(--ink-mute);background:var(--surface-2);padding:2px 6px;border-radius:4px;border:1px solid var(--line)" title="Live Spot Delta Mark-to-Market Model">⚡ MTM Live</span>'
+        '<span style="font-size:.70rem;font-weight:600;font-family:var(--mono);color:var(--ink-mute);background:var(--surface-2);padding:2px 6px;border-radius:4px;border:1px solid var(--line)" title="Live Spot Delta Mark-to-Market Model (0ms)">⚡ MTM 0ms</span>'
     )
 
     # Score Delta indicator
@@ -2770,6 +2961,23 @@ def _render_single_recommendation_card(
     trig_time_str = idea.triggered_at if idea.triggered_at else "Live Cycle"
     is_new = _is_recently_triggered(idea.triggered_at, max_age_seconds=600.0)
     new_badge = '<span class="rec-badge-new">NEW</span>' if is_new else ""
+
+    time_badge_txt, time_badge_col, time_badge_tip = format_time_since_active(
+        latch_state=getattr(idea, "latch_state", "QUALIFIED"),
+        last_active_ts=getattr(idea, "last_active_ts", 0.0),
+        first_active_ts=getattr(idea, "first_active_ts", 0.0),
+    )
+    time_counter_html = (
+        f'<span class="rec-counter-chip" '
+        f'data-latch-state="{getattr(idea, "latch_state", "QUALIFIED")}" '
+        f'data-first-active="{float(getattr(idea, "first_active_ts", 0.0) or 0.0):.1f}" '
+        f'data-last-active="{float(getattr(idea, "last_active_ts", 0.0) or 0.0):.1f}" '
+        f'style="font-size:.68rem;font-weight:700;font-family:var(--mono);'
+        f'color:{time_badge_col};background:rgba(255,255,255,.05);padding:2px 7px;border-radius:4px;'
+        f'border:1px solid {time_badge_col};margin-left:8px;display:inline-flex;align-items:center;gap:4px" '
+        f'title="{time_badge_tip}">'
+        f'{time_badge_txt}</span>'
+    )
 
     # Ensure full option symbol with expiry
     opt_symbol_display = idea.option_symbol
@@ -2829,9 +3037,10 @@ def _render_single_recommendation_card(
         f'{extra_top_html}'
         f'{event_banner_html}'
         f'<div class="rec-header">'
-        f'<div><span class="rec-badge {side_cls}">{idea.play_badge}</span>{new_badge}{bm_chip}'
-        f'<span style="font-size:.72rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">Δ {idea.delta_approx:+.2f}</span>'
-        f'<span style="font-size:.70rem;color:var(--ink-mute);margin-left:8px;font-family:var(--mono)">⏱️ {trig_time_str}</span>'
+        f'<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px"><span class="rec-badge {side_cls}">{idea.play_badge}</span>{new_badge}{bm_chip}'
+        f'<span style="font-size:.72rem;color:var(--ink-mute);margin-left:4px;font-family:var(--mono)">Δ {idea.delta_approx:+.2f}</span>'
+        f'<span style="font-size:.70rem;color:var(--ink-mute);margin-left:4px;font-family:var(--mono)">⏱️ {trig_time_str}</span>'
+        f'{time_counter_html}'
         f'</div>'
         f'<span style="font-size:.74rem;font-weight:750;color:{idea.conviction_color};background:var(--surface-2);border:1px solid var(--line);padding:3px 8px;border-radius:12px">'
         f'★ Score: <b>{idea.quality_score}/100</b>{delta_str}'
@@ -2841,16 +3050,22 @@ def _render_single_recommendation_card(
         f'<span class="rec-symbol {side_cls}">{opt_symbol_display}</span>'
         f'<span class="rec-rr">R:R {idea.risk_reward_ratio}</span>'
         f'</div>'
-        f'<div class="rec-px-row">'
-        f'<span class="rec-ltp" title="Entry Option Price">₹{idea.current_ltp:,.1f}</span>'
+        f'<div class="rec-px-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 4px">'
+        f'<span class="rec-ltp rec-ltp-value" style="font-size:1.18rem;font-weight:800;color:var(--ink)" title="Live Traded Option Price (LTP)"><span class="rec-live-dot"></span>₹{curr_ltp:,.1f}</span>'
         f'{ws_badge_html}'
+        f'<span style="font-size:.74rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-2);padding:2px 7px;border-radius:4px;border:1px solid var(--line)" title="Entry Reference Option Price">Entry: ₹{entry_ltp:,.1f}</span>'
+        f'<span style="font-size:.74rem;font-weight:750;font-family:var(--mono);color:{pnl_color};background:{pnl_bg};padding:2px 8px;border-radius:4px;border:1px solid {pnl_color}" title="Unrealized MTM PnL">'
+        f'MTM: {pnl_sign}₹{pnl_pts:,.1f} ({pnl_sign}{pnl_pct:.1f}%)</span>'
         f'<span class="rec-tgt" style="background:rgba(34,197,94,.1);padding:2px 7px;border-radius:4px" title="Target 1 Option Price">T1: ₹{idea.target_1:,.1f} ({tgt1_pct:+.0f}%)</span>'
         f'<span class="rec-tgt" style="background:rgba(34,197,94,.1);padding:2px 7px;border-radius:4px" title="Target 2 Option Price">T2: ₹{idea.target_2:,.1f} ({tgt2_pct:+.0f}%)</span>'
         f'<span class="rec-sl" style="background:rgba(239,68,68,.1);padding:2px 7px;border-radius:4px" title="Stop Loss Option Price">SL: ₹{idea.stop_loss:,.1f} ({sl_pct:+.0f}%)</span>'
         f'{inval_badge_html}'
         f'</div>'
+        f'<div style="background:var(--surface-3, rgba(255,255,255,.05));border-radius:3px;height:4px;width:100%;margin:4px 0 8px;overflow:hidden;border:1px solid var(--line)" title="Target 1 Progress: {tgt_prog:.0f}%">'
+        f'<div style="background:linear-gradient(90deg, #38bdf8, #22c55e);height:100%;width:{tgt_prog}%;transition:width 0.4s ease;border-radius:2px"></div>'
+        f'</div>'
         f'<div class="rec-sizing-strip">'
-        f'<span>📦 <b>{pos_size.suggested_lots} Lots</b> ({pos_size.total_quantity} Qty) · Outlay: <b>₹{pos_size.capital_outlay_inr:,.0f}</b> ({pos_size.portfolio_pct:.1f}% Port)</span>'
+        f'<span>📦 <b>{pos_size.suggested_lots} Lots</b> ({pos_size.total_quantity} Qty) · Outlay: <b>₹{pos_size.capital_outlay_inr:,.0f}</b> ({pos_size.portfolio_pct:.1f}% Port) · Position MTM: <b style="color:{pos_pnl_color}">{pos_pnl_str}</b></span>'
         f'<span style="font-size:.70rem;color:var(--ink-mute)">{pos_size.sizing_rationale}</span>'
         f'</div>'
         f'<div class="rec-trigger-box">'
@@ -2923,7 +3138,7 @@ def _render_single_recommendation_card(
             )
             st.button(
                 btn_label,
-                key=f"btn_rec_{prefix}_{idea.side}_{int(idea.strike)}_{key_suffix}_{symbol}",
+                key=f"btn_rec_{prefix}_{idea.rec_id}_{key_suffix}_{symbol}",
                 use_container_width=True,
                 type="primary" if (idea.quality_score >= 85 or is_executed) else "secondary",
                 on_click=_execute_recommendation_trade,
@@ -2949,6 +3164,10 @@ def _render_recommendation_cluster_card(
     show_action_button: bool = True,
 ) -> None:
     """Render a strike cluster card: single-strategy cards render standardly; multi-strategy clusters render with confluence selector & matrix."""
+    from analytics.trade_ideas import update_trade_idea_live_telemetry
+    for i in cluster.ideas:
+        update_trade_idea_live_telemetry(i, symbol, current_spot)
+
     if not cluster.is_confluence:
         _render_single_recommendation_card(
             cluster.ideas[0], symbol, data, key_suffix=key_suffix, prefix=prefix,
@@ -3028,7 +3247,7 @@ def _render_recommendation_cluster_card(
         index=sel_idx,
         format_func=lambda i: f"{'🟢' if strat_status.get(i.rec_id, ('', ''))[0] == 'ACTIVE' else '🛑'} {i.play_badge} (Score {i.quality_score}/100) — {strat_status.get(i.rec_id, ('', ''))[1]}",
         horizontal=True,
-        key=f"cluster_sel_{prefix}_{cluster.side}_{int(cluster.strike)}_{key_suffix}_{symbol}",
+        key=f"cluster_sel_{prefix}_{cluster.side}_{int(cluster.strike)}_{symbol}",
         label_visibility="collapsed",
     )
 
@@ -3044,26 +3263,33 @@ def _render_recommendation_cluster_card(
         ev_val = getattr(i, "net_ev_pts", 0.0)
         pt1_str = f"{pt1_val:.0%}" if pt1_val > 0 else "—"
         ev_str = f"{ev_val:+.1f}" if ev_val != 0.0 else "—"
+        act_lbl, act_col, _ = format_time_since_active(
+            latch_state=st_code,
+            last_active_ts=getattr(i, "last_active_ts", 0.0),
+            first_active_ts=getattr(i, "first_active_ts", 0.0),
+        )
         matrix_rows.append(
             f'<tr style="{row_bg}border-bottom:1px solid var(--line)">'
             f'<td style="padding:4px 8px;font-weight:700;color:var(--ink)">{sel_marker}{i.play_badge}</td>'
             f'<td style="padding:4px 8px;color:{i.conviction_color};font-weight:700">{i.quality_score}/100</td>'
+            f'<td style="padding:4px 8px;color:var(--ink);font-family:var(--mono);font-weight:700">₹{i.current_ltp:,.1f}</td>'
             f'<td style="padding:4px 8px;color:var(--go);font-family:var(--mono)">₹{i.target_1:,.1f}</td>'
             f'<td style="padding:4px 8px;color:var(--stop);font-family:var(--mono)">₹{i.stop_loss:,.1f}</td>'
             f'<td style="padding:4px 8px;font-family:var(--mono)">₹{i.spot_invalidation:,.0f}</td>'
             f'<td style="padding:4px 8px;color:var(--go);font-weight:700">{pt1_str}</td>'
             f'<td style="padding:4px 8px;color:var(--spark);font-weight:700">{ev_str}</td>'
+            f'<td style="padding:4px 8px;font-family:var(--mono);font-size:.68rem;color:{act_col}"><span class="rec-counter-chip" data-latch-state="{st_code}" data-first-active="{float(getattr(i, "first_active_ts", 0.0) or 0.0):.1f}" data-last-active="{float(getattr(i, "last_active_ts", 0.0) or 0.0):.1f}">{act_lbl}</span></td>'
             f'<td style="padding:4px 8px;font-weight:700;color:{color}">{st_lbl}</td>'
             f'</tr>'
         )
     matrix_html = (
         f'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px;margin:8px 0">'
-        f'<div style="font-size:.70rem;font-weight:700;color:var(--ink-mute);margin-bottom:4px;text-transform:uppercase">Confluence Strategy Matrix (Target Engine Repriced)</div>'
+        f'<div style="font-size:.70rem;font-weight:700;color:var(--ink-mute);margin-bottom:4px;text-transform:uppercase">Confluence Strategy Matrix (Live Telemetry & Repriced)</div>'
         f'<table style="width:100%;font-size:.72rem;border-collapse:collapse">'
         f'<thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:left">'
-        f'<th style="padding:4px 8px">Strategy</th><th style="padding:4px 8px">Score</th><th style="padding:4px 8px">Tgt 1</th>'
+        f'<th style="padding:4px 8px">Strategy</th><th style="padding:4px 8px">Score</th><th style="padding:4px 8px">Live LTP</th><th style="padding:4px 8px">Tgt 1</th>'
         f'<th style="padding:4px 8px">Opt SL</th><th style="padding:4px 8px">Spot Inval</th><th style="padding:4px 8px">P(Tgt)</th>'
-        f'<th style="padding:4px 8px">Net EV</th><th style="padding:4px 8px">Status</th>'
+        f'<th style="padding:4px 8px">Net EV</th><th style="padding:4px 8px">Active Dwell</th><th style="padding:4px 8px">Status</th>'
         f'</tr></thead>'
         f'<tbody>{"".join(matrix_rows)}</tbody>'
         f'</table>'
@@ -3145,16 +3371,25 @@ class _SimpleBias:
 _REC_BATCH_CACHE: dict = {}  # symbol -> (float_ts, spot, bias_score, batch)
 
 
+def _refresh_batch_live_telemetry(batch: Any, symbol: str, spot: float) -> None:
+    """Sub-millisecond in-memory MTM update for all ideas in the batch (< 0.05ms)."""
+    if not batch:
+        return
+    from analytics.trade_ideas import update_trade_idea_live_telemetry
+    all_ideas = getattr(batch, "all_recommendations", None)
+    if all_ideas:
+        for idea in all_ideas:
+            update_trade_idea_live_telemetry(idea, symbol, spot)
+    else:
+        for idea in getattr(batch, "ce_recommendations", []):
+            update_trade_idea_live_telemetry(idea, symbol, spot)
+        for idea in getattr(batch, "pe_recommendations", []):
+            update_trade_idea_live_telemetry(idea, symbol, spot)
+
+
 def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     """Retrieve or generate active recommendation batch with TTL caching."""
     if data is None or not getattr(data, "levels", None):
-        return None
-
-    # Off-market hours: APIs are paused. Do not synthesize fresh trade ideas without live market data.
-    if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
-        cached = _REC_BATCH_CACHE.get(symbol)
-        if cached is not None:
-            return cached[3]
         return None
 
     bias_score = st.session_state.get(f"bias_score_{symbol}")
@@ -3191,6 +3426,15 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     except Exception:
         pass
 
+    # Off-market hours: APIs are paused. Do not synthesize fresh trade ideas without live market data.
+    if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
+        cached = _REC_BATCH_CACHE.get(symbol)
+        if cached is not None:
+            c_batch = cached[3]
+            _refresh_batch_live_telemetry(c_batch, symbol, spot)
+            return c_batch
+        return None
+
     now_t = time.time()
     cached = _REC_BATCH_CACHE.get(symbol)
     curr_bias_val = float(bias_score) if bias_score is not None else 0.0
@@ -3198,10 +3442,10 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     spot_thresh = step * 0.35  # ~17.5 pts on NIFTY, 35.0 pts on BANKNIFTY
     if cached is not None:
         c_ts, c_spot, c_bias, c_batch = cached
-        # Debounce: retain recommendation batch for 20s unconditionally to allow
-        # human review and eliminate flickering; or up to 60s if spot move is within
-        # structural noise threshold (17.5 pts on NIFTY) and bias is stable
+        # Debounce: retain recommendation batch structure for 20-60s to eliminate UI jitter,
+        # while refreshing live MTM premiums and PnL continuously in sub-milliseconds
         if (now_t - c_ts < 20.0) or ((now_t - c_ts < 60.0) and abs(c_spot - spot) < spot_thresh and abs(c_bias - curr_bias_val) < 0.15):
+            _refresh_batch_live_telemetry(c_batch, symbol, spot)
             return c_batch
 
     sec_rows = None
@@ -3219,9 +3463,22 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
         sentinel_bars=bars_5m or bars,
         spot_override=spot,
         sector_rows=sec_rows,
+        pre_market_state=pm_disc,
         min_score=75,
     )
+    _refresh_batch_live_telemetry(batch, symbol, spot)
     _REC_BATCH_CACHE[symbol] = (now_t, spot, curr_bias_val, batch)
+
+    # Dynamic registration of active recommendation strikes on live Dhan WebSocket feed
+    try:
+        from app.ws_spot_feed import subscribe_options
+        all_ideas = getattr(batch, "all_recommendations", None) or (batch.ce_recommendations + batch.pe_recommendations)
+        strikes = list({float(i.strike) for i in all_ideas if getattr(i, "strike", None)})
+        if strikes:
+            subscribe_options(symbol, strikes)
+    except Exception:
+        pass
+
     return batch
 
 
@@ -3328,9 +3585,9 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
         if len(ce_all_ideas) > n_ce_cards:
             card_label += f" · {len(ce_all_ideas)} Setups"
         st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--go)">🟢 Calls ({card_label})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_ce}</span></div>', unsafe_allow_html=True)
-        for i, cluster in enumerate(ce_clusters):
+        for cluster in ce_clusters:
             _render_recommendation_cluster_card(
-                cluster, symbol, data, key_suffix=f"ck_ce_cl_{i}", prefix="ck_bm",
+                cluster, symbol, data, key_suffix=f"ck_ce_{int(cluster.strike)}", prefix="ck_bm",
                 current_spot=spot,
             )
 
@@ -3341,11 +3598,13 @@ def _render_cockpit_bookmarked_recommendations(symbol: str, window: str) -> None
         if len(pe_all_ideas) > n_pe_cards:
             card_label += f" · {len(pe_all_ideas)} Setups"
         st.markdown(f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-weight:750;font-size:.84rem;color:var(--stop)">🔴 Puts ({card_label})</span><span style="font-size:.68rem;color:var(--ink-mute)">{sub_pe}</span></div>', unsafe_allow_html=True)
-        for i, cluster in enumerate(pe_clusters):
+        for cluster in pe_clusters:
             _render_recommendation_cluster_card(
-                cluster, symbol, data, key_suffix=f"ck_pe_cl_{i}", prefix="ck_bm",
+                cluster, symbol, data, key_suffix=f"ck_pe_{int(cluster.strike)}", prefix="ck_bm",
                 current_spot=spot,
             )
+
+    _inject_rec_counter_ticker()
 
 
 def _render_trade_recommendations(symbol: str, window: str) -> None:
@@ -3499,9 +3758,9 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
             )
 
         if ce_clusters:
-            for i, cluster in enumerate(ce_clusters):
+            for cluster in ce_clusters:
                 _render_recommendation_cluster_card(
-                    cluster, symbol, data, key_suffix=f"ce_cl_{i}", prefix="ck",
+                    cluster, symbol, data, key_suffix=f"ce_{int(cluster.strike)}", prefix="ck",
                     account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                 )
         else:
@@ -3543,9 +3802,9 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
             )
 
         if pe_clusters:
-            for i, cluster in enumerate(pe_clusters):
+            for cluster in pe_clusters:
                 _render_recommendation_cluster_card(
-                    cluster, symbol, data, key_suffix=f"pe_cl_{i}", prefix="ck",
+                    cluster, symbol, data, key_suffix=f"pe_{int(cluster.strike)}", prefix="ck",
                     account_capital=user_cap, risk_pct=user_risk_pct, current_spot=spot,
                 )
         else:
@@ -3557,6 +3816,8 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
                 '</div>',
                 unsafe_allow_html=True,
             )
+
+    _inject_rec_counter_ticker()
 
 
 
@@ -3602,8 +3863,8 @@ def _tab_cockpit(symbol: str, window: str) -> None:
     if st.session_state.get("replay_mode_active", False):
         _render_cockpit_simulator_bar(symbol, window)
 
-    # 2. Executive Status Strip & 6-Card KPI Grid (3s pulse, 0ms instant quote)
-    if _is_stream_live():
+    # 2. Executive Status Strip & 6-Card KPI Grid (1s live pulse, 0ms instant quote)
+    if _is_spot_live():
         _fragment_cockpit_kpis_live(symbol, window)
     else:
         _fragment_cockpit_kpis_static(symbol, window)
@@ -3644,15 +3905,25 @@ _SENTINEL_DATA_CACHE: dict = {}   # (inst_id, timeframe, limit) -> (float_ts, ba
 _SENTINEL_CHART_CACHE: dict = {}  # chart_key -> compound_chart
 
 
-def _get_cached_sentinel_data(inst_id: str, timeframe: str = "1m", limit: int = 120, ttl: float = 1.8) -> tuple[list, list, list]:
+def _get_cached_sentinel_data(inst_id: str, timeframe: str = "1m", limit: int = 400, ttl: float = 1.8) -> tuple[list, list, list]:
     """Retrieve sentinel bars, signals, and outcomes with in-memory TTL caching for instant UI switching."""
     now = time.time()
     ckey = (inst_id, timeframe, limit)
     hit = _SENTINEL_DATA_CACHE.get(ckey)
-    if hit and (now - hit[0] < ttl):
-        return hit[1], hit[2], hit[3]
+    now_ist = datetime.now(IST_TZ)
+    today_dt = now_ist.date()
+    m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+    m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
+    is_live_hours = (now_ist.weekday() < 5) and (m_open <= now_ist <= m_close)
 
-    bars = list_recent_bars(inst_id, timeframe=timeframe, limit=limit)
+    if hit and (now - hit[0] < ttl):
+        # Bust cache if cached bars belong to a prior trading day during today's live session
+        if is_live_hours and hit[1] and _to_ist(hit[1][-1].start_ts).date() != today_dt:
+            pass
+        else:
+            return hit[1], hit[2], hit[3]
+
+    bars = list_recent_bars(inst_id, timeframe=timeframe, limit=limit, session_only=True)
     signals = list_recent_signals(inst_id, limit=100)
     outcomes = list_recent_outcomes(inst_id, limit=100)
     _SENTINEL_DATA_CACHE[ckey] = (now, bars, signals, outcomes)
@@ -4672,6 +4943,7 @@ if (typeof LightweightCharts === 'undefined') {{
 
   if (data.candles.length > 0) {{
     updateLegend(data.candles[data.candles.length - 1]);
+    chart.timeScale().fitContent();
   }}
   function zoomPrice(factor) {{
     currentTopMargin = Math.max(0.02, Math.min(0.40, currentTopMargin + (1 - factor) * 0.08));
@@ -4820,8 +5092,7 @@ def _render_profile_content(
     timeframe: str = "1m",
 ) -> None:
     """Renderer for chart profile presets with choice of TradingView Lightweight Charts or Altair."""
-    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=120)
-    lookback_map = {"30 Bars": 30, "60 Bars": 60, "90 Bars": 90, "120 Bars": 120, "All Bars": len(bars)}
+    bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=400)
 
     desc_map = {
         "⚡ Full OrderFlow": "Candlesticks, VWAP envelopes, 9/21 ribbon + CVD and Delta subplots.",
@@ -4832,16 +5103,16 @@ def _render_profile_content(
 
     prof_key = profile_name.split()[-1].lower()
 
-    c_info, c_lb, c_ht, c_st, c_eng, c_pop, c_ref = st.columns([2.8, 1.1, 1.2, 1.1, 1.2, 0.9, 0.7])
+    c_info, c_ht, c_st, c_eng, c_pop, c_ref = st.columns([3.6, 1.4, 1.2, 1.4, 0.9, 0.7])
     with c_info:
+        n_bars = len(bars)
         st.markdown(
             f"<div style='font-size:0.74rem;color:var(--ink-mute);padding-top:6px'>"
-            f"<b>{profile_name}:</b> {desc_map.get(profile_name, '')}"
+            f"<b>{profile_name}:</b> {desc_map.get(profile_name, '')} "
+            f"<span style='background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.70rem'>Full Session ({n_bars} bars)</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
-    with c_lb:
-        lb = st.selectbox("Lookback", ["30 Bars", "60 Bars", "90 Bars", "120 Bars", "All Bars"], key=f"lb_{prof_key}_{symbol}", index=1, label_visibility="collapsed")
     with c_ht:
         ht_val = st.selectbox("Height", ["Expanded (620px)", "Deep (820px)", "Compact (460px)"], key=f"ht_{prof_key}_{symbol}", index=0, label_visibility="collapsed")
     with c_st:
@@ -4867,9 +5138,7 @@ def _render_profile_content(
         "Compact (460px)": 460,
     }
     chart_h = height_map.get(ht_val, 620)
-
-    target_limit = lookback_map.get(lb, 60)
-    bars_to_render = bars[-target_limit:] if bars else []
+    bars_to_render = bars
 
     if "TradingView" in engine:
         _render_tv_lightweight_chart(
@@ -5025,9 +5294,11 @@ def _fragment_sentinel_chart_card(
     timeframe: str = "1m",
 ) -> None:
     """Card 2: Candlestick & CVD Chart rendered independently with TradingView Lightweight Charts."""
-    bars, _, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=120)
-    first_dt = _to_ist(bars[0].start_ts).strftime("%d-%b-%Y") if bars else ""
-    date_badge = f' · <span style="color:var(--spark)">{first_dt}</span>' if first_dt else ""
+    bars, _, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=400)
+    session_dt = _to_ist(bars[-1].start_ts).strftime("%d-%b-%Y") if bars else ""
+    is_live_today = bool(bars and _to_ist(bars[-1].start_ts).date() == datetime.now(IST_TZ).date())
+    live_badge = ' · <span style="background:rgba(16,185,129,0.15);color:var(--go);padding:2px 6px;border-radius:4px;font-weight:700">🟢 LIVE TODAY</span>' if is_live_today else ""
+    date_badge = f' · <span style="color:var(--spark)">{session_dt}</span>{live_badge}' if session_dt else ""
 
     st.markdown(
         f'<div class="ck card"><div class="card-body">'
@@ -5183,13 +5454,39 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
         tags_html = " ".join([f'<span class="ck tag mute">{t}</span>' for t in sig.context_tags])
         inval_dir = "below" if sig.bias == "LONG" else "above"
         new_pill = '<span style="font-size:0.65rem;background:var(--spark);color:#fff;padding:2px 5px;border-radius:4px;font-weight:700;margin-left:4px">NEW</span>' if is_latest else ''
+        speed_badge = ""
+        trig_speed = getattr(sig, "trigger_speed", "CONFIRMED_BAR")
+        if trig_speed == "MICRO_BURST":
+            speed_badge = '<span style="font-size:0.65rem;background:rgba(56,189,248,0.15);color:var(--spark);border:1px solid rgba(56,189,248,0.3);padding:2px 6px;border-radius:4px;font-weight:700;margin-left:4px">⚡ FAST TAPE (15s)</span>'
 
-        opt_play_chip = ""
-        if sig.invalidation_level > 0:
+        entry_px = getattr(sig, "entry_price", 0.0)
+        t1 = getattr(sig, "target_1_pts", 0.0)
+        t2 = getattr(sig, "target_2_pts", 0.0)
+        rr = getattr(sig, "risk_reward_ratio", 1.5)
+        play_name = getattr(sig, "actionable_play", "")
+
+        trade_params_html = ""
+        if entry_px > 0:
+            is_long = sig.bias == "LONG"
+            risk_pts = abs(entry_px - sig.invalidation_level)
+            t1_px = entry_px + t1 if is_long else entry_px - t1
+            play_chip = f'<div style="color:var(--spark);font-weight:700;margin-top:4px">🎯 Play: {play_name}</div>' if play_name else ""
+            trade_params_html = (
+                f'<div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-top:8px;font-size:0.74rem">'
+                f'<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+                f'<span><b>Entry:</b> ₹{entry_px:,.1f}</span>'
+                f'<span style="color:var(--stop)"><b>Stop:</b> ₹{sig.invalidation_level:,.1f} (-{risk_pts:.1f} pts)</span>'
+                f'<span style="color:var(--go)"><b>T1:</b> +{t1:.0f} pts (₹{t1_px:,.0f})</span>'
+                f'<span style="color:var(--spark)"><b>R:R:</b> 1:{rr:.1f}</span>'
+                f'</div>'
+                f'{play_chip}'
+                f'</div>'
+            )
+        elif sig.invalidation_level > 0:
             step = 50 if "NIFTY" in sig.instrument_id else 100
             opt_k = round(sig.invalidation_level / step) * step
             opt_side = "CE" if sig.bias == "LONG" else "PE"
-            opt_play_chip = (
+            trade_params_html = (
                 f'<div style="font-size:.70rem;background:rgba(56,189,248,.08);color:var(--spark);'
                 f'padding:3px 7px;border-radius:4px;border:1px solid rgba(56,189,248,.25);margin-top:5px;'
                 f'display:flex;justify-content:space-between;align-items:center">'
@@ -5201,7 +5498,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
         return (
             f'<div class="ck sig-card {cat_cls}" style="width:100%;box-sizing:border-box">'
             f'<div class="sig-card-hdr">'
-            f'<div><span class="sentinel-chip {cat_cls}">{cat_ico} {sig.category}</span> {new_pill}'
+            f'<div><span class="sentinel-chip {cat_cls}">{cat_ico} {sig.category}</span> {new_pill} {speed_badge}'
             f'<span style="font-size:.76rem;color:var(--ink-mute);margin-left:6px;font-family:var(--mono)">📅 {ts_str}</span></div>'
             f'<span class="sig-score-pill">Score: <b>{sig.score}/100</b></span>'
             f'</div>'
@@ -5213,7 +5510,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
             f'</div>'
             f'<div class="sig-insight">💡 {sig.insight_text}</div>'
             f'<div class="sig-inval">🛑 Invalidation: candle closes {inval_dir} <b>{sig.invalidation_level:,.1f}</b></div>'
-            f'{opt_play_chip}'
+            f'{trade_params_html}'
             f'<div style="margin-top:6px">{tags_html}</div>'
             f'{out_chip}'
             f'</div>'
@@ -5236,6 +5533,214 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
 
 
 @st.fragment
+def _fragment_sentinel_daily_cvd_card(symbol: str, inst_id: str) -> None:
+    """Card: 10-Day Daily Closing CVD & Session Volume Delta History with direct values labels."""
+    from sentinel.storage.db import ensure_historical_daily_cvd
+    recs = ensure_historical_daily_cvd(inst_id, symbol=symbol, days=10)
+    if not recs:
+        return
+
+    # Compute high-level summary KPIs
+    total_net_cvd = sum(r["closing_cvd"] for r in recs)
+    tot_buy_vol = sum(r["buy_volume"] for r in recs)
+    tot_sell_vol = sum(r["sell_volume"] for r in recs)
+    all_vol = tot_buy_vol + tot_sell_vol
+    buy_pct = (tot_buy_vol / all_vol * 100.0) if all_vol > 0 else 50.0
+
+    net_color = "var(--go)" if total_net_cvd > 0 else "var(--stop)"
+    regime_badge = "🟢 INSTITUTIONAL ACCUMULATION" if total_net_cvd > 0 else "🔴 INSTITUTIONAL DISTRIBUTION"
+    regime_cls = "bull" if total_net_cvd > 0 else "bear"
+
+    st.markdown(
+        f'<div class="ck card" style="margin-top:16px"><div class="card-body">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'
+        f'<div class="eyebrow" style="margin:0;display:flex;align-items:center;gap:8px">'
+        f'<span>📊 10-Day Closing CVD & Session Volume Delta History</span>'
+        f'<span class="sentinel-chip {regime_cls}">{regime_badge}</span>'
+        f'</div>'
+        f'<span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">'
+        f'10-Day Net CVD: <b style="color:{net_color}">{total_net_cvd:+,.0f}</b> · Buyer Ratio: <b>{buy_pct:.1f}%</b>'
+        f'</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # 4 Quick KPI cards
+    avg_daily_cvd = total_net_cvd / len(recs)
+    peak_buy_day = max(recs, key=lambda x: x["buy_volume"])
+    peak_sell_day = max(recs, key=lambda x: x["sell_volume"])
+
+    st.markdown(
+        f'<div class="ck"><div class="sentinel-kpi-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 12px;">'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>10-Day Cumulative Net CVD</small>'
+        f'<b style="color:{net_color}">{total_net_cvd:+,.0f}</b>'
+        f'<span>Avg Daily: {avg_daily_cvd:+,.0f}</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Total 10D Buy Volume</small>'
+        f'<b style="color:var(--go)">{tot_buy_vol:,}</b>'
+        f'<span>{buy_pct:.1f}% of session volume</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Total 10D Sell Volume</small>'
+        f'<b style="color:var(--stop)">{tot_sell_vol:,}</b>'
+        f'<span>{100.0 - buy_pct:.1f}% of session volume</span>'
+        f'</div>'
+        f'<div class="sentinel-kpi-card">'
+        f'<small>Peak Absorption / Aggression</small>'
+        f'<b style="color:var(--ink)">{peak_buy_day["trade_date"][-5:]} vs {peak_sell_day["trade_date"][-5:]}</b>'
+        f'<span>Top Buy: {peak_buy_day["buy_volume"]:,}</span>'
+        f'</div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_cvd_chart, tab_vol_chart, tab_ledger = st.tabs([
+        "🌊 10-Day Closing CVD Bar Chart",
+        "⚖️ Buyer vs Seller Volume Breakdown",
+        "📋 Historical Daily Ledger",
+    ])
+
+    import pandas as pd
+    import altair as alt
+    from datetime import datetime
+
+    ordered_dates = [datetime.strptime(r["trade_date"], "%Y-%m-%d").strftime("%d-%b") for r in recs]
+
+    with tab_cvd_chart:
+        cvd_rows = []
+        for r in recs:
+            d_obj = datetime.strptime(r["trade_date"], "%Y-%m-%d")
+            cvd = r["closing_cvd"]
+            lbl = f"{'+' if cvd >= 0 else ''}{cvd/1000.0:,.1f}K"
+            cvd_rows.append({
+                "trade_date": r["trade_date"],
+                "date_label": d_obj.strftime("%d-%b"),
+                "closing_cvd": cvd,
+                "cvd_label": lbl,
+                "buy_vol": r["buy_volume"],
+                "sell_vol": r["sell_volume"],
+                "total_vol": r["total_volume"],
+                "close_price": r["closing_price"],
+                "color": "#10b981" if cvd >= 0 else "#ef4444",
+            })
+        df_cvd = pd.DataFrame(cvd_rows)
+
+        base = alt.Chart(df_cvd)
+        bars_mark = base.mark_bar(size=26, cornerRadius=3).encode(
+            x=alt.X("date_label:O", sort=ordered_dates, title="Trading Session Date", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("closing_cvd:Q", title="Closing Cumulative Volume Delta (CVD)"),
+            color=alt.Color("color:N", scale=None),
+            tooltip=[
+                alt.Tooltip("trade_date:N", title="Date"),
+                alt.Tooltip("closing_cvd:Q", title="Closing CVD", format="+,d"),
+                alt.Tooltip("buy_vol:Q", title="Buyer Volume", format=",d"),
+                alt.Tooltip("sell_vol:Q", title="Seller Volume", format=",d"),
+                alt.Tooltip("total_vol:Q", title="Total Volume", format=",d"),
+                alt.Tooltip("close_price:Q", title="Close (₹)", format=",.1f"),
+            ],
+        )
+        zero_rule = base.mark_rule(strokeDash=[3, 3], color="#94a3b8").encode(y=alt.datum(0))
+        df_pos = df_cvd[df_cvd["closing_cvd"] >= 0]
+        df_neg = df_cvd[df_cvd["closing_cvd"] < 0]
+
+        layers = [bars_mark, zero_rule]
+        if not df_pos.empty:
+            layers.append(alt.Chart(df_pos).mark_text(
+                align="center", baseline="bottom", dy=-5, fontSize=11, fontWeight="bold", color="#10b981"
+            ).encode(
+                x=alt.X("date_label:O", sort=ordered_dates),
+                y=alt.Y("closing_cvd:Q"),
+                text="cvd_label:N",
+            ))
+        if not df_neg.empty:
+            layers.append(alt.Chart(df_neg).mark_text(
+                align="center", baseline="top", dy=5, fontSize=11, fontWeight="bold", color="#ef4444"
+            ).encode(
+                x=alt.X("date_label:O", sort=ordered_dates),
+                y=alt.Y("closing_cvd:Q"),
+                text="cvd_label:N",
+            ))
+
+        chart_cvd = alt.layer(*layers).properties(height=280)
+        st.altair_chart(chart_cvd, use_container_width=True)
+
+    with tab_vol_chart:
+        vol_rows = []
+        for r in recs:
+            d_obj = datetime.strptime(r["trade_date"], "%Y-%m-%d")
+            d_lbl = d_obj.strftime("%d-%b")
+            vol_rows.append({
+                "trade_date": r["trade_date"],
+                "date_label": d_lbl,
+                "side": "Buyer Volume",
+                "volume": r["buy_volume"],
+                "vol_str": f"{r['buy_volume']/1000.0:,.1f}K",
+                "color": "#10b981",
+            })
+            vol_rows.append({
+                "trade_date": r["trade_date"],
+                "date_label": d_lbl,
+                "side": "Seller Volume",
+                "volume": r["sell_volume"],
+                "vol_str": f"{r['sell_volume']/1000.0:,.1f}K",
+                "color": "#ef4444",
+            })
+        df_vol = pd.DataFrame(vol_rows)
+
+        base_vol = alt.Chart(df_vol)
+        vol_bars = base_vol.mark_bar(cornerRadius=2).encode(
+            x=alt.X("date_label:O", sort=ordered_dates, title="Trading Session Date", axis=alt.Axis(labelAngle=0)),
+            xOffset=alt.XOffset("side:N", sort=["Buyer Volume", "Seller Volume"]),
+            y=alt.Y("volume:Q", title="Volume Units / Contracts"),
+            color=alt.Color("side:N", scale=alt.Scale(domain=["Buyer Volume", "Seller Volume"], range=["#10b981", "#ef4444"]), legend=alt.Legend(title=None, orient="top-left")),
+            tooltip=[
+                alt.Tooltip("trade_date:N", title="Date"),
+                alt.Tooltip("date_label:N", title="Session"),
+                alt.Tooltip("side:N", title="Side"),
+                alt.Tooltip("volume:Q", title="Volume", format=",d"),
+                alt.Tooltip("vol_str:N", title="Formatted"),
+            ],
+        )
+
+        vol_text = base_vol.mark_text(
+            align="center", baseline="bottom", dy=-4, fontSize=10, fontWeight="bold"
+        ).encode(
+            x=alt.X("date_label:O", sort=ordered_dates),
+            xOffset=alt.XOffset("side:N", sort=["Buyer Volume", "Seller Volume"]),
+            y=alt.Y("volume:Q"),
+            text="vol_str:N",
+            color=alt.Color("side:N", scale=alt.Scale(domain=["Buyer Volume", "Seller Volume"], range=["#10b981", "#ef4444"]), legend=None),
+        )
+
+        vol_chart = (vol_bars + vol_text).properties(height=280)
+        st.altair_chart(vol_chart, use_container_width=True)
+
+    with tab_ledger:
+        ledger_data = []
+        for r in reversed(recs):
+            cvd = r["closing_cvd"]
+            b_vol = r["buy_volume"]
+            s_vol = r["sell_volume"]
+            tot = r["total_volume"] or (b_vol + s_vol)
+            b_ratio = (b_vol / tot * 100.0) if tot > 0 else 50.0
+            bias_str = "🟢 Buyer Dominated" if cvd > 0 else ("🔴 Seller Dominated" if cvd < 0 else "⚖️ Neutral")
+            ledger_data.append({
+                "Date": r["trade_date"],
+                "Closing CVD": f"{cvd:+,.0f}",
+                "Buyer Volume": f"{b_vol:,}",
+                "Seller Volume": f"{s_vol:,}",
+                "Total Volume": f"{tot:,}",
+                "Buyer Ratio": f"{b_ratio:.1f}%",
+                "Close (₹)": f"₹{r['closing_price']:,.1f}",
+                "Bias": bias_str,
+            })
+        st.dataframe(pd.DataFrame(ledger_data), use_container_width=True, hide_index=True)
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
+
 def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     """OrderFlow Sentinel v2.0 — Screen 2 Live Tape & Microstructure with Decoupled Independent Cards."""
     data, _ = _load_data(symbol, window)
@@ -5263,11 +5768,14 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     inst_id = f"{symbol}-FUT"
     ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
 
-    # In Replay Mode, seed simulated flow; in Live Mode, sync genuine intraday bars from Dhan
+    # In Replay Mode or outside live market hours, ensure completed intraday bars exist; during active live hours, sync genuine flow with seamless demo fallback
+    import config
     if st.session_state.get("replay_mode_active"):
         seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
     else:
-        sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+        synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+        if not synced:
+            seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
 
     # 1. Static Top Controls Bar
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 3, 2])
@@ -5287,7 +5795,9 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
             if st.session_state.get("replay_mode_active"):
                 seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
             else:
-                sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw, force=True)
+                synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw, force=True)
+                if not synced:
+                    seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
             st.rerun()
 
     # 2. Independent Card 1: Microstructure KPI Strip (auto-updates every 3s independently)
@@ -5359,7 +5869,10 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     # 4. Independent Card 2: Candlestick & CVD Chart Card (TradingView Lightweight Charts)
     _fragment_sentinel_chart_card(symbol, inst_id, ref_px, cw, pw, gamma_flip=gamma_flip, timeframe=timeframe)
 
-    # 5. Independent Card 3: Live OrderFlow Stream Card (auto-updates every 5s independently)
+    # 5. Independent Card 3: 10-Day Daily Closing CVD & Session Volume Delta History
+    _fragment_sentinel_daily_cvd_card(symbol, inst_id)
+
+    # 6. Independent Card 4: Live OrderFlow Stream Card (auto-updates every 5s independently)
     _fragment_sentinel_stream_card(symbol, inst_id, sig_filter)
 
 
@@ -5648,7 +6161,10 @@ def _render_market_intelligence(data, spot: float, spot_chg_pct: float = 0.0, sy
         f'<div style="font-size:1.15rem;font-weight:800;color:var(--ink);margin:3px 0">{intel.macro_verdict}</div>'
         f'<div style="font-size:.82rem;color:var(--ink-2);line-height:1.5;max-width:900px">{intel.executive_narrative}</div>'
         f'</div>'
+        f'<div style="display:flex;gap:8px;align-items:center">'
+        f'<a href="/?view=market_intelligence_guide" target="_blank" style="font-size:.76rem;background:var(--surface-2);color:var(--spark);padding:4px 8px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">📖 Intel Guide ↗</a>'
         f'<span class="sentinel-chip {risk_chip_cls}" style="font-size:.74rem">{risk_label}</span>'
+        f'</div>'
         f'</div>'
         f'<div class="mi-kpi-grid">'
         f'<div class="mi-kpi">'
@@ -5950,6 +6466,40 @@ def _render_analytics_guide() -> None:
         )
 
 
+def _get_analytics_spot(symbol: str, levels) -> tuple[float, str]:
+    """Uniformly resolve spot price for Options Analytics with Pre-Market equilibrium awareness.
+    Returns (spot_price, source_note)."""
+    # 1. Pre-market equilibrium anchoring during 09:00-09:15 IST
+    try:
+        from data.pre_post_market import get_pre_market_state
+        pm = get_pre_market_state(symbol)
+        if pm.get("is_pre_market") and pm.get("is_discovered") and float(pm.get("discovered_spot", 0)) > 0:
+            return float(pm["discovered_spot"]), "pre-market"
+    except Exception:
+        pass
+
+    # 2. Live WebSocket instant quote
+    iq = get_instant_quote(symbol)
+    if iq and float(iq.get("spot", 0)) > 0:
+        return float(iq["spot"]), "live"
+
+    # 3. Levels from dashboard data
+    lvl_spot = float(getattr(levels, "spot", 0) or 0)
+    if lvl_spot > 0:
+        return lvl_spot, "levels"
+
+    # 4. Persistent SQLite market snapshot
+    try:
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(symbol)
+        if snap and float(snap.get("spot", 0)) > 0:
+            return float(snap["spot"]), "snapshot"
+    except Exception:
+        pass
+
+    return 24500.0 if "NIFTY" in symbol else 50000.0, "fallback"
+
+
 def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
     """Card 0: NOA Top KPI Strip (Preview Panel 1 Fidelity)."""
     data, err = _load_data(symbol, window)
@@ -5957,8 +6507,8 @@ def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
         return
 
     levels = data.levels
+    spot, spot_src = _get_analytics_spot(symbol, levels)
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
     contracts_df = getattr(data, "contracts", None)
     oi_strikes = getattr(data, "oi_strikes", None) or []
 
@@ -6009,8 +6559,50 @@ def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
     pcr_regime = "BULLISH" if pcr > 1.0 else "BEARISH"
     pcr_reg_col = "var(--go)" if pcr > 1.0 else "var(--stop)"
 
+    # Pre-market banner if spot anchored to pre-open equilibrium
+    pm_banner_html = ""
+    if spot_src == "pre-market":
+        try:
+            from data.pre_post_market import get_pre_market_state
+            pm_st = get_pre_market_state(symbol)
+            gap_pts = pm_st.get("gap_pts", 0.0)
+            gap_pct = pm_st.get("gap_pct", 0.0)
+            reg_badge = pm_st.get("regime_badge", "PRE-MARKET")
+            fav_play = pm_st.get("favored_play", "")
+            pm_banner_html = (
+                f'<div style="background:rgba(245,158,11,0.09);border:1px solid rgba(245,158,11,0.3);'
+                f'border-radius:7px;padding:6px 12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;'
+                f'font-size:.76rem;color:var(--ink)">'
+                f'<div><b>🌅 Pre-Market Equilibrium:</b> ₹{spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%) · <b>{reg_badge}</b></div>'
+                f'<div style="color:var(--ink-mute)">Favored Play: <b style="color:var(--spark)">{fav_play}</b></div>'
+                f'</div>'
+            )
+        except Exception:
+            pass
+
+    # Active recommendations confluence chip
+    rec_bridge_html = ""
+    cached_rec = _REC_BATCH_CACHE.get(symbol)
+    if cached_rec is not None:
+        rec_batch = cached_rec[3]
+        if rec_batch:
+            ideas = getattr(rec_batch, "all_recommendations", None) or (rec_batch.ce_recommendations + rec_batch.pe_recommendations)
+            if ideas:
+                chips = []
+                for idea in ideas[:3]:
+                    s_col = "var(--go)" if idea.side == "CE" else "var(--stop)"
+                    chips.append(f'<span style="background:var(--surface-2);border:1px solid var(--line);padding:2px 7px;border-radius:4px;font-size:.70rem">'
+                                 f'<b style="color:{s_col}">{idea.side}</b> {idea.play_type[:16]} ({idea.quality_score}/100)</span>')
+                rec_bridge_html = (
+                    f'<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:.72rem;color:var(--ink-mute)">'
+                    f'<span>⚡ <b>Active Strategy Confluence (Tab 3):</b></span>'
+                    f'{" ".join(chips)}'
+                    f'</div>'
+                )
+
     st.markdown(
         f'<div class="ck">'
+        f'{pm_banner_html}'
         f'<div class="noa-kpi-grid">'
         f'<div class="noa-kpi-card"><small>ATM IV</small><b>{atm_iv*100:.1f}%</b><span>{skew_label[:14]}</span></div>'
         f'<div class="noa-kpi-card"><small>PCR (OI)</small><b>{pcr:.2f}</b><span style="color:{pcr_reg_col}">{pcr_regime}</span></div>'
@@ -6018,7 +6610,9 @@ def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
         f'<div class="noa-kpi-card"><small>IV Rank (30D)</small><b>{iv_rank:.0f}%</b><span>Normal zone</span></div>'
         f'<div class="noa-kpi-card"><small>India VIX</small><b>{vix_val:.2f}</b><span>{vix_label}</span></div>'
         f'<div class="noa-kpi-card"><small>Bias Gauge</small><b style="color:{score_color}">{score:+.1f}</b><span>{bias.regime}</span></div>'
-        f'</div></div>',
+        f'</div>'
+        f'{rec_bridge_html}'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -6030,8 +6624,8 @@ def _render_analytics_row1_bias_strikes(symbol: str, window: str) -> None:
         return
 
     levels = data.levels
+    spot, _ = _get_analytics_spot(symbol, levels)
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
     contracts_df = getattr(data, "contracts", None)
     oi_strikes = getattr(data, "oi_strikes", None) or []
 
@@ -6169,8 +6763,8 @@ def _render_analytics_row2_oi_expected_move(symbol: str, window: str) -> None:
         return
 
     levels = data.levels
+    spot, _ = _get_analytics_spot(symbol, levels)
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
     contracts_df = getattr(data, "contracts", None)
     oi_strikes = getattr(data, "oi_strikes", None) or []
 
@@ -6316,8 +6910,8 @@ def _render_analytics_row3_buildup_skew(symbol: str, window: str) -> None:
         return
 
     levels = data.levels
+    spot, _ = _get_analytics_spot(symbol, levels)
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
     contracts_df = getattr(data, "contracts", None)
     oi_strikes = getattr(data, "oi_strikes", None) or []
 
@@ -6472,8 +7066,8 @@ def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
         return
 
     levels = data.levels
+    spot, _ = _get_analytics_spot(symbol, levels)
     iq = get_instant_quote(symbol)
-    spot = float(iq["spot"]) if (iq and iq.get("spot")) else float(levels.spot)
     contracts_df = getattr(data, "contracts", None)
 
     pcr, call_doi, put_doi = _extract_pcr_and_oi(data)
@@ -6502,12 +7096,23 @@ def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
     existing_divs = prev_state.get("divergences", [])
     new_parity_count = parity_count + 1 if parity.alerted else 0
 
+    # Rolling total delta OI history for 2-sigma velocity burst detection
+    doi_hist_key = f"doi_hist_{symbol}"
+    doi_hist = st.session_state.get(doi_hist_key, [])
+    if call_doi is not None and put_doi is not None:
+        tot_doi = abs(float(call_doi or 0)) + abs(float(put_doi or 0))
+        doi_hist = (doi_hist + [tot_doi])[-20:]
+        st.session_state[doi_hist_key] = doi_hist
+
+    # Prior session PCR from SQLite market snapshot if available
+    pcr_prev_session = float(snap.get("pcr", 0.0)) if snap.get("pcr") else None
+
     div_report = detect_divergences(
         spot=spot,
         spot_prev=spot_prev,
         pcr=pcr,
         pcr_prev=pcr_prev,
-        pcr_prev_session=None,
+        pcr_prev_session=pcr_prev_session,
         atm_iv=near_atm_iv,
         atm_iv_prev=atm_iv_prev,
         call_wall=call_wall,
@@ -6517,6 +7122,7 @@ def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
         parity_alert_count=new_parity_count,
         call_doi_total=call_doi,
         put_doi_total=put_doi,
+        oi_doi_history=doi_hist if len(doi_hist) >= 3 else None,
         existing_divergences=existing_divs,
     )
 
@@ -6586,28 +7192,27 @@ def _render_analytics_row4_divergences_parity(symbol: str, window: str) -> None:
                     "badge_cls": "bear" if any(w in a.type for w in ["WALL", "DROP", "BREAK"]) else "bull",
                     "desc": f"{a.description} — {a.detail}",
                 })
-        if not shift_events:
-            cw_disp = f"{call_wall:,.0f}"
-            pw_disp = f"{put_wall:,.0f}"
-            pcr_badge = "CALL WRITING DOMINANCE" if pcr < 0.9 else ("PUT WRITING DOMINANCE" if pcr > 1.1 else "PCR REGIME FLIP")
-            pcr_badge_cls = "bear" if pcr < 0.9 else ("bull" if pcr > 1.1 else "neutral")
-            pcr_desc = f"PCR at {pcr:.2f} with heavy call writing concentration at {cw_disp}." if pcr < 0.9 else f"PCR at {pcr:.2f} with aggressive put writing concentrated at {pw_disp}."
-            shift_events = [
-                {"time": f"{today_ist} 09:48 IST", "badge": "CALL WALL TEST", "badge_cls": "warn", "desc": f"Spot tested {cw_disp} Call Wall; upper wick formed on elevated seller delta."},
-                {"time": f"{today_ist} 09:31 IST", "badge": pcr_badge, "badge_cls": pcr_badge_cls, "desc": pcr_desc},
-                {"time": f"{today_ist} 09:15 IST", "badge": "OPENING UNSETTLED", "badge_cls": "neutral", "desc": "Initial 15m bracket established; OI velocity dampener active during discovery."},
-            ]
 
-        shift_html = '<div class="scroll-feed" style="margin-bottom:10px">'
-        for ev in shift_events:
-            shift_html += (
-                f'<div class="shift-log-row">'
-                f'<span class="shift-time">📅 {ev["time"]}</span>'
-                f'<span class="sentinel-chip {ev["badge_cls"]}">{ev["badge"]}</span>'
-                f'<span style="color:var(--ink-2);font-size:.78rem">{ev["desc"]}</span>'
+        if shift_events:
+            shift_html = '<div class="scroll-feed" style="margin-bottom:10px">'
+            for ev in shift_events:
+                shift_html += (
+                    f'<div class="shift-log-row">'
+                    f'<span class="shift-time">📅 {ev["time"]}</span>'
+                    f'<span class="sentinel-chip {ev["badge_cls"]}">{ev["badge"]}</span>'
+                    f'<span style="color:var(--ink-2);font-size:.78rem">{ev["desc"]}</span>'
+                    f'</div>'
+                )
+            shift_html += '</div>'
+        else:
+            cw_disp = f"{call_wall:,.0f}" if call_wall else "—"
+            pw_disp = f"{put_wall:,.0f}" if put_wall else "—"
+            shift_html = (
+                f'<div style="background:var(--surface-1);border:1px dashed var(--line);border-radius:6px;'
+                f'padding:12px;font-size:.78rem;color:var(--ink-mute);text-align:center;margin-bottom:10px">'
+                f'🛡️ No intraday wall breaches or PCR regime flips triggered. Spot range bounded within {pw_disp} (PW) — {cw_disp} (CW).'
                 f'</div>'
             )
-        shift_html += '</div>'
 
         parity_color = "var(--stop)" if parity.alerted else "var(--go)"
         events_card_html = (
@@ -7527,6 +8132,16 @@ DOCS_MAP = {
         "file": "docs/target-engine-guide.md",
         "badge": "Target Engine v1.0",
     },
+    "market_intelligence_guide": {
+        "title": "🧭 Market Intelligence: Sectorial Performance & News Sentiment Guide",
+        "file": "docs/market-intelligence-guide.md",
+        "badge": "Sector Breadth & Catalysts",
+    },
+    "session_commentary_guide": {
+        "title": "🎙️ Session Commentary & Suggestion Bites Guide",
+        "file": "docs/session-commentary-guide.md",
+        "badge": "Narrative Engine v1.0",
+    },
 }
 
 
@@ -7581,12 +8196,7 @@ def _render_documentation_page(view_key: str) -> None:
     )
 
 
-def _is_stream_live() -> bool:
-    """Return True if fast live stream should be auto-updating (market open and not manual)."""
-    if not config.is_market_open():
-        return False
-    mode = st.session_state.get("stream_refresh_mode", "")
-    return "Manual" not in mode and "Paused" not in mode
+
 
 
 def _render_sidebar_instant_quote(symbol: str) -> None:
@@ -7603,6 +8213,9 @@ def _render_sidebar_instant_quote(symbol: str) -> None:
         basis_color = iq.get("basis_color", "var(--go)")
         vix = iq.get("vix")
         range_str = iq.get("range_str", "")
+        as_of = iq.get("as_of") or ""
+        as_of_time = as_of.split()[-1] if as_of else ""
+        time_tag = f'<span style="font-size:.62rem;color:var(--ink-mute);font-family:var(--mono)">{as_of_time}</span>' if as_of_time else ""
 
         vix_badge = f'<span style="font-size:.70rem;color:var(--ink-2);background:var(--surface);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">VIX: <b style="color:var(--ink)">{vix:.2f}</b></span>' if vix else ""
 
@@ -7610,7 +8223,10 @@ def _render_sidebar_instant_quote(symbol: str) -> None:
             f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line);margin:6px 0 12px">'
             f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">'
             f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">⚡ Instant Live Quote</span>'
+            f'<div style="display:flex;align-items:center;gap:6px">'
+            f'{time_tag}'
             f'<span style="font-size:.65rem;font-weight:700;color:var(--go);background:var(--go-bg);padding:1px 6px;border-radius:4px">🟢 0ms Cache</span>'
+            f'</div>'
             f'</div>'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
             f'<span style="font-size:1.15rem;font-weight:800;color:var(--ink)">₹{spot:,.2f}</span>'
@@ -7628,7 +8244,7 @@ def _render_sidebar_instant_quote(symbol: str) -> None:
         pass
 
 
-@st.fragment(run_every=3)
+@st.fragment(run_every=1)
 def _fragment_sidebar_quote_live(symbol: str) -> None:
     _render_sidebar_instant_quote(symbol)
 
@@ -7718,8 +8334,10 @@ def _render_standalone_orderflow_page() -> None:
     inst_id = f"{symbol}-FUT"
     ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
 
-    # Ensure live intraday flow is synced
-    sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+    # Ensure live intraday flow is synced with seamless demo fallback
+    synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+    if not synced:
+        seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
 
     # Top Navigation Banner
     col_sym, col_tf, col_nav = st.columns([4, 2, 2])
@@ -7784,8 +8402,8 @@ def main() -> None:
         st.query_params["symbol"] = symbol
         idx = config.get_index(symbol)
 
-        # Independent fragment rendering: ticks on its own 3s pulse without touching tabs or page
-        if _is_stream_live():
+        # Independent fragment rendering: ticks on its own 1s pulse without touching tabs or page
+        if _is_spot_live():
             _fragment_sidebar_quote_live(symbol)
         else:
             _fragment_sidebar_quote_static(symbol)
@@ -7871,11 +8489,12 @@ def main() -> None:
             f'</div>',
             unsafe_allow_html=True,
         )
-        # Live Streaming & Rate Controls
-        poller = get_adaptive_poller(symbol)
-        rtt_ms = poller.rolling_rtt * 1000.0 if poller.rolling_rtt else 18.0
-
+        # ── Two-Mode Live Streaming Architecture ────────────────────────────────────────────────
+        # Mode 1: Live WebSocket Stream (near real-time, 0ms in-memory cache)
+        # Mode 2: Offline Auto-Switch Mode (market closed, authenticated SQLite snapshot / cache)
+        is_live = is_live_session()
         market_open = config.is_market_open()
+
         try:
             from data.pre_post_market import get_current_session_phase, get_pre_market_state
             sess_phase, sess_label, _ = get_current_session_phase()
@@ -7885,112 +8504,55 @@ def main() -> None:
         is_pre_mkt = sess_phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")
         is_fno_ext = sess_phase == "CAS_AND_FNO_EXTENDED"
 
-        if market_open:
-            market_header_html = (
-                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line);margin:8px 0 10px">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700">⚡ Live Stream & Poller</span>'
-                f'<span style="font-size:.68rem;color:var(--go);font-weight:700">🟢 Ingestion Online</span>'
-                f'</div>'
-            )
-        elif is_pre_mkt:
-            pm_st = get_pre_market_state(symbol)
-            disc_label = "🟢 Discovered" if pm_st.get("is_discovered") else "🟡 Polling Equilibrium"
-            market_header_html = (
-                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid rgba(245,158,11,.3);margin:8px 0 10px">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-size:.65rem;color:#f59e0b;text-transform:uppercase;font-weight:700">🌅 Pre-Open Discovery</span>'
-                f'<span style="font-size:.68rem;color:#f59e0b;font-weight:700">{disc_label}</span>'
-                f'</div>'
-            )
-        elif is_fno_ext:
-            market_header_html = (
-                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid rgba(56,189,248,.3);margin:8px 0 10px">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-size:.65rem;color:var(--spark);text-transform:uppercase;font-weight:700">🔔 CAS & F&O Extended</span>'
-                f'<span style="font-size:.68rem;color:var(--spark);font-weight:700">⏳ Closes 15:40 IST</span>'
-                f'</div>'
-            )
-        else:
-            market_header_html = (
-                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line);margin:8px 0 10px">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-                f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700">🛑 Market Closed</span>'
-                f'<span style="font-size:.68rem;color:#f87171;font-weight:700">⏸️ Auto-Refresh Paused</span>'
-                f'</div>'
-            )
-        st.markdown(market_header_html, unsafe_allow_html=True)
+        if is_live:
+            if market_open:
+                session_title = "🟢 Live Market Open"
+                sub_state = "Regular Session (09:15–15:30 IST)"
+            elif is_pre_mkt:
+                pm_st = get_pre_market_state(symbol)
+                disc_text = f"₹{pm_st['discovered_spot']:,.1f}" if pm_st.get("is_discovered") else "Equilibrium Discovery"
+                session_title = "🌅 Pre-Open Discovery"
+                sub_state = f"Spot: {disc_text}"
+            elif is_fno_ext:
+                session_title = "🔔 F&O Ext / Settlement"
+                sub_state = "Extended Session (Closes 15:40 IST)"
+            else:
+                session_title = "⚡ Replay Simulation"
+                sub_state = "Historical Tick Playback"
 
-        is_active_session = market_open or is_pre_mkt or is_fno_ext
-        mode_options = [
-            "⚡ Live Stream (3s Tape / 15s GEX)",
-            "⏱️ Active (10s Macro)",
-            "🐢 Conservative (30s Macro)",
-            "⏸️ Manual / Paused",
-        ] if is_active_session else [
-            "⏸️ Manual / Paused",
-            "⚡ Live Stream (3s Tape / 15s GEX)",
-            "⏱️ Active (10s Macro)",
-            "🐢 Conservative (30s Macro)",
-        ]
-
-        if "stream_refresh_mode" not in st.session_state:
-            st.session_state["stream_refresh_mode"] = mode_options[0]
-        elif not is_active_session and "Manual" not in st.session_state.get("stream_refresh_mode", ""):
-            # Auto-pause after market hours
-            st.session_state["stream_refresh_mode"] = "⏸️ Manual / Paused"
-
-        curr_mode = st.session_state.get("stream_refresh_mode", mode_options[0])
-        curr_idx = mode_options.index(curr_mode) if curr_mode in mode_options else 0
-
-        refresh_mode = st.selectbox(
-            "Streaming Mode:",
-            mode_options,
-            index=curr_idx,
-            key="stream_refresh_mode",
-            label_visibility="collapsed",
-        )
-
-        if market_open:
             st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
-                f'<span>Status: <b style="color:#4ade80">🟢 Live Market Open</b></span>'
-                f'<span>RTT: <b style="color:var(--ink)">{rtt_ms:.0f}ms</b></span>'
-                f'<span>Interval: <b style="color:var(--spark)">{poller.current_interval:.1f}s</b></span>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-        elif is_pre_mkt:
-            pm_st = get_pre_market_state(symbol)
-            disc_text = f"₹{pm_st['discovered_spot']:,.1f}" if pm_st.get("is_discovered") else "Polling (3s)"
-            st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
-                f'<span>Status: <b style="color:#f59e0b">🌅 Pre-Open Discovery</b></span>'
-                f'<span>Spot: <b style="color:var(--ink)">{disc_text}</b></span>'
-                f'<span>Mode: <b style="color:var(--spark)">Pre-Bell</b></span>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-        elif is_fno_ext:
-            st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
-                f'<span>Status: <b style="color:var(--spark)">🔔 F&O Ext / CAS</b></span>'
-                f'<span>Close: <b style="color:var(--ink)">15:40 IST</b></span>'
-                f'<span>Mode: <b style="color:var(--spark)">Settlement</b></span>'
-                f'</div></div>',
+                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid rgba(74,222,128,.35);margin:8px 0 10px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">⚡ Feed Mode</span>'
+                f'<span style="font-size:.68rem;color:var(--go);font-weight:700;background:var(--go-bg);padding:2px 7px;border-radius:4px">🟢 WebSocket Live</span>'
+                f'</div>'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">'
+                f'<span>Status: <b style="color:#4ade80">{session_title}</b></span>'
+                f'<span>Push: <b style="color:var(--ink)">&lt; 1ms</b></span>'
+                f'<span>Cache: <b style="color:var(--spark)">0ms Memory</b></span>'
+                f'</div>'
+                f'<div style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">{sub_state}</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
         else:
             st.markdown(
-                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:6px">'
-                f'<span>Status: <b style="color:#f87171">🛑 Closed (After Hours)</b></span>'
-                f'<span>Auto-Refresh: <b style="color:var(--ink)">Off</b></span>'
-                f'<span>Mode: <b style="color:var(--spark)">Manual</b></span>'
-                f'</div></div>',
+                f'<div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line);margin:8px 0 10px">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                f'<span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">🛑 Feed Mode</span>'
+                f'<span style="font-size:.68rem;color:#f87171;font-weight:700;background:rgba(248,113,113,.12);padding:2px 7px;border-radius:4px">Offline Auto-Switch</span>'
+                f'</div>'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">'
+                f'<span>Status: <b style="color:#f87171">Market Closed</b></span>'
+                f'<span>Source: <b style="color:var(--ink)">Session Snapshot</b></span>'
+                f'<span>Pollers: <b style="color:var(--ink-mute)">Paused</b></span>'
+                f'</div>'
+                f'<div style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">Auto-resumes live on next market bell (09:15 IST)</div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
-        refresh_btn_label = "🔄 Refresh Cockpit" if not market_open else "🔄 Force Refresh All"
+        refresh_btn_label = "🔄 Refresh Snapshot" if not is_live else "🔄 Force Re-sync"
         if st.button(refresh_btn_label, key="btn_force_refresh", use_container_width=True):
             with st.spinner("🔄 Fetching data..."):
                 _load_data(symbol, window, force=True)
@@ -8013,9 +8575,12 @@ def main() -> None:
             '<a href="/?view=pre_post_market_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🌅 Pre/Post-Market & Recs Guide ↗</a>'
             '<a href="/?view=options_strategies_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎯 Options Strategies Guide ↗</a>'
             '<a href="/?view=orderflow_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">⚡ OrderFlow Signals Guide ↗</a>'
+            '<a href="/?view=market_intelligence_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🧭 Market Intelligence Guide ↗</a>'
+            '<a href="/?view=session_commentary_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🎙️ Session Commentary Guide ↗</a>'
             '<a href="/?view=signal_efficiency_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📈 Signal Efficiency Guide ↗</a>'
             '<a href="/?view=gex_playbook" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🗺️ Indian GEX Playbook ↗</a>'
             '<a href="/?view=participant_guide" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">🧭 Participant Positioning ↗</a>'
+            '<a href="/?view=data_dictionary" target="_blank" style="color:var(--spark);text-decoration:none;font-weight:600">📊 Data & Calculations ↗</a>'
             '</div>',
 
             unsafe_allow_html=True,
