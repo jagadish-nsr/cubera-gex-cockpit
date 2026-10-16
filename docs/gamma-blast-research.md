@@ -393,3 +393,18 @@ GEX background (US convention this engine was ported from):
 > independent validation. The academic links validate the *mechanism* (dealer
 > short gamma amplifies vol), **not** the specific entry rule or its sign for
 > Nifty. Treat §6 as the governing verdict.
+
+---
+
+## 🔗 Related Technical Documentation
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
+- [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)
+- [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
+- [🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)
+- [📈 Signal Efficiency & MFE/MAE Performance Guide](/?view=signal_efficiency_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Participant Open Interest Guide](/?view=participant_guide)
+- [📘 Master Cockpit User Guide](/?view=user_guide)

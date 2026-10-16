@@ -1,12 +1,12 @@
 # 🎯 Options Recommendation Strategies: Field Guide & Alpha Playbook
 
-This guide details the institutional microstructure models, trigger mechanics, data feeds, and execution rules powering the **Options Recommendations Engine (Score ≥ 75)** in the Indian-GEX Cockpit.
+This guide details the institutional microstructure models, trigger mechanics, data feeds, and execution rules powering the **Options Recommendations Engine (Score ≥ 75)** in the **Cubera GEX Cockpit**.
 
 ---
 
 ## Part 1: Implemented Recommendation Strategies & Quality Gating
 
-The engine synthesizes **GEX structural walls**, **OrderFlow volume delta (CVD)**, **Session VWAP equilibrium**, and **live Dhan WebSocket streaming prices** across seven complementary institutional strategies per side.
+The engine synthesizes **GEX structural walls**, **OrderFlow volume delta (CVD)**, **Session VWAP equilibrium**, **ADX trend regimes**, **Sector Breadth**, **FII positioning**, and **live Dhan WebSocket streaming prices** across seven complementary institutional strategies per side.
 
 ### 🛡️ Quality Gating: Score ≥ 75 (High Conviction Only)
 Rather than displaying a static number of trade ideas regardless of quality, the engine evaluates **all 7 strategies** for Calls (CE) and Puts (PE) and applies an institutional quality gate:
@@ -42,7 +42,7 @@ Exploits pure delta acceleration when price holds intraday equilibrium (Session 
 - **Session VWAP ($\text{VWAP}$)** and $\pm 1.0\sigma$ Bands: Calculated over all completed 1-minute futures bars.
 - **Directional Bias Score**: Multi-factor conviction score from $-10.0$ to $+10.0$.
 - **Cumulative Volume Delta (CVD)**: 15-minute slope of buyer vs seller aggression.
-- **Contract ATM Delta ($\Delta \approx 0.50$)**: Black-Scholes estimate or live option chain delta.
+- **Contract ATM Delta ($\Delta \approx 0.50$)**: Black-76 estimate or live option chain delta.
 
 #### 3. Inference Made
 - When spot is trading above VWAP with a positive Bias Score ($\ge +1.5$), institutional buyers are absorbing liquidity on dips. Pullbacks into VWAP are buying opportunities, not trend reversals.
@@ -62,7 +62,6 @@ Exploits pure delta acceleration when price holds intraday equilibrium (Session 
   - **Dynamic Calculation**: Evaluated via **Target Engine Black-76 analytical forward repricing** (`_reprice_trade_idea_targets` in `analytics/trade_ideas.py`).
   - **Stop Loss ($V_{\text{sl}}$)**: Modeled by repricing the option contract at the exact **Spot Invalidation** level under adverse IV shock $\sigma_{\text{sl}}$ and holding horizon time decay $T_{\text{sl}}$.
   - **Target 1 ($V_{\text{tgt1}}$) & Target 2 ($V_{\text{tgt2}}$)**: Repriced at the primary session target level and secondary momentum expansion level.
-  - *Legacy Baseline Benchmark*: Prior to Target Engine integration, the heuristic baseline assumed approximately $-28\%$ from entry LTP ($0.72 \times \text{LTP}$) for stops, $+35\%$ for Target 1 ($1.35 \times \text{LTP}$), and $+70\%$ for Target 2 ($1.70 \times \text{LTP}$). Today, exact prices and Net EV are dynamically calibrated to live volatility and the underlying invalidation boundary.
 
 ---
 
@@ -91,9 +90,7 @@ Capitalizes on the defensive behavior of institutional option writers who protec
   - CE: Structural breakdown below Put Wall ($PW - 0.3 \times \text{step}$).
   - PE: Structural breach above Call Wall ($CW + 0.3 \times \text{step}$).
 - **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-32\%$ from entry LTP ($0.68 \times \text{LTP}$).
-  - **Target 1**: $+45\%$ from entry LTP ($1.45 \times \text{LTP}$, $1.4\text{R}$).
-  - **Target 2**: $+95\%$ from entry LTP ($1.95 \times \text{LTP}$, $3.0\text{R}$).
+  - Dynamic Black-76 repricing anchored to target walls and invalidation levels.
 
 ---
 
@@ -110,7 +107,6 @@ Designed for explosive non-linear gains ($100\%$ to $250\%+$). Targets the exact
 
 #### 3. Inference Made
 - If spot crosses the Call Wall with positive orderflow volume, market makers who sold calls must purchase spot/futures to rebalance deltas. This self-reinforcing buying spiral creates convex upward velocity, rapidly inflating OTM call premiums.
-- Conversely, a breakdown below the Put Wall forces dealers to dump futures, causing a "trapdoor" cascade.
 
 #### 4. Strike Selection
 - **Call (CE)**: At the Call Wall strike: $K = CW$ (or $\text{ATM} + 2\cdot\text{step}$ if $CW \le S$).
@@ -122,10 +118,6 @@ Designed for explosive non-linear gains ($100\%$ to $250\%+$). Targets the exact
 - **Spot Invalidation**:
   - CE: Trapdoor failure where spot falls back below Call Wall ($-0.4 \times \text{step}$).
   - PE: Failed breakdown where spot recovers back above Put Wall ($+0.4 \times \text{step}$).
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-40\%$ from entry LTP ($0.60 \times \text{LTP}$).
-  - **Target 1**: $+60\%$ from entry LTP ($1.60 \times \text{LTP}$, $1.5\text{R}$).
-  - **Target 2**: $+140\%$ from entry LTP ($2.40 \times \text{LTP}$, $3.5\text{R}$).
 
 ---
 
@@ -143,16 +135,10 @@ Capitalizes on passive institutional liquidity absorption occurring at the outer
 - **Call (CE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx 0.50$).
 - **Put (PE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx -0.50$).
 
-#### 4. Decision-Making & Execution Rules
+#### 4. Execution Rules
 - **Entry Trigger (CE)**: Passive limit buyer absorption confirmed at lower VWAP envelope with positive CVD delta divergence.
 - **Entry Trigger (PE)**: Passive limit seller absorption confirmed at upper VWAP envelope with negative CVD delta divergence.
-- **Spot Invalidation**:
-  - CE: Spot breakdown below lower VWAP band by $>0.25 \times \text{step}$ ($<15\text{ pts}$ on NIFTY).
-  - PE: Spot breakout above upper VWAP band by $>0.25 \times \text{step}$.
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-20\%$ from entry LTP ($0.80 \times \text{LTP}$, tightest stop).
-  - **Target 1**: $+40\%$ from entry LTP ($1.40 \times \text{LTP}$, $2.0\text{R}$, at VWAP).
-  - **Target 2**: $+90\%$ from entry LTP ($1.90 \times \text{LTP}$, $4.5\text{R}$, at opposite band).
+- **Spot Invalidation**: Spot breach beyond the band by $>0.25 \times \text{step}$.
 
 ---
 
@@ -161,22 +147,10 @@ Capitalizes on passive institutional liquidity absorption occurring at the outer
 #### 1. Concept & Objective
 Exploits second-order Greek acceleration ($\partial \Delta / \partial t$) during expiry sessions or late-cycle market sessions. When spot is pinned between the Put Wall and Call Wall with Gamma Flip near spot, dealer delta hedging dampens volatility, causing OTM options premiums to collapse towards zero.
 
-#### 2. Data Points Used
-- **Days to Expiration (DTE)**: High edge within 1 session of contract settlement.
-- **Gamma Flip & Wall Distance**: Spot tightly contained within $PW$ and $CW$ and within $0.5 \times \text{step}$ of Flip.
-- **Realized Volatility**: Intraday ATR compression indicating range lock.
-
-#### 3. Strike Selection
+#### 2. Strike Selection & Execution
 - **Call (CE)**: OTM Strike at $\text{ATM} + 2 \times \text{step}$ ($\Delta \approx 0.20$).
 - **Put (PE)**: OTM Strike at $\text{ATM} - 2 \times \text{step}$ ($\Delta \approx -0.20$).
-
-#### 4. Decision-Making & Execution Rules
-- **Entry Trigger (CE/PE)**: Spot pinned between major walls with low realized volatility, monetizing rapid premium collapse.
-- **Spot Invalidation**: Volatility expansion breaking through the outer wall ($CW + 0.3 \times \text{step}$ or $PW - 0.3 \times \text{step}$).
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-35\%$ from entry LTP ($0.65 \times \text{LTP}$).
-  - **Target 1**: $+30\%$ from entry LTP ($1.30 \times \text{LTP}$).
-  - **Target 2**: $+60\%$ from entry LTP ($1.60 \times \text{LTP}$).
+- **Entry Trigger**: Pinned between major walls with low realized volatility, monetizing rapid premium collapse.
 
 ---
 
@@ -185,78 +159,127 @@ Exploits second-order Greek acceleration ($\partial \Delta / \partial t$) during
 #### 1. Concept & Objective
 Deployed during compressed volatility regimes where India VIX drops or market consolidation has persisted inside narrow bands. Options trade at low implied volatility, making gamma convexity unusually cheap. Once spot breaks out of the consolidation band, simultaneous vega expansion and gamma explosion generate outsized gains.
 
-#### 2. Data Points Used
-- **India VIX & Realized Volatility**: Low baseline volatility or multi-hour range contraction.
-- **VWAP Envelope Bandwidth**: Squeeze in the distance between $+1\sigma$ and $-1\sigma$ bands.
-- **Volume Expansion Surge**: Sudden influx of volume breaking past consolidation boundaries.
-
-#### 3. Strike Selection
-- **Call (CE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx 0.50$).
-- **Put (PE)**: ATM Strike: $K = \text{ATM}$ ($\Delta \approx -0.50$).
-
-#### 4. Decision-Making & Execution Rules
-- **Entry Trigger (CE)**: Compression breakout above Session VWAP $+0.5\sigma$ with expanding green volume.
-- **Entry Trigger (PE)**: Compression breakdown below Session VWAP $-0.5\sigma$ with expanding red volume.
-- **Spot Invalidation**: Spot falls back into the consolidation band midpoint ($\text{VWAP} \pm 0.4 \times \text{step}$).
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: $-30\%$ from entry LTP ($0.70 \times \text{LTP}$).
-  - **Target 1**: $+50\%$ from entry LTP ($1.50 \times \text{LTP}$, $1.67\text{R}$).
-  - **Target 2**: $+120\%$ from entry LTP ($2.20 \times \text{LTP}$, $4.0\text{R}$).
+#### 2. Strike Selection & Execution
+- **Call / Put**: ATM Strike ($K = \text{ATM}$).
+- **Entry Trigger**: Squeeze breakout above Session VWAP $+0.5\sigma$ with expanding volume.
 
 ---
 
 ### Strategy 7: Zero-Cost Ratio Risk Reversal (`RATIO REVERSAL`)
 
 #### 1. Concept & Objective
-Synthetic 1x2 ratio structure where buying 1 near-money option is funded by the expected resistance of the wall. Formulated for steady trending regimes where spot is expected to move toward the Call Wall or Put Wall without blasting through it, providing high percentage returns with zero theta drag on sideways chop.
+Synthetic ratio structure where buying near-money options targets the expected resistance of the wall. Formulated for steady trending regimes where spot is expected to move toward the Call Wall or Put Wall without blasting through it, providing high percentage returns with zero theta drag on sideways chop.
 
-#### 2. Data Points Used
-- **Directional Bias**: Moderate conviction score ($+1.0$ to $+3.5$ for CE; $-1.0$ to $-3.5$ for PE).
-- **Distance to Target Wall**: Sweet spot of $1.5$ to $3.0$ strike steps away from the target wall.
-- **Institutional Accumulation/Distribution**: Steady tape buildup towards the wall.
-
-#### 3. Strike Selection
-- **Call (CE)**: Strike at $\text{ATM} + \text{step}$ ($\Delta \approx 0.40$), targeting Call Wall rotation.
-- **Put (PE)**: Strike at $\text{ATM} - \text{step}$ ($\Delta \approx -0.40$), targeting Put Wall rotation.
-
-#### 4. Decision-Making & Execution Rules
-- **Entry Trigger (CE)**: Moderate upward drift with steady buyer accumulation targeting the Call Wall.
-- **Entry Trigger (PE)**: Moderate downward drift with steady seller distribution targeting the Put Wall.
-- **Spot Invalidation**: Spot reversal across VWAP by $>0.35 \times \text{step}$.
-- **Option Price Targets & Stop Loss**:
-  - **Stop Loss**: Calibrated by Target Engine Black-76 repricing at Spot Invalidation.
-  - **Target 1**: Repriced at primary wall rotation barrier.
-  - **Target 2**: Repriced at secondary volatility expansion move.
+#### 2. Strike Selection & Execution
+- **Call (CE)**: Strike at $\text{ATM} + \text{step}$ ($\Delta \approx 0.40$).
+- **Put (PE)**: Strike at $\text{ATM} - \text{step}$ ($\Delta \approx -0.40$).
 
 ---
 
-## Part 2: Target Engine Quantitative Repricing Architecture
+## Part 2: Defined-Risk Vertical Spread Alternatives
 
-In the latest release, the Recommendations Engine has been upgraded from crude static heuristic multipliers (`* 1.35`, `* 0.72`) to the **Target Engine Quantitative Suite**:
+To eliminate theta decay drag and protect capital against sudden intraday whipsaws, every qualifying naked recommendation is accompanied by an institutional **Defined-Risk Vertical Spread Alternative** (`_build_spread_alternative`):
 
-### 1. Black-76 Forward Pricing & Repricing
-Every trade recommendation computes `Target 1`, `Target 2`, and `Stop Loss` using analytical Black-76 forward pricing:
-- **Baseline Pricing**: Initial option entry premium $V_0$ is derived from current underlying spot/futures $F_0$, strike $K$, annualized time to expiry $T_0$, and ATM implied volatility $\sigma_{\text{atm}}$.
-- **Forward Invalidation & Target Repricing**:
-  - **Target 1 Premium ($V_{\text{tgt1}}$)**: Repriced at $F = \text{Target Spot 1}$, $T = T_0 - \Delta t$, and $\sigma = \text{Forecast IV}$.
-  - **Target 2 Premium ($V_{\text{tgt2}}$)**: Repriced at $F = \text{Target Spot 2}$ under scenario volatility expansion/compression.
-  - **Stop Loss Premium ($V_{\text{sl}}$)**: Repriced at $F = \text{Spot Invalidation Level}$.
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ 🛡️ DEFINED-RISK DEBIT VERTICAL SPREAD ALTERNATIVE                                      │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ • Bull Call Spread (CE): Buy Strike K1 (ATM) + Sell Strike K2 (K1 + step)              │
+│ • Bear Put Spread (PE) : Buy Strike K1 (ATM) + Sell Strike K2 (K1 - step)              │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│ 1. Net Debit Outlay  = Long Premium (LTP_long) - Short Premium (LTP_short)             │
+│ 2. Maximum Loss      = Net Debit Paid (100% Capped Risk - Zero Overnight Ruin)         │
+│ 3. Maximum Gain      = Strike Width (step) - Net Debit Paid                            │
+│ 4. Spread R:R Ratio  = Max Gain / Max Loss                                             │
+│ 5. Theta Decay Hedge = Short leg theta decay directly offsets long leg theta bleed      │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-### 2. Reflection-Principle Barrier Touch Probabilities
-Rather than assuming a static $50/50$ coin-flip, the engine computes closed-form touch probabilities using the Brownian reflection principle:
-$$P(\text{touch target 1}) = 2 \cdot \left[ 1 - \Phi\left( \frac{|\text{Target 1} - \text{Spot}|}{\sigma_h} \right) \right]$$
-$$P(\text{touch SL}) = 2 \cdot \left[ 1 - \Phi\left( \frac{|\text{Spot Invalidation} - \text{Spot}|}{\sigma_h} \right) \right]$$
-where $\sigma_h = \text{Spot} \cdot \sigma_{\text{atm}} \cdot \sqrt{h / (375 \times 252)}$ is the 1-SD horizon expected move.
+- **Lower Capital Requirement**: Net debit outlays are typically $40\%–60\%$ lower than buying naked options.
+- **High-Volatility Defense**: When IV is elevated, selling the higher strike finances the long position and cushions the trade against volatility crush.
 
-### 3. Probability-Weighted Net Expected Value (Net EV)
-Displayed on every recommendation card and the Confluence Strategy Matrix:
-$$\text{Net EV (pts)} = \left[ P(\text{target 1}) \times (V_{\text{tgt1}} - V_0) \right] - \left[ P(\text{SL}) \times (V_0 - V_{\text{sl}}) \right]$$
-A trade is only considered institutional Grade A if $\text{Net EV} > 0$, guaranteeing positive mathematical expectancy over repeated executions.
+---
 
-### 4. Greek Attribution Decomposition
-Every repriced target decomposes expected return into:
-- **Delta PnL**: Linear underlying index follow-through ($\Delta \cdot \Delta F$).
-- **Gamma PnL**: Convexity acceleration on momentum expansion ($\frac{1}{2}\Gamma (\Delta F)^2$).
-- **Vega PnL**: Impact of IV forecast shifts ($\mathcal{V} \cdot \Delta\sigma$).
-- **Theta Bleed**: Expected time decay over the holding horizon ($\Theta \cdot \Delta t$).
+## Part 3: Multi-Factor Sigmoid Conviction Scoring & Confluence
 
+The Recommendations Engine does not rely on simple indicator thresholds. Instead, candidate setups pass through a multi-factor quantitative scoring model:
+
+$$\text{Final Conviction Score} = \text{Sigmoid}\left(\text{Base Score} + \sum \text{Confluence Modifiers}\right) \times 100$$
+
+### Confluence Factors:
+1. **ADX Trend Regime (`compute_adx`)**:
+   - `ADX >= 25` (Strong Trend): $+5\text{ pts}$ bonus for Momentum, $+10\text{ pts}$ for Gamma Squeeze.
+   - `ADX < 20` (Choppy Range): $-10\text{ pts}$ penalty on Momentum; favors Iceberg Fade and Vanna-Charm.
+2. **CVD Divergence (`compute_cvd_divergence`)**:
+   - `BULLISH_ABSORPTION`: Spot printing flat/lower lows while CVD rises $\to +8\text{ pts}$ on CE.
+   - `BEARISH_EXHAUSTION`: Spot printing higher highs while CVD falls $\to +8\text{ pts}$ on PE.
+   - Opposing divergence penalizes candidate score by $-12\text{ pts}$.
+3. **Trend Alignment (`compute_trend_context`)**:
+   - Spot vs 20 EMA, 50 SMA, and Session VWAP. Full triple-bullish alignment awards $+10\text{ pts}$.
+4. **Lunch-Hour Chop Filter (`is_lunch_hour_chop`)**:
+   - Session window **11:30 – 13:00 IST** suffers from low European overlap volume. Breakout setups receive an automatic $-8\text{ pts}$ chop damping penalty.
+5. **Sector Breadth Alignment (`compute_sector_breadth_context`)**:
+   - When $\ge 70\%$ of the 11 constituent sectors advance, Call setups gain $+6\text{ pts}$; Put setups lose $-8\text{ pts}$.
+6. **FII Net Futures Positioning (`compute_fii_positioning_context`)**:
+   - Aligns trades with institutional foreign desk positioning from exchange clearing data.
+
+---
+
+## Part 4: Anti-Flicker Latching & Lifecycle State Machine
+
+To eliminate card flickering, disappearance, and false exits during live streaming ticks, recommendations are governed by an explicit finite-state machine managed by `RecommendationLatchManager`:
+
+```
+   ┌─────────┐
+   │ DORMANT │ ◀── Initial State (Score < 75)
+   └────┬────┘
+        │ Quality Score >= 75 (Initial Qualification)
+        ▼
+  ┌───────────┐
+  │ QUALIFIED │
+  └─────┬─────┘
+        │ Quality Score >= min_score (75/85) & Initial Lease Granted
+        ▼
+   ┌──────────┐ ◀──────────────────────────────────────────────┐
+   │  ACTIVE  │ ── Score fluctuates between [65, 100] (Hysteresis)│
+   └────┬─────┘ ── 180s Dwell Lease Guarantees Display         │
+        │                                                      │
+        ├──────────────────────┬──────────────────────┐        │
+        │ Target 1 Hit         │ Spot Invalidation    │ Lease Expired
+        │ (Spot >= T1 / <= T1) │ Breached             │ & Score < 65
+        ▼                      ▼                      ▼        │
+ ┌────────────┐        ┌─────────────┐        ┌──────────┐     │
+ │ TARGET_HIT │        │ INVALIDATED │        │ DEGRADED │ ────┘
+ └────────────┘        └─────────────┘        └──────────┘  Re-qualifies if score >= 75
+ (Card flags Target    (Filtered out          (Demoted to
+  Reached; locks gain)  from display)          Watchlist)
+```
+
+### State Machine Invariants:
+1. **Dwell Time Lease (180 Seconds)**: Once promoted to `ACTIVE`, an options recommendation card is guaranteed a minimum dwell lease of 180 seconds. It will not vanish on ephemeral microsecond tick dips.
+2. **Score Hysteresis ($\Delta = 10\text{ pts}$)**:
+   - Initial entry requires $\text{Score} \ge 75$ (or 85 for High Conviction).
+   - Once `ACTIVE`, the card remains in active display even if score fluctuates down to **65** ($\text{min\_score} - 10$).
+   - Only when score stays below 65 *after* the 180s dwell lease expires does the card transition to `DEGRADED`.
+3. **Continuous Sub-Millisecond Telemetry (`update_trade_idea_live_telemetry`)**:
+   - Tracks live option MTM, current PnL, Maximum Favorable Excursion (MFE), and Maximum Adverse Excursion (MAE) tick-by-tick.
+4. **"Time Since Last Active" Dynamic Counter**:
+   - Displayed in every card header:
+     - `🟢 Active: 2m 15s`: Actively dwelling within valid execution window.
+     - `🎯 Target Hit (30s ago)`: Target 1 achieved; locks gains.
+     - `🛑 Inval (1m ago)`: Structural stop breached; alerts trader.
+     - `⏱️ Last Active: 3m 40s ago`: Demoted after dwell expiration.
+
+---
+
+## Part 5: Strict Market Hours Gating & Real Spot Sourcing
+
+1. **Market Hours Invariant (09:15 – 15:30/15:40 IST)**:
+   - Live recommendation generation is active **only during continuous exchange trading hours**.
+   - Outside market hours, generation is cleanly gated off. The cockpit loads the last verified closing state from the persistent SQLite market snapshot registry (`market_snapshots`).
+2. **Zero Synthetic / Fabricated Prices**:
+   - All spot prices, strike quotes, and GEX levels are sourced strictly from Dhan WebSocket feeds or verified exchange snapshots. Synthetic fallback levels are strictly blocked.
+3. **Clamping of Target Spot Reach**:
+   - Target spot levels are mathematically clamped to realistic 1-SD horizon expected moves ($\sigma_h$), preventing unachievable targets on low-volatility sessions.
+4. **Pinned Cards Retention**:
+   - Pinned cards persist in the local storage registry across page reloads and browser sessions until explicitly unpinned by the user or until the contract crosses its expiry date.

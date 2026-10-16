@@ -1,6 +1,6 @@
-# 📊 Indian-GEX Data Dictionary & Calculation Reference Guide
+# 📊 Cubera GEX Data Dictionary & Quantitative Calculations Reference
 
-This reference document catalogs every data point ingested from **Dhan REST APIs** and **Dhan WebSocket Streams**, as well as the complete mathematical and quantitative formulas used to derive institutional indicators, Gamma Exposure (GEX) levels, and real-time execution metrics.
+This reference document catalogs every data point ingested from **Dhan REST APIs** and **Dhan WebSocket Streams**, as well as the complete mathematical and quantitative formulas used to derive institutional indicators, Gamma Exposure (GEX) levels, Black-76 forward repricing, reflection barrier probabilities, and execution risk metrics.
 
 ---
 
@@ -52,8 +52,8 @@ Where:
 The monetary Gamma Exposure (in ₹ Crores per 1% spot move) for strike $k$:
 $$\text{GEX}_k = \Gamma_k \times S^2 \times \text{OI}_k \times \text{LotSize} \times 0.01 \times \text{DealerSign}$$
 
-#### B. Dealer Sign Assumption
-- **Calls**: Option buyers are typically retail/speculative; dealers are net **Short Calls** $\rightarrow \text{DealerSign} = -1$ (or $+1$ in standard customer sign convention). When spot rises, short call dealers must **buy futures/spot** to stay delta-neutral.
+#### B. Dealer Sign Assumption (Indian Market Mode: `short_call_short_put`)
+- **Calls**: Retail/speculative traders buy calls; dealers are net **Short Calls** $\rightarrow \text{DealerSign} = -1$.
 - **Puts**: Option writers are institutional; retail hedges with puts $\rightarrow \text{DealerSign} = +1$.
 
 #### C. Structural Level Calculations
@@ -68,62 +68,60 @@ $$\text{GEX}_k = \Gamma_k \times S^2 \times \text{OI}_k \times \text{LotSize} \t
 
 ---
 
-### 2. Intraday OrderFlow & Volume Profiling
+### 2. Target Engine Quantitative Pricing Suite
 
-#### A. Cumulative Volume Delta (CVD)
-Measures aggressive market buyer volume minus aggressive market seller volume:
-$$\Delta V_t = V_{\text{buyer\_initiated}} - V_{\text{seller\_initiated}}$$
-$$\text{CVD}_T = \sum_{t=0}^T \Delta V_t$$
-In 1-minute bars without tick-level classification, tick-rule approximation is used:
-$$\Delta V_t = \text{Volume}_t \times \left(\frac{2 \cdot (\text{Close}_t - \text{Low}_t)}{\text{High}_t - \text{Low}_t} - 1\right)$$
+#### A. Analytical Black-76 Forward Option Pricing
+Used for options on index futures and forward spot levels:
+$$d_1 = \frac{\ln(F / K) + \frac{1}{2}\sigma^2 T}{\sigma \sqrt{T}}, \quad d_2 = d_1 - \sigma \sqrt{T}$$
+$$\text{Call Value } (C) = e^{-rT} \left[ F \cdot \Phi(d_1) - K \cdot \Phi(d_2) \right]$$
+$$\text{Put Value } (P) = e^{-rT} \left[ K \cdot \Phi(-d_2) - F \cdot \Phi(-d_1) \right]$$
 
-#### B. Volume Weighted Average Price (VWAP) & Standard Deviation Bands
-$$\text{VWAP}_T = \frac{\sum_{t=1}^T \text{TypicalPrice}_t \times \text{Volume}_t}{\sum_{t=1}^T \text{Volume}_t} \quad \text{where} \quad \text{TypicalPrice}_t = \frac{\text{High}_t + \text{Low}_t + \text{Close}_t}{3}$$
+#### B. 1-SD Horizon Expected Move ($\sigma_h$)
+For a scenario horizon of $h$ trading minutes (where 1 trading day = 375 minutes):
+$$\sigma_h = \text{Spot} \times \sigma_{\text{atm}} \times \sqrt{\frac{h}{375 \times 252}}$$
 
-$$\sigma_{\text{VWAP}} = \sqrt{\frac{\sum_{t=1}^T \text{Volume}_t \times (\text{TypicalPrice}_t - \text{VWAP}_T)^2}{\sum_{t=1}^T \text{Volume}_t}}$$
-$$\text{Upper Band} = \text{VWAP} + 1.0 \times \sigma_{\text{VWAP}}, \quad \text{Lower Band} = \text{VWAP} - 1.0 \times \sigma_{\text{VWAP}}$$
+#### C. Brownian Reflection Principle Touch Probability ($P_{\text{touch}}$)
+Closed-form analytical probability that the underlying touches barrier level $B$ within horizon $h$:
+$$P(\text{touch barrier } B) = 2 \cdot \left[ 1 - \Phi\left( \frac{|B - \text{Spot}|}{\sigma_h} \right) \right]$$
 
----
+#### D. Probability-Weighted Net Expected Value (Net EV)
+$$\text{Net EV (pts)} = \left[ P(\text{touch Target 1}) \times (V_{\text{tgt1}} - V_0) \right] - \left[ P(\text{touch Invalidation}) \times (V_0 - V_{\text{sl}}) \right]$$
 
-### 3. Directional Bias Score (-10.0 to +10.0)
-Synthesizes 8 independent market microstructure indicators into a single institutional conviction rating:
-
-$$\text{Bias Score} = \sum_{i=1}^8 w_i \times S_i$$
-
-| Factor ($i$) | Weight ($w_i$) | Input Metric | Bullish Condition ($+1$) | Bearish Condition ($-1$) |
-| :--- | :---: | :--- | :--- | :--- |
-| **PCR Trend** | $1.5$ | Put-Call Ratio ($\frac{\sum \text{Put OI}}{\sum \text{Call OI}}$) | $\text{PCR} > 1.25$ or $\Delta \text{PCR} > +0.10$ | $\text{PCR} < 0.75$ or $\Delta \text{PCR} < -0.10$ |
-| **Wall Alignment** | $1.5$ | Spot location relative to Walls | Spot within $25\%$ of Call Wall | Spot within $25\%$ of Put Wall |
-| **Gamma Regime** | $1.5$ | Spot vs Gamma Flip | Spot $> GF$ (Low vol, squeeze risk) | Spot $< GF$ (High vol, cascade risk) |
-| **CVD Slope** | $1.5$ | 15-minute Cumulative Volume Delta | $\text{CVD}$ rising with higher highs | $\text{CVD}$ falling with lower lows |
-| **VWAP Location** | $1.0$ | Spot vs Session VWAP | $\text{Spot} > \text{VWAP} + 0.5\sigma$ | $\text{Spot} < \text{VWAP} - 0.5\sigma$ |
-| **OI Velocity** | $1.0$ | Strike-level $\Delta \text{OI}$ in last 15m | Heavy Call Unwinding + Put Addition | Heavy Put Unwinding + Call Addition |
-| **IV Skew** | $1.0$ | $\text{OTM Put IV} - \text{OTM Call IV}$ | Put IV softening (hedges removed) | Put IV surging (panic downside hedge) |
-| **VIX Delta** | $1.0$ | Day change in India VIX | $\text{VIX} < -3\%$ (calm environment) | $\text{VIX} > +4\%$ (fear expansion) |
+#### E. Greek Attribution Decomposition
+Expected price change decomposed into first- and second-order derivatives:
+$$\Delta V \approx \underbrace{\Delta \cdot \Delta F}_{\text{Delta PnL}} + \underbrace{\frac{1}{2}\Gamma (\Delta F)^2}_{\text{Gamma PnL}} + \underbrace{\mathcal{V} \cdot \Delta \sigma}_{\text{Vega PnL}} + \underbrace{\Theta \cdot \Delta t}_{\text{Theta Bleed}}$$
 
 ---
 
-### 4. Real-Time Delta Mark-to-Market (MTM) Option Pricing
+### 3. Defined-Risk Vertical Spreads
 
-When a raw exchange WebSocket trade tick has not yet arrived for a specific option contract, the system updates the option's LTP with sub-millisecond latency using the live spot move and Black-Scholes Delta:
+For Bull Call Spreads (CE) and Bear Put Spreads (PE):
+- **Net Debit Outlay**:
+  $$\text{Debit} = \text{LTP}_{\text{long}} - \text{LTP}_{\text{short}}$$
+- **Maximum Risk**:
+  $$\text{Max Risk} = \text{Debit} \times \text{LotSize}$$
+- **Maximum Profit**:
+  $$\text{Max Profit} = (\text{Spread Width} - \text{Debit}) \times \text{LotSize}$$
+- **Risk-to-Reward Ratio**:
+  $$\text{R:R} = \frac{\text{Spread Width} - \text{Debit}}{\text{Debit}}$$
 
-$$\Delta_{\text{Call}} = \mathcal{N}(d_1), \quad \Delta_{\text{Put}} = \mathcal{N}(d_1) - 1.0$$
-$$\Delta S = S_{\text{live\_ws}} - S_{\text{snapshot}}$$
-$$\text{LTP}_{\text{live}} = \max\left(\text{LTP}_{\text{snapshot}} + (\Delta \times \Delta S), \; \text{IntrinsicPrice} + 0.50, \; 0.50\right)$$
+---
 
-Where:
-- $\text{IntrinsicPrice}_{\text{Call}} = \max(0, S_{\text{live}} - K)$
-- $\text{IntrinsicPrice}_{\text{Put}} = \max(0, K - S_{\text{live}})$
+### 4. Put-Call Parity & Synthetic Futures Basis
+
+Monitors no-arbitrage conditions across European options:
+$$C - P = S - K \cdot e^{-rT} \implies \text{Synthetic Future} = C - P + K$$
+$$\text{Basis Discrepancy} = \text{Actual Futures Price} - \text{Synthetic Futures Price}$$
+- Discrepancy $> +15\text{ pts}$: Long cash-and-carry dislocation.
+- Discrepancy $< -15\text{ pts}$: Reverse cash-and-carry dislocation.
 
 ---
 
 ### 5. Position Sizing & Risk Management Formulas
 
-The system calculates institutional lot sizes dynamically per trade recommendation based on capital and maximum drawdown tolerance:
-
 1. **Trade Risk Budget (₹)**:
    $$\text{Budget}_{\text{risk}} = \text{AccountCapital} \times \left(\frac{\text{RiskPct}}{100}\right)$$
-2. **Capital Outlay Cap (₹)** (Max 15% of account in a single option purchase):
+2. **Capital Outlay Cap (₹)** (Max 15% of account in a single trade):
    $$\text{Cap}_{\text{outlay}} = \text{AccountCapital} \times 0.15$$
 3. **Risk per Lot (₹)**:
    $$\text{Risk}_{\text{lot}} = (\text{LTP} - \text{StopLoss}) \times \text{LotSize}$$

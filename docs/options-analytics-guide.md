@@ -209,3 +209,18 @@ $$\text{Basis Discrepancy} = \text{Actual Future Price} - \text{Synthetic Future
    - `11:30 - 13:00 IST`: European overlap / midday consolidation.
    - `13:30 - 15:15 IST`: Expiry pinning & gamma acceleration window.
 3. **Respect Independent Card Fragments**: The Options Analytics tab updates smoothly without page jumps. Use the top KPI strip for situational awareness and dive into specific rows for tactical trade execution.
+
+---
+
+## 🔗 Related Technical Documentation
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
+- [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
+- [🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)
+- [📈 Signal Efficiency & MFE/MAE Performance Guide](/?view=signal_efficiency_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Participant Open Interest Guide](/?view=participant_guide)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [📘 Master Cockpit User Guide](/?view=user_guide)

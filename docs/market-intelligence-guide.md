@@ -1,6 +1,14 @@
-# Market Intelligence: Sectorial Performance & News Sentiment Guide
+# 🧭 Market Intelligence: Sectorial Performance & News Sentiment Guide
+
+> **Module:** Market Intelligence Engine (Tab 5 · `analytics/market_intelligence.py`, `data/sectors.py`, `data/news.py`)  
+> **Market Microstructure:** Institutional Breadth Integration & Exogenous Catalyst Control (Phase B)  
+> **Applicable Indices:** NIFTY 50, BANK NIFTY, SENSEX  
+> **Terminal View:** Served directly inside Tab 5 or standalone at `/?view=market_intelligence_guide`  
+
+---
 
 ## 1. Overview & Trading Philosophy
+
 Gamma Exposure (GEX) is a **probability map of dealer hedging reflexivity, not a directional crystal ball**. In Indian markets:
 1. **Sector Breadth Sets the Ground Truth**: When Nifty moves, is the rally broad-based or an isolated drag/lift by a single heavyweight like Reliance or HDFC Bank?
 2. **Exogenous Catalysts Override Dealer Flow**: Breaking geopolitical or macro headlines (e.g. crude shocks, RBI/Fed surprises, conflict) can breach dealer walls and render pure option sign tests misleading (Phase B Confound Control).
@@ -32,7 +40,7 @@ The analytical engine categorizes intraday market structure into 5 distinct regi
 2. **🛡️ DEFENSIVE ROTATION**: FMCG, Pharma and Healthcare outperforming while Banking and Auto stall or slide. Signals institutional risk-off hedging / smart money seeking safe havens.
 3. **🟢 BROAD EXPANSION**: Over 70% of sectors advancing concurrently across cyclicals and defensives. Strong confirmation that index rallies will respect call walls as breakout targets rather than fakeouts.
 4. **🔴 BROAD LIQUIDATION**: Over 70% of sectors slumping with negative weighted contribution. High risk of dealer gamma flip breakdown and stop-hunting cascades.
-5. **⚖️ BALANCED DISPERSION / CHOP**: Mixed sectors with high dispersion. Favors range-bound mean-reversion tactics (e.g., Short Iron Condors / Stangles).
+5. **⚖️ BALANCED DISPERSION / CHOP**: Mixed sectors with high dispersion. Favors range-bound mean-reversion tactics (e.g., Short Iron Condors / Strangles).
 
 ---
 
@@ -67,10 +75,13 @@ Positioned immediately below the Executive Telemetry header for instant glanceab
 - **Top Sector Leader**: E.g., `🚀 FMCG (+1.80%)`.
 - **News Sentiment & Top Headline**: E.g., `📰 BULLISH "Indices snap four-day losing streak as oil prices ease..."`.
 
-### B. Full Analytical Dashboard (Tab 2: Analytics)
-Located in the dedicated `🧭 Market Intelligence: Sector Breadth & News Sentiment` section:
-1. **Executive Macro Verdict Banner**: One-line situational verdict + plain-English narrative synthesis + exogenous risk level pill.
-2. **4-Metric Telemetry KPI Cards**: Breadth Ratio, Net Weighted Contribution, News Catalyst Sentiment, and Spot Move Alignment.
+### B. Dedicated Workstation (Tab 5: Market Intelligence)
+1. **Executive Macro Verdict Banner**: One-line situational verdict + plain-English narrative synthesis + exogenous risk level pill (`🟢 LOW EXOGENOUS RISK`, `⚡ MODERATE CATALYSTS`, `⚠️ EXOGENOUS SHOCK`).
+2. **4-Metric Telemetry KPI Cards**:
+   - **Sector Breadth Ratio**: Visual ratio with percentage and breadth state.
+   - **Net Weighted Contribution**: Percentage contribution with active rotation regime.
+   - **News Catalyst Sentiment**: Sentiment label with aggregate impact score and count of fresh stories.
+   - **Spot Move Alignment**: Verifies if spot direction is confirmed or desynced from sector breadth.
 3. **Actionable Trader Takeaways**: Specific tactical bullet points based on the synthesis.
-4. **Sector Performance Leaderboard**: Visual horizontal performance bars for all 11 sectors + benchmark broad indices (Midcap, Smallcap, Nifty 50) with last traded prices and weights.
+4. **Sector Performance Leaderboard**: Visual horizontal performance bars for all 11 sectors + benchmark broad indices (Midcap, Smallcap, Nifty 50) with last traded prices, percentage change, and weights.
 5. **Interactive Financial News Stream**: Filterable by category pills (`ALL`, `Energy & Crude`, `Macro & Policy`, etc.) with timestamps, age in minutes, sentiment tags, and impact scores.

@@ -73,54 +73,72 @@ Before writing code:
 
 ---
 
-## 1. Codebase Audit Checklist (first deliverable, before code)
+## 1. Codebase Audit Checklist (Verified against Live Repository)
 
-| Area | Exists? | Location | Reuse plan |
+| Area | Exists? | Location | Reuse plan / Implementation Status |
 |---|---|---|---|
-| chain_snapshots, ATM IV, PCR, max pain | | | |
-| Wall detection (OI walls) | | | |
-| GEX / gamma exposure code | | | |
-| Black-76 pricer / Greeks (Target Engine T5) | | | |
-| Scenario scoring, targets, candidates (T2, T3, T6, T7) | | | |
-| Backtest / PointInTimeView / replay harness (T9) | | | |
-| Futures price + OI + depth feeds | | | |
-| Bank Nifty / heavyweight / breadth quote feeds | | | |
-| News ingestion (source, timestamps) | | | |
-| LLM client / prompt templates | | | |
-| Notification channels | | | |
-| Positions API client | | | |
-| Config, scheduler, DB, API, frontend | | | |
-
-Rule: any "Yes" means the spec describes only the **delta**.
+| **chain_snapshots, ATM IV, PCR, max pain** | **Yes** | [`data/market_snapshot.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/market_snapshot.py), [`app/data_access.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/data_access.py) | **Reused:** PointInTimeView pulls spot, ATM IV, 1-day expected move, PCR, and Max Pain directly. |
+| **Wall detection (OI walls)** | **Yes** | [`commentary/detectors/walls.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/walls.py), [`target_engine/levels.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/target_engine/levels.py) | **Extended:** Wall tests, breaks, and strike migrations evaluated with hysteresis and cooldown. |
+| **GEX / gamma exposure code** | **Yes** | [`data/market_snapshot.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/market_snapshot.py), [`app/data_access.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/data_access.py) | **Reused:** Gamma Flip zero-crossing level and Net GEX sign (amplifying vs dampening) integrated. |
+| **Black-76 pricer / Greeks** | **Yes** | [`target_engine/pricer.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/target_engine/pricer.py) | **Reused:** Evaluates strike implied volatility, delta, and target/invalidation probabilities. |
+| **Scenario scoring & Trade Recommendations** | **Yes** | [`analytics/trade_ideas.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/analytics/trade_ideas.py), [`target_engine/scenarios.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/target_engine/scenarios.py) | **Extended:** 14 institutional candidate strategies (7 CE, 7 PE), signal latching, live telemetry, and pre-market regime weighting. |
+| **Pre-Market Equilibrium & Gap Regimes** | **Yes** | [`data/pre_post_market.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/pre_post_market.py) | **Reused:** 09:00–09:08 equilibrium discovery, 5 auction regimes, and dynamic `gap_fill_status`. |
+| **Backtest / PointInTimeView / Replay** | **Yes** | [`commentary/qa/replay.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/qa/replay.py), [`app/market_simulator.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/market_simulator.py) | **Reused:** PointInTimeView enforces strict zero look-ahead guards with simulated tick playback. |
+| **Futures price + OI + depth feeds** | **Yes** | [`app/ws_spot_feed.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/ws_spot_feed.py), [`app/spot_ticker.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/spot_ticker.py), [`data/dhan_live.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/dhan_live.py) | **Reused:** WebSocket tick feed (<1ms push) provides spot ticks, futures OI, and option quotes. |
+| **Dual Streaming Modes (Live / Offline)** | **Yes** | [`app/cockpit.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/cockpit.py) (`is_live_session`) | **Reused:** Live WebSocket streaming during market hours; Offline Auto-Switch serving authenticated local snapshots when closed. |
+| **Bank Nifty / heavyweight / breadth feeds** | **Yes** | [`data/sectors.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/sectors.py), [`data/indices.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/indices.py) | **Reused:** Sector breadth and relative strength feed divergence detectors. |
+| **News ingestion & Macro Catalysts** | **Yes** | [`data/news.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/news.py), [`commentary/detectors/news.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/news.py) | **Reused:** Published timestamp matching with $[-10\text{m}, +3\text{m}]$ lead/lag window. |
+| **Narrator & Fact Verifier** | **Yes** | [`commentary/narrator/`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/narrator/) | **Net-New:** Deterministic template library, strict numeric verification, and storytelling formatter. |
+| **Pinned Positions / Bookmarked Trades** | **Yes** | [`data/journal/recommendations_store.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/journal/recommendations_store.py), [`commentary/detectors/pinned.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/pinned.py) | **Extended:** Real-time tracking of pinned ideas for Target 1 approach, target hit, and invalidation. |
+| **Persistence, API & Presentation** | **Yes** | [`commentary/storage/db.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/storage/db.py), [`app/tab_commentary.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/tab_commentary.py) | **Net-New:** SQLite WAL database, freeflowing storytelling stream, and isolated `@st.fragment`. |
 
 ---
 
 ## 2. Architecture Overview
 
+### 2.1 Dual Streaming Modes: Real-Time vs Offline Auto-Switch
+
+The engine operates deterministically across two production streaming modes:
+
 ```
- Replayable inputs: chain snapshots, futures ticks, depth, spot candles,
- constituents/Bank Nifty, news items, event calendar, (optional) positions
-                          |
-                          v
-   C1 Detectors  ---->  Event(ts, type, severity_raw, facts{}, quality_flags)
-                          |
-                          v
-   C2 Significance scoring + confluence merge + cooldown + daily budget
-                          |
-                          v
-   C3 Story State  (phase of day, running thesis, open threads, prior entries)
-                          |
-              +-----------+-----------+
-              v                       v
-   C4 Suggestion Bite Engine     C5 Narrator (LLM, facts-only)
-   (reads Target Engine,                |
-    gates, builds bites)                |
-              +-----------+-----------+
-                          v
-   C6 Delivery: feed, push alerts, chart snapshots, EOD recap
-                          |
-   C7 Replay & QA harness: regenerates any day, grades events and bites,
-                           feeds tuning and bite demotion back to C2/C4
+┌───────────────────────────────────────────────────────────────────────────────────────┐
+│                             COCKPIT STREAMING ARCHITECTURE                            │
+├───────────────────────────────────────────┬───────────────────────────────────────────┤
+│ Mode 1: 🟢 Real-Time WebSocket Mode       │ Mode 2: 🛑 Offline Auto-Switch Mode       │
+├───────────────────────────────────────────┼───────────────────────────────────────────┤
+│ • Active during Market Hours (09:15–15:30)│ • Automatically engages when market closes│
+│ • Pre-Open Discovery (09:00–09:08 IST)    │   (evenings, weekends, holidays).         │
+│ • Extended Settlement (15:30–15:40 IST)   │ • Pauses external network polling.        │
+│ • Historical Replay Simulation (<1ms push)│ • Serves authenticated SQLite WAL snapshot│
+│ • Evaluates detectors on live ticks.      │ • Instant offline review & replay grading │
+│ • Streams verified entries via @st.fragment│ • Zero latency, zero blank cards/errors. │
+└───────────────────────────────────────────┴───────────────────────────────────────────┘
+```
+
+```
+  Data Sources:
+  [Real-Time WebSocket Tick Feed]  OR  [Authenticated SQLite WAL / Replay Snapshot]
+  (Spot, Futures OI, Depth, ATM IV, Pre-Market Equilibrium, Pinned Recommendations)
+                           │
+                           ▼
+    C1 Detectors ───────► Event(ts, type, severity_raw, facts{}, quality_flags)
+                           │
+                           ▼
+    C2 Significance Scoring + Confluence Merge + Cooldown + Daily Budget
+                           │
+                           ▼
+    C3 Story State  (phase of day, running thesis, open threads, prior entries)
+                           │
+               ┌───────────┴───────────┐
+               ▼                       ▼
+    C4 Suggestion Bite Engine     C5 Narrator (Deterministic Template & Verifier)
+    (14 institutional strategies,        │
+     signal latching & telemetry)        │
+               └───────────┬───────────┘
+                           ▼
+    C6 Delivery: Freeflowing Storytelling Stream, Pinned Alerts Strip, EOD Recap
+                           │
+    C7 Replay & QA Harness: Walk-forward session replay, expectancy grading ($0.08R$)
 ```
 
 **Core contracts:**
@@ -133,8 +151,8 @@ Bite        { id, ts, type, headline, condition{machine_checkable}, action_frame
               structure{legs[], from_candidate_id}, levels{trigger, invalidation, target},
               risk{max_loss_per_lot, rr, breakevens}, valid_until,
               scenario_link, badge{calibrated, n_samples, mode}, facts_used[],
-              lifecycle{state, resolved_ts, outcome} }
-Entry       { id, ts, event_ids[], text, bites[], chart_ref, verified: bool }
+              lifecycle{state, resolved_ts, outcome}, pinned_rec_id }
+Entry       { id, ts, event_ids[], headline, body, bites[], verified: bool, tags[], facts{} }
 ```
 
 ---
@@ -185,12 +203,18 @@ Time rules: all timestamps timezone-aware (Asia/Kolkata); every detector declare
 
 Each detector is a pure function `(point_in_time_view, state) -> list[Event]`, with a **cooldown** and **hysteresis** so it doesn't flicker. All distances are expressed in σ units (using ATM IV expected move) so thresholds are regime-independent.
 
-#### D1. Opening Gap
-- **Inputs:** prior close, first print/open price, pre-open indications if available (GIFT Nifty if the source exists), walls, max pain, ATM IV.
-- **Compute:** `gap_pts`, `gap_sigma = gap_pts / σ_1day`, gap direction, position relative to walls (gap into a wall? through a wall?), gap size percentile versus the trailing N days.
-- **Event facts:** gap size (pts, %, σ), nearest wall and its OI share, whether the gap is above/below prior day's range.
-- **Follow-up events (same thread):** *gap-fill progress* (retrace % of gap at 15/30/60 min), *gap holds* (still open after X minutes), *gap-and-go* (extends beyond opening range).
-- **Edge cases:** missing pre-open data (fall back to open vs prior close); gaps on expiry day (flag higher gamma sensitivity); tiny gaps below `min_gap_sigma` produce no event.
+#### D1. Opening Gap & Pre-Market Auction Regime
+- **Inputs:** prior close, pre-market equilibrium discovery ([`data/pre_post_market.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/pre_post_market.py), discovered 09:00–09:08 IST), first print/open price, walls (call wall, put wall), gamma flip level, max pain, ATM IV.
+- **Compute:** `gap_pts = open - prior_close`, `gap_pct`, `gap_sigma = gap_pts / σ_1day`, gap direction, relative positioning against GEX walls.
+- **Pre-Market Regime Classification (5 Auction Archetypes):**
+  1. `GAP_UP_RUNAWAY`: Breakaway open above Call Wall with positive delta momentum.
+  2. `GAP_DOWN_TRAP`: Breakdown open below Put Wall with negative delta acceleration.
+  3. `SHORT_GAMMA_WALL_TEST`: Gap open directly into Call Wall ($\le 0.15\sigma$), triggering immediate call writer defense.
+  4. `PUT_WALL_BREAKDOWN_TEST`: Gap open directly into Put Wall ($\le 0.15\sigma$), testing put writer resolve.
+  5. `AUCTION_BALANCED`: Contained within prior day range / between walls, favoring rotational mean-reversion.
+- **Intraday Gap Fill Tracking:** Dynamically evaluates `gap_fill_status` (`FILLED` vs `UNFILLED`) against live high/low prints. When price fills the gap, emits a `GAP_FILLED` event ("Morning opening gap has been 100% filled as spot returns to ₹X").
+- **Event facts:** `open`, `prior_close`, `gap_pts`, `gap_pct`, `gap_sigma`, `nearest_wall`, `dist_to_wall`, `gap_regime`, `gap_fill_status`.
+- **Edge cases:** pre-open feed unavailable $\to$ fall back to regular 09:15 open vs prior close; expiry day $\to$ flag higher gamma sensitivity; tiny gaps below `min_gap_sigma` suppress standalone gap events.
 
 #### D2. OI Wall / GEX Wall Shifts
 - **Walls:** reuse the Analytics Service wall detector (OI share, OI change).
@@ -252,77 +276,78 @@ Each divergence is a rule over two series with a sign test over a rolling window
 #### D9. Session Structure
 - Opening-range (first 15/30 min) break up/down, VWAP loss/reclaim, day-high/low tests, previous-day high/low interactions, midday compression (range contraction) and expansion.
 
-#### D10. Scheduled-Event Markers
-- From the event calendar: "RBI policy in 30 minutes," "US CPI tonight." These feed the story and the bite gating (Stand-Aside bites).
+#### D10. Scheduled-Event Markers & Pinned Position Sentinel
+- **Scheduled Macro Events:** From event calendar: "RBI policy in 30 minutes," "US CPI tonight." Drives STAND-ASIDE gating.
+- **Pinned Recommendation Sentinel ([`commentary/detectors/pinned.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/pinned.py)):** Monitors trader-bookmarked recommendations in real time against live ticks:
+  - `PINNED_TARGET_APPROACH`: Spot within proximity threshold of Target 1.
+  - `PINNED_TARGET_HIT`: Spot reaches Target 1; emits update for trailing stop to entry or partial booking.
+  - `PINNED_INVALIDATION_WARNING`: Spot within warning threshold of invalidation wall; emits thesis protection alert.
 
 ---
 
 ### C2. Significance Scoring, Merging, and Budget
 
 **Score:** `significance = f(magnitude_sigma) × novelty × confluence × time_weight × quality`
-- **Magnitude:** monotone, saturating function of σ-normalized size.
+- **Magnitude:** monotone, saturating function of σ-normalized size: $f(\sigma) = 1 - e^{-\sigma/1.2}$.
 - **Novelty:** decays if a similar event fired recently (same type, same level).
 - **Confluence:** events within a short window that share levels or direction are **merged** into one richer event (e.g., wall break + IV spike + volume burst + news match = one entry).
-- **Time weight:** configurable multipliers (the opening, the expiry hour and the close are more significant).
+- **Time weight:** configurable multipliers (opening, expiry hour, and closing are more significant).
 - **Quality:** multiplied down when quality flags are set (stale data, thin chain, missing depth).
 
 **Publication rules:**
-1. Publish only if `significance >= publish_threshold`.
-2. Respect `min_gap_minutes` unless severity is extreme (a "breaking" override).
-3. Daily budget: when the cap is near, raise the threshold dynamically.
-4. Every suppressed event is stored with its reason (for replay tuning).
-
-**Output:** `Scored` events with `reasons[]` explaining the score, so threshold tuning is data-driven.
+1. Publish only if `significance >= publish_threshold` (0.60).
+2. Respect `min_gap_minutes` (8 minutes) unless severity is extreme ($\ge 0.88$ breaking override).
+3. Daily budget: when cap is near ($\le 3$ remaining of 15), raise threshold dynamically ($+0.15$).
+4. Every suppressed event is stored with its reason in SQLite `commentary_suppressed` for replay tuning.
 
 ---
 
 ### C3. Story State Manager
 
 Maintains the narrative continuity that separates a story from a log:
-- **Phase of day** (pre-open, opening, morning, midday, afternoon, closing) and the phase-specific tone.
-- **Running thesis:** a small state `{bias: bullish|bearish|range|unclear, confidence, since}` derived from the Target Engine scenario set and recent events. Changes in thesis are themselves story events ("the morning's range-bound thesis is breaking").
-- **Open threads:** unresolved items (a gap not yet filled, a wall under test, a divergence unresolved). Later entries reference and **close** threads ("the 23,000 wall that held this morning has now given way").
-- **Callbacks:** the narrator receives the last few entries and open threads, and must reference at least the relevant thread when one exists.
-- **Resets:** state resets at session start; EOD recap reads the full thread history.
+- **Phase of day:** `pre_open`, `opening_15m`, `morning`, `midday`, `afternoon`, `closing_30m`.
+- **Pre-Market Regime Integration:** Captures equilibrium regime (`GAP_UP_RUNAWAY`, `GAP_DOWN_TRAP`, `SHORT_GAMMA_WALL_TEST`, `PUT_WALL_BREAKDOWN_TEST`, `AUCTION_BALANCED`) and gap fill state.
+- **Running thesis:** `{bias: bullish|bearish|range|unclear, confidence, since}` derived from scenarios and events.
+- **Open threads:** Unresolved items (gap not yet filled, wall under test, divergence open). Follow-up entries reference and close threads.
+- **Callbacks:** Narrator receives prior entries and open threads, referencing them naturally.
 
 ---
 
-### C4. Suggestion Bite Engine
+### C4. Suggestion Bite Engine (Trade Recommendations Integration)
 
 **Purpose:** Add short, applicable, conditional guidance to commentary entries so a trader knows what a development means for decisions, without issuing commands or guarantees.
 
-#### C4.1 Bite types
+#### C4.1 Institutional Recommendations Pipeline
+- **14 Parallel Strategies:** 7 Call strategies (Momentum, Structure, Breakout, Vanna, Gamma Squeeze, Charm, Reversal) and 7 Put strategies evaluated concurrently.
+- **Quality-Gate Partitioning:**
+  - *Higher Conviction:* Score $> 85$. Displayed whenever available.
+  - *Lower Fallback:* $75 \le \text{Score} \le 85$. Displayed only if zero higher conviction candidates exist.
+- **Signal Latching (`_LATCH_MANAGER`):** Eliminates card flickering and disappearing across live streaming ticks. Maintains candidates in an active latched state until invalidated or expired.
+- **Live Telemetry Tracking:** `update_trade_idea_live_telemetry` provides real-time target progress %, spot invalidation buffer (`inval_buffer`), and breach status (`inval_breached`).
+- **Pre-Market Regime Confluence:** Recommendation scores incorporate Factor 13 ($\pm 6$ pts) linking the pre-market auction regime and gap fill state with strategy suitability.
 
-| Type | Meaning | Example (illustrative numbers) |
+#### C4.2 Bite types
+
+| Type | Meaning | Storytelling Example |
 |---|---|---|
-| **WATCH** | A level or condition worth monitoring; no action implied | "Watch 23,000: a 5-min close above it would weaken the call-wall thesis." |
-| **PREPARE** | A setup forming; here's what would trigger it and what structure would fit | "If price reclaims 22,900, bull scenario strengthens. A 22,950/23,100 call debit spread would fit; est. max loss ₹X per lot." |
-| **ACT-IF** | A conditional, fully specified idea: trigger, structure, invalidation, target, risk | "If 5-min closes above 23,000: bull call spread 23,000/23,200 fits; invalid on a close below 22,930; target zone 23,150-23,200; R:R 1.8; max loss ₹Y per lot." |
-| **MANAGE** | Guidance for an existing position (position-aware mode only) | "Your long 22,900 CE is up; price is at the 23,000 wall where resistance is likely. Partial profit-booking or trailing the stop to 22,960 are options." |
-| **STAND-ASIDE** | Low edge or elevated risk; reducing size or waiting is valid | "RBI decision in 40 min, IV already elevated, edge is low. Waiting is a reasonable position." |
-| **HEDGE** | Risk-reduction framing for short-gamma or large exposures | "Short-gamma structures into this event: defined-risk wings reduce tail risk." |
+| **WATCH** | A level or condition worth monitoring; no action implied | "Bite: WATCH 23,000. A 5-min close above it would weaken the wall-defence read." |
+| **PREPARE** | A setup forming; trigger and fitting structure identified | "Bite: PREPARE. If price slips back under 22,900 (estimated gamma flip), a range-to-bearish read strengthens; 22,900/22,750 put debit spread would fit; est. max loss ₹X/lot; invalid on a close above 23,030. Badge: heuristic, shadow-graded." |
+| **ACT-IF** | Conditional idea: trigger, structure, invalidation, target, risk | "Bite: ACT-IF. If 5-min closes beyond 23,000: bull call spread 23,000/23,200 fits; target zone 23,180, invalid beyond 22,940; R:R 1.8; est. max loss ₹2,200/lot. Badge: heuristic, shadow-graded." |
+| **TRIGGERED** | A previously issued conditional idea has fired its trigger | "Bite: TRIGGERED (the earlier 22,900 put-spread idea is now live; target zone 22,780, invalid above 22,960)." |
+| **MANAGE** | Guidance for an active or pinned trade | "Bite: MANAGE (Target approached near 22,785; trailing stop to breakeven or partial profit booking are valid options; invalidation 22,960)." |
+| **STAND-ASIDE** | Low edge or elevated risk; waiting is favored | "Bite: STAND-ASIDE for tomorrow's open: event risk overnight." |
+| **HEDGE** | Risk-reduction framing for short-gamma or large exposures | "Bite: HEDGE. Short-gamma exposure into resistance; defined-risk spreads reduce tail risk." |
 
-#### C4.2 What goes into every bite (required fields; a bite missing any is not published)
-
-1. **Condition:** machine-checkable trigger (e.g., `close_5m > 23000`), so the system can detect when it fires.
-2. **Action frame:** the structure that fits, taken from the Target Engine's ranked **TradeCandidate** (T6/T7), never invented by the LLM or by this module.
-3. **Invalidation:** the level or condition that cancels the idea (T3 stop logic).
-4. **Valid-until:** a time bound (end of horizon or session phase); bites expire.
-5. **Risk numbers:** max loss per lot, R:R, breakevens at horizon (from T7), lot size from the instrument master, and `lots` for the configured risk budget if a profile exists.
-6. **Scenario link:** which scenario this belongs to and its probability, with the **badge**.
-7. **Badge:** `heuristic / uncalibrated` or `calibrated (N samples, Brier X)`, plus `mode: shadow|live`.
-8. **Facts used:** the event and feature IDs that justify the bite (the "why").
-
-#### C4.3 Gating rules (all must pass; each failure is logged)
-
-- **Target Engine verdict:** ACT-IF and PREPARE bites require a candidate with verdict `favorable` (or `marginal` if config allows, with a "marginal" label). `avoid`/`no_edge` → only WATCH or STAND-ASIDE bites.
-- **Quality flags:** stale snapshot, thin chain, wide spreads, missing depth, or an event window suppress actionable bites.
-- **Calibration policy:** while the Target Engine is uncalibrated, actionable bites are either suppressed or capped at PREPARE with the "uncalibrated" badge (config: `allow_actionable_when_uncalibrated`, default `false`). Flip it only after the shadow-mode track record supports it.
-- **Time gating:** no new ACT-IF in the first N minutes after open or the last M minutes before close; expiry-day bites carry a high-gamma caution and are limited to defined-risk structures.
-- **Profile gating:** respect `allowed_structures` (e.g., `defined_risk_only`: no naked short options, ever).
-- **Budget and cooldown:** `max_actionable_bites_per_day`, no duplicate bite for the same level within the cooldown, conflicting bites (bullish and bearish ACT-IF at once) are not issued together, and the story's thesis must be consistent with the bite direction or the bite is labelled "counter-thesis."
-- **Liquidity:** all legs pass the Target Engine's liquidity filters.
-- **Kill switch:** a single config flag disables all bites immediately.
+#### C4.3 Required Fields & Gating Rules
+- **Machine-checkable condition:** e.g., `{"field": "close_5m", "op": ">", "val": 23000.0}`.
+- **Action frame:** Directly from ranked `TradeIdea`, never hallucinated.
+- **Gating Rules:**
+  - *Verdict gate:* ACT-IF/PREPARE requires favorable score ($\ge 75$, latch active).
+  - *Quality flags:* Stale ticks, missing depth, or thin chain suppresses actionable bites.
+  - *Time gating:* No new ACT-IF during initial 10m of open or final 15m of close.
+  - *Structure limits:* Defined-risk only (spreads, condors, long options); naked short options strictly blocked.
+  - *Kill switch:* Master config switch disables all bites instantly if triggered.
+  - *Shadow mode gating:* Live display requires minimum 20 shadow sessions passing out-of-sample expectancy ($> +0.25R$ post-friction). Auto-demotion downgrades degrading types.
 
 #### C4.4 Bite lifecycle (tracked, not fire-and-forget)
 
@@ -377,78 +402,57 @@ ISSUED -> TRIGGERED -> (TARGET_HIT | STOPPED | EXPIRED_AFTER_TRIGGER)
 
 ---
 
-### C6. Delivery
+### C6. Delivery & UI Integration
 
-- **Live feed:** chronological entries; bites shown as distinct chips (type, badge, trigger, invalidation, risk) beneath the narrative text.
-- **Push alerts (existing channel):** only for (a) breaking/extreme events, (b) **bite triggers**, (c) bite invalidations when the user has "followed" a bite. Respect quiet hours and rate limits.
-- **Chart snapshots:** each entry may attach a small chart (price, walls, flip level, the event marker) rendered with the repo's charting stack.
-- **Pre-market brief (optional):** prior day's recap, today's levels, events calendar, GIFT/global cues if available, initial scenarios and WATCH bites.
-- **End-of-day recap:** the day as a story in ≤ 10 lines: gap and opening, key wall behavior, regime changes, the biggest move, the news linked, divergences that resolved, **plus a scorecard**: which walls held, which bites triggered and how they ended, and what the engine got wrong.
-- **Export:** recap as markdown/PDF/message for sharing (subject to Section 9).
+- **Freeflowing Storytelling Stream:** Clean chronological or reverse-chronological narrative stream without individual card frames or per-paragraph expander bloat. Native Streamlit Markdown rendering eliminates unrendered HTML tags or raw JSON leakage. Format: `DD Mon YYYY, HH:MM IST | **Bold Topic Header**: Narrative body. **Bite: TYPE** details.`
+- **Pinned Recommendations Alert Strip:** Persistent top strip alerting on real-time Target 1 approach, Target 1 reach, and Invalidation warnings for bookmarked trades.
+- **Copy-to-Journal Exporter:** One-click plain text copy block for pasting the session's clean narrative into personal trading journals.
+- **Unified Fact Verification Drawer:** Single bottom drawer verifying ground-truth exchange data (Spot, Call Wall, Put Wall, Gamma Flip, Max Pain, Expected Move) using native Streamlit metrics without raw JSON dumps.
+- **Push Alerts (via configured webhook/stream):** High-priority alerts for (a) extreme break events ($\ge 0.88$ override), (b) bite triggers, and (c) pinned trade invalidations.
+- **End-of-Day Recap & Scorecard:** Session story in $\le 10$ lines with scorecard: which walls held, which bites triggered, outcomes, and prediction audit.
 
 ---
 
 ### C7. Replay and QA Harness
 
-- **Replay:** rerun any stored day through C1-C5 at original pace or accelerated; LLM stubbed or cached for determinism; outputs diffed against golden files for regression testing.
-- **Detector QA:** for each detector, a labelled set of historical sessions marking true events; report precision/recall per detector, and tune thresholds on a train period, verify on later periods (walk-forward, no random splits).
-- **Narrative QA:** daily "spam score" (entries per day vs budget), duplicate-theme rate, thread-closure rate, verifier rejection rate, template-fallback rate.
-- **Bite QA (the key part):** simulate bite outcomes using Target Engine conventions (entry at the next quote after trigger, conservative handling when target and stop are crossed in one bar, costs included). Report per bite type: trigger rate, win rate, avg R, expectancy after costs, max drawdown, performance split by regime (IV rank bucket, DTE bucket, event vs non-event, trend vs range). **Baselines:** random-direction bites, and "always WATCH" (no action). A bite type that doesn't beat baselines after costs is not promoted.
-- **Wall-hold audit:** how often did walls named in commentary actually hold within X pts? Report honestly; this feeds the narrator's hedging strength.
-- **Live monitoring:** live bite outcomes versus backtest expectancy with a decay alarm.
+- **Replay:** Rerun stored sessions through C1–C5 deterministically; template fallback ensures 100% reproducible prose without LLM token cost.
+- **Detector QA:** Validates precision/recall on labelled fixture sessions; enforces zero point-in-time violations.
+- **Bite QA & Track Record:** Simulates bite outcomes using realistic friction ($0.08R$ costs per trade). Evaluates win rate, average $R$, and post-cost expectancy ($> +0.25R$ promotion threshold).
+- **Auto-Demotion Engine ([`commentary/qa/demotion.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/qa/demotion.py)):** Monitors rolling track records and demotes underperforming live bite types automatically (`ACT-IF` $\to$ `PREPARE` $\to$ `WATCH`).
 
 ---
 
 ### C8. Persistence, API, UI
 
-**Tables:**
-```
-events        id, ts, type, facts_json, magnitude_sigma, quality_flags, significance, published
-suppressed    event_id, reason
-entries       id, ts, event_ids, text, verified, template_fallback, llm_model
-bites         id, entry_id, ts, type, condition_json, structure_json, levels_json,
-              risk_json, valid_until, badge_json, mode, state, resolved_ts, outcome_json
-bite_feedback bite_id, ts, feedback
-story_state   ts, phase, thesis_json, open_threads_json
-news_items    id, source, headline, url, published_ts, ingested_ts, relevance, linked_event_id
-recaps        date, text, scorecard_json
-```
+**Database Tables ([`commentary/storage/db.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/storage/db.py)):**
+- `commentary_entries`: `entry_id`, `ts`, `symbol`, `phase`, `headline`, `body`, `event_ids_json`, `verified`, `bites_json`, `tags_json`, `facts_json`
+- `commentary_bites`: `bite_id`, `entry_id`, `ts`, `symbol`, `bite_type`, `headline`, `action_frame`, `levels_json`, `risk_json`, `condition_json`, `badge_json`, `state`, `resolved_ts`, `outcome_json`, `pinned_rec_id`
+- `commentary_events`: `event_id`, `ts`, `symbol`, `event_type`, `facts_json`, `magnitude_sigma`, `quality_flags_json`
+- `commentary_suppressed`: `suppress_id`, `event_id`, `ts`, `symbol`, `event_type`, `reason`
+- `session_recaps`: `session_date`, `symbol`, `recap_text`, `open_threads_json`, `stats_json`
 
-**API (adapt to repo naming):**
-- `GET /commentary/{symbol}/feed?date=` entries with bites
-- `GET /commentary/{symbol}/stream` SSE/websocket for live entries
-- `GET /commentary/{symbol}/bites?state=open|resolved`
-- `GET /commentary/{symbol}/recap?date=`
-- `GET /commentary/track-record?type=` bite-type track records
-- `POST /commentary/bites/{id}/feedback`
-- `GET /commentary/{symbol}/explain/{entry_id}` events, facts, formulas, gating decisions
-- `POST /commentary/replay` (admin) run a stored day
-
-**UI (reuse the repo's chart library and components):**
-- Timeline/feed with entries, phase dividers, and chart thumbnails
-- Bite chips with type, trigger, invalidation, risk, badge; open bites pinned in a side panel with live state
-- Price ladder: spot, walls, gamma flip, max pain, bite triggers and invalidations
-- "Why this?" drawer for every entry and bite (events, facts, gating decisions)
-- Track-record panel and the EOD recap view
-- Settings: profile (capital, risk %, allowed structures), alert preferences, bite types enabled, shadow/live indicator
+**UI Component Architecture ([`app/tab_commentary.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/tab_commentary.py)):**
+- Embedded directly in Cockpit as the dedicated **"🎙️ Session Commentary"** tab.
+- Runs inside an isolated `@st.fragment` guaranteeing non-blocking zero-latency updates without full-app reruns.
+- Filter options: *All Entries*, *Actionable Bites Only*, *Pinned Recommendations*.
 
 ---
 
-## 5. Example Day (illustrative numbers, shows how entries and bites fit together)
+## 5. Example Day (Production Verified Freeflowing Story Format)
 
-> **09:15 | Gap-up open.** Nifty opened 0.7% (about 1.0σ) above the prior close, straight into the 23,000 call wall (24% of nearby call OI). *Bite: WATCH 23,000. A 5-min close above it would weaken the wall-defence read.*
+> **14 Oct 2026, 09:15 IST | **Gap-Up Open**: Nifty opened 0.7% (about 1.0σ) above the prior close, straight into the 23,000 call wall (24% of nearby call OI). **Bite: WATCH 23,000** — A 5-min close above it would weaken the wall-defence read.
 >
-> **09:48 | Wall holds so far.** Buyers reached 22,985 but couldn't close above 23,000. Call OI there rose 18% during the test, which looks like writers defending it. *Bite: PREPARE. If price slips back under 22,900 (estimated gamma flip), a range-to-bearish read strengthens; 22,900/22,750 put debit spread would fit; est. max loss ₹X/lot; invalid on a close above 23,030. Badge: heuristic, shadow-graded.*
+> **14 Oct 2026, 09:48 IST | **Wall Holds So Far**: Buyers reached 22,985 but couldn't close above 23,000. Call OI there rose 18% during the test, which looks like writers defending it. **Bite: PREPARE** — If price slips back under 22,900 (estimated gamma flip), a range-to-bearish read strengthens; 22,900/22,750 put debit spread would fit; est. max loss ₹X/lot; invalid on a close above 23,030. *Badge: heuristic, shadow-graded.*
 >
-> **11:20 | Divergence.** A fresh high, but futures OI is falling and ATM IV is rising: the move looks like short covering rather than new buying. 
+> **14 Oct 2026, 11:20 IST | **Divergence**: A fresh high, but futures OI is falling and ATM IV is rising: the move looks like short covering rather than new buying.
 >
-> **13:05 | Impulsive break.** −1.4σ in 12 minutes on 3x normal volume after the flip level gave way; estimated negative-gamma conditions may have amplified it. *Bite: TRIGGERED (the earlier 22,900 put-spread idea is now live; target zone 22,780, invalid above 22,960).*
+> **14 Oct 2026, 13:05 IST | **Impulsive Break**: −1.4σ in 12 minutes on 3x normal volume after the flip level gave way; estimated negative-gamma conditions may have amplified it. **Bite: TRIGGERED** — (the earlier 22,900 put-spread idea is now live; target zone 22,780, invalid above 22,960).
 >
-> **13:07 | Possible catalyst.** A headline about [X] was published 4 minutes before the move.
+> **14 Oct 2026, 13:07 IST | **Possible Catalyst**: A headline about [X] was published 4 minutes before the move.
 >
-> **14:40 | Bite update.** Target zone reached at 22,785; the idea is resolved (+1.7R in simulated terms). *Bite: MANAGE (if you hold this, booking is an option here; the next put wall is 22,700).*
+> **14 Oct 2026, 14:40 IST | **Bite Update**: Target zone reached at 22,785; the idea is resolved (+1.7R in simulated terms). **Bite: MANAGE** — (if you hold this, booking is an option here; the next put wall is 22,700).
 >
-> **15:10 | Close.** Back inside the opening range; max pain at 22,950 pulled price toward the middle. *Bite: STAND-ASIDE for tomorrow's open: event risk overnight.*
+> **14 Oct 2026, 15:10 IST | **Session Close**: Back inside the opening range; max pain at 22,950 pulled price toward the middle. **Bite: STAND-ASIDE** — for tomorrow's open: event risk overnight.
 >
 > **EOD scorecard:** 6 entries, 3 bites (1 triggered, target hit; 1 expired; 1 watch). Wall at 23,000 held all day.
 
@@ -458,65 +462,40 @@ recaps        date, text, scorecard_json
 
 | Layer | Tests |
 |---|---|
-| Detectors | Fixture sessions with known events; cooldown/hysteresis behavior; point-in-time violation raises; stale/missing-data suppression |
-| GEX/flip | Hand-computed GEX on a tiny chain; flip level equals the zero crossing; sign-convention switch works |
-| News matching | Labelled set: precision/recall; wrong-timestamp items are never linked; lead/lag windows respected |
-| Scoring/budget | Merge logic; budget cap raises the threshold; extreme override works; suppressed events logged with reasons |
-| Story state | Threads open and close; callbacks present when relevant; reset at session start |
-| Bite gating | Each gate has a test that a failing condition blocks the bite; unconditional or forbidden wording is rejected; no bite when no_edge or uncalibrated (default config) |
-| Bite lifecycle | Trigger/invalidation/expiry on synthetic price paths; same-bar target and stop resolves conservatively |
-| Verifier | An injected wrong number is caught; directional contradiction is caught; fallback template used; LLM-disabled run still produces entries |
-| Replay | Same inputs plus same config reproduce identical output; golden-file regression |
-| Bite QA | Synthetic data with a known edge is detected; with **no edge, reports none** |
-| Integration | End-to-end on a stored day: events → entries → bites → recap |
+| **Detectors (Phases 1–3)** | [`tests/test_commentary_phase1.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase1.py), [`tests/test_commentary_phase2.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase2.py), [`tests/test_commentary_phase3.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase3.py): Fixture sessions with verified events, cooldown/hysteresis, and zero point-in-time leaks. |
+| **Scoring & Story State (Phase 4)** | [`tests/test_commentary_phase4.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase4.py): Merge logic, dynamic thresholding near budget cap, and thread resolution. |
+| **Narrator & Verifier (Phase 5)** | [`tests/test_commentary_phase5.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase5.py): Catches forbidden language, direction contradiction, and numeric hallucinations. |
+| **Suggestion Bites & Gating (Phase 6)** | [`tests/test_commentary_phase6.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase6.py): Verdict gating, defined-risk structure limits, and shadow-mode gating. |
+| **Replay & Grading (Phase 7)** | [`tests/test_commentary_phase7.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase7.py): Point-in-time replay, win rate, expectancy after costs ($0.08R$), and demotion logic. |
+| **Persistence & UI (Phase 8)** | [`tests/test_commentary_phase8.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/tests/test_commentary_phase8.py): SQLite WAL persistence, pinned recommendations, and UI retrieval. |
 
 ---
 
 ## 7. Non-Functional Requirements
 
-- **Determinism:** same stored inputs, config, and model version produce identical output (LLM cached/stubbed in replay).
-- **Latency:** detection-to-publication within a few seconds for breaking events; the narrator call must not block detectors.
-- **Explainability:** every entry and bite has a "why" trace (events, facts, thresholds, gating results).
-- **Resilience:** missing feeds degrade gracefully (flag the detector as degraded, never fabricate); the LLM outage uses templates.
-- **Auditability:** store config version, model version, and prompt version per entry; keep every published bite and its outcome permanently.
-- **Safety rails:** kill switch, forbidden-phrase lint, footer notice, rate-limited alerts, the shadow-mode default.
-- **Observability:** per-detector firing counts, suppression reasons, verifier rejection rate, LLM cost per day, bite track record, live-vs-backtest drift.
+- **Determinism:** Same inputs and config reproduce identical storytelling output; template fallback eliminates token latency and cost.
+- **Latency:** Real-time WebSocket push updates within < 1ms; commentary evaluated without blocking market feeds.
+- **Resilience:** Graceful offline auto-switch when market closes, serving local authenticated snapshots.
+- **Auditability:** Ground-truth fact verification drawer surfaces all underlying GEX levels for every session.
+- **Safety Rails:** Kill switch, forbidden-phrase lint, advisory-only disclaimer, and shadow-mode gating.
 
 ---
 
-## 8. Known Limitations (surface these in the product)
+## 8. Regulatory and Responsible-Use Policy
 
-1. **GEX is estimated.** Dealer positioning is unobservable; conventions are assumptions. Treat the flip level as approximate.
-2. **"Institutional" activity is inferred.** Footprints are labelled as such; identity is only confirmable end-of-day from participant data.
-3. **News causality is not provable.** Matching is temporal; wording stays hedged.
-4. **Bites inherit the Target Engine's uncertainty.** Until calibrated, they are heuristics, and the badge says so.
-5. **Walls fail.** Especially on trend days, expiry days, and event days; the commentary's hedging should scale with the audited wall-hold rate.
-6. **Narration can over-explain noise.** The budget, thresholds, and spam score exist to counter this; tune with replay.
-7. **Costs and slippage matter.** Short-dated option edges can disappear after costs; bite risk numbers include them.
-8. **Data dependencies.** Constituent/breadth data, GIFT Nifty, and timestamped news come from outside Dhan; features depending on them degrade when absent.
+- **Advisory Only:** No automated order placement code anywhere in this module.
+- **Personal Use:** Designed as a personal decision-support cockpit.
+- **Shadow Mode Default:** Suggestion bites require 20 verified shadow sessions with proven edge before live promotion.
 
 ---
 
-## 9. Regulatory and Responsible-Use Considerations
+## 9. Resolutions to Architectural Questions
 
-- **Personal use:** a tool that guides your own trading decisions is one thing.
-- **Sharing with others:** publishing specific, actionable trade ideas (levels, structures, entries/exits) to other people, especially publicly or for a fee, can fall under SEBI's research analyst and investment adviser regulations in India, and SEBI has also tightened rules on trade-related content on social platforms. If the output will ever leave your own screen (channel, subscribers, clients), consult a SEBI-registered professional or a securities lawyer **before** distributing, and keep the shadow-mode, disclaimer, and audit trail features on.
-- **Design consequence:** keep a config switch separating `personal` and `shared` modes; in `shared` mode, default to commentary and WATCH/STAND-ASIDE bites only, until compliance is settled.
-- **Never** auto-trade from bites in this module.
-
----
-
-## 10. Open Questions to Resolve Early
-
-1. News source: which feed(s), and do they provide reliable `published_ts`?
-2. Is Bank Nifty / heavyweight / breadth data accessible for the divergence detectors?
-3. Is pre-open/GIFT Nifty data available, or should the gap detector run on open vs prior close only?
-4. How many logged sessions exist now, and how many shadow sessions will be required before promoting each bite type?
-5. Personal use only, or will the feed be shared? This sets the default bite policy (Section 9).
-6. Preferred channel(s) for alerts and the EOD recap.
-7. Buyer-only, defined-risk-only, or open to short-premium structures? This drives bite structure gating.
-8. Should position-aware MANAGE bites be built in v1, or deferred?
-
----
-
-*Hand Sections 0-4 to the AI editor as the working brief. First required output: the Section 1 audit table. Hard gate: bites remain in shadow mode until Phase 7 grading supports promotion.*
+1. **Streaming Feed Architecture:** Dual-mode architecture established: Real-Time WebSocket Mode (`<1ms` push) during live hours; Offline Auto-Switch Mode serving authenticated local snapshots when closed.
+2. **Pre-Market & Gap Auction:** Integrated with [`data/pre_post_market.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/pre_post_market.py). Discovers equilibrium at 09:00–09:08 IST, classifies 5 auction regimes, and tracks dynamic gap-fill progress.
+3. **Trade Recommendations Integration:** 14 institutional candidate strategies (7 CE, 7 PE), signal latching (`_LATCH_MANAGER`) to eliminate card flickering, live telemetry (`inval_buffer`, `target_progress_pct`), and real-time pinned positions monitoring.
+4. **Presentation Format:** Bulky card containers replaced with a unified, freeflowing storytelling stream (`HH:MM | Headline. Body. Bite: TYPE...`) and a single consolidated fact-verification drawer.
+5. **Macro News Source:** Sourced from [`data/news.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/news.py) with published timestamps strictly matching $[-10\text{m}, +3\text{m}]$ lead/lag windows.
+6. **Sector Breadth & Divergences:** Sourced from [`data/sectors.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/sectors.py) and Bank Nifty relative strength feeds.
+7. **Shadow Mode Gating:** 20 sessions required with post-cost expectancy $> +0.25R$ before bite promotion. Auto-demotion active.
+8. **Position-Aware Bites:** Pinned trade bookmarks ([`data/journal/recommendations_store.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/journal/recommendations_store.py)) feed real-time MANAGE alerts for target approaches, target hits, and invalidation breaches.

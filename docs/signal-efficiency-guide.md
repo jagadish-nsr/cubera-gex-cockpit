@@ -159,3 +159,18 @@ print(pruned_counts)
 3. **Invalidation Honesty:** If your average MAE consistently matches or exceeds the invalidation distance, entries are lagging the market. Seek earlier entry triggers or wait for pullbacks to VWAP.
 4. **Calibration Discipline:** Discard or demote setups that exhibit negative Calibration Alpha, even if their nominal win rate appears acceptable.
 
+---
+
+## 🔗 Related Technical Documentation
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
+- [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)
+- [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
+- [🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Participant Open Interest Guide](/?view=participant_guide)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [📘 Master Cockpit User Guide](/?view=user_guide)
+

@@ -16,16 +16,21 @@ The Indian financial markets operate under distinct microstructure regimes acros
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
 │                                 INDIAN MARKET MICROSTRUCTURE TIMETABLE                                 │
 ├───────────────┬─────────────────────────┬──────────────────────┬───────────────────────────────────────┤
-│ Time (IST)    │ Session Phase           │ Ingestion Frequency  │ Core Microstructure Mechanics         │
+│ Time (IST)    │ Session Phase           │ Streaming Mode       │ Core Microstructure Mechanics         │
 ├───────────────┼─────────────────────────┼──────────────────────┼───────────────────────────────────────┤
-│ 09:00 – 09:07 │ PRE_MARKET_ENTRY        │ Passive / Paused     │ Order accumulation; no matching       │
-│ 09:07:30–09:15│ PRE_MARKET_DISCOVERY    │ Adaptive 3.0s Retry  │ Equilibrium price discovery & Pre-Bell│
-│ 09:15 – 15:30 │ REGULAR_SESSION         │ 0ms WS / 3s REST     │ Continuous trading & intraday signals │
-│ 15:30 – 15:40 │ CAS_AND_FNO_EXTENDED    │ 3s Continuous        │ 30m VWAP cash auction & F&O final run │
-│ 15:40 – 16:00 │ POST_MARKET_SETTLEMENT  │ Reconciliation       │ Settlement divergence & pin scorecard │
-│ 16:00 – 09:00 │ OFF_HOURS               │ Static Cache         │ Overnight off-hours & holiday standby │
+│ 09:00 – 09:07 │ PRE_MARKET_ENTRY        │ Static Standby       │ Order accumulation; no matching       │
+│ 09:07:30–09:15│ PRE_MARKET_DISCOVERY    │ Adaptive Discovery   │ Equilibrium price discovery & Pre-Bell│
+│ 09:15 – 15:30 │ REGULAR_SESSION         │ 🟢 WebSocket Live    │ Continuous trading & intraday signals │
+│ 15:30 – 15:40 │ CAS_AND_FNO_EXTENDED    │ 🟢 WebSocket Live    │ 30m VWAP cash auction & F&O final run │
+│ 15:40 – 16:00 │ POST_MARKET_SETTLEMENT  │ 🛑 Offline Snapshot  │ Settlement divergence & pin scorecard │
+│ 16:00 – 09:00 │ OFF_HOURS               │ 🛑 Offline Snapshot  │ Overnight off-hours & holiday standby │
 └───────────────┴─────────────────────────┴──────────────────────┴───────────────────────────────────────┘
 ```
+
+> [!NOTE]
+> **Streamlined 2-Mode Streaming Architecture**: The legacy 4-tier selectbox (3s/10s/30s/Manual) has been consolidated into two strict operating modes:
+> 1. **🟢 WebSocket Live Feed**: Active during trading hours (09:15–15:30 IST), Pre-Market Discovery (09:07:30–09:15 IST), F&O Extended Window (15:30–15:40 IST), and historical Replay Mode. Push latency is <1ms from Dhan binary feed with 0ms in-memory cache and 1s sub-element `@st.fragment` rendering.
+> 2. **🛑 Offline Snapshot Mode**: Active during off-hours, weekends, holidays, and post-market settlement. Background API pollers are paused to conserve rate limits and prevent phantom ticks; the UI serves authentic closing data cached from the SQLite snapshot registry with manual on-demand refresh.
 
 ---
 
@@ -145,6 +150,36 @@ Because option contracts cannot trade until 09:15, traders often enter the open 
 
 ---
 
+### 1.5 Day-Session Pre-Market Confluence Engine & Gap-Fill Tracking
+The 09:08 discovered equilibrium price and opening gap regime remain authoritative anchors for options strategy evaluation throughout the entire 09:15–15:30 trading session:
+
+1. **Trade Quality Factor 13 (Pre-Market Regime & Gap Confluence)**:
+   The Trade Quality Score engine directly incorporates the morning opening regime:
+   - **`GAP_UP_RUNAWAY` (Gap > +0.40%)**: Boosts Call Momentum & Institutional Structure plays (+5 pts) if the gap remains unfilled; penalizes Put Momentum (-6 pts) as shorting into an unfilled open-drive gap has low expectancy.
+   - **`GAP_DOWN_TRAP` (Gap < -0.40%)**: Boosts Put Momentum & Structure (+5 pts) if the gap remains unfilled; penalizes Call Momentum (-6 pts).
+   - **`SHORT_GAMMA_WALL_TEST` / `PUT_WALL_BREAKDOWN_TEST`**: Boosts Gamma Squeeze setups (+6 pts) as dealers face immediate delta hedging acceleration.
+   - **`AUCTION_BALANCED` (Flat Open ±0.15%)**: Boosts Mean-Reversion plays (+4 pts, Iceberg Absorption, Vanna-Charm theta compression); trims Momentum setups (-3 pts) due to lower morning follow-through.
+
+2. **Dynamic Intraday Gap-Fill Tracking**:
+   As live price bars print throughout the session, `get_pre_market_state(symbol)` dynamically monitors intraday `high` and `low`:
+   - For a **Gap Up** ($S_{\text{disc}} > S_{\text{prev}}$): The gap is declared **`FILLED`** the moment live session $\text{Low} \le S_{\text{prev}}$.
+   - For a **Gap Down** ($S_{\text{disc}} < S_{\text{prev}}$): The gap is declared **`FILLED`** the moment live session $\text{High} \ge S_{\text{prev}}$.
+   - Once filled, directional penalties are lifted, and mean-reversion strategy scoring engages.
+
+3. **Intraday Opening Baseline & Gap Fill Tracker Strip (09:25 – 15:30 IST)**:
+   After 09:25 IST, the large pre-bell 7-strike matrix transitions into a sleek, compact HUD strip above the recommendations matrix:
+   ```
+   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚨 CALL WALL BREACH]  [⚡ GAP UNFILLED]
+   Opening gap holding +80.0 pts — directional momentum favored (MOMENTUM CALLS).
+   ```
+   When filled, the strip instantly transitions to:
+   ```
+   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚨 CALL WALL BREACH]  [✅ GAP FILLED]
+   Opening gap filled — mean-reversion cycle active, auction re-established inside prior range.
+   ```
+
+---
+
 ## Part 2: Closing Auction Session (CAS) & F&O Extended Close (15:30 – 16:00 IST)
 
 ### 2.1 The Two Closing Milestones (15:30 vs 15:40 IST)
@@ -188,7 +223,54 @@ $$\text{Efficiency}_{\text{pin}} = \max\left(0, 100 - \frac{|S_{\text{settle}} -
 
 ## Part 3: High-Conviction Recommendations Lifecycle
 
-### 3.1 Pinned Cards Retention Rules
+### 3.1 Recommendation State Machine Lifecycle Architecture
+
+To eliminate card flickering, disappearance, and false exits during live streaming ticks, recommendations are governed by an explicit finite-state machine managed by `RecommendationLatchManager`:
+
+```
+   ┌─────────┐
+   │ DORMANT │ ◀── Initial State (Score < 75)
+   └────┬────┘
+        │ Quality Score >= 75 (Initial Qualification)
+        ▼
+  ┌───────────┐
+  │ QUALIFIED │
+  └─────┬─────┘
+        │ Quality Score >= min_score (75/85) & Initial Lease Granted
+        ▼
+   ┌──────────┐ ◀──────────────────────────────────────────────┐
+   │  ACTIVE  │ ── Score fluctuates between [65, 100] (Hysteresis)│
+   └────┬─────┘ ── 180s Dwell Lease Guarantees Display         │
+        │                                                      │
+        ├──────────────────────┬──────────────────────┐        │
+        │ Target 1 Hit         │ Spot Invalidation    │ Lease Expired
+        │ (Spot >= T1 / <= T1) │ Breached             │ & Score < 65
+        ▼                      ▼                      ▼        │
+ ┌────────────┐        ┌─────────────┐        ┌──────────┐     │
+ │ TARGET_HIT │        │ INVALIDATED │        │ DEGRADED │ ────┘
+ └────────────┘        └─────────────┘        └──────────┘  Re-qualifies if score >= 75
+ (Card flags Target    (Filtered out          (Demoted to
+  Reached; locks gain)  from display)          Watchlist)
+```
+
+#### State Machine Invariants:
+1. **Dwell Time Lease (180 Seconds)**: Once promoted to `ACTIVE`, an options recommendation card is guaranteed a minimum dwell lease of 180 seconds. It will not vanish on ephemeral microsecond tick dips.
+2. **Score Hysteresis ($\Delta = 10\text{ pts}$)**:
+   - Initial entry requires $\text{Score} \ge 75$ (or 85 for High Conviction).
+   - Once `ACTIVE`, the card remains in active display even if score fluctuates down to **65** ($\text{min\_score} - 10$).
+   - Only when score stays below 65 *after* the 180s dwell lease expires does the card transition to `DEGRADED`.
+3. **Target 1 Touch Recognition (`TARGET_HIT`)**:
+   - Monitored on live spot and option LTP ticks.
+   - For Calls: Triggers when $\text{Spot} \ge \text{Target 1 Spot}$.
+   - For Puts: Triggers when $\text{Spot} \le \text{Target 1 Spot}$.
+   - Once hit, the card prominently displays the green `TARGET 1 REACHED` celebration state.
+4. **Spot Invalidation Breach (`INVALIDATED`)**:
+   - Triggers when live spot breaches the structural invalidation boundary (e.g. Call Spot < Invalidation).
+   - Once invalidated, the card is immediately purged from active display to prevent executing flawed setups.
+
+---
+
+### 3.2 Pinned Cards Retention Rules
 Previously, bookmarked recommendation cards could be cleared across intraday restarts or daily scans. The updated lifecycle model enforces strict operational persistence:
 
 ```
@@ -221,11 +303,11 @@ Previously, bookmarked recommendation cards could be cleared across intraday res
 
 ---
 
-### 3.2 Recommendation Card Visual Enhancements
+### 3.3 Recommendation Card Visual Enhancements & "Time Since Last Active" Counter
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ 🟢 NIFTY 13 OCT 22700 CE  [NEW] ★ Pinned                           Grade A+ (95/100)  │
+│ 🟢 NIFTY 13 OCT 22700 CE  [NEW] ★ Pinned  🟢 Active: 2m 15s           Grade A+ (95/100)│
 │ ────────────────────────────────────────────────────────────────────────────────────── │
 │ Entry: ₹45.2   |   T1: ₹68.0 (+50%)   |   T2: ₹90.0 (+99%)   |   SL: ₹28.0 (-38%)      │
 │ 📦 2 Lots (50 Qty) · Outlay: ₹2,260 (0.9% Port) · Conservative Risk Budget             │
@@ -233,18 +315,35 @@ Previously, bookmarked recommendation cards could be cleared across intraday res
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+#### 1. "Time Since Last Active" Dynamic Counter
+Every recommendation card (across Pinned Cards, Live Trade Ideas, and Confluence Strategy Clusters) displays an ultra-low-latency (<0.05ms) state-aware timer chip in the card header:
+
+| Card State | Chip Badge Format | Microstructure Meaning |
+| :--- | :--- | :--- |
+| **`ACTIVE`** | `🟢 Active: 45s` / `🟢 Active: 2m 15s` | Setup is live, qualified ($\ge 75$), and actively dwelling within its valid execution window. Shows continuous dwell time since initial activation. |
+| **`TARGET_HIT`** | `🎯 Target Hit (30s ago)` | Take-profit milestone (Target 1) was achieved. Shows elapsed time since target was reached. |
+| **`INVALIDATED`** | `🛑 Inval (1m ago)` | Structural stop/invalidation was breached. Displays elapsed time since setup was invalidated. |
+| **`DEGRADED`** | `⏱️ Last Active: 3m 40s ago` | Setup dropped below conviction threshold ($\text{Score} < 65$) after dwell expiration. Informs operator exactly how long the setup has been dormant. |
+| **`QUALIFIED`** (Pre-Active) | `⏱️ Pending Active` | Card is newly qualified but awaiting first active promotion lease confirmation. |
+
+- **Sub-Millisecond Live Recalculation**:
+  `update_trade_idea_live_telemetry()` continuously recomputes `time_since_active_label` and `time_since_active_sec` on every incoming WebSocket option and underlying tick without waiting for full 3-second cycle re-evaluations.
+- **Confluence Strategy Matrix Tracking**:
+  In multi-leg clustered cards (`_render_cluster_card`), the strategy comparison table features a dedicated **`Active Dwell`** column displaying individual leg dwell timers (e.g. `🟢 Active: 1m 20s` vs `⏱️ Last Active: 4m ago`).
+
+#### 2. Visual Polish & Styling
 1. **Card Borderlines**: Clean, high-contrast borderlines (`1.5px solid rgba(34,197,94,.4)` for CE, `rgba(239,68,68,.4)` for PE) with subtle glassmorphic elevation.
 2. **Blinking "NEW" Pill**:
    - Rendered on newly generated recommendations whose detection timestamp is within **5 minutes** (`age_seconds < 300`).
    - Uses CSS animation `rec-pulse-badge` (1.2s infinite pulse) that automatically subsides after 5 minutes.
 3. **Full Contract Notation**:
-   - Replaced abbreviated `NIFTY 22700 CE` with full official derivative format:
+   - Uses full official derivative format:
      $$\text{SYMBOL} \quad \text{DD} \quad \text{MMM} \quad \text{STRIKE} \quad \text{TYPE}$$
      Example: `NIFTY 13 OCT 22700 CE` or `BANKNIFTY 15 OCT 55200 PE`.
 
 ---
 
-### 3.3 Conviction Trajectory Audit Redesign
+### 3.4 Conviction Trajectory Audit Redesign
 The **Conviction Trajectory Audit Table** tracks how an option recommendation's score evolved as market microstructure shifted:
 
 #### Key Fixes & Upgrades:
@@ -298,7 +397,13 @@ To prevent phantom chart bars or stale data processing during exchange holidays:
 
 ## 🔗 Related Technical Documentation
 - [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
+- [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)
 - [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
-- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
 - [📈 Signal Efficiency & MFE/MAE Performance Guide](/?view=signal_efficiency_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Participant Open Interest Guide](/?view=participant_guide)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
 - [📘 Master Cockpit User Guide](/?view=user_guide)

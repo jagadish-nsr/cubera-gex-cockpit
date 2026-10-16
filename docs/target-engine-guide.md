@@ -237,11 +237,15 @@ The **🎯 Target Engine** tab in the Cockpit interface is organized into five d
 │ • Forecast ATM IV: 14.98%         │ • Forecast ATM IV: 15.10%         │ • Forecast ATM IV: 15.05%      │
 │ • Anchor: 0.6-Sigma Move (22394)  │ • Anchor: Midpoint of Walls       │ • Anchor: 0.6-Sigma Move       │
 ├───────────────────────────────────┴───────────────────────────────────┴────────────────────────────────┤
+│ ⚡ Live Target / SL Strike Ladder (ATM ± 5 Strikes) — Dual-Wing Matrix [● 11/11 Live WS Ticks]         │
+│ 🟢 CALLS (CE) WING                   │            STRIKE            │ 🔴 PUTS (PE) WING                │
+│ T1 PnL | R:R | T2 | T1 | SL | LiveLTP│ 25000 ★ ATM                  │ LiveLTP | SL | T1 | T2 | R:R | PnL│
+├──────────────────────────────────────┴──────────────────────────────┴──────────────────────────────────┤
 │ 📋 Ranked Trade Candidates (Scenario-Repriced)                                                         │
 │ ▶ Rank #1 — LONG CALL (22350 CE) | Net EV: +₹4,850 | R:R: 2.85:1                                       │
 │   Scenario Payoff Matrix: Target Spot | Entry Prem | Target Prem | PnL % | Delta PnL | Vega | Theta     │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│ 🎛️ Interactive 'What-If' Option Repricer                                                               │
+│ 🎛️ Interactive 'What-If' Option Repricer & Target/SL Calculator                                       │
 │ [Strike: 22350 ▼]  (o) CE  ( ) PE  [Spot Shift: +50 pts ────]  [IV Shift: 0.0 pts ────] [Time: 60m ────]│
 │ Current: ₹143.8  | Repriced: ₹172.5 (+28.7 pts) | PnL/Lot: +₹1,865 | Residual: -0.15 pts               │
 ├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
@@ -286,7 +290,17 @@ Three distinct side-by-side cards display the underlying targets for each scenar
    - **$P(\text{Touch})$ & $P(\text{Close})$:** Downside barrier probabilities.
    - **Forecast ATM IV:** Projected volatility under market selloff (including skew bump).
 
-### 4.4 Section 4: Ranked Candidate Strategy Cards
+### 4.4 Section 4: Live WebSocket Dynamic Target / SL Strike Ladder (ATM ± 5 Strikes)
+An institutional-grade, real-time streaming options execution matrix placed directly beneath the price targets:
+- **ATM ± 5 Strikes Band:** Automatically identifies the current active ATM strike and computes repricing for the 11-strike band ($K_{\text{atm}-5}$ down to $K_{\text{atm}+5}$) using official exchange strike steps (50 pts for NIFTY, 100 pts for BANKNIFTY/SENSEX).
+- **Dual-Wing Matrix (Option A):**
+  - **Left Wing (Calls / CE):** Live LTP, Invalidation Stop-Loss ($V_{\text{sl}}$), Primary Target ($V_{\text{tgt1}}$), Secondary Extension ($V_{\text{tgt2}}$), Risk-Reward ratio ($R:R$), and ₹ PnL per lot.
+  - **Center Pillar (Strike):** Prominently styled strike price with glowing `★ ATM` badge on the active ATM strike and point offset indicators.
+  - **Right Wing (Puts / PE):** Symmetrical mirror layout displaying Live LTP, Invalidation Stop-Loss ($V_{\text{sl}}$), Primary Target ($V_{\text{tgt1}}$), Secondary Extension ($V_{\text{tgt2}}$), Risk-Reward ratio ($R:R$), and ₹ PnL per lot.
+- **WebSocket Streaming & Isolation:** Powered by `@st.fragment(run_every=2)`, updating every 2 seconds via in-memory Dhan v2 WebSocket quotes with zero full-page reload and pulsing live indicators (`● live`).
+- **Flexible Matrix Views:** Fast toggle between **Dual-Wing Matrix**, **Calls (CE) Only**, and **Puts (PE) Only** (featuring expanded Greeks and volatility skew metrics).
+
+### 4.5 Section 5: Ranked Candidate Strategy Cards
 Displays the top scenario-repriced trade structures ranked by Net Expected Value ($\mathbb{E}[V]$):
 - **Card Header:** Structure name (e.g. `LONG CALL`, `BULL SPREAD`, `LONG PUT`), Net EV in INR, and Risk-Reward ratio.
 - **Summary Metrics Strip:** Net EV, R:R ratio, Max Loss (INR and pts), and Breakeven price levels.
@@ -298,18 +312,30 @@ Displays the top scenario-repriced trade structures ranked by Net Expected Value
     - **Greek Attribution Decomposition:** Delta PnL, Vega PnL, and Theta bleed explicitly segregated.
 - **Rationale Bullet Points:** Microstructure reasons why this contract was selected.
 
-### 4.5 Section 5: Interactive "What-If" Option Repricer
-A real-time sandbox allowing traders to model hypothetical price shifts before entering orders:
-- **Inputs:**
-  - Strike selector (all valid strikes in chain).
+### 4.6 Section 6: Interactive "What-If" Option Repricer & Target/SL Calculator
+A real-time quantitative sandbox allowing traders to calculate exact target and stop-loss option premiums, PnL per lot, and risk-reward across any contract and expiry:
+- **Contract & Expiry Selector:**
+  - Expiry selector (`📅 Expiry`) supporting weekly, monthly, and far-month options.
+  - Strike selector automatically populated from the selected expiry chain.
   - Option Type toggle (`CE` or `PE`).
-  - Spot Shift slider ($-300$ to $+300$ index points).
-  - IV Shift slider ($-5.0$ to $+5.0$ volatility percentage points).
+  - Real-Time Market Reality strip: Displays Current Market Premium (Live LTP), Theoretical Black-76 price, Strike Implied Volatility (skew-adjusted), and live Greeks (Delta, Gamma, Vega, Theta).
+- **Mode 1: Target & Stop-Loss Calculator:**
+  - Target Spot level input (with quick presets for Bull Target, Bear Target, or Base/Pin level).
+  - Stop Loss / Invalidation Spot level input.
+  - Holding Horizon slider ($5$ to $375$ mins).
+  - Regime Volatility Shock (Auto regime-conditioned, vol crush, or vol expansion).
+  - **Outputs:**
+    - Repriced Target Option Premium ($V_{\text{target}}$) with point gain, % gain, and INR PnL per lot.
+    - Repriced Stop-Loss Option Premium ($V_{\text{sl}}$) with point risk, % loss, and INR risk per lot.
+    - Risk : Reward ratio ($R:R$).
+    - Reflection-principle touch probabilities: $P(\text{Target Touch})$ and $P(\text{SL Touch})$.
+    - Touch-weighted Net EV per lot.
+    - Greek attribution breakdown table at Target and Stop Loss (Delta, Gamma, Vega, Theta bleed, and Residual).
+- **Mode 2: Custom 'What-If' Parameter Sliders:**
+  - Spot Shift slider ($-400$ to $+400$ index points).
+  - IV Shift slider ($-8.0$ to $+8.0$ volatility percentage points).
   - Time Elapsed slider ($0$ to $375$ minutes).
-- **Outputs:**
-  - Current Premium vs. Repriced Theoretical Premium.
-  - Net Change ($\Delta$ pts) and PnL per lot in INR.
-  - Greek Residual ($\epsilon$) displaying approximation accuracy.
+  - Live repriced theoretical premium, PnL per lot, and full Greek attribution decomposition.
 
 ### 4.6 Section 6: Diagnostics & Explain Drawer
 Collapsible drawer providing 100% mathematical auditability:
@@ -370,3 +396,18 @@ The Target Engine serves as the core quantitative pricing nucleus across four ot
 1. **Never Trade Negative EV:** If a setup exhibits negative Net EV, statistical expectancy is negative regardless of win rate.
 2. **Respect the Range Dominant Warning:** When the engine flags `NO EDGE`, choppy whipsaws will erode option premiums through theta bleed.
 3. **Always Anchor Stops to the Underlying Invalidation:** Option price stops are subject to market maker bid-ask spread spikes; the true invalidation is always the underlying index level.
+
+---
+
+## 🔗 Related Technical Documentation
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)
+- [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
+- [🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)
+- [📈 Signal Efficiency & MFE/MAE Performance Guide](/?view=signal_efficiency_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🧭 Participant Open Interest Guide](/?view=participant_guide)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [📘 Master Cockpit User Guide](/?view=user_guide)

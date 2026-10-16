@@ -79,3 +79,18 @@ EOD only (T+0); market-wide (not per-index); index cols of a combined index+stoc
 sign-free but the put=support/writer-heuristics are exploratory; FII futures shorts are
 often cash hedges (the single most misread NSE number); a headline overrides positioning.
 GEX/positioning is a probability map, not a predictor.
+
+---
+
+## 🔗 Related Technical Documentation
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
+- [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)
+- [⚡ OrderFlow Sentinel Stream Signals Field Guide](/?view=orderflow_guide)
+- [🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)
+- [🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)
+- [🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)
+- [📈 Signal Efficiency & MFE/MAE Performance Guide](/?view=signal_efficiency_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [📘 Master Cockpit User Guide](/?view=user_guide)
