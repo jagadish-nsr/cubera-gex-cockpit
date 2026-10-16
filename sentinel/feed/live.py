@@ -82,19 +82,28 @@ class LiveSentinelManager:
         now_epoch = time.time()
         last_sync = self._last_synced_time.get(instrument_id, 0.0)
 
-        # Throttle sync calls to once every 60 seconds unless forced
-        if not force and (now_epoch - last_sync) < 60.0:
+        # Check if existing bars belong to a prior trading day
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        existing_sample = list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False)
+        needs_day_rollover = bool(existing_sample and existing_sample[-1].start_ts.strftime("%Y-%m-%d") != today_str)
+
+        # Throttle sync calls to once every 60 seconds unless forced or on day rollover
+        if not force and not needs_day_rollover and (now_epoch - last_sync) < 60.0:
             return False
 
         import config
         # Off market hours: do not poll Dhan API unless explicitly forced and no bars exist
         if not config.is_market_open():
-            if not force or list_recent_bars(instrument_id, limit=5):
+            if not force or list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False):
                 return False
 
         with _LOCK:
             self._last_synced_time[instrument_id] = now_epoch
             try:
+                # Purge stale/demo bars and signals if forcing clean sync, or if existing bars are from a prior day
+                if force or not existing_sample or needs_day_rollover:
+                    clear_sentinel_data(instrument_id)
+
                 from data.dhan import fetch_futures_intraday, nearest_futures
 
                 futs = nearest_futures(symbol)
@@ -104,7 +113,6 @@ class LiveSentinelManager:
 
                 front_fut = futs[0]
                 sec_id = front_fut["security_id"]
-                today_str = datetime.now(IST).strftime("%Y-%m-%d")
 
                 df = fetch_futures_intraday(sec_id, today_str, today_str, interval="1")
                 if df is None or df.empty:
@@ -113,10 +121,6 @@ class LiveSentinelManager:
 
                 # Sort by timestamp
                 df = df.sort_values("timestamp").reset_index(drop=True)
-
-                # Purge stale/demo bars and signals if forcing clean sync
-                if force or not list_recent_bars(instrument_id, limit=5):
-                    clear_sentinel_data(instrument_id)
 
                 lot_size = front_fut.get("lot") or (10 if "SENSEX" in symbol else (15 if "BANKNIFTY" in symbol else 65))
 
@@ -156,12 +160,15 @@ class LiveSentinelManager:
                     typical_price = (h + l + c) / 3.0
                     vwap, up1, up2, dn1, dn2 = vwap_tracker.update(typical_price, float(vol))
 
-                    # Microstructure Delta calculation based on candle close location
+                    # Enhanced Microstructure Delta: blend candle body thrust with wick location
                     rng = max(0.5, h - l)
+                    body = c - o
                     close_pct = (c - l) / rng
-                    # If close is above midpoint, buyers were net aggressors
-                    delta_factor = (close_pct - 0.5) * 2.0  # -1.0 to +1.0
-                    bar_delta = round(vol * delta_factor * 0.45, 1) if vol > 0 else 0.0
+                    body_factor = (body / rng) if rng > 0 else 0.0
+                    location_factor = (close_pct - 0.5) * 2.0
+                    combined_thrust = (0.65 * body_factor) + (0.35 * location_factor)
+
+                    bar_delta = round(vol * combined_thrust * 0.50, 1) if vol > 0 else 0.0
                     cum_cvd += bar_delta
                     delta_ratio = round(bar_delta / vol, 4) if vol > 0 else 0.0
 
@@ -197,6 +204,7 @@ class LiveSentinelManager:
                         delta_oi=delta_oi,
                         oi_fresh=True,
                         incomplete=False,
+                        depth_imbalance=0.0,
                     )
                     bars_to_save.append(bar)
                     save_bar(bar)
@@ -227,6 +235,11 @@ class LiveSentinelManager:
                     instrument_id,
                     latest_bar.close,
                 )
+                try:
+                    from sentinel.storage.db import record_daily_closing_cvd
+                    record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=today_str)
+                except Exception:
+                    pass
                 return True
 
             except Exception as exc:
@@ -260,6 +273,7 @@ class LiveSentinelManager:
             vol_delta = pkt.get("ltq") or 1
 
         oi = pkt.get("oi") or 0
+        depth_imbalance = float(pkt.get("depth_imbalance", 0.0) or 0.0)
 
         with _LOCK:
             completed_bar = agg.add_tick(
@@ -267,7 +281,18 @@ class LiveSentinelManager:
                 timestamp=tick_dt,
                 volume_delta=int(vol_delta),
                 oi=int(oi),
+                depth_imbalance=depth_imbalance,
             )
+
+            # High-speed intra-bar micro-burst detection (< 500ms latency)
+            burst = agg.check_micro_burst(tick_dt)
+            if burst is not None:
+                ctx = self._contexts.get(instrument_id)
+                classifier = self._classifiers.get(instrument_id)
+                if ctx and classifier:
+                    micro_sig = classifier.evaluate_micro_burst(burst, ctx)
+                    if micro_sig:
+                        save_signal(micro_sig)
 
             if completed_bar is not None:
                 save_bar(completed_bar)
@@ -288,6 +313,12 @@ class LiveSentinelManager:
                     agg_list = aggregate_bars(bars_1m, target_minutes=tf)
                     if agg_list:
                         save_bar(agg_list[-1])
+
+                try:
+                    from sentinel.storage.db import record_daily_closing_cvd
+                    record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=tick_dt.strftime("%Y-%m-%d"))
+                except Exception:
+                    pass
 
 
 # Global singleton manager

@@ -87,13 +87,15 @@ def seed_sentinel_demo_if_needed(
         try:
             from sentinel.feed.live import sync_live_sentinel_if_needed
             sym = instrument_id.replace("-FUT", "")
-            sync_live_sentinel_if_needed(instrument_id, symbol=sym, call_wall=call_wall, put_wall=put_wall)
-            return
+            synced = sync_live_sentinel_if_needed(instrument_id, symbol=sym, call_wall=call_wall, put_wall=put_wall)
+            if synced:
+                return
         except Exception as exc:
             log.warning("Live sentinel sync delegation failed: %s", exc)
 
-    existing_1m = list_recent_bars(instrument_id, timeframe="1m", limit=10)
-    existing_5m = list_recent_bars(instrument_id, timeframe="5m", limit=10)
+    existing_1m = list_recent_bars(instrument_id, timeframe="1m", limit=400, session_only=False, _auto_populate=False)
+    existing_5m = list_recent_bars(instrument_id, timeframe="5m", limit=80, session_only=False, _auto_populate=False)
+    is_today = False
     if existing_1m and not force:
         last_b = existing_1m[-1]
         is_today = (last_b.start_ts.date() == now_ist.date())
@@ -110,19 +112,20 @@ def seed_sentinel_demo_if_needed(
             # Bars in DB are from an exchange holiday or weekend: purge and re-anchor
             force = True
         elif not is_live_trading_day or now_ist < m_open or now_ist > m_close:
-            # Market closed: anchor to prior trading day
+            # Market closed: anchor to prior trading day (or today if after 15:30)
             ref_day = roll_back_to_trading_day(now_ist.date() - timedelta(days=1)) if (now_ist < m_open or not is_live_trading_day) else now_ist.date()
-            if last_b.start_ts.date() != ref_day:
+            if last_b.start_ts.date() != ref_day or len(existing_1m) < 370:
                 force = True
 
-    if len(existing_1m) >= 20 and len(existing_5m) >= 5 and not force:
+    min_required_bars = 370 if (now_ist > m_close or now_ist < m_open or not is_live_trading_day) else 1
+    if len(existing_1m) >= min_required_bars and len(existing_5m) >= 1 and not force and is_today:
         return
 
     if force:
         clear_sentinel_data(instrument_id)
     elif len(existing_1m) >= 20 and len(existing_5m) < 5:
         # 1m bars already exist: synthesize and save 5m bars without clearing 1m history
-        bars_1m_all = list_recent_bars(instrument_id, timeframe="1m", limit=180)
+        bars_1m_all = list_recent_bars(instrument_id, timeframe="1m", limit=180, session_only=False, _auto_populate=False)
         bars_5m = aggregate_1m_to_5m(bars_1m_all)
         for b5 in bars_5m:
             save_bar(b5)
@@ -130,10 +133,10 @@ def seed_sentinel_demo_if_needed(
 
     if is_live_trading_day and (m_open <= now_ist <= m_close):
         # Market open: generate bars from market open (09:15) up to current minute
-        end_time = now_ist.replace(second=0, microsecond=0)
-        minutes_since_open = max(60, min(375, int((end_time - m_open).total_seconds() / 60) + 1))
+        end_time = min(now_ist, m_close).replace(second=0, microsecond=0)
+        minutes_since_open = max(1, min(375, int((end_time - m_open).total_seconds() / 60) + 1))
         num_bars = minutes_since_open
-        start_time = end_time - timedelta(minutes=num_bars - 1)
+        start_time = m_open  # Always start at 09:15:00 IST for current session!
     else:
         # Market closed (after hours, weekend, or holiday):
         # Anchor bars to the closing hours of latest completed trading session
@@ -142,7 +145,7 @@ def seed_sentinel_demo_if_needed(
         else:
             ref_day = now_ist.date()
         end_time = datetime(ref_day.year, ref_day.month, ref_day.day, 15, 30, tzinfo=IST)
-        num_bars = 120
+        num_bars = 375  # Full 09:15 to 15:30 session (375 bars)
         start_time = end_time - timedelta(minutes=num_bars - 1)
 
     vwap_tracker = SessionVWAPTracker()
@@ -197,6 +200,7 @@ def seed_sentinel_demo_if_needed(
             vwap_lower_2=round(dn2, 1),
             oi=int(14500000 + i * 15000),
             delta_oi=int(15000 * (1.2 if is_up else -0.8)),
+            depth_imbalance=round(math.sin(i / 5.0) * 0.25, 3),
         )
         bars_to_save.append(bar)
         save_bar(bar)
@@ -268,12 +272,19 @@ def seed_sentinel_demo_if_needed(
         ),
     ]
 
+    step = 50 if "NIFTY" in instrument_id else 100
     for rel_pos, sig_type, cat, bias, score, conf, rvol, tags, text, inval_off, gex_align in signal_templates:
         idx = int(rel_pos * (len(bars_to_save) - 1))
         idx = max(3, min(len(bars_to_save) - 2, idx))
         trigger_bar = bars_to_save[idx]
         sig_ts = trigger_bar.start_ts
-        inval_lvl = round(trigger_bar.low + inval_off, 1) if bias == "LONG" else round(trigger_bar.high + inval_off, 1)
+        inval_lvl = round(trigger_bar.low - abs(inval_off) * 5.0, 1) if bias == "LONG" else round(trigger_bar.high + abs(inval_off) * 5.0, 1)
+        entry_px = round(trigger_bar.close, 1)
+        risk = max(12.0, abs(entry_px - inval_lvl))
+        t1 = round(risk * 1.5, 1)
+        t2 = round(risk * 2.5, 1)
+        atm = round(entry_px / step) * step
+        play = f"Bull Put Spread {int(atm)}/{int(atm - step)} PE" if bias == "LONG" else f"Bear Call Spread {int(atm)}/{int(atm + step)} CE"
 
         sig = SentinelSignal(
             event_id=f"sig_{sig_ts.strftime('%Y%m%d_%H%M%S')}_{instrument_id}_1m_{sig_type}",
@@ -292,13 +303,25 @@ def seed_sentinel_demo_if_needed(
             context_tags=tags,
             insight_text=text,
             invalidation_level=inval_lvl,
-            rule_set_version="v2.0",
+            entry_price=entry_px,
+            target_1_pts=t1,
+            target_2_pts=t2,
+            risk_reward_ratio=1.5,
+            actionable_play=play,
+            trigger_speed="CONFIRMED_BAR",
+            rule_set_version="v2.1",
             status="CONFIRMED",
             gex_alignment=gex_align,
         )
         save_signal(sig)
         outcome = evaluate_signal_outcomes(sig, bars_to_save[idx + 1:])
         save_outcome(outcome)
+
+    try:
+        from sentinel.storage.db import record_daily_closing_cvd
+        record_daily_closing_cvd(instrument_id, symbol=instrument_id.replace("-FUT", ""), trade_date=start_time.strftime("%Y-%m-%d"))
+    except Exception:
+        pass
 
 
 class SentinelLiveFeedEngine:

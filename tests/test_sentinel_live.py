@@ -27,7 +27,7 @@ class TestSentinelLive(unittest.TestCase):
     @patch("data.dhan.fetch_futures_intraday")
     def test_sync_live_session_success(self, mock_fetch, mock_nearest):
         mock_nearest.return_value = [{"security_id": 99999, "symbol": "TEST-FUT", "lot": 65}]
-        now_ts = 1791870000.0
+        now_ts = datetime.now(timezone.utc).timestamp() - 300
         mock_df = pd.DataFrame([
             {
                 "open": 22500.0,
@@ -107,6 +107,67 @@ class TestSentinelLive(unittest.TestCase):
         bars = list_recent_bars("TEST-FUT", "1m", limit=5)
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0].close, 22505.0)
+
+    def test_live_session_isolation_never_returns_yesterday_data(self):
+        """Verify that during an active live market session, list_recent_bars strictly isolates to today."""
+        from sentinel.storage.db import save_bar
+        import pytz
+        IST = pytz.timezone("Asia/Kolkata")
+        today_ist = datetime.now(IST)
+        yesterday_ist = today_ist - timedelta(days=1)
+
+        # Save a bar with yesterday's timestamp
+        yest_bar = Bar(
+            instrument_id="TEST-FUT",
+            timeframe="1m",
+            start_ts=yesterday_ist.replace(hour=15, minute=29, second=0, microsecond=0),
+            open=22400.0, high=22410.0, low=22395.0, close=22405.0,
+            volume_units=1000, volume_lots=15.4,
+            buy_vol_est=500.0, sell_vol_est=500.0,
+            delta=0.0, delta_ratio=0.0, delta_quality=1.0,
+            cvd=1000.0, vwap=22400.0,
+            vwap_sigma_1=22410.0, vwap_sigma_2=22420.0,
+            vwap_lower_1=22390.0, vwap_lower_2=22380.0,
+            oi=50000, delta_oi=0, oi_fresh=True, incomplete=False,
+        )
+        save_bar(yest_bar)
+
+        # Mock active market session at 10:30 AM on a weekday
+        mock_market_now = today_ist.replace(hour=10, minute=30, second=0, microsecond=0)
+        # Ensure it's treated as a weekday
+        if mock_market_now.weekday() >= 5:
+            mock_market_now = mock_market_now - timedelta(days=mock_market_now.weekday() - 3)
+
+        with patch("sentinel.storage.db.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_market_now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+
+            # Query with session_only=True and _auto_populate=False
+            bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=True, _auto_populate=False)
+            # Must be empty for today, NOT containing yesterday's bar!
+            self.assertEqual(len(bars), 0)
+
+            # Save a bar with today's timestamp
+            today_bar = Bar(
+                instrument_id="TEST-FUT",
+                timeframe="1m",
+                start_ts=mock_market_now.replace(minute=25),
+                open=22500.0, high=22510.0, low=22495.0, close=22505.0,
+                volume_units=2000, volume_lots=30.8,
+                buy_vol_est=1200.0, sell_vol_est=800.0,
+                delta=400.0, delta_ratio=0.2, delta_quality=1.0,
+                cvd=400.0, vwap=22503.0,
+                vwap_sigma_1=22512.0, vwap_sigma_2=22520.0,
+                vwap_lower_1=22490.0, vwap_lower_2=22480.0,
+                oi=51000, delta_oi=1000, oi_fresh=True, incomplete=False,
+            )
+            save_bar(today_bar)
+
+            bars_today = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=True, _auto_populate=False)
+            self.assertEqual(len(bars_today), 1)
+            self.assertEqual(bars_today[0].start_ts.date(), mock_market_now.date())
+            self.assertEqual(bars_today[0].cvd, 400.0)
 
 
 if __name__ == "__main__":

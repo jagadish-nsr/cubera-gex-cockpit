@@ -22,6 +22,9 @@ from sentinel.storage.db import (
     save_signal,
     list_recent_bars,
     list_recent_signals,
+    list_daily_cvd,
+    record_daily_closing_cvd,
+    ensure_historical_daily_cvd,
 )
 
 __all__ = [
@@ -41,4 +44,7 @@ __all__ = [
     "save_signal",
     "list_recent_bars",
     "list_recent_signals",
+    "list_daily_cvd",
+    "record_daily_closing_cvd",
+    "ensure_historical_daily_cvd",
 ]

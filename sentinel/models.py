@@ -39,6 +39,7 @@ class Bar:
     delta_oi: int = 0
     oi_fresh: bool = True
     incomplete: bool = False       # True if bar closed prematurely or dropped ticks
+    depth_imbalance: float = 0.0   # (bids - asks) / (bids + asks) from depth book
 
 
 @dataclass
@@ -60,7 +61,13 @@ class SentinelSignal:
     context_tags: list[str]        # ["NEAR_CALL_WALL", "ABOVE_VWAP", "ORB_HIGH"]
     insight_text: str              # Explainable plain English description
     invalidation_level: float      # Concrete price invalidation cutoff
-    rule_set_version: str = "v2.0"
+    entry_price: float = 0.0       # Exact benchmark entry price at signal trigger
+    target_1_pts: float = 0.0      # Target 1 (e.g. 1.5R or nearest GEX wall)
+    target_2_pts: float = 0.0      # Target 2 (e.g. 2.5R or major GEX wall)
+    risk_reward_ratio: float = 0.0 # Expected R:R ratio
+    actionable_play: str = ""      # Specific derivative trade structure (e.g. "Bull Put Spread 24800/24700")
+    trigger_speed: str = "CONFIRMED_BAR"  # "CONFIRMED_BAR" | "MICRO_BURST"
+    rule_set_version: str = "v2.1"
     status: str = "NEW"            # "NEW" | "CONFIRMED" | "FAILED" | "REPLACED"
     gex_alignment: str = "NEUTRAL" # "CONFIRMED_AT_WALL" | "COUNTER_TREND" | "NEUTRAL"
 

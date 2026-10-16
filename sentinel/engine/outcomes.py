@@ -40,13 +40,24 @@ def evaluate_signal_outcomes(
         risk_pts = base_risk
 
     is_long = signal.bias == "LONG"
-    if signal.invalidation_level > 0:
+    if getattr(signal, "entry_price", 0.0) > 0:
+        entry_price = float(signal.entry_price)
+    elif subsequent_bars:
+        entry_price = float(subsequent_bars[0].open)
+    elif signal.invalidation_level > 0:
         entry_price = signal.invalidation_level + (risk_pts if is_long else -risk_pts)
     else:
-        entry_price = subsequent_bars[0].open if subsequent_bars else 22600.0
+        entry_price = 22600.0
 
-    # 2. Dynamic target points (Structural Wall & Realized Vol calibrated)
-    if target_pts is None or target_pts <= 0:
+    if signal.invalidation_level > 0:
+        inval_risk = abs(entry_price - signal.invalidation_level)
+        if inval_risk > 5.0:
+            risk_pts = inval_risk
+
+    # 2. Dynamic target points (Signal target, Structural Wall, or Realized Vol calibrated)
+    if getattr(signal, "target_1_pts", 0.0) > 0:
+        target_pts = float(signal.target_1_pts)
+    elif target_pts is None or target_pts <= 0:
         if is_long and call_wall > entry_price:
             dist_w = call_wall - entry_price
             target_pts = min(dist_w, max(risk_pts * 1.5, 30.0))

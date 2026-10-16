@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sentinel.models import Bar
@@ -66,8 +66,10 @@ class SessionVWAPTracker:
         self.cum_p2v = 0.0
 
 
+from collections import deque
+
 class BarAggregator:
-    """Aggregates raw ticks into completed 1-minute and 5-minute Bars."""
+    """Aggregates raw ticks into completed 1-minute and 5-minute Bars with micro-burst detection."""
 
     def __init__(self, instrument_id: str, timeframe: str = "1m") -> None:
         self.instrument_id = instrument_id
@@ -84,10 +86,15 @@ class BarAggregator:
         self.bar_volume: int = 0
         self.bar_buy_vol: float = 0.0
         self.bar_sell_vol: float = 0.0
+        self.bar_depth_imbalances: list[float] = []
         self.last_tick_price: float | None = None
         self.last_tick_direction: int = 1  # 1 for buy, -1 for sell (tick rule default)
         self.bar_oi: int = 0
         self.prev_bar_oi: int = 0
+
+        # Sub-minute rolling micro-burst detector (15-second window)
+        self.rolling_ticks: deque = deque()
+        self.last_micro_burst_ts: datetime | None = None
 
     def _get_bar_boundary(self, dt: datetime) -> datetime:
         """Align datetime down to minute boundary."""
@@ -102,8 +109,9 @@ class BarAggregator:
         timestamp: datetime,
         volume_delta: int = 1,
         oi: int = 0,
+        depth_imbalance: float = 0.0,
     ) -> Bar | None:
-        """Process an incoming tick.
+        """Process an incoming tick with hybrid tick-rule and depth-imbalance weighting.
 
         Returns completed Bar when minute boundary rolls over, else None.
         """
@@ -119,12 +127,20 @@ class BarAggregator:
         self.last_tick_price = price
 
         vol = max(1, volume_delta)
-        if self.last_tick_direction >= 0:
-            buy_v = float(vol)
-            sell_v = 0.0
-        else:
-            buy_v = 0.0
-            sell_v = float(vol)
+
+        # Hybrid microstructure delta: blend Lee-Ready tick aggressor with order book depth imbalance
+        base_buyer_weight = 0.70 if self.last_tick_direction > 0 else (0.30 if self.last_tick_direction < 0 else 0.50)
+        depth_adj = max(-0.25, min(0.25, depth_imbalance * 0.25))
+        buyer_pct = max(0.05, min(0.95, base_buyer_weight + depth_adj))
+
+        buy_v = float(vol) * buyer_pct
+        sell_v = float(vol) * (1.0 - buyer_pct)
+
+        # Maintain 15-second rolling micro-burst window
+        self.rolling_ticks.append((timestamp, price, vol, buy_v, sell_v, depth_imbalance))
+        cutoff = timestamp - timedelta(seconds=15)
+        while self.rolling_ticks and self.rolling_ticks[0][0] < cutoff:
+            self.rolling_ticks.popleft()
 
         bar_start = self._get_bar_boundary(timestamp)
         completed_bar: Bar | None = None
@@ -132,9 +148,9 @@ class BarAggregator:
         if self.current_bar_start is not None and bar_start > self.current_bar_start:
             # Bar rolled over -> finalize previous bar
             completed_bar = self._finalize_bar()
-            self._start_new_bar(bar_start, price, vol, buy_v, sell_v, oi)
+            self._start_new_bar(bar_start, price, vol, buy_v, sell_v, oi, depth_imbalance)
         elif self.current_bar_start is None:
-            self._start_new_bar(bar_start, price, vol, buy_v, sell_v, oi)
+            self._start_new_bar(bar_start, price, vol, buy_v, sell_v, oi, depth_imbalance)
         else:
             # Continue current bar
             self.high_p = max(self.high_p, price)
@@ -143,10 +159,45 @@ class BarAggregator:
             self.bar_volume += vol
             self.bar_buy_vol += buy_v
             self.bar_sell_vol += sell_v
+            self.bar_depth_imbalances.append(depth_imbalance)
             if oi > 0:
                 self.bar_oi = oi
 
         return completed_bar
+
+    def check_micro_burst(self, now: datetime) -> dict | None:
+        """Inspect rolling 15s window for high-velocity orderflow surges or absorption before bar close."""
+        if len(self.rolling_ticks) < 4:
+            return None
+
+        # Cooldown: at least 15s between micro-burst alerts
+        if self.last_micro_burst_ts and (now - self.last_micro_burst_ts).total_seconds() < 15.0:
+            return None
+
+        tot_vol = sum(t[2] for t in self.rolling_ticks)
+        tot_buy = sum(t[3] for t in self.rolling_ticks)
+        tot_sell = sum(t[4] for t in self.rolling_ticks)
+        delta = tot_buy - tot_sell
+        delta_ratio = delta / tot_vol if tot_vol > 0 else 0.0
+
+        # Minimum threshold for micro-burst (e.g. at least 500 units and 35% delta bias)
+        min_burst_vol = 500 if "NIFTY" in self.instrument_id else 300
+        if tot_vol >= min_burst_vol and abs(delta_ratio) >= 0.35:
+            latest_depth = self.rolling_ticks[-1][5]
+            recent_px = [t[1] for t in self.rolling_ticks]
+            self.last_micro_burst_ts = now
+            return {
+                "instrument_id": self.instrument_id,
+                "timestamp": now,
+                "volume_15s": tot_vol,
+                "delta_15s": delta,
+                "delta_ratio_15s": round(delta_ratio, 3),
+                "high_15s": max(recent_px),
+                "low_15s": min(recent_px),
+                "latest_price": recent_px[-1],
+                "depth_imbalance": latest_depth,
+            }
+        return None
 
     def _start_new_bar(
         self,
@@ -156,6 +207,7 @@ class BarAggregator:
         buy_v: float,
         sell_v: float,
         oi: int,
+        depth_imbalance: float = 0.0,
     ) -> None:
         self.current_bar_start = bar_start
         self.open_p = price
@@ -165,6 +217,7 @@ class BarAggregator:
         self.bar_volume = volume
         self.bar_buy_vol = buy_v
         self.bar_sell_vol = sell_v
+        self.bar_depth_imbalances = [depth_imbalance]
         self.prev_bar_oi = self.bar_oi if self.bar_oi > 0 else oi
         self.bar_oi = oi if oi > 0 else self.prev_bar_oi
 
@@ -177,6 +230,7 @@ class BarAggregator:
 
         delta_ratio = delta / self.bar_volume if self.bar_volume > 0 else 0.0
         delta_oi = self.bar_oi - self.prev_bar_oi if self.prev_bar_oi > 0 else 0
+        avg_depth = sum(self.bar_depth_imbalances) / max(1, len(self.bar_depth_imbalances)) if self.bar_depth_imbalances else 0.0
 
         bar = Bar(
             instrument_id=self.instrument_id,
@@ -203,6 +257,7 @@ class BarAggregator:
             delta_oi=delta_oi,
             oi_fresh=True,
             incomplete=False,
+            depth_imbalance=round(avg_depth, 4),
         )
         return bar
 
@@ -246,6 +301,7 @@ def aggregate_bars(bars_1m: list[Bar], target_minutes: int = 5) -> list[Bar]:
         tot_vol = sum(b.volume_units for b in b_list)
         tot_delta = sum(b.delta for b in b_list)
         delta_ratio = round(tot_delta / tot_vol, 3) if tot_vol > 0 else 0.0
+        avg_depth = sum(getattr(b, "depth_imbalance", 0.0) for b in b_list) / max(1, len(b_list))
 
         bars_out.append(Bar(
             instrument_id=first_b.instrument_id,
@@ -272,6 +328,7 @@ def aggregate_bars(bars_1m: list[Bar], target_minutes: int = 5) -> list[Bar]:
             delta_oi=sum(b.delta_oi for b in b_list),
             oi_fresh=last_b.oi_fresh,
             incomplete=False,
+            depth_imbalance=round(avg_depth, 4),
         ))
 
     return bars_out
