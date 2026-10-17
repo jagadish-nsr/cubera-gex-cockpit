@@ -3,14 +3,11 @@ Background daemon to continuously fetch option chain data and write to local fil
 This allows Streamlit to render smoothly without waiting on API calls.
 
 Architecture:
-- Works with any configured DATA_SOURCE (icici_breeze, dhan, nse)
+- Works with any configured DATA_SOURCE (dhan, nse, auto)
 - Fetches ALL configured indices in a round-robin loop
 - Writes per-index snapshot files: data/journal/latest_snap_{SYMBOL}.pkl
 - Each snapshot contains a fully processed DashboardData object (ready to use by the UI)
 - Configurable poll interval (default 5s per index)
-
-Note: File is named breeze_daemon.py for back-compat with existing shell scripts/cron.
-The daemon is fully adapter-agnostic and routes through load_dashboard().
 """
 import os
 import sys
@@ -25,7 +22,6 @@ if cwd not in sys.path:
 
 import config
 from app.data_access import load_dashboard
-from data.icici_breeze import SessionExpiredError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("gex_daemon")
@@ -45,12 +41,9 @@ def run_daemon():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log.info("Starting GEX Daemon (adapter: %s)...", config.DATA_SOURCE)
 
-    session_expired = False
-
     while True:
         try:
-            # Reload config each loop iteration so a new session token written
-            # to .env is picked up without restarting the daemon.
+            # Reload config each loop iteration so new tokens written to .env are picked up
             import importlib
             importlib.reload(config)
 
@@ -62,35 +55,17 @@ def run_daemon():
                 from data.dhan import _DHAN_UNDERLYING_ID as _dhan_ids
                 indices = [idx for idx in indices if idx.symbol in _dhan_ids]
 
-
-            if session_expired:
-                # Back-off: wait for the user to update the token in the UI.
-                log.error("Session Token Expired (adapter: %s). Please update credentials.",
-                          config.DATA_SOURCE)
-                time.sleep(30)
-                session_expired = False
-                continue
-
             # Round-robin: fetch each index in turn
             failed_count = 0
             for idx in indices:
                 symbol = idx.symbol
                 t0 = time.time()
                 try:
-                    # Use load_dashboard() so the pkl contains a ready-to-use
-                    # DashboardData object, not a raw tuple that the UI would
-                    # have to post-process (which was the original bug).
                     dashboard_data = load_dashboard(
                         window=window,
                         use_demo=False,
                         symbol=symbol,
                     )
-                except SessionExpiredError:
-                    session_expired = True
-                    log.error(
-                        "Session Token Expired fetching %s — waiting for UI token update.", symbol
-                    )
-                    break  # exit the inner for-loop; the while loop will handle back-off
                 except Exception as e:
                     log.warning("Daemon: failed to fetch %s: %s", symbol, e)
                     failed_count += 1
@@ -144,10 +119,6 @@ def run_daemon():
             except Exception as _poi_err:
                 log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
 
-        except SessionExpiredError:
-            session_expired = True
-            log.error("Session Token Expired (adapter: %s). Please update credentials.",
-                      config.DATA_SOURCE)
         except Exception as e:
             log.error("Daemon loop error: %s", e)
             time.sleep(5)

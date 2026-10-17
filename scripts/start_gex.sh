@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.." || exit 1
 
 echo "Starting GEX Daemon (option chain & participant OI)..."
-python3 scripts/breeze_daemon.py &
+python3 scripts/gex_daemon.py &
 DAEMON_PID=$!
 
 echo "Starting Indian GEX Dashboard (3-Tab)..."

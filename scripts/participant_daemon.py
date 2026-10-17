@@ -1,6 +1,5 @@
 """
 Background daemon to fetch EOD Participant OI data from NSE.
-(Extracted from former breeze_daemon.py)
 Runs daily after 16:30 IST to download the NSE participant OI CSV.
 """
 import os

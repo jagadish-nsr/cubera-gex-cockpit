@@ -24,17 +24,6 @@ import pytz
 import config  # noqa: E402
 from app.data_access import WINDOW_CHOICES, load_dashboard  # noqa: E402
 
-# SessionExpiredError is used by the ICICI Breeze adapter's refresh handler.
-# Import lazily so the dashboard works with Dhan (the new default) even if
-# icici_breeze extras are not installed.
-try:
-    from data.icici_breeze import SessionExpiredError  # noqa: E402
-except ImportError:
-    class SessionExpiredError(Exception):  # type: ignore[no-redef]
-        """Stub — icici_breeze not available (Dhan mode)."""
-
-    class SessionExpiredError(Exception):  # type: ignore[no-redef]
-        """Stub — icici_breeze not available (Dhan mode)."""
 
 # ---------------------------------------------------------------------------
 # Global CSS — glassmorphism cards, gradient badges, regime glow, dividers
@@ -53,11 +42,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     border: 1px solid rgba(255,255,255,0.15);
     backdrop-filter: blur(6px);
     margin-bottom: 4px;
-}
-.adapter-badge.icici {
-    background: linear-gradient(135deg, #3730a3 0%, #4f46e5 100%);
-    color: #e0e7ff;
-    box-shadow: 0 0 14px rgba(79,70,229,0.45);
 }
 .adapter-badge.dhan {
     background: linear-gradient(135deg, #92400e 0%, #f97316 100%);
@@ -612,7 +596,6 @@ def render_gex_scsp_tab():
             )
             # Data source badge
             _src_map = {
-                "icici_breeze": ("icici", "📡", "ICICI Direct Breeze"),
                 "dhan":         ("dhan",  "🔶", "Dhan API"),
                 "nse":          ("nse",   "📊", "NSE Scraper"),
             }
@@ -635,49 +618,6 @@ def render_gex_scsp_tab():
     else:
         st.session_state["symbol_changed"] = False
 
-    # Session / credential expiration handlers
-    # ICICI Breeze session expired
-    if st.session_state.get("session_expired"):
-        st.error("⚠️ ICICI Breeze Session Expired! Please generate a new session token from ICICI Direct and enter it below.")
-        st.markdown("[Generate new token here →](https://api.icicidirect.com/apiuser/login?api_key={})\n\nAfter login, copy the `apisession` value from the redirect URL.".format(
-            (config.ICICI_BREEZE_API_KEY or "").replace("+", "%2B")))
-        with st.form("session_token_form", clear_on_submit=True):
-            new_token = st.text_input("New Session Token:", type="password",
-                                      help="The session token from the ICICI Direct login redirect URL")
-            submitted = st.form_submit_button("✅ Update Token & Reconnect", type="primary")
-            if submitted and new_token:
-                import os, re
-                # 1. Update the live process environment
-                os.environ["ICICI_BREEZE_SESSION_TOKEN"] = new_token
-                # 2. Update the config module attribute so _load_from_breeze reads new value
-                config.ICICI_BREEZE_SESSION_TOKEN = new_token
-                # 3. Persist to .env so the daemon picks it up on its next loop reload
-                try:
-                    env_path = str(ROOT / ".env")
-                    with open(env_path, "r") as f:
-                        env_content = f.read()
-                    if "ICICI_BREEZE_SESSION_TOKEN=" in env_content:
-                        env_content = re.sub(
-                            r'ICICI_BREEZE_SESSION_TOKEN=.*',
-                            f'ICICI_BREEZE_SESSION_TOKEN={new_token}',
-                            env_content
-                        )
-                    else:
-                        env_content += f'\nICICI_BREEZE_SESSION_TOKEN={new_token}\n'
-                    with open(env_path, "w") as f:
-                        f.write(env_content)
-                    st.success("Token saved to .env — daemon will reload automatically.")
-                except Exception as _env_err:
-                    st.warning(f"Could not write .env ({_env_err}), running in-memory only.")
-                st.session_state.session_expired = False
-                st.session_state.err = None
-                st.session_state.data = None  # force a fresh fetch on next rerun
-                st.rerun()
-            elif submitted and not new_token:
-                st.warning("Please enter a token before submitting.")
-        # CRITICAL: stop here so the refresh logic below doesn't re-trigger
-        # and immediately overwrite the session_expired flag in a tight loop.
-        st.stop()
 
     # Dhan credential missing/expired handler
     if config.DATA_SOURCE == "dhan":
@@ -871,7 +811,6 @@ def render_gex_scsp_tab():
 
     # --- Source / provenance tag line under title -------------------------
     _adapter_labels = {
-        "icici_breeze":    "📡 ICICI Direct Breeze",
         "dhan":            "🔶 Dhan API",
         "nse":             "📊 NSE Scraper",
         "DEMO-SYNTHETIC":  "🧪 Demo (synthetic)",

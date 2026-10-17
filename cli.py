@@ -2,13 +2,13 @@
 
   python cli.py --demo                          # offline SYNTHETIC data (no NSE) — sanity-check
   python cli.py --live                          # live data (per DATA_SOURCE in .env)
-  python cli.py --live --symbol SENSEX          # SENSEX (requires DATA_SOURCE=icici_breeze)
+  python cli.py --live --symbol SENSEX          # SENSEX (requires Dhan credentials)
   python cli.py --live --symbol BANKNIFTY       # Bank Nifty
   python cli.py --live --window 0dte
 
 DATA_SOURCE in .env controls which provider is used:
-  DATA_SOURCE=icici_breeze  — default; ICICI Direct Breeze API (NIFTY, BANKNIFTY, SENSEX)
-  DATA_SOURCE=dhan          — Dhan broker API (NIFTY, BANKNIFTY)
+  DATA_SOURCE=auto          — default; uses Dhan when token present, else NSE
+  DATA_SOURCE=dhan          — Dhan broker API (NIFTY, BANKNIFTY, SENSEX)
   DATA_SOURCE=nse           — legacy NSE scraper (NIFTY, BANKNIFTY only)
 
 Every assumption is logged: lot size (VERIFY), dealer-sign model (UNVERIFIED for
@@ -42,58 +42,43 @@ def _build_snapshot(args):
 
         rows, spot = build_demo_rows(fetched_at=fetched_at)
         source = "DEMO-SYNTHETIC"
-    elif config.DATA_SOURCE == "dhan":
-        from data.dhan import fetch_chain_dhan
-
+    elif config.DATA_SOURCE in ("dhan", "auto"):
         client_id    = config.DHAN_CLIENT_ID
         access_token = config.DHAN_ACCESS_TOKEN
-        if not (client_id and access_token):
+        if client_id and access_token:
+            from data.dhan import fetch_chain_dhan
+
+            rows, spot = fetch_chain_dhan(
+                idx.symbol,
+                client_id=client_id,
+                access_token=access_token,
+                has_weekly=idx.has_weekly,
+            )
+            source = "dhan"
+        elif config.DATA_SOURCE == "dhan":
             print(
                 "ERROR: DATA_SOURCE=dhan requires DHAN_CLIENT_ID and "
                 "DHAN_ACCESS_TOKEN in .env",
                 file=sys.stderr,
             )
             sys.exit(1)
-        if idx.symbol == "SENSEX":
-            print(
-                "ERROR: SENSEX is not supported by the Dhan adapter. "
-                "Set DATA_SOURCE=icici_breeze in .env.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        rows, spot = fetch_chain_dhan(
-            idx.symbol,
-            client_id=client_id,
-            access_token=access_token,
-            has_weekly=idx.has_weekly,
-        )
-        source = "dhan"
-    elif config.DATA_SOURCE == "icici_breeze":
-        from data.icici_breeze import fetch_chain_breeze
+        else:
+            if idx.symbol == "SENSEX":
+                print(
+                    "ERROR: SENSEX is a BSE index not available via NSE scraper. "
+                    "Set DHAN_CLIENT_ID and DHAN_ACCESS_TOKEN in .env.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            from data.nse import fetch_chain, parse_nse_option_chain
 
-        api_key = config.ICICI_BREEZE_API_KEY
-        api_secret = config.ICICI_BREEZE_API_SECRET
-        session_token = config.ICICI_BREEZE_SESSION_TOKEN
-        if not (api_key and api_secret and session_token):
-            print(
-                "ERROR: DATA_SOURCE=icici_breeze requires ICICI_BREEZE_API_KEY, "
-                "ICICI_BREEZE_API_SECRET, and ICICI_BREEZE_SESSION_TOKEN in .env",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        rows, spot = fetch_chain_breeze(
-            idx.symbol,
-            api_key=api_key,
-            api_secret=api_secret,
-            session_token=session_token,
-            has_weekly=idx.has_weekly,
-        )
-        source = "icici_breeze"
+            rows, spot = parse_nse_option_chain(fetch_chain(idx.symbol, has_weekly=idx.has_weekly))
+            source = "nse"
     else:
         if idx.symbol == "SENSEX":
             print(
-                "ERROR: SENSEX requires DATA_SOURCE=icici_breeze in .env. "
-                "The NSE scraper cannot access BSE options.",
+                "ERROR: SENSEX is a BSE index and not available via NSE scraper. "
+                "Use DATA_SOURCE=dhan with credentials in .env.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -168,7 +153,7 @@ def main():
     p = argparse.ArgumentParser(description="Indian GEX level table (Nifty / Bank Nifty / Sensex)")
     mode = p.add_mutually_exclusive_group(required=True)
     mode.add_argument("--live", action="store_true",
-                      help="fetch live chain (NSE or Breeze per DATA_SOURCE in .env)")
+                      help="fetch live chain (Dhan or NSE per DATA_SOURCE in .env)")
     mode.add_argument("--demo", action="store_true", help="offline synthetic demo data")
     p.add_argument("--symbol", default=None,
                    help="index symbol: NIFTY (default) / BANKNIFTY / SENSEX")

@@ -79,22 +79,16 @@ def get_index(symbol: str | None) -> Index:
 # Controls which data provider is used for option-chain fetches.
 #   "auto"         — DEFAULT. Uses Dhan when token is present, else NSE backup.
 #   "dhan"         — Dhan broker API (requires DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN).
-#   "icici_breeze" — ICICI Direct Breeze API (requires API key + secret + daily session token).
 #   "nse"          — Legacy: scrapes official NSE endpoint.
 DATA_SOURCE: str = os.environ.get("DATA_SOURCE", "auto").strip().lower()
 LIVE_SOURCE = DATA_SOURCE
 
-VALID_DATA_SOURCES = {"nse", "icici_breeze", "dhan", "auto"}
+VALID_DATA_SOURCES = {"nse", "dhan", "auto"}
 if DATA_SOURCE not in VALID_DATA_SOURCES:
     raise ValueError(
         f"Unknown DATA_SOURCE={DATA_SOURCE!r}; valid: {sorted(VALID_DATA_SOURCES)}"
     )
 
-
-# --- ICICI Direct Breeze API credentials ------------------------------------
-ICICI_BREEZE_API_KEY:       str | None = os.environ.get("ICICI_BREEZE_API_KEY")
-ICICI_BREEZE_API_SECRET:    str | None = os.environ.get("ICICI_BREEZE_API_SECRET")
-ICICI_BREEZE_SESSION_TOKEN: str | None = os.environ.get("ICICI_BREEZE_SESSION_TOKEN")
 
 # --- Dhan API credentials ---------------------------------------------------
 DHAN_CLIENT_ID:    str | None = os.environ.get("DHAN_CLIENT_ID")

@@ -5,7 +5,7 @@ rem Change to project root
 cd /d "%~dp0.."
 
 echo Starting GEX Daemon (option chain & participant OI)...
-start "GEX Daemon" /B python scripts\breeze_daemon.py
+start "GEX Daemon" /B python scripts\gex_daemon.py
 set DAEMON_PID=%!
 
 echo Starting Indian GEX Dashboard (3-Tab)...

@@ -100,8 +100,6 @@ The Cockpit organizes quantitative index analytics into 11 tabbed workstations:
   - Feeds underlying spot indices (`IDX_I:13`, `25`, `51`), India VIX (`IDX_I:26`), near-month futures, and active option strikes.
 - **Dhan REST API (`v2`) [Option Chain & History]:**
   - Fast snapshots of full options chains and 1-minute historical intraday bars for VWAP and ATR calculations.
-- **ICICI Direct Breeze API [Configurable Data Provider]:**
-  - Multi-index live chain provider configured via `DATA_SOURCE=icici_breeze` in `.env`.
 - **NSE India Scraper [Automatic Fail-Soft Fallback]:**
   - Scrapes official exchange option chains (`/api/option-chain-indices`) when broker connections are unavailable.
 

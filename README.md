@@ -44,20 +44,9 @@ The adapter is configured via `DATA_SOURCE` in your `.env` file:
 
 | `DATA_SOURCE`   | Provider                  | Indices supported          | Credentials needed |
 |----------------|---------------------------|----------------------------|--------------------|
-| `icici_breeze` | **ICICI Direct** (default)| NIFTY, BANKNIFTY, SENSEX   | API key + secret + **daily** session token |
-| `dhan`         | Dhan broker               | NIFTY, BANKNIFTY           | Client ID + access token (static) |
+| `auto`         | **Auto (Dhan / NSE)** (default) | NIFTY, BANKNIFTY, SENSEX | Dhan credentials optional (uses NSE/demo fallback) |
+| `dhan`         | Dhan broker               | NIFTY, BANKNIFTY, SENSEX   | Client ID + access token (static) |
 | `nse`          | NSE scraper (legacy)      | NIFTY, BANKNIFTY only      | None (run from home/Indian IP) |
-
-### ICICI Direct Breeze (default)
-Copy `.env.example` → `.env` and fill in:
-```
-DATA_SOURCE=icici_breeze
-ICICI_BREEZE_API_KEY=...
-ICICI_BREEZE_API_SECRET=...
-ICICI_BREEZE_SESSION_TOKEN=...   # refresh daily
-```
-Generate your session token at:
-`https://api.icicidirect.com/apiuser/login?api_key=<url-encoded-api-key>`
 
 ### Dhan
 ```
@@ -78,7 +67,7 @@ Supports NIFTY and BANKNIFTY only — not SENSEX.
 ```
 python3 cli.py --demo            # offline SYNTHETIC chain (no network) — sanity check
 python3 cli.py --live            # live chain via DATA_SOURCE adapter in .env
-python3 cli.py --live --symbol SENSEX     # SENSEX (requires DATA_SOURCE=icici_breeze)
+python3 cli.py --live --symbol SENSEX     # SENSEX (via Dhan)
 python3 cli.py --live --window 0dte
 ```
 Local dashboard — one-click: `run_simple.bat` (Windows) or `run_simple.command` (macOS/Linux).
@@ -104,7 +93,6 @@ python -m pytest -q
 - `regime/` — regime classification + playbook (unchanged).
 - `data/schema.py`, `data/parity.py` — common schema + parity r/q + spot (unchanged).
 - `data/nse.py` — **NSE adapter**: live Nifty option-chain fetch + parse (legacy).
-- `data/icici_breeze.py` — **ICICI Direct Breeze adapter**: full GEX + OI + VIX (default).
 - `data/dhan.py` — **Dhan adapter**: option chain + OI aggregation (static token).
 - `data/expiry.py` — **NSE expiry calendar** (VERIFY current weekly/monthly rules).
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).

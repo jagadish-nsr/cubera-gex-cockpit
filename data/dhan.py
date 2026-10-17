@@ -666,7 +666,7 @@ def parse_dhan_option_chain(
 ) -> tuple:
     """Parse Dhan option chain response into normalised rows.
 
-    Returns (rows, spot) where each row has the same keys as icici_breeze rows:
+    Returns (rows, spot) where each row has the standard keys:
     expiry, strike, type, oi, doi, vol, price, iv, T.
 
     Dhan v2 provides greeks (delta, gamma, theta, vega) and implied_volatility
@@ -811,7 +811,7 @@ def fetch_chain_dhan(
     """Fetch the full option chain for ``symbol`` from the Dhan API.
 
     Returns (rows, spot) where rows is a list of normalised contract dicts and
-    spot is the underlying index level. Mirrors fetch_chain_breeze() surface.
+    spot is the underlying index level.
     """
     fetched_at = fetched_at or datetime.now(timezone.utc)
 
@@ -863,7 +863,7 @@ def fetch_chain_dhan(
 # ---------- OI aggregation helpers ------------------------------------------
 
 def aggregate_oi_volume_dhan(rows: list) -> dict:
-    """Aggregate total call/put OI, delta-OI, and volume. Same schema as breeze."""
+    """Aggregate total call/put OI, delta-OI, and volume."""
     call_oi = put_oi = call_doi = put_doi = call_vol = put_vol = 0.0
     for r in rows:
         if r["type"] == "C":
@@ -891,10 +891,7 @@ def per_strike_oi_dhan(
     spot=None,
     band_pts=None,
 ) -> list:
-    """Per-strike OI/delta-OI/volume, filtered to ±band_pts of spot if given.
-
-    Same output schema as per_strike_oi_breeze().
-    """
+    """Per-strike OI/delta-OI/volume, filtered to ±band_pts of spot if given."""
     strikes = {}
     for r in rows:
         k = float(r["strike"])
@@ -920,7 +917,6 @@ def per_strike_oi_dhan(
 def nearest_expiry_premiums_dhan(rows: list) -> dict:
     """Extract call/put mid-prices for the nearest expiry only.
 
-    Same output schema as nearest_expiry_premiums_breeze().
     Returns {strike: {"call_ltp": float|None, "put_ltp": float|None}}.
     """
     if not rows:
