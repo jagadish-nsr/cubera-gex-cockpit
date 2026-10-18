@@ -1,0 +1,1643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🎯 Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
+  <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
+  <link rel="stylesheet" href="/static/css/cockpit.css">
+  <script src="/static/lightweight-charts.standalone.js"></script>
+</head>
+<body>
+  <div id="app-layout">
+    <!-- Persistent Left Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-brand">
+          <span>⚡ CUBERA GEX</span>
+        </div>
+        <span id="sidebar-version" style="font-size:0.68rem;color:var(--ink-faint);font-family:var(--mono)">v2.0 PRO</span>
+      </div>
+
+      <div class="sidebar-content">
+        <!-- Index Selector -->
+        <div class="form-group">
+          <label class="form-label" for="index-select">Index:</label>
+          <select id="index-select" class="form-control">
+            <option value="NIFTY" selected>NIFTY (Nifty 50)</option>
+            <option value="BANKNIFTY">BANKNIFTY (Nifty Bank)</option>
+            <option value="SENSEX">SENSEX (BSE Sensex)</option>
+          </select>
+        </div>
+
+        <!-- Live Quote Box -->
+        <!-- Live / Offline Quote Box -->
+        <div class="quote-box">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span id="quote-box-label" style="font-size:0.68rem;text-transform:uppercase;color:var(--ink-mute);font-weight:750">Spot Close (EOD)</span>
+            <span id="quote-source-badge" style="font-size:0.65rem;color:var(--ink-mute);background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:4px;font-family:var(--mono)">EOD Close</span>
+          </div>
+          <div class="quote-spot">
+            <span id="quote-status-dot" class="offline-dot"></span>
+            <span id="spot-price-display">₹23,146.2</span>
+          </div>
+          <div class="quote-meta-grid">
+            <div class="quote-meta-item">
+              <small>Near Futures</small>
+              <b id="futures-price-display">₹23,171.2</b>
+            </div>
+            <div class="quote-meta-item">
+              <small>Basis Spread</small>
+              <b id="basis-display" style="color:var(--go)">+25.0 pts</b>
+            </div>
+            <div class="quote-meta-item">
+              <small>Day High / Low</small>
+              <span id="day-hl-display" style="font-family:var(--mono);font-size:0.72rem">23,215 / 23,085</span>
+            </div>
+            <div class="quote-meta-item">
+              <small>India VIX</small>
+              <b id="vix-display" style="color:var(--spark)">14.04 (+0.0%)</b>
+            </div>
+          </div>
+        </div>
+
+        <!-- Expiry Window Scope -->
+        <div class="form-group">
+          <label class="form-label" for="window-select">Expiry / Calculation Scope:</label>
+          <select id="window-select" class="form-control">
+            <option value="current_week" selected>🎯 Current Week (Near Expiry)</option>
+            <option value="next_week">⏭️ Next Week (Next Expiry)</option>
+            <option value="weekly">📅 Weekly Window Aggregation</option>
+            <option value="monthly">📆 Monthly Window Aggregation</option>
+            <option value="0dte_to_next_monthly">🌐 Composite: 0DTE to Near Monthly</option>
+            <option value="all">📚 All Expiries (Full Chain Aggregate)</option>
+          </select>
+        </div>
+
+        <!-- Active Expiry Target Card -->
+        <div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line)">
+          <div style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">Active Expiry Target</div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;margin:4px 0 2px">
+            <span id="active-expiry-target" style="font-size:1.02rem;font-weight:800;color:var(--ink)">15-Oct-2026</span>
+            <span id="active-dte-badge" style="font-size:.75rem;font-weight:700;background:var(--spark);color:#fff;padding:2px 7px;border-radius:5px">0DTE Today</span>
+          </div>
+          <div id="active-mode-desc" style="font-size:.72rem;color:var(--ink-mute)">Single Expiry Isolated GEX · NIFTY 50</div>
+        </div>
+
+        <!-- Two-Mode Feed Streaming Banner -->
+        <div id="feed-mode-banner" class="feed-mode-banner live">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">⚡ Feed Mode</span>
+            <span id="feed-status-badge" style="font-size:.68rem;color:var(--go);font-weight:700;background:var(--go-bg);padding:2px 7px;border-radius:4px">🟢 WebSocket Live</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">
+            <span>Status: <b id="session-title-display" style="color:#4ade80">Live Market Open</b></span>
+            <span>Push: <b style="color:var(--ink)">&lt; 1ms</b></span>
+            <span>Cache: <b style="color:var(--spark)">0ms Memory</b></span>
+          </div>
+          <div id="session-substate-display" style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">
+            Regular Session (09:15–15:30 IST)
+          </div>
+        </div>
+
+        <!-- Refresh Button -->
+        <button id="btn-force-refresh" class="btn btn-secondary btn-block">🔄 Force Re-sync Snapshot</button>
+
+        <hr style="border:none;border-top:1px solid var(--line);margin:4px 0">
+
+        <!-- Dhan Broker API Token Manager -->
+        <div class="token-box">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:.68rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🔑 Dhan Broker Token</span>
+            <span id="token-status-pill" style="font-size:.66rem;padding:1px 6px;border-radius:4px;background:var(--go-bg);color:var(--go);font-weight:700">Active (14h)</span>
+          </div>
+          <input type="password" id="dhan-token-input" class="form-control" placeholder="Paste Dhan Access Token..." style="font-size:0.75rem">
+          <button id="btn-save-token" class="btn btn-primary btn-block" style="font-size:0.76rem">💾 Save Token</button>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--line);margin:4px 0">
+
+        <!-- 12 Documentation & Manual Links -->
+        <div>
+          <div class="sidebar-section-title">📚 Documentation & Manuals</div>
+          <div class="help-links-list">
+            <a href="#" onclick="alert('Master User Guide: Complete reference for Cubera GEX Cockpit.')">📖 Master User Guide ↗</a>
+            <a href="#" onclick="alert('Target Engine Guide: Confluence dial, scenario scoring, and option repricing.')">🎯 Target Engine Guide ↗</a>
+            <a href="#" onclick="alert('Options Analytics Guide: Buildup matrix, IV skew, and term structure.')">🔬 Options Analytics Guide ↗</a>
+            <a href="#" onclick="alert('Pre/Post-Market & Recs Guide: Discovery auction and trade recommendations.')">🌅 Pre/Post-Market Guide ↗</a>
+            <a href="#" onclick="alert('Options Strategies Guide: Playbook rules for spreads, scalps, and condors.')">🎯 Options Strategies Guide ↗</a>
+            <a href="#" onclick="alert('OrderFlow Signals Guide: Sentinel tape, CVD divergence, and block sweeps.')">⚡ OrderFlow Signals Guide ↗</a>
+            <a href="#" onclick="alert('Market Intelligence Guide: Macro narrative, sector breadth, and FII flows.')">🧭 Market Intelligence Guide ↗</a>
+            <a href="#" onclick="alert('Session Commentary Guide: AI audio broadcast and intraday storytelling.')">🎙️ Session Commentary Guide ↗</a>
+            <a href="#" onclick="alert('Signal Efficiency Guide: Model calibration and expectancy matrix.')">📈 Signal Efficiency Guide ↗</a>
+            <a href="#" onclick="alert('Indian GEX Playbook: Expiry pinning, gamma blast, and speed bumps.')">🗺️ Indian GEX Playbook ↗</a>
+            <a href="#" onclick="alert('Participant Positioning: FII, DII, Pro, and Client OI trends.')">🧭 Participant Positioning ↗</a>
+            <a href="#" onclick="alert('Data & Calculations: Mathematical formulas for Black-76, GEX, and Charm.')">📊 Data & Calculations ↗</a>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Viewport Area -->
+    <main id="main-viewport">
+      <!-- Top Sticky Bar -->
+      <header id="top-header">
+        <div class="header-top-row">
+          <div class="header-title-block">
+            <h1>🎯 <span id="header-index-label">NIFTY 50</span> Trading Cockpit</h1>
+            <div class="header-subtitle">
+              <span>GEX Map · Options Analytics · Paper Journal</span>
+              <span> &nbsp;|&nbsp; </span>
+              <span id="header-clock" style="font-family:var(--mono)">14:30:15 IST</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <button id="btn-sound-toggle" class="btn btn-secondary" style="font-size:0.75rem">🔔 Audio Chimes: ON</button>
+            <span id="session-phase-badge" class="badge-active" style="padding:5px 12px;font-size:0.74rem">POWER HOUR (09:15–15:30)</span>
+          </div>
+        </div>
+
+        <!-- 11 Tab Navigation Bar -->
+        <nav class="nav-tabs" id="nav-tabs">
+          <button class="tab-btn active" id="tab-btn-cockpit" data-tab="tab-cockpit" onclick="window.switchTab('tab-cockpit')">🗺️ Cockpit</button>
+          <button class="tab-btn" id="tab-btn-target-engine" data-tab="tab-target-engine" onclick="window.switchTab('tab-target-engine')">🎯 Target Engine</button>
+          <button class="tab-btn" id="tab-btn-recommendations" data-tab="tab-recommendations" onclick="window.switchTab('tab-recommendations')">⚡ Trade Recommendations</button>
+          <button class="tab-btn" id="tab-btn-sentinel" data-tab="tab-sentinel" onclick="window.switchTab('tab-sentinel')">⚡ Sentinel Tape</button>
+          <button class="tab-btn" id="tab-btn-efficiency" data-tab="tab-efficiency" onclick="window.switchTab('tab-efficiency')">🎯 Signal Efficiency</button>
+          <button class="tab-btn" id="tab-btn-market-intel" data-tab="tab-market-intel" onclick="window.switchTab('tab-market-intel')">🧭 Market Intelligence</button>
+          <button class="tab-btn" id="tab-btn-analytics" data-tab="tab-analytics" onclick="window.switchTab('tab-analytics')">📡 Options Analytics</button>
+          <button class="tab-btn" id="tab-btn-journal" data-tab="tab-journal" onclick="window.switchTab('tab-journal')">📓 Journal</button>
+          <button class="tab-btn" id="tab-btn-scorecard" data-tab="tab-scorecard" onclick="window.switchTab('tab-scorecard')">📊 Scorecard</button>
+          <button class="tab-btn" id="tab-btn-ops" data-tab="tab-ops" onclick="window.switchTab('tab-ops')">⚙️ Ops &amp; Calendar</button>
+          <button class="tab-btn" id="tab-btn-commentary" data-tab="tab-commentary" onclick="window.switchTab('tab-commentary')">🎙️ Session Commentary</button>
+        </nav>
+      </header>
+
+      <!-- Tab Content Area -->
+      <section class="tab-content">
+        <!-- Tab 1: 🗺️ Cockpit -->
+        <div id="tab-cockpit" class="tab-pane active">
+          <!-- Executive Status Strip -->
+          <div class="exec-strip">
+            <div class="exec-item">
+              <span class="exec-label">Executive Session Status</span>
+              <span id="cockpit-exec-status" class="exec-val" style="color:var(--ink-mute)">Session Closed · Snapshot Locked at ₹23,146.15</span>
+            </div>
+            <div class="exec-item">
+              <span class="exec-label">Market Breadth</span>
+              <span id="cockpit-breadth-val" class="exec-val">11 Adv / 3 Dec (3.67x)</span>
+            </div>
+            <div class="exec-item">
+              <span class="exec-label">Next Phase Countdown</span>
+              <span id="cockpit-phase-countdown" class="exec-val" style="color:var(--ink-mute)">Market Closed (Reopens Mon 09:15 IST)</span>
+            </div>
+          </div>
+
+          <!-- Pre-Bell Tactical Briefing & Opening Shocks (Discovered Equilibrium) -->
+          <div id="cockpit-pre-market-card" class="pre-bell-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:1.15rem">🌅</span>
+                <b style="font-size:0.95rem;color:var(--warn)">Pre-Bell Tactical Briefing &amp; Opening Discovery</b>
+                <span id="pm-discovered-at" style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:07:30 IST Discovery</span>
+              </div>
+              <div>
+                <span id="pm-regime-badge" class="badge-active" style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">GAP EXTENSION BULL</span>
+              </div>
+            </div>
+            <div class="pre-bell-grid">
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative Open</small>
+                <b id="pm-indicative-open" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">₹24,525.0</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
+                <b id="pm-opening-gap" style="font-size:1.1rem;font-family:var(--mono);color:var(--go)">+65.0 pts (+0.27%)</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call / Put Wall</small>
+                <b id="pm-walls" style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">24,600 / 24,400</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Favored Opening Play</small>
+                <b id="pm-favored-play" style="font-size:0.92rem;color:var(--spark)">Dip Buying near VWAP</b>
+              </div>
+            </div>
+            <div id="pm-briefing-text" style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:9px 12px;border-radius:6px;border:1px solid var(--line);margin-bottom:10px">
+              Opening above prior session high with dealer call wall absorption at 24,600. Volatility crush expected in first 15 mins.
+            </div>
+
+            <!-- Projected Opening Option Shocks Table (5 Strikes around ATM) -->
+            <details class="collapsible-matrix" style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)" open>
+              <summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;list-style:none;user-select:none;outline:none">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="matrix-chevron" style="color:var(--spark);font-size:0.72rem;display:inline-block;transition:transform 0.2s">▼</span>
+                  <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>
+                  <span style="font-size:0.65rem;color:var(--ink-faint);background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>
+                </div>
+                <span id="pm-straddle-badge" style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹210.0 ➔ <b>₹218.4</b> (<span style="color:var(--go);font-weight:700">+4.0%</span>)</span>
+              </summary>
+              <div style="margin-top:8px;overflow-x:auto">
+                <table class="shock-table">
+                  <thead>
+                    <tr>
+                      <th>CE Prev</th>
+                      <th>CE Proj</th>
+                      <th>CE Δ</th>
+                      <th>Strike Level</th>
+                      <th>PE Prev</th>
+                      <th>PE Proj</th>
+                      <th>PE Δ</th>
+                    </tr>
+                  </thead>
+                  <tbody id="pm-shocks-body">
+                    <!-- Dynamically populated 5 strikes -->
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+
+          <!-- 6-Card KPI Strip -->
+          <div class="kpi-grid">
+            <div class="kpi-card go">
+              <small>Call Wall (Resistance)</small>
+              <b id="kpi-call-wall">₹24,600</b>
+              <span>Major Overhead Ceiling</span>
+            </div>
+            <div class="kpi-card stop">
+              <small>Put Wall (Support)</small>
+              <b id="kpi-put-wall">₹24,400</b>
+              <span>Major Floor Support</span>
+            </div>
+            <div class="kpi-card spark">
+              <small>Gamma Flip</small>
+              <b id="kpi-gamma-flip">₹24,480</b>
+              <span>Volatility Pivot Barrier</span>
+            </div>
+            <div class="kpi-card purple">
+              <small>Regime Classification</small>
+              <b id="kpi-regime">BULL_TREND</b>
+              <span id="kpi-regime-mode">Mode: Positive Gamma Pin</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>Net Dealer Gamma</small>
+              <b id="kpi-net-gex">+145,200</b>
+              <span>Dealer Gamma Units</span>
+            </div>
+            <div class="kpi-card">
+              <small>Put-Call Ratio (PCR)</small>
+              <b id="kpi-pcr">1.18</b>
+              <span>Bullish Open Interest Bias</span>
+            </div>
+          </div>
+
+          <!-- Gamma Blast Verdict Card -->
+          <div class="repricer-card" style="border-left:4px solid var(--go);display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <div style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">⚡ Expiry Gamma Blast Model</div>
+              <div id="gamma-blast-badge" style="font-size:1.15rem;font-weight:800;color:var(--go);margin:3px 0">GAMMA BLAST: INACTIVE</div>
+              <div id="gamma-blast-desc" style="font-size:0.8rem;color:var(--ink-mute)">Dealer gamma pinned within absorption walls; no explosive squeeze imminent.</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:0.7rem;color:var(--ink-faint)">Blast Score</div>
+              <div id="gamma-blast-score" style="font-size:1.8rem;font-weight:900;font-family:var(--mono);color:var(--ink)">24 / 100</div>
+            </div>
+          </div>
+
+          <!-- Gamma Price Ladder -->
+          <div class="ladder-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h3 style="font-size:1.05rem;font-weight:800">🗺️ Gamma Price Ladder (Spot Centered)</h3>
+              <span style="font-size:0.74rem;color:var(--ink-mute)">Real-time dealer positioning by strike</span>
+            </div>
+            <table class="ladder-table">
+              <thead>
+                <tr>
+                  <th>Strike Level</th>
+                  <th>GEX Role / Wall Marker</th>
+                  <th>Call Gamma Exposure</th>
+                  <th>Put Gamma Exposure</th>
+                  <th>Net Dealer Gamma</th>
+                </tr>
+              </thead>
+              <tbody id="gamma-ladder-body">
+                <!-- Dynamically rendered rows -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Bottom Row 2: Orderflow Sentinel Alerts + Active Paper Positions -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:24px">
+            <!-- Orderflow Sentinel Alerts (Tape) -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">⚡ OrderFlow Sentinel Alerts (Tape)</h3>
+                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Microstructure Feed</span>
+              </div>
+              <div id="cockpit-orderflow-alerts-container" class="signal-stream-container" style="max-height:360px">
+                <!-- Dynamically populated recent signals -->
+              </div>
+            </div>
+
+            <!-- Active Paper Positions (Live MTM) -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">💼 Active Paper Positions</h3>
+                <span id="cockpit-open-mtm-badge" style="font-family:var(--mono);font-size:0.82rem;font-weight:800;color:var(--go)">MTM: +₹12,450</span>
+              </div>
+              <table class="block-tape-table">
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th>Qty</th>
+                    <th>Entry</th>
+                    <th>Current</th>
+                    <th>PnL</th>
+                  </tr>
+                </thead>
+                <tbody id="cockpit-open-positions-body">
+                  <!-- Dynamically populated open trades -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Pinned Setups Section -->
+          <div class="ladder-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">★ Pinned High-Conviction Setups</h3>
+            <div id="pinned-setups-container">
+              <div style="color:var(--ink-mute);font-size:0.82rem">No cards pinned yet. Click '☆ Pin Card' on any recommendation to pin it here.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 2: 🎯 Target Engine -->
+        <div id="tab-target-engine" class="tab-pane">
+          <!-- Confluence Dial Box -->
+          <div class="dial-box">
+            <div>
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">T2 Institutional Confluence Dial</span>
+              <div style="font-size:1.35rem;font-weight:800;color:var(--go);margin:4px 0" id="dial-verdict">CONFLUENCE BULLISH</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">Concurrence across GEX, Sentinel CVD, OI flow, and IV Skew.</div>
+            </div>
+            <div style="text-align:right">
+              <div class="dial-score-num" id="dial-score-num">68 / 100</div>
+              <span style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH CONVICTION</span>
+            </div>
+          </div>
+
+          <!-- Targets Grid: Bull, Base, Bear -->
+          <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:14px;margin-bottom:24px">
+            <div class="kpi-card go">
+              <small>🚀 Bull Path Target</small>
+              <b id="target-bull-val">₹24,620.0</b>
+              <span id="target-bull-sub">Probability: 68% · +120 pts</span>
+            </div>
+            <div class="kpi-card spark">
+              <small>🎯 Base Case Target</small>
+              <b id="target-base-val">₹24,535.0</b>
+              <span id="target-base-sub">Probability: 74% · +35 pts</span>
+            </div>
+            <div class="kpi-card stop">
+              <small>🛑 Bear Path Stop</small>
+              <b id="target-bear-val">₹24,395.0</b>
+              <span id="target-bear-sub">Probability: 32% · -105 pts</span>
+            </div>
+          </div>
+
+          <!-- Reference Anchors Status Strip -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+            <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:750;color:var(--go)">🟢 Bullish / Calls (CE) Reference</span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-ce-inval" style="color:var(--stop)">24,395.0</b></span>
+              </div>
+              <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
+                Target 1: <b id="ladder-ce-tgt1" style="color:var(--go)">24,535.0</b> · Target 2: <b id="ladder-ce-tgt2" style="color:#4ade80">24,620.0</b>
+              </div>
+            </div>
+            <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <span style="font-weight:750;color:var(--stop)">🔴 Bearish / Puts (PE) Reference</span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-pe-inval" style="color:var(--stop)">24,550.0</b></span>
+              </div>
+              <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
+                Target 1: <b id="ladder-pe-tgt1" style="color:var(--stop)">24,420.0</b> · Target 2: <b id="ladder-pe-tgt2" style="color:#f87171">24,350.0</b>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.74rem;color:var(--ink-mute)">
+            <div>
+              <span id="ladder-ws-status" style="color:var(--go);font-weight:700">🟢 11/11 Live WS Ticks</span> · 
+              Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">25</b> · 
+              Spot: <b id="ladder-spot-display" style="color:var(--spark)">₹23,146.2</b> · 
+              ATM: <b id="ladder-atm-display" style="color:var(--warn)">23,150</b>
+            </div>
+            <span style="font-size:0.7rem;color:var(--ink-faint)">Updated: Real-time 0ms</span>
+          </div>
+
+          <!-- Symmetrical Dual-Wing Ladder (ATM ± 5 Strikes) -->
+          <div class="ck-ladder-table-wrap">
+            <table class="ck-ladder-table">
+              <thead>
+                <tr>
+                  <th colspan="6" class="th-calls-header">🟢 CALLS (CE) WING</th>
+                  <th rowspan="2" class="th-strike-header">STRIKE</th>
+                  <th colspan="6" class="th-puts-header">🔴 PUTS (PE) WING</th>
+                </tr>
+                <tr>
+                  <th style="text-align:right">T1 PnL/Lot</th>
+                  <th style="text-align:right">R : R</th>
+                  <th style="text-align:right">T2 (₹)</th>
+                  <th style="text-align:right">T1 (₹)</th>
+                  <th style="text-align:right">SL (₹)</th>
+                  <th style="text-align:right">LTP (₹)</th>
+                  <th style="text-align:right">LTP (₹)</th>
+                  <th style="text-align:right">SL (₹)</th>
+                  <th style="text-align:right">T1 (₹)</th>
+                  <th style="text-align:right">T2 (₹)</th>
+                  <th style="text-align:right">R : R</th>
+                  <th style="text-align:right">T1 PnL/Lot</th>
+                </tr>
+              </thead>
+              <tbody id="strike-ladder-body">
+                <!-- Dynamically populated 11 strikes -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Target Engine Target/SL Calculator & Repricer Suite -->
+          <div class="repricer-card" style="margin-top:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <div>
+                <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎛️ Interactive 'What-If' Option Repricer &amp; Target/SL Calculator</h3>
+                <div style="font-size:0.75rem;color:var(--ink-mute);margin-top:2px">Calculate exact option target &amp; stop-loss premiums, PnL per lot, risk:reward, and Greeks for any strike across any expiry.</div>
+              </div>
+              <div style="display:flex;gap:6px;background:var(--surface-2);padding:3px;border-radius:6px;border:1px solid var(--line)">
+                <button id="te-mode-calc" class="btn btn-secondary active" style="font-size:0.72rem;padding:4px 10px" onclick="window.switchTEMode('calc')">🎯 Target / SL Calculator</button>
+                <button id="te-mode-sliders" class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px" onclick="window.switchTEMode('sliders')">🎛️ Custom What-If Sliders</button>
+              </div>
+            </div>
+
+            <!-- Contract Selector Bar -->
+            <div style="display:grid;grid-template-columns:1.8fr 2fr 1.2fr;gap:12px;background:var(--surface-2);padding:10px 14px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px">
+              <div>
+                <label class="form-label" style="font-size:0.72rem">📅 Expiry Contract:</label>
+                <select id="te-calc-expiry" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:0.72rem">🎯 Strike (21 ATM Band):</label>
+                <select id="te-calc-strike" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:0.72rem">Option Type:</label>
+                <div style="display:flex;gap:12px;align-items:center;height:32px">
+                  <label style="font-size:0.8rem;font-weight:750;color:var(--go);cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="te_calc_type" value="CE" checked onchange="window.recalculateTargetSL()"> CE
+                  </label>
+                  <label style="font-size:0.8rem;font-weight:750;color:var(--stop);cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="te_calc_type" value="PE" onchange="window.recalculateTargetSL()"> PE
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Contract Telemetry Strip -->
+            <div id="te-contract-strip" style="background:rgba(15, 23, 42, 0.85);border:1px solid #334155;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+              <div>
+                <b id="te-strip-title" style="color:#f8fafc">NIFTY 23,150 CE</b>
+                <span id="te-strip-sub" style="color:#94a3b8;font-size:0.72rem;margin-left:6px">(ATM Reference Contract)</span>
+              </div>
+              <div style="display:flex;gap:12px;font-family:var(--mono);color:#cbd5e1">
+                <span>LTP: <b id="te-strip-ltp" style="color:#38bdf8">₹124.5</b></span>
+                <span>Model Theo: <b id="te-strip-theo" style="color:#94a3b8">₹123.8</b></span>
+                <span>Strike IV: <b id="te-strip-iv" style="color:#facc15">14.2%</b></span>
+                <span>Delta: <b id="te-strip-delta" style="color:#34d399">+0.512</b></span>
+                <span>Theta: <b id="te-strip-theta" style="color:#f87171">-14.2</b></span>
+                <span>Vega: <b id="te-strip-vega" style="color:#c084fc">+18.5</b></span>
+              </div>
+            </div>
+
+            <!-- Mode 1: Target / SL Calculator Module -->
+            <div id="te-calc-panel">
+              <!-- Quick Preset Buttons -->
+              <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
+                <button id="te-btn-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull Preset (+1σ)</button>
+                <button id="te-btn-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear Preset (-1σ)</button>
+                <button id="te-btn-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Pin)</button>
+                <button id="te-btn-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
+              </div>
+
+              <!-- Inputs Grid -->
+              <div style="display:grid;grid-template-columns:1fr 1fr 1.2fr 1.2fr;gap:12px;margin-bottom:14px">
+                <div>
+                  <label class="form-label" style="font-size:0.72rem">Target Spot Level (₹):</label>
+                  <input type="number" id="te-input-target-spot" class="form-control" style="font-size:0.84rem;font-family:var(--mono)" step="10" value="24570" onchange="window.recalculateTargetSL()">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:0.72rem">Stop Loss Spot Level (₹):</label>
+                  <input type="number" id="te-input-sl-spot" class="form-control" style="font-size:0.84rem;font-family:var(--mono)" step="10" value="24460" onchange="window.recalculateTargetSL()">
+                </div>
+                <div>
+                  <div style="display:flex;justify-content:space-between">
+                    <label class="form-label" style="font-size:0.72rem">Holding Time (mins):</label>
+                    <span id="te-val-holding-mins" style="font-family:var(--mono);font-size:0.72rem;color:var(--spark)">60 mins</span>
+                  </div>
+                  <input type="range" id="te-slider-holding-mins" min="5" max="375" step="15" value="60" oninput="document.getElementById('te-val-holding-mins').textContent = this.value + ' mins'; window.recalculateTargetSL()">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:0.72rem">IV Scenario Shock:</label>
+                  <select id="te-select-iv-shock" class="form-control" style="font-size:0.8rem;padding:4px 8px" onchange="window.recalculateTargetSL()">
+                    <option value="Auto (Regime-Conditioned)" selected>Auto (Regime-Conditioned)</option>
+                    <option value="Flat IV (0.0 pts)">Flat IV (0.0 pts)</option>
+                    <option value="Mild Vol Compression (-1.0 pts)">Mild Vol Compression (-1.0 pts)</option>
+                    <option value="Strong Vol Compression (-2.5 pts)">Strong Vol Compression (-2.5 pts)</option>
+                    <option value="Panic Vol Expansion (+2.0 pts)">Panic Vol Expansion (+2.0 pts)</option>
+                    <option value="Extreme Vol Squeeze (+4.0 pts)">Extreme Vol Squeeze (+4.0 pts)</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 4 Real-Time Outcome Metric Cards -->
+              <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
+                <div class="kpi-card go">
+                  <small>Target Option Premium</small>
+                  <b id="te-out-tgt-ltp">₹168.40</b>
+                  <span id="te-out-tgt-gain" style="color:var(--go)">+43.90 pts (+35.3%)</span>
+                  <div id="te-out-tgt-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target PnL / Lot: +₹1,098 · P(Touch): 68.4%</div>
+                </div>
+                <div class="kpi-card stop">
+                  <small>Stop Loss Option Premium</small>
+                  <b id="te-out-sl-ltp">₹98.20</b>
+                  <span id="te-out-sl-loss" style="color:var(--stop)">-26.30 pts (-21.1%)</span>
+                  <div id="te-out-sl-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Risk / Lot: -₹658 · P(Touch SL): 32.1%</div>
+                </div>
+                <div class="kpi-card spark">
+                  <small>Risk : Reward Ratio</small>
+                  <b id="te-out-rr-ratio">1.67 : 1</b>
+                  <span id="te-out-rr-verdict" style="color:var(--spark)">Sub-Optimal (&lt; 1.8)</span>
+                  <div id="te-out-rr-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Net Spread: +17.6 pts · Breakeven: ₹24,624.5</div>
+                </div>
+                <div class="kpi-card purple">
+                  <small>Touch-Weighted EV / Lot</small>
+                  <b id="te-out-ev-val">+₹540</b>
+                  <span id="te-out-ev-verdict" style="color:var(--go)">Positive Expectancy</span>
+                  <div id="te-out-ev-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target IV: 13.5% (-0.8 pts)</div>
+                </div>
+              </div>
+
+              <!-- Collapsible Greek Decomposition Table -->
+              <details style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin-bottom:10px" open>
+                <summary style="font-size:0.76rem;font-weight:750;color:var(--spark);cursor:pointer">🔬 Greek Attribution Breakdown at Target &amp; Stop Loss</summary>
+                <table style="width:100%;font-size:0.72rem;border-collapse:collapse;margin-top:8px">
+                  <thead>
+                    <tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:left">
+                      <th style="padding:4px 6px">Phase</th><th style="padding:4px 6px">Spot Move</th><th style="padding:4px 6px">Full PnL</th>
+                      <th style="padding:4px 6px">Delta PnL</th><th style="padding:4px 6px">Gamma PnL</th><th style="padding:4px 6px">Vega PnL</th>
+                      <th style="padding:4px 6px">Theta Bleed</th><th style="padding:4px 6px">Residual</th>
+                    </tr>
+                  </thead>
+                  <tbody id="te-greek-attr-body"></tbody>
+                </table>
+              </details>
+            </div>
+
+            <!-- Mode 2: Custom What-If Sliders (Hidden by default) -->
+            <div id="te-sliders-panel" style="display:none">
+              <!-- Preset Buttons in Sliders Mode -->
+              <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
+                <button id="te-slider-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull (+1σ)</button>
+                <button id="te-slider-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear (-1σ)</button>
+                <button id="te-slider-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Pin)</button>
+                <button id="te-slider-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
+              </div>
+              <div class="slider-row">
+                <label for="slider-spot-shift">Underlying Spot Shift:</label>
+                <input type="range" id="slider-spot-shift" min="-250" max="250" value="0" step="5">
+                <span id="val-spot-shift" class="slider-val">0 pts</span>
+              </div>
+              <div class="slider-row">
+                <label for="slider-iv-shock">IV Shock (%):</label>
+                <input type="range" id="slider-iv-shock" min="-5.0" max="5.0" value="0.0" step="0.2">
+                <span id="val-iv-shock" class="slider-val">0.0%</span>
+              </div>
+              <div class="slider-row">
+                <label for="slider-decay-mins">Time Decay (Minutes):</label>
+                <input type="range" id="slider-decay-mins" min="0" max="360" value="60" step="15">
+                <span id="val-decay-mins" class="slider-val">60 mins</span>
+              </div>
+              <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:14px;font-size:0.8rem">
+                <b>Repriced Sample Option (ATM CE):</b> Base LTP — ➔ <b style="color:var(--spark)" id="repriced-sample-ltp">—</b> (<span id="repriced-sample-pnl" style="color:var(--go)">—</span>)
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: ⚡ Trade Recommendations -->
+        <div id="tab-recommendations" class="tab-pane">
+          <!-- Position Sizing & Risk Management HUD Bar -->
+          <div class="sizer-hud">
+            <div class="sizer-inputs">
+              <div class="form-group" style="flex:1">
+                <label class="form-label" for="sizer-cap-slider">💼 Account Trading Capital:</label>
+                <select id="sizer-cap-select" class="form-control" style="font-size:0.85rem;font-weight:750" onchange="window.updateSizerPreferences()">
+                  <option value="100000">₹1,00,000 (1.0 Lakh)</option>
+                  <option value="250000">₹2,50,000 (2.5 Lakh)</option>
+                  <option value="500000" selected>₹5,00,000 (5.0 Lakh)</option>
+                  <option value="1000000">₹10,00,000 (10.0 Lakh)</option>
+                  <option value="2500000">₹25,00,000 (25.0 Lakh)</option>
+                </select>
+              </div>
+              <div class="form-group" style="flex:1.2">
+                <label class="form-label">🎯 Risk Tolerance per Trade:</label>
+                <div style="display:flex;gap:8px;height:36px;align-items:center">
+                  <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="sizer_risk_radio" value="1.0" onchange="window.updateSizerPreferences()"> 🛡️ Cons (1.0%)
+                  </label>
+                  <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="sizer_risk_radio" value="1.5" checked onchange="window.updateSizerPreferences()"> ⚖️ Bal (1.5%)
+                  </label>
+                  <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="sizer_risk_radio" value="2.5" onchange="window.updateSizerPreferences()"> 🚀 Aggr (2.5%)
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="sizer-budget-banner">
+              <div style="color:var(--ink-mute);font-size:0.68rem;text-transform:uppercase">Max Risk Budget</div>
+              <div id="sizer-budget-val" style="font-size:1.3rem;font-weight:850;font-family:var(--mono);color:var(--stop)">₹7,500 / trade</div>
+            </div>
+          </div>
+
+          <!-- Position Sizing Telemetry Strip -->
+          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px 12px;margin:4px 0 14px;font-size:0.76rem;display:flex;justify-content:space-between">
+            <span>Max Risk Budget: <b id="hud-risk-budget" style="color:var(--stop)">₹7,500 / trade</b></span>
+            <span>Portfolio Outlay Cap (15%): <b id="hud-outlay-cap" style="color:var(--spark)">₹75,000</b></span>
+            <span>Contract Lot: <b id="hud-lot-size" style="color:var(--ink)">25 Qty/lot</b></span>
+          </div>
+
+          <!-- Strategy Effectiveness Telemetry Strip -->
+          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">📊 Strategy Effectiveness &amp; ML Ground-Truth Telemetry</span>
+              <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● AI/ML Logger Active (SQLite)</span>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:10px;font-size:0.76rem">
+              <div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b id="eff-total-tracked">38 setups</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="eff-tgt-rate" style="color:var(--go)">73.7%</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="eff-sl-rate" style="color:var(--stop)">15.8%</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="eff-inval-rate" style="color:var(--warn)">10.5%</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b id="eff-avg-rr" style="color:var(--spark)">1 : 2.8</b></div>
+            </div>
+          </div>
+
+          <!-- Higher Conviction (Grade A+) Section: Strict 2-Column Side-by-Side CE / PE -->
+          <div style="margin-bottom:28px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">⚡ Higher Conviction Recommendations (Score &gt; 85 · Grade A+)</h3>
+              <span style="font-size:0.72rem;color:var(--ink-mute)">Institutional Quality Gates</span>
+            </div>
+            <div class="rec-grid-ce-pe">
+              <div>
+                <div class="rec-column-header rec-col-ce">
+                  <span id="ce-higher-header-title">🟢 Higher Conviction Calls (Score &gt; 85)</span>
+                  <span style="font-size:0.70rem;background:rgba(34,197,94,.15);padding:1px 6px;border-radius:4px">Grade A+</span>
+                </div>
+                <div id="higher-ce-container"></div>
+              </div>
+              <div>
+                <div class="rec-column-header rec-col-pe">
+                  <span id="pe-higher-header-title">🔴 Higher Conviction Puts (Score &gt; 85)</span>
+                  <span style="font-size:0.70rem;background:rgba(239,68,68,.15);padding:1px 6px;border-radius:4px">Grade A+</span>
+                </div>
+                <div id="higher-pe-container"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Secondary Conviction (Fallback Tier 75-85) Section: Strict 2-Column Side-by-Side CE / PE -->
+          <div style="margin-bottom:28px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎯 Secondary Conviction / Fallback Tier (Score 75–85)</h3>
+              <span style="font-size:0.72rem;color:var(--ink-mute)">Fallback Risk Sized</span>
+            </div>
+            <div class="rec-grid-ce-pe">
+              <div>
+                <div class="rec-column-header" style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
+                  <span id="ce-fallback-header-title">🟡 Secondary Conviction Calls (Score 75–85)</span>
+                  <span style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback Tier</span>
+                </div>
+                <div id="fallback-ce-container"></div>
+              </div>
+              <div>
+                <div class="rec-column-header" style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
+                  <span id="pe-fallback-header-title">🟡 Secondary Conviction Puts (Score 75–85)</span>
+                  <span style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback Tier</span>
+                </div>
+                <div id="fallback-pe-container"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: ⚡ Sentinel Tape -->
+        <div id="tab-sentinel" class="tab-pane">
+          <!-- Top Timeframe, Filter, & Re-Seed Controls Bar -->
+          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+            <div style="display:flex;align-items:center;gap:12px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Timeframe:</label>
+                <select id="sentinel-timeframe-select" class="form-control" style="font-size:0.76rem;width:80px;padding:2px 6px" onchange="window.switchSentinelTimeframe(this.value)">
+                  <option value="1m" selected>1m</option>
+                  <option value="3m">3m</option>
+                  <option value="5m">5m</option>
+                  <option value="15m">15m</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Filter Signals:</label>
+                <select id="sentinel-signal-filter" class="form-control" style="font-size:0.76rem;padding:2px 6px" onchange="window.filterSentinelSignals(this.value)">
+                  <option value="ALL">All Signals</option>
+                  <option value="HIGH_CONF">High Confidence (Score ≥ 70)</option>
+                  <option value="BULL">Bullish Only</option>
+                  <option value="BEAR">Bearish Only</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px">
+              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750" onclick="window.reseedSentinelFlow('1m')" title="Seed authentic 1-minute full session flow (375 bars)">⚡ 1m Seeding</button>
+              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--spark);border-color:rgba(56,189,248,.4);font-weight:750" onclick="window.reseedSentinelFlow('5m')" title="Seed authentic 5-minute session flow (75 bars)">⚡ 5m Seeding</button>
+              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--ink);border-color:var(--line)" onclick="window.reseedSentinelFlow()">🔄 Sync Live</button>
+            </div>
+          </div>
+
+          <!-- Microstructure KPIs -->
+          <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
+            <div class="kpi-card go">
+              <small>CVD Regime</small>
+              <b id="sentinel-kpi-regime">BUYER_DOMINATED</b>
+              <span>Aggressive Delta Flow</span>
+            </div>
+            <div class="kpi-card spark">
+              <small>Net Cumulative Volume</small>
+              <b id="sentinel-kpi-net-cvd">+12,500</b>
+              <span>Delta Contracts</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>Buyer Volume Ratio</small>
+              <b id="sentinel-kpi-buyer-ratio">58.4%</b>
+              <span>Buy vs Sell Sweeps</span>
+            </div>
+            <div class="kpi-card purple">
+              <small>Block Sweeps (&gt;₹20L)</small>
+              <b id="sentinel-kpi-blocks">14 Blocks</b>
+              <span>Institutional Tape Bursts</span>
+            </div>
+            <div class="kpi-card">
+              <small>Absorption Status</small>
+              <b id="sentinel-kpi-absorption" style="color:var(--go)">ACTIVE_AT_PUT_WALL</b>
+              <span>Passive Bid Walls Active</span>
+            </div>
+          </div>
+
+          <!-- Candlestick + CVD Chart Card with 4 Profiles, 2D Resizing & Toolbar -->
+          <div class="repricer-card" style="padding:16px;margin-top:16px">
+            <div class="tv-toolbar-wrap">
+              <div style="display:flex;align-items:center;gap:8px">
+                <h3 id="sentinel-chart-title" style="font-size:1.02rem;font-weight:800;margin:0">📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, GEX Walls + CVD &amp; Delta</h3>
+                <span id="sentinel-bar-count-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.70rem">Full Session (250 bars)</span>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <!-- 4 Distinct Profiles -->
+                <div style="display:flex;gap:4px;background:var(--surface-2);padding:2px;border-radius:6px;border:1px solid var(--line)">
+                  <button class="btn btn-primary" id="btn-prof-full" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Full')">⚡ Full OrderFlow</button>
+                  <button class="btn btn-secondary" id="btn-prof-pure" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Pure')">🎯 Pure Price</button>
+                  <button class="btn btn-secondary" id="btn-prof-cvd" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('CVD')">🌊 CVD Focus</button>
+                  <button class="btn btn-secondary" id="btn-prof-trend" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Trend')">📈 Trend Follower</button>
+                </div>
+                <!-- 2D Zoom & Scaling Controls -->
+                <div style="display:flex;gap:3px;align-items:center;background:rgba(15,23,42,0.85);padding:2px 5px;border-radius:6px;border:1px solid #334155">
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Zoom In (Both Axes)" onclick="window.zoomSentinelBoth(1.3)">🔍 +</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Zoom Out (Both Axes)" onclick="window.zoomSentinelBoth(0.77)">🔍 −</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Reset / Auto Price Scale (Vertical)" onclick="window.resetSentinelPriceScale()">↕ Price</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Fit Time (Horizontal)" onclick="window.fitSentinelTimeScale()">↔ Time</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Reset Both Axes" onclick="window.resetSentinelAxes()">↺ Reset</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Maximize Fullscreen" onclick="window.toggleSentinelFullscreen()">⛶ Fullscreen</button>
+                </div>
+                <!-- Height Presets & Popout -->
+                <div style="display:flex;gap:4px">
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(460)">Compact 460px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(620)">Expanded 620px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(820)">Deep 820px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750" onclick="window.openPopoutChart()">⤢ Open in New Window</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Top Real-Time Crosshair Hover HUD -->
+            <div id="sentinel-hover-legend" style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+              <span style="font-weight:750;color:var(--spark)" id="shl-sym">NIFTY</span>
+              <span style="color:var(--ink-mute)" id="shl-time">--:-- IST</span>
+              <span id="shl-ohlc" style="color:var(--ink)">O: -- H: -- L: -- C: --</span>
+              <span style="color:#c084fc" id="shl-vwap">VWAP: --</span>
+              <span id="shl-delta" style="color:var(--go)">Δ: --</span>
+              <span style="color:#38bdf8" id="shl-cvd">CVD: --</span>
+            </div>
+
+            <!-- TV Lightweight Chart Container -->
+            <div id="sentinel-chart-mount" class="cvd-chart-container" style="height:520px;position:relative"></div>
+            <!-- 2D Vertical Drag Handle -->
+            <div class="chart-resize-handle" id="sentinel-chart-drag" title="Drag vertically to resize chart height"></div>
+
+            <!-- Chart Legend Strip -->
+            <div style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
+              <span>🟣 <b>VWAP:</b> Session Mean</span>
+              <span>🟣 <b>±1σ &amp; ±2σ:</b> Envelopes</span>
+              <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
+              <span style="color:#ef4444">🟥 <b>Call Wall (<span id="legend-cw-val">--</span>)</b></span>
+              <span style="color:#22c55e">🟩 <b>Put Wall (<span id="legend-pw-val">--</span>)</b></span>
+              <span style="color:#eab308">🟨 <b>Gamma Flip (<span id="legend-flip-val">--</span>)</b></span>
+              <span style="color:#38bdf8">🌊 <b>CVD:</b> Cumulative Vol Delta</span>
+              <span>📊 <b>Δ Vol:</b> Bar Aggression</span>
+            </div>
+          </div>
+
+          <!-- 10-Day Closing CVD & Session Volume Delta History -->
+          <div class="ladder-card" style="margin-top:20px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <h3 style="font-size:1.1rem;font-weight:850">📊 10-Day Closing CVD &amp; Session Volume Delta History</h3>
+                <span id="sentinel-10d-regime-badge" class="badge-active" style="background:var(--go-bg);color:var(--go);font-size:0.72rem">🟢 INSTITUTIONAL ACCUMULATION</span>
+              </div>
+              <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">
+                10-Day Net CVD: <b id="sentinel-10d-net-badge" style="color:var(--go)">+125,000</b> · Buyer Ratio: <b id="sentinel-10d-buyer-ratio">58.4%</b>
+              </span>
+            </div>
+
+            <!-- 4 Quick KPI cards -->
+            <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
+              <div class="kpi-card go">
+                <small>10-Day Cumulative Net CVD</small>
+                <b id="kpi-10d-net-cvd">+125,000</b>
+                <span id="kpi-10d-avg-cvd">Avg Daily: +12,500</span>
+              </div>
+              <div class="kpi-card go">
+                <small>Total 10D Buy Volume</small>
+                <b id="kpi-10d-buy-vol">850,000</b>
+                <span id="kpi-10d-buy-pct">54.0% of session volume</span>
+              </div>
+              <div class="kpi-card stop">
+                <small>Total 10D Sell Volume</small>
+                <b id="kpi-10d-sell-vol">725,000</b>
+                <span id="kpi-10d-sell-pct">46.0% of session volume</span>
+              </div>
+              <div class="kpi-card spark">
+                <small>Peak Absorption / Aggression</small>
+                <b id="kpi-10d-peaks">14-Oct vs 09-Oct</b>
+                <span id="kpi-10d-top-buy">Top Buy: 95,000</span>
+              </div>
+            </div>
+
+            <!-- 3 Subtabs for 10-Day CVD History -->
+            <div class="subtabs-bar">
+              <button class="subtab-btn active" id="btn-subtab-cvd-chart" onclick="window.switchSentinelSubtab('chart')">🌊 10-Day Closing CVD Bar Chart</button>
+              <button class="subtab-btn" id="btn-subtab-vol-breakdown" onclick="window.switchSentinelSubtab('breakdown')">⚖️ Buyer vs Seller Volume Breakdown</button>
+              <button class="subtab-btn" id="btn-subtab-daily-ledger" onclick="window.switchSentinelSubtab('ledger')">📋 Historical Daily Ledger</button>
+            </div>
+
+            <!-- Subtab 1: CVD Bar Chart -->
+            <div id="subtab-content-chart" style="padding:10px 0">
+              <div id="sentinel-cvd-barchart-container" style="width:100%;min-height:240px"></div>
+            </div>
+
+            <!-- Subtab 2: Buyer vs Seller Volume Breakdown -->
+            <div id="subtab-content-breakdown" style="display:none;padding:10px 0">
+              <div id="sentinel-vol-breakdown-container" style="width:100%;min-height:240px"></div>
+            </div>
+
+            <!-- Subtab 3: Historical Daily Ledger -->
+            <div id="subtab-content-ledger" style="display:none;padding:10px 0">
+              <table class="ladder-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Buyer Volume</th>
+                    <th>Seller Volume</th>
+                    <th>Closing CVD</th>
+                    <th>Net Delta %</th>
+                  </tr>
+                </thead>
+                <tbody id="daily-cvd-suite-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Bottom Row: OrderFlow Signals Stream + Institutional Block Tape -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px">
+            <!-- OrderFlow Signals Stream -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">⚡ Live OrderFlow Signal Stream</h3>
+                <div class="news-filters" style="display:flex;gap:4px">
+                  <button class="btn btn-primary" onclick="window.filterSentinelSignals('ALL')" style="font-size:0.68rem;padding:2px 7px">ALL</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('ABSORPTION')" style="font-size:0.68rem;padding:2px 7px">Absorption</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('SWEPT')" style="font-size:0.68rem;padding:2px 7px">Sweeps</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('DIVERGENCE')" style="font-size:0.68rem;padding:2px 7px">Divergence</button>
+                </div>
+              </div>
+              <div id="sentinel-signals-stream-container" class="signal-stream-container">
+                <!-- Dynamically populated signals -->
+              </div>
+            </div>
+
+            <!-- Institutional Block Tape -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">⚡ Institutional Block Tape (&gt;₹20L)</h3>
+                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Live Sweeps</span>
+              </div>
+              <table class="block-tape-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Strike</th>
+                    <th>Qty</th>
+                    <th>Premium</th>
+                    <th>Tag</th>
+                  </tr>
+                </thead>
+                <tbody id="block-tape-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 5: 🎯 Signal Efficiency -->
+        <div id="tab-efficiency" class="tab-pane">
+          <!-- Header & Period Filter Controls Bar -->
+          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+            <div>
+              <div style="font-size:1.1rem;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:8px">
+                <span>📈 OrderFlow Sentinel Signal Efficiency Analytics</span>
+              </div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-top:2px">
+                Descriptive statistical performance of orderflow signals evaluated against forward returns &amp; MFE/MAE excursions.
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <div style="display:flex;align-items:center;gap:6px">
+                <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Period:</label>
+                <select id="eff-period-select" class="form-control" style="font-size:0.76rem;padding:3px 8px;width:150px" onchange="window.switchEffPeriod(this.value)">
+                  <option value="daily" selected>Daily (by Date)</option>
+                  <option value="weekly">Weekly (by Week)</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px">
+                <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Scope:</label>
+                <select id="eff-scope-select" class="form-control" style="font-size:0.76rem;padding:3px 8px;width:160px" onchange="window.switchEffScope(this.value)">
+                  <option value="symbol" selected>Current Symbol (FUT)</option>
+                  <option value="ALL">All Symbols Combined</option>
+                </select>
+              </div>
+              <a href="/?view=signal_efficiency_guide" target="_blank" style="font-size:0.74rem;background:var(--surface);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">📖 Efficiency Guide ↗</a>
+            </div>
+          </div>
+
+          <!-- Top 5-KPI Strip -->
+          <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr);margin-bottom:14px">
+            <div class="kpi-card spark">
+              <small>Signals Evaluated</small>
+              <b id="eff-kpi-total">142</b>
+              <span>Total Events Evaluated</span>
+            </div>
+            <div class="kpi-card go">
+              <small>Target Hit Rate</small>
+              <b id="eff-kpi-hit-rate" style="color:var(--go)">76.4%</b>
+              <span>Reached 1R/2R Target</span>
+            </div>
+            <div class="kpi-card stop">
+              <small>Stop-Out Rate</small>
+              <b id="eff-kpi-stop-rate" style="color:var(--stop)">23.6%</b>
+              <span>Hit Invalidation Cutoff</span>
+            </div>
+            <div class="kpi-card">
+              <small>Avg Excursions</small>
+              <b id="eff-kpi-excursions" style="font-family:var(--mono)">+42.5 / -18.2</b>
+              <span>MFE (gain) vs MAE (risk) pts</span>
+            </div>
+            <div class="kpi-card purple">
+              <small>Edge Ratio</small>
+              <b id="eff-kpi-edge-ratio" style="color:var(--go)">2.34×</b>
+              <span>MFE / MAE Ratio</span>
+            </div>
+          </div>
+
+          <!-- 4 Sub-Tabs Bar -->
+          <div class="subtabs-bar" style="margin-bottom:12px">
+            <button class="subtab-btn active" id="btn-eff-tab-timeline" onclick="window.switchEffSubtab('timeline')">📅 Efficiency Timeline</button>
+            <button class="subtab-btn" id="btn-eff-tab-breakdowns" onclick="window.switchEffSubtab('breakdowns')">🏷️ Breakdowns (Type &amp; GEX)</button>
+            <button class="subtab-btn" id="btn-eff-tab-expectancy" onclick="window.switchEffSubtab('expectancy')">⏱️ Return Expectancy</button>
+            <button class="subtab-btn" id="btn-eff-tab-calib" onclick="window.switchEffSubtab('calib')">🎯 Model Calibration &amp; Options Expectancy</button>
+          </div>
+
+          <!-- Subtab 1: Efficiency Timeline -->
+          <div id="eff-content-timeline" class="repricer-card" style="padding:14px;margin-bottom:12px">
+            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">📅 Aggregated Period Timeline (<span id="eff-timeline-period-label">Daily</span>)</h3>
+            <div style="overflow-x:auto">
+              <table class="ladder-table" style="font-size:0.75rem">
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    <th>Signals</th>
+                    <th>Target Hits</th>
+                    <th>Hit Rate %</th>
+                    <th>Stop Rate %</th>
+                    <th>Avg MFE (pts)</th>
+                    <th>Avg MAE (pts)</th>
+                    <th>Edge Ratio</th>
+                    <th>+5m Ret</th>
+                    <th>+15m Ret</th>
+                  </tr>
+                </thead>
+                <tbody id="eff-timeline-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Subtab 2: Breakdowns (Side-by-Side: By Signal Type & By GEX Wall Alignment) -->
+          <div id="eff-content-breakdowns" style="display:none;margin-bottom:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div class="repricer-card" style="padding:14px">
+                <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">🏷️ By Signal Type</h3>
+                <table class="ladder-table" style="font-size:0.74rem">
+                  <thead>
+                    <tr>
+                      <th>Signal Type</th>
+                      <th>Count</th>
+                      <th>Hit Rate</th>
+                      <th>Avg MFE</th>
+                      <th>Avg MAE</th>
+                      <th>Edge Ratio</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eff-by-type-body"></tbody>
+                </table>
+              </div>
+              <div class="repricer-card" style="padding:14px">
+                <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">🧱 By GEX Wall Alignment</h3>
+                <table class="ladder-table" style="font-size:0.74rem">
+                  <thead>
+                    <tr>
+                      <th>Alignment</th>
+                      <th>Count</th>
+                      <th>Hit Rate</th>
+                      <th>Avg MFE</th>
+                      <th>Avg MAE</th>
+                      <th>Edge Ratio</th>
+                    </tr>
+                  </thead>
+                  <tbody id="eff-by-align-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Subtab 3: Return Expectancy Profile -->
+          <div id="eff-content-expectancy" class="repricer-card" style="display:none;padding:14px;margin-bottom:12px">
+            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:6px">⏱️ Forward Return Expectancy Profile (+1m to +30m)</h3>
+            <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:12px">Average post-signal excursion across standardized forward holding horizons.</div>
+            <div id="eff-expectancy-bars" style="display:flex;flex-direction:column;gap:10px">
+              <!-- Dynamically populated forward return bars -->
+            </div>
+          </div>
+
+          <!-- Subtab 4: Model Calibration & Options Expectancy -->
+          <div id="eff-content-calib" style="display:none;margin-bottom:12px">
+            <div class="repricer-card" style="padding:14px;margin-bottom:12px">
+              <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:4px">🎯 Target Engine Model Calibration &amp; Options Expectancy Curve</h3>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:12px">
+                Quantitative reflection-principle calibration alpha (Empirical Hit Rate − Theoretical P(touch)) &amp; Black-76 forward repricing.
+              </div>
+              <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
+                <div class="kpi-card go">
+                  <small>Empirical Hit Rate</small>
+                  <b id="calib-kpi-empirical">76.4%</b>
+                  <span>Evaluated Outcomes</span>
+                </div>
+                <div class="kpi-card spark">
+                  <small>Theoretical P(touch)</small>
+                  <b id="calib-kpi-theo">65.0%</b>
+                  <span>Reflection Diffusion</span>
+                </div>
+                <div class="kpi-card purple">
+                  <small>Calibration Alpha</small>
+                  <b id="calib-kpi-alpha" style="color:var(--go)">+11.4%</b>
+                  <span>Model Edge over Brownian</span>
+                </div>
+                <div class="kpi-card">
+                  <small>ATM Benchmark</small>
+                  <b id="calib-kpi-atm">23,150 CE</b>
+                  <span id="calib-kpi-entry">—</span>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div>
+                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha by Signal Type</div>
+                  <table class="ladder-table" style="font-size:0.72rem">
+                    <thead>
+                      <tr><th>Signal Type</th><th>Count</th><th>Empirical</th><th>Theoretical</th><th>Alpha</th></tr>
+                    </thead>
+                    <tbody id="calib-by-type-body"></tbody>
+                  </table>
+                </div>
+                <div>
+                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha by GEX Alignment</div>
+                  <table class="ladder-table" style="font-size:0.72rem">
+                    <thead>
+                      <tr><th>Alignment</th><th>Count</th><th>Empirical</th><th>Theoretical</th><th>Alpha</th></tr>
+                    </thead>
+                    <tbody id="calib-by-align-body"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 6: 🧭 Market Intelligence -->
+        <div id="tab-market-intel" class="tab-pane">
+          <!-- Market Intelligence & Macro Synthesis -->
+          <div class="mi-macro-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+              <div>
+                <div class="eyebrow" style="color:var(--spark);font-size:0.74rem;letter-spacing:0.5px">🧭 Market Intelligence & Macro Synthesis</div>
+                <div id="intel-verdict" style="font-size:1.18rem;font-weight:850;color:var(--ink);margin:4px 0">⚖️ Balanced Sector Dispersion</div>
+                <div id="intel-narrative" style="font-size:0.83rem;color:var(--ink-2);line-height:1.55;max-width:960px">
+                  Loading macro intelligence and sector synthesis...
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <a href="/?view=market_intelligence_guide" target="_blank" style="font-size:0.75rem;background:var(--surface-2);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700;display:inline-flex;align-items:center;gap:4px">📖 Intel Guide ↗</a>
+                <span id="intel-risk-chip" class="sentinel-chip go" style="font-size:0.74rem">🟢 LOW EXOGENOUS RISK</span>
+              </div>
+            </div>
+
+            <!-- 4-KPI Grid -->
+            <div class="mi-kpi-grid">
+              <div class="mi-kpi">
+                <small>Sector Breadth</small>
+                <b id="mi-kpi-breadth-val" style="color:var(--go)">9/11 Green</b>
+                <span id="mi-kpi-breadth-sub">82% Green (Broad Rally)</span>
+              </div>
+              <div class="mi-kpi">
+                <small>Weighted Net Contrib</small>
+                <b id="mi-kpi-contrib-val" style="color:var(--go)">+0.48%</b>
+                <span id="mi-kpi-contrib-sub">Rotation: Cyclical Leadership</span>
+              </div>
+              <div class="mi-kpi">
+                <small>News Catalyst Sentiment</small>
+                <b id="mi-kpi-sent-val" style="color:var(--stop)">BEARISH</b>
+                <span id="mi-kpi-sent-sub">Impact Score: 4 (6 fresh)</span>
+              </div>
+              <div class="mi-kpi">
+                <small>Alignment With Index</small>
+                <b id="mi-kpi-align-val" style="color:var(--go)">Confirming Bullish</b>
+                <span id="mi-kpi-align-sub">Catalyst Risk: Low</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actionable Trader Takeaways -->
+          <div class="mi-takeaways-card">
+            <div style="font-size:0.72rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+              🎯 Actionable Trader Takeaways
+            </div>
+            <div id="intel-takeaways-container" style="display:flex;flex-direction:column;gap:5px">
+              <div style="font-size:0.80rem;color:var(--ink-2)">• Loading synthesized trader takeaways...</div>
+            </div>
+          </div>
+
+          <!-- 2-Column Workstation Layout -->
+          <div class="mi-grid-2col">
+            <!-- Left Column: Sector Performance Leaderboard -->
+            <div class="repricer-card" style="margin-bottom:0">
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📊 Sector Performance Leaderboard (~Nifty 50 Weights)</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Exchange % change vs previous session close</div>
+              
+              <div id="sector-table-container" class="sector-table">
+                <!-- Dynamically populated sector rows -->
+              </div>
+
+              <!-- Broad Market Context -->
+              <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)">
+                <div class="eyebrow" style="font-size:0.70rem;margin-bottom:6px;color:var(--ink-mute)">Broad Market Context</div>
+                <div id="broad-market-container" class="sector-table">
+                  <!-- Dynamically populated benchmark rows -->
+                </div>
+              </div>
+
+              <!-- Source Footer -->
+              <div style="margin-top:12px;font-size:0.68rem;color:var(--ink-mute);display:flex;justify-content:space-between">
+                <span id="sector-source-label">Source: NSE</span>
+                <span id="sector-weights-label">Weights as of: 2025-07</span>
+              </div>
+            </div>
+
+            <!-- Right Column: Real-Time Financial News & Catalysts -->
+            <div class="repricer-card" style="margin-bottom:0">
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📰 Real-Time Financial News & Catalysts</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Aggregated from Economic Times & Times of India</div>
+
+              <!-- Category Filter Pills -->
+              <div id="news-category-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+                <button class="news-cat-pill active" onclick="window.filterMarketNews('ALL')">ALL</button>
+              </div>
+
+              <!-- News Feed Scroll -->
+              <div id="news-feed-container" class="news-feed-scroll">
+                <!-- Dynamically populated news cards -->
+              </div>
+
+              <!-- Phase B Confound Control Notice -->
+              <div style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:9px 12px;font-size:0.70rem;color:var(--ink-mute);line-height:1.45;border:1px solid var(--line)">
+                <b style="color:var(--ink-2)">Phase B Confound Control:</b> Intraday headline bursts with keyword-weighted impact ≥ 6 flag exogenous shocks, quarantining days where macro news overrides dealer delta-hedging.
+              </div>
+            </div>
+          </div>
+        </div>
+
+
+        <!-- Tab 7: 📡 Options Analytics -->
+        <div id="tab-analytics" class="tab-pane">
+          <!-- Top 6-Card KPI Strip -->
+          <div class="noa-kpi-grid">
+            <div class="noa-kpi-card">
+              <small>ATM IV</small>
+              <b id="noa-kpi-iv">14.2%</b>
+              <span id="noa-kpi-skew">Contango (Normal)</span>
+            </div>
+            <div class="noa-kpi-card">
+              <small>PCR (OI)</small>
+              <b id="noa-kpi-pcr">1.18</b>
+              <span id="noa-kpi-pcr-regime" style="color:var(--go)">BULLISH</span>
+            </div>
+            <div class="noa-kpi-card">
+              <small>Max Pain Strike</small>
+              <b id="noa-kpi-mp">₹23,150</b>
+              <span id="noa-kpi-pin">—</span>
+            </div>
+            <div class="noa-kpi-card">
+              <small>IV Rank (30D)</small>
+              <b id="noa-kpi-ivr">28%</b>
+              <span>Normal Vol Zone</span>
+            </div>
+            <div class="noa-kpi-card">
+              <small>India VIX</small>
+              <b id="noa-kpi-vix">13.45</b>
+              <span style="color:var(--spark)">Low Vol</span>
+            </div>
+            <div class="noa-kpi-card">
+              <small>Aggregate Bias</small>
+              <b id="noa-kpi-bias" style="color:var(--go)">+2.4</b>
+              <span>MOMENTUM_BULLISH</span>
+            </div>
+          </div>
+
+          <!-- Expected Move Range Bar -->
+          <div class="repricer-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:10px">📏 Expected Move &amp; Standard Deviation Range</h3>
+            <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.85rem;margin-bottom:6px">
+              <span id="exp-move-low" style="color:var(--stop)">Lower 1σ: —</span>
+              <span id="exp-move-center" style="color:var(--ink);font-weight:800">Spot: ₹23,146.2</span>
+              <span id="exp-move-high" style="color:var(--go)">Upper 1σ: —</span>
+            </div>
+            <div style="background:var(--surface-3);height:8px;border-radius:4px;overflow:hidden;position:relative">
+              <div style="position:absolute;left:25%;width:50%;height:100%;background:linear-gradient(90deg, var(--stop), var(--spark), var(--go));border-radius:4px"></div>
+            </div>
+          </div>
+
+          <!-- IV Skew & Term Structure Curve Panel -->
+          <div class="ladder-card" style="margin-top:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <div style="display:flex;align-items:center;gap:10px">
+                <h3 style="font-size:1.05rem;font-weight:800">📉 Intraday IV Skew &amp; Term Structure Curve</h3>
+                <span id="noa-skew-badge" class="badge-active" style="background:var(--spark-bg);color:var(--spark);font-size:0.72rem">CALL WING SKEW</span>
+              </div>
+              <div style="display:flex;gap:12px;font-family:var(--mono);font-size:0.75rem">
+                <span>25Δ Skew: <b id="noa-skew-25d" style="color:var(--spark)">+1.8%</b></span>
+                <span>Near ATM IV: <b id="noa-skew-atm-iv">14.2%</b></span>
+                <span>Term Spread: <b id="noa-skew-term-spread" style="color:var(--go)">+0.85% (Contango)</b></span>
+              </div>
+            </div>
+            <!-- Dual-Line Call vs Put IV Curve Chart -->
+            <div id="iv-skew-chart-container" style="width:100%;min-height:220px;background:var(--surface-2);border-radius:8px;padding:10px 0;display:flex;align-items:center;justify-content:center">
+              <!-- Dynamically populated SVG dual line curve -->
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);padding-top:6px">
+              <span>🔵 <b>Call IV Smile (Wing Risk)</b></span>
+              <span>🟠 <b>Put IV Smile (Crash Protection)</b></span>
+              <span>⚪ <b>ATM Strike Anchor</b></span>
+            </div>
+          </div>
+
+          <!-- Strike Buildup Matrix -->
+          <div class="ladder-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">🧱 Strike Open Interest Buildup Matrix</h3>
+            <table class="ladder-table">
+              <thead>
+                <tr>
+                  <th>Strike</th>
+                  <th>Call OI</th>
+                  <th>Call ΔOI (Shift)</th>
+                  <th>Call Classification</th>
+                  <th>Put OI</th>
+                  <th>Put ΔOI (Shift)</th>
+                  <th>Put Classification</th>
+                  <th>PCR</th>
+                </tr>
+              </thead>
+              <tbody id="buildup-matrix-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Intraday Shift Events & Put-Call Parity Arbitrage Monitor -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:20px">
+            <!-- Shift Events Log -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">⚡ Intraday Microstructure Shift Events</h3>
+                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Telemetry Log</span>
+              </div>
+              <div id="noa-shift-events-container" class="shift-timeline">
+                <!-- Dynamically populated shift events -->
+              </div>
+            </div>
+
+            <!-- Put-Call Parity Arbitrage Monitor -->
+            <div class="ladder-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h3 style="font-size:1.05rem;font-weight:800">⚖️ Put-Call Parity &amp; Synthetic Arbitrage</h3>
+                <span class="badge-active" style="font-size:0.7rem;background:var(--go-bg);color:var(--go)">No Mispricing</span>
+              </div>
+              <table class="block-tape-table">
+                <thead>
+                  <tr>
+                    <th>Metric</th>
+                    <th>Value</th>
+                    <th>Benchmark</th>
+                    <th>Deviation</th>
+                  </tr>
+                </thead>
+                <tbody id="noa-parity-body">
+                  <tr>
+                    <td>Synthetic Spot (C - P + K)</td>
+                    <td style="font-family:var(--mono);color:var(--spark)">₹23,148.0</td>
+                    <td style="font-family:var(--mono)">₹23,146.2</td>
+                    <td style="color:var(--go)">+1.8 pts (Normal)</td>
+                  </tr>
+                  <tr>
+                    <td>Theoretical Futures Basis</td>
+                    <td style="font-family:var(--mono);color:var(--go)">+28.5 pts</td>
+                    <td style="font-family:var(--mono)">+27.0 pts</td>
+                    <td style="color:var(--go)">In-Line Fair Value</td>
+                  </tr>
+                  <tr>
+                    <td>Box Spread Discrepancy</td>
+                    <td style="font-family:var(--mono)">0.15 pts</td>
+                    <td style="font-family:var(--mono)">&lt; 0.50 pts</td>
+                    <td style="color:var(--ink-mute)">Arb Inefficient</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 8: 📓 Journal -->
+        <div id="tab-journal" class="tab-pane">
+          <!-- Active Open Positions Table -->
+          <div class="repricer-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+              <div>
+                <h3 style="font-size:1.15rem;font-weight:850">💼 Active Open Paper Positions</h3>
+                <span style="font-size:0.75rem;color:var(--ink-mute)">Live Mark-to-Market paper-trade ledger</span>
+              </div>
+              <div style="text-align:right">
+                <span style="font-size:0.7rem;color:var(--ink-faint);text-transform:uppercase">Total Unrealized MTM</span>
+                <div id="journal-total-mtm" style="font-size:1.4rem;font-weight:900;font-family:var(--mono);color:var(--go)">+₹12,450</div>
+              </div>
+            </div>
+
+            <table class="ladder-table">
+              <thead>
+                <tr>
+                  <th>Trade ID</th>
+                  <th>Symbol</th>
+                  <th>Strategy Name</th>
+                  <th>Lots (Qty)</th>
+                  <th>Entry Time</th>
+                  <th>Entry LTP</th>
+                  <th>Current LTP</th>
+                  <th>Unrealized PnL</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="open-positions-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Manual Paper Trade Logging Form -->
+          <div class="repricer-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">📝 Log Manual Paper Trade</h3>
+            <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:12px;margin-bottom:12px">
+              <div class="form-group">
+                <label class="form-label" for="manual-sym">Index:</label>
+                <select id="manual-sym" class="form-control">
+                  <option value="NIFTY">NIFTY</option>
+                  <option value="BANKNIFTY">BANKNIFTY</option>
+                  <option value="SENSEX">SENSEX</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="manual-strat">Strategy Name:</label>
+                <input type="text" id="manual-strat" class="form-control" value="Bull Call Spread">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="manual-qty">Lots:</label>
+                <input type="number" id="manual-lots" class="form-control" value="2" min="1" max="50">
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="manual-prem">Net Premium (₹):</label>
+                <input type="number" id="manual-prem" class="form-control" value="115.0" step="0.5">
+              </div>
+            </div>
+            <button id="btn-manual-submit" class="btn btn-primary" style="margin-top:4px">📥 Execute &amp; Save Paper Trade</button>
+          </div>
+        </div>
+
+        <!-- Tab 9: 📊 Scorecard -->
+        <div id="tab-scorecard" class="tab-pane">
+          <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
+            <div class="kpi-card go">
+              <small>Realized Net PnL</small>
+              <b id="scorecard-kpi-pnl">+₹84,250</b>
+              <span>All Closed Trades</span>
+            </div>
+            <div class="kpi-card spark">
+              <small>Total Closed Trades</small>
+              <b id="scorecard-kpi-trades">42 Trades</b>
+              <span>Paper Ledger</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>Win Rate</small>
+              <b id="scorecard-kpi-winrate">78.6%</b>
+              <span>33 Wins / 9 Losses</span>
+            </div>
+            <div class="kpi-card purple">
+              <small>Profit Factor</small>
+              <b id="scorecard-kpi-pf">3.12</b>
+              <span>Gross Wins / Gross Losses</span>
+            </div>
+            <div class="kpi-card stop">
+              <small>Max Drawdown</small>
+              <b id="scorecard-kpi-dd">-₹14,500</b>
+              <span>Peak to Trough</span>
+            </div>
+          </div>
+
+          <!-- Cumulative Realized Equity Curve -->
+          <div class="repricer-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">📈 Cumulative Realized Equity Curve</h3>
+            <div id="equity-curve-container" style="height:260px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);border-radius:8px">
+              <!-- SVG chart will mount here -->
+            </div>
+          </div>
+
+          <!-- Closed Trades Ledger -->
+          <div class="ladder-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">📜 Closed Trades Audit Ledger</h3>
+            <table class="ladder-table">
+              <thead>
+                <tr>
+                  <th>Trade ID</th>
+                  <th>Strategy</th>
+                  <th>Entry Time</th>
+                  <th>Exit Time</th>
+                  <th>Realized PnL</th>
+                  <th>Exit Reason</th>
+                </tr>
+              </thead>
+              <tbody id="closed-trades-body">
+                <!-- Dynamically populated -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 10: ⚙️ Ops & Calendar -->
+        <div id="tab-ops" class="tab-pane">
+          <!-- Resilience Strip -->
+          <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr)">
+            <div class="kpi-card go">
+              <small>Circuit Breaker</small>
+              <b id="ops-cb-state">CLOSED (Healthy)</b>
+              <span>0 Failures Recorded</span>
+            </div>
+            <div class="kpi-card spark">
+              <small>Adaptive Poller RTT</small>
+              <b id="ops-poller-rtt">42.5 ms</b>
+              <span>Exchange Response Time</span>
+            </div>
+            <div class="kpi-card purple">
+              <small>Memory Cache Entries</small>
+              <b id="ops-cache-entries">128 Keys</b>
+              <span>LKGS Sub-ms Cache</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>SQLite WAL Storage</small>
+              <b id="ops-wal-size">2.4 MB</b>
+              <span>Journal &amp; ML DB Size</span>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:12px;margin-bottom:20px">
+            <button id="btn-ops-reset-cb" class="btn btn-secondary">🔄 Reset Circuit Breaker</button>
+            <button id="btn-ops-clear-cache" class="btn btn-secondary">🧹 Clear Memory Cache</button>
+          </div>
+
+          <!-- Indian Market 11-Window Timeline -->
+          <div class="repricer-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:14px">🇮🇳 Indian Market 11-Window Execution Timeline</h3>
+            <div class="timeline-track" id="timeline-track-container">
+              <!-- Dynamically populated timeline nodes -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 11: 🎙️ Session Commentary -->
+        <div id="tab-commentary" class="tab-pane">
+          <div class="dial-box">
+            <div>
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎙️ AI Audio Speech Synthesis &amp; Session Narrative</span>
+              <div style="font-size:1.35rem;font-weight:800;color:var(--spark);margin:4px 0" id="commentary-phase-title">Power Hour Session Narrative</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">Continuous institutional intraday storytelling &amp; dealer wall shift alerts.</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:12px">
+              <button id="btn-play-voice" class="btn btn-success">▶ Play Voice Broadcast</button>
+              <select id="voice-speed-select" class="form-control" style="width:100px">
+                <option value="0.75">0.75x</option>
+                <option value="1.0" selected>1.0x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Pre-Market Tactical Baseline Card -->
+          <div id="comm-pre-market-card" class="pre-bell-card" style="margin-bottom:14px">
+            <!-- Dynamically populated pre-market baseline -->
+          </div>
+
+          <!-- Commentary Filter Bar -->
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-primary" id="comm-flt-all" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('ALL')">📜 All Story Entries</button>
+              <button class="btn btn-secondary" id="comm-flt-bites" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('BITES')">⚡ Actionable Bites Only</button>
+              <button class="btn btn-secondary" id="comm-flt-pinned" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('PINNED')">📌 Pinned Recommendations</button>
+            </div>
+            <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px" onclick="window.loadCommentary()">🔄 Refresh Stream</button>
+          </div>
+
+          <!-- Chronological Commentary Cards Stream -->
+          <div id="commentary-stream-container" style="display:flex;flex-direction:column;gap:14px">
+            <!-- Dynamically populated commentary cards -->
+          </div>
+
+          <!-- Post-Market Settlement & Daily Close Scorecard -->
+          <div id="comm-post-market-card" class="ladder-card" style="margin-top:20px;border-top:3px solid var(--purple)">
+            <!-- Dynamically populated post-market wrap -->
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <!-- Client Application Script -->
+  <script src="/static/js/cockpit.js?v=4.2"></script>
+</body>
+</html>

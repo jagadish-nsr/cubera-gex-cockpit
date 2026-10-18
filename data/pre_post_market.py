@@ -505,7 +505,12 @@ def get_pre_market_state(
             _PRE_MARKET_CACHE[symbol.upper()] = state
         return state
 
-    # Adaptive Poll (runs when phase is PRE_MARKET_DISCOVERY or REGULAR_SESSION or force_refresh)
+    # Adaptive Poll (runs ONLY when phase is PRE_MARKET_DISCOVERY or REGULAR_SESSION or force_refresh)
+    if not force_refresh and phase_code not in ("PRE_MARKET_DISCOVERY", "REGULAR_SESSION"):
+        with _CACHE_LOCK:
+            _PRE_MARKET_CACHE[symbol.upper()] = state
+        return state
+
     try:
         from data.dhan_live import fetch_index_ohlc
         ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
@@ -900,16 +905,17 @@ def get_post_market_state(
         "status_text": "Session Concluded · Final Settlement Reconciled",
     }
 
-    try:
-        from data.dhan_live import fetch_index_ohlc
-        ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
-        if ohlc:
-            ltp = float(ohlc.get("ltp") or fallback_spot)
-            # At 15:40 CAS close, the official close represents the 30-min VWAP
-            state["settlement_spot"] = round(ltp, 2)
-            state["last_continuous_spot"] = round(ltp, 2)
-    except Exception as e:
-        log.debug(f"Post-market poll failed: {e}")
+    if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and (not config.is_holiday(now_ist.date())) and (now_ist.weekday() < 5):
+        try:
+            from data.dhan_live import fetch_index_ohlc
+            ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
+            if ohlc:
+                ltp = float(ohlc.get("ltp") or fallback_spot)
+                # At 15:40 CAS close, the official close represents the 30-min VWAP
+                state["settlement_spot"] = round(ltp, 2)
+                state["last_continuous_spot"] = round(ltp, 2)
+        except Exception as e:
+            log.debug(f"Post-market poll failed: {e}")
 
     try:
         from sentinel.storage.db import record_daily_closing_cvd

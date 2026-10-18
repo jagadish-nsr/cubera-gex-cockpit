@@ -146,11 +146,27 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
 
     ohlc = rec.get("ohlc") if rec else None
     if ohlc is None:
-        try:
-            from data.dhan_live import fetch_index_ohlc
-            ohlc = fetch_index_ohlc(symbol)
-        except Exception:
-            pass
+        import config
+        if not config.is_market_open():
+            from data.market_snapshot import get_snapshot
+            snap = get_snapshot(symbol)
+            if snap:
+                ohlc = {
+                    "ltp": snap.get("spot"),
+                    "close": snap.get("spot"),
+                    "prev_close": snap.get("prev_close"),
+                    "open": snap.get("open"),
+                    "high": snap.get("high"),
+                    "low": snap.get("low"),
+                    "vix": {"last": snap.get("vix", 13.5)},
+                    "as_of": snap.get("as_of"),
+                }
+        else:
+            try:
+                from data.dhan_live import fetch_index_ohlc
+                ohlc = fetch_index_ohlc(symbol)
+            except Exception:
+                pass
     fut = rec.get("fut") if rec else None
     quote = _compile_quote(symbol, ohlc, fut)
     if rec:
@@ -270,11 +286,29 @@ def _loop(symbol: str, interval_s: float) -> None:
     from data.dhan_live import fetch_index_ohlc, fetch_futures_dhan
     import config
     while True:
-        # Hydrate _STORE from authentic offline snapshot if currently empty
-        if not _STORE.get(symbol) or not (_STORE[symbol].get("ohlc")):
+        # Off-market hours guard: never call Dhan API when market is closed
+        if not config.is_market_open():
             try:
-                d_init = fetch_index_ohlc(symbol)
-                if d_init and d_init.get("ltp") is not None:
+                from data.pre_post_market import get_current_session_phase
+                phase_code, _, _ = get_current_session_phase()
+            except Exception:
+                phase_code = "OFF_HOURS"
+
+            # Hydrate _STORE from persistent snapshot if empty
+            if not _STORE.get(symbol) or not (_STORE[symbol].get("ohlc")):
+                from data.market_snapshot import get_snapshot
+                snap = get_snapshot(symbol)
+                if snap:
+                    d_init = {
+                        "ltp": snap.get("spot"),
+                        "close": snap.get("spot"),
+                        "prev_close": snap.get("prev_close"),
+                        "open": snap.get("open"),
+                        "high": snap.get("high"),
+                        "low": snap.get("low"),
+                        "vix": {"last": snap.get("vix", 13.5)},
+                        "as_of": snap.get("as_of"),
+                    }
                     q_init = _compile_quote(symbol, d_init, None)
                     _STORE[symbol] = {
                         "ohlc": d_init,
@@ -284,27 +318,12 @@ def _loop(symbol: str, interval_s: float) -> None:
                         "ws_at": None,
                         "err": None,
                     }
-            except Exception:
-                pass
-
-        # 1. Back off REST polling when the WebSocket feed is actively providing live ticks
-        if _ws_is_live_for(symbol, max_silence_s=10.0):
-            time.sleep(WS_BACKOFF_S)
-            continue
-
-        # 2. Back off when market is closed — EXCEPT during Pre-Open equilibrium discovery (09:07:30 to 09:15:00 IST)
-        if not config.is_market_open():
-            try:
-                from data.pre_post_market import get_current_session_phase
-                phase_code, _, _ = get_current_session_phase()
-            except Exception:
-                phase_code = "OFF_HOURS"
 
             if phase_code != "PRE_MARKET_DISCOVERY":
                 time.sleep(30.0)
                 continue
             else:
-                interval_s = 3.0  # Adaptive 3s retry during pre-open discovery window
+                interval_s = 3.0  # Adaptive retry during pre-open discovery window
 
         ok = False
         try:
