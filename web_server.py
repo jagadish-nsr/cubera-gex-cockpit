@@ -2777,9 +2777,349 @@ async def health_check():
     }
 
 
+# --------------------------------------------------------------------------
+# Documentation & Manuals Library
+# --------------------------------------------------------------------------
+DOCS_MAP = {
+    "user_guide": {
+        "title": "📖 Master User Guide & Manual",
+        "file": "docs/USER_GUIDE.md",
+        "badge": "Master User Guide",
+    },
+    "orderflow_guide": {
+        "title": "⚡ OrderFlow Sentinel Stream — Signals Field Guide",
+        "file": "docs/orderflow-signals-guide.md",
+        "badge": "Microstructure Sentinel v2.0",
+    },
+    "gex_playbook": {
+        "title": "🗺️ Indian GEX Playbook & Research Manual",
+        "file": "docs/gamma-blast-research.md",
+        "badge": "Indian Market Mode (SCSP)",
+    },
+    "participant_guide": {
+        "title": "🧭 Participant Open Interest & Institutional Drift",
+        "file": "docs/participant-oi.md",
+        "badge": "FII / Pro / Client Flow",
+    },
+    "signal_efficiency_guide": {
+        "title": "📈 Signal Efficiency Analytics & Performance Guide",
+        "file": "docs/signal-efficiency-guide.md",
+        "badge": "Statistical Edge & MFE/MAE",
+    },
+    "data_dictionary": {
+        "title": "📊 Data Dictionary & Quantitative Calculation Reference",
+        "file": "docs/data-dictionary-and-calculations.md",
+        "badge": "WebSocket & REST Telemetry",
+    },
+    "options_strategies_guide": {
+        "title": "🎯 Options Recommendation Strategies & Alpha Playbook",
+        "file": "docs/options-recommendation-strategies-guide.md",
+        "badge": "Institutional Execution Engine",
+    },
+    "pre_post_market_guide": {
+        "title": "🌅 Pre/Post-Market Microstructure & Recommendations Lifecycle Guide",
+        "file": "docs/pre-post-market-and-recommendations-guide.md",
+        "badge": "Pre-Bell Alpha & CAS 15:40",
+    },
+    "options_analytics_guide": {
+        "title": "🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)",
+        "file": "docs/options-analytics-guide.md",
+        "badge": "IOAS v3.0 Microstructure",
+    },
+    "target_engine_guide": {
+        "title": "🎯 Target Engine — Scenario & Repricing Suite Technical Guide",
+        "file": "docs/target-engine-guide.md",
+        "badge": "Target Engine v1.0",
+    },
+    "market_intelligence_guide": {
+        "title": "🧭 Market Intelligence: Sectorial Performance & News Sentiment Guide",
+        "file": "docs/market-intelligence-guide.md",
+        "badge": "Sector Breadth & Catalysts",
+    },
+    "session_commentary_guide": {
+        "title": "🎙️ Session Commentary & Suggestion Bites Guide",
+        "file": "docs/session-commentary-guide.md",
+        "badge": "Narrative Engine v1.0",
+    },
+}
+
+
+def render_guide_html(doc_id: str) -> HTMLResponse:
+    doc_info = DOCS_MAP.get(doc_id)
+    if not doc_info:
+        doc_id = "user_guide"
+        doc_info = DOCS_MAP[doc_id]
+
+    doc_path = ROOT_DIR / doc_info["file"]
+    content = ""
+    if doc_path.exists():
+        content = doc_path.read_text(encoding="utf-8")
+    else:
+        content = f"# {doc_info['title']}\n\nDocumentation file `{doc_info['file']}` not found on server."
+
+    options_html = "".join([
+        f'<option value="{k}" {"selected" if k == doc_id else ""}>{v["title"]}</option>'
+        for k, v in DOCS_MAP.items()
+    ])
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{doc_info['title']} — Cubera Institutional Reference</title>
+  <link rel="stylesheet" href="/static/css/cockpit.css">
+  <script src="/static/marked.min.js"></script>
+  <style>
+    body {{
+      background: var(--bg, #090d16);
+      color: var(--ink, #f8fafc);
+      font-family: var(--font-sans, system-ui, -apple-system, sans-serif);
+      margin: 0;
+      padding: 0;
+      line-height: 1.6;
+    }}
+    .doc-viewer-wrap {{
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 24px 20px 80px;
+    }}
+    .doc-top-bar {{
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line, #1e293b);
+      padding: 12px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }}
+    .doc-brand {{
+      font-weight: 850;
+      font-size: 1.05rem;
+      color: var(--spark, #38bdf8);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }}
+    .doc-header-card {{
+      background: var(--surface, #0f172a);
+      border: 1px solid var(--line, #1e293b);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 14px;
+    }}
+    .doc-badge {{
+      display: inline-block;
+      font-size: 0.72rem;
+      font-weight: 750;
+      text-transform: uppercase;
+      color: var(--spark, #38bdf8);
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      padding: 3px 10px;
+      border-radius: 6px;
+      margin-bottom: 6px;
+    }}
+    .doc-content-card {{
+      background: var(--surface, #0f172a);
+      border: 1px solid var(--line, #1e293b);
+      border-radius: 10px;
+      padding: 32px 36px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    }}
+    .markdown-body h1 {{
+      font-size: 1.8rem;
+      font-weight: 850;
+      color: #f8fafc;
+      border-bottom: 1px solid var(--line, #1e293b);
+      padding-bottom: 12px;
+      margin-top: 0;
+    }}
+    .markdown-body h2 {{
+      font-size: 1.35rem;
+      font-weight: 800;
+      color: var(--spark, #38bdf8);
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      padding-bottom: 8px;
+      margin-top: 28px;
+    }}
+    .markdown-body h3 {{
+      font-size: 1.15rem;
+      font-weight: 750;
+      color: #e2e8f0;
+      margin-top: 22px;
+    }}
+    .markdown-body p, .markdown-body li {{
+      font-size: 0.92rem;
+      color: #cbd5e1;
+      line-height: 1.68;
+    }}
+    .markdown-body ul, .markdown-body ol {{
+      padding-left: 24px;
+    }}
+    .markdown-body code {{
+      font-family: var(--mono, monospace);
+      font-size: 0.85em;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: var(--spark, #38bdf8);
+    }}
+    .markdown-body pre {{
+      background: #020617;
+      border: 1px solid var(--line, #1e293b);
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+    }}
+    .markdown-body pre code {{
+      background: transparent;
+      border: none;
+      padding: 0;
+      color: #e2e8f0;
+      font-size: 0.86rem;
+    }}
+    .markdown-body table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin: 18px 0;
+      font-size: 0.84rem;
+    }}
+    .markdown-body th {{
+      background: var(--surface-2, #1e293b);
+      border: 1px solid var(--line, #334155);
+      padding: 8px 12px;
+      text-align: left;
+      font-weight: 750;
+      color: var(--spark, #38bdf8);
+    }}
+    .markdown-body td {{
+      border: 1px solid var(--line, #334155);
+      padding: 8px 12px;
+      color: #cbd5e1;
+    }}
+    .markdown-body tr:nth-child(even) td {{
+      background: rgba(255,255,255,0.015);
+    }}
+    .markdown-body blockquote {{
+      margin: 16px 0;
+      padding: 10px 18px;
+      background: rgba(56, 189, 248, 0.05);
+      border-left: 4px solid var(--spark, #38bdf8);
+      border-radius: 0 6px 6px 0;
+      color: #e2e8f0;
+    }}
+    .doc-nav-select {{
+      background: var(--surface-2, #1e293b);
+      border: 1px solid var(--line, #334155);
+      color: var(--ink, #f8fafc);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }}
+  </style>
+</head>
+<body>
+  <div class="doc-top-bar">
+    <div class="doc-brand">
+      <span>⚡ CUBERA GEX</span>
+      <span style="font-size:0.75rem;color:var(--ink-mute, #94a3b8);font-weight:600">Documentation &amp; Manuals Library</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <label style="font-size:0.74rem;color:var(--ink-mute, #94a3b8);font-weight:700">Quick Guide Jump:</label>
+      <select class="doc-nav-select" onchange="window.location.href='/guide/' + this.value">
+        {options_html}
+      </select>
+      <a href="/" class="btn btn-primary" style="font-size:0.76rem;text-decoration:none;padding:6px 14px">🎯 Return to Cockpit</a>
+    </div>
+  </div>
+
+  <div class="doc-viewer-wrap">
+    <div class="doc-header-card">
+      <div>
+        <span class="doc-badge">{doc_info['badge']}</span>
+        <h1 style="font-size:1.4rem;font-weight:850;margin:0;color:#f8fafc">{doc_info['title']}</h1>
+        <div style="font-size:0.76rem;color:var(--ink-mute, #94a3b8);margin-top:4px">
+          Source: <code style="font-family:var(--mono, monospace)">{doc_info['file']}</code> &nbsp;·&nbsp; Institutional Architecture Reference
+        </div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" onclick="window.print()" style="font-size:0.74rem">🖨️ Print / PDF</button>
+      </div>
+    </div>
+
+    <div class="doc-content-card">
+      <div id="guide-content" class="markdown-body">
+        Loading guide content...
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const rawContent = {json.dumps(content)};
+    document.addEventListener("DOMContentLoaded", function() {{
+      const target = document.getElementById("guide-content");
+      if (typeof marked !== "undefined" && marked.parse) {{
+        target.innerHTML = marked.parse(rawContent);
+      }} else {{
+        target.innerHTML = "<pre style='white-space:pre-wrap;font-family:inherit'>" + rawContent + "</pre>";
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@app.get("/guide/{guide_id}")
+@app.get("/manuals/{guide_id}")
+async def get_guide(guide_id: str):
+    """Serve formatted HTML documentation page for the requested guide."""
+    return render_guide_html(guide_id)
+
+
+@app.get("/api/docs/{guide_id}")
+async def get_doc_api(guide_id: str):
+    """API endpoint providing raw documentation metadata and content."""
+    if guide_id == "list":
+        return {
+            "guides": [
+                {"id": k, "title": v["title"], "badge": v["badge"], "file": v["file"]}
+                for k, v in DOCS_MAP.items()
+            ]
+        }
+    if guide_id not in DOCS_MAP:
+        raise HTTPException(status_code=404, detail=f"Guide '{guide_id}' not found.")
+    info = DOCS_MAP[guide_id]
+    doc_path = ROOT_DIR / info["file"]
+    content = doc_path.read_text(encoding="utf-8") if doc_path.exists() else ""
+    return {
+        "id": guide_id,
+        "title": info["title"],
+        "badge": info["badge"],
+        "file": info["file"],
+        "content": content,
+    }
+
+
 @app.get("/")
-async def root():
-    """Serve the single-page application entry point."""
+async def root(view: Optional[str] = None):
+    """Serve the single-page application entry point or documentation view."""
+    if view and view in DOCS_MAP:
+        return render_guide_html(view)
+
     index_file = STATIC_DIR / "index.html"
     if not index_file.exists():
         return JSONResponse(

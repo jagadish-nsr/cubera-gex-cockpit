@@ -92,6 +92,13 @@ echo ""
 # ------------------------------------------------------------------------------
 echo "▶ [Stage 3/5] Synchronizing Git Branches & Creating Release Tag..."
 
+if [[ -z "${PROD_DIR}" || ! -d "${PROD_DIR}" ]]; then
+    echo "ℹ️ Note: Production worktree does not exist yet at '../cubera-gex-cockpit-prod'."
+    echo "  Creating it now via 'git worktree add ../cubera-gex-cockpit-prod main'..."
+    git -C "${DEV_DIR}" worktree add "${DEV_DIR}/../cubera-gex-cockpit-prod" main
+    PROD_DIR="${DEV_DIR}/../cubera-gex-cockpit-prod"
+fi
+
 # Merge dev into main inside the production worktree
 echo "  • Merging ${CURRENT_BRANCH} into main in production worktree..."
 git -C "${PROD_DIR}" merge "${CURRENT_BRANCH}" --no-edit -m "Release ${NEW_TAG}: Promoted from ${CURRENT_BRANCH}"
@@ -113,13 +120,6 @@ echo ""
 # Stage 4: Production Worktree Deployment & Server Reload
 # ------------------------------------------------------------------------------
 echo "▶ [Stage 4/5] Deploying to Production Worktree..."
-
-if [[ -z "${PROD_DIR}" || ! -d "${PROD_DIR}" ]]; then
-    echo "ℹ️ Note: Production worktree does not exist yet at '../cubera-gex-cockpit-prod'."
-    echo "  Creating it now via 'git worktree add ../cubera-gex-cockpit-prod main'..."
-    git -C "${DEV_DIR}" worktree add "${DEV_DIR}/../cubera-gex-cockpit-prod" main
-    PROD_DIR="${DEV_DIR}/../cubera-gex-cockpit-prod"
-fi
 
 # Update prod worktree
 echo "  • Updating production worktree to main (${NEW_TAG})..."

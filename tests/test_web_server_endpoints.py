@@ -476,3 +476,54 @@ class TestOffMarketPersistence:
         assert "timestamp" in data
         assert "market_open" in data
 
+    def test_documentation_endpoints(self):
+        """Verify documentation REST API and rendered HTML endpoints for all 12 guides."""
+        from web_server import DOCS_MAP
+
+        # 1. /api/docs/list
+        status, _, content = asyncio.run(asgi_request("GET", "/api/docs/list"))
+        assert status == 200
+        data = json.loads(content)
+        assert "guides" in data
+        assert len(data["guides"]) == 12
+
+        # 2. /api/docs/{guide_id}
+        status, _, content = asyncio.run(asgi_request("GET", "/api/docs/user_guide"))
+        assert status == 200
+        doc = json.loads(content)
+        assert doc["id"] == "user_guide"
+        assert "Master User Guide" in doc["title"]
+        assert len(doc["content"]) > 100
+
+        # 3. /guide/{guide_id} HTML rendering
+        status, headers, content = asyncio.run(asgi_request("GET", "/guide/user_guide"))
+        assert status == 200
+        assert "text/html" in headers.get("content-type", "")
+        html = content.decode("utf-8")
+        assert "marked.min.js" in html
+        assert "Quick Guide Jump:" in html
+        assert "Master User Guide" in html
+
+        # 4. /manuals/{guide_id} alias
+        status, _, content = asyncio.run(asgi_request("GET", "/manuals/orderflow_guide"))
+        assert status == 200
+        html = content.decode("utf-8")
+        assert "OrderFlow" in html
+
+        # 5. /?view={guide_id} query parameter
+        status, _, content = asyncio.run(asgi_request("GET", "/?view=target_engine_guide"))
+        assert status == 200
+        html = content.decode("utf-8")
+        assert "Target Engine" in html
+
+    def test_all_docs_files_exist_on_disk(self):
+        """Verify all 12 markdown source manuals mapped in DOCS_MAP exist on disk and have content."""
+        from web_server import DOCS_MAP, ROOT_DIR
+
+        assert len(DOCS_MAP) == 12
+        for doc_id, info in DOCS_MAP.items():
+            doc_file = ROOT_DIR / info["file"]
+            assert doc_file.exists(), f"Missing docs markdown file: {info['file']} for {doc_id}"
+            assert doc_file.stat().st_size > 200, f"Docs file too small or empty: {info['file']}"
+
+
