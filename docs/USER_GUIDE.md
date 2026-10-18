@@ -92,6 +92,138 @@ The Cockpit organizes quantitative index analytics into 11 tabbed workstations:
 
 ---
 
+## 🧭 Market State Assessment: The Quick-Check Playbook & 10-Second Triage Routine
+
+To assess market state in the **Cubera GEX Cockpit**, traders cross-reference **dealer positioning (Gamma Exposure / GEX)** with **live execution microstructure (CVD / Orderflow Sentinel)**, **Target Engine confluence**, and **market breadth**.
+
+To automate this workflow, the **🗺️ Cockpit** tab features a live **Flashing Marquee Alert Tape** backed by a **3.0-second louder brass bell chime 🔔** that continuously evaluates the tape and alerts you to regime shifts in real time.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [● LIVE 14:15:22 IST] [⚠️ BIG MOVE COMING]  ◀◀ ⚡ VOLATILITY EXPANSION: Market entering fast accelerator  [🔔 ON][🔔 Test]│
+│  (Fixed Left Anchor with Blinking Badge)   zone (Spot < Flip). Big swings expected. 👉 ACTION: Buy momentum  (Controls)│
+│                                            with tight stops. DO NOT sell naked options! ✦✦✦ [Net GEX: -42k] ▶▶         │
+│                                            ◄──────────── CONTINUOUS SIDEWAYS MARQUEE SCROLL ────────────►              │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### ⏱️ The 10-Second Trader's Triage Routine
+When opening the terminal during a live trading session, follow this 4-step triage sequence to establish your market posture in under 10 seconds:
+
+```
+Step 1: Check 🗺️ Cockpit KPI Strip & Alert Tape
+   ↳ Scenario Badge: Positive Gamma = Fade / Sideways; Negative Gamma = Momentum / Big Move.
+   ↳ Spot position relative to Gamma Flip, Call Wall, and Put Wall.
+
+Step 2: Check ⚡ Sentinel Tape Top KPIs
+   ↳ CVD Regime: BUYER_DOMINATED vs. SELLER_DOMINATED.
+   ↳ Angle/slope of the purple CVD line and Buyer Volume Ratio (>55% or <45%).
+
+Step 3: Check 🎯 Target Engine Dial
+   ↳ T2 Confluence Score: > 65 = High conviction trend; < 50 = Sideways / No edge.
+
+Step 4: Check 🧭 Market Intelligence
+   ↳ Sector Breadth: Are 8+ of 11 sectors unified, or is it a balanced chop?
+```
+
+---
+
+### The 4 Core Operating Scenarios: Mechanism & 15-Second Checklists
+
+#### 1. How to Know When a Big Move is Coming (Volatility Expansion Imminent)
+- **Institutional Mechanism:** When aggregate dealer gamma is negative or spot crosses below the Gamma Flip, market makers become short gamma. To dynamically delta-hedge, dealers must **sell as price falls and buy as price rises**, amplifying volatility rather than damping it. On expiry days, near-the-money gamma compresses into explosive strikes.
+- **Key Institutional Rule:** If Spot breaks through the Gamma Flip, the market enters the **"trapdoor/accelerator"** zone. Volatility expands by **1.5× to 2.0× normal expectations**.
+
+##### ⚡ Quick 15-Second Checklist:
+| Tab | Component / Card | What to Look For |
+|---|---|---|
+| **🗺️ Cockpit** | **Regime Classification & Net GEX** | • Regime flips to **NEGATIVE / TRENDING (Volatile)**.<br>• Net GEX drops near zero or turns negative.<br>• Spot moves into the Negative Gamma Zone (**Spot < Gamma Flip**). |
+| **🗺️ Cockpit** | **⚡ Expiry Gamma Blast Model** | • Blast Score spikes **> 60 / 100** with status **BLAST IMMINENT / ACTIVE** (especially between 13:30–15:15 IST). |
+| **📡 Options Analytics** | **ATM IV & IV Rank** | • IV compression followed by sudden IV expansion on both wings.<br>• Term structure shifting out of calm contango. |
+| **⚡ Sentinel Tape** | **Block Sweeps & Delta Spikes** | • Sudden cluster of institutional block sweeps (> ₹20L) firing in rapid succession on the tape. |
+
+- **👉 Beginner Playbook:** Buy breakout momentum with defined stop-losses. **DO NOT** sell naked options (strangles/straddles) — risk of sudden wipeout is severe.
+
+---
+
+#### 2. How to Know the Market is Trending (Bull or Bear Momentum)
+- **Institutional Mechanism:** A sustained trend requires institutional delta aggression (CVD divergence), broad sector confirmation, and options dealers continuously chasing hedge inventory without wall resistance pinning the spot.
+- **Key Institutional Rule:** A genuine trend requires **Index + CVD + Sector Breadth all pointing in the same direction**. If the index moves up but Breadth is mixed or CVD is flat, it is a **low-quality squeeze / bull trap**, not a trend.
+
+##### ⚡ Quick 15-Second Checklist:
+| Tab | Component / Card | What to Look For |
+|---|---|---|
+| **⚡ Sentinel Tape** | **CVD Regime & Cumulative Net CVD** | • CVD Regime shows **BUYER_DOMINATED** (or **SELLER_DOMINATED**).<br>• CVD line climbs at a steep angle, making consecutive higher highs without flattening.<br>• Buyer Volume Ratio stays consistently **> 55%** (uptrend) or **< 45%** (downtrend). |
+| **⚡ Sentinel Tape** | **VWAP & EMA 9/21 Ribbon** | • Candlesticks riding above the EMA 9/21 Ribbon and holding outside the **VWAP +1σ envelope** without returning to session mean VWAP. |
+| **🎯 Target Engine** | **T2 Confluence Dial** | • Dial reads **CONFLUENCE BULLISH** (or **BEARISH**) with score **> 65 / 100** (High Conviction). |
+| **🧭 Market Intelligence** | **Sector Breadth & Net Contribution** | • Breadth is **> 8/11 Green** (or **> 8/11 Red**).<br>• Weighted Net Contribution aligns with the index (**> +0.30%** or **< -0.30%**).<br>• Rotation Regime reads **BROAD_EXPANSION** or **CYCLICAL_LEADERSHIP** (not BALANCED_CHOP). |
+
+- **👉 Beginner Playbook:**  
+  - **Uptrend:** Buy call options or enter longs on minor dips to the EMA ribbon/VWAP. **DO NOT** try to short or pick tops.  
+  - **Downtrend:** Stick with put options or short trades on bounces to VWAP. **DO NOT** try to catch falling knives.
+
+---
+
+#### 3. How to Know the Market is Going to be Sideways (Chop / Mean Reversion)
+- **Institutional Mechanism:** When dealers are in Positive Gamma and spot sits comfortably between the Call and Put Walls, dealers hedge counter-cyclically (buying dips, selling rips). This acts as shock absorbers, damping volatility and pinning price.
+- **Key Institutional Rule:** If you see **Positive Gamma + Put/Call Wall Sandwich + Balanced Sector Chop**, avoid breakout trades. The optimal strategy is **Range Fade / Mean Reversion** (selling edges, buying support, shorting resistance).
+
+##### ⚡ Quick 15-Second Checklist:
+| Tab | Component / Card | What to Look For |
+|---|---|---|
+| **🗺️ Cockpit** | **Regime Classification & Net GEX** | • Regime reads **POSITIVE / RANGE-BOUND / BULL_TREND** (Mode: Positive Gamma Pin).<br>• High positive Net Dealer Gamma (+100k+ units).<br>• Spot is sandwiched between Put Wall (support) and Call Wall (resistance). |
+| **🗺️ Cockpit** | **Put Wall Role vs Flip** | • Put Wall is **ABOVE the Gamma Flip** $\rightarrow$ Classified as genuine **Support** (not a "speed bump"). |
+| **⚡ Sentinel Tape** | **CVD Line & VWAP** | • CVD oscillates around 0 with no clear directional slope.<br>• Price repeatedly snaps back to the purple Session VWAP line. |
+| **🧭 Market Intelligence** | **Sector Performance & Intel Verdict** | • Intel Verdict reads **⚖️ Balanced Sector Dispersion**.<br>• Rotation Regime reads **BALANCED_CHOP** (e.g., Banks green while IT/Energy red, canceling each other out). |
+| **📡 Options Analytics** | **Max Pain & Strike Buildup** | • Spot is gravitating tightly within **±30–50 points of Max Pain**.<br>• Heavy dual straddle/strangle writing on both CE and PE in the Buildup Matrix. |
+
+- **👉 Beginner Playbook:** Buy low near support (Put Wall), sell high near resistance (Call Wall). **DO NOT** chase breakouts; they will likely fail.
+
+---
+
+#### 4. How to Know the Market is About to Break Out or Break Down
+- **Institutional Mechanism:** Price tests a major institutional boundary (Call Wall / Put Wall / Prior Highs) accompanied by Delta Absorption or Exhaustion, shifting dealer inventory past their inflection point.
+
+##### ⚡ Quick 15-Second Checklist:
+| Tab | Component / Card | What to Look For |
+|---|---|---|
+| **🗺️ Cockpit** | **Gamma Price Ladder (Spot Centered)** | • **Breakout:** Spot approaches Call Wall; Call Gamma shrinks or shifts higher to next strikes (Short squeeze dynamic).<br>• **Breakdown:** Spot approaches Put Wall; if Put Wall is below Gamma Flip, it is flagged as **Speed Bump** (risk of sudden waterfall cascade). |
+| **⚡ Sentinel Tape** | **Absorption Status & OrderFlow Tape** | • Absorption Status KPI shows **ACTIVE_AT_PUT_WALL** or **ACTIVE_AT_CALL_WALL**.<br>• **Breakout:** Aggressive buyer market orders absorbing passive limit sellers at resistance.<br>• **Breakdown:** Passive bids getting swept with consecutive red delta bars. |
+| **📡 Options Analytics** | **Strike Buildup Matrix & Shift Events** | • Microstructure Shift Events log shows **Call Unwinding / Short Covering** (breakout fuel) or **Put Long Unwinding / Heavy Call Addition** (breakdown fuel).<br>• PCR shifts rapidly (**> 0.15 change within 15 mins**). |
+| **🎯 Target Engine** | **Spot Invalidation Anchors** | • Reference anchors indicate Spot breaching the Spot Inval level (`ladder-ce-inval` or `ladder-pe-inval`), activating Target 1 & Target 2 paths. |
+
+- **👉 Beginner Playbook:**  
+  - **Call Wall Breakout:** Wait for a 5-minute candle to close above the Call Wall, then enter for a short squeeze surge.  
+  - **Put Wall Breakdown:** If Put Wall is below the Gamma Flip, cut longs immediately; look for rapid downward cascade.
+
+---
+
+### 🛡️ Guardrail: Low-Quality Squeeze (Fakeout Detection)
+- **Trap Setup:** Price is rising, but Sector Breadth is mixed (e.g. only 3 of 11 sectors green) and Cumulative Net CVD is flat or negative.
+- **Institutional Reality:** Only 1 or 2 heavy-weight stocks are artificially pulling the index up while the broader market is being sold.
+- **Alert Badge:** `⚠️ CAUTION: FAKEOUT`
+- **👉 Action:** Stand aside or tighten stops. **DO NOT** chase this rally — high probability of a bull trap reversal.
+
+---
+
+### 🔊 Acoustic Alerting & Multi-Tier TTL Architecture
+
+#### 1. Unified 3.0-Second Louder Brass Desk Bell Chime (`🔔`)
+- To prevent sensory overload from multiple confusing beeps, the system uses **ONE clean, loud, 3.0-second brass desk bell chime** synthesized natively via Web Audio (`987.77 Hz B5 fundamental` + 3 metallic partials).
+- **Trigger Rule:** Fires **only on market state transitions** (with a 45-second silence cooldown).
+- Includes **`[🔔 Bell: ON / MUTE]`** and **`[🔔 Test]`** controls directly on the tape.
+
+#### 2. Multi-Tier TTL (Time-To-Live) Hierarchy
+| Layer | Validity Window (TTL) | Operating Rule |
+|---|---|---|
+| **Live Marquee Alert Tape** | **State-Bound (15–30 Mins)** | Active as long as market condition holds. If state flips, transitions immediately. |
+| **Tactical Beginner Advice** | **30 Minutes (`valid_until`)** | Actionable advice has a 30-minute impulse shelf-life to prevent acting on expired setups. |
+| **Session Commentary Timeline** | **Full Trading Session** | Logged as an immutable historical record; persists until market close (15:30 IST) / daily rollover. |
+
+---
+
 ## ⚡ Execution Architecture & Data Pipelines
 
 ### 1. Data Feed Hierarchy
