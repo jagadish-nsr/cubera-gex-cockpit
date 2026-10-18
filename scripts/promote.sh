@@ -88,17 +88,13 @@ echo "  • Promoted Version  : ${NEW_TAG}"
 echo ""
 
 # ------------------------------------------------------------------------------
-# Stage 3: Merge & Push to Production Branch (`main`)
+# Stage 3: Merge & Tag in Production Worktree (`main`)
 # ------------------------------------------------------------------------------
 echo "▶ [Stage 3/5] Synchronizing Git Branches & Creating Release Tag..."
 
-# Merge dev into main if not already on main
-if [[ "${CURRENT_BRANCH}" != "main" ]]; then
-    echo "  • Checking out main branch..."
-    git -C "${DEV_DIR}" checkout main
-    echo "  • Merging ${CURRENT_BRANCH} into main..."
-    git -C "${DEV_DIR}" merge "${CURRENT_BRANCH}" --no-edit -m "Release ${NEW_TAG}: Promoted from ${CURRENT_BRANCH}"
-fi
+# Merge dev into main inside the production worktree
+echo "  • Merging ${CURRENT_BRANCH} into main in production worktree..."
+git -C "${PROD_DIR}" merge "${CURRENT_BRANCH}" --no-edit -m "Release ${NEW_TAG}: Promoted from ${CURRENT_BRANCH}"
 
 # Create annotated git tag
 echo "  • Tagging release: ${NEW_TAG}..."
@@ -107,12 +103,7 @@ git -C "${DEV_DIR}" tag -a "${NEW_TAG}" -m "Release ${NEW_TAG} (Promoted $(date)
 # Push to origin (if remote configured)
 if git -C "${DEV_DIR}" remote get-url origin >/dev/null 2>&1; then
     echo "  • Pushing main and tags to GitHub..."
-    git -C "${DEV_DIR}" push origin main "${NEW_TAG}" || echo "  (Remote push skipped or offline)"
-fi
-
-# Return to dev branch if we switched
-if [[ "${CURRENT_BRANCH}" != "main" ]]; then
-    git -C "${DEV_DIR}" checkout "${CURRENT_BRANCH}"
+    git -C "${PROD_DIR}" push origin main "${NEW_TAG}" || echo "  (Remote push skipped or offline)"
 fi
 
 echo "✅ Branch synchronization and tagging complete."
@@ -131,9 +122,8 @@ if [[ -z "${PROD_DIR}" || ! -d "${PROD_DIR}" ]]; then
 fi
 
 # Update prod worktree
-echo "  • Updating production worktree to ${NEW_TAG}..."
-git -C "${PROD_DIR}" fetch --all --tags || true
-git -C "${PROD_DIR}" checkout "${NEW_TAG}"
+echo "  • Updating production worktree to main (${NEW_TAG})..."
+git -C "${PROD_DIR}" checkout main
 
 # Ensure requirements installed
 if [[ -f "${PROD_DIR}/requirements.txt" ]]; then
