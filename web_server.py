@@ -14,7 +14,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 import json
 import logging
+import os
 from pathlib import Path
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -97,7 +99,8 @@ STATIC_DIR = ROOT_DIR / "app" / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-app = FastAPI(title="Cubera GEX Cockpit Web API", version="2.0.0")
+app = FastAPI(title="Cubera GEX Cockpit Web API", version="5.3.0")
+APP_VERSION = "5.3.0"
 
 app.add_middleware(
     CORSMiddleware,
@@ -2758,6 +2761,22 @@ async def websocket_telemetry(websocket: WebSocket):
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for CD pipeline probes, monitoring, and readiness verification."""
+    from datetime import datetime
+    now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
+    return {
+        "status": "ok",
+        "app": "Cubera GEX Cockpit",
+        "version": APP_VERSION,
+        "env": os.environ.get("ENV_MODE", "production"),
+        "timestamp": now_ist,
+        "market_open": config.is_market_open(),
+        "data_source": config.DATA_SOURCE,
+    }
+
+
 @app.get("/")
 async def root():
     """Serve the single-page application entry point."""
@@ -2777,10 +2796,25 @@ def main():
     parser = argparse.ArgumentParser(description="Cubera GEX Cockpit Web Server")
     parser.add_argument("--port", type=int, default=8640, help="Port to bind (default: 8640)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host interface (default: 0.0.0.0)")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
+    parser.add_argument("--dev", action="store_true", help="Explicitly run in development mode")
     args = parser.parse_args()
 
-    log.info("Starting Cubera GEX Cockpit Web Server on http://%s:%d", args.host, args.port)
-    uvicorn.run("web_server:app", host=args.host, port=args.port, reload=False, log_level="info")
+    is_dev = args.dev or args.reload or (args.port != 8640)
+    if is_dev:
+        os.environ["ENV_MODE"] = "development"
+    else:
+        os.environ.setdefault("ENV_MODE", "production")
+
+    log.info(
+        "Starting Cubera GEX Cockpit [%s] v%s on http://%s:%d (reload=%s)",
+        os.environ["ENV_MODE"].upper(),
+        APP_VERSION,
+        args.host,
+        args.port,
+        args.reload,
+    )
+    uvicorn.run("web_server:app", host=args.host, port=args.port, reload=args.reload, log_level="info")
 
 
 if __name__ == "__main__":

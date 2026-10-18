@@ -3451,6 +3451,13 @@
   // -------------------------------------------------------------------------
   function startCockpit() {
     setupUIEventListeners();
+    // Environment visual badge
+    if (window.location.port === "8650" || window.location.search.includes("dev=true")) {
+      const sbVersion = document.getElementById("sidebar-version");
+      if (sbVersion) {
+        sbVersion.innerHTML = `v5.3 <span style="background:rgba(245,158,11,0.2);color:#f59e0b;padding:2px 6px;border-radius:4px;font-size:0.65rem;font-weight:700;border:1px solid rgba(245,158,11,0.4)">DEV :8650</span>`;
+      }
+    }
     initWebSocket();
     refreshAll();
     setInterval(loadStatus, 5000);

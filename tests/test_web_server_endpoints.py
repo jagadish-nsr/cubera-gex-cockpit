@@ -464,3 +464,15 @@ class TestOffMarketPersistence:
             assert "cards" in sc_data
             assert "session_date" in sc_data
 
+    def test_health_check_endpoint(self):
+        """Verify /api/health endpoint returns 200, valid status, and semantic version."""
+        status, _, content = asyncio.run(asgi_request("GET", "/api/health"))
+        assert status == 200
+        data = json.loads(content)
+        assert data["status"] == "ok"
+        assert data["app"] == "Cubera GEX Cockpit"
+        assert "version" in data
+        assert "env" in data
+        assert "timestamp" in data
+        assert "market_open" in data
+
