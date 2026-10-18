@@ -194,6 +194,34 @@
             </div>
           </div>
 
+          <!-- Institutional Market State Marquee Alert Tape with Sideways Blinking Shimmer -->
+          <div id="cockpit-alert-tape" class="alert-tape-marquee-container alert-tape-warn">
+            <div class="alert-tape-anchor-left">
+              <span class="alert-live-pulse-dot"></span>
+              <span id="alert-tape-timestamp" class="alert-tape-timestamp">--:--:-- IST</span>
+              <span id="alert-tape-badge" class="alert-tape-badge">INITIALIZING STATE</span>
+            </div>
+            <div class="alert-marquee-viewport" title="Hover mouse to pause scrolling">
+              <div id="alert-marquee-track" class="alert-marquee-track">
+                <span class="alert-marquee-item">
+                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Synchronizing Dealer GEX, Orderflow CVD, and Breadth metrics...
+                  <span class="marquee-action-tag">👉 ACTION: Monitoring opening flow</span>
+                  <span class="marquee-telemetry">[Calibrating LKGS Snapshot]</span>
+                </span>
+                <span class="marquee-separator">✦✦✦</span>
+                <span class="alert-marquee-item">
+                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Synchronizing Dealer GEX, Orderflow CVD, and Breadth metrics...
+                  <span class="marquee-action-tag">👉 ACTION: Monitoring opening flow</span>
+                  <span class="marquee-telemetry">[Calibrating LKGS Snapshot]</span>
+                </span>
+              </div>
+            </div>
+            <div class="alert-tape-anchor-right">
+              <button id="alert-bell-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleAlertBell()" title="Toggle 3-second alert bell sound">🔔 Bell: ON</button>
+              <button id="alert-bell-test-btn" class="tape-ctrl-btn" onclick="window.testAlertBell()" title="Audition 3-second louder brass bell chime">🔔 Test</button>
+            </div>
+          </div>
+
           <!-- Pre-Bell Tactical Briefing & Opening Shocks (Discovered Equilibrium) -->
           <div id="cockpit-pre-market-card" class="pre-bell-card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -1639,6 +1667,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=4.2"></script>
+  <script src="/static/js/cockpit.js?v=5.0"></script>
 </body>
 </html>

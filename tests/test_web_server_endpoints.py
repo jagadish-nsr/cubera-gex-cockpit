@@ -527,3 +527,26 @@ class TestOffMarketPersistence:
             assert doc_file.stat().st_size > 200, f"Docs file too small or empty: {info['file']}"
 
 
+def test_commentary_log_market_alert():
+    """Verify POST /api/commentary/log-market-alert logs an alert into session commentary with 30m TTL."""
+    payload = {
+        "symbol": "NIFTY",
+        "scenario": "VOLATILITY_EXPANSION",
+        "badge": "⚠️ BIG MOVE COMING",
+        "headline": "VOLATILITY EXPANSION IMMINENT",
+        "body": "Market entering fast accelerator zone.",
+        "action_advice": "Buy breakout momentum with tight stops.",
+        "diagnostics": "Spot: 24,480 | Flip: 24,545"
+    }
+    status, headers, content = asyncio.run(
+        asgi_request("POST", "/api/commentary/log-market-alert", body=payload)
+    )
+    assert status == 200
+    data = json.loads(content)
+    assert data["status"] == "ok"
+    assert "entry_id" in data
+    assert data["ttl"] == "30m"
+    assert "logged_at" in data
+
+
+

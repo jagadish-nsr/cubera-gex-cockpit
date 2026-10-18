@@ -15,6 +15,10 @@
     riskPct: 1.5,
     activeTab: "tab-cockpit",
     soundEnabled: true,
+    alertBellEnabled: localStorage.getItem("cubera_alert_bell_muted") !== "true",
+    lastAlertScenario: null,
+    lastAlertSoundTime: 0,
+    audioCtx: null,
     spot: 24500.0,
     ws: null,
     sentinelChart: null,
@@ -52,6 +56,65 @@
     playAudioTone(370.0, "triangle", 0.2); // F#4
     setTimeout(() => playAudioTone(311.13, "triangle", 0.3), 150); // Eb4
   }
+
+  // Unified 3.0-Second Louder Brass Desk Bell Synthesizer (Pure Web Audio)
+  function playTraderBellRing() {
+    if (!state.alertBellEnabled) return;
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!state.audioCtx) state.audioCtx = new AudioCtx();
+      const ctx = state.audioCtx;
+      if (ctx.state === "suspended") ctx.resume();
+
+      const now = ctx.currentTime;
+      const f0 = 987.77; // B5 authentic brass desk bell fundamental
+      const partials = [
+        { freq: f0, gain: 0.55, decay: 3.0 },
+        { freq: f0 * 2.02, gain: 0.28, decay: 2.1 },
+        { freq: f0 * 3.01, gain: 0.16, decay: 1.4 },
+        { freq: f0 * 4.25, gain: 0.09, decay: 0.8 },
+      ];
+
+      partials.forEach((p) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(p.freq, now);
+
+        g.gain.setValueAtTime(0.001, now);
+        g.gain.linearRampToValueAtTime(p.gain, now + 0.002);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + p.decay);
+
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + p.decay + 0.05);
+      });
+    } catch (e) {
+      console.warn("Error synthesizing 3.0s alert bell:", e);
+    }
+  }
+
+  window.toggleAlertBell = function () {
+    state.alertBellEnabled = !state.alertBellEnabled;
+    localStorage.setItem("cubera_alert_bell_muted", (!state.alertBellEnabled).toString());
+    const btn = document.getElementById("alert-bell-toggle-btn");
+    if (btn) {
+      if (state.alertBellEnabled) {
+        btn.textContent = "🔔 Bell: ON";
+        btn.className = "tape-ctrl-btn active";
+      } else {
+        btn.textContent = "🔕 Bell: MUTE";
+        btn.className = "tape-ctrl-btn muted";
+      }
+    }
+  };
+
+  window.testAlertBell = function () {
+    playTraderBellRing();
+    showToast("Auditioning 3.0s Louder Brass Bell Alert", "🔔");
+  };
 
   // -------------------------------------------------------------------------
   // Toast Notifications
@@ -550,8 +613,187 @@
             .join("");
         }
       }
+
+      // Update Flashing Sideways Marquee Alert Tape
+      updateMarketAlertTape(data);
     } catch (e) {
       console.error("Error loading cockpit:", e);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Institutional Market Alert State Evaluator & Marquee Tape Renderer
+  // -------------------------------------------------------------------------
+  function evaluateMarketAlertState(dash) {
+    const spot = Number(dash.spot || 0);
+    const kpis = dash.kpis || {};
+    const cw = Number(kpis.call_wall ? kpis.call_wall.val : 0) || (spot + 100);
+    const pw = Number(kpis.put_wall ? kpis.put_wall.val : 0) || (spot - 100);
+    const flip = Number(kpis.gamma_flip ? kpis.gamma_flip.val : 0) || spot;
+    const regime = String(kpis.regime ? kpis.regime.val : "NEUTRAL").toUpperCase();
+    const blast = dash.gamma_blast || {};
+    const blastScore = Number(blast.score || 0);
+    const breadth = dash.market_breadth || { advances: 25, declines: 25, ratio: 1.0 };
+    const adv = Number(breadth.advances || 0);
+    const dec = Number(breadth.declines || 0);
+    const ratio = Number(breadth.ratio || 1.0);
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
+
+    // 1. Volatility Expansion Imminent (Spot < Flip, Negative Gamma Zone, or Blast Score > 60)
+    if (spot < flip || regime === "NEGATIVE" || blastScore >= 60) {
+      return {
+        scenario: "VOLATILITY_EXPANSION",
+        badge: "⚠️ BIG MOVE COMING",
+        theme: "alert-tape-stop",
+        headline: "VOLATILITY EXPANSION IMMINENT",
+        body: "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
+        action: "Buy breakout momentum with strict stops. DO NOT sell naked options (high risk of violent explosion).",
+        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")} · Blast Score: ${blastScore}/100`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 2. Wall Absorption Breakout Test (Spot within 30 pts of Call Wall)
+    if (Math.abs(spot - cw) <= 30 && spot >= cw - 30) {
+      return {
+        scenario: "WALL_BREAKOUT",
+        badge: "🔥 BREAKOUT IMMINENT",
+        theme: "alert-tape-spark",
+        headline: "RESISTANCE BREAKOUT TEST",
+        body: `Price is hammering the Call Wall at ₹${cw.toLocaleString("en-IN")} with aggressive buying absorption. Trapped call sellers are losing inventory control.`,
+        action: `Watch ₹${cw.toLocaleString("en-IN")} closely. If a 5-min candle closes above the wall, enter for a short squeeze surge.`,
+        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Call Wall: ₹${cw.toLocaleString("en-IN")} · Wall Gap: ${Math.round(cw - spot)} pts`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 3. Wall Breakdown / Speed Bump Trapdoor (Spot within 30 pts of Put Wall AND Put Wall < Flip)
+    if (Math.abs(spot - pw) <= 30 && pw < flip) {
+      return {
+        scenario: "WALL_BREAKDOWN",
+        badge: "🚨 TRAPDOOR BREAKDOWN",
+        theme: "alert-tape-stop",
+        headline: "FRAGILE SUPPORT TEST (TRAPDOOR RISK)",
+        body: `Price is testing Put Wall support at ₹${pw.toLocaleString("en-IN")}, but it sits below the Gamma Flip ('Speed Bump'). If breached, there is no dealer floor.`,
+        action: `Cut longs immediately if ₹${pw.toLocaleString("en-IN")} breaks; look for rapid downward acceleration.`,
+        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Put Wall: ₹${pw.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 4. Fakeout Warning (Spot rising but market breadth ratio < 0.8)
+    if (adv < dec && ratio < 0.8 && spot > (pw + cw) / 2) {
+      return {
+        scenario: "FAKEOUT_WARNING",
+        badge: "⚠️ CAUTION: FAKEOUT",
+        theme: "alert-tape-warn",
+        headline: "LOW-QUALITY SQUEEZE WARNING",
+        body: `Spot is ticking up without broad market backing (only ${adv} advancers vs ${dec} decliners). Low institutional commitment.`,
+        action: "Stand aside or tighten stops. DO NOT chase this move — high risk of a bull trap reversal.",
+        diagnostics: `Breadth Divergence (${ratio}x) · Mixed Sectors (${adv} Adv / ${dec} Dec)`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 5A. Strong Bull Uptrend (Triple Confluence)
+    if (ratio >= 1.5 && adv >= 28 && spot >= flip) {
+      return {
+        scenario: "STRONG_UPTREND",
+        badge: "🚀 STRONG UPTREND",
+        theme: "alert-tape-go",
+        headline: "STRONG UPTREND — BUYERS IN CONTROL",
+        body: `Triple Confirmation verified: Institutional buyers dominating flow, sector breadth broadly positive (${adv} Adv / ${dec} Dec), and price riding comfortably above key levels.`,
+        action: "Buy call options or enter longs on minor dips. DO NOT try to short or pick market tops!",
+        diagnostics: `Breadth: ${ratio}x Bullish · Call Wall: ₹${cw.toLocaleString("en-IN")} · Put Floor: ₹${pw.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 5B. Strong Bear Downtrend (Triple Confluence)
+    if (ratio <= 0.65 && dec >= 28) {
+      return {
+        scenario: "STRONG_DOWNTREND",
+        badge: "📉 STRONG DOWNTREND",
+        theme: "alert-tape-stop",
+        headline: "STRONG DOWNTREND — SELLERS IN CONTROL",
+        body: `Triple Confirmation verified: Heavy institutional selling dumping inventory across sectors (${dec} Decliners), with spot pinned below key barriers.`,
+        action: "Stick with put options or short trades on bounces. DO NOT try to catch falling knives!",
+        diagnostics: `Breadth: ${ratio}x Bearish · Put Wall: ₹${pw.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 6. Sideways Chop (Gamma Pin)
+    return {
+      scenario: "SIDEWAYS_CHOP",
+      badge: "⚖️ SIDEWAYS CHOP",
+      theme: "alert-tape-warn",
+      headline: "SIDEWAYS CHOP — MARKET PINNED",
+      body: `Market is safely cushioned between Put Wall (₹${pw.toLocaleString("en-IN")}) and Call Wall (₹${cw.toLocaleString("en-IN")}). Option dealers are absorbing shocks and pinning price.`,
+      action: "Fade edges — buy near Put Wall support, sell near Call Wall resistance. DO NOT chase breakout trades!",
+      diagnostics: `Sandwiched: ₹${pw.toLocaleString("en-IN")} - ₹${cw.toLocaleString("en-IN")} · Net GEX: Positive Pin`,
+      timestamp: timeStr,
+    };
+  }
+
+  function updateMarketAlertTape(dash) {
+    const alert = evaluateMarketAlertState(dash);
+    const container = document.getElementById("cockpit-alert-tape");
+    if (!container) return;
+
+    // Apply color theme
+    container.className = `alert-tape-marquee-container ${alert.theme}`;
+
+    // Update timestamp and badge
+    const tsEl = document.getElementById("alert-tape-timestamp");
+    if (tsEl) tsEl.textContent = alert.timestamp;
+
+    const badgeEl = document.getElementById("alert-tape-badge");
+    if (badgeEl) badgeEl.textContent = alert.badge;
+
+    // Generate seamless dual-loop marquee track
+    const track = document.getElementById("alert-marquee-track");
+    if (track) {
+      const itemHtml = `
+        <span class="alert-marquee-item">
+          <span class="marquee-headline">${alert.headline}:</span> ${alert.body}
+          <span class="marquee-action-tag">👉 ACTION: ${alert.action}</span>
+          <span class="marquee-telemetry">[${alert.diagnostics}]</span>
+        </span>
+      `;
+      track.innerHTML = `${itemHtml}<span class="marquee-separator">✦✦✦</span>${itemHtml}`;
+    }
+
+    // State transition detection & 3.0s Louder Brass Bell Alert
+    if (alert.scenario !== state.lastAlertScenario) {
+      const now = Date.now();
+      const isInitial = state.lastAlertScenario === null;
+      state.lastAlertScenario = alert.scenario;
+
+      if (!isInitial) {
+        // Play 3.0-second louder brass bell
+        if (now - state.lastAlertSoundTime > 45000) {
+          playTraderBellRing();
+          state.lastAlertSoundTime = now;
+        }
+
+        // Post alert message with timestamp to Session Commentary timeline
+        fetch("/api/commentary/log-market-alert", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol: state.symbol,
+            scenario: alert.scenario,
+            badge: alert.badge,
+            headline: alert.headline,
+            body: alert.body,
+            action_advice: alert.action,
+            diagnostics: alert.diagnostics,
+          }),
+        }).catch((err) => console.warn("Failed to log alert to commentary:", err));
+      }
     }
   }
 
@@ -3459,6 +3701,16 @@
       }
     }
     initWebSocket();
+    const bellBtn = document.getElementById("alert-bell-toggle-btn");
+    if (bellBtn) {
+      if (state.alertBellEnabled) {
+        bellBtn.textContent = "🔔 Bell: ON";
+        bellBtn.className = "tape-ctrl-btn active";
+      } else {
+        bellBtn.textContent = "🔕 Bell: MUTE";
+        bellBtn.className = "tape-ctrl-btn muted";
+      }
+    }
     refreshAll();
     setInterval(loadStatus, 5000);
   }

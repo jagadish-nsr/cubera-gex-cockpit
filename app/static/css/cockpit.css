@@ -1694,3 +1694,244 @@ details.collapsible-matrix[open] .matrix-chevron {
 details.collapsible-matrix:not([open]) .matrix-chevron {
   transform: rotate(-90deg);
 }
+
+/* =========================================================================
+   Cockpit Tab: Flashing Sideways Marquee Alert Tape & Trader Ticker
+   ========================================================================= */
+.alert-tape-marquee-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+/* Sideways blinking shimmer scanline effect */
+@keyframes alert-shimmer-sweep {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.alert-tape-marquee-container::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--tape-accent, var(--spark)), transparent);
+  background-size: 200% 100%;
+  animation: alert-shimmer-sweep 3s linear infinite;
+  pointer-events: none;
+}
+
+/* Theme color variations */
+.alert-tape-stop {
+  --tape-accent: var(--stop);
+  border-color: rgba(239, 68, 68, 0.45);
+  box-shadow: 0 0 25px rgba(239, 68, 68, 0.15), inset 0 0 15px rgba(239, 68, 68, 0.05);
+}
+.alert-tape-go {
+  --tape-accent: var(--go);
+  border-color: rgba(34, 197, 94, 0.45);
+  box-shadow: 0 0 25px rgba(34, 197, 94, 0.15), inset 0 0 15px rgba(34, 197, 94, 0.05);
+}
+.alert-tape-warn {
+  --tape-accent: var(--warn);
+  border-color: rgba(245, 158, 11, 0.45);
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.15), inset 0 0 15px rgba(245, 158, 11, 0.05);
+}
+.alert-tape-spark {
+  --tape-accent: var(--spark);
+  border-color: rgba(56, 189, 248, 0.45);
+  box-shadow: 0 0 25px rgba(56, 189, 248, 0.15), inset 0 0 15px rgba(56, 189, 248, 0.05);
+}
+
+/* Fixed Left Anchor */
+.alert-tape-anchor-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  padding-right: 10px;
+  border-right: 1px solid var(--line);
+}
+
+/* Animated pulsating live dot */
+@keyframes alert-live-pulse {
+  0% { transform: scale(0.92); opacity: 0.6; }
+  50% { transform: scale(1.15); opacity: 1; filter: drop-shadow(0 0 6px var(--tape-accent, var(--spark))); }
+  100% { transform: scale(0.92); opacity: 0.6; }
+}
+
+.alert-live-pulse-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tape-accent, var(--spark));
+  animation: alert-live-pulse 1.4s ease-in-out infinite;
+}
+
+.alert-tape-timestamp {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--ink-mute);
+  letter-spacing: 0.02em;
+}
+
+/* Sideways blinking badge */
+@keyframes alert-badge-sideways-blink {
+  0%, 100% {
+    opacity: 1;
+    transform: translateX(0);
+    filter: drop-shadow(0 0 6px var(--tape-accent, var(--spark)));
+  }
+  50% {
+    opacity: 0.6;
+    transform: translateX(-1px);
+    filter: none;
+  }
+}
+
+.alert-tape-badge {
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--tape-accent, var(--spark));
+  color: var(--tape-accent, var(--spark));
+  animation: alert-badge-sideways-blink 2s ease-in-out infinite;
+  white-space: nowrap;
+}
+
+/* Center Marquee Viewport with Soft Gradient Edge Fade */
+.alert-marquee-viewport {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  position: relative;
+  display: flex;
+  align-items: center;
+  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
+}
+
+@keyframes alert-marquee-scroll {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.alert-marquee-track {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  will-change: transform;
+  animation: alert-marquee-scroll 26s linear infinite;
+  cursor: default;
+}
+
+.alert-marquee-viewport:hover .alert-marquee-track {
+  animation-play-state: paused;
+}
+
+.alert-marquee-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+.marquee-headline {
+  font-weight: 800;
+  color: var(--tape-accent, var(--spark));
+}
+
+.marquee-action-tag {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 750;
+  color: var(--ink);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.marquee-telemetry {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.marquee-separator {
+  color: var(--tape-accent, var(--spark));
+  font-size: 0.7rem;
+  opacity: 0.6;
+  padding: 0 10px;
+}
+
+/* Fixed Right Anchor (Controls) */
+.alert-tape-anchor-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  z-index: 2;
+  background: var(--surface-1);
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.tape-ctrl-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 9px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tape-ctrl-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--spark);
+  color: var(--spark);
+  transform: translateY(-1px);
+}
+
+.tape-ctrl-btn.active {
+  border-color: var(--go);
+  color: var(--go);
+  background: var(--go-bg);
+}
+
+.tape-ctrl-btn.muted {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-bg);
+}
+

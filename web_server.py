@@ -2021,6 +2021,43 @@ async def clear_cache():
     return {"status": "ok", "message": "LKGS memory cache cleared successfully"}
 
 
+@app.post("/api/commentary/log-market-alert")
+async def log_market_alert(payload: dict = Body(...)):
+    """Log an institutional market state transition alert into Session Commentary with 30m TTL."""
+    sym = (payload.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    scenario = payload.get("scenario", "ALERT")
+    badge = payload.get("badge", "MARKET ALERT")
+    headline = payload.get("headline", "Market State Shift")
+    body = payload.get("body", "")
+    action_advice = payload.get("action_advice", "")
+    diagnostics = payload.get("diagnostics", "")
+    now_ist = _get_ist_now()
+
+    from commentary.models import CommentaryEntry, to_ist
+    from commentary.storage.db import save_commentary_entry
+
+    entry_id = f"alert-{sym.lower()}-{int(now_ist.timestamp())}"
+    full_body = f"{body}\n\n👉 BEGINNER ACTION: {action_advice}\n\n🔬 DIAGNOSTICS: {diagnostics}\n(Tactical TTL: 30 minutes from {now_ist.strftime('%H:%M:%S IST')})"
+
+    entry = CommentaryEntry(
+        id=entry_id,
+        ts=now_ist,
+        phase="MARKET_ALERT",
+        event_ids=[f"evt-{int(now_ist.timestamp())}"],
+        headline=f"{badge} — {headline}",
+        body=full_body,
+        tags=["MARKET_STATE_ALERT", scenario],
+        facts={"scenario": scenario, "badge": badge, "ttl_minutes": 30, "diagnostics": diagnostics},
+    )
+
+    try:
+        save_commentary_entry(entry, symbol=sym)
+        return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": now_ist.strftime("%H:%M:%S IST")}
+    except Exception as e:
+        logger.warning("Error saving commentary market alert: %s", e)
+        return {"status": "error", "message": str(e)}
+
+
 @app.get("/api/session-commentary")
 async def get_session_commentary(symbol: Optional[str] = None):
     """Session Commentary Tab: Strictly single trading session date narrative, Morning Anchor pre-market card, and post-market scorecard."""
