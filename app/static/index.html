@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>🎯 Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
+  <title>Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
   <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
+  <link rel="icon" type="image/jpeg" href="/static/img/cubera-logo-mark.jpg">
   <link rel="stylesheet" href="/static/css/cockpit.css">
   <script src="/static/lightweight-charts.standalone.js"></script>
 </head>
@@ -13,9 +14,13 @@
     <!-- Persistent Left Sidebar -->
     <aside id="sidebar">
       <div class="sidebar-header">
-        <div class="sidebar-brand">
-          <span>⚡ CUBERA GEX</span>
-        </div>
+        <a href="/" class="sidebar-brand">
+          <img src="/static/img/cubera-logo-mark.jpg" alt="Cubera GEX Logo" class="brand-logo-img">
+          <div class="brand-text-block">
+            <span class="brand-title">CUBERA</span>
+            <span class="brand-gex-badge">GEX</span>
+          </div>
+        </a>
         <span id="sidebar-version" style="font-size:0.68rem;color:var(--ink-faint);font-family:var(--mono)">v2.0 PRO</span>
       </div>
 
@@ -144,7 +149,25 @@
       <header id="top-header">
         <div class="header-top-row">
           <div class="header-title-block">
-            <h1>🎯 <span id="header-index-label">NIFTY 50</span> Trading Cockpit</h1>
+            <h1>
+              <span class="cockpit-header-icon-wrap" title="Cubera Quantitative Trading Cockpit">
+                <svg class="cockpit-title-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle cx="12" cy="12" r="9.5" stroke="url(#cockpitGrad)" stroke-width="1.8" stroke-dasharray="3 1.5"/>
+                  <circle cx="12" cy="12" r="6" stroke="url(#cockpitGrad)" stroke-width="1.2" opacity="0.6"/>
+                  <circle cx="12" cy="12" r="2.2" fill="#00f2fe"/>
+                  <path d="M4 12H8M16 12H20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M12 4V7.5M12 16.5V20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
+                  <path d="M8 15L10 12L12 14L14 12L16 15" stroke="#00e676" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+                  <defs>
+                    <linearGradient id="cockpitGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                      <stop offset="0%" stop-color="#00f2fe"/>
+                      <stop offset="100%" stop-color="#00e676"/>
+                    </linearGradient>
+                  </defs>
+                </svg>
+              </span>
+              <span><span id="header-index-label">NIFTY 50</span> Trading Cockpit</span>
+            </h1>
             <div class="header-subtitle">
               <span>GEX Map · Options Analytics · Paper Journal</span>
               <span> &nbsp;|&nbsp; </span>
@@ -152,7 +175,14 @@
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:12px">
-            <a href="/guide/user_guide" target="_blank" class="btn btn-secondary" style="font-size:0.75rem;text-decoration:none;display:inline-flex;align-items:center;gap:4px">📚 User Manual ↗</a>
+            <a href="/guide/user_guide" target="_blank" class="btn btn-secondary" style="font-size:0.75rem;text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+              <svg class="tab-icon" style="width:13px;height:13px" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M4 2.5H14C15.1046 2.5 16 3.39543 16 4.5V16C16 16.5523 15.5523 17 15 17H5C3.89543 17 3 16.1046 3 15V3.5C3 2.94772 3.44772 2.5 4 2.5Z" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="6.5" y1="6.5" x2="12.5" y2="6.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                <line x1="6.5" y1="10" x2="12.5" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+              <span>User Manual ↗</span>
+            </a>
             <button id="btn-sound-toggle" class="btn btn-secondary" style="font-size:0.75rem">🔔 Audio Chimes: ON</button>
             <span id="session-phase-badge" class="badge-active" style="padding:5px 12px;font-size:0.74rem">POWER HOUR (09:15–15:30)</span>
           </div>
@@ -160,17 +190,110 @@
 
         <!-- 11 Tab Navigation Bar -->
         <nav class="nav-tabs" id="nav-tabs">
-          <button class="tab-btn active" id="tab-btn-cockpit" data-tab="tab-cockpit" onclick="window.switchTab('tab-cockpit')">🗺️ Cockpit</button>
-          <button class="tab-btn" id="tab-btn-target-engine" data-tab="tab-target-engine" onclick="window.switchTab('tab-target-engine')">🎯 Target Engine</button>
-          <button class="tab-btn" id="tab-btn-recommendations" data-tab="tab-recommendations" onclick="window.switchTab('tab-recommendations')">⚡ Trade Recommendations</button>
-          <button class="tab-btn" id="tab-btn-sentinel" data-tab="tab-sentinel" onclick="window.switchTab('tab-sentinel')">⚡ Sentinel Tape</button>
-          <button class="tab-btn" id="tab-btn-efficiency" data-tab="tab-efficiency" onclick="window.switchTab('tab-efficiency')">🎯 Signal Efficiency</button>
-          <button class="tab-btn" id="tab-btn-market-intel" data-tab="tab-market-intel" onclick="window.switchTab('tab-market-intel')">🧭 Market Intelligence</button>
-          <button class="tab-btn" id="tab-btn-analytics" data-tab="tab-analytics" onclick="window.switchTab('tab-analytics')">📡 Options Analytics</button>
-          <button class="tab-btn" id="tab-btn-journal" data-tab="tab-journal" onclick="window.switchTab('tab-journal')">📓 Journal</button>
-          <button class="tab-btn" id="tab-btn-scorecard" data-tab="tab-scorecard" onclick="window.switchTab('tab-scorecard')">📊 Scorecard</button>
-          <button class="tab-btn" id="tab-btn-ops" data-tab="tab-ops" onclick="window.switchTab('tab-ops')">⚙️ Ops &amp; Calendar</button>
-          <button class="tab-btn" id="tab-btn-commentary" data-tab="tab-commentary" onclick="window.switchTab('tab-commentary')">🎙️ Session Commentary</button>
+          <button class="tab-btn active" id="tab-btn-cockpit" data-tab="tab-cockpit" onclick="window.switchTab('tab-cockpit')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1.5"/>
+              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="10" y1="1" x2="10" y2="4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="10" y1="15.5" x2="10" y2="19" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="1" y1="10" x2="4.5" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="15.5" y1="10" x2="19" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Cockpit</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-target-engine" data-tab="tab-target-engine" onclick="window.switchTab('tab-target-engine')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.4"/>
+              <circle cx="10" cy="10" r="5" stroke="currentColor" stroke-width="1.4"/>
+              <circle cx="10" cy="10" r="2" fill="currentColor"/>
+              <path d="M14 6L18 2M18 2H14.5M18 2V5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Target Engine</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-recommendations" data-tab="tab-recommendations" onclick="window.switchTab('tab-recommendations')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M11.5 1.5L3.5 11H10L8.5 18.5L16.5 9H10L11.5 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="currentColor" fill-opacity="0.15"/>
+            </svg>
+            <span>Trade Recommendations</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-sentinel" data-tab="tab-sentinel" onclick="window.switchTab('tab-sentinel')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M1.5 10H5L7.5 4L11 16L13.5 8L15.5 12H18.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="18.5" cy="12" r="1.5" fill="currentColor"/>
+            </svg>
+            <span>Sentinel Tape</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-efficiency" data-tab="tab-efficiency" onclick="window.switchTab('tab-efficiency')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 14A8 8 0 1 1 17 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="10" cy="13" r="2" fill="currentColor"/>
+              <path d="M10 13L14 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <span>Signal Efficiency</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-market-intel" data-tab="tab-market-intel" onclick="window.switchTab('tab-market-intel')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4"/>
+              <polygon points="10,4 12.5,9.5 10,8.5 7.5,9.5" fill="currentColor"/>
+              <polygon points="10,16 12.5,10.5 10,11.5 7.5,10.5" fill="currentColor" opacity="0.35"/>
+              <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+            </svg>
+            <span>Market Intelligence</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-analytics" data-tab="tab-analytics" onclick="window.switchTab('tab-analytics')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M2 15C5 15 6 5 10 5C14 5 15 15 18 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <line x1="2" y1="17" x2="18" y2="17" stroke="currentColor" stroke-width="1.2" opacity="0.4"/>
+              <line x1="10" y1="5" x2="10" y2="17" stroke="currentColor" stroke-width="1" stroke-dasharray="2 2" opacity="0.6"/>
+              <circle cx="10" cy="5" r="2" fill="currentColor"/>
+            </svg>
+            <span>Options Analytics</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-journal" data-tab="tab-journal" onclick="window.switchTab('tab-journal')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="4" y="2.5" width="12" height="15" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="7" y1="6.5" x2="13" y2="6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="7" y1="13.5" x2="10.5" y2="13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="2.5" y1="6" x2="4" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="2.5" y1="10" x2="4" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="2.5" y1="14" x2="4" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Journal</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-scorecard" data-tab="tab-scorecard" onclick="window.switchTab('tab-scorecard')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2.5" y="11" width="3.5" height="6.5" rx="1" fill="currentColor" fill-opacity="0.25" stroke="currentColor" stroke-width="1.4"/>
+              <rect x="8.2" y="7" width="3.5" height="10.5" rx="1" fill="currentColor" fill-opacity="0.25" stroke="currentColor" stroke-width="1.4"/>
+              <rect x="14" y="3" width="3.5" height="14.5" rx="1" fill="currentColor" fill-opacity="0.4" stroke="currentColor" stroke-width="1.4"/>
+              <path d="M4 8L9.5 4.5L15.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>Scorecard</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-ops" data-tab="tab-ops" onclick="window.switchTab('tab-ops')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2"/>
+              <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="7" cy="11" r="1" fill="currentColor"/>
+              <circle cx="10" cy="11" r="1" fill="currentColor"/>
+              <circle cx="13" cy="11" r="1" fill="currentColor"/>
+              <circle cx="7" cy="14" r="1" fill="currentColor"/>
+              <circle cx="10" cy="14" r="1" fill="currentColor"/>
+              <circle cx="13" cy="14" r="1" fill="currentColor"/>
+            </svg>
+            <span>Ops &amp; Calendar</span>
+          </button>
+          <button class="tab-btn" id="tab-btn-commentary" data-tab="tab-commentary" onclick="window.switchTab('tab-commentary')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="7" y="2" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.15"/>
+              <path d="M4.5 8C4.5 11.0376 6.96243 13.5 10 13.5C13.0376 13.5 15.5 11.0376 15.5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="10" y1="13.5" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <line x1="7" y1="17" x2="13" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Session Commentary</span>
+          </button>
         </nav>
       </header>
 
@@ -931,9 +1054,31 @@
 
             <!-- 3 Subtabs for 10-Day CVD History -->
             <div class="subtabs-bar">
-              <button class="subtab-btn active" id="btn-subtab-cvd-chart" onclick="window.switchSentinelSubtab('chart')">🌊 10-Day Closing CVD Bar Chart</button>
-              <button class="subtab-btn" id="btn-subtab-vol-breakdown" onclick="window.switchSentinelSubtab('breakdown')">⚖️ Buyer vs Seller Volume Breakdown</button>
-              <button class="subtab-btn" id="btn-subtab-daily-ledger" onclick="window.switchSentinelSubtab('ledger')">📋 Historical Daily Ledger</button>
+              <button class="subtab-btn active" id="btn-subtab-cvd-chart" onclick="window.switchSentinelSubtab('chart')">
+                <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M2 13C4 11 7 14 10 12C13 10 16 13 18 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                  <path d="M2 16C5 14 8 16 11 14C14 12 16 15 18 13.5" stroke="currentColor" stroke-width="1.2" opacity="0.4" stroke-linecap="round"/>
+                </svg>
+                <span>10-Day Closing CVD Bar Chart</span>
+              </button>
+              <button class="subtab-btn" id="btn-subtab-vol-breakdown" onclick="window.switchSentinelSubtab('breakdown')">
+                <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <line x1="3" y1="6" x2="17" y2="6" stroke="currentColor" stroke-width="1.5"/>
+                  <line x1="10" y1="3" x2="10" y2="17" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M4 6L2 12H7L5 6" stroke="currentColor" stroke-width="1.2"/>
+                  <path d="M16 6L14 12H19L17 6" stroke="currentColor" stroke-width="1.2"/>
+                </svg>
+                <span>Buyer vs Seller Volume Breakdown</span>
+              </button>
+              <button class="subtab-btn" id="btn-subtab-daily-ledger" onclick="window.switchSentinelSubtab('ledger')">
+                <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <rect x="4" y="3" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                  <line x1="7" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  <line x1="7" y1="13" x2="11" y2="13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                </svg>
+                <span>Historical Daily Ledger</span>
+              </button>
             </div>
 
             <!-- Subtab 1: CVD Bar Chart -->
@@ -1069,10 +1214,38 @@
 
           <!-- 4 Sub-Tabs Bar -->
           <div class="subtabs-bar" style="margin-bottom:12px">
-            <button class="subtab-btn active" id="btn-eff-tab-timeline" onclick="window.switchEffSubtab('timeline')">📅 Efficiency Timeline</button>
-            <button class="subtab-btn" id="btn-eff-tab-breakdowns" onclick="window.switchEffSubtab('breakdowns')">🏷️ Breakdowns (Type &amp; GEX)</button>
-            <button class="subtab-btn" id="btn-eff-tab-expectancy" onclick="window.switchEffSubtab('expectancy')">⏱️ Return Expectancy</button>
-            <button class="subtab-btn" id="btn-eff-tab-calib" onclick="window.switchEffSubtab('calib')">🎯 Model Calibration &amp; Options Expectancy</button>
+            <button class="subtab-btn active" id="btn-eff-tab-timeline" onclick="window.switchEffSubtab('timeline')">
+              <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2"/>
+                <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span>Efficiency Timeline</span>
+            </button>
+            <button class="subtab-btn" id="btn-eff-tab-breakdowns" onclick="window.switchEffSubtab('breakdowns')">
+              <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M3 10L10 3H16V9L9 16L3 10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+                <circle cx="13" cy="6" r="1.5" fill="currentColor"/>
+              </svg>
+              <span>Breakdowns (Type &amp; GEX)</span>
+            </button>
+            <button class="subtab-btn" id="btn-eff-tab-expectancy" onclick="window.switchEffSubtab('expectancy')">
+              <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="10" cy="11" r="7" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M10 7V11L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <line x1="8" y1="2" x2="12" y2="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <span>Return Expectancy</span>
+            </button>
+            <button class="subtab-btn" id="btn-eff-tab-calib" onclick="window.switchEffSubtab('calib')">
+              <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="10" cy="10" r="4.5" stroke="currentColor" stroke-width="1.4"/>
+                <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+              </svg>
+              <span>Model Calibration &amp; Options Expectancy</span>
+            </button>
           </div>
 
           <!-- Subtab 1: Efficiency Timeline -->
