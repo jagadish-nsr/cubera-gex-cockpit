@@ -142,3 +142,50 @@ def test_gex_daemon_pauses_when_market_closed():
                     pass
                 assert not mock_load.called
 
+
+def test_gamma_blast_concluded_when_market_closed():
+    """Verify evaluate_dashboard_gamma_blast returns SESSION CONCLUDED with score 0 off-market."""
+    from app.gammablast import evaluate_dashboard_gamma_blast
+    from unittest.mock import MagicMock
+
+    dash = MagicMock()
+    dash.levels.spot = 22888.0
+    dash.levels.call_wall = 23000.0
+    dash.levels.put_wall = 22500.0
+    dash.fetched_at = datetime(2026, 10, 19, 21, 30, 0, tzinfo=timezone.utc)
+
+    with patch("config.is_market_open", return_value=False):
+        gb = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+        assert gb["state"] == "NO_TRIGGER"
+        assert gb["badge"] == "GAMMA BLAST: SESSION CONCLUDED"
+        assert gb["score"] == 0
+        assert "closed" in gb["description"].lower()
+
+
+def test_market_snapshot_rejects_corrupted_walls():
+    """Verify save_snapshot and _load_active_dashboard reject corrupt outlier walls (e.g. 17000 for NIFTY)."""
+    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
+    from unittest.mock import MagicMock
+
+    _DASH_MEM_CACHE.clear()
+    fake_dash = MagicMock()
+    fake_dash.levels.spot = 22888.95
+    fake_dash.levels.call_wall = 23000.0
+    fake_dash.levels.put_wall = 22500.0
+
+    with patch("config.is_market_open", return_value=False):
+        with patch("web_server.load_dashboard", return_value=fake_dash):
+            # Corrupted db snapshot with 17000
+            with patch("data.market_snapshot.get_snapshot", return_value={
+                "spot": 22888.95,
+                "call_wall": 17000.0,
+                "put_wall": 17000.0,
+            }):
+                dash = _load_active_dashboard("NIFTY", "weekly")
+                # Must NOT overwrite authentic snapshot walls with corrupted 17000.0
+                assert dash.levels.call_wall != 17000.0
+                assert dash.levels.put_wall != 17000.0
+                assert dash.levels.call_wall >= 19000.0
+                assert dash.levels.put_wall >= 19000.0
+
+

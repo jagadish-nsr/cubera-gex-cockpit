@@ -922,10 +922,10 @@
     renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
   }
 
-  function renderCockpitChart(symbol, tf, engine) {
+  function renderCockpitChart(symbol, tf) {
     cockpitChartState.symbol = (symbol || state.symbol || "NIFTY").toUpperCase();
     cockpitChartState.timeframe = tf || cockpitChartState.timeframe || "5m";
-    cockpitChartState.engine = engine || cockpitChartState.engine || "gex_canvas";
+    cockpitChartState.engine = "gex_canvas";
 
     const symBadge = document.getElementById("cockpit-chart-symbol-badge");
     if (symBadge) symBadge.textContent = cockpitChartState.symbol;
@@ -933,8 +933,14 @@
     const chlSym = document.getElementById("chl-sym");
     if (chlSym) chlSym.textContent = cockpitChartState.symbol;
 
+    const isClosed = state.is_market_open === false || state.market_state === "CLOSED";
     const tfBadge = document.getElementById("cockpit-chart-badge");
-    if (tfBadge) tfBadge.textContent = `${cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe} · LIVE`;
+    if (tfBadge) {
+      const tfName = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
+      tfBadge.textContent = isClosed ? `${tfName} · EOD (CLOSED)` : `${tfName} · LIVE`;
+      tfBadge.style.color = isClosed ? "var(--ink-mute)" : "var(--go)";
+      tfBadge.style.borderColor = isClosed ? "var(--line)" : "rgba(34, 197, 94, 0.4)";
+    }
 
     const symTag = document.getElementById("legend-sym-tag");
     if (symTag) symTag.textContent = `INDEX: ${cockpitChartState.symbol}`;
@@ -950,28 +956,12 @@
       }
     });
 
-    // Update Engine button active states
-    const btnTv = document.getElementById("btn-cockpit-engine-tv");
-    const btnGex = document.getElementById("btn-cockpit-engine-gex");
-    if (btnTv) btnTv.className = cockpitChartState.engine === "tv_widget" ? "btn btn-primary" : "btn btn-secondary";
-    if (btnGex) btnGex.className = cockpitChartState.engine === "gex_canvas" ? "btn btn-primary" : "btn btn-secondary";
-
-    const tvContainer = document.getElementById("cockpit-tv-widget-container");
     const gexContainer = document.getElementById("cockpit-gex-canvas-container");
     const hoverHud = document.getElementById("cockpit-hover-legend");
+    if (gexContainer) gexContainer.style.display = "block";
+    if (hoverHud) hoverHud.style.display = "flex";
 
-    if (cockpitChartState.engine === "tv_widget") {
-      if (tvContainer) tvContainer.style.display = "block";
-      if (gexContainer) gexContainer.style.display = "none";
-      if (hoverHud) hoverHud.style.display = "none";
-      renderTradingViewWidget(cockpitChartState.symbol, cockpitChartState.timeframe);
-    } else {
-      if (tvContainer) tvContainer.style.display = "none";
-      if (gexContainer) gexContainer.style.display = "block";
-      if (hoverHud) hoverHud.style.display = "flex";
-      loadCockpitGexCanvas(cockpitChartState.symbol, cockpitChartState.timeframe);
-    }
-
+    loadCockpitGexCanvas(cockpitChartState.symbol, cockpitChartState.timeframe);
     initCockpitChartDragHandle();
   }
 
@@ -1313,7 +1303,7 @@
   window.openCockpitPopoutChart = function () {
     const sym = state.symbol || "NIFTY";
     const tf = cockpitChartState.timeframe || "5m";
-    const engine = cockpitChartState.engine || "tv_widget";
+    const engine = "gex_canvas";
     const url = `/chart/tradingview?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&engine=${encodeURIComponent(engine)}`;
     window.open(url, "_blank", "width=1280,height=820,menubar=no,toolbar=no,location=no,status=no,resizable=yes");
   };
@@ -1378,8 +1368,33 @@
     const isHeavyDec = totalBreadth <= 16 ? (dec >= 9 && ratio <= 0.65) : (dec >= 28 && ratio <= 0.65);
     const isHeavyAdv = totalBreadth <= 16 ? (adv >= 9 && ratio >= 1.5) : (adv >= 28 && ratio >= 1.5);
 
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
+    const isClosed = dash && (dash.is_market_open === false || dash.market_state === "CLOSED");
+    let timeStr = "";
+    if (dash && (dash.as_of_time || dash.as_of)) {
+      timeStr = dash.as_of_time || dash.as_of;
+    } else if (dash && dash.fetched_at) {
+      try {
+        const fd = new Date(dash.fetched_at);
+        timeStr = fd.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
+      } catch (e) {}
+    }
+    if (!timeStr) {
+      timeStr = isClosed ? "15:30:00 IST" : new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
+    }
+
+    // 0. Off-Market Session Closed
+    if (isClosed) {
+      return {
+        scenario: "MARKET_CLOSED",
+        badge: "🌙 SESSION CLOSED",
+        theme: "alert-tape-spark",
+        headline: "SESSION CLOSED — EOD SETTLEMENT FROZEN",
+        body: `Market session concluded at 15:30 IST. Key institutional levels, walls, and gamma profiles are frozen at the final closing settlement. No live dealer hedging active.`,
+        action: `Review EOD institutional participant buildup, final walls (CW: ₹${cw.toLocaleString("en-IN")}, PW: ₹${pw.toLocaleString("en-IN")}), and prepare for next session opening plan.`,
+        diagnostics: `Closing Spot: ₹${spot.toLocaleString("en-IN")} · Final CW: ₹${cw.toLocaleString("en-IN")} · Final PW: ₹${pw.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
 
     // 1. Wall Breakdown / Speed Bump Trapdoor (Spot within 30 pts of Put Wall AND (Put Wall < Flip OR spot <= pw + 10))
     if (Math.abs(spot - pw) <= 30 && (pw < flip || spot <= pw + 10)) {

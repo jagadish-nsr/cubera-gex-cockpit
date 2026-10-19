@@ -504,11 +504,9 @@
                   <button class="btn btn-secondary" id="btn-cockpit-tf-15m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('15m')">15m</button>
                 </div>
 
-                <!-- Engine Switcher (TradingView Canvas with Live Dhan Ticks vs TradingView Cloud Widget) -->
-                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 4px;border-radius:6px;border:1px solid var(--line);align-items:center">
-                  <span style="font-size:0.68rem;color:var(--ink-mute);font-weight:700;padding:0 4px">Engine:</span>
-                  <button class="btn btn-primary" id="btn-cockpit-engine-gex" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchCockpitChartEngine('gex_canvas')" title="TradingView Lightweight Canvas with Live Dhan Ticks, GEX Call/Put Walls &amp; VWAP">⚡ TV Canvas (Live Ticks)</button>
-                  <button class="btn btn-secondary" id="btn-cockpit-engine-tv" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchCockpitChartEngine('tv_widget')" title="TradingView Advanced Cloud Interactive Chart with Technicals &amp; Drawings">🌐 TV Cloud Widget</button>
+                <!-- Index Mode Indicator (Index Only GEX Canvas) -->
+                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 8px;border-radius:6px;border:1px solid var(--line);align-items:center">
+                  <span style="font-size:0.68rem;color:var(--spark);font-weight:750" id="cockpit-chart-engine-badge">⚡ GEX Canvas (Index Tape)</span>
                 </div>
 
                 <!-- Height Presets, Fullscreen & Popout -->
@@ -536,8 +534,6 @@
             <div id="cockpit-chart-viewport" style="height:520px;position:relative;background:var(--surface-2);border-radius:6px;overflow:hidden;border:1px solid var(--line)">
               <!-- TV Lightweight Chart Container -->
               <div id="cockpit-gex-canvas-container" style="width:100%;height:100%;position:relative;display:block"></div>
-              <!-- TV Widget Container -->
-              <div id="cockpit-tv-widget-container" style="width:100%;height:100%;position:relative;display:none"></div>
             </div>
 
             <!-- 2D Vertical Drag Handle -->

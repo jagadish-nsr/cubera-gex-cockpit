@@ -254,14 +254,16 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
             db_snap = get_snapshot(sym)
             if db_snap and db_snap.get("spot"):
                 if getattr(dash, "levels", None):
-                    dash.levels.spot = float(db_snap["spot"])
-                    if db_snap.get("call_wall"):
+                    min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
+                    if float(db_snap["spot"]) > min_valid:
+                        dash.levels.spot = float(db_snap["spot"])
+                    if db_snap.get("call_wall") and float(db_snap["call_wall"]) > min_valid:
                         dash.levels.call_wall = float(db_snap["call_wall"])
-                    if db_snap.get("put_wall"):
+                    if db_snap.get("put_wall") and float(db_snap["put_wall"]) > min_valid:
                         dash.levels.put_wall = float(db_snap["put_wall"])
-                    if db_snap.get("gamma_flip"):
+                    if db_snap.get("gamma_flip") and float(db_snap["gamma_flip"]) > min_valid:
                         dash.levels.gamma_flip = float(db_snap["gamma_flip"])
-                    if db_snap.get("max_pain"):
+                    if db_snap.get("max_pain") and float(db_snap["max_pain"]) > min_valid:
                         dash.levels.max_pain = float(db_snap["max_pain"])
                 if db_snap.get("vix") and getattr(dash, "india_vix", None) is not None:
                     if isinstance(dash.india_vix, dict):
@@ -836,6 +838,10 @@ async def get_cockpit_data(
             "ratio": ratio,
             "sentiment": sentiment,
         },
+        "is_market_open": is_open,
+        "market_state": "OPEN" if is_open else "CLOSED",
+        "as_of_time": getattr(dash, "as_of_time", None) or (dash.fetched_at.strftime("%H:%M:%S IST") if getattr(dash, "fetched_at", None) else ("15:30:00 IST" if not is_open else None)),
+        "fetched_at": str(getattr(dash, "fetched_at", "") or ""),
     }
 
 
@@ -2466,23 +2472,23 @@ async def get_session_commentary(symbol: Optional[str] = None):
 
 
 @app.get("/chart/tradingview", response_class=HTMLResponse)
-async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "5m", engine: str = "tv_widget"):
-    """Standalone popout window for TradingView chart with 1m, 5min, 15m timeframes and dual engine support."""
+async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "5m", engine: str = "gex_canvas"):
+    """Standalone popout window for index chart with 1m, 5min, 15m timeframes and native GEX Canvas."""
     sym = symbol.upper()
     tf = timeframe.lower() if timeframe.lower() in ("1m", "5m", "15m") else "5m"
-    eng = engine.lower() if engine.lower() in ("tv_widget", "gex_canvas") else "tv_widget"
-    tv_symbol = "BSE:SENSEX" if sym == "SENSEX" else f"NSE:{sym}"
-    interval_map = {"1m": "1", "5m": "5", "15m": "15"}
-    interval = interval_map.get(tf, "5")
+    eng = "gex_canvas"
+    is_closed = not config.is_market_open()
+    status_label = f"{tf} · EOD (CLOSED)" if is_closed else f"{tf} · LIVE"
+    status_color = "#94a3b8" if is_closed else "#38bdf8"
+    status_bg = "rgba(148,163,184,0.15)" if is_closed else "rgba(56,189,248,0.15)"
 
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>📈 {sym} TradingView Chart ({tf}) — Cubera GEX Institutional Terminal</title>
+  <title>📈 {sym} GEX Index Chart ({tf}) — Cubera GEX Institutional Terminal</title>
   <link rel="stylesheet" href="/static/css/cockpit.css">
   <script src="/static/lightweight-charts.standalone.js"></script>
-  <script src="https://s3.tradingview.com/tv.js"></script>
   <style>
     body {{
       margin: 0;
@@ -2537,8 +2543,8 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
 <body>
   <div id="popout-header">
     <div style="display:flex;align-items:center;gap:10px">
-      <h3 style="margin:0;font-size:0.98rem;font-weight:800;color:#38bdf8">📈 {sym} TradingView Live Chart</h3>
-      <span id="popout-badge" style="background:rgba(56,189,248,0.15);color:#38bdf8;padding:2px 7px;border-radius:4px;font-size:0.72rem;font-weight:700">{tf} · LIVE</span>
+      <h3 style="margin:0;font-size:0.98rem;font-weight:800;color:#38bdf8">📈 {sym} GEX Index Chart</h3>
+      <span id="popout-badge" style="background:{status_bg};color:{status_color};padding:2px 7px;border-radius:4px;font-size:0.72rem;font-weight:700">{status_label}</span>
     </div>
 
     <div style="display:flex;align-items:center;gap:10px">
@@ -2550,11 +2556,9 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
         <button class="tf-btn {'active' if tf == '15m' else ''}" onclick="switchTf('15m')">15m</button>
       </div>
 
-      <!-- Engine Selector -->
+      <!-- Engine Badge -->
       <div class="btn-group">
-        <span style="font-size:0.7rem;color:#64748b;font-weight:700;padding-left:4px">Engine:</span>
-        <button class="eng-btn {'active' if eng == 'tv_widget' else ''}" id="btn-tv" onclick="switchEngine('tv_widget')">🌐 TradingView</button>
-        <button class="eng-btn {'active' if eng == 'gex_canvas' else ''}" id="btn-gex" onclick="switchEngine('gex_canvas')">⚡ GEX Canvas</button>
+        <span style="font-size:0.72rem;color:#38bdf8;font-weight:750;padding:2px 6px">⚡ GEX Canvas</span>
       </div>
 
       <!-- Index Switcher -->
@@ -2567,8 +2571,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
   </div>
 
   <div id="chart-container">
-    <div id="tv-mount" style="width:100%;height:100%;display:{'block' if eng == 'tv_widget' else 'none'}"></div>
-    <div id="gex-mount" style="width:100%;height:100%;display:{'block' if eng == 'gex_canvas' else 'none'}"></div>
+    <div id="gex-mount" style="width:100%;height:100%;display:block"></div>
   </div>
 
   <script>

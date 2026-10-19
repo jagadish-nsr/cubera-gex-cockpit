@@ -593,7 +593,7 @@ def test_commentary_log_market_alert():
 
 
 def test_cockpit_tradingview_chart_in_index_html():
-    """Verify that index.html contains the Cockpit TradingView Chart card and all timeframe controls."""
+    """Verify that index.html contains the Cockpit Chart card, timeframe controls, and GEX Canvas."""
     status, headers, content = asyncio.run(asgi_request("GET", "/"))
     assert status == 200
     html = content.decode("utf-8")
@@ -601,12 +601,9 @@ def test_cockpit_tradingview_chart_in_index_html():
     assert 'id="btn-cockpit-tf-1m"' in html
     assert 'id="btn-cockpit-tf-5m"' in html
     assert 'id="btn-cockpit-tf-15m"' in html
-    assert 'id="btn-cockpit-engine-tv"' in html
-    assert 'id="btn-cockpit-engine-gex"' in html
+    assert 'id="cockpit-chart-engine-badge"' in html
     assert 'id="cockpit-chart-viewport"' in html
-    assert 'id="cockpit-tv-widget-container"' in html
     assert 'id="cockpit-gex-canvas-container"' in html
-    assert 'tv.js' in html
 
 
 def test_standalone_tradingview_popout_endpoint():
@@ -616,22 +613,21 @@ def test_standalone_tradingview_popout_endpoint():
     assert status == 200
     assert "text/html" in headers.get("content-type", "")
     html = content.decode("utf-8")
-    assert "NIFTY TradingView Live Chart" in html
+    assert "NIFTY GEX Index Chart" in html
     assert "switchTf('1m')" in html
     assert "switchTf('5m')" in html
     assert "switchTf('15m')" in html
-    assert "tv-mount" in html
     assert "gex-mount" in html
 
     # Test BANKNIFTY 1m
     status, _, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=BANKNIFTY&timeframe=1m"))
     assert status == 200
-    assert "BANKNIFTY TradingView Live Chart" in content.decode("utf-8")
+    assert "BANKNIFTY GEX Index Chart" in content.decode("utf-8")
 
     # Test SENSEX 15m
     status, _, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=SENSEX&timeframe=15m"))
     assert status == 200
-    assert "SENSEX TradingView Live Chart" in content.decode("utf-8")
+    assert "SENSEX GEX Index Chart" in content.decode("utf-8")
 
 
 

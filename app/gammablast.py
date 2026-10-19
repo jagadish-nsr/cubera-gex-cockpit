@@ -331,6 +331,19 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     # Window opens around 13:00 IST and peaks from 13:45 to 15:30 IST
     in_blast_window = (ist_min >= 13 * 60 and ist_min <= 15 * 60 + 30)
 
+    # Off-market hours safety gate: dealer gamma blast model is strictly an active market regime
+    import config
+    if not config.is_market_open(dt_ist) or ist_min > 15 * 60 + 30 or ist_min < 9 * 60 + 15:
+        return {
+            "state": "NO_TRIGGER",
+            "badge": "GAMMA BLAST: SESSION CONCLUDED",
+            "description": "Market session closed at 15:30 IST. 0-DTE dealer gamma hedging is offline.",
+            "score": 0,
+            "is_expiry": False,
+            "in_blast_window": False,
+            "primary_strike": None,
+        }
+
     # 2. 0-DTE Expiry Gate
     dte_now = getattr(dash, "dte_now", None)
     expiries = getattr(dash, "expiries", []) or []
