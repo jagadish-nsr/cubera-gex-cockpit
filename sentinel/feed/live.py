@@ -129,6 +129,7 @@ class LiveSentinelManager:
                 cum_cvd = 0.0
                 prev_oi = 0
                 bars_to_save: list[Bar] = []
+                signals_generated: list[SentinelSignal] = []
 
                 # Context
                 day_high = float(df["high"].max())
@@ -213,6 +214,19 @@ class LiveSentinelManager:
                     sig = classifier.evaluate_bar(bar, ctx)
                     if sig:
                         save_signal(sig)
+                        signals_generated.append(sig)
+
+                # Evaluate outcomes for signals generated across the session bars
+                for sig in signals_generated:
+                    sub_bars = [b for b in bars_to_save if b.start_ts > sig.bar_start_ts]
+                    if sub_bars:
+                        try:
+                            outcome = evaluate_signal_outcomes(
+                                sig, sub_bars, call_wall=call_wall or 0.0, put_wall=put_wall or 0.0
+                            )
+                            save_outcome(outcome)
+                        except Exception as e_out:
+                            log.debug("Failed evaluating outcome for %s: %s", sig.event_id, e_out)
 
                 # Aggregate to 3m, 5m, 15m and save
                 for tf_min in (3, 5, 15):
@@ -307,6 +321,20 @@ class LiveSentinelManager:
                         if sig:
                             save_signal(sig)
 
+                # Update outcomes of recent signals with subsequent bars
+                try:
+                    recent_sigs = list_recent_signals(instrument_id, limit=30)
+                    bars_eval = list_recent_bars(instrument_id, timeframe="1m", limit=120, session_only=True)
+                    cw = ctx.call_wall if ctx else 0.0
+                    pw = ctx.put_wall if ctx else 0.0
+                    for s in recent_sigs:
+                        sub_bars = [b for b in bars_eval if b.start_ts > s.bar_start_ts]
+                        if sub_bars:
+                            upd_o = evaluate_signal_outcomes(s, sub_bars, call_wall=cw or 0.0, put_wall=pw or 0.0)
+                            save_outcome(upd_o)
+                except Exception as err:
+                    log.debug("Failed evaluating live tick outcomes for %s: %s", instrument_id, err)
+
                 # Aggregate into higher timeframes on interval boundaries
                 bars_1m = list_recent_bars(instrument_id, timeframe="1m", limit=30)
                 for tf in (3, 5, 15):
@@ -323,6 +351,27 @@ class LiveSentinelManager:
 
 # Global singleton manager
 _live_manager = LiveSentinelManager()
+
+
+def evaluate_active_sentinel_outcomes(
+    instrument_id: str = "NIFTY-FUT",
+    call_wall: float = 0.0,
+    put_wall: float = 0.0,
+) -> int:
+    """Evaluate and persist forward outcomes for all active session signals."""
+    bars = list_recent_bars(instrument_id, timeframe="1m", limit=500, session_only=True)
+    sigs = list_recent_signals(instrument_id, limit=250)
+    count = 0
+    for s in sigs:
+        sub_bars = [b for b in bars if b.start_ts > s.bar_start_ts]
+        if sub_bars:
+            try:
+                outcome = evaluate_signal_outcomes(s, sub_bars, call_wall=call_wall, put_wall=put_wall)
+                save_outcome(outcome)
+                count += 1
+            except Exception:
+                pass
+    return count
 
 
 def sync_live_sentinel_if_needed(

@@ -33,13 +33,23 @@ class OpeningGapDetector(BaseDetector):
         # Extract opening price from candles if available, else current spot
         candles = pit_view.candles_1m
         if candles:
-            open_p = float(candles[0].get("open", pit_view.spot))
+            cand_open = float(candles[0].get("open", pit_view.spot))
+            # Guard against cross-instrument candle contamination (e.g. NIFTY candle in SENSEX view)
+            if abs(cand_open - pit_view.prior_close) / pit_view.prior_close > 0.15:
+                open_p = pit_view.spot
+            else:
+                open_p = cand_open
         else:
             open_p = pit_view.spot
 
         if not self._initial_gap_fired:
             gap_pts = open_p - pit_view.prior_close
             gap_pct = (gap_pts / pit_view.prior_close) * 100.0
+
+            # Guard against absurd gaps (> 15% circuit breaker limit)
+            if abs(gap_pct) > 15.0:
+                return events
+
             sigma_1d = pit_view.sigma_1d
             gap_sigma = gap_pts / sigma_1d if sigma_1d > 0 else 0.0
 
@@ -55,6 +65,7 @@ class OpeningGapDetector(BaseDetector):
                 dist_wall = abs(open_p - nearest_wall)
 
                 facts = {
+                    "symbol": pit_view.symbol,
                     "open": round(open_p, 1),
                     "prior_close": round(pit_view.prior_close, 1),
                     "gap_pts": round(gap_pts, 1),

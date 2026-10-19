@@ -16,9 +16,12 @@
     activeTab: "tab-cockpit",
     soundEnabled: true,
     alertBellEnabled: localStorage.getItem("cubera_alert_bell_muted") !== "true",
+    lastAlertScenarios: {},
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
     audioCtx: null,
+    pendingAlertBell: false,
+    pendingAlertBellTime: 0,
     spot: 24500.0,
     ws: null,
     sentinelChart: null,
@@ -28,12 +31,49 @@
   };
 
   // -------------------------------------------------------------------------
-  // Web Audio Synthesizer (Chimes & Alerts)
+  // Web Audio Synthesizer & Auto-Unlock on First User Interaction
   // -------------------------------------------------------------------------
+  function initAudioContext() {
+    if (!state.audioCtx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        state.audioCtx = new AudioCtx();
+      }
+    }
+    if (state.audioCtx && state.audioCtx.state === "suspended") {
+      state.audioCtx.resume().catch(() => {});
+    }
+    return state.audioCtx;
+  }
+
+  // Auto-unlock Web Audio on first user interaction anywhere on the page
+  const audioUnlockEvents = ["click", "keydown", "touchstart", "pointerdown"];
+  function handleFirstInteractionUnlock() {
+    const ctx = initAudioContext();
+    if (ctx) {
+      ctx.resume().then(() => {
+        if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
+          state.pendingAlertBell = false;
+          playTraderBellRing();
+        }
+      }).catch(() => {});
+
+      if (ctx.state === "running") {
+        audioUnlockEvents.forEach((evt) => {
+          window.removeEventListener(evt, handleFirstInteractionUnlock, { capture: true });
+        });
+      }
+    }
+  }
+  audioUnlockEvents.forEach((evt) => {
+    window.addEventListener(evt, handleFirstInteractionUnlock, { capture: true, passive: true });
+  });
+
   function playAudioTone(freq, type = "sine", duration = 0.25) {
     if (!state.soundEnabled) return;
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const audioCtx = initAudioContext();
+      if (!audioCtx) return;
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = type;
@@ -61,11 +101,11 @@
   function playTraderBellRing() {
     if (!state.alertBellEnabled) return;
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      if (!state.audioCtx) state.audioCtx = new AudioCtx();
-      const ctx = state.audioCtx;
-      if (ctx.state === "suspended") ctx.resume();
+      const ctx = initAudioContext();
+      if (!ctx) return;
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
 
       const now = ctx.currentTime;
       const f0 = 987.77; // B5 authentic brass desk bell fundamental
@@ -112,6 +152,7 @@
   };
 
   window.testAlertBell = function () {
+    initAudioContext();
     playTraderBellRing();
     showToast("Auditioning 3.0s Louder Brass Bell Alert", "🔔");
   };
@@ -191,13 +232,16 @@
   function initWebSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/ws/telemetry`;
+    const wsUrl = `${protocol}//${host}/ws/telemetry?symbol=${encodeURIComponent(state.symbol)}`;
 
     try {
       state.ws = new WebSocket(wsUrl);
 
       state.ws.onopen = () => {
-        console.log("WebSocket connected to /ws/telemetry");
+        console.log(`WebSocket connected to /ws/telemetry for ${state.symbol}`);
+        try {
+          state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
+        } catch (e) {}
         const badge = document.getElementById("quote-source-badge");
         if (badge) {
           badge.textContent = "⚡ WS 0ms";
@@ -238,6 +282,14 @@
   }
 
   function handleLiveTick(tick) {
+    if (!tick) return;
+    // Strict symbol matching: never allow ticks from a different index to contaminate the active display
+    const tickSym = (tick.symbol || "").toUpperCase();
+    const activeSym = (state.symbol || "").toUpperCase();
+    if (tickSym && activeSym && tickSym !== activeSym) {
+      return;
+    }
+
     state.spot = tick.spot;
     const spotEl = document.getElementById("spot-price-display");
     if (spotEl) {
@@ -257,6 +309,102 @@
     if (clockEl && tick.ist_time) {
       const cleanTime = String(tick.ist_time).replace(/\bIST\b/gi, "").trim();
       clockEl.textContent = `${cleanTime} IST`;
+    }
+
+    // Feed Dhan live tick data into TradingView chart components
+    feedDhanTickToTradingView(tick);
+  }
+
+  function feedDhanTickToTradingView(tick) {
+    if (!tick) return;
+    const px = Number(tick.spot || tick.future_price || 0);
+    if (px <= 0) return;
+
+    const tickSym = (tick.symbol || "").toUpperCase();
+    const activeChartSym = (cockpitChartState.symbol || state.symbol || "").toUpperCase();
+
+    const tickTs = Math.floor(tick.timestamp || (Date.now() / 1000));
+    // Rule 1 & Rule 8: IST Timestamp Shifting (+19,800s)
+    const istTs = tickTs + 19800;
+
+    // 1. Update Cockpit TradingView Chart (GEX Canvas) - only if tick matches active chart index
+    if (cockpitCandleSeries && cockpitChartState.engine === "gex_canvas" && tickSym === activeChartSym) {
+      const tfSecMap = { "1m": 60, "5m": 300, "15m": 900 };
+      const intervalSec = tfSecMap[cockpitChartState.timeframe] || 300;
+      const barTime = Math.floor(istTs / intervalSec) * intervalSec;
+
+      if (!cockpitChartState.currentBar || cockpitChartState.currentBar.time !== barTime) {
+        if (tick.latest_bar && tick.latest_bar.time === barTime) {
+          cockpitChartState.currentBar = { ...tick.latest_bar };
+        } else {
+          cockpitChartState.currentBar = {
+            time: barTime,
+            open: px,
+            high: px,
+            low: px,
+            close: px,
+          };
+        }
+      } else {
+        cockpitChartState.currentBar.high = Math.max(cockpitChartState.currentBar.high, px);
+        cockpitChartState.currentBar.low = Math.min(cockpitChartState.currentBar.low, px);
+        cockpitChartState.currentBar.close = px;
+      }
+      try {
+        cockpitCandleSeries.update(cockpitChartState.currentBar);
+      } catch (err) {}
+
+      if (cockpitVwapSeries && tick.latest_bar && tick.latest_bar.vwap > 0) {
+        try {
+          cockpitVwapSeries.update({ time: barTime, value: tick.latest_bar.vwap });
+        } catch (err) {}
+      }
+
+      // Live HUD Badges Update
+      const chlOhlc = document.getElementById("chl-ohlc");
+      if (chlOhlc && cockpitChartState.currentBar) {
+        const cb = cockpitChartState.currentBar;
+        chlOhlc.textContent = `O: ₹${cb.open.toFixed(1)} H: ₹${cb.high.toFixed(1)} L: ₹${cb.low.toFixed(1)} C: ₹${cb.close.toFixed(1)}`;
+      }
+      const tfBadge = document.getElementById("cockpit-chart-badge");
+      if (tfBadge) {
+        const tfLabel = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
+        tfBadge.innerHTML = `${tfLabel} · <span style="color:var(--go);font-weight:800">🟢 DHAN TICK ₹${px.toFixed(1)}</span>`;
+      }
+    }
+
+    // 2. Update Sentinel Tape TradingView Chart - only if tick matches active sentinel index
+    if (state.candlestickSeries && tickSym === (state.symbol || "").toUpperCase()) {
+      const sTfSecMap = { "1m": 60, "3m": 180, "5m": 300, "15m": 900 };
+      const sIntervalSec = sTfSecMap[sentinelState.timeframe] || 60;
+      const sBarTime = Math.floor(istTs / sIntervalSec) * sIntervalSec;
+
+      if (!sentinelState.currentBar || sentinelState.currentBar.time !== sBarTime) {
+        if (tick.latest_bar && tick.latest_bar.time === sBarTime) {
+          sentinelState.currentBar = { ...tick.latest_bar };
+        } else {
+          sentinelState.currentBar = {
+            time: sBarTime,
+            open: px,
+            high: px,
+            low: px,
+            close: px,
+          };
+        }
+      } else {
+        sentinelState.currentBar.high = Math.max(sentinelState.currentBar.high, px);
+        sentinelState.currentBar.low = Math.min(sentinelState.currentBar.low, px);
+        sentinelState.currentBar.close = px;
+      }
+      try {
+        state.candlestickSeries.update(sentinelState.currentBar);
+      } catch (err) {}
+
+      const shlOhlc = document.getElementById("shl-ohlc");
+      if (shlOhlc && sentinelState.currentBar) {
+        const sb = sentinelState.currentBar;
+        shlOhlc.textContent = `O: ₹${sb.open.toFixed(1)} H: ₹${sb.high.toFixed(1)} L: ₹${sb.low.toFixed(1)} C: ₹${sb.close.toFixed(1)}`;
+      }
     }
   }
 
@@ -567,6 +715,11 @@
       document.getElementById("gamma-blast-desc").textContent = data.gamma_blast.description;
       document.getElementById("gamma-blast-score").textContent = `${data.gamma_blast.score} / 100`;
 
+      // Update Cockpit TradingView Live Chart
+      if (typeof updateCockpitChart === "function") {
+        updateCockpitChart(data);
+      }
+
       // Gamma Price Ladder
       const tbody = document.getElementById("gamma-ladder-body");
       if (tbody) {
@@ -696,10 +849,476 @@
   }
 
   // -------------------------------------------------------------------------
+  // Cockpit TradingView Live Chart Module (Selected Index, 1m, 5min, 15m)
+  // -------------------------------------------------------------------------
+  const cockpitChartState = {
+    symbol: "NIFTY",
+    timeframe: "5m", // "1m" | "5m" | "15m"
+    engine: "gex_canvas", // "gex_canvas" (TV Lightweight Canvas with Live Dhan Ticks) | "tv_widget"
+    height: 520,
+    cw: 0,
+    pw: 0,
+    flip: 0,
+    dragInitialized: false,
+  };
+
+  let cockpitGexChart = null;
+  let cockpitCandleSeries = null;
+  let cockpitVwapSeries = null;
+  let cockpitUp1Series = null;
+  let cockpitDn1Series = null;
+  let cockpitEma9Series = null;
+  let cockpitEma21Series = null;
+  let cockpitDeltaSeries = null;
+  let cockpitCwLine = null;
+  let cockpitPwLine = null;
+  let cockpitFlipLine = null;
+
+  function updateCockpitChart(data) {
+    if (data && data.kpis) {
+      cockpitChartState.cw = Number(data.kpis.call_wall ? data.kpis.call_wall.val : 0) || 0;
+      cockpitChartState.pw = Number(data.kpis.put_wall ? data.kpis.put_wall.val : 0) || 0;
+      cockpitChartState.flip = Number(data.kpis.gamma_flip ? data.kpis.gamma_flip.val : 0) || 0;
+
+      const cwEl = document.getElementById("cockpit-legend-cw-val");
+      const pwEl = document.getElementById("cockpit-legend-pw-val");
+      const flipEl = document.getElementById("cockpit-legend-flip-val");
+      if (cwEl) cwEl.textContent = cockpitChartState.cw ? `₹${cockpitChartState.cw.toLocaleString("en-IN")}` : "--";
+      if (pwEl) pwEl.textContent = cockpitChartState.pw ? `₹${cockpitChartState.pw.toLocaleString("en-IN")}` : "--";
+      if (flipEl) flipEl.textContent = cockpitChartState.flip ? `₹${cockpitChartState.flip.toLocaleString("en-IN")}` : "--";
+    }
+
+    renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
+  }
+
+  function renderCockpitChart(symbol, tf, engine) {
+    cockpitChartState.symbol = symbol || state.symbol || "NIFTY";
+    cockpitChartState.timeframe = tf || cockpitChartState.timeframe || "5m";
+    cockpitChartState.engine = engine || cockpitChartState.engine || "gex_canvas";
+
+    const symBadge = document.getElementById("cockpit-chart-symbol-badge");
+    if (symBadge) symBadge.textContent = cockpitChartState.symbol;
+
+    const tfBadge = document.getElementById("cockpit-chart-badge");
+    if (tfBadge) tfBadge.textContent = `${cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe} · LIVE`;
+
+    const symTag = document.getElementById("legend-sym-tag");
+    if (symTag) symTag.textContent = `INDEX: ${cockpitChartState.symbol}`;
+
+    const tfTag = document.getElementById("legend-tf-tag");
+    if (tfTag) tfTag.textContent = `Timeframe: ${cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe}`;
+
+    // Update Timeframe button active states
+    ["1m", "5m", "15m"].forEach((t) => {
+      const btn = document.getElementById(`btn-cockpit-tf-${t}`);
+      if (btn) {
+        btn.className = t === cockpitChartState.timeframe ? "btn btn-primary" : "btn btn-secondary";
+      }
+    });
+
+    // Update Engine button active states
+    const btnTv = document.getElementById("btn-cockpit-engine-tv");
+    const btnGex = document.getElementById("btn-cockpit-engine-gex");
+    if (btnTv) btnTv.className = cockpitChartState.engine === "tv_widget" ? "btn btn-primary" : "btn btn-secondary";
+    if (btnGex) btnGex.className = cockpitChartState.engine === "gex_canvas" ? "btn btn-primary" : "btn btn-secondary";
+
+    const tvContainer = document.getElementById("cockpit-tv-widget-container");
+    const gexContainer = document.getElementById("cockpit-gex-canvas-container");
+    const hoverHud = document.getElementById("cockpit-hover-legend");
+
+    if (cockpitChartState.engine === "tv_widget") {
+      if (tvContainer) tvContainer.style.display = "block";
+      if (gexContainer) gexContainer.style.display = "none";
+      if (hoverHud) hoverHud.style.display = "none";
+      renderTradingViewWidget(cockpitChartState.symbol, cockpitChartState.timeframe);
+    } else {
+      if (tvContainer) tvContainer.style.display = "none";
+      if (gexContainer) gexContainer.style.display = "block";
+      if (hoverHud) hoverHud.style.display = "flex";
+      loadCockpitGexCanvas(cockpitChartState.symbol, cockpitChartState.timeframe);
+    }
+
+    initCockpitChartDragHandle();
+  }
+
+  function renderTradingViewWidget(symbol, tf) {
+    const mount = document.getElementById("cockpit-tv-widget-container");
+    if (!mount) return;
+    mount.innerHTML = "";
+
+    const tvSymbol = symbol === "SENSEX" ? "BSE:SENSEX" : `NSE:${symbol}`;
+    const intervalMap = { "1m": "1", "5m": "5", "15m": "15" };
+    const interval = intervalMap[tf] || "5";
+
+    const tvMountId = "tv_chart_container_" + Math.random().toString(36).substring(7);
+    const wrapper = document.createElement("div");
+    wrapper.id = tvMountId;
+    wrapper.style.width = "100%";
+    wrapper.style.height = "100%";
+    mount.appendChild(wrapper);
+
+    if (typeof TradingView !== "undefined" && TradingView.widget) {
+      try {
+        new TradingView.widget({
+          autosize: true,
+          symbol: tvSymbol,
+          interval: interval,
+          timezone: "Asia/Kolkata",
+          theme: "dark",
+          style: "1",
+          locale: "en",
+          toolbar_bg: "#0c1424",
+          enable_publishing: false,
+          allow_symbol_change: true,
+          container_id: tvMountId,
+          hide_side_toolbar: false,
+          withdateranges: true,
+          save_image: false,
+          backgroundColor: "#0c1424",
+          gridColor: "rgba(56, 189, 248, 0.06)",
+        });
+        return;
+      } catch (err) {
+        console.warn("TradingView widget constructor failed, using embed iframe fallback:", err);
+      }
+    }
+
+    wrapper.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvSymbol)}&interval=${interval}&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;border-radius:6px" allowfullscreen></iframe>`;
+  }
+
+  async function loadCockpitGexCanvas(symbol, tf) {
+    const mount = document.getElementById("cockpit-gex-canvas-container");
+    if (!mount || !window.LightweightCharts) return;
+
+    if (!cockpitGexChart) {
+        mount.innerHTML = "";
+        cockpitGexChart = window.LightweightCharts.createChart(mount, {
+          width: mount.clientWidth || 850,
+          height: cockpitChartState.height,
+          layout: { background: { color: "#0c1424" }, textColor: "#94a3b8" },
+          grid: { vertLines: { color: "rgba(56,189,248,0.06)" }, horzLines: { color: "rgba(56,189,248,0.06)" } },
+          crosshair: { mode: window.LightweightCharts.CrosshairMode.Normal },
+          rightPriceScale: {
+            borderColor: "rgba(51, 65, 85, 0.45)",
+            autoScale: true,
+            scaleMargins: { top: 0.08, bottom: 0.25 },
+          },
+          handleScale: {
+            axisPressedMouseMove: { time: true, price: true },
+            axisDoubleClickReset: { time: true, price: true },
+            mouseWheel: true,
+            pinch: true,
+          },
+          handleScroll: {
+            mouseWheel: true,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+          },
+          timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(51, 65, 85, 0.45)", barSpacing: 9 },
+          localization: {
+            timeFormatter: (ts) => {
+              if (typeof ts === "number") {
+                const d = new Date(ts * 1000);
+                return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} IST`;
+              }
+              return String(ts);
+            },
+          },
+        });
+
+        cockpitCandleSeries = cockpitGexChart.addCandlestickSeries({
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderVisible: false,
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+          title: "Price",
+          autoscaleInfoProvider: (original) => {
+            const res = original();
+            if (res !== null && res.priceRange) {
+              let min = res.priceRange.minValue;
+              let max = res.priceRange.maxValue;
+              const cw = cockpitChartState.cw || 0;
+              const pw = cockpitChartState.pw || 0;
+              if (cw > 0) {
+                if (cw < min) min = cw - 15;
+                if (cw > max) max = cw + 15;
+              }
+              if (pw > 0) {
+                if (pw < min) min = pw - 15;
+                if (pw > max) max = pw + 15;
+              }
+              return {
+                priceRange: { minValue: min, maxValue: max },
+                margins: res.margins,
+              };
+            }
+            return res;
+          },
+        });
+
+        cockpitVwapSeries = cockpitGexChart.addLineSeries({
+          color: "#c084fc",
+          lineWidth: 1.5,
+          title: "VWAP",
+        });
+
+        cockpitUp1Series = cockpitGexChart.addLineSeries({
+          color: "rgba(192, 132, 252, 0.45)",
+          lineWidth: 1,
+          lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
+          title: "+1σ",
+        });
+
+        cockpitDn1Series = cockpitGexChart.addLineSeries({
+          color: "rgba(192, 132, 252, 0.45)",
+          lineWidth: 1,
+          lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
+          title: "-1σ",
+        });
+
+        cockpitEma9Series = cockpitGexChart.addLineSeries({
+          color: "#facc15",
+          lineWidth: 2,
+          title: "EMA 9",
+        });
+
+        cockpitEma21Series = cockpitGexChart.addLineSeries({
+          color: "#38bdf8",
+          lineWidth: 2,
+          title: "EMA 21",
+        });
+
+        cockpitDeltaSeries = cockpitGexChart.addHistogramSeries({
+          priceFormat: { type: "volume" },
+          priceScaleId: "cockpit_delta_scale",
+          title: "Δ Vol",
+        });
+        cockpitGexChart.priceScale("cockpit_delta_scale").applyOptions({
+          scaleMargins: { top: 0.82, bottom: 0 },
+        });
+
+        // Crosshair move HUD
+        cockpitGexChart.subscribeCrosshairMove((param) => {
+          if (!param || !param.time || !param.seriesData) return;
+          const c = param.seriesData.get(cockpitCandleSeries);
+          const v = param.seriesData.get(cockpitVwapSeries);
+          const d = param.seriesData.get(cockpitDeltaSeries);
+          const e9 = param.seriesData.get(cockpitEma9Series);
+          const e21 = param.seriesData.get(cockpitEma21Series);
+
+          const chlTime = document.getElementById("chl-time");
+          const chlOhlc = document.getElementById("chl-ohlc");
+          const chlVwap = document.getElementById("chl-vwap");
+          const chlEma = document.getElementById("chl-ema");
+          const chlDelta = document.getElementById("chl-delta");
+
+          if (chlTime && param.time) {
+            const ts = typeof param.time === "number" ? param.time : param.time.timestamp;
+            if (ts) {
+              const dt = new Date(ts * 1000);
+              chlTime.textContent = `${String(dt.getUTCHours()).padStart(2, "0")}:${String(dt.getUTCMinutes()).padStart(2, "0")} IST`;
+            }
+          }
+          if (chlOhlc && c) {
+            chlOhlc.textContent = `O: ₹${c.open.toFixed(1)} H: ₹${c.high.toFixed(1)} L: ₹${c.low.toFixed(1)} C: ₹${c.close.toFixed(1)}`;
+          }
+          if (chlVwap && v) {
+            chlVwap.textContent = `VWAP: ₹${v.value.toFixed(1)}`;
+          }
+          if (chlEma && e9 && e21) {
+            chlEma.textContent = `EMA 9/21: ₹${e9.value.toFixed(1)} / ₹${e21.value.toFixed(1)}`;
+          }
+          if (chlDelta && d) {
+            chlDelta.textContent = `Δ: ${(d.value || 0).toLocaleString("en-IN")}`;
+          }
+        });
+
+        window.addEventListener("resize", () => {
+          if (cockpitGexChart && mount) {
+            cockpitGexChart.applyOptions({ width: mount.clientWidth });
+          }
+        });
+      }
+
+    try {
+      const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(tf)}`);
+      const data = await res.json();
+
+      const candles = (data.bars || []).map((b) => ({
+        time: b.time,
+        open: b.open,
+        high: b.high,
+        low: b.low,
+        close: b.close,
+      }));
+
+      cockpitCandleSeries.setData(candles);
+      if (candles.length > 0) {
+        cockpitChartState.currentBar = { ...candles[candles.length - 1] };
+      }
+
+      const vwapData = (data.bars || []).filter((b) => b.vwap > 0).map((b) => ({ time: b.time, value: b.vwap }));
+      cockpitVwapSeries.setData(vwapData);
+
+      const up1Data = (data.bars || []).filter((b) => b.up1 > 0).map((b) => ({ time: b.time, value: b.up1 }));
+      cockpitUp1Series.setData(up1Data);
+
+      const dn1Data = (data.bars || []).filter((b) => b.dn1 > 0).map((b) => ({ time: b.time, value: b.dn1 }));
+      cockpitDn1Series.setData(dn1Data);
+
+      function calcEMA(candlesArr, period) {
+        if (!candlesArr || candlesArr.length === 0) return [];
+        const k = 2.0 / (period + 1.0);
+        let ema = candlesArr[0].close;
+        const resArr = [];
+        for (let i = 0; i < candlesArr.length; i++) {
+          const c = candlesArr[i].close;
+          ema = c * k + ema * (1.0 - k);
+          resArr.push({ time: candlesArr[i].time, value: Math.round(ema * 100) / 100 });
+        }
+        return resArr;
+      }
+
+      cockpitEma9Series.setData(calcEMA(candles, 9));
+      cockpitEma21Series.setData(calcEMA(candles, 21));
+
+      const deltaData = (data.bars || []).map((b) => ({
+        time: b.time,
+        value: b.delta,
+        color: b.delta >= 0 ? "rgba(16, 185, 129, 0.45)" : "rgba(239, 68, 68, 0.45)",
+      }));
+      cockpitDeltaSeries.setData(deltaData);
+
+      // GEX Walls
+      if (cockpitCwLine) cockpitCandleSeries.removePriceLine(cockpitCwLine);
+      if (cockpitPwLine) cockpitCandleSeries.removePriceLine(cockpitPwLine);
+      if (cockpitFlipLine) cockpitCandleSeries.removePriceLine(cockpitFlipLine);
+
+      if (data.call_wall > 0) {
+        cockpitCwLine = cockpitCandleSeries.createPriceLine({
+          price: data.call_wall,
+          color: "#ef4444",
+          lineWidth: 2,
+          lineStyle: 1,
+          axisLabelVisible: true,
+          title: "Call Wall (Resistance)",
+        });
+      }
+      if (data.put_wall > 0) {
+        cockpitPwLine = cockpitCandleSeries.createPriceLine({
+          price: data.put_wall,
+          color: "#22c55e",
+          lineWidth: 2,
+          lineStyle: 1,
+          axisLabelVisible: true,
+          title: "Put Wall (Support)",
+        });
+      }
+      if (data.gamma_flip > 0) {
+        cockpitFlipLine = cockpitCandleSeries.createPriceLine({
+          price: data.gamma_flip,
+          color: "#eab308",
+          lineWidth: 1.5,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: "Gamma Flip",
+        });
+      }
+
+      cockpitGexChart.timeScale().fitContent();
+
+      setTimeout(() => {
+        if (cockpitGexChart && mount) {
+          cockpitGexChart.applyOptions({ width: mount.clientWidth });
+        }
+      }, 50);
+    } catch (err) {
+      console.error("Error loading Cockpit GEX Canvas:", err);
+    }
+  }
+
+  window.switchCockpitTimeframe = function (tf) {
+    cockpitChartState.timeframe = tf;
+    renderCockpitChart(state.symbol, tf, cockpitChartState.engine);
+  };
+
+  window.switchCockpitChartEngine = function (engine) {
+    cockpitChartState.engine = engine;
+    renderCockpitChart(state.symbol, cockpitChartState.timeframe, engine);
+  };
+
+  window.setCockpitChartHeight = function (h) {
+    cockpitChartState.height = h;
+    const vp = document.getElementById("cockpit-chart-viewport");
+    if (vp) vp.style.height = `${h}px`;
+    if (cockpitGexChart && cockpitChartState.engine === "gex_canvas") {
+      cockpitGexChart.applyOptions({ height: h });
+    }
+  };
+
+  window.toggleCockpitChartFullscreen = function () {
+    const card = document.getElementById("cockpit-tv-card");
+    if (!card) return;
+    if (!document.fullscreenElement) {
+      card.requestFullscreen().catch(() => {});
+    } else {
+      if (document.exitFullscreen) document.exitFullscreen();
+    }
+  };
+
+  window.openCockpitPopoutChart = function () {
+    const sym = state.symbol || "NIFTY";
+    const tf = cockpitChartState.timeframe || "5m";
+    const engine = cockpitChartState.engine || "tv_widget";
+    const url = `/chart/tradingview?symbol=${encodeURIComponent(sym)}&timeframe=${encodeURIComponent(tf)}&engine=${encodeURIComponent(engine)}`;
+    window.open(url, "_blank", "width=1280,height=820,menubar=no,toolbar=no,location=no,status=no,resizable=yes");
+  };
+
+  function initCockpitChartDragHandle() {
+    if (cockpitChartState.dragInitialized) return;
+    const dragHandle = document.getElementById("cockpit-chart-drag");
+    const vp = document.getElementById("cockpit-chart-viewport");
+    if (!dragHandle || !vp) return;
+
+    cockpitChartState.dragInitialized = true;
+    let isDragging = false;
+    let startY = 0;
+    let startH = 0;
+
+    dragHandle.addEventListener("mousedown", (e) => {
+      isDragging = true;
+      startY = e.clientY;
+      startH = vp.clientHeight;
+      document.body.style.cursor = "ns-resize";
+      e.preventDefault();
+    });
+
+    window.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      const delta = e.clientY - startY;
+      const newH = Math.max(340, Math.min(1000, startH + delta));
+      window.setCockpitChartHeight(newH);
+    });
+
+    window.addEventListener("mouseup", () => {
+      if (isDragging) {
+        isDragging = false;
+        document.body.style.cursor = "";
+      }
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // Institutional Market Alert State Evaluator & Marquee Tape Renderer
   // -------------------------------------------------------------------------
   function evaluateMarketAlertState(dash) {
+    if (!dash || !dash.kpis) return null;
+
     const spot = Number(dash.spot || 0);
+    if (spot <= 0) return null;
+
     const kpis = dash.kpis || {};
     const cw = Number(kpis.call_wall ? kpis.call_wall.val : 0) || (spot + 100);
     const pw = Number(kpis.put_wall ? kpis.put_wall.val : 0) || (spot - 100);
@@ -707,24 +1326,29 @@
     const regime = String(kpis.regime ? kpis.regime.val : "NEUTRAL").toUpperCase();
     const blast = dash.gamma_blast || {};
     const blastScore = Number(blast.score || 0);
-    const breadth = dash.market_breadth || { advances: 25, declines: 25, ratio: 1.0 };
+    const breadth = dash.market_breadth || { advances: 7, declines: 7, ratio: 1.0 };
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
+    const totalBreadth = adv + dec;
     const ratio = Number(breadth.ratio || 1.0);
+
+    // Dynamic majority threshold: If sector mode (<=16 items), >=60% is supermajority (>=9). If stock mode (>16), >=28.
+    const isHeavyDec = totalBreadth <= 16 ? (dec >= 9 && ratio <= 0.65) : (dec >= 28 && ratio <= 0.65);
+    const isHeavyAdv = totalBreadth <= 16 ? (adv >= 9 && ratio >= 1.5) : (adv >= 28 && ratio >= 1.5);
 
     const now = new Date();
     const timeStr = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
 
-    // 1. Volatility Expansion Imminent (Spot < Flip, Negative Gamma Zone, or Blast Score > 60)
-    if (spot < flip || regime === "NEGATIVE" || blastScore >= 60) {
+    // 1. Wall Breakdown / Speed Bump Trapdoor (Spot within 30 pts of Put Wall AND (Put Wall < Flip OR spot <= pw + 10))
+    if (Math.abs(spot - pw) <= 30 && (pw < flip || spot <= pw + 10)) {
       return {
-        scenario: "VOLATILITY_EXPANSION",
-        badge: "⚠️ BIG MOVE COMING",
+        scenario: "WALL_BREAKDOWN",
+        badge: "🚨 TRAPDOOR BREAKDOWN",
         theme: "alert-tape-stop",
-        headline: "VOLATILITY EXPANSION IMMINENT",
-        body: "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
-        action: "Buy breakout momentum with strict stops. DO NOT sell naked options (high risk of violent explosion).",
-        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")} · Blast Score: ${blastScore}/100`,
+        headline: "FRAGILE SUPPORT TEST (TRAPDOOR RISK)",
+        body: `Price is testing Put Wall support at ₹${pw.toLocaleString("en-IN")}, but it sits below the Gamma Flip ('Speed Bump'). If breached, there is no dealer floor.`,
+        action: `Cut longs immediately if ₹${pw.toLocaleString("en-IN")} breaks; look for rapid downward acceleration.`,
+        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Put Wall: ₹${pw.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")}`,
         timestamp: timeStr,
       };
     }
@@ -743,22 +1367,51 @@
       };
     }
 
-    // 3. Wall Breakdown / Speed Bump Trapdoor (Spot within 30 pts of Put Wall AND Put Wall < Flip)
-    if (Math.abs(spot - pw) <= 30 && pw < flip) {
+    // 3. Volatility Expansion Imminent (Blast Score >= 60 OR Spot actively crossing Flip accelerator zone)
+    const isCrossingFlip = flip > 0 && Math.abs(spot - flip) <= 35 && spot < flip;
+    if (blastScore >= 60 || isCrossingFlip) {
       return {
-        scenario: "WALL_BREAKDOWN",
-        badge: "🚨 TRAPDOOR BREAKDOWN",
+        scenario: "VOLATILITY_EXPANSION",
+        badge: "⚠️ BIG MOVE COMING",
         theme: "alert-tape-stop",
-        headline: "FRAGILE SUPPORT TEST (TRAPDOOR RISK)",
-        body: `Price is testing Put Wall support at ₹${pw.toLocaleString("en-IN")}, but it sits below the Gamma Flip ('Speed Bump'). If breached, there is no dealer floor.`,
-        action: `Cut longs immediately if ₹${pw.toLocaleString("en-IN")} breaks; look for rapid downward acceleration.`,
-        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Put Wall: ₹${pw.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")}`,
+        headline: "VOLATILITY EXPANSION IMMINENT",
+        body: "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
+        action: "Buy breakout momentum with strict stops. DO NOT sell naked options (high risk of violent explosion).",
+        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")} · Blast Score: ${blastScore}/100`,
         timestamp: timeStr,
       };
     }
 
-    // 4. Fakeout Warning (Spot rising but market breadth ratio < 0.8)
-    if (adv < dec && ratio < 0.8 && spot > (pw + cw) / 2) {
+    // 4A. Strong Bull Uptrend (Triple Confluence: Broad sector buying + price above flip)
+    if (isHeavyAdv && spot >= flip) {
+      return {
+        scenario: "STRONG_UPTREND",
+        badge: "🚀 STRONG UPTREND",
+        theme: "alert-tape-go",
+        headline: "STRONG UPTREND — BUYERS IN CONTROL",
+        body: `Triple Confirmation verified: Institutional buyers dominating flow, sector breadth broadly positive (${adv} Adv / ${dec} Dec), and price riding comfortably above key levels.`,
+        action: "Buy call options or enter longs on minor dips. DO NOT try to short or pick market tops!",
+        diagnostics: `Breadth: ${ratio}x Bullish (${adv} Advancers) · Call Wall: ₹${cw.toLocaleString("en-IN")} · Put Floor: ₹${pw.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 4B. Strong Bear Downtrend (Triple Confluence: Broad sector selling dumping inventory)
+    if (isHeavyDec) {
+      return {
+        scenario: "STRONG_DOWNTREND",
+        badge: "📉 STRONG DOWNTREND",
+        theme: "alert-tape-stop",
+        headline: "STRONG DOWNTREND — SELLERS IN CONTROL",
+        body: `Triple Confirmation verified: Heavy institutional selling dumping inventory across sectors (${dec} Decliners), with spot pinned below key barriers.`,
+        action: "Stick with put options or short trades on bounces. DO NOT try to catch falling knives!",
+        diagnostics: `Breadth: ${ratio}x Bearish (${dec} Decliners) · Put Wall: ₹${pw.toLocaleString("en-IN")}`,
+        timestamp: timeStr,
+      };
+    }
+
+    // 5. Fakeout Warning (Spot in upper range but market breadth ratio < 0.8)
+    if (cw > pw && adv < dec && ratio < 0.8 && spot > (pw + cw) / 2) {
       return {
         scenario: "FAKEOUT_WARNING",
         badge: "⚠️ CAUTION: FAKEOUT",
@@ -771,34 +1424,6 @@
       };
     }
 
-    // 5A. Strong Bull Uptrend (Triple Confluence)
-    if (ratio >= 1.5 && adv >= 28 && spot >= flip) {
-      return {
-        scenario: "STRONG_UPTREND",
-        badge: "🚀 STRONG UPTREND",
-        theme: "alert-tape-go",
-        headline: "STRONG UPTREND — BUYERS IN CONTROL",
-        body: `Triple Confirmation verified: Institutional buyers dominating flow, sector breadth broadly positive (${adv} Adv / ${dec} Dec), and price riding comfortably above key levels.`,
-        action: "Buy call options or enter longs on minor dips. DO NOT try to short or pick market tops!",
-        diagnostics: `Breadth: ${ratio}x Bullish · Call Wall: ₹${cw.toLocaleString("en-IN")} · Put Floor: ₹${pw.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 5B. Strong Bear Downtrend (Triple Confluence)
-    if (ratio <= 0.65 && dec >= 28) {
-      return {
-        scenario: "STRONG_DOWNTREND",
-        badge: "📉 STRONG DOWNTREND",
-        theme: "alert-tape-stop",
-        headline: "STRONG DOWNTREND — SELLERS IN CONTROL",
-        body: `Triple Confirmation verified: Heavy institutional selling dumping inventory across sectors (${dec} Decliners), with spot pinned below key barriers.`,
-        action: "Stick with put options or short trades on bounces. DO NOT try to catch falling knives!",
-        diagnostics: `Breadth: ${ratio}x Bearish · Put Wall: ₹${pw.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
-    }
-
     // 6. Sideways Chop (Gamma Pin)
     return {
       scenario: "SIDEWAYS_CHOP",
@@ -807,7 +1432,7 @@
       headline: "SIDEWAYS CHOP — MARKET PINNED",
       body: `Market is safely cushioned between Put Wall (₹${pw.toLocaleString("en-IN")}) and Call Wall (₹${cw.toLocaleString("en-IN")}). Option dealers are absorbing shocks and pinning price.`,
       action: "Fade edges — buy near Put Wall support, sell near Call Wall resistance. DO NOT chase breakout trades!",
-      diagnostics: `Sandwiched: ₹${pw.toLocaleString("en-IN")} - ₹${cw.toLocaleString("en-IN")} · Net GEX: Positive Pin`,
+      diagnostics: `Sandwiched: ₹${pw.toLocaleString("en-IN")} - ₹${cw.toLocaleString("en-IN")} · Net GEX: ${regime}`,
       timestamp: timeStr,
     };
   }
@@ -815,7 +1440,7 @@
   function updateMarketAlertTape(dash) {
     const alert = evaluateMarketAlertState(dash);
     const container = document.getElementById("cockpit-alert-tape");
-    if (!container) return;
+    if (!container || !alert) return;
 
     // Apply color theme
     container.className = `alert-tape-marquee-container ${alert.theme}`;
@@ -840,15 +1465,23 @@
       track.innerHTML = `${itemHtml}<span class="marquee-separator">✦✦✦</span>${itemHtml}`;
     }
 
-    // State transition detection & 3.0s Louder Brass Bell Alert
-    if (alert.scenario !== state.lastAlertScenario) {
+    // Symbol-isolated state transition detection & 3.0s Louder Brass Bell Alert
+    const sym = (state.symbol || "NIFTY").toUpperCase();
+    const lastScenario = state.lastAlertScenarios[sym] || null;
+
+    if (alert.scenario !== lastScenario) {
       const now = Date.now();
-      const isInitial = state.lastAlertScenario === null;
+      const isInitial = lastScenario === null;
+      state.lastAlertScenarios[sym] = alert.scenario;
       state.lastAlertScenario = alert.scenario;
 
       if (!isInitial) {
         // Play 3.0-second louder brass bell
         if (now - state.lastAlertSoundTime > 45000) {
+          if (!state.audioCtx || state.audioCtx.state === "suspended") {
+            state.pendingAlertBell = true;
+            state.pendingAlertBellTime = now;
+          }
           playTraderBellRing();
           state.lastAlertSoundTime = now;
         }
@@ -858,7 +1491,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            symbol: state.symbol,
+            symbol: sym,
             scenario: alert.scenario,
             badge: alert.badge,
             headline: alert.headline,
@@ -1996,6 +2629,9 @@
 
         const candleData = data.bars.map((b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }));
         state.candlestickSeries.setData(candleData);
+        if (candleData.length > 0) {
+          sentinelState.currentBar = { ...candleData[candleData.length - 1] };
+        }
 
         // 1. VWAP & Envelopes
         if (state.vwapSeries) {
@@ -3562,6 +4198,15 @@
         window.history.replaceState(null, null, `#${hashName}`);
       }
 
+      if (targetId === "tab-cockpit") {
+        setTimeout(() => {
+          const mount = document.getElementById("cockpit-gex-canvas-container");
+          if (cockpitGexChart && mount) {
+            cockpitGexChart.applyOptions({ width: mount.clientWidth || 850 });
+          }
+        }, 80);
+      }
+
       if (targetId === "tab-sentinel") {
         setTimeout(() => {
           const mount = document.getElementById("sentinel-chart-mount");
@@ -3618,6 +4263,14 @@
     if (symSelect) {
       symSelect.addEventListener("change", async (e) => {
         state.symbol = e.target.value;
+        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+          try {
+            state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
+          } catch (err) {}
+        }
+        if (typeof renderCockpitChart === "function") {
+          renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
+        }
         await fetch("/api/select-index", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3881,6 +4534,15 @@
         sbVersion.innerHTML = `v5.3 <span style="background:rgba(245,158,11,0.15);color:#f59e0b;padding:1px 4px;border-radius:3px;font-size:0.6rem;font-weight:700;border:1px solid rgba(245,158,11,0.3)">DEV</span>`;
       }
     }
+    const symSelect = document.getElementById("index-select");
+    if (symSelect && symSelect.value) {
+      state.symbol = symSelect.value;
+    }
+    fetch("/api/select-index", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol: state.symbol, window: state.window }),
+    }).catch(() => {});
     initWebSocket();
     const bellBtn = document.getElementById("alert-bell-toggle-btn");
     if (bellBtn) {
@@ -3892,6 +4554,8 @@
         bellBtn.className = "tape-ctrl-btn muted";
       }
     }
+    // Mount Cockpit TradingView chart immediately
+    renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
     refreshAll();
     setInterval(loadStatus, 5000);
   }

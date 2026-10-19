@@ -569,15 +569,68 @@ def test_commentary_log_market_alert():
         "action_advice": "Buy breakout momentum with tight stops.",
         "diagnostics": "Spot: 24,480 | Flip: 24,545"
     }
-    status, headers, content = asyncio.run(
-        asgi_request("POST", "/api/commentary/log-market-alert", body=payload)
-    )
+    try:
+        status, headers, content = asyncio.run(
+            asgi_request("POST", "/api/commentary/log-market-alert", body=payload)
+        )
+        assert status == 200
+        data = json.loads(content)
+        assert data["status"] == "ok"
+        assert "entry_id" in data
+        assert data["ttl"] == "30m"
+        assert "logged_at" in data
+    finally:
+        try:
+            if "data" in locals() and "entry_id" in data:
+                from commentary.storage.db import _get_write_conn
+                with _get_write_conn() as conn:
+                    conn.execute("DELETE FROM commentary_entries WHERE entry_id = ?", (data["entry_id"],))
+                    conn.commit()
+        except Exception:
+            pass
+
+
+def test_cockpit_tradingview_chart_in_index_html():
+    """Verify that index.html contains the Cockpit TradingView Chart card and all timeframe controls."""
+    status, headers, content = asyncio.run(asgi_request("GET", "/"))
     assert status == 200
-    data = json.loads(content)
-    assert data["status"] == "ok"
-    assert "entry_id" in data
-    assert data["ttl"] == "30m"
-    assert "logged_at" in data
+    html = content.decode("utf-8")
+    assert 'id="cockpit-tv-card"' in html
+    assert 'id="btn-cockpit-tf-1m"' in html
+    assert 'id="btn-cockpit-tf-5m"' in html
+    assert 'id="btn-cockpit-tf-15m"' in html
+    assert 'id="btn-cockpit-engine-tv"' in html
+    assert 'id="btn-cockpit-engine-gex"' in html
+    assert 'id="cockpit-chart-viewport"' in html
+    assert 'id="cockpit-tv-widget-container"' in html
+    assert 'id="cockpit-gex-canvas-container"' in html
+    assert 'tv.js' in html
+
+
+def test_standalone_tradingview_popout_endpoint():
+    """Verify GET /chart/tradingview returns standalone HTML popout with 1m, 5min, 15m timeframe options."""
+    # Test NIFTY 5m
+    status, headers, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=NIFTY&timeframe=5m"))
+    assert status == 200
+    assert "text/html" in headers.get("content-type", "")
+    html = content.decode("utf-8")
+    assert "NIFTY TradingView Live Chart" in html
+    assert "switchTf('1m')" in html
+    assert "switchTf('5m')" in html
+    assert "switchTf('15m')" in html
+    assert "tv-mount" in html
+    assert "gex-mount" in html
+
+    # Test BANKNIFTY 1m
+    status, _, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=BANKNIFTY&timeframe=1m"))
+    assert status == 200
+    assert "BANKNIFTY TradingView Live Chart" in content.decode("utf-8")
+
+    # Test SENSEX 15m
+    status, _, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=SENSEX&timeframe=15m"))
+    assert status == 200
+    assert "SENSEX TradingView Live Chart" in content.decode("utf-8")
+
 
 
 

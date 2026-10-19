@@ -1686,6 +1686,16 @@ body {
   font-size: 10px;
   letter-spacing: 2px;
 }
+#cockpit-tv-card:fullscreen {
+  background: var(--surface);
+  padding: 20px;
+  overflow: auto;
+  border-radius: 0;
+}
+#cockpit-tv-card:fullscreen #cockpit-chart-viewport {
+  height: calc(100vh - 120px) !important;
+}
+
 
 /* Market Intelligence & Sectorial Performance */
 .mi-macro-card {

@@ -78,16 +78,20 @@ def test_sentinel_seed_anchors_to_prior_trading_day_on_weekday_holiday():
     # Simulate running on Friday, 2026-10-02 (Gandhi Jayanti)
     fake_holiday_now = datetime(2026, 10, 2, 11, 30, 0, tzinfo=IST)
     inst_id = "HOLIDAY-NIFTY-FUT"
-    with patch("sentinel.feed.demo.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_holiday_now
-        mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-        mock_dt.fromisoformat = datetime.fromisoformat
-        seed_sentinel_demo_if_needed(inst_id, spot=22500.0, force=True)
+    try:
+        with patch("sentinel.feed.demo.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_holiday_now
+            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            mock_dt.fromisoformat = datetime.fromisoformat
+            seed_sentinel_demo_if_needed(inst_id, spot=22500.0, force=True)
 
-    bars = list_recent_bars(inst_id, "1m", 5)
-    assert len(bars) > 0
-    # Must anchor to 2026-10-01 (Thursday, the preceding trading day before Gandhi Jayanti)
-    assert bars[-1].start_ts.strftime("%Y-%m-%d") == "2026-10-01"
+        bars = list_recent_bars(inst_id, "1m", 5)
+        assert len(bars) > 0
+        # Must anchor to 2026-10-01 (Thursday, the preceding trading day before Gandhi Jayanti)
+        assert bars[-1].start_ts.strftime("%Y-%m-%d") == "2026-10-01"
+    finally:
+        from sentinel.storage.db import clear_sentinel_data
+        clear_sentinel_data(inst_id)
 
 
 def test_step_sentinel_live_feed_pauses_after_hours():

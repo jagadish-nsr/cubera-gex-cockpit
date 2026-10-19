@@ -75,6 +75,7 @@ from data.journal.recommendations_store import (
     list_bookmarked_records,
     get_score_history,
     record_event,
+    evaluate_recommendation_lifecycle,
     get_strategy_effectiveness_metrics,
 )
 from commentary.story_state import StoryStateManager
@@ -282,6 +283,22 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
                 except Exception:
                     pass
 
+        if dash is None:
+            try:
+                from resilience.lkgs import get_lkgs_manager
+                lkgs = get_lkgs_manager()
+                deg_data, _, _, _ = lkgs.get_degraded_snapshot(sym, reason="Live Fallback Snapshot")
+                if deg_data is not None:
+                    dash = deg_data
+            except Exception:
+                pass
+
+        if dash is None:
+            try:
+                dash = load_dashboard(symbol=sym, window=win, use_demo=True)
+            except Exception:
+                pass
+
     _DASH_MEM_CACHE[ckey] = (now_t, dash)
     return dash
 
@@ -333,13 +350,50 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
     inval_breached = not is_active
     st_code = "INVALIDATED" if inval_breached else ("ACTIVE" if idea.quality_score >= 75 else "DEGRADED")
 
+    bm = is_bookmarked(idea.rec_id)
+
+    # Lifecycle target / stop / invalidation checking and event recording
+    tgt1_pct = round(((idea.target_1 - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+    tgt2_pct = round(((idea.target_2 - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+    sl_pct = round(((idea.stop_loss - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+
+    event_type_hit = None
+    event_msg_hit = ""
+    if inval_breached:
+        event_type_hit = "INVALIDATED"
+        event_msg_hit = f"🛑 Spot Invalidation Breached at ₹{spot:,.1f} (Inval level: ₹{idea.spot_invalidation:,.0f})"
+    elif curr_ltp > 0:
+        if idea.target_2 > 0 and curr_ltp >= idea.target_2:
+            event_type_hit = "TGT2_HIT"
+            event_msg_hit = f"🚀 Target 2 Achieved at ₹{curr_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
+        elif idea.target_1 > 0 and curr_ltp >= idea.target_1:
+            event_type_hit = "TGT1_HIT"
+            event_msg_hit = f"🎯 Target 1 Achieved at ₹{curr_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
+        elif idea.stop_loss > 0 and curr_ltp <= idea.stop_loss:
+            event_type_hit = "SL_HIT"
+            event_msg_hit = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({sl_pct:+.0f}%)"
+
+    if event_type_hit:
+        try:
+            record_event(
+                rec_id=idea.rec_id,
+                symbol=idea.symbol,
+                event_type=event_type_hit,
+                spot_at_event=spot,
+                ltp_at_event=curr_ltp,
+                pnl_pct=tgt1_pct if "TGT" in event_type_hit else sl_pct,
+                message=event_msg_hit,
+                was_bookmarked=bm,
+            )
+            st_code = event_type_hit
+        except Exception:
+            pass
+
     act_lbl, act_col, act_tip = format_time_since_active(
         latch_state=st_code,
         last_active_ts=getattr(idea, "last_active_ts", 0.0) or time.time(),
         first_active_ts=getattr(idea, "first_active_ts", 0.0) or time.time(),
     )
-
-    bm = is_bookmarked(idea.rec_id)
 
     return {
         "rec_id": idea.rec_id,
@@ -1190,6 +1244,11 @@ async def get_recommendations(
 
     recs = generate_trade_recommendations(dash, sym)
 
+    try:
+        evaluate_recommendation_lifecycle(sym, spot)
+    except Exception:
+        pass
+
     # Cluster recommendations by strike
     high_ce_clusters = _cluster_ideas_by_strike(recs.higher_ce_recommendations)
     high_pe_clusters = _cluster_ideas_by_strike(recs.higher_pe_recommendations)
@@ -1308,7 +1367,7 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     """Sentinel Tape Tab: Microstructure KPIs, Candlestick + CVD 60 FPS Canvas, 10-Day Closing Suite, Live Block Tape."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     dash = _load_active_dashboard(sym, "weekly")
-    spot = float(dash.levels.spot or 24500.0)
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
     tf = timeframe or "1m"
 
     inst_id = f"{sym}-FUT"
@@ -1427,9 +1486,9 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     return {
         "symbol": sym,
         "timeframe": tf,
-        "call_wall": float(dash.levels.call_wall or 0),
-        "put_wall": float(dash.levels.put_wall or 0),
-        "gamma_flip": float(getattr(dash.levels, "flip", 0.0) or 0.0),
+        "call_wall": float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0),
+        "put_wall": float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0),
+        "gamma_flip": float(getattr(getattr(dash, "levels", None), "flip", 0.0) or 0.0),
         "kpis": {
             "cvd_regime": "BUYER_DOMINATED" if total_net_cvd >= 0 else "SELLER_DOMINATED",
             "net_cvd": f"{total_net_cvd:+,.0f}",
@@ -1898,7 +1957,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
             "alerted": False,
         },
         "divergences": [
-            {"type": "BULLISH_ABSORPTION", "strike": dash.levels.put_wall, "notes": "Heavy Put writing absorbing dealer sell flow"},
+            {"type": "BULLISH_ABSORPTION", "strike": getattr(getattr(dash, "levels", None), "put_wall", 24000.0), "notes": "Heavy Put writing absorbing dealer sell flow"},
         ],
     }
 
@@ -1912,7 +1971,7 @@ async def get_journal(symbol: Optional[str] = None):
     closed_trades = journal_store.list_closed_trades(symbol=sym if sym != "ALL" else None)
 
     dash = _load_active_dashboard(sym, "weekly")
-    spot = float(dash.levels.spot or 24500.0)
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
 
     # Format open positions with simulated live tick MTM
     pos_list = []
@@ -2372,6 +2431,266 @@ async def get_session_commentary(symbol: Optional[str] = None):
         "post_market": post_state,
         "cards": cards,
     }
+
+
+@app.get("/chart/tradingview", response_class=HTMLResponse)
+async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "5m", engine: str = "tv_widget"):
+    """Standalone popout window for TradingView chart with 1m, 5min, 15m timeframes and dual engine support."""
+    sym = symbol.upper()
+    tf = timeframe.lower() if timeframe.lower() in ("1m", "5m", "15m") else "5m"
+    eng = engine.lower() if engine.lower() in ("tv_widget", "gex_canvas") else "tv_widget"
+    tv_symbol = "BSE:SENSEX" if sym == "SENSEX" else f"NSE:{sym}"
+    interval_map = {"1m": "1", "5m": "5", "15m": "15"}
+    interval = interval_map.get(tf, "5")
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>📈 {sym} TradingView Chart ({tf}) — Cubera GEX Institutional Terminal</title>
+  <link rel="stylesheet" href="/static/css/cockpit.css">
+  <script src="/static/lightweight-charts.standalone.js"></script>
+  <script src="https://s3.tradingview.com/tv.js"></script>
+  <style>
+    body {{
+      margin: 0;
+      padding: 0;
+      background: #080c14;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }}
+    #popout-header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 16px;
+      background: #0b111e;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      gap: 12px;
+      flex-wrap: wrap;
+    }}
+    .btn-group {{
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      background: rgba(15, 23, 42, 0.6);
+      padding: 2px 5px;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }}
+    .tf-btn, .eng-btn {{
+      background: #141f33;
+      color: #94a3b8;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }}
+    .tf-btn.active, .eng-btn.active {{
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #38bdf8;
+    }}
+    #chart-container {{
+      width: 100vw;
+      height: calc(100vh - 48px);
+      position: relative;
+    }}
+  </style>
+</head>
+<body>
+  <div id="popout-header">
+    <div style="display:flex;align-items:center;gap:10px">
+      <h3 style="margin:0;font-size:0.98rem;font-weight:800;color:#38bdf8">📈 {sym} TradingView Live Chart</h3>
+      <span id="popout-badge" style="background:rgba(56,189,248,0.15);color:#38bdf8;padding:2px 7px;border-radius:4px;font-size:0.72rem;font-weight:700">{tf} · LIVE</span>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:10px">
+      <!-- Timeframe Selector (1m, 5min, 15m) -->
+      <div class="btn-group">
+        <span style="font-size:0.7rem;color:#64748b;font-weight:700;padding-left:4px">TF:</span>
+        <button class="tf-btn {'active' if tf == '1m' else ''}" onclick="switchTf('1m')">1m</button>
+        <button class="tf-btn {'active' if tf == '5m' else ''}" onclick="switchTf('5m')">5min</button>
+        <button class="tf-btn {'active' if tf == '15m' else ''}" onclick="switchTf('15m')">15m</button>
+      </div>
+
+      <!-- Engine Selector -->
+      <div class="btn-group">
+        <span style="font-size:0.7rem;color:#64748b;font-weight:700;padding-left:4px">Engine:</span>
+        <button class="eng-btn {'active' if eng == 'tv_widget' else ''}" id="btn-tv" onclick="switchEngine('tv_widget')">🌐 TradingView</button>
+        <button class="eng-btn {'active' if eng == 'gex_canvas' else ''}" id="btn-gex" onclick="switchEngine('gex_canvas')">⚡ GEX Canvas</button>
+      </div>
+
+      <!-- Index Switcher -->
+      <select id="popout-sym" onchange="switchSym(this.value)" style="background:#0f172a;color:#f8fafc;border:1px solid #334155;border-radius:4px;padding:4px 8px;font-size:0.75rem;font-weight:700">
+        <option value="NIFTY" {'selected' if sym == 'NIFTY' else ''}>NIFTY</option>
+        <option value="BANKNIFTY" {'selected' if sym == 'BANKNIFTY' else ''}>BANKNIFTY</option>
+        <option value="SENSEX" {'selected' if sym == 'SENSEX' else ''}>SENSEX</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="chart-container">
+    <div id="tv-mount" style="width:100%;height:100%;display:{'block' if eng == 'tv_widget' else 'none'}"></div>
+    <div id="gex-mount" style="width:100%;height:100%;display:{'block' if eng == 'gex_canvas' else 'none'}"></div>
+  </div>
+
+  <script>
+    let currentSym = "{sym}";
+    let currentTf = "{tf}";
+    let currentEng = "{eng}";
+    let gexChart = null;
+    let candleSeries = null;
+    let vwapSeries = null;
+    let ema9Series = null;
+    let ema21Series = null;
+    let cwLine = null;
+    let pwLine = null;
+    let flipLine = null;
+
+    function renderWidget() {{
+      const mount = document.getElementById("tv-mount");
+      mount.innerHTML = "";
+      const tvSym = currentSym === "SENSEX" ? "BSE:SENSEX" : "NSE:" + currentSym;
+      const intervalMap = {{ "1m": "1", "5m": "5", "15m": "15" }};
+      const interval = intervalMap[currentTf] || "5";
+
+      if (typeof TradingView !== "undefined" && TradingView.widget) {{
+        try {{
+          new TradingView.widget({{
+            autosize: true,
+            symbol: tvSym,
+            interval: interval,
+            timezone: "Asia/Kolkata",
+            theme: "dark",
+            style: "1",
+            locale: "en",
+            toolbar_bg: "#0c1424",
+            enable_publishing: false,
+            allow_symbol_change: true,
+            container_id: "tv-mount",
+            hide_side_toolbar: false,
+            withdateranges: true,
+            save_image: false,
+            backgroundColor: "#080c14",
+            gridColor: "rgba(56, 189, 248, 0.06)",
+          }});
+          return;
+        }} catch(e) {{}}
+      }}
+      mount.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${{encodeURIComponent(tvSym)}}&interval=${{interval}}&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;"></iframe>`;
+    }}
+
+    async function renderGex() {{
+      const mount = document.getElementById("gex-mount");
+      if (!window.LightweightCharts) return;
+      if (!gexChart) {{
+        mount.innerHTML = "";
+        gexChart = window.LightweightCharts.createChart(mount, {{
+          width: mount.clientWidth || window.innerWidth,
+          height: mount.clientHeight || (window.innerHeight - 48),
+          layout: {{ background: {{ color: "#080c14" }}, textColor: "#94a3b8" }},
+          grid: {{ vertLines: {{ color: "rgba(56,189,248,0.06)" }}, horzLines: {{ color: "rgba(56,189,248,0.06)" }} }},
+          crosshair: {{ mode: window.LightweightCharts.CrosshairMode.Normal }},
+          rightPriceScale: {{ borderColor: "rgba(51, 65, 85, 0.45)", autoScale: true }},
+          timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: "rgba(51, 65, 85, 0.45)" }},
+          localization: {{
+            timeFormatter: (ts) => {{
+              if (typeof ts === "number") {{
+                const d = new Date(ts * 1000);
+                return `${{String(d.getUTCHours()).padStart(2, "0")}}:${{String(d.getUTCMinutes()).padStart(2, "0")}} IST`;
+              }}
+              return String(ts);
+            }}
+          }}
+        }});
+        candleSeries = gexChart.addCandlestickSeries({{ upColor: "#10b981", downColor: "#ef4444" }});
+        vwapSeries = gexChart.addLineSeries({{ color: "#c084fc", lineWidth: 1.5, title: "VWAP" }});
+        ema9Series = gexChart.addLineSeries({{ color: "#facc15", lineWidth: 2, title: "EMA 9" }});
+        ema21Series = gexChart.addLineSeries({{ color: "#38bdf8", lineWidth: 2, title: "EMA 21" }});
+        window.addEventListener("resize", () => {{
+          if (gexChart) gexChart.applyOptions({{ width: window.innerWidth, height: window.innerHeight - 48 }});
+        }});
+      }}
+
+      try {{
+        const res = await fetch(`/api/sentinel-tape?symbol=${{encodeURIComponent(currentSym)}}&timeframe=${{encodeURIComponent(currentTf)}}`);
+        const data = await res.json();
+        const candles = (data.bars || []).map(b => ({{ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }}));
+        candleSeries.setData(candles);
+        vwapSeries.setData((data.bars || []).filter(b => b.vwap > 0).map(b => ({{ time: b.time, value: b.vwap }})));
+
+        let k9 = 2.0 / 10.0, ema9 = candles.length > 0 ? candles[0].close : 0;
+        let k21 = 2.0 / 22.0, ema21 = candles.length > 0 ? candles[0].close : 0;
+        let e9Arr = [], e21Arr = [];
+        for (let i = 0; i < candles.length; i++) {{
+          ema9 = candles[i].close * k9 + ema9 * (1.0 - k9);
+          ema21 = candles[i].close * k21 + ema21 * (1.0 - k21);
+          e9Arr.push({{ time: candles[i].time, value: Math.round(ema9 * 100) / 100 }});
+          e21Arr.push({{ time: candles[i].time, value: Math.round(ema21 * 100) / 100 }});
+        }}
+        ema9Series.setData(e9Arr);
+        ema21Series.setData(e21Arr);
+
+        if (cwLine) candleSeries.removePriceLine(cwLine);
+        if (pwLine) candleSeries.removePriceLine(pwLine);
+        if (flipLine) candleSeries.removePriceLine(flipLine);
+
+        if (data.call_wall > 0) cwLine = candleSeries.createPriceLine({{ price: data.call_wall, color: "#ef4444", lineWidth: 2, lineStyle: 1, title: "Call Wall" }});
+        if (data.put_wall > 0) pwLine = candleSeries.createPriceLine({{ price: data.put_wall, color: "#22c55e", lineWidth: 2, lineStyle: 1, title: "Put Wall" }});
+        if (data.gamma_flip > 0) flipLine = candleSeries.createPriceLine({{ price: data.gamma_flip, color: "#eab308", lineWidth: 1.5, lineStyle: 2, title: "Gamma Flip" }});
+
+        gexChart.timeScale().fitContent();
+      }} catch(e) {{}}
+    }}
+
+    function applyActiveView() {{
+      const tvMount = document.getElementById("tv-mount");
+      const gexMount = document.getElementById("gex-mount");
+      document.getElementById("popout-badge").textContent = `${{currentTf}} · LIVE`;
+      if (currentEng === "tv_widget") {{
+        tvMount.style.display = "block";
+        gexMount.style.display = "none";
+        renderWidget();
+      }} else {{
+        tvMount.style.display = "none";
+        gexMount.style.display = "block";
+        renderGex();
+      }}
+      document.querySelectorAll(".tf-btn").forEach(b => {{
+        b.classList.toggle("active", b.textContent.replace("min", "m") === currentTf);
+      }});
+      document.getElementById("btn-tv").classList.toggle("active", currentEng === "tv_widget");
+      document.getElementById("btn-gex").classList.toggle("active", currentEng === "gex_canvas");
+      if (window.history && window.history.replaceState) {{
+        window.history.replaceState(null, null, `?symbol=${{currentSym}}&timeframe=${{currentTf}}&engine=${{currentEng}}`);
+      }}
+    }}
+
+    function switchTf(tf) {{
+      currentTf = tf;
+      applyActiveView();
+    }}
+
+    function switchEngine(eng) {{
+      currentEng = eng;
+      applyActiveView();
+    }}
+
+    function switchSym(s) {{
+      currentSym = s;
+      applyActiveView();
+    }}
+
+    applyActiveView();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_content)
 
 
 @app.get("/chart/sentinel", response_class=HTMLResponse)
@@ -2846,13 +3165,35 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
 # --------------------------------------------------------------------------
 @app.websocket("/ws/telemetry")
 @app.websocket("/ws/live")
-async def websocket_telemetry(websocket: WebSocket):
+async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None):
     """Real-time streaming WebSocket connection broadcasting 1s live telemetry ticks."""
     await ws_manager.connect(websocket)
-    log.info("WebSocket client connected to /ws/telemetry")
+    client_sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    log.info("WebSocket client connected to /ws/telemetry (symbol: %s)", client_sym)
+    
+    active_sym_box = [client_sym]
+
+    async def listen_for_client_messages():
+        try:
+            while True:
+                msg = await websocket.receive_text()
+                try:
+                    data = json.loads(msg)
+                    if isinstance(data, dict):
+                        new_sym = data.get("symbol")
+                        if new_sym and new_sym.upper() in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                            active_sym_box[0] = new_sym.upper()
+                            log.info("WebSocket client subscription switched to %s", active_sym_box[0])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    listener_task = asyncio.create_task(listen_for_client_messages())
+
     try:
         while True:
-            sym = _ACTIVE_STATE["symbol"]
+            sym = active_sym_box[0]
             win = _ACTIVE_STATE["window"]
             dash = _load_active_dashboard(sym, win)
             spot = float(dash.levels.spot or 0.0)
@@ -2865,6 +3206,26 @@ async def websocket_telemetry(websocket: WebSocket):
                 "change": 0.0,
                 "pct_change": 0.0,
             }
+
+            # Fetch latest synthesized bar from Sentinel for live chart streaming
+            latest_bar_dict = None
+            try:
+                from sentinel.storage.db import list_recent_bars
+                b_list = list_recent_bars(f"{sym}-FUT", timeframe="1m", limit=1, session_only=is_live, _auto_populate=False)
+                if b_list:
+                    b = b_list[-1]
+                    latest_bar_dict = {
+                        "time": _to_ist_chart_timestamp(b.start_ts),
+                        "open": b.open,
+                        "high": b.high,
+                        "low": b.low,
+                        "close": b.close,
+                        "vwap": b.vwap,
+                        "delta": b.delta,
+                        "cvd": b.cvd,
+                    }
+            except Exception:
+                pass
 
             if is_live:
                 tick_payload = {
@@ -2881,6 +3242,7 @@ async def websocket_telemetry(websocket: WebSocket):
                     "gamma_flip": float(getattr(dash.levels, "flip", 0.0) or 0.0),
                     "is_market_open": True,
                     "feed_mode": "LIVE_WEBSOCKET",
+                    "latest_bar": latest_bar_dict,
                 }
                 await websocket.send_json(tick_payload)
                 await asyncio.sleep(1.0)
@@ -2901,11 +3263,13 @@ async def websocket_telemetry(websocket: WebSocket):
                 await websocket.send_json(status_payload)
                 await asyncio.sleep(15.0)
     except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
-        log.info("WebSocket client disconnected from /ws/telemetry")
+        pass
     except Exception as exc:
         log.warning("WebSocket error: %s", exc)
+    finally:
+        listener_task.cancel()
         ws_manager.disconnect(websocket)
+        log.info("WebSocket client disconnected from /ws/telemetry")
 
 
 # Mount static assets

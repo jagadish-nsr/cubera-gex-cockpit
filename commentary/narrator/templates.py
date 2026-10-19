@@ -20,9 +20,10 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         gap_pct = f.get("gap_pct", 0.0)
         open_p = f.get("open", 0.0)
         cw = f.get("call_wall", 0.0)
+        sym = f.get("symbol") or "Nifty"
         headline = f"Gap-Up Open: +{gap_pts:,.1f} pts (+{gap_pct:.2f}%)"
         body = (
-            f"Nifty opened higher at ₹{open_p:,.1f}, up {gap_pts:+.1f} pts ({gap_pct:+.2f}%) "
+            f"{sym} opened higher at ₹{open_p:,.1f}, up {gap_pts:+.1f} pts ({gap_pct:+.2f}%) "
             f"versus prior close. Current spot is testing towards the ₹{cw:,.0f} Call Wall."
         )
 
@@ -31,9 +32,10 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         gap_pct = f.get("gap_pct", 0.0)
         open_p = f.get("open", 0.0)
         pw = f.get("put_wall", 0.0)
+        sym = f.get("symbol") or "Nifty"
         headline = f"Gap-Down Open: {gap_pts:,.1f} pts ({gap_pct:.2f}%)"
         body = (
-            f"Nifty opened lower at ₹{open_p:,.1f}, down {gap_pts:,.1f} pts ({gap_pct:.2f}%) "
+            f"{sym} opened lower at ₹{open_p:,.1f}, down {gap_pts:,.1f} pts ({gap_pct:.2f}%) "
             f"versus prior close. Downside pressure tests towards the ₹{pw:,.0f} Put Wall."
         )
 

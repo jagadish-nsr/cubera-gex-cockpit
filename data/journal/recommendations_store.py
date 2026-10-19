@@ -250,11 +250,19 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 current_score = excluded.current_score,
                 conviction_tier = excluded.conviction_tier,
                 target_1 = excluded.target_1,
+                target_1_spot = excluded.target_1_spot,
                 target_2 = excluded.target_2,
+                target_2_spot = excluded.target_2_spot,
                 stop_loss = excluded.stop_loss,
                 spot_invalidation = excluded.spot_invalidation,
+                spot_invalidation_text = excluded.spot_invalidation_text,
+                risk_reward_ratio = excluded.risk_reward_ratio,
                 entry_trigger = excluded.entry_trigger,
-                payload_json = excluded.payload_json
+                rationale = excluded.rationale,
+                catalyst_tags_json = excluded.catalyst_tags_json,
+                payload_json = excluded.payload_json,
+                status = CASE WHEN ? THEN 'ACTIVE' ELSE recommendation_records.status END,
+                outcome_ts = CASE WHEN ? THEN NULL ELSE recommendation_records.outcome_ts END
         """, (
             rec_id,
             idea_dict["symbol"],
@@ -284,6 +292,8 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             bm_at,
             idea_dict.get("status", "ACTIVE"),
             payload_json or json.dumps(idea_dict),
+            int(is_fresh_day),
+            int(is_fresh_day),
         ))
         conn.commit()
 
@@ -538,7 +548,114 @@ def record_event(
                 _BOOKMARK_CACHE[rec_id]["status"] = rec_status
                 _BOOKMARK_CACHE[rec_id]["outcome_ts"] = now_ts
 
+        # Update ML telemetry dataset with outcome label and performance
+        try:
+            date_tag = now_ts[:10].replace("-", "")
+            for s_id in (f"{rec_id}_{date_tag}", rec_id):
+                update_ml_outcome(
+                    sample_id=s_id,
+                    outcome_label=rec_status,
+                    max_favorable_excursion_pct=max(0.0, float(pnl_pct)),
+                    max_adverse_excursion_pct=min(0.0, float(pnl_pct)) if float(pnl_pct) < 0 else 0.0,
+                    realized_rr=round(abs(float(pnl_pct)) / 25.0, 2),
+                    holding_time_minutes=30.0,
+                )
+        except Exception:
+            pass
+
         return cur.lastrowid
+
+
+def evaluate_recommendation_lifecycle(
+    symbol: str,
+    current_spot: float,
+    options_ltp_map: dict[str, float] | None = None,
+    session_date: str | None = None,
+) -> list[dict]:
+    """Check active recommendations for symbol against live spot & option LTPs, triggering events when met."""
+    if current_spot <= 0:
+        return []
+
+    ensure_schema()
+    options_ltp_map = options_ltp_map or {}
+    events_triggered = []
+    trade_date = session_date or datetime.now(IST).strftime("%Y-%m-%d")
+
+    with _get_read_conn() as conn:
+        active_recs = conn.execute(
+            "SELECT * FROM recommendation_records WHERE symbol = ? AND status = 'ACTIVE' AND substr(triggered_at, 1, 10) = ?",
+            (symbol.upper(), trade_date)
+        ).fetchall()
+
+    for r in active_recs:
+        rec_id = r["rec_id"]
+        side = r["side"]
+        strike = float(r["strike"])
+        init_spot = float(r["initial_spot"] or current_spot)
+        init_ltp = float(r["initial_ltp"] or 0.0)
+        t1 = float(r["target_1"] or 0.0)
+        t2 = float(r["target_2"] or 0.0)
+        sl = float(r["stop_loss"] or 0.0)
+        inval = float(r["spot_invalidation"] or 0.0)
+        is_bm = bool(r["is_bookmarked"])
+
+        # Look up LTP or estimate delta MTM
+        opt_sym = r["option_symbol"] or ""
+        curr_ltp = options_ltp_map.get(opt_sym) or options_ltp_map.get(f"{strike}_{side}")
+        if curr_ltp is None or curr_ltp <= 0:
+            delta = 0.50 if side == "CE" else -0.50
+            spot_diff = current_spot - init_spot
+            est_ltp = max(0.05, init_ltp + (spot_diff * delta))
+            curr_ltp = est_ltp if init_ltp > 0 else 0.0
+
+        event_type = None
+        event_msg = ""
+
+        # Check spot invalidation
+        if inval > 0:
+            if side == "CE" and current_spot <= inval:
+                event_type = "INVALIDATED"
+                event_msg = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{inval:,.0f})"
+            elif side == "PE" and current_spot >= inval:
+                event_type = "INVALIDATED"
+                event_msg = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{inval:,.0f})"
+
+        # Check price targets and stop loss
+        if not event_type and curr_ltp > 0:
+            pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
+            if t2 > 0 and curr_ltp >= t2:
+                event_type = "TGT2_HIT"
+                event_msg = f"🚀 Target 2 Achieved at ₹{curr_ltp:,.1f} (+{pnl_pct:+.0f}%)"
+            elif t1 > 0 and curr_ltp >= t1:
+                event_type = "TGT1_HIT"
+                event_msg = f"🎯 Target 1 Achieved at ₹{curr_ltp:,.1f} (+{pnl_pct:+.0f}%)"
+            elif sl > 0 and curr_ltp <= sl:
+                event_type = "SL_HIT"
+                event_msg = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({pnl_pct:+.0f}%)"
+
+        if event_type:
+            pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
+            try:
+                record_event(
+                    rec_id=rec_id,
+                    symbol=symbol.upper(),
+                    event_type=event_type,
+                    spot_at_event=current_spot,
+                    ltp_at_event=curr_ltp,
+                    pnl_pct=pnl_pct,
+                    message=event_msg,
+                    was_bookmarked=is_bm,
+                )
+                events_triggered.append({
+                    "rec_id": rec_id,
+                    "event_type": event_type,
+                    "message": event_msg,
+                    "pnl_pct": pnl_pct,
+                })
+            except Exception as e_rec:
+                log.debug("Error recording lifecycle event for %s: %s", rec_id, e_rec)
+
+    return events_triggered
 
 
 def get_unacknowledged_alerts(only_bookmarked: bool = True) -> list[dict]:

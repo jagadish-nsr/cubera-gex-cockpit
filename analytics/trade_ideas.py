@@ -2053,8 +2053,9 @@ def _evaluate_ce_strategies(
     # 3. CE GAMMA SQUEEZE (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
     ce_sq_score, _, _ = _score("Gamma Squeeze Lotto", ce_sq_doi)
-    ce_sq_inval_spot = round(min(call_wall - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
-    ce_sq_tgt1_spot = round(max(call_wall + sigma_30, spot + sigma_30), 0)
+    eff_cw = call_wall if (spot < call_wall <= spot + 6 * step) else (spot + 2 * step)
+    ce_sq_inval_spot = round(min(eff_cw - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
+    ce_sq_tgt1_spot = round(max(eff_cw + sigma_30, spot + max(sigma_30, step * 1.5)), 0)
     ce_sq_tgt2_spot = round(ce_sq_tgt1_spot + sigma_30, 0)
     ce_sq_sl, ce_sq_tgt1, ce_sq_tgt2, ce_sq_pt1, ce_sq_psl, ce_sq_ev, ce_sq_rr, ce_sq_attr = _reprice_trade_idea_targets(
         side="CE", strike=ce_squeeze_k, current_ltp=ce_sq_ltp, spot=spot,
@@ -2487,8 +2488,9 @@ def _evaluate_pe_strategies(
     # 3. PE GAMMA SQUEEZE (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
     pe_sq_score, _, _ = _score("Gamma Squeeze Lotto", pe_sq_doi)
-    pe_sq_inval_spot = round(max(put_wall + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
-    pe_sq_tgt1_spot = round(min(put_wall - sigma_30, spot - sigma_30), 0)
+    eff_pw = put_wall if (spot - 6 * step <= put_wall < spot) else (spot - 2 * step)
+    pe_sq_inval_spot = round(max(eff_pw + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
+    pe_sq_tgt1_spot = round(min(eff_pw - sigma_30, spot - max(sigma_30, step * 1.5)), 0)
     pe_sq_tgt2_spot = round(pe_sq_tgt1_spot - sigma_30, 0)
     pe_sq_sl, pe_sq_tgt1, pe_sq_tgt2, pe_sq_pt1, pe_sq_psl, pe_sq_ev, pe_sq_rr, pe_sq_attr = _reprice_trade_idea_targets(
         side="PE", strike=pe_squeeze_k, current_ltp=pe_sq_ltp, spot=spot,
@@ -2777,7 +2779,8 @@ def generate_trade_recommendations(
     levels = getattr(data, "levels", None) if data else None
     raw_spot = getattr(levels, "spot", None) if levels else None
     chain_spot = float(raw_spot) if raw_spot is not None else 0.0
-    spot = spot_override or (chain_spot if chain_spot > 0 else 24500.0)
+    default_spot = 74000.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 23000.0)
+    spot = spot_override or (chain_spot if chain_spot > 0 else default_spot)
     if chain_spot <= 0.0:
         chain_spot = spot
     raw_cw = getattr(levels, "call_wall", None) if levels else None
@@ -2839,12 +2842,13 @@ def generate_trade_recommendations(
     # Pre-calculate candidate strikes across all 7 strategies via Delta Window selection
     ce_atm_k = _select_strike_by_delta_window(0.50, True, atm_strike, contracts_map, step)
     ce_struct_k = _select_strike_by_delta_window(0.40, True, atm_strike + step, contracts_map, step)
-    ce_squeeze_k = call_wall if call_wall > spot else _select_strike_by_delta_window(0.28, True, atm_strike + (2 * step), contracts_map, step)
+    # Clamp gamma squeeze strike to avoid deep OTM outlier noise (> 6 steps away)
+    ce_squeeze_k = call_wall if (call_wall > spot and call_wall <= spot + (6 * step)) else _select_strike_by_delta_window(0.28, True, atm_strike + (2 * step), contracts_map, step)
     ce_vanna_k = _select_strike_by_delta_window(0.20, True, atm_strike + (2 * step), contracts_map, step)
 
     pe_atm_k = _select_strike_by_delta_window(0.50, False, atm_strike, contracts_map, step)
     pe_struct_k = _select_strike_by_delta_window(0.40, False, atm_strike - step, contracts_map, step)
-    pe_squeeze_k = put_wall if put_wall < spot else _select_strike_by_delta_window(0.28, False, atm_strike - (2 * step), contracts_map, step)
+    pe_squeeze_k = put_wall if (put_wall < spot and put_wall >= spot - (6 * step)) else _select_strike_by_delta_window(0.28, False, atm_strike - (2 * step), contracts_map, step)
     pe_vanna_k = _select_strike_by_delta_window(0.20, False, atm_strike - (2 * step), contracts_map, step)
 
     # Deduplicated subscription registration into live Dhan WebSocket feed
@@ -3149,8 +3153,9 @@ def generate_trade_recommendations(
                 raw_agg = getattr(data, "raw_agg", {}) if data else {}
                 pcr_val = float(raw_agg.get("pcr")) if raw_agg and raw_agg.get("pcr") is not None else 1.0
 
+                date_tag = str(t.triggered_at)[:10].replace("-", "")
                 ml_feat = {
-                    "sample_id": t.rec_id,
+                    "sample_id": f"{t.rec_id}_{date_tag}",
                     "symbol": symbol,
                     "triggered_at": t.triggered_at,
                     "strategy_name": t.play_badge,
