@@ -540,11 +540,14 @@
             </div>
           </div>
 
-          <!-- Pinned Setups Section -->
-          <div class="ladder-card">
-            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">★ Pinned High-Conviction Setups</h3>
+          <!-- Active Cockpit Recommendations Section (Pinned + Fresh Setups) -->
+          <div class="ladder-card" id="cockpit-recommendations-wrapper">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <h3 style="font-size:1.05rem;font-weight:800;margin:0" id="cockpit-rec-title">★ Active Cockpit Recommendations (<span id="cockpit-rec-count">0</span>)</h3>
+              <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600" id="cockpit-rec-subtitle">Cockpit Watchlist · Preserved across scans</span>
+            </div>
             <div id="pinned-setups-container">
-              <div style="color:var(--ink-mute);font-size:0.82rem">No cards pinned yet. Click '☆ Pin Card' on any recommendation to pin it here.</div>
+              <!-- Dynamically populated or institutional empty state banner -->
             </div>
           </div>
         </div>

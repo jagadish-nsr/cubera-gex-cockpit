@@ -19,6 +19,7 @@
 | **10** | **Popout Window (`/chart/sentinel`)** | "Open in New Window" was stuck on only one fixed profile, missing buttons, VWAP, EMAs, and walls | The popout button didn't forward the active profile in the URL. `/chart/sentinel` only instantiated candles and CVD, lacking full profile engine parity. | **100% Feature Parity**: Forward `&profile=...` in URL. Implement full indicator series, profile switcher buttons, and GEX walls in `/chart/sentinel` identical to the main cockpit. |
 | **11** | **Target Engine Repricer & Target/SL Calculator** | Expiry contract was wrong/outdated (e.g. `2026-10-06`), Bull/bear/base presets and reset buttons were non-functional | In `web_server.py`, `get_target_engine` and `reprice_target_engine` used raw `dash.expiries` from stale offline snapshots instead of `get_sidebar_active_expiries()` (which dynamically computes upcoming active exchange expiries, e.g. `2026-10-19`). In `cockpit.js`, `applyTEPreset` looked for ID `te-sl-spot` instead of `te-input-sl-spot`, causing an immediate null return before doing anything. | **Active Expiry Dynamic Resolution & Synced Presets**: In `web_server.py`, resolve expiries via `get_sidebar_active_expiries` and filter crossed dates. In `cockpit.js`, fix element ID to `te-input-sl-spot`, wire dynamic target engine values to Bull/Bear/Base/Reset presets across both Mode 1 (Calculator) and Mode 2 (Sliders), and drive Black-76 Greek repricing from authentic model telemetry. |
 | **12** | **Session Commentary Pre-Market Shock Matrix** | Pre-Market Shock Matrix was a static block taking excessive vertical height | Rendered as a plain non-collapsible `<div>` block without collapse/expand toggling. | **Collapsible Matrix with State Retention**: Converted to an accessible `<details class="collapsible-matrix">` element with interactive chevron indicator (`▼`/`▶`), `ontoggle` memory hook preserving user's collapsed state across auto-refreshes, and subtle institutional hover styling. |
+| **13** | **Cockpit Pinned & Fresh Setups Dual Pipeline** | "No Pinned or Fresh Setups in Cockpit" banner and <10m fresh recommendations missing | Audits verified top-level key presence (`"pinned_setups" in data`) without validating conditional branching or secondary data feeds. Streamlit blends SQLite bookmarks with fresh intraday setups (<10m TTL) and renders a distinct institutional dashed card with 📌 icon. | **Dual-Source Aggregation & Branch Parity**: In `web_server.py`, aggregate bookmarked records with fresh recommendations (<600s TTL). In `cockpit.js` and `index.html`, render dynamic headers (`N Pinned · M Fresh`), institutional dashed card on zero count, and dual Call/Put column cards with `PINNED` vs flashing `NEW` badges and 1-click execution. |
 
 ---
 
@@ -46,6 +47,11 @@ Triggered by: *"I think UTC time issue still exists, check the time axis on the 
 - **Lightweight Charts UTC Offset**: Converted all epoch seconds sent to charts with `+19,800s` (+5h 30m) offset via `_to_ist_chart_timestamp()`, causing Lightweight Charts UTC renderer to output Indian Market Hours (`09:15` to `15:30 IST`).
 - **Profile Parity in Popout Window**: Rebuilt `/chart/sentinel` with query parameter `profile: str = "Full"`, interactive buttons (`⚡ Full`, `🎯 Pure`, `🌊 CVD`, `📈 Trend`), all indicator series (VWAP, EMA ribbons, delta volume, CVD), GEX walls, and live IST crosshair HUD.
 
+### Phase 5: Deep Multi-Branch & Dual-Pipeline Verification Audit
+Triggered by: *"On target engine, the section present in streamlit UI TargetHorizon, scoring mode, dominant scenario, bull/base/bear target with P(Touch Target) P(close Beyond) are missing on the web UI.. why?" / "can you confirm - 'No Pinned or Fresh Setups in Cockpit' on streamlit UI is properly migrated to web UI?"*
+- **Target Engine Tri-Scenario & Model Controls Parity**: Implemented Target Horizon (30m to 375m) and Scoring Mode (Heuristic vs Calibrated Stage B) selectors, live Dominant Scenario banner with segmented tri-color probability progress bar, and 3 rich quantitative Tri-Scenario target cards with P(Touch Target), P(Close Beyond), Forecast IV, and Target Anchors.
+- **Cockpit Pinned vs Fresh Setups Dual-Pipeline**: Implemented aggregation of permanent SQLite bookmarks with dynamic in-memory fresh recommendations (<10 min TTL), dynamic header counts, institutional empty state banner (`📌 No Pinned or Fresh Setups in Cockpit`), and dual-column CE/PE setup cards with `[PINNED]` vs flashing `[NEW (<10m)]` badges and 1-click execution.
+
 ---
 
 ## 3. Strict Rules for Future Development
@@ -70,3 +76,7 @@ When modifying or adding features to the Cockpit:
 
 5. **Rule of Off-Market Persistence**:
    - Never show blank/error states when market is closed. Always display the latest completed session's verified database snapshot.
+
+6. **Rule of Multi-Branch Condition & Dual-Pipeline Verification**:
+   - Never declare parity based purely on high-level API key existence (e.g. `"pinned_setups" in data`).
+   - Every Streamlit conditional render branch (e.g. `total_cockpit_cards == 0` empty state banner vs `> 0` cards) and secondary data aggregation pipeline (e.g. blending bookmarks with `< 10m` fresh recommendations) must be audited and verified under both populated and zero-state conditions.

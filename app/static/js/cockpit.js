@@ -592,25 +592,99 @@
         });
       }
 
-      // Pinned Setups
+      // Active Cockpit Recommendations (Pinned + Fresh within 10m)
       const pinnedContainer = document.getElementById("pinned-setups-container");
-      if (pinnedContainer) {
-        if (!data.pinned_setups || data.pinned_setups.length === 0) {
-          pinnedContainer.innerHTML = '<div style="color:var(--ink-mute);font-size:0.82rem">No cards pinned yet. Click "☆ Pin Card" on any recommendation to pin it here.</div>';
+      const recCountEl = document.getElementById("cockpit-rec-count");
+      const recSubEl = document.getElementById("cockpit-rec-subtitle");
+
+      const recs = data.cockpit_recommendations || (data.pinned_setups || []).map((p) => ({
+        ...p,
+        is_pinned: true,
+        is_fresh: false,
+      }));
+      const totalCards = data.total_cockpit_cards !== undefined ? data.total_cockpit_cards : recs.length;
+      const pinnedCount = data.pinned_count !== undefined ? data.pinned_count : (data.pinned_setups ? data.pinned_setups.length : 0);
+      const freshCount = data.fresh_count !== undefined ? data.fresh_count : 0;
+
+      if (recCountEl) recCountEl.textContent = totalCards;
+      if (recSubEl) {
+        if (totalCards > 0) {
+          recSubEl.textContent = freshCount > 0
+            ? `${pinnedCount} Pinned · ${freshCount} Fresh (< 10m Flash)`
+            : `${pinnedCount} Pinned Card${pinnedCount !== 1 ? "s" : ""}`;
         } else {
-          pinnedContainer.innerHTML = data.pinned_setups
-            .map(
-              (p) => `
-            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-              <div>
-                <b style="color:var(--spark)">${p.option_symbol || p.rec_id}</b>
-                <span style="font-size:0.75rem;color:var(--ink-mute);margin-left:8px">Score: ${p.quality_score}/100</span>
+          recSubEl.textContent = "Cockpit Watchlist · Preserved across scans";
+        }
+      }
+
+      if (pinnedContainer) {
+        if (totalCards === 0) {
+          pinnedContainer.innerHTML = `
+            <div style="background:var(--surface-2);border:1px dashed var(--line);border-radius:8px;padding:22px 20px;text-align:center;margin-bottom:14px">
+              <div style="font-size:1.3rem;margin-bottom:6px">📌</div>
+              <div style="font-weight:700;font-size:.84rem;color:var(--ink)">No Pinned or Fresh Setups in Cockpit</div>
+              <div style="font-size:.76rem;color:var(--ink-mute);max-width:540px;margin:4px auto 0;line-height:1.4">
+                Browse active Grade A+ setups in the <b>⚡ Trade Recommendations</b> tab and click <b>☆ Pin Card</b>. Fresh recommendations generated within the last 10 minutes will also surface here automatically with a flashing <b style="color:var(--spark)">NEW</b> badge.
               </div>
-              <button class="btn btn-secondary" onclick="window.unpinCard('${p.rec_id}')" style="font-size:0.72rem;padding:3px 8px">★ Pinned (Remove)</button>
             </div>
-          `
-            )
-            .join("");
+          `;
+        } else {
+          const ceCards = recs.filter((r) => String(r.side).toUpperCase() === "CE");
+          const peCards = recs.filter((r) => String(r.side).toUpperCase() === "PE");
+
+          function renderCardItem(c) {
+            const sideColor = String(c.side).toUpperCase() === "CE" ? "var(--go)" : "var(--stop)";
+            const badgeHtml = c.is_fresh
+              ? '<span style="background:rgba(255,160,0,0.18);color:#ffa000;border:1px solid #ffa000;font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">⚡ NEW (&lt; 10m)</span>'
+              : '<span style="background:rgba(0,180,216,0.18);color:var(--spark);border:1px solid var(--spark);font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">📌 PINNED</span>';
+
+            const ltp = Number(c.current_ltp || c.entry_ltp || 0).toFixed(1);
+            const t1 = Number(c.target_1 || 0).toFixed(1);
+            const sl = Number(c.stop_loss || 0).toFixed(1);
+            const score = c.quality_score || 85;
+
+            return `
+              <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    ${badgeHtml}
+                    <b style="color:${sideColor};font-size:0.86rem">${c.option_symbol || (c.symbol + " " + c.strike + " " + c.side)}</b>
+                  </div>
+                  <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
+                </div>
+                <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
+                  <span>LTP: <b style="color:var(--ink)">₹${ltp}</b></span>
+                  <span>T1: <b style="color:var(--go)">₹${t1}</b></span>
+                  <span>SL: <b style="color:var(--stop)">₹${sl}</b></span>
+                </div>
+                <div style="display:flex;justify-content:flex-end;gap:6px">
+                  ${
+                    c.is_pinned
+                      ? `<button class="btn btn-secondary" onclick="window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
+                      : `<button class="btn btn-secondary" onclick="window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`
+                  }
+                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(c.current_ltp || c.entry_ltp || 0)}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
+                </div>
+              </div>
+            `;
+          }
+
+          pinnedContainer.innerHTML = `
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:12px">
+              <div>
+                <div style="font-size:0.75rem;font-weight:750;color:var(--go);margin-bottom:6px;display:flex;justify-content:space-between">
+                  <span>🟢 CALL SETUPS (${ceCards.length})</span>
+                </div>
+                ${ceCards.length > 0 ? ceCards.map(renderCardItem).join("") : '<div style="font-size:0.75rem;color:var(--ink-mute);padding:8px">No active Call setups</div>'}
+              </div>
+              <div>
+                <div style="font-size:0.75rem;font-weight:750;color:var(--stop);margin-bottom:6px;display:flex;justify-content:space-between">
+                  <span>🔴 PUT SETUPS (${peCards.length})</span>
+                </div>
+                ${peCards.length > 0 ? peCards.map(renderCardItem).join("") : '<div style="font-size:0.75rem;color:var(--ink-mute);padding:8px">No active Put setups</div>'}
+              </div>
+            </div>
+          `;
         }
       }
 
@@ -3414,6 +3488,8 @@
   window.unpinCard = async function (recId) {
     await window.toggleBookmark(recId);
   };
+
+  window.bookmarkCard = window.toggleBookmark;
 
   window.executePaperTrade = async function (recId, optSymbol, strike, side, ltp, lots) {
     try {

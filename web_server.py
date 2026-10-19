@@ -441,6 +441,25 @@ def _serialize_cluster(cluster: StrikeCluster, spot: float, capital: float, risk
         "best_idea": _serialize_trade_idea(cluster.best_idea, spot, capital, risk, lot_size),
     }
 
+def _is_recently_triggered(triggered_at_val: Any, max_age_seconds: float = 600.0) -> bool:
+    """Return True if recommendation timestamp was within max_age_seconds (default 10 mins)."""
+    if not triggered_at_val:
+        return False
+    try:
+        from datetime import datetime, timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now_ist = datetime.now(ist)
+        if isinstance(triggered_at_val, (int, float)):
+            diff_sec = now_ist.timestamp() - float(triggered_at_val)
+            return 0 <= diff_sec <= max_age_seconds
+        clean_str = str(triggered_at_val).strip().replace("T", " ")[:19]
+        dt = datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
+        dt_ist = dt.replace(tzinfo=ist)
+        diff_sec = (now_ist - dt_ist).total_seconds()
+        return 0 <= diff_sec <= max_age_seconds
+    except Exception:
+        return False
+
 
 # --------------------------------------------------------------------------
 # API REST Endpoints
@@ -640,8 +659,59 @@ async def get_cockpit_data(symbol: Optional[str] = None, window: Optional[str] =
         "score": 24,
     }
 
-    # Pinned setups from database
+    # ── Collect Cockpit Recommendations (Pinned + Fresh within 10m) ────
     pinned_records = list_bookmarked_records(sym)
+    bm_ids = {r.get("rec_id") for r in pinned_records if r.get("rec_id")}
+
+    fresh_ideas = []
+    try:
+        recs = generate_trade_recommendations(dash, sym)
+        all_recs = []
+        if recs:
+            all_recs = getattr(recs, "all_recommendations", None) or (
+                getattr(recs, "higher_ce_recommendations", [])
+                + getattr(recs, "higher_pe_recommendations", [])
+                + getattr(recs, "lower_ce_recommendations", [])
+                + getattr(recs, "lower_pe_recommendations", [])
+            )
+        for idea in all_recs:
+            if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
+                fresh_ideas.append(idea)
+    except Exception as e:
+        logger.debug(f"Cockpit fresh ideas check: {e}")
+
+    cockpit_cards = []
+    for r in pinned_records:
+        cockpit_cards.append({
+            "rec_id": r.get("rec_id"),
+            "symbol": r.get("symbol", sym),
+            "side": r.get("side", "CE"),
+            "strike": float(r.get("strike", 0)),
+            "option_symbol": r.get("option_symbol") or f"{sym} {int(r.get('strike', 0))} {r.get('side', 'CE')}",
+            "play_badge": r.get("play_badge", "STRATEGY"),
+            "quality_score": int(r.get("quality_score", 85)),
+            "entry_ltp": float(r.get("entry_ltp", 0.0)),
+            "current_ltp": float(r.get("current_ltp", r.get("entry_ltp", 0.0))),
+            "target_1": float(r.get("target_1", 0.0)),
+            "target_2": float(r.get("target_2", 0.0)),
+            "stop_loss": float(r.get("stop_loss", 0.0)),
+            "is_pinned": True,
+            "is_fresh": False,
+            "triggered_at": r.get("triggered_at", ""),
+        })
+
+    for f in fresh_ideas:
+        try:
+            s_idea = _serialize_trade_idea(f, spot, 500000.0, 0.015, idx.lot_size)
+            s_idea["is_pinned"] = False
+            s_idea["is_fresh"] = True
+            cockpit_cards.append(s_idea)
+        except Exception:
+            pass
+
+    pinned_count = len(pinned_records)
+    fresh_count = len(fresh_ideas)
+    total_cockpit_cards = pinned_count + fresh_count
 
     # Pre-Market Discovery Summary (09:07:30 Equilibrium & Opening Shock)
     pm_state = get_pre_market_state(sym)
@@ -683,6 +753,10 @@ async def get_cockpit_data(symbol: Optional[str] = None, window: Optional[str] =
         "gamma_blast": gamma_blast,
         "ladder": ladder,
         "pinned_setups": pinned_records,
+        "cockpit_recommendations": cockpit_cards,
+        "pinned_count": pinned_count,
+        "fresh_count": fresh_count,
+        "total_cockpit_cards": total_cockpit_cards,
         "pre_market": pm_state,
         "orderflow_alerts": orderflow_alerts,
         "market_breadth": {

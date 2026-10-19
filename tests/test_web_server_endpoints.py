@@ -127,6 +127,30 @@ def test_get_cockpit_data_levels_and_tape():
     assert "ladder" in data
     assert "orderflow_alerts" in data
     assert "pre_market" in data
+    assert "cockpit_recommendations" in data
+    assert "pinned_count" in data
+    assert "fresh_count" in data
+    assert "total_cockpit_cards" in data
+    assert data["total_cockpit_cards"] == data["pinned_count"] + data["fresh_count"]
+
+
+def test_cockpit_recommendations_pinned_and_fresh_setups():
+    """Verify Cockpit recommendations include dual-pipeline pinned and fresh setups."""
+    status, headers, content = asyncio.run(asgi_request("GET", "/api/cockpit-data?symbol=NIFTY&window=current_week"))
+    assert status == 200
+    data = json.loads(content)
+    assert isinstance(data["cockpit_recommendations"], list)
+    assert isinstance(data["pinned_count"], int)
+    assert isinstance(data["fresh_count"], int)
+    assert data["pinned_count"] >= 0
+    assert data["fresh_count"] >= 0
+    for card in data["cockpit_recommendations"]:
+        assert "rec_id" in card
+        assert "side" in card
+        assert "strike" in card
+        assert "quality_score" in card
+        assert "is_pinned" in card
+        assert "is_fresh" in card
 
 
 def test_target_engine_candidate_structures_table():
