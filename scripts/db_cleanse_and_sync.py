@@ -11,25 +11,28 @@ Cleanses and standardizes:
    - Runs WAL checkpoint and VACUUM on SQLite databases.
 """
 
+import argparse
 import logging
+import os
 import sqlite3
 import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 # Ensure project root is in sys.path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 IST = timezone(timedelta(hours=5, minutes=30))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("db_cleanse")
 
 
-def cleanse_market_snapshot_db():
-    log.info("--- Step 1: Cleansing data/journal/market_snapshot.db ---")
-    db_path = Path("data/journal/market_snapshot.db")
+def cleanse_market_snapshot_db(base_dir: Path):
+    log.info("--- Step 1: Cleansing market_snapshot.db in %s ---", base_dir)
+    db_path = base_dir / "data" / "journal" / "market_snapshot.db"
     if not db_path.exists():
-        log.warning("market_snapshot.db does not exist, skipping.")
+        log.warning("market_snapshot.db does not exist at %s, skipping.", db_path)
         return
 
     from data.market_snapshot import save_snapshot, get_snapshot
@@ -62,11 +65,11 @@ def cleanse_market_snapshot_db():
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
-def cleanse_sentinel_db():
-    log.info("--- Step 2: Cleansing and Re-syncing data/sentinel.db ---")
-    db_path = Path("data/sentinel.db")
+def cleanse_sentinel_db(base_dir: Path):
+    log.info("--- Step 2: Cleansing and Re-syncing sentinel.db in %s ---", base_dir)
+    db_path = base_dir / "data" / "sentinel.db"
     if not db_path.exists():
-        log.warning("sentinel.db does not exist, skipping.")
+        log.warning("sentinel.db does not exist at %s, skipping.", db_path)
         return
 
     with sqlite3.connect(str(db_path)) as conn:
@@ -93,7 +96,7 @@ def cleanse_sentinel_db():
         sigs = list_recent_signals(inst_id, limit=50)
         log.info("Synchronized %s: %d genuine 1m bars, %d signals generated", inst_id, len(bars), len(sigs))
 
-        # Mirror genuine bars to base symbol (e.g. NIFTY mirrors NIFTY-FUT) to replace stale 2026-10-16 demo bars
+        # Mirror genuine bars to base symbol (e.g. NIFTY mirrors NIFTY-FUT) to replace stale demo bars
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute("DELETE FROM sentinel_bars WHERE instrument_id = ?", (sym,))
             conn.execute("DELETE FROM sentinel_signals WHERE instrument_id = ?", (sym,))
@@ -119,10 +122,37 @@ def cleanse_sentinel_db():
 
 
 def main():
-    log.info("=== Starting Production DB Cleansing & Standardization ===")
-    cleanse_market_snapshot_db()
-    cleanse_sentinel_db()
-    log.info("=== Production DB Cleansing & Standardization COMPLETE ===")
+    parser = argparse.ArgumentParser(description="Database cleansing and standardization tool")
+    parser.add_argument(
+        "--target",
+        choices=["dev", "prod"],
+        default="dev",
+        help="Target workspace environment (default: dev)",
+    )
+    args = parser.parse_args()
+
+    if args.target == "prod":
+        base_dir = ROOT.parent / "cubera-gex-cockpit-prod"
+    else:
+        base_dir = ROOT
+
+    if not base_dir.exists():
+        log.error("Target directory %s does not exist!", base_dir)
+        sys.exit(1)
+
+    log.info("=== Starting DB Cleansing & Standardization [Target: %s (%s)] ===", args.target.upper(), base_dir)
+
+    # Re-anchor working directory and module paths to target workspace
+    os.chdir(str(base_dir))
+    import data.market_snapshot
+    data.market_snapshot.DB_PATH = base_dir / "data" / "journal" / "market_snapshot.db"
+
+    import sentinel.storage.db
+    sentinel.storage.db._DB_PATH = base_dir / "data" / "sentinel.db"
+
+    cleanse_market_snapshot_db(base_dir)
+    cleanse_sentinel_db(base_dir)
+    log.info("=== DB Cleansing & Standardization COMPLETE for %s ===", args.target.upper())
 
 
 if __name__ == "__main__":

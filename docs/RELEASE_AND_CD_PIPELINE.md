@@ -118,11 +118,22 @@ The promotion script enforces strict checks before allowing a release:
    `pip install -r requirements.txt --quiet`.
 
 ### Stage 4: Graceful Server Reload & Zero-Downtime Swap
-1. Finds the running production PID on port 8640.
-2. Initiates graceful reload:
+1. **Database Protection (Default)**:
+   - Persistent runtime databases (`data/sentinel.db`, `data/journal/market_snapshot.db`) are **never** blindly overwritten from Dev.
+   - This protects genuine live market data accumulated in Production during trading hours.
+   - If a deliberate database overwrite is required (e.g. repairing a damaged Prod DB from clean Dev), supply the opt-in flag:
+     ```bash
+     ./scripts/promote.sh --sync-db
+     ```
+   - For database cleansing or backfilling without code deployment:
+     ```bash
+     python3 scripts/db_cleanse_and_sync.py --target prod
+     ```
+2. Finds the running production PID on port 8640.
+3. Initiates graceful reload:
    - Uses PID file `logs/prod_server.pid`.
-   - Launches new process and terminates old process after port binding, or issues clean reload.
-3. Production server boots up cleanly with the newly promoted code.
+   - Spawns new process, binds port 8640, and terminates old process cleanly via `kill -15`.
+4. Production server boots up cleanly with the newly promoted code.
 
 ### Stage 5: Post-Deployment Smoke Health Check & Rollback
 1. Pings the production health endpoint:

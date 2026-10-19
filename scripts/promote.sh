@@ -7,6 +7,8 @@
 #   ./scripts/promote.sh              # Auto-increments patch version (e.g. v5.3.0 -> v5.3.1)
 #   ./scripts/promote.sh minor        # Increments minor version (e.g. v5.3.0 -> v5.4.0)
 #   ./scripts/promote.sh v5.4.0       # Explicit semantic version tag
+#   ./scripts/promote.sh --sync-db    # Include Dev->Prod SQLite DB overwrite (opt-in only!)
+#   ./scripts/promote.sh patch --sync-db
 # ==============================================================================
 
 set -euo pipefail
@@ -63,7 +65,25 @@ echo "▶ [Stage 2/5] Resolving Version Tag..."
 CURRENT_BRANCH=$(git -C "${DEV_DIR}" rev-parse --abbrev-ref HEAD)
 LATEST_TAG=$(git -C "${DEV_DIR}" describe --tags --abbrev=0 2>/dev/null || echo "v5.3.0")
 
-TARGET_TAG="${1:-patch}"
+TARGET_TAG=""
+SYNC_DB=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --sync-db|--force-db-sync)
+            SYNC_DB=true
+            ;;
+        *)
+            if [[ -z "${TARGET_TAG}" ]]; then
+                TARGET_TAG="$arg"
+            fi
+            ;;
+    esac
+done
+
+if [[ -z "${TARGET_TAG}" ]]; then
+    TARGET_TAG="patch"
+fi
 
 if [[ "${TARGET_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
     NEW_TAG="${TARGET_TAG}"
@@ -133,20 +153,26 @@ if [[ -f "${PROD_DIR}/requirements.txt" ]]; then
     python3 -m pip install -r "${PROD_DIR}/requirements.txt" --quiet --disable-pip-version-check
 fi
 
-# Synchronize persistent runtime databases and EOD journal snapshots from Dev to Prod
-echo "  • Synchronizing persistent runtime databases and EOD snapshots from Dev to Prod..."
-mkdir -p "${PROD_DIR}/data/journal"
-if [[ -f "${DEV_DIR}/data/sentinel.db" ]]; then
-    cp "${DEV_DIR}/data/sentinel.db"* "${PROD_DIR}/data/" 2>/dev/null || true
-fi
-if [[ -f "${DEV_DIR}/data/journal/market_snapshot.db" ]]; then
-    cp "${DEV_DIR}/data/journal/market_snapshot.db"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
-fi
-if [[ -d "${DEV_DIR}/data/journal/futures_intraday_dhan" ]]; then
-    cp -r "${DEV_DIR}/data/journal/futures_intraday"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
-fi
-if [[ -f "${DEV_DIR}/data/journal/sessions.csv" ]]; then
-    cp "${DEV_DIR}/data/journal/sessions.csv" "${PROD_DIR}/data/journal/" 2>/dev/null || true
+# Check if database synchronization was explicitly requested
+if [[ "${SYNC_DB}" == "true" ]]; then
+    echo "  ⚠️ OPT-IN FLAG DETECTED (--sync-db): Synchronizing runtime databases from Dev to Prod..."
+    mkdir -p "${PROD_DIR}/data/journal"
+    if [[ -f "${DEV_DIR}/data/sentinel.db" ]]; then
+        cp "${DEV_DIR}/data/sentinel.db"* "${PROD_DIR}/data/" 2>/dev/null || true
+    fi
+    if [[ -f "${DEV_DIR}/data/journal/market_snapshot.db" ]]; then
+        cp "${DEV_DIR}/data/journal/market_snapshot.db"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
+    fi
+    if [[ -d "${DEV_DIR}/data/journal/futures_intraday_dhan" ]]; then
+        cp -r "${DEV_DIR}/data/journal/futures_intraday"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
+    fi
+    if [[ -f "${DEV_DIR}/data/journal/sessions.csv" ]]; then
+        cp "${DEV_DIR}/data/journal/sessions.csv" "${PROD_DIR}/data/journal/" 2>/dev/null || true
+    fi
+    echo "  ✅ Runtime databases synchronized to Prod."
+else
+    echo "  • Preserving production runtime databases (skipped DB overwrite)."
+    echo "    (Live market data in prod is protected. Use './scripts/promote.sh --sync-db' only if deliberate overwrite is needed.)"
 fi
 
 # Reload production server on port 8640
