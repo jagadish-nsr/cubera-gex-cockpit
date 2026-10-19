@@ -1400,8 +1400,16 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
 
     inst_id = f"{sym}-FUT"
     is_live = config.is_market_open()
-    sigs = list_recent_signals(inst_id, limit=40)
     raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
+    if not raw_bars:
+        try:
+            cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0) or 0)
+            pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0) or 0)
+            seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw)
+            raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
+        except Exception:
+            pass
+    sigs = list_recent_signals(inst_id, limit=40)
 
     # 10-Day Historical Closing CVD & Volume Breakdown
     daily_recs = ensure_historical_daily_cvd(inst_id, symbol=sym, days=10)

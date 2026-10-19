@@ -292,6 +292,21 @@ def list_recent_bars(
                     ORDER BY start_ts DESC LIMIT 1
                 """, (instrument_id, now_max)).fetchone()
                 target_date = latest_row["dt"] if latest_row and latest_row["dt"] else None
+                if not target_date and _auto_populate:
+                    try:
+                        conn.close()
+                        from sentinel.feed.demo import seed_sentinel_demo_if_needed
+                        seed_sentinel_demo_if_needed(instrument_id)
+                        conn = _get_read_conn()
+                        latest_row = conn.execute("""
+                            SELECT substr(start_ts, 1, 10) AS dt
+                            FROM sentinel_bars
+                            WHERE instrument_id = ? AND start_ts <= ?
+                            ORDER BY start_ts DESC LIMIT 1
+                        """, (instrument_id, now_max)).fetchone()
+                        target_date = latest_row["dt"] if latest_row and latest_row["dt"] else None
+                    except Exception:
+                        conn = _get_read_conn()
 
             if target_date:
                 rows = conn.execute("""

@@ -133,6 +133,22 @@ if [[ -f "${PROD_DIR}/requirements.txt" ]]; then
     python3 -m pip install -r "${PROD_DIR}/requirements.txt" --quiet --disable-pip-version-check
 fi
 
+# Synchronize persistent runtime databases and EOD journal snapshots from Dev to Prod
+echo "  • Synchronizing persistent runtime databases and EOD snapshots from Dev to Prod..."
+mkdir -p "${PROD_DIR}/data/journal"
+if [[ -f "${DEV_DIR}/data/sentinel.db" ]]; then
+    cp "${DEV_DIR}/data/sentinel.db"* "${PROD_DIR}/data/" 2>/dev/null || true
+fi
+if [[ -f "${DEV_DIR}/data/journal/market_snapshot.db" ]]; then
+    cp "${DEV_DIR}/data/journal/market_snapshot.db"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
+fi
+if [[ -d "${DEV_DIR}/data/journal/futures_intraday_dhan" ]]; then
+    cp -r "${DEV_DIR}/data/journal/futures_intraday"* "${PROD_DIR}/data/journal/" 2>/dev/null || true
+fi
+if [[ -f "${DEV_DIR}/data/journal/sessions.csv" ]]; then
+    cp "${DEV_DIR}/data/journal/sessions.csv" "${PROD_DIR}/data/journal/" 2>/dev/null || true
+fi
+
 # Reload production server on port 8640
 echo "  • Gracefully reloading Production Server on port ${PROD_PORT}..."
 OLD_PID=$(lsof -ti :${PROD_PORT} || echo "")
