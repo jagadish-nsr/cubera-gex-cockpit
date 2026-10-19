@@ -14,6 +14,7 @@ direction (that depends on the UNVALIDATED India dealer sign — see CLAUDE.md).
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta, timezone
 import os
 
 # |call - put| within this many points counts as "at the crossover" (spot ≈ K).
@@ -273,3 +274,224 @@ def gamma_concentration(oi_strikes, spot: float, n: int = 6,
             "dist": s["strike"] - spot,
         })
     return out
+
+
+def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
+    """Evaluate point-in-time Expiry Gamma Blast status and 0-100 score for Cockpit.
+
+    Pure, robust function that evaluates:
+      1. Expiry Status (0-DTE vs non-expiry session).
+      2. Session Window (Morning Pin vs 13:00+ Afternoon Blast Window).
+      3. Wall Proximity & Breaches (Call Wall short squeeze vs Put Wall trapdoor breakdown).
+      4. Writer Ignition & Defense (OI covering vs building from oi_strikes).
+      5. GEX / Regime Confluence (Spot < Flip negative accelerator zone).
+
+    Returns a dict with:
+      - state: 'TRIGGERED' | 'COILING' | 'NO_TRIGGER'
+      - badge: 'GAMMA BLAST: ACTIVE' | 'GAMMA BLAST: COILING' | 'GAMMA BLAST: INACTIVE'
+      - description: Plain text diagnostic summary.
+      - score: int (0 to 100)
+      - is_expiry: bool
+      - in_blast_window: bool
+      - primary_strike: float | None
+    """
+    levels = getattr(dash, "levels", None)
+    spot = float(getattr(levels, "spot", 0.0) or 0.0)
+    if spot <= 0:
+        return {
+            "state": "NO_TRIGGER",
+            "badge": "GAMMA BLAST: INACTIVE",
+            "description": "Dealer gamma pinned within absorption walls; no explosive squeeze imminent.",
+            "score": 24,
+            "is_expiry": False,
+            "in_blast_window": False,
+            "primary_strike": None,
+        }
+
+    call_wall = float(getattr(levels, "call_wall", 0.0) or 0.0)
+    put_wall = float(getattr(levels, "put_wall", 0.0) or 0.0)
+    flip = float(getattr(levels, "flip", 0.0) or 0.0)
+    magnet = float(getattr(levels, "magnet", 0.0) or 0.0)
+    net_gex = float(getattr(levels, "total_net_gex", 0.0) or 0.0)
+    regime = str(getattr(getattr(dash, "view", None), "regime", "NEUTRAL") or "NEUTRAL").upper()
+    oi_strikes = getattr(dash, "oi_strikes", None) or []
+
+    # 1. IST Datetime & Session Window
+    fetched_at = getattr(dash, "fetched_at", None)
+    if fetched_at:
+        if getattr(fetched_at, "tzinfo", None) is None:
+            dt_ist = fetched_at + timedelta(hours=5, minutes=30)
+        else:
+            dt_ist = fetched_at.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    else:
+        dt_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+
+    ist_min = dt_ist.hour * 60 + dt_ist.minute
+    cut_min, _ = afternoon_cut()
+    # Window opens around 13:00 IST and peaks from 13:45 to 15:30 IST
+    in_blast_window = (ist_min >= 13 * 60 and ist_min <= 15 * 60 + 30)
+
+    # 2. 0-DTE Expiry Gate
+    dte_now = getattr(dash, "dte_now", None)
+    expiries = getattr(dash, "expiries", []) or []
+    is_expiry = False
+    if dte_now is not None and float(dte_now) < 0.6:
+        is_expiry = True
+    elif expiries:
+        first_exp = expiries[0]
+        if hasattr(first_exp, "strftime"):
+            is_expiry = (first_exp.strftime("%Y-%m-%d") == dt_ist.strftime("%Y-%m-%d"))
+        elif isinstance(first_exp, str):
+            is_expiry = first_exp.startswith(dt_ist.strftime("%Y-%m-%d"))
+
+    if not is_expiry:
+        try:
+            from data.replay import is_expiry_day
+            is_expiry = is_expiry_day(symbol, dt_ist.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+
+    step = 50.0 if symbol.upper() == "NIFTY" else 100.0
+
+    # 3. Wall Proximity & Target Strike
+    cw_dist = call_wall - spot if call_wall > 0 else 9999.0
+    pw_dist = spot - put_wall if put_wall > 0 else 9999.0
+
+    cw_breach = (call_wall > 0 and spot >= call_wall - 5.0)
+    cw_testing = (call_wall > 0 and spot >= call_wall - step * 0.6)
+    pw_breach = (put_wall > 0 and spot <= put_wall + 5.0)
+    pw_testing = (put_wall > 0 and spot <= put_wall + step * 0.6)
+
+    # 4. Strike OI & Covering Ratio (Ignition)
+    cover_frac = 0.0
+    primary_strike = None
+    if cw_testing or (cw_dist <= pw_dist and call_wall > 0):
+        primary_strike = call_wall
+        for s in oi_strikes:
+            if abs(float(s.get("strike", 0.0)) - call_wall) < step / 2:
+                coi = float(s.get("call_oi") or 0.0)
+                c_doi = float(s.get("call_doi") or s.get("call_doi_near") or 0.0)
+                if coi > 0:
+                    cover_frac = c_doi / coi
+                break
+    elif pw_testing or put_wall > 0:
+        primary_strike = put_wall
+        for s in oi_strikes:
+            if abs(float(s.get("strike", 0.0)) - put_wall) < step / 2:
+                poi = float(s.get("put_oi") or 0.0)
+                p_doi = float(s.get("put_doi") or s.get("put_doi_near") or 0.0)
+                if poi > 0:
+                    cover_frac = p_doi / poi
+                break
+
+    # 5. Non-Expiry Session
+    if not is_expiry:
+        score = 22
+        if cw_testing or pw_testing:
+            score += 6
+        if regime == "NEGATIVE" or (flip > 0 and spot < flip):
+            score += 4
+        score = max(10, min(32, score))
+
+        dte_str = f"{dte_now:.1f}d" if (dte_now is not None and dte_now > 0) else "off-cycle"
+        return {
+            "state": "NO_TRIGGER",
+            "badge": "GAMMA BLAST: INACTIVE (NON-EXPIRY)",
+            "description": f"Non-expiry session ({dte_str} to nearest expiry). Dealer gamma risks remain bounded by calendar decay; 0-DTE blast inactive.",
+            "score": score,
+            "is_expiry": False,
+            "in_blast_window": in_blast_window,
+            "primary_strike": primary_strike,
+        }
+
+    # 6. Expiry Session: Pre-Blast Window (< 13:00 IST)
+    if not in_blast_window and ist_min < 13 * 60:
+        base_score = 24
+        if cw_testing or pw_testing:
+            base_score = 38
+            state = "COILING"
+            badge = "GAMMA BLAST: COILING (PRE-BLAST)"
+            desc = f"0-DTE morning session. Spot testing {'Call' if cw_testing else 'Put'} barrier ({primary_strike:,.0f}). Blast acceleration window opens at 13:30 IST."
+        else:
+            state = "NO_TRIGGER"
+            badge = "GAMMA BLAST: INACTIVE (MORNING PIN)"
+            desc = "0-DTE session in morning positioning. Dealer gamma pinning spot within range; blast window activates at 13:30–15:15 IST."
+        return {
+            "state": state,
+            "badge": badge,
+            "description": desc,
+            "score": base_score,
+            "is_expiry": True,
+            "in_blast_window": False,
+            "primary_strike": primary_strike,
+        }
+
+    # 7. Expiry Session: Afternoon Blast Window (13:00 - 15:30 IST)
+    # Ignition points (0 to 40)
+    if cover_frac < 0:
+        # Writers covering! Saturates at 30% covering
+        ignition_pts = min(40.0, (-cover_frac / _FULL_COVER) * 40.0)
+    elif cover_frac > 0.05:
+        # Writers actively defending (adds resistance)
+        ignition_pts = 0.0
+    else:
+        ignition_pts = 12.0
+
+    # Proximity & Breach points (0 to 40)
+    if cw_breach:
+        progress = min(1.0, max(0.0, (spot - call_wall + 10.0) / (step * 0.8)))
+        proximity_pts = 26.0 + progress * 14.0
+    elif pw_breach:
+        progress = min(1.0, max(0.0, (put_wall + 10.0 - spot) / (step * 0.8)))
+        proximity_pts = 26.0 + progress * 14.0
+    elif cw_testing:
+        proximity_pts = 14.0 + (1.0 - max(0.0, cw_dist) / (step * 0.6)) * 12.0
+    elif pw_testing:
+        proximity_pts = 14.0 + (1.0 - max(0.0, pw_dist) / (step * 0.6)) * 12.0
+    else:
+        proximity_pts = 6.0
+
+    # Regime & Accelerator points (0 to 20)
+    regime_pts = 0.0
+    if regime == "NEGATIVE":
+        regime_pts += 10.0
+    if flip > 0 and spot < flip:
+        regime_pts += 10.0
+    elif net_gex < -100_000_000.0:
+        regime_pts += 5.0
+
+    raw_score = round(ignition_pts + proximity_pts + regime_pts)
+
+    # Defending cap: if writers are actively adding OI at K, blast cannot sustain
+    if cover_frac > 0.05:
+        raw_score = min(raw_score, 34)
+
+    score = max(12, min(96, raw_score))
+
+    if score >= 60:
+        state = "TRIGGERED"
+        if cw_breach or spot > (call_wall + put_wall) / 2:
+            badge = "GAMMA BLAST: ACTIVE (CALL SQUEEZE)"
+            desc = f"0-DTE Call Wall at ₹{call_wall:,.0f} overrun. Forced dealer short-gamma hedging is detonating upward squeeze."
+        else:
+            badge = "GAMMA BLAST: ACTIVE (PUT SQUEEZE)"
+            desc = f"0-DTE Put Wall at ₹{put_wall:,.0f} broken. Forced dealer long liquidation is detonating downward trapdoor."
+    elif score >= 35:
+        state = "COILING"
+        badge = "GAMMA BLAST: COILING / IMMINENT"
+        target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
+        desc = f"Spot is hammering within {abs(spot - (primary_strike or spot)):.0f} pts of {target_name}. Pressure coiling for afternoon break."
+    else:
+        state = "NO_TRIGGER"
+        badge = "GAMMA BLAST: INACTIVE"
+        desc = f"Dealer gamma pinned within absorption walls ({put_wall:,.0f} PW – {call_wall:,.0f} CW); no explosive squeeze imminent."
+
+    return {
+        "state": state,
+        "badge": badge,
+        "description": desc,
+        "score": score,
+        "is_expiry": True,
+        "in_blast_window": in_blast_window,
+        "primary_strike": primary_strike,
+    }
