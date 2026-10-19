@@ -1,8 +1,9 @@
 """Gamma-blast crossover logic — pure, hand-checkable (parity-based, sign-free)."""
 
 from app.gammablast import (atm_strike, blast_score, crossover_state,
-                            detect_crossovers, gamma_concentration, grade_blast,
-                            next_strike, pick_anchors, strike_oi, strike_premiums)
+                            detect_crossovers, evaluate_dashboard_gamma_blast,
+                            gamma_concentration, grade_blast, next_strike,
+                            pick_anchors, strike_oi, strike_premiums)
 
 
 def _strikes(spot=24000):
@@ -124,3 +125,74 @@ def test_blast_score_defensive_none():
     assert blast_score("sideways", [{"call_oi": 1}]) is None    # bad direction
     assert blast_score("up", []) is None                        # no data
     assert blast_score("up", [{"call_oi": 0, "call_ltp": 0}]) is None  # zero start OI
+
+
+def test_evaluate_dashboard_gamma_blast_non_expiry():
+    from unittest.mock import MagicMock
+    dash = MagicMock()
+    dash.levels.spot = 22800.0
+    dash.levels.call_wall = 23000.0
+    dash.levels.put_wall = 22600.0
+    dash.levels.flip = 22800.0
+    dash.levels.magnet = 22800.0
+    dash.levels.total_net_gex = 50_000_000.0
+    dash.view.regime = "POSITIVE"
+    dash.dte_now = 3.5
+    dash.expiries = []
+    dash.oi_strikes = []
+    dash.fetched_at = None
+
+    res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert res["is_expiry"] is False
+    assert res["state"] == "NO_TRIGGER"
+    assert "INACTIVE (NON-EXPIRY)" in res["badge"]
+    assert res["score"] <= 32
+
+
+def test_evaluate_dashboard_gamma_blast_0dte_breakout():
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    dash = MagicMock()
+    dash.levels.spot = 23020.0  # breached Call Wall
+    dash.levels.call_wall = 23000.0
+    dash.levels.put_wall = 22600.0
+    dash.levels.flip = 22950.0
+    dash.levels.magnet = 22900.0
+    dash.levels.total_net_gex = -250_000_000.0
+    dash.view.regime = "NEGATIVE"
+    dash.dte_now = 0.0  # 0-DTE
+    dash.expiries = []
+    # Call writers covering 25% OI
+    dash.oi_strikes = [{"strike": 23000.0, "call_oi": 100000.0, "call_doi": -25000.0}]
+    # 14:45 IST (09:15 UTC)
+    dash.fetched_at = datetime(2026, 10, 19, 9, 15, tzinfo=timezone.utc)
+
+    res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert res["is_expiry"] is True
+    assert res["in_blast_window"] is True
+    assert res["state"] == "TRIGGERED"
+    assert "ACTIVE (CALL SQUEEZE)" in res["badge"]
+    assert res["score"] >= 60
+
+
+def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    dash = MagicMock()
+    dash.levels.spot = 23020.0  # breached Call Wall
+    dash.levels.call_wall = 23000.0
+    dash.levels.put_wall = 22600.0
+    dash.levels.flip = 22950.0
+    dash.levels.magnet = 22900.0
+    dash.levels.total_net_gex = -50_000_000.0
+    dash.view.regime = "NEGATIVE"
+    dash.dte_now = 0.0  # 0-DTE
+    # Call writers adding +20% OI (defending)
+    dash.oi_strikes = [{"strike": 23000.0, "call_oi": 100000.0, "call_doi": 20000.0}]
+    dash.fetched_at = datetime(2026, 10, 19, 9, 15, tzinfo=timezone.utc)
+
+    res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert res["is_expiry"] is True
+    assert res["state"] == "NO_TRIGGER"
+    assert res["score"] < 35
+

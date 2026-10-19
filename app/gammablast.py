@@ -335,16 +335,15 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     dte_now = getattr(dash, "dte_now", None)
     expiries = getattr(dash, "expiries", []) or []
     is_expiry = False
-    if dte_now is not None and float(dte_now) < 0.6:
-        is_expiry = True
+    if dte_now is not None:
+        is_expiry = float(dte_now) < 0.6
     elif expiries:
         first_exp = expiries[0]
         if hasattr(first_exp, "strftime"):
             is_expiry = (first_exp.strftime("%Y-%m-%d") == dt_ist.strftime("%Y-%m-%d"))
         elif isinstance(first_exp, str):
             is_expiry = first_exp.startswith(dt_ist.strftime("%Y-%m-%d"))
-
-    if not is_expiry:
+    else:
         try:
             from data.replay import is_expiry_day
             is_expiry = is_expiry_day(symbol, dt_ist.strftime("%Y-%m-%d"))
