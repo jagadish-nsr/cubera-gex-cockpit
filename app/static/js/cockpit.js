@@ -1036,12 +1036,19 @@
             pinch: true,
           },
           handleScroll: {
-            mouseWheel: true,
+            mouseWheel: false, // Directly zoom candles with mouse wheel without needing Ctrl
             pressedMouseMove: true,
             horzTouchDrag: true,
             vertTouchDrag: true,
           },
-          timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(51, 65, 85, 0.45)", barSpacing: 9 },
+          timeScale: {
+            timeVisible: true,
+            secondsVisible: false,
+            borderColor: "rgba(51, 65, 85, 0.45)",
+            barSpacing: 12,
+            minBarSpacing: 3,
+            rightOffset: 6,
+          },
           localization: {
             timeFormatter: (ts) => {
               if (typeof ts === "number") {
@@ -1056,7 +1063,9 @@
         cockpitCandleSeries = cockpitGexChart.addCandlestickSeries({
           upColor: "#10b981",
           downColor: "#ef4444",
-          borderVisible: false,
+          borderVisible: true,
+          borderUpColor: "#10b981",
+          borderDownColor: "#ef4444",
           wickUpColor: "#10b981",
           wickDownColor: "#ef4444",
           title: "Price",
@@ -1065,15 +1074,15 @@
             if (res !== null && res.priceRange) {
               let min = res.priceRange.minValue;
               let max = res.priceRange.maxValue;
+              const range = Math.max(max - min, 20);
               const cw = cockpitChartState.cw || 0;
               const pw = cockpitChartState.pw || 0;
-              if (cw > 0) {
-                if (cw < min) min = cw - 15;
-                if (cw > max) max = cw + 15;
+              // Expand to include Call Wall / Put Wall if reasonably close, without crushing candle bodies
+              if (cw > 0 && cw >= min && cw <= max + range * 0.8) {
+                max = Math.max(max, cw + 10);
               }
-              if (pw > 0) {
-                if (pw < min) min = pw - 15;
-                if (pw > max) max = pw + 15;
+              if (pw > 0 && pw <= max && pw >= min - range * 0.8) {
+                min = Math.min(min, pw - 10);
               }
               return {
                 priceRange: { minValue: min, maxValue: max },
@@ -1229,6 +1238,7 @@
       if (cockpitFlipLine) cockpitCandleSeries.removePriceLine(cockpitFlipLine);
 
       if (data.call_wall > 0) {
+        cockpitChartState.cw = data.call_wall;
         cockpitCwLine = cockpitCandleSeries.createPriceLine({
           price: data.call_wall,
           color: "#ef4444",
@@ -1239,6 +1249,7 @@
         });
       }
       if (data.put_wall > 0) {
+        cockpitChartState.pw = data.put_wall;
         cockpitPwLine = cockpitCandleSeries.createPriceLine({
           price: data.put_wall,
           color: "#22c55e",
@@ -1259,7 +1270,18 @@
         });
       }
 
-      cockpitGexChart.timeScale().fitContent();
+      // Initial Render: Fit the most recent 65 candles at a bold, comfortable width instead of squishing all intraday bars
+      const totalBars = candles.length;
+      cockpitChartState.totalBars = totalBars;
+      if (totalBars > 0) {
+        const visibleBars = Math.min(totalBars, 65);
+        cockpitGexChart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, totalBars - visibleBars),
+          to: totalBars + 5,
+        });
+      } else {
+        cockpitGexChart.timeScale().fitContent();
+      }
 
       setTimeout(() => {
         if (cockpitGexChart && mount) {
@@ -1270,6 +1292,21 @@
       console.error("Error loading Cockpit GEX Canvas:", err);
     }
   }
+
+  window.resetCockpitChartFit = function () {
+    if (!cockpitGexChart) return;
+    try {
+      cockpitGexChart.priceScale("right").applyOptions({ autoScale: true });
+      const totalBars = cockpitChartState.totalBars || 65;
+      const visibleBars = Math.min(totalBars, 65);
+      cockpitGexChart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, totalBars - visibleBars),
+        to: totalBars + 5,
+      });
+    } catch (e) {
+      if (cockpitGexChart) cockpitGexChart.timeScale().fitContent();
+    }
+  };
 
   window.switchCockpitTimeframe = function (tf) {
     cockpitChartState.timeframe = tf;
@@ -2514,12 +2551,19 @@
               pinch: true,
             },
             handleScroll: {
-              mouseWheel: true,
+              mouseWheel: false, // Directly zoom candles with mouse wheel
               pressedMouseMove: true,
               horzTouchDrag: true,
               vertTouchDrag: true,
             },
-            timeScale: { timeVisible: true, secondsVisible: false, borderColor: "rgba(51, 65, 85, 0.45)", barSpacing: 9 },
+            timeScale: {
+              timeVisible: true,
+              secondsVisible: false,
+              borderColor: "rgba(51, 65, 85, 0.45)",
+              barSpacing: 12,
+              minBarSpacing: 3,
+              rightOffset: 6,
+            },
             localization: {
               timeFormatter: (ts) => {
                 if (typeof ts === "number") {
@@ -2535,7 +2579,9 @@
           state.candlestickSeries = state.sentinelChart.addCandlestickSeries({
             upColor: "#10b981",
             downColor: "#ef4444",
-            borderVisible: false,
+            borderVisible: true,
+            borderUpColor: "#10b981",
+            borderDownColor: "#ef4444",
             wickUpColor: "#10b981",
             wickDownColor: "#ef4444",
             title: "Price",
@@ -2544,15 +2590,14 @@
               if (res !== null && res.priceRange) {
                 let min = res.priceRange.minValue;
                 let max = res.priceRange.maxValue;
+                const range = Math.max(max - min, 20);
                 const cw = state.sentinelCw || 0;
                 const pw = state.sentinelPw || 0;
-                if (cw > 0) {
-                  if (cw < min) min = cw - 15;
-                  if (cw > max) max = cw + 15;
+                if (cw > 0 && cw >= min && cw <= max + range * 0.8) {
+                  max = Math.max(max, cw + 10);
                 }
-                if (pw > 0) {
-                  if (pw < min) min = pw - 15;
-                  if (pw > max) max = pw + 15;
+                if (pw > 0 && pw <= max && pw >= min - range * 0.8) {
+                  min = Math.min(min, pw - 10);
                 }
                 return {
                   priceRange: { minValue: min, maxValue: max },
@@ -2796,6 +2841,18 @@
 
         // Apply active profile visibility
         window.switchSentinelProfile(sentinelState.profile);
+
+        // Initial Render: Fit most recent 65 candles at a legible size
+        sentinelState.totalBars = candleData.length;
+        if (!sentinelState.initialFitDone && candleData.length > 0) {
+          sentinelState.initialFitDone = true;
+          const totalBars = candleData.length;
+          const visibleBars = Math.min(totalBars, 65);
+          state.sentinelChart.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, totalBars - visibleBars),
+            to: totalBars + 5,
+          });
+        }
       }
 
       // Subtab 1: Render SVG 10-Day Closing CVD Bar Chart
@@ -2848,6 +2905,7 @@
 
   window.switchSentinelTimeframe = function (tf) {
     sentinelState.timeframe = tf;
+    sentinelState.initialFitDone = false;
     const sel = document.getElementById("sentinel-timeframe-select");
     if (sel) sel.value = tf;
     loadSentinelTape();
@@ -3007,13 +3065,23 @@
 
   window.fitSentinelTimeScale = function () {
     if (!state.sentinelChart) return;
-    state.sentinelChart.timeScale().fitContent();
+    try {
+      state.sentinelChart.priceScale("right").applyOptions({ autoScale: true });
+      const totalBars = sentinelState.totalBars || 65;
+      const visibleBars = Math.min(totalBars, 65);
+      state.sentinelChart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, totalBars - visibleBars),
+        to: totalBars + 5,
+      });
+    } catch (e) {
+      state.sentinelChart.timeScale().fitContent();
+    }
   };
 
   window.resetSentinelAxes = function () {
     if (!state.sentinelChart) return;
-    state.sentinelChart.timeScale().applyOptions({ barSpacing: 9 });
-    state.sentinelChart.timeScale().fitContent();
+    state.sentinelChart.timeScale().applyOptions({ barSpacing: 12, rightOffset: 6 });
+    window.fitSentinelTimeScale();
     window.resetSentinelPriceScale();
   };
 
@@ -4519,13 +4587,14 @@
         const lots = parseInt(document.getElementById("manual-lots").value);
         const prem = parseFloat(document.getElementById("manual-prem").value);
 
+        const idxLots = sym === "SENSEX" ? 20 : (sym === "BANKNIFTY" ? 30 : 65);
         await fetch("/api/journal/manual-trade", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             symbol: sym,
             strategy_name: strat,
-            lot_size: lots * 25,
+            lot_size: lots * idxLots,
             entry_net_premium: prem,
             entry_spot: state.spot,
           }),

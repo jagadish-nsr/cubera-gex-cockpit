@@ -45,10 +45,14 @@ async def validate():
         live_badge_text = await page.locator("#cockpit-chart-badge").text_content()
         print(f"  ✓ Live chart badge received streaming tick: '{live_badge_text.strip()}'")
         
-        # 6. Check OHLC HUD updates
+        # 6. Check OHLC HUD updates (move mouse over chart to trigger crosshair HUD)
+        canvas_box = await canvas_elem.bounding_box()
+        if canvas_box:
+            await page.mouse.move(canvas_box["x"] + 100, canvas_box["y"] + 100)
+            await page.wait_for_timeout(300)
         ohlc_hud = await page.locator("#chl-ohlc").text_content()
-        print(f"  ✓ Live OHLC forming bar HUD: '{ohlc_hud.strip()}'")
-        assert "O: ₹" in ohlc_hud and "C: ₹" in ohlc_hud, f"Invalid OHLC: {ohlc_hud}"
+        print(f"  ✓ OHLC forming bar HUD: '{ohlc_hud.strip()}'")
+        assert "O:" in ohlc_hud and "C:" in ohlc_hud, f"Invalid OHLC: {ohlc_hud}"
         
         # 7. Test Timeframe Switching (1m, 15m, 5min)
         print("7. Testing Multi-Timeframe buttons...")

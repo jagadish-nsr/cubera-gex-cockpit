@@ -94,6 +94,11 @@ if DATA_SOURCE not in VALID_DATA_SOURCES:
 DHAN_CLIENT_ID:    str | None = os.environ.get("DHAN_CLIENT_ID")
 DHAN_ACCESS_TOKEN: str | None = os.environ.get("DHAN_ACCESS_TOKEN")
 
+# --- Simulation Mode Flag (Zero-Fabrication Contract) -----------------------
+# When True: Allows synthetic test/demo generators (reseed, mock ticks, synthetic drift).
+# When False (DEFAULT): Strict Zero-Fabrication Contract. Live data from Dhan WS/API or EOD snapshots.
+SIMULATION_MODE: bool = os.environ.get("SIMULATION_MODE", "false").strip().lower() in ("true", "1", "yes")
+
 
 # --- Dealer gamma sign convention -------------------------------------------
 # Native Indian Market Mode: Indian index option participants and prop desks

@@ -82,28 +82,29 @@ class LiveSentinelManager:
         now_epoch = time.time()
         last_sync = self._last_synced_time.get(instrument_id, 0.0)
 
-        # Check if existing bars belong to a prior trading day
-        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        # Determine target trading date (today if active market day after 09:00, or latest completed trading session)
+        now_ist = datetime.now(IST)
+        m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+        try:
+            from data.holidays import is_trading_day, roll_back_to_trading_day
+            if is_trading_day(now_ist.date()) and now_ist >= m_open:
+                target_date = now_ist.date()
+            else:
+                target_date = roll_back_to_trading_day(now_ist.date() - timedelta(days=1) if now_ist < m_open else now_ist.date())
+        except Exception:
+            target_date = now_ist.date()
+        target_date_str = target_date.strftime("%Y-%m-%d")
+
         existing_sample = list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False)
-        needs_day_rollover = bool(existing_sample and existing_sample[-1].start_ts.strftime("%Y-%m-%d") != today_str)
+        needs_day_rollover = bool(existing_sample and existing_sample[-1].start_ts.strftime("%Y-%m-%d") != target_date_str)
 
         # Throttle sync calls to once every 60 seconds unless forced or on day rollover
-        if not force and not needs_day_rollover and (now_epoch - last_sync) < 60.0:
+        if not force and not needs_day_rollover and existing_sample and (now_epoch - last_sync) < 60.0:
             return False
-
-        import config
-        # Off market hours: do not poll Dhan API unless explicitly forced and no bars exist
-        if not config.is_market_open():
-            if not force or list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False):
-                return False
 
         with _LOCK:
             self._last_synced_time[instrument_id] = now_epoch
             try:
-                # Purge stale/demo bars and signals if forcing clean sync, or if existing bars are from a prior day
-                if force or not existing_sample or needs_day_rollover:
-                    clear_sentinel_data(instrument_id)
-
                 from data.dhan import fetch_futures_intraday, nearest_futures
 
                 futs = nearest_futures(symbol)
@@ -113,16 +114,20 @@ class LiveSentinelManager:
 
                 front_fut = futs[0]
                 sec_id = front_fut["security_id"]
+                seg = "BSE_FNO" if symbol == "SENSEX" else "NSE_FNO"
 
-                df = fetch_futures_intraday(sec_id, today_str, today_str, interval="1")
+                df = fetch_futures_intraday(sec_id, target_date_str, target_date_str, interval="1", segment=seg)
                 if df is None or df.empty:
-                    log.info("No intraday bars returned for %s (market pre-open or exchange closed)", instrument_id)
+                    log.info("No intraday bars returned for %s (date %s)", instrument_id, target_date_str)
                     return False
+
+                # Purge stale/demo bars only after verifying genuine Dhan data arrived
+                clear_sentinel_data(instrument_id)
 
                 # Sort by timestamp
                 df = df.sort_values("timestamp").reset_index(drop=True)
 
-                lot_size = front_fut.get("lot") or (10 if "SENSEX" in symbol else (15 if "BANKNIFTY" in symbol else 65))
+                lot_size = front_fut.get("lot") or (20 if "SENSEX" in symbol else (30 if "BANKNIFTY" in symbol else 65))
 
                 # Track session metrics
                 vwap_tracker = SessionVWAPTracker()

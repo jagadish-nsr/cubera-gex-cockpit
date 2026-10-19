@@ -736,7 +736,7 @@ def ensure_historical_daily_cvd(
                         continue
                     last_row = reader[-1]
                     raw_vol = float(last_row.get("agg_vol") or last_row.get("volume") or 0.0)
-                    lot_size = 10 if "SENSEX" in sym else (15 if "BANKNIFTY" in sym else 65)
+                    lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
                     tot_vol = int(round(raw_vol / float(lot_size))) if raw_vol > 500000 else int(raw_vol)
                     if tot_vol <= 0:
                         continue

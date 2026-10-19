@@ -31,16 +31,25 @@ def _get_tod_baseline(time_str: str, instrument: str = "NIFTY") -> float:
         return 15000.0
 
     if mins_from_open < 0 or mins_from_open > 375:
-        return 10000.0
+        mins_from_open = 180
 
-    # Model the U-curve analytically if discrete bucket is empty
+    # Model the U-curve analytically
     # U-shape: high at t=0 (09:15), low at t=180 (12:15), high at t=375 (15:30)
-    # Scaled to baseline Nifty 1m units
-    norm_t = (mins_from_open - 180) / 180.0  # -1.0 at open, 0 at midday, +1.08 at close
-    u_curve = 12000.0 + 35000.0 * (norm_t ** 2)
+    norm_t = (mins_from_open - 180) / 180.0
+    inst_upper = instrument.upper()
 
-    scale = 1.0 if "NIFTY" in instrument.upper() else 0.4
-    return max(5000.0, u_curve * scale)
+    if "SENSEX" in inst_upper:
+        # SENSEX futures (BSE F&O): lot size 20, typical minute volume 50-250 units
+        u_curve = 60.0 + 150.0 * (norm_t ** 2)
+        return max(35.0, u_curve)
+    elif "BANKNIFTY" in inst_upper:
+        # BANKNIFTY futures (NSE F&O): lot size 30, typical minute volume 2,000-6,000 units
+        u_curve = 2200.0 + 4500.0 * (norm_t ** 2)
+        return max(1400.0, u_curve)
+    else:
+        # NIFTY futures (NSE F&O): lot size 65, typical minute volume 12,000-45,000 units
+        u_curve = 12000.0 + 35000.0 * (norm_t ** 2)
+        return max(5000.0, u_curve)
 
 
 def compute_tod_rvol(

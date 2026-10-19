@@ -610,11 +610,16 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
 @app.get("/api/indices")
 async def get_indices():
-    """List available trading indices."""
+    """List available trading indices with verified exchange lot sizes."""
     return [
-        {"symbol": "NIFTY", "label": "NIFTY 50", "exchange": "NSE", "lot_size": 25, "has_weekly": True},
-        {"symbol": "BANKNIFTY", "label": "NIFTY BANK", "exchange": "NSE", "lot_size": 15, "has_weekly": True},
-        {"symbol": "SENSEX", "label": "BSE SENSEX", "exchange": "BSE", "lot_size": 10, "has_weekly": True},
+        {
+            "symbol": idx.symbol,
+            "label": idx.label,
+            "exchange": idx.exchange,
+            "lot_size": idx.lot_size,
+            "has_weekly": idx.has_weekly,
+        }
+        for idx in config.INDICES.values()
     ]
 
 
@@ -1554,7 +1559,7 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
     inst_id = f"{sym}-FUT"
     cw = float(dash.levels.call_wall or 0)
     pw = float(dash.levels.put_wall or 0)
-    seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw, force=True)
+    seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw, force=True, simulation_mode=True)
     return {"status": "ok", "message": f"Reseeded simulator flow for {sym} ({tf})"}
 
 
@@ -2561,12 +2566,13 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
         <span style="font-size:0.72rem;color:#38bdf8;font-weight:750;padding:2px 6px">⚡ GEX Canvas</span>
       </div>
 
-      <!-- Index Switcher -->
+      <!-- Index Switcher & Fit Button -->
       <select id="popout-sym" onchange="switchSym(this.value)" style="background:#0f172a;color:#f8fafc;border:1px solid #334155;border-radius:4px;padding:4px 8px;font-size:0.75rem;font-weight:700">
         <option value="NIFTY" {'selected' if sym == 'NIFTY' else ''}>NIFTY</option>
         <option value="BANKNIFTY" {'selected' if sym == 'BANKNIFTY' else ''}>BANKNIFTY</option>
         <option value="SENSEX" {'selected' if sym == 'SENSEX' else ''}>SENSEX</option>
       </select>
+      <button class="tf-btn" style="color:#38bdf8;border-color:rgba(56,189,248,0.4)" title="Fit chart view to recent candles" onclick="fitView()">🎯 Fit</button>
     </div>
   </div>
 
@@ -2586,6 +2592,9 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
     let cwLine = null;
     let pwLine = null;
     let flipLine = null;
+    let popoutCw = 0;
+    let popoutPw = 0;
+    let lastCandlesCount = 0;
 
     function renderWidget() {{
       const mount = document.getElementById("tv-mount");
@@ -2631,8 +2640,31 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
           layout: {{ background: {{ color: "#080c14" }}, textColor: "#94a3b8" }},
           grid: {{ vertLines: {{ color: "rgba(56,189,248,0.06)" }}, horzLines: {{ color: "rgba(56,189,248,0.06)" }} }},
           crosshair: {{ mode: window.LightweightCharts.CrosshairMode.Normal }},
-          rightPriceScale: {{ borderColor: "rgba(51, 65, 85, 0.45)", autoScale: true }},
-          timeScale: {{ timeVisible: true, secondsVisible: false, borderColor: "rgba(51, 65, 85, 0.45)" }},
+          rightPriceScale: {{
+            borderColor: "rgba(51, 65, 85, 0.45)",
+            autoScale: true,
+            scaleMargins: {{ top: 0.08, bottom: 0.20 }},
+          }},
+          handleScale: {{
+            axisPressedMouseMove: {{ time: true, price: true }},
+            axisDoubleClickReset: {{ time: true, price: true }},
+            mouseWheel: true,
+            pinch: true,
+          }},
+          handleScroll: {{
+            mouseWheel: false,
+            pressedMouseMove: true,
+            horzTouchDrag: true,
+            vertTouchDrag: true,
+          }},
+          timeScale: {{
+            timeVisible: true,
+            secondsVisible: false,
+            borderColor: "rgba(51, 65, 85, 0.45)",
+            barSpacing: 12,
+            minBarSpacing: 3,
+            rightOffset: 6,
+          }},
           localization: {{
             timeFormatter: (ts) => {{
               if (typeof ts === "number") {{
@@ -2643,7 +2675,37 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
             }}
           }}
         }});
-        candleSeries = gexChart.addCandlestickSeries({{ upColor: "#10b981", downColor: "#ef4444" }});
+        candleSeries = gexChart.addCandlestickSeries({{
+          upColor: "#10b981",
+          downColor: "#ef4444",
+          borderVisible: true,
+          borderUpColor: "#10b981",
+          borderDownColor: "#ef4444",
+          wickUpColor: "#10b981",
+          wickDownColor: "#ef4444",
+          title: "Price",
+          autoscaleInfoProvider: (original) => {{
+            const res = original();
+            if (res !== null && res.priceRange) {{
+              let min = res.priceRange.minValue;
+              let max = res.priceRange.maxValue;
+              const range = Math.max(max - min, 20);
+              const cw = popoutCw || 0;
+              const pw = popoutPw || 0;
+              if (cw > 0 && cw >= min && cw <= max + range * 0.8) {{
+                max = Math.max(max, cw + 10);
+              }}
+              if (pw > 0 && pw <= max && pw >= min - range * 0.8) {{
+                min = Math.min(min, pw - 10);
+              }}
+              return {{
+                priceRange: {{ minValue: min, maxValue: max }},
+                margins: res.margins,
+              }};
+            }}
+            return res;
+          }},
+        }});
         vwapSeries = gexChart.addLineSeries({{ color: "#c084fc", lineWidth: 1.5, title: "VWAP" }});
         ema9Series = gexChart.addLineSeries({{ color: "#facc15", lineWidth: 2, title: "EMA 9" }});
         ema21Series = gexChart.addLineSeries({{ color: "#38bdf8", lineWidth: 2, title: "EMA 21" }});
@@ -2657,6 +2719,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
         const data = await res.json();
         const candles = (data.bars || []).map(b => ({{ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }}));
         candleSeries.setData(candles);
+        lastCandlesCount = candles.length;
         vwapSeries.setData((data.bars || []).filter(b => b.vwap > 0).map(b => ({{ time: b.time, value: b.vwap }})));
 
         let k9 = 2.0 / 10.0, ema9 = candles.length > 0 ? candles[0].close : 0;
@@ -2675,12 +2738,45 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
         if (pwLine) candleSeries.removePriceLine(pwLine);
         if (flipLine) candleSeries.removePriceLine(flipLine);
 
-        if (data.call_wall > 0) cwLine = candleSeries.createPriceLine({{ price: data.call_wall, color: "#ef4444", lineWidth: 2, lineStyle: 1, title: "Call Wall" }});
-        if (data.put_wall > 0) pwLine = candleSeries.createPriceLine({{ price: data.put_wall, color: "#22c55e", lineWidth: 2, lineStyle: 1, title: "Put Wall" }});
-        if (data.gamma_flip > 0) flipLine = candleSeries.createPriceLine({{ price: data.gamma_flip, color: "#eab308", lineWidth: 1.5, lineStyle: 2, title: "Gamma Flip" }});
+        if (data.call_wall > 0) {{
+          popoutCw = data.call_wall;
+          cwLine = candleSeries.createPriceLine({{ price: data.call_wall, color: "#ef4444", lineWidth: 2, lineStyle: 1, title: "Call Wall" }});
+        }}
+        if (data.put_wall > 0) {{
+          popoutPw = data.put_wall;
+          pwLine = candleSeries.createPriceLine({{ price: data.put_wall, color: "#22c55e", lineWidth: 2, lineStyle: 1, title: "Put Wall" }});
+        }}
+        if (data.gamma_flip > 0) {{
+          flipLine = candleSeries.createPriceLine({{ price: data.gamma_flip, color: "#eab308", lineWidth: 1.5, lineStyle: 2, title: "Gamma Flip" }});
+        }}
 
-        gexChart.timeScale().fitContent();
+        // Initial Render: Fit most recent 65 candles at a legible size
+        const totalBars = candles.length;
+        if (totalBars > 0) {{
+          const visibleBars = Math.min(totalBars, 65);
+          gexChart.timeScale().setVisibleLogicalRange({{
+            from: Math.max(0, totalBars - visibleBars),
+            to: totalBars + 5,
+          }});
+        }} else {{
+          gexChart.timeScale().fitContent();
+        }}
       }} catch(e) {{}}
+    }}
+
+    function fitView() {{
+      if (!gexChart) return;
+      try {{
+        gexChart.priceScale("right").applyOptions({{ autoScale: true }});
+        const totalBars = lastCandlesCount || 65;
+        const visibleBars = Math.min(totalBars, 65);
+        gexChart.timeScale().setVisibleLogicalRange({{
+          from: Math.max(0, totalBars - visibleBars),
+          to: totalBars + 5,
+        }});
+      }} catch(e) {{
+        gexChart.timeScale().fitContent();
+      }}
     }}
 
     function applyActiveView() {{
@@ -2836,6 +2932,8 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
     let chart, candleSeries, vwapSeries, up1Series, dn1Series, ema9Series, ema21Series, deltaSeries, cvdSeries;
     let callWallLine = null, putWallLine = null, gammaFlipLine = null;
     let currentCw = 0, currentPw = 0, currentFlip = 0;
+    let lastBarsCount = 0;
+    let initialFitDone = false;
 
     function initChart() {{
       const mount = document.getElementById('chart-mount');
@@ -2856,11 +2954,25 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
           autoScale: true,
           scaleMargins: {{ top: 0.08, bottom: 0.38 }},
         }},
+        handleScale: {{
+          axisPressedMouseMove: {{ time: true, price: true }},
+          axisDoubleClickReset: {{ time: true, price: true }},
+          mouseWheel: true,
+          pinch: true,
+        }},
+        handleScroll: {{
+          mouseWheel: false,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        }},
         timeScale: {{
           borderColor: 'rgba(255, 255, 255, 0.1)',
           timeVisible: true,
           secondsVisible: false,
-          barSpacing: 9,
+          barSpacing: 12,
+          minBarSpacing: 3,
+          rightOffset: 6,
         }},
         localization: {{
           timeFormatter: (ts) => {{
@@ -2877,7 +2989,9 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
       candleSeries = chart.addCandlestickSeries({{
         upColor: '#10b981',
         downColor: '#ef4444',
-        borderVisible: false,
+        borderVisible: true,
+        borderUpColor: '#10b981',
+        borderDownColor: '#ef4444',
         wickUpColor: '#10b981',
         wickDownColor: '#ef4444',
         title: 'Price',
@@ -2886,13 +3000,12 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
           if (res !== null && res.priceRange) {{
             let min = res.priceRange.minValue;
             let max = res.priceRange.maxValue;
-            if (currentCw > 0) {{
-              if (currentCw < min) min = currentCw - 15;
-              if (currentCw > max) max = currentCw + 15;
+            const range = Math.max(max - min, 20);
+            if (currentCw > 0 && currentCw >= min && currentCw <= max + range * 0.8) {{
+              max = Math.max(max, currentCw + 10);
             }}
-            if (currentPw > 0) {{
-              if (currentPw < min) min = currentPw - 15;
-              if (currentPw > max) max = currentPw + 15;
+            if (currentPw > 0 && currentPw <= max && currentPw >= min - range * 0.8) {{
+              min = Math.min(min, currentPw - 10);
             }}
             return {{
               priceRange: {{ minValue: min, maxValue: max }},
@@ -3086,6 +3199,16 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
 
         const candleData = bars.map(b => ({{ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close }}));
         candleSeries.setData(candleData);
+        lastBarsCount = candleData.length;
+        if (!initialFitDone && candleData.length > 0) {{
+          initialFitDone = true;
+          const totalBars = candleData.length;
+          const visibleBars = Math.min(totalBars, 65);
+          chart.timeScale().setVisibleLogicalRange({{
+            from: Math.max(0, totalBars - visibleBars),
+            to: totalBars + 5,
+          }});
+        }}
 
         if (vwapSeries) vwapSeries.setData(bars.filter(b => b.vwap != null).map(b => ({{ time: b.time, value: b.vwap }})));
         if (up1Series) up1Series.setData(bars.filter(b => b.up1 != null).map(b => ({{ time: b.time, value: b.up1 }})));
@@ -3175,6 +3298,7 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
 
     function switchTF(newTf) {{
       currentTf = newTf;
+      initialFitDone = false;
       document.querySelectorAll('.tf-btn').forEach(b => {{
         b.classList.toggle('active', b.textContent === newTf);
       }});
@@ -3182,7 +3306,18 @@ async def standalone_sentinel_chart(symbol: str = "NIFTY", timeframe: str = "1m"
     }}
 
     function fitView() {{
-      if (chart) chart.timeScale().fitContent();
+      if (!chart) return;
+      try {{
+        chart.priceScale("right").applyOptions({{ autoScale: true }});
+        const totalBars = lastBarsCount || 65;
+        const visibleBars = Math.min(totalBars, 65);
+        chart.timeScale().setVisibleLogicalRange({{
+          from: Math.max(0, totalBars - visibleBars),
+          to: totalBars + 5,
+        }});
+      }} catch (e) {{
+        chart.timeScale().fitContent();
+      }}
     }}
 
     window.onload = () => {{
