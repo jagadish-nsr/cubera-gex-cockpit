@@ -710,13 +710,21 @@ async def get_cockpit_data(
             "is_gamma_flip": (abs(stk - flip_val) < step / 2),
         })
 
-    # Gamma Blast Verdict
-    gamma_blast = {
-        "state": "NO_TRIGGER",
-        "badge": "GAMMA BLAST: INACTIVE",
-        "description": "Dealer gamma pinned within absorption walls; no explosive squeeze imminent.",
-        "score": 24,
-    }
+    # Gamma Blast Verdict (Evaluated dynamically via app.gammablast)
+    try:
+        from app.gammablast import evaluate_dashboard_gamma_blast
+        gamma_blast = evaluate_dashboard_gamma_blast(dash, sym)
+    except Exception as exc:
+        log.warning("Gamma blast dynamic evaluation fallback: %s", exc)
+        gamma_blast = {
+            "state": "NO_TRIGGER",
+            "badge": "GAMMA BLAST: INACTIVE",
+            "description": "Dealer gamma pinned within absorption walls; no explosive squeeze imminent.",
+            "score": 24,
+            "is_expiry": False,
+            "in_blast_window": False,
+            "primary_strike": None,
+        }
 
     # ── Collect Cockpit Recommendations (Pinned + Fresh within 10m) ────
     pinned_records = list_bookmarked_records(sym)
