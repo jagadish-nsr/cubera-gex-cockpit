@@ -58,10 +58,16 @@ def _fmt(ev) -> str:
 
 
 def _market_window():
-    """Today's (open_epoch, close_epoch) in true epochs, or None on a weekend."""
+    """Today's (open_epoch, close_epoch) in true epochs, or None on a weekend or exchange holiday."""
     now = datetime.now(IST)
     if now.weekday() >= 5:
         return None
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(now.date()):
+            return None
+    except Exception:
+        pass
     o = now.replace(hour=9, minute=15, second=0, microsecond=0)
     c = now.replace(hour=CLOSE_MIN // 60, minute=CLOSE_MIN % 60, second=0, microsecond=0)
     return o.timestamp(), c.timestamp()

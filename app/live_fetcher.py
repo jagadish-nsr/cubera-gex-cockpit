@@ -45,6 +45,12 @@ def _loop(symbol: str) -> None:
     served = -1.0
     while True:
         cfg = _CFG.get(symbol) or {}
+        use_demo = bool(cfg.get("use_demo"))
+        import config
+        if not config.is_market_open() and not use_demo:
+            time.sleep(30.0)
+            continue
+
         interval = max(30, int(cfg.get("interval", 60)))
         lead = float(cfg.get("lead", 15.0))
         now = time.time()

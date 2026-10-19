@@ -105,3 +105,40 @@ def test_step_sentinel_live_feed_pauses_after_hours():
             # With force=True: should step even after hours
             step_sentinel_live_feed("NIFTY-FUT", 24550.0, 24700.0, 24400.0, force=True)
             assert mock_step.called
+
+
+def test_web_server_load_active_dashboard_cold_fallback_uses_demo_when_closed():
+    """Verify that if market is closed and no snapshot files exist, _load_active_dashboard uses demo mode instead of hitting live APIs."""
+    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
+    from pathlib import Path
+
+    _DASH_MEM_CACHE.clear()
+
+    with patch("config.is_market_open", return_value=False):
+        with patch.object(Path, "exists", return_value=False):
+            with patch("web_server.load_dashboard") as mock_load:
+                mock_load.return_value = None
+                try:
+                    _load_active_dashboard("NIFTY", "weekly")
+                except Exception:
+                    pass
+                assert mock_load.called
+                _, kwargs = mock_load.call_args
+                assert kwargs.get("use_demo") is True
+
+
+def test_gex_daemon_pauses_when_market_closed():
+    """Verify gex_daemon skips load_dashboard when config.is_market_open() returns False."""
+    from scripts.gex_daemon import run_daemon
+    import time
+
+    with patch("config.is_market_open", return_value=False):
+        with patch("scripts.gex_daemon.load_dashboard") as mock_load:
+            # Let it run one iteration and then raise an exception to exit cleanly
+            with patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")):
+                try:
+                    run_daemon(ignore_session=False)
+                except KeyboardInterrupt:
+                    pass
+                assert not mock_load.called
+

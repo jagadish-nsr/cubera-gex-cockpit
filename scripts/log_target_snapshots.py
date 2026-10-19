@@ -84,11 +84,8 @@ def _init_db(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 def _in_session(ist: datetime) -> bool:
     """Check if current time is within NSE trading session."""
-    if ist.weekday() >= 5:  # Saturday / Sunday
-        return False
-    o = ist.replace(hour=_OPEN_IST[0], minute=_OPEN_IST[1], second=0, microsecond=0)
-    c = ist.replace(hour=_CLOSE_IST[0], minute=_CLOSE_IST[1], second=0, microsecond=0)
-    return o <= ist <= c
+    import config
+    return config.is_market_open(ist, include_fno_extended=False)
 
 
 def record_snapshot(symbol: str = "NIFTY") -> bool:

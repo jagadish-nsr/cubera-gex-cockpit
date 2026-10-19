@@ -129,6 +129,13 @@ class Collector:
         resolve_day = datetime.now(IST).date()
         state_ts: dict = {}                                 # security_id -> last futures_state upsert
         while not self._stop.is_set():
+            import config
+            if not config.is_market_open():
+                self.status.connected = False
+                self.status.error = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+                self._stop.wait(30)
+                continue
+
             today = datetime.now(IST).date()                # daily ROLL: re-resolve near/next contracts
             if today != resolve_day:
                 nc = resolve_futures(self.symbols)
@@ -153,6 +160,10 @@ class Collector:
             ws.settimeout(2.0)
             try:
                 while not self._stop.is_set():
+                    if not config.is_market_open():
+                        self.status.connected = False
+                        self.status.error = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+                        break
                     if time.time() > next_day_check:        # promptly reconnect+re-resolve on a new IST day
                         next_day_check = time.time() + 60
                         if datetime.now(IST).date() != resolve_day:

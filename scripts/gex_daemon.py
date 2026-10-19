@@ -37,15 +37,43 @@ def _snap_path(symbol: str) -> str:
     return OUTPUT_TEMPLATE.format(symbol=symbol.upper())
 
 
-def run_daemon():
+def run_daemon(ignore_session: bool = False):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log.info("Starting GEX Daemon (adapter: %s)...", config.DATA_SOURCE)
+
+    last_off_market_log = 0.0
 
     while True:
         try:
             # Reload config each loop iteration so new tokens written to .env are picked up
             import importlib
             importlib.reload(config)
+
+            # Off-market hours guard: pause option chain live polling
+            if not ignore_session and not config.is_market_open():
+                now_epoch = time.time()
+                if now_epoch - last_off_market_log >= 300.0:
+                    log.info("Market closed (FnO hours: 09:15-15:40 IST / weekends / holidays). Option chain polling paused.")
+                    last_off_market_log = now_epoch
+
+                # ── EOD Participant OI auto-fetch (after 16:30 IST) ────────────────
+                try:
+                    from datetime import timedelta
+                    ist_now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+                    if ist_now.hour >= 16 and ist_now.minute >= 30:
+                        today_ist = ist_now.strftime("%Y-%m-%d")
+                        from app.participant_oi import capture_latest, load_participant_day
+                        if load_participant_day(today_ist) is None:
+                            result = capture_latest(today_ist=today_ist, max_back=1)
+                            if result:
+                                log.info("Daemon: participant OI captured for %s", result[0])
+                            else:
+                                log.debug("Daemon: participant OI not yet available for %s", today_ist)
+                except Exception as _poi_err:
+                    log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
+
+                time.sleep(60)
+                continue
 
             window = config.EXPIRY_WINDOW_DEFAULT
             indices = list(config.INDICES.values())
@@ -125,4 +153,8 @@ def run_daemon():
 
 
 if __name__ == "__main__":
-    run_daemon()
+    import argparse
+    parser = argparse.ArgumentParser(description="Cubera GEX Option Chain Daemon")
+    parser.add_argument("--ignore-session", action="store_true", help="Force polling even outside NSE market hours (testing)")
+    args = parser.parse_args()
+    run_daemon(ignore_session=args.ignore_session)

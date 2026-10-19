@@ -242,11 +242,12 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
                 pass
 
         if dash is None:
-            # Load without demo data
+            # Off-market hours safety: do not trigger live network calls if no snapshots exist;
+            # fall back to synthetic structure so UI renders offline without hitting broker APIs.
             try:
-                dash = load_dashboard(symbol=sym, window=win, use_demo=False)
+                dash = load_dashboard(symbol=sym, window=win, use_demo=True)
             except Exception as e:
-                log.warning(f"Could not load live dashboard for {sym}: {e}")
+                log.warning(f"Could not load offline fallback dashboard for {sym}: {e}")
 
         try:
             from data.market_snapshot import get_snapshot
@@ -2297,11 +2298,12 @@ async def get_session_commentary(symbol: Optional[str] = None):
 
     # Pre-market state & projected shocks for Morning Anchor (whole day on commentary tab)
     pm_state = dict(get_pre_market_state(sym) or {})
-    disc_spot = float(pm_state.get("discovered_spot") or getattr(dash.levels, "spot", 24500.0) or 24500.0)
+    d_levels = getattr(dash, "levels", None) if dash is not None else None
+    disc_spot = float(pm_state.get("discovered_spot") or getattr(d_levels, "spot", 24500.0) or 24500.0)
     gap_pts = float(pm_state.get("gap_pts") or 0.0)
-    cw = float(getattr(dash.levels, "call_wall", 24600.0) or 24600.0)
-    pw = float(getattr(dash.levels, "put_wall", 24400.0) or 24400.0)
-    flip = float(getattr(dash.levels, "flip", 24500.0) or 24500.0)
+    cw = float(getattr(d_levels, "call_wall", 24600.0) or 24600.0)
+    pw = float(getattr(d_levels, "put_wall", 24400.0) or 24400.0)
+    flip = float(getattr(d_levels, "flip", 24500.0) or 24500.0)
 
     try:
         shocks = calculate_pre_market_option_shocks(
@@ -2310,7 +2312,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
             contracts_df=getattr(dash, "contracts", None),
             symbol=sym,
             dte_days=float(getattr(dash, "dte_now", 3.0) or 3.0),
-            atm_iv=float(getattr(dash.levels, "atm_iv", 0.14) or 0.14),
+            atm_iv=float(getattr(d_levels, "atm_iv", 0.14) or 0.14),
         )
     except Exception as ex:
         logger.warning("calculate_pre_market_option_shocks failed: %s", ex)

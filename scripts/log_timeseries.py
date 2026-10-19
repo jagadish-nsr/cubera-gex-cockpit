@@ -51,16 +51,19 @@ def _mins(hm: tuple[int, int]) -> int:
 
 
 def _in_session(ist: datetime) -> bool:
-    if ist.weekday() >= 5:  # Sat / Sun
-        return False
-    o = ist.replace(hour=_OPEN_IST[0], minute=_OPEN_IST[1], second=0, microsecond=0)
-    c = ist.replace(hour=_CLOSE_IST[0], minute=_CLOSE_IST[1], second=0, microsecond=0)
-    return o <= ist <= c
+    import config
+    return config.is_market_open(ist, include_fno_extended=False)
 
 
 def _in_blast_window(ist: datetime) -> bool:
     if ist.weekday() >= 5:
         return False
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(ist.date()):
+            return False
+    except Exception:
+        pass
     m = ist.hour * 60 + ist.minute
     return _mins(_BLAST_START_IST) <= m <= _mins(_BLAST_END_IST)
 
