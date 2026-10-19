@@ -283,10 +283,10 @@
 
   function handleLiveTick(tick) {
     if (!tick) return;
-    // Strict symbol matching: never allow ticks from a different index to contaminate the active display
+    // Strict symbol matching: never allow ticks without a symbol or from a different index to contaminate the active display
     const tickSym = (tick.symbol || "").toUpperCase();
     const activeSym = (state.symbol || "").toUpperCase();
-    if (tickSym && activeSym && tickSym !== activeSym) {
+    if (!tickSym || !activeSym || tickSym !== activeSym) {
       return;
     }
 
@@ -322,13 +322,16 @@
 
     const tickSym = (tick.symbol || "").toUpperCase();
     const activeChartSym = (cockpitChartState.symbol || state.symbol || "").toUpperCase();
+    if (!tickSym || !activeChartSym || tickSym !== activeChartSym) {
+      return;
+    }
 
     const tickTs = Math.floor(tick.timestamp || (Date.now() / 1000));
     // Rule 1 & Rule 8: IST Timestamp Shifting (+19,800s)
     const istTs = tickTs + 19800;
 
-    // 1. Update Cockpit TradingView Chart (GEX Canvas) - only if tick matches active chart index
-    if (cockpitCandleSeries && cockpitChartState.engine === "gex_canvas" && tickSym === activeChartSym) {
+    // 1. Update Cockpit TradingView Chart (GEX Canvas) - only if tick strictly matches active chart index
+    if (cockpitCandleSeries && cockpitChartState.engine === "gex_canvas") {
       const tfSecMap = { "1m": 60, "5m": 300, "15m": 900 };
       const intervalSec = tfSecMap[cockpitChartState.timeframe] || 300;
       const barTime = Math.floor(istTs / intervalSec) * intervalSec;
@@ -413,8 +416,14 @@
   // -------------------------------------------------------------------------
   async function loadStatus() {
     try {
-      const res = await fetch(`/api/status?symbol=${state.symbol}&window=${state.window}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/status?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
       const data = await res.json();
+      // Discard stale in-flight response if user has switched index
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) {
+        return;
+      }
       state.spot = data.spot;
 
       document.getElementById("spot-price-display").textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
@@ -540,8 +549,14 @@
 
   async function loadCockpit() {
     try {
-      const res = await fetch(`/api/cockpit-data?symbol=${state.symbol}&window=${state.window}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
       const data = await res.json();
+      // Discard stale in-flight response if index switched
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) {
+        return;
+      }
 
       document.getElementById("kpi-call-wall").textContent = `₹${data.kpis.call_wall.val.toLocaleString("en-IN")}`;
       document.getElementById("kpi-put-wall").textContent = `₹${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
@@ -892,12 +907,15 @@
   }
 
   function renderCockpitChart(symbol, tf, engine) {
-    cockpitChartState.symbol = symbol || state.symbol || "NIFTY";
+    cockpitChartState.symbol = (symbol || state.symbol || "NIFTY").toUpperCase();
     cockpitChartState.timeframe = tf || cockpitChartState.timeframe || "5m";
     cockpitChartState.engine = engine || cockpitChartState.engine || "gex_canvas";
 
     const symBadge = document.getElementById("cockpit-chart-symbol-badge");
     if (symBadge) symBadge.textContent = cockpitChartState.symbol;
+
+    const chlSym = document.getElementById("chl-sym");
+    if (chlSym) chlSym.textContent = cockpitChartState.symbol;
 
     const tfBadge = document.getElementById("cockpit-chart-badge");
     if (tfBadge) tfBadge.textContent = `${cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe} · LIVE`;
@@ -969,7 +987,7 @@
           locale: "en",
           toolbar_bg: "#0c1424",
           enable_publishing: false,
-          allow_symbol_change: true,
+          allow_symbol_change: false, // Strict symbol binding to selected index
           container_id: tvMountId,
           hide_side_toolbar: false,
           withdateranges: true,
@@ -989,6 +1007,8 @@
   async function loadCockpitGexCanvas(symbol, tf) {
     const mount = document.getElementById("cockpit-gex-canvas-container");
     if (!mount || !window.LightweightCharts) return;
+
+    const targetSym = (symbol || cockpitChartState.symbol || state.symbol || "NIFTY").toUpperCase();
 
     if (!cockpitGexChart) {
         mount.innerHTML = "";
@@ -1143,8 +1163,14 @@
       }
 
     try {
-      const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(tf)}`);
+      const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(targetSym)}&timeframe=${encodeURIComponent(tf)}`);
       const data = await res.json();
+
+      // Guard against race conditions: only update series if still matching active symbol
+      const currentActive = (cockpitChartState.symbol || state.symbol || "").toUpperCase();
+      if (targetSym !== currentActive || (data.symbol && data.symbol.toUpperCase() !== currentActive)) {
+        return;
+      }
 
       const candles = (data.bars || []).map((b) => ({
         time: b.time,
@@ -3904,7 +3930,7 @@
             </tr>
           `).join("");
 
-          const isShockOpen = (window._commShockMatrixOpen !== undefined) ? window._commShockMatrixOpen : true;
+          const isShockOpen = (window._commShockMatrixOpen !== undefined) ? window._commShockMatrixOpen : false;
           shocksTableHtml = `
             <details class="collapsible-matrix" ontoggle="window._commShockMatrixOpen = this.open" style="margin-top:10px;background:rgba(0,0,0,0.25);border:1px solid var(--line);border-radius:6px;padding:8px 12px" ${isShockOpen ? "open" : ""}>
               <summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;user-select:none;outline:none">
@@ -3973,38 +3999,46 @@
 
       // 3. Render Post-Market Settlement & Daily Close Scorecard
       const postCard = document.getElementById("comm-post-market-card");
-      if (postCard && data.post_market) {
+      if (postCard) {
         const post = data.post_market;
-        postCard.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:1.15rem">🏁</span>
-              <h3 style="font-size:1.05rem;font-weight:800;color:var(--purple)">Post-Market Settlement &amp; Daily Close Scorecard</h3>
+        const isSettled = post && (post.is_post_market || post.post_market_settled);
+        if (isSettled) {
+          postCard.style.display = "block";
+          const settleSpot = (post.settlement_spot && post.settlement_spot > 0) ? post.settlement_spot : state.spot;
+          const dateTag = post.date ? ` · ${post.date}` : "";
+          postCard.innerHTML = `
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:1.15rem">🏁</span>
+                <h3 style="font-size:1.05rem;font-weight:800;color:var(--purple)">Post-Market Settlement &amp; Daily Close Scorecard${dateTag}</h3>
+              </div>
+              <span class="badge-active" style="background:rgba(168,85,247,0.15);color:var(--purple);font-size:0.72rem">OFFICIAL CLOSE</span>
             </div>
-            <span class="badge-active" style="background:rgba(168,85,247,0.15);color:var(--purple);font-size:0.72rem">OFFICIAL CLOSE</span>
-          </div>
-          <div class="pre-bell-grid" style="margin-bottom:12px">
-            <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Settlement Spot</small>
-              <b style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">₹${(post.settlement_spot || state.spot).toLocaleString("en-IN", { minimumFractionDigits: 1 })}</b>
+            <div class="pre-bell-grid" style="margin-bottom:12px">
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Settlement Spot</small>
+                <b style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">₹${Number(settleSpot).toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 2 })}</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Session Range (H / L)</small>
+                <b style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">${post.day_range || "N/A"}</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Net Day Change</small>
+                <b style="font-size:1.05rem;font-family:var(--mono);color:${(post.net_change_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(post.net_change_pts || 0) >= 0 ? "+" : ""}${Number(post.net_change_pts || 0).toFixed(1)} pts (${(post.net_change_pct || 0) >= 0 ? "+" : ""}${Number(post.net_change_pct || 0).toFixed(2)}%)</b>
+              </div>
+              <div class="pre-bell-item">
+                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Next Session Key Levels</small>
+                <b style="font-size:0.88rem;color:var(--spark)">${post.next_key_levels || "Key Walls Pinned"}</b>
+              </div>
             </div>
-            <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Session Range (H / L)</small>
-              <b style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">${post.day_range || "24,560 / 24,420"}</b>
+            <div style="font-size:0.82rem;line-height:1.6;color:var(--ink);background:var(--surface-2);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
+              ${post.institutional_wrap || post.status_text || "Institutional positioning completed with strong accumulation above the session VWAP. Put writers retain control into next expiry."}
             </div>
-            <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Net Day Change</small>
-              <b style="font-size:1.05rem;font-family:var(--mono);color:${(post.net_change_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(post.net_change_pts || 0) >= 0 ? "+" : ""}${(post.net_change_pts || 0).toFixed(1)} pts (${(post.net_change_pct || 0) >= 0 ? "+" : ""}${(post.net_change_pct || 0).toFixed(2)}%)</b>
-            </div>
-            <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Next Session Key Levels</small>
-              <b style="font-size:0.88rem;color:var(--spark)">${post.next_key_levels || "24,650 / 24,350"}</b>
-            </div>
-          </div>
-          <div style="font-size:0.82rem;line-height:1.6;color:var(--ink);background:var(--surface-2);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
-            ${post.institutional_wrap || "Institutional positioning completed with strong accumulation above the session VWAP. Put writers retain control into next expiry."}
-          </div>
-        `;
+          `;
+        } else {
+          postCard.style.display = "none";
+        }
       }
     } catch (e) {
       console.error("Error loading commentary:", e);
@@ -4262,7 +4296,16 @@
     const symSelect = document.getElementById("index-select");
     if (symSelect) {
       symSelect.addEventListener("change", async (e) => {
-        state.symbol = e.target.value;
+        state.symbol = (e.target.value || "NIFTY").toUpperCase();
+        cockpitChartState.symbol = state.symbol;
+        cockpitChartState.currentBar = null;
+
+        // Clear forming bar HUD immediately so previous index values don't linger
+        const chlOhlc = document.getElementById("chl-ohlc");
+        if (chlOhlc) chlOhlc.textContent = "O: -- H: -- L: -- C: --";
+        const chlSym = document.getElementById("chl-sym");
+        if (chlSym) chlSym.textContent = state.symbol;
+
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
           try {
             state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
@@ -4536,8 +4579,9 @@
     }
     const symSelect = document.getElementById("index-select");
     if (symSelect && symSelect.value) {
-      state.symbol = symSelect.value;
+      state.symbol = symSelect.value.toUpperCase();
     }
+    cockpitChartState.symbol = state.symbol;
     fetch("/api/select-index", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

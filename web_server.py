@@ -2314,7 +2314,21 @@ async def get_session_commentary(symbol: Optional[str] = None):
     pm_state["regime_badge"] = pm_state.get("regime_badge") or "GAP EXTENSION BULL"
     pm_state["briefing"] = pm_state.get("briefing") or "Opening above prior session high with dealer call wall absorption at 24,600. Volatility crush expected in first 15 mins."
 
-    post_state = get_post_market_state(sym)
+    post_state = dict(get_post_market_state(sym, session_date=active_session_date) or {})
+    if post_state:
+        p_settle = float(post_state.get("settlement_spot") or 0.0)
+        p_prev = float(post_state.get("prev_close") or pm_state.get("prev_close") or 0.0)
+        if p_settle > 0 and p_prev > 0 and not post_state.get("net_change_pts"):
+            diff = round(p_settle - p_prev, 1)
+            post_state["net_change_pts"] = diff
+            post_state["net_change_pct"] = round((diff / p_prev) * 100.0, 2)
+        if not post_state.get("day_range"):
+            hi = float(getattr(dash, "day_high", 0.0) or getattr(getattr(dash, "levels", None), "day_high", 0.0) or 0.0)
+            lo = float(getattr(dash, "day_low", 0.0) or getattr(getattr(dash, "levels", None), "day_low", 0.0) or 0.0)
+            if hi > 0 and lo > 0:
+                post_state["day_range"] = f"₹{hi:,.1f} / ₹{lo:,.1f}"
+        if not post_state.get("next_key_levels") and cw > 0 and pw > 0:
+            post_state["next_key_levels"] = f"{cw:,.0f} CW / {pw:,.0f} PW"
 
     cards = []
     if session_entries:
@@ -3669,7 +3683,14 @@ def main():
         args.port,
         args.reload,
     )
-    uvicorn.run("web_server:app", host=args.host, port=args.port, reload=args.reload, log_level="info")
+    uvicorn.run(
+        "web_server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        reload_excludes=["*.db", "*.db-*", "data/*", "*.log"],
+        log_level="info",
+    )
 
 
 if __name__ == "__main__":

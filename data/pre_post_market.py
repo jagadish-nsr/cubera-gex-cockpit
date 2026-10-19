@@ -26,6 +26,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import config
+
 log = logging.getLogger(__name__)
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -81,9 +83,25 @@ def init_pre_post_db() -> None:
                 orderflow_bias TEXT,
                 status_text TEXT,
                 updated_at TEXT,
+                day_range TEXT,
+                net_change_pts REAL,
+                net_change_pct REAL,
+                next_key_levels TEXT,
+                institutional_wrap TEXT,
                 PRIMARY KEY (trade_date, symbol)
             )
         """)
+        for col, col_type in [
+            ("day_range", "TEXT"),
+            ("net_change_pts", "REAL"),
+            ("net_change_pct", "REAL"),
+            ("next_key_levels", "TEXT"),
+            ("institutional_wrap", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE market_auctions_history ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auctions_date_sym ON market_auctions_history(trade_date, symbol)")
         conn.commit()
 
@@ -253,6 +271,11 @@ def save_post_market_state(symbol: str, state: dict) -> None:
                         closing_cvd = ?,
                         orderflow_bias = ?,
                         status_text = ?,
+                        day_range = COALESCE(?, day_range),
+                        net_change_pts = COALESCE(?, net_change_pts),
+                        net_change_pct = COALESCE(?, net_change_pct),
+                        next_key_levels = COALESCE(?, next_key_levels),
+                        institutional_wrap = COALESCE(?, institutional_wrap),
                         updated_at = ?
                     WHERE trade_date = ? AND symbol = ?
                 """, (
@@ -265,6 +288,11 @@ def save_post_market_state(symbol: str, state: dict) -> None:
                     state.get("closing_cvd"),
                     state.get("orderflow_bias"),
                     state.get("status_text"),
+                    state.get("day_range"),
+                    state.get("net_change_pts"),
+                    state.get("net_change_pct"),
+                    state.get("next_key_levels"),
+                    state.get("institutional_wrap"),
                     now_iso,
                     trade_date,
                     sym,
@@ -275,8 +303,9 @@ def save_post_market_state(symbol: str, state: dict) -> None:
                         trade_date, symbol, post_market_settled, settlement_spot,
                         last_continuous_spot, settlement_divergence_pts, pin_efficiency_pct,
                         pin_target_wall, settled_at, closing_cvd, orderflow_bias,
-                        status_text, updated_at
-                    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status_text, day_range, net_change_pts, net_change_pct,
+                        next_key_levels, institutional_wrap, updated_at
+                    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     trade_date,
                     sym,
@@ -289,6 +318,11 @@ def save_post_market_state(symbol: str, state: dict) -> None:
                     state.get("closing_cvd"),
                     state.get("orderflow_bias"),
                     state.get("status_text"),
+                    state.get("day_range"),
+                    state.get("net_change_pts"),
+                    state.get("net_change_pct"),
+                    state.get("next_key_levels"),
+                    state.get("institutional_wrap"),
                     now_iso,
                 ))
             conn.commit()
@@ -853,25 +887,28 @@ def get_post_market_state(
     symbol: str = "NIFTY",
     force_refresh: bool = False,
     now: datetime | None = None,
+    session_date: str | None = None,
 ) -> dict:
     """Retrieve post-closing settlement state, CAS 30-min VWAP reconciliation, and dealer pin efficiency."""
     now_ist = now or datetime.now(IST)
     today_str = now_ist.strftime("%Y-%m-%d")
+    target_date = session_date or today_str
 
-    with _CACHE_LOCK:
-        cached = _POST_MARKET_CACHE.get(symbol.upper())
-        if cached and cached.get("date") == today_str and not force_refresh:
-            return cached
-
-    if not force_refresh:
-        persisted = get_persisted_auction_record(symbol.upper(), today_str)
-        if persisted and persisted.get("post_market_settled"):
-            rehydrated = {
+    # 1. Historical or specific prior session requested
+    if target_date != today_str:
+        persisted = get_persisted_auction_record(symbol.upper(), target_date)
+        if persisted and (persisted.get("post_market_settled") or persisted.get("settlement_spot")):
+            s_spot = float(persisted.get("settlement_spot") or 0.0)
+            p_close = float(persisted.get("prev_close") or s_spot)
+            net_pts = float(persisted.get("net_change_pts") or (round(s_spot - p_close, 1) if p_close > 0 else 0.0))
+            net_pct = float(persisted.get("net_change_pct") or (round((net_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0))
+            return {
                 "symbol": symbol.upper(),
-                "date": today_str,
+                "date": target_date,
                 "is_post_market": True,
-                "settlement_spot": float(persisted.get("settlement_spot") or 0.0),
-                "last_continuous_spot": float(persisted.get("last_continuous_spot") or 0.0),
+                "post_market_settled": bool(persisted.get("post_market_settled", 1)),
+                "settlement_spot": s_spot,
+                "last_continuous_spot": float(persisted.get("last_continuous_spot") or s_spot),
                 "settlement_divergence_pts": float(persisted.get("settlement_divergence_pts") or 0.0),
                 "pin_efficiency_pct": float(persisted.get("pin_efficiency_pct") or 100.0),
                 "pin_target_wall": persisted.get("pin_target_wall") or "Call Wall",
@@ -879,43 +916,136 @@ def get_post_market_state(
                 "closing_cvd": float(persisted.get("closing_cvd") or 0.0),
                 "orderflow_bias": persisted.get("orderflow_bias") or "",
                 "status_text": persisted.get("status_text") or "Session Concluded · Final Settlement Reconciled",
+                "day_range": persisted.get("day_range") or "",
+                "net_change_pts": net_pts,
+                "net_change_pct": net_pct,
+                "next_key_levels": persisted.get("next_key_levels") or "",
+                "institutional_wrap": persisted.get("institutional_wrap") or "",
             }
-            with _CACHE_LOCK:
-                _POST_MARKET_CACHE[symbol.upper()] = rehydrated
-            return rehydrated
+
+    with _CACHE_LOCK:
+        cached = _POST_MARKET_CACHE.get(symbol.upper())
+        if cached and cached.get("date") == today_str and not force_refresh:
+            return cached
 
     from data.market_snapshot import get_snapshot
     snap = get_snapshot(symbol) or {}
-    fallback_spot = float(snap.get("spot") or snap.get("prev_close") or 0.0)
+    snap_spot = float(snap.get("spot") or 0.0)
+    snap_prev_close = float(snap.get("prev_close") or 0.0)
+    fallback_spot = snap_spot if snap_spot > 0 else snap_prev_close
 
-    # In continuous or pre-market hours, post-market is not yet reached
+    # In continuous or pre-market hours on trading days, post-market is not yet reached
     t_min = now_ist.hour * 60 + now_ist.minute
-    is_post = t_min >= 15 * 60 + 30
+    from data.holidays import is_holiday
+    is_trading_day_today = (not is_holiday(now_ist.date())) and (now_ist.weekday() < 5)
+    is_post = (t_min >= 15 * 60 + 30) or (not is_trading_day_today)
 
-    state = {
-        "symbol": symbol.upper(),
-        "date": today_str,
-        "is_post_market": is_post,
-        "settlement_spot": fallback_spot,
-        "last_continuous_spot": fallback_spot,
-        "settlement_divergence_pts": 0.0,
-        "pin_efficiency_pct": 100.0,
-        "pin_target_wall": "Call Wall",
-        "settled_at": "15:40:00",
-        "status_text": "Session Concluded · Final Settlement Reconciled",
-    }
+    if not is_post:
+        state = {
+            "symbol": symbol.upper(),
+            "date": today_str,
+            "is_post_market": False,
+            "post_market_settled": False,
+            "settlement_spot": fallback_spot,
+            "last_continuous_spot": fallback_spot,
+            "settlement_divergence_pts": 0.0,
+            "pin_efficiency_pct": 100.0,
+            "pin_target_wall": "Call Wall",
+            "settled_at": None,
+            "status_text": "Active Trading Session · Settlement at 15:40 IST",
+            "day_range": "",
+            "net_change_pts": 0.0,
+            "net_change_pct": 0.0,
+            "next_key_levels": "",
+        }
+        with _CACHE_LOCK:
+            _POST_MARKET_CACHE[symbol.upper()] = state
+        return state
 
-    if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and (not config.is_holiday(now_ist.date())) and (now_ist.weekday() < 5):
+    persisted = get_persisted_auction_record(symbol.upper(), today_str) if not force_refresh else None
+    if persisted and persisted.get("post_market_settled"):
+        p_settle = float(persisted.get("settlement_spot") or 0.0)
+        p_prev = float(persisted.get("prev_close") or 0.0)
+        # Avoid stale clone where settlement was erroneously set to prev_close when authentic spot is different
+        is_stale_clone = (snap_spot > 0 and p_prev > 0 and abs(p_settle - p_prev) < 0.01 and abs(snap_spot - p_prev) > 0.05)
+        if not is_stale_clone:
+                snap_hi = float(snap.get("high") or 0.0)
+                snap_lo = float(snap.get("low") or 0.0)
+                calc_range = f"₹{snap_hi:,.1f} / ₹{snap_lo:,.1f}" if snap_hi > 0 and snap_lo > 0 else ""
+                calc_net_pts = round(p_settle - p_prev, 1) if p_prev > 0 else 0.0
+                calc_net_pct = round((calc_net_pts / p_prev) * 100.0, 2) if p_prev > 0 else 0.0
+                rehydrated = {
+                    "symbol": symbol.upper(),
+                    "date": today_str,
+                    "is_post_market": True,
+                    "post_market_settled": True,
+                    "settlement_spot": p_settle,
+                    "last_continuous_spot": float(persisted.get("last_continuous_spot") or p_settle),
+                    "settlement_divergence_pts": float(persisted.get("settlement_divergence_pts") or 0.0),
+                    "pin_efficiency_pct": float(persisted.get("pin_efficiency_pct") or 100.0),
+                    "pin_target_wall": persisted.get("pin_target_wall") or "Call Wall",
+                    "settled_at": persisted.get("settled_at") or "15:40:00",
+                    "closing_cvd": float(persisted.get("closing_cvd") or 0.0),
+                    "orderflow_bias": persisted.get("orderflow_bias") or "",
+                    "status_text": persisted.get("status_text") or "Session Concluded · Final Settlement Reconciled",
+                    "day_range": persisted.get("day_range") or calc_range,
+                    "net_change_pts": float(persisted.get("net_change_pts") or calc_net_pts),
+                    "net_change_pct": float(persisted.get("net_change_pct") or calc_net_pct),
+                    "next_key_levels": persisted.get("next_key_levels") or "",
+                    "institutional_wrap": persisted.get("institutional_wrap") or "",
+                }
+                with _CACHE_LOCK:
+                    _POST_MARKET_CACHE[symbol.upper()] = rehydrated
+                return rehydrated
+
+    settle_px = snap_spot if snap_spot > 0 else fallback_spot
+    cont_px = settle_px
+
+    if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and is_trading_day_today:
         try:
             from data.dhan_live import fetch_index_ohlc
             ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
             if ohlc:
-                ltp = float(ohlc.get("ltp") or fallback_spot)
-                # At 15:40 CAS close, the official close represents the 30-min VWAP
-                state["settlement_spot"] = round(ltp, 2)
-                state["last_continuous_spot"] = round(ltp, 2)
+                ltp = float(ohlc.get("ltp") or ohlc.get("close") or settle_px)
+                if ltp > 0:
+                    settle_px = round(ltp, 2)
+                    cont_px = round(ltp, 2)
         except Exception as e:
             log.debug(f"Post-market poll failed: {e}")
+
+    persisted_rec = get_persisted_auction_record(symbol.upper(), today_str) or {}
+    prev_close_ref = float(persisted_rec.get("prev_close") or 0.0)
+    if prev_close_ref <= 0:
+        pm_cached = _PRE_MARKET_CACHE.get(symbol.upper()) or {}
+        prev_close_ref = float(pm_cached.get("prev_close") or 0.0) or snap_prev_close or settle_px
+
+    net_pts = round(settle_px - prev_close_ref, 1) if prev_close_ref > 0 else 0.0
+    net_pct = round((net_pts / prev_close_ref) * 100.0, 2) if prev_close_ref > 0 else 0.0
+    hi = float(snap.get("high") or 0.0)
+    lo = float(snap.get("low") or 0.0)
+    cw = float(snap.get("call_wall") or 0.0)
+    pw = float(snap.get("put_wall") or 0.0)
+    d_range = f"₹{hi:,.1f} / ₹{lo:,.1f}" if hi > 0 and lo > 0 else ""
+    key_lvls = f"₹{cw:,.0f} CW / ₹{pw:,.0f} PW" if cw > 0 and pw > 0 else ""
+
+    state = {
+        "symbol": symbol.upper(),
+        "date": today_str,
+        "is_post_market": True,
+        "post_market_settled": True,
+        "settlement_spot": settle_px,
+        "last_continuous_spot": cont_px,
+        "settlement_divergence_pts": round(settle_px - cont_px, 2),
+        "pin_efficiency_pct": 100.0,
+        "pin_target_wall": "Call Wall",
+        "settled_at": "15:40:00",
+        "status_text": "Session Concluded · Final Settlement Reconciled",
+        "prev_close": prev_close_ref,
+        "day_range": d_range,
+        "net_change_pts": net_pts,
+        "net_change_pct": net_pct,
+        "next_key_levels": key_lvls,
+    }
 
     try:
         from sentinel.storage.db import record_daily_closing_cvd
@@ -931,7 +1061,7 @@ def get_post_market_state(
     with _CACHE_LOCK:
         _POST_MARKET_CACHE[symbol.upper()] = state
     try:
-        if is_post or state.get("settlement_spot", 0) > 0:
+        if is_post and state.get("settlement_spot", 0) > 0:
             save_post_market_state(symbol.upper(), state)
     except Exception as e:
         log.debug(f"Failed to persist post-market state: {e}")
@@ -1204,10 +1334,7 @@ def render_post_market_commentary_card(symbol: str, data: Any = None, session_da
         target_date = session_date or today_str
 
         persisted = get_persisted_auction_record(sym_u, target_date) or {}
-        if target_date == today_str:
-            post_st = get_post_market_state(sym_u, now=now_ist)
-        else:
-            post_st = persisted
+        post_st = get_post_market_state(sym_u, now=now_ist, session_date=target_date)
 
         # GEX levels
         cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0) or 0.0)
@@ -1218,7 +1345,7 @@ def render_post_market_commentary_card(symbol: str, data: Any = None, session_da
             cw = cw or float(snap.get("call_wall") or 0.0)
             pw = pw or float(snap.get("put_wall") or 0.0)
 
-        is_post_settled = bool(post_st.get("is_post_market")) or bool(persisted.get("post_market_settled")) or (target_date != today_str and persisted.get("settlement_spot"))
+        is_post_settled = bool(post_st.get("is_post_market")) if target_date == today_str else bool(post_st.get("post_market_settled") or persisted.get("post_market_settled") or persisted.get("settlement_spot"))
         if is_post_settled:
             settle_spot = float(post_st.get("settlement_spot") or persisted.get("settlement_spot") or 0.0)
             cont_spot = float(post_st.get("last_continuous_spot") or persisted.get("last_continuous_spot") or settle_spot)

@@ -2351,11 +2351,16 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                         )
                 straddle_clr = "var(--go)" if shocks["straddle_shock_pct"] >= 0 else "var(--stop)"
                 shocks_matrix_html = (
-                    f'<div style="margin-top:10px;background:var(--surface);padding:8px 10px;border-radius:8px;border:1px solid var(--line)">'
-                    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
+                    f'<details class="collapsible-matrix" style="margin-top:10px;background:var(--surface);padding:8px 10px;border-radius:8px;border:1px solid var(--line)">'
+                    f'<summary style="cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center;user-select:none;outline:none">'
+                    f'<div style="display:flex;align-items:center;gap:8px">'
+                    f'<span class="matrix-chevron" style="color:var(--spark);font-size:.70rem;display:inline-block;transition:transform 0.2s">▼</span>'
                     f'<span style="font-size:.70rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>'
-                    f'<span style="font-size:.68rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 6px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹{shocks["atm_straddle_prev"]:,.1f} → <b>₹{shocks["atm_straddle_projected"]:,.1f}</b> (<span style="color:{straddle_clr};font-weight:700">{shocks["straddle_shock_pct"]:+.1f}%</span>)</span>'
+                    f'<span style="font-size:.65rem;color:var(--ink-faint);background:rgba(255,255,255,.05);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>'
                     f'</div>'
+                    f'<span style="font-size:.68rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 6px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹{shocks["atm_straddle_prev"]:,.1f} → <b>₹{shocks["atm_straddle_projected"]:,.1f}</b> (<span style="color:{straddle_clr};font-weight:700">{shocks["straddle_shock_pct"]:+.1f}%</span>)</span>'
+                    f'</summary>'
+                    f'<div style="margin-top:8px;overflow-x:auto">'
                     f'<table style="width:100%;font-size:.70rem;border-collapse:collapse">'
                     f'<thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:center">'
                     f'<th style="padding:3px">CE Prev</th><th style="padding:3px">CE Proj</th><th style="padding:3px">CE Δ</th>'
@@ -2365,6 +2370,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                     f'<tbody>{"".join(shock_rows)}</tbody>'
                     f'</table>'
                     f'</div>'
+                    f'</details>'
                 )
 
                 st.markdown(
