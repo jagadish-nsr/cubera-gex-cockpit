@@ -447,6 +447,8 @@ class TestOffMarketPersistence:
             assert "gamma_blast" in c_data
             assert "ladder" in c_data
             assert len(c_data["ladder"]) > 0
+            assert c_data["fresh_count"] == 0
+            assert len([c for c in c_data.get("cockpit_recommendations", []) if c.get("is_fresh")]) == 0
 
     def test_off_market_recommendations_and_target_engine_persistence(self):
         """Verify recommendations and target engine do not fail or return blank states when market is closed."""

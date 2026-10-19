@@ -425,6 +425,7 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
         "rationale": idea.rationale,
         "catalyst_tags": idea.catalyst_tags,
         "latch_state": st_code,
+        "triggered_at": getattr(idea, "triggered_at", "") or "",
         "first_active_ts": float(getattr(idea, "first_active_ts", 0.0) or time.time()),
         "last_active_ts": float(getattr(idea, "last_active_ts", 0.0) or time.time()),
         "active_label": act_lbl,
@@ -640,7 +641,11 @@ async def save_dhan_token(payload: dict = Body(...)):
 
 @app.get("/api/cockpit-data")
 @app.get("/api/market/dashboard")
-async def get_cockpit_data(symbol: Optional[str] = None, window: Optional[str] = None):
+async def get_cockpit_data(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    simulation_mode: Optional[bool] = False,
+):
     """Cockpit Tab: Executive strip, 6 KPIs, Gamma Blast, Ladder, Candidate structures, Pinned setups."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
@@ -718,21 +723,24 @@ async def get_cockpit_data(symbol: Optional[str] = None, window: Optional[str] =
     bm_ids = {r.get("rec_id") for r in pinned_records if r.get("rec_id")}
 
     fresh_ideas = []
-    try:
-        recs = generate_trade_recommendations(dash, sym)
-        all_recs = []
-        if recs:
-            all_recs = getattr(recs, "all_recommendations", None) or (
-                getattr(recs, "higher_ce_recommendations", [])
-                + getattr(recs, "higher_pe_recommendations", [])
-                + getattr(recs, "lower_ce_recommendations", [])
-                + getattr(recs, "lower_pe_recommendations", [])
-            )
-        for idea in all_recs:
-            if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
-                fresh_ideas.append(idea)
-    except Exception as e:
-        logger.debug(f"Cockpit fresh ideas check: {e}")
+    is_open = config.is_market_open()
+    # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
+    if is_open or simulation_mode:
+        try:
+            recs = generate_trade_recommendations(dash, sym)
+            all_recs = []
+            if recs:
+                all_recs = getattr(recs, "all_recommendations", None) or (
+                    getattr(recs, "higher_ce_recommendations", [])
+                    + getattr(recs, "higher_pe_recommendations", [])
+                    + getattr(recs, "lower_ce_recommendations", [])
+                    + getattr(recs, "lower_pe_recommendations", [])
+                )
+            for idea in all_recs:
+                if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
+                    fresh_ideas.append(idea)
+        except Exception as e:
+            logger.debug(f"Cockpit fresh ideas check: {e}")
 
     cockpit_cards = []
     for r in pinned_records:
