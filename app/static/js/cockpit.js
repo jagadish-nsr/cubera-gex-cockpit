@@ -726,9 +726,25 @@
       } catch (e) {}
 
       // Gamma blast card
-      document.getElementById("gamma-blast-badge").textContent = data.gamma_blast.badge;
-      document.getElementById("gamma-blast-desc").textContent = data.gamma_blast.description;
-      document.getElementById("gamma-blast-score").textContent = `${data.gamma_blast.score} / 100`;
+      const gbBadge = document.getElementById("gamma-blast-badge");
+      const gbDesc = document.getElementById("gamma-blast-desc");
+      const gbScore = document.getElementById("gamma-blast-score");
+      const gbCard = document.getElementById("gamma-blast-card");
+
+      if (gbBadge) gbBadge.textContent = data.gamma_blast.badge;
+      if (gbDesc) gbDesc.textContent = data.gamma_blast.description;
+      if (gbScore) gbScore.textContent = `${data.gamma_blast.score} / 100`;
+
+      const scoreVal = Number(data.gamma_blast.score || 0);
+      let themeColor = "var(--go)";
+      if (scoreVal >= 60 || (data.gamma_blast && data.gamma_blast.state === "TRIGGERED")) {
+        themeColor = "var(--stop)";
+      } else if (scoreVal >= 35 || (data.gamma_blast && data.gamma_blast.state === "COILING")) {
+        themeColor = "var(--spark)";
+      }
+
+      if (gbBadge) gbBadge.style.color = themeColor;
+      if (gbCard) gbCard.style.borderLeftColor = themeColor;
 
       // Update Cockpit TradingView Live Chart
       if (typeof updateCockpitChart === "function") {
@@ -1396,12 +1412,15 @@
     // 3. Volatility Expansion Imminent (Blast Score >= 60 OR Spot actively crossing Flip accelerator zone)
     const isCrossingFlip = flip > 0 && Math.abs(spot - flip) <= 35 && spot < flip;
     if (blastScore >= 60 || isCrossingFlip) {
+      const isBlastTrigger = blastScore >= 60;
       return {
         scenario: "VOLATILITY_EXPANSION",
-        badge: "⚠️ BIG MOVE COMING",
+        badge: isBlastTrigger ? "⚡ GAMMA BLAST DETONATION" : "⚠️ BIG MOVE COMING",
         theme: "alert-tape-stop",
-        headline: "VOLATILITY EXPANSION IMMINENT",
-        body: "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
+        headline: isBlastTrigger ? "0-DTE GAMMA BLAST DETONATION" : "VOLATILITY EXPANSION IMMINENT",
+        body: isBlastTrigger
+          ? `Expiry Gamma Blast model fired with Blast Score ${blastScore}/100. Forced dealer short-gamma hedging is detonating non-linear squeeze velocity.`
+          : "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
         action: "Buy breakout momentum with strict stops. DO NOT sell naked options (high risk of violent explosion).",
         diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")} · Blast Score: ${blastScore}/100`,
         timestamp: timeStr,
