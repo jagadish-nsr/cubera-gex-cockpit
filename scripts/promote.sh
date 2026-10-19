@@ -11,6 +11,8 @@
 
 set -euo pipefail
 
+export PATH="$HOME/Library/Python/3.9/bin:$PATH"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEV_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PROD_DIR="$(cd "${DEV_DIR}/../cubera-gex-cockpit-prod" 2>/dev/null && pwd || echo "")"
