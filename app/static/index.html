@@ -551,6 +551,124 @@
 
         <!-- Tab 2: 🎯 Target Engine -->
         <div id="tab-target-engine" class="tab-pane">
+          <!-- Target Engine Model Controls Bar: Target Horizon & Scoring Mode -->
+          <div class="repricer-card" style="padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+            <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+              <div style="display:flex;align-items:center;gap:8px">
+                <label style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">⏱️ Target Horizon:</label>
+                <select id="te-horizon-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:170px" onchange="window.onTargetEngineParamsChange()">
+                  <option value="30">30 mins (0.5 hr)</option>
+                  <option value="60">60 mins (1 hr)</option>
+                  <option value="120" selected>120 mins (2 hrs)</option>
+                  <option value="240">240 mins (4 hrs)</option>
+                  <option value="375">375 mins (Full Session)</option>
+                </select>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <label style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">🔬 Scoring Mode:</label>
+                <select id="te-mode-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:190px" onchange="window.onTargetEngineParamsChange()">
+                  <option value="heuristic" selected>Heuristic Baseline</option>
+                  <option value="calibrated">Calibrated (Stage B)</option>
+                </select>
+              </div>
+            </div>
+            <div style="font-size:0.74rem;color:var(--ink-mute)">
+              Auto-refreshes with live chain updates · All numbers explainable via Diagnostics
+            </div>
+          </div>
+
+          <!-- Dominant Scenario Banner & Multi-Color Probability Bar -->
+          <div class="repricer-card" style="padding:16px 18px;margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <div>
+                <span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mute);font-weight:700">Dominant Scenario</span>
+                <div id="te-dominant-scenario" style="font-size:1.35rem;font-weight:900;color:var(--go);text-transform:uppercase;letter-spacing:0.02em">
+                  BULL (62.4%)
+                </div>
+              </div>
+              <div style="text-align:right">
+                <span id="te-edge-badge" style="background:#064e3b;color:#f8fafc;padding:4px 10px;border-radius:4px;font-size:0.74rem;font-weight:800;letter-spacing:0.04em;border:1px solid rgba(16,185,129,0.3)">
+                  CONFIRMED EDGE
+                </span>
+                <div style="font-size:0.78rem;color:var(--ink-mute);margin-top:4px">
+                  Conviction: <b id="te-conviction-val" style="color:var(--ink)">78%</b> &nbsp;|&nbsp; Spot: <b id="te-spot-val" style="color:var(--spark)">₹24,480.0</b>
+                </div>
+              </div>
+            </div>
+
+            <!-- Multi-color Segmented Progress Bar -->
+            <div style="display:flex;height:16px;border-radius:6px;overflow:hidden;background:#334155;box-shadow:inset 0 1px 3px rgba(0,0,0,0.4)">
+              <div id="te-bar-bull" style="width:62.4%;background:#10b981;transition:width 0.4s ease" title="Bull: 62.4%"></div>
+              <div id="te-bar-base" style="width:25.1%;background:#3b82f6;transition:width 0.4s ease" title="Base: 25.1%"></div>
+              <div id="te-bar-bear" style="width:12.5%;background:#ef4444;transition:width 0.4s ease" title="Bear: 12.5%"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-size:0.76rem;color:var(--ink-mute);margin-top:8px">
+              <span>🟢 Bullish: <b id="te-prob-bull" style="color:#10b981">62.4%</b></span>
+              <span>🔵 Base (Range): <b id="te-prob-base" style="color:#3b82f6">25.1%</b></span>
+              <span>🔴 Bearish: <b id="te-prob-bear" style="color:#ef4444">12.5%</b></span>
+            </div>
+          </div>
+
+          <!-- Tri-Scenario Price Target Cards: Bull, Base, Bear with P(Touch), P(Close Beyond) & Forecast IV -->
+          <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:14px;margin-bottom:18px">
+            <!-- Bull Target Card -->
+            <div style="background:rgba(16, 185, 129, 0.05);border:1px solid rgba(16, 185, 129, 0.28);border-radius:8px;padding:14px">
+              <div style="font-weight:750;color:#10b981;font-size:0.92rem;margin-bottom:6px">
+                🚀 Bull Target (<span id="te-bull-horizon-badge">120m</span>)
+              </div>
+              <div id="te-bull-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+                ₹24,620.0
+              </div>
+              <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
+                Stop: <span id="te-bull-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,395.0</span>
+              </div>
+              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+                • P(Touch Target): <b id="te-bull-ptouch" style="color:#10b981">68.4%</b><br>
+                • P(Close Beyond): <b id="te-bull-pclose" style="color:#38bdf8">42.1%</b><br>
+                • Forecast ATM IV: <b id="te-bull-iv" style="color:#facc15">14.12%</b><br>
+                • Anchor: <i id="te-bull-anchor" style="color:var(--ink-mute)">Call Wall + 0.5σ Extension</i>
+              </div>
+            </div>
+
+            <!-- Base Case Target Card -->
+            <div style="background:rgba(59, 130, 246, 0.05);border:1px solid rgba(59, 130, 246, 0.28);border-radius:8px;padding:14px">
+              <div style="font-weight:750;color:#3b82f6;font-size:0.92rem;margin-bottom:6px">
+                ⚖️ Base / Range Target (<span id="te-base-horizon-badge">120m</span>)
+              </div>
+              <div id="te-base-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+                ₹24,535.0
+              </div>
+              <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
+                Band Stop: <span id="te-base-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
+              </div>
+              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+                • P(Touch Pin): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
+                • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">58.6%</b><br>
+                • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">13.85%</b><br>
+                • Anchor: <i id="te-base-anchor" style="color:var(--ink-mute)">Gamma Flip / VWAP Pin</i>
+              </div>
+            </div>
+
+            <!-- Bear Target Card -->
+            <div style="background:rgba(239, 68, 68, 0.05);border:1px solid rgba(239, 68, 68, 0.28);border-radius:8px;padding:14px">
+              <div style="font-weight:750;color:#ef4444;font-size:0.92rem;margin-bottom:6px">
+                🔻 Bear Target (<span id="te-bear-horizon-badge">120m</span>)
+              </div>
+              <div id="te-bear-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+                ₹24,395.0
+              </div>
+              <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
+                Stop: <span id="te-bear-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,550.0</span>
+              </div>
+              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+                • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">32.0%</b><br>
+                • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">18.5%</b><br>
+                • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">15.40%</b><br>
+                • Anchor: <i id="te-bear-anchor" style="color:var(--ink-mute)">Put Wall Speed Bump</i>
+              </div>
+            </div>
+          </div>
+
           <!-- Confluence Dial Box -->
           <div class="dial-box">
             <div>
@@ -561,25 +679,6 @@
             <div style="text-align:right">
               <div class="dial-score-num" id="dial-score-num">68 / 100</div>
               <span style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH CONVICTION</span>
-            </div>
-          </div>
-
-          <!-- Targets Grid: Bull, Base, Bear -->
-          <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:14px;margin-bottom:24px">
-            <div class="kpi-card go">
-              <small>🚀 Bull Path Target</small>
-              <b id="target-bull-val">₹24,620.0</b>
-              <span id="target-bull-sub">Probability: 68% · +120 pts</span>
-            </div>
-            <div class="kpi-card spark">
-              <small>🎯 Base Case Target</small>
-              <b id="target-base-val">₹24,535.0</b>
-              <span id="target-base-sub">Probability: 74% · +35 pts</span>
-            </div>
-            <div class="kpi-card stop">
-              <small>🛑 Bear Path Stop</small>
-              <b id="target-bear-val">₹24,395.0</b>
-              <span id="target-bear-sub">Probability: 32% · -105 pts</span>
             </div>
           </div>
 

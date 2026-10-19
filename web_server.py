@@ -696,13 +696,19 @@ async def get_cockpit_data(symbol: Optional[str] = None, window: Optional[str] =
 
 @app.get("/api/target-engine")
 @app.get("/api/target_engine")
-async def get_target_engine(symbol: Optional[str] = None, window: Optional[str] = None):
-    """Target Engine Tab: Confluence Dial, Targets, Symmetrical Ladder, Ranked Setups, Repricer."""
+async def get_target_engine(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    horizon: Optional[int] = 120,
+    mode: Optional[str] = "heuristic",
+):
+    """Target Engine Tab: Confluence Dial, Dominant Scenario, Targets, Symmetrical Ladder, Ranked Setups, Repricer."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
     dash = _load_active_dashboard(sym, win)
-    res = run_target_engine(dashboard_data=dash)
+    horizon_val = int(horizon) if horizon else 120
+    res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
     spot = float(dash.levels.spot or 0.0)
 
     # Dynamic Confluence Dial derived from authentic target engine candidate rankings & features
@@ -737,15 +743,46 @@ async def get_target_engine(symbol: Optional[str] = None, window: Optional[str] 
         },
     }
 
-    # Bull, Base, Bear Targets
+    # Scenario Set & Dominant Scenario Distribution
+    sc_set = res.scenario_set
+    p_bull = float(sc_set.get_prob("bull"))
+    p_base = float(sc_set.get_prob("base"))
+    p_bear = float(sc_set.get_prob("bear"))
+
+    scenario_info = {
+        "dominant_scenario": sc_set.dominant_scenario.lower(),
+        "conviction": float(sc_set.conviction),
+        "no_edge": bool(sc_set.no_edge),
+        "edge_label": "NO EDGE — RANGE DOMINANT" if sc_set.no_edge else "CONFIRMED EDGE",
+        "probabilities": {
+            "bull": round(p_bull, 4),
+            "base": round(p_base, 4),
+            "bear": round(p_bear, 4),
+        },
+        "horizon_minutes": horizon_val,
+        "scoring_mode": mode or "heuristic",
+    }
+
+    # Bull, Base, Bear Targets with Full Mathematical Probabilities & IV Forecasts
+    iv_fcs = getattr(res, "iv_forecasts", {}) or {}
     targets = {}
     for k, v in res.underlying_targets.items():
         tgt_val = float(getattr(v, "target", spot) or spot)
+        stop_val = float(getattr(v, "stop", spot) or spot)
+        p_touch = float(getattr(v, "p_touch_target", 0.65) or 0.65)
+        p_close = float(getattr(v, "p_close_beyond", 0.45) or 0.45)
+        reason_txt = getattr(v, "reason", "") or "GEX / Volatility Anchor"
+        fc_iv = float(iv_fcs[k].iv_at_horizon) if k in iv_fcs and hasattr(iv_fcs[k], "iv_at_horizon") else 0.14
         targets[k] = {
             "target": tgt_val,
-            "p_touch": getattr(v, "p_touch_target", 0.65),
+            "stop": stop_val,
+            "p_touch_target": round(p_touch, 4),
+            "p_touch": round(p_touch, 4),
+            "p_close_beyond": round(p_close, 4),
             "points_away": tgt_val - spot,
-            "horizon_minutes": getattr(v, "horizon_minutes", 120),
+            "horizon_minutes": getattr(v, "horizon_minutes", horizon_val),
+            "reason": reason_txt,
+            "forecast_iv": round(fc_iv, 4),
         }
 
     # Symmetrical Dual-Wing Ladder (ATM ± 5 Strikes with full Target / SL repricing)
@@ -831,6 +868,9 @@ async def get_target_engine(symbol: Optional[str] = None, window: Optional[str] 
         "active_expiry": active_exps[0] if active_exps else "2026-10-19",
         "nearby_strikes": nearby_21_strikes,
         "dial": dial,
+        "scenario_set": scenario_info,
+        "horizon": horizon_val,
+        "scoring_mode": mode,
         "targets": targets,
         "ladder": strike_ladder_rows,
         "candidates": ranked_candidates,

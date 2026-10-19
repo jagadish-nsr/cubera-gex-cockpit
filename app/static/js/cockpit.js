@@ -797,26 +797,131 @@
     }
   }
 
+  window.onTargetEngineParamsChange = function () {
+    const hSelect = document.getElementById("te-horizon-select");
+    const mSelect = document.getElementById("te-mode-select");
+    if (hSelect) state.teHorizon = parseInt(hSelect.value) || 120;
+    if (mSelect) state.teMode = mSelect.value || "heuristic";
+    loadTargetEngine();
+  };
+
   async function loadTargetEngine() {
     try {
-      const res = await fetch(`/api/target-engine?symbol=${state.symbol}&window=${state.window}`);
+      const horizon = state.teHorizon || 120;
+      const mode = state.teMode || "heuristic";
+      const res = await fetch(`/api/target-engine?symbol=${state.symbol}&window=${state.window}&horizon=${horizon}&mode=${mode}`);
       const data = await res.json();
 
       document.getElementById("dial-verdict").textContent = data.dial.verdict;
       document.getElementById("dial-score-num").textContent = `${data.dial.score} / 100`;
 
+      // 1. Dominant Scenario & Multi-Color Segmented Probability Bar
+      if (data.scenario_set) {
+        const sc = data.scenario_set;
+        const domScen = sc.dominant_scenario ? sc.dominant_scenario.toUpperCase() : "BULL";
+        const probs = sc.probabilities || { bull: 0.624, base: 0.251, bear: 0.125 };
+        const pBull = probs.bull || 0;
+        const pBase = probs.base || 0;
+        const pBear = probs.bear || 0;
+        const maxProb = Math.max(pBull, pBase, pBear);
+
+        const domEl = document.getElementById("te-dominant-scenario");
+        if (domEl) {
+          domEl.textContent = `${domScen} (${(maxProb * 100).toFixed(1)}%)`;
+          domEl.style.color = domScen.includes("BULL") ? "var(--go)" : (domScen.includes("BEAR") ? "var(--stop)" : "var(--spark)");
+        }
+
+        const edgeBadge = document.getElementById("te-edge-badge");
+        if (edgeBadge) {
+          edgeBadge.textContent = sc.edge_label || (sc.no_edge ? "NO EDGE — RANGE DOMINANT" : "CONFIRMED EDGE");
+          edgeBadge.style.background = sc.no_edge ? "#78350f" : "#064e3b";
+          edgeBadge.style.borderColor = sc.no_edge ? "rgba(245,158,11,0.4)" : "rgba(16,185,129,0.3)";
+        }
+
+        const convEl = document.getElementById("te-conviction-val");
+        if (convEl) convEl.textContent = `${((sc.conviction || 0) * 100).toFixed(0)}%`;
+
+        const spotEl = document.getElementById("te-spot-val");
+        if (spotEl) spotEl.textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+
+        // Segmented Progress Bar
+        const barBull = document.getElementById("te-bar-bull");
+        if (barBull) {
+          barBull.style.width = `${(pBull * 100).toFixed(1)}%`;
+          barBull.title = `Bull: ${(pBull * 100).toFixed(1)}%`;
+        }
+        const barBase = document.getElementById("te-bar-base");
+        if (barBase) {
+          barBase.style.width = `${(pBase * 100).toFixed(1)}%`;
+          barBase.title = `Base: ${(pBase * 100).toFixed(1)}%`;
+        }
+        const barBear = document.getElementById("te-bar-bear");
+        if (barBear) {
+          barBear.style.width = `${(pBear * 100).toFixed(1)}%`;
+          barBear.title = `Bear: ${(pBear * 100).toFixed(1)}%`;
+        }
+
+        // Probability Labels
+        const lblBull = document.getElementById("te-prob-bull");
+        if (lblBull) lblBull.textContent = `${(pBull * 100).toFixed(1)}%`;
+        const lblBase = document.getElementById("te-prob-base");
+        if (lblBase) lblBase.textContent = `${(pBase * 100).toFixed(1)}%`;
+        const lblBear = document.getElementById("te-prob-bear");
+        if (lblBear) lblBear.textContent = `${(pBear * 100).toFixed(1)}%`;
+      }
+
+      // 2. Tri-Scenario Target Cards with P(Touch), P(Close Beyond), and Forecast IV
       if (data.targets) {
+        const horizonTxt = `${data.horizon || 120}m`;
+        ["te-bull-horizon-badge", "te-base-horizon-badge", "te-bear-horizon-badge"].forEach((id) => {
+          const el = document.getElementById(id);
+          if (el) el.textContent = horizonTxt;
+        });
+
         if (data.targets.bull) {
-          document.getElementById("target-bull-val").textContent = `₹${data.targets.bull.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
-          document.getElementById("target-bull-sub").textContent = `Prob: ${(data.targets.bull.p_touch * 100).toFixed(0)}% · ${data.targets.bull.points_away >= 0 ? "+" : ""}${data.targets.bull.points_away.toFixed(0)} pts`;
+          const b = data.targets.bull;
+          const tgtEl = document.getElementById("te-bull-target-val") || document.getElementById("target-bull-val");
+          if (tgtEl) tgtEl.textContent = `₹${b.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const stopEl = document.getElementById("te-bull-stop-val");
+          if (stopEl) stopEl.textContent = `₹${b.stop.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const pTouchEl = document.getElementById("te-bull-ptouch");
+          if (pTouchEl) pTouchEl.textContent = `${((b.p_touch_target || b.p_touch || 0) * 100).toFixed(1)}%`;
+          const pCloseEl = document.getElementById("te-bull-pclose");
+          if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
+          const ivEl = document.getElementById("te-bull-iv");
+          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          const ancEl = document.getElementById("te-bull-anchor");
+          if (ancEl) ancEl.textContent = b.reason || "Call Wall Extension";
         }
         if (data.targets.base) {
-          document.getElementById("target-base-val").textContent = `₹${data.targets.base.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
-          document.getElementById("target-base-sub").textContent = `Prob: ${(data.targets.base.p_touch * 100).toFixed(0)}% · ${data.targets.base.points_away >= 0 ? "+" : ""}${data.targets.base.points_away.toFixed(0)} pts`;
+          const b = data.targets.base;
+          const tgtEl = document.getElementById("te-base-target-val") || document.getElementById("target-base-val");
+          if (tgtEl) tgtEl.textContent = `₹${b.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const stopEl = document.getElementById("te-base-stop-val");
+          if (stopEl) stopEl.textContent = `₹${b.stop.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const pTouchEl = document.getElementById("te-base-ptouch");
+          if (pTouchEl) pTouchEl.textContent = `${((b.p_touch_target || b.p_touch || 0) * 100).toFixed(1)}%`;
+          const pCloseEl = document.getElementById("te-base-pclose");
+          if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
+          const ivEl = document.getElementById("te-base-iv");
+          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          const ancEl = document.getElementById("te-base-anchor");
+          if (ancEl) ancEl.textContent = b.reason || "Gamma Flip Pin";
         }
         if (data.targets.bear) {
-          document.getElementById("target-bear-val").textContent = `₹${data.targets.bear.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
-          document.getElementById("target-bear-sub").textContent = `Prob: ${(data.targets.bear.p_touch * 100).toFixed(0)}% · ${data.targets.bear.points_away.toFixed(0)} pts`;
+          const b = data.targets.bear;
+          const tgtEl = document.getElementById("te-bear-target-val") || document.getElementById("target-bear-val");
+          if (tgtEl) tgtEl.textContent = `₹${b.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const stopEl = document.getElementById("te-bear-stop-val");
+          if (stopEl) stopEl.textContent = `₹${b.stop.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+          const pTouchEl = document.getElementById("te-bear-ptouch");
+          if (pTouchEl) pTouchEl.textContent = `${((b.p_touch_target || b.p_touch || 0) * 100).toFixed(1)}%`;
+          const pCloseEl = document.getElementById("te-bear-pclose");
+          if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
+          const ivEl = document.getElementById("te-bear-iv");
+          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          const ancEl = document.getElementById("te-bear-anchor");
+          if (ancEl) ancEl.textContent = b.reason || "Put Wall Speed Bump";
         }
       }
 

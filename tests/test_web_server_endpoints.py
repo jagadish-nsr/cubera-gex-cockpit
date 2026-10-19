@@ -428,11 +428,18 @@ class TestOffMarketPersistence:
         """Verify recommendations and target engine do not fail or return blank states when market is closed."""
         with patch.object(config, "is_market_open", return_value=False):
             # 1. /api/target-engine
-            te_status, _, te_content = asyncio.run(asgi_request("GET", "/api/target-engine?symbol=NIFTY"))
+            te_status, _, te_content = asyncio.run(asgi_request("GET", "/api/target-engine?symbol=NIFTY&horizon=120&mode=heuristic"))
             assert te_status == 200
             te_data = json.loads(te_content)
             assert "dial" in te_data
             assert "targets" in te_data
+            assert "scenario_set" in te_data
+            assert "dominant_scenario" in te_data["scenario_set"]
+            assert "probabilities" in te_data["scenario_set"]
+            assert "bull" in te_data["targets"]
+            assert "p_touch_target" in te_data["targets"]["bull"]
+            assert "p_close_beyond" in te_data["targets"]["bull"]
+            assert "forecast_iv" in te_data["targets"]["bull"]
             assert "candidates" in te_data
             assert len(te_data["candidates"]) > 0
 
