@@ -123,8 +123,16 @@ def test_get_cockpit_data_levels_and_tape():
     data = json.loads(content)
     assert "spot" in data
     assert "kpis" in data
+    assert "call_wall" in data["kpis"]
+    assert "put_wall" in data["kpis"]
+    assert "gamma_flip" in data["kpis"]
+    assert "max_pain" in data["kpis"]
+    assert "directional_bias" in data["kpis"]
     assert "gamma_blast" in data
     assert "ladder" in data
+    assert len(data["ladder"]) == 11
+    assert "is_max_pain" in data["ladder"][0]
+    assert "is_magnet" in data["ladder"][0]
     assert "orderflow_alerts" in data
     assert "pre_market" in data
     assert "cockpit_recommendations" in data

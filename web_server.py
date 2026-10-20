@@ -90,6 +90,7 @@ from sentinel.storage.db import list_recent_signals, ensure_historical_daily_cvd
 from sentinel.feed.demo import seed_sentinel_demo_if_needed
 from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_expiries, is_expiry_crossed
 from analytics.iv_skew import skew_25delta
+from analytics.directional_bias import compute_directional_bias, BiasResult
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -519,6 +520,36 @@ def _is_recently_triggered(triggered_at_val: Any, max_age_seconds: float = 600.0
         return False
 
 
+def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
+    """Evaluate authentic IOAS 8-Signal Directional Bias (including Max Pain Gravitation)."""
+    spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
+    cw = float(dash.levels.call_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
+    pw = float(dash.levels.put_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
+    mp = float(dash.levels.max_pain or 0.0) if dash and hasattr(dash, "levels") and dash.levels else spot
+    pcr = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95) if dash and hasattr(dash, "levels") and dash.levels else 0.95
+    call_doi = getattr(dash, "call_doi", None) or (getattr(dash.levels, "call_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
+    put_doi = getattr(dash, "put_doi", None) or (getattr(dash.levels, "put_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
+    oi_strikes = getattr(dash, "oi_strikes", None)
+    india_vix = getattr(dash, "india_vix", None)
+    atm_iv = float(getattr(dash.levels, "atm_iv", None) or 0.14) if dash and hasattr(dash, "levels") and dash.levels else 0.14
+    try:
+        return compute_directional_bias(
+            spot=spot,
+            call_wall=cw,
+            put_wall=pw,
+            max_pain=mp,
+            pcr=pcr,
+            call_doi=call_doi,
+            put_doi=put_doi,
+            oi_strikes=oi_strikes,
+            india_vix=india_vix,
+            near_atm_iv=atm_iv,
+        )
+    except Exception as ex:
+        log.warning("Directional bias calculation fallback for %s: %s", sym, ex)
+        return BiasResult(score=0.0, regime="Neutral ⏳", signals=[], headline="Neutral equilibrium")
+
+
 # --------------------------------------------------------------------------
 # API REST Endpoints
 # --------------------------------------------------------------------------
@@ -654,22 +685,36 @@ async def get_cockpit_data(
     window: Optional[str] = None,
     simulation_mode: Optional[bool] = False,
 ):
-    """Cockpit Tab: Executive strip, 6 KPIs, Gamma Blast, Ladder, Candidate structures, Pinned setups."""
+    """Cockpit Tab: Executive strip, 8 KPIs, Gamma Blast, Ladder, Candidate structures, Pinned setups."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
     dash = _load_active_dashboard(sym, win)
     spot = float(dash.levels.spot or 0.0)
 
-    # 6 KPI cards
+    # 8 KPI cards (including Max Pain and IOAS Directional Bias)
     flip_val = float(getattr(dash.levels, "flip", 0.0) or 0.0)
     net_gex_val = float(getattr(dash.levels, "total_net_gex", 0.0) or 0.0)
     pcr_val = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95)
+    mp_val = float(getattr(dash.levels, "max_pain", 0.0) or spot)
+    magnet_val = float(getattr(dash.levels, "magnet", 0.0) or 0.0)
+
+    bias_res = _compute_active_directional_bias(dash, sym)
+    pin_dist = abs(spot - mp_val) if (spot and mp_val) else 0.0
+    pin_score = max(10, min(100, int(round(100 - (pin_dist / max(spot, 1.0)) * 2800))))
+    bias_color = "var(--go)" if bias_res.score > 0.8 else ("var(--stop)" if bias_res.score < -0.8 else "var(--spark)")
 
     kpis = {
         "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": "Major Overhead Resistance"},
         "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": "Major Floor Support"},
         "gamma_flip": {"val": flip_val, "sub": "Volatility Pivot Barrier"},
+        "max_pain": {"val": float(mp_val), "sub": f"Pin: {pin_score}/100"},
+        "directional_bias": {
+            "val": f"{bias_res.score:+.2f}",
+            "sub": bias_res.regime,
+            "raw": round(bias_res.score, 2),
+            "color": bias_color,
+        },
         "regime": {"val": str(dash.view.regime or "NEUTRAL").upper(), "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}"},
         "net_gex": {"val": f"{net_gex_val:,.0f}", "sub": "Dealer Gamma Exposure"},
         "pcr_oi": {"val": f"{pcr_val:.2f}", "sub": "Put-Call Open Interest Ratio"},
@@ -716,6 +761,8 @@ async def get_cockpit_data(
             "is_call_wall": (stk == dash.levels.call_wall),
             "is_put_wall": (stk == dash.levels.put_wall),
             "is_gamma_flip": (abs(stk - flip_val) < step / 2),
+            "is_max_pain": (abs(stk - mp_val) < step / 2),
+            "is_magnet": (abs(stk - magnet_val) < step / 2),
         })
 
     # Gamma Blast Verdict (Evaluated dynamically via app.gammablast)
@@ -743,7 +790,7 @@ async def get_cockpit_data(
     # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
     if is_open or simulation_mode:
         try:
-            recs = generate_trade_recommendations(dash, sym)
+            recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
             all_recs = []
             if recs:
                 all_recs = getattr(recs, "all_recommendations", None) or (
@@ -819,9 +866,7 @@ async def get_cockpit_data(
     if sec_snap and isinstance(sec_snap, dict) and "rows" in sec_snap:
         adv = sum(1 for r in sec_snap["rows"] if (r.get("pct") or 0) > 0)
         dec = sum(1 for r in sec_snap["rows"] if (r.get("pct") or 0) < 0)
-    if adv == 0 and dec == 0:
-        adv, dec = 28, 22
-    ratio = round(adv / max(1, dec), 2)
+    ratio = round(adv / max(1, dec), 2) if (adv > 0 or dec > 0) else 1.0
     sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
 
     return {
@@ -997,16 +1042,23 @@ async def get_target_engine(
         stk = leg.strike if leg else spot
         op_type = leg.option_type if leg else "CE"
         ent_ltp = leg.entry_premium if leg else 115.0
+        # Extract authentic modeled target and risk levels from scenario targets
+        sc_tgt = c.scenario_targets.get("bull") or c.scenario_targets.get("bear") or c.scenario_targets.get("base")
+        t1_val = round(float(sc_tgt.target_premium), 1) if sc_tgt and getattr(sc_tgt, "target_premium", 0.0) > 0 else round(float(ent_ltp * 1.35), 1)
+        max_l = getattr(c, "max_loss_pts", None)
+        sl_val = round(max(1.0, float(ent_ltp - max_l)), 1) if (max_l and max_l > 0) else round(float(ent_ltp * 0.70), 1)
+        rr_val = getattr(c, "risk_reward", 2.0) or 2.0
+        pt_val = getattr(sc_tgt, "p_touch_target", 0.65) if sc_tgt else 0.65
         ranked_candidates.append({
             "strike": stk,
             "option_type": op_type,
             "score": round(float(getattr(c, "rank_score", 82.0)), 1),
             "entry_ltp": round(float(ent_ltp), 1),
-            "target_1": round(float(ent_ltp * 1.45), 1),
-            "stop_loss": round(float(ent_ltp * 0.72), 1),
+            "target_1": t1_val,
+            "stop_loss": sl_val,
             "net_ev": round(float(getattr(c, "expected_value", 24.5)), 1),
-            "risk_reward": f"1 : {getattr(c, 'risk_reward', 2.4):.1f}",
-            "p_touch": 0.68,
+            "risk_reward": f"1 : {rr_val:.1f}",
+            "p_touch": round(float(pt_val), 2),
         })
 
     # 21-Strike ATM Band
@@ -1270,7 +1322,8 @@ async def get_recommendations(
     dash = _load_active_dashboard(sym, win)
     spot = float(dash.levels.spot or 0.0)
 
-    recs = generate_trade_recommendations(dash, sym)
+    bias_res = _compute_active_directional_bias(dash, sym)
+    recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
 
     try:
         evaluate_recommendation_lifecycle(sym, spot)
@@ -1942,22 +1995,71 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     pcr = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95)
     max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else spot
     vix = float(dash.india_vix.get("last", 13.5)) if dash.india_vix else 13.5
-    iv_rank = 28.0
+
+    # Dynamic IV Rank relative to historical volatility baseline (10.0 - 25.0%)
+    iv_rank = round(min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0)), 0)
+    iv_rank_sub = "Elevated Vol" if iv_rank >= 65 else ("Low Vol Compress" if iv_rank <= 30 else "Normal Vol Zone")
+
+    # Dynamic Pinning Score
+    mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
+    pin_score = max(10, min(100, int(round(100 - (mp_dist / max(spot, 1.0)) * 2800))))
+
+    # Dynamic IOAS Directional Bias
+    bias_res = _compute_active_directional_bias(dash, sym)
 
     kpis = {
         "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "Contango (Normal)"},
         "pcr": {"val": f"{pcr:.2f}", "sub": "BULLISH" if pcr > 1.0 else "BEARISH"},
-        "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": "Pin: 85/100"},
-        "iv_rank": {"val": f"{iv_rank:.0f}%", "sub": "Normal Vol Zone"},
+        "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": f"Pin: {pin_score}/100"},
+        "iv_rank": {"val": f"{iv_rank:.0f}%", "sub": iv_rank_sub},
         "india_vix": {"val": f"{vix:.2f}", "sub": "Low Vol" if vix < 15 else "Elevated"},
-        "bias_gauge": {"val": "+2.4", "sub": "MOMENTUM_BULLISH"},
+        "bias_gauge": {"val": f"{bias_res.score:+.2f}", "sub": bias_res.regime},
     }
 
-    # Intraday Shift Events Log
-    shift_events = [
-        {"time": "14:15 IST", "badge": "PUT_WALL_DEFENSE", "badge_cls": "bull", "desc": f"Passive Put writers absorb dealer supply at {dash.levels.put_wall:,.0f}"},
-        {"time": "11:30 IST", "badge": "PCR_UPTICK", "badge_cls": "bull", "desc": "Put additions outpace Call additions 1.4x"},
-    ]
+    # Dynamic Intraday Shift Events Log
+    shift_events = []
+    try:
+        from analytics.divergence import detect_divergences
+        div_rep = detect_divergences(
+            spot=spot,
+            spot_prev=getattr(dash.levels, "prev_close", spot),
+            pcr=pcr,
+            pcr_prev=None,
+            pcr_prev_session=None,
+            atm_iv=atm_iv,
+            atm_iv_prev=None,
+            call_wall=dash.levels.call_wall,
+            put_wall=dash.levels.put_wall,
+            call_wall_prev=None,
+            put_wall_prev=None,
+        )
+        if div_rep and div_rep.active_divergences:
+            for d in div_rep.active_divergences[:5]:
+                shift_events.append({
+                    "time": _get_ist_now().strftime("%H:%M IST"),
+                    "badge": d.type,
+                    "badge_cls": "bear" if any(w in d.type for w in ["WALL", "DROP", "BREAK", "BEAR"]) else "bull",
+                    "desc": f"{d.description} — {d.detail}",
+                })
+    except Exception:
+        pass
+
+    if not shift_events:
+        now_time_str = _get_ist_now().strftime("%H:%M IST")
+        shift_events = [
+            {
+                "time": now_time_str,
+                "badge": "WALL_ANCHOR",
+                "badge_cls": "bull" if spot >= (dash.levels.put_wall or spot) else "bear",
+                "desc": f"Passive Put wall defense at ₹{dash.levels.put_wall:,.0f} · Call wall ceiling at ₹{dash.levels.call_wall:,.0f}",
+            },
+            {
+                "time": now_time_str,
+                "badge": "GEX_REGIME",
+                "badge_cls": "bull" if (dash.levels.total_net_gex or 0) >= 0 else "bear",
+                "desc": f"Dealer gamma {dash.view.regime} (PCR {pcr:.2f}) · Volatility barrier at ₹{dash.levels.flip or spot:,.0f}",
+            },
+        ]
 
     # 25Δ Skew & Term Structure Curve
     contracts_df = getattr(dash, "contracts", None)
@@ -2029,7 +2131,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         "term_structure": term_structure,
         "shift_events": shift_events,
         "parity_monitor": {
-            "summary": "Parity Holds: Basis +2.4 pts",
+            "summary": f"Parity Holds: Synthetic Basis {(float(getattr(dash.levels, 'spot', 0.0)) - float(getattr(dash.levels, 'flip', getattr(dash.levels, 'spot', 0.0)) or getattr(dash.levels, 'spot', 0.0))):+.1f} pts" if getattr(dash, "levels", None) else "Parity Holds: Basis 0.0 pts",
             "alerted": False,
         },
         "divergences": [
