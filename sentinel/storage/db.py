@@ -267,16 +267,12 @@ def list_recent_bars(
                     """, (instrument_id, now_max)).fetchone()
                     target_date = latest_row["dt"] if latest_row and latest_row["dt"] else today_str
                 elif _auto_populate:
-                    # Today's bars not generated/synced yet: auto-populate today's session immediately
-                    # so live charts never show stale prior-day data
+                    # Today's bars not generated/synced yet: attempt live sync then EOD snapshot.
+                    # Zero-Fabrication Contract: never generate synthetic bars here.
                     try:
                         conn.close()
-                        from sentinel.feed.live import sync_live_sentinel_if_needed
-                        sym = instrument_id.replace("-FUT", "")
-                        synced = sync_live_sentinel_if_needed(instrument_id, symbol=sym)
-                        if not synced:
-                            from sentinel.feed.demo import seed_sentinel_demo_if_needed
-                            seed_sentinel_demo_if_needed(instrument_id)
+                        from sentinel.feed.history import ensure_sentinel_session_data
+                        ensure_sentinel_session_data(instrument_id)
                         conn = _get_read_conn()
                     except Exception:
                         conn = _get_read_conn()

@@ -1116,9 +1116,8 @@
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px">
-              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750" onclick="window.reseedSentinelFlow('1m')" title="Seed authentic 1-minute full session flow (375 bars)">⚡ 1m Seeding</button>
-              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--spark);border-color:rgba(56,189,248,.4);font-weight:750" onclick="window.reseedSentinelFlow('5m')" title="Seed authentic 5-minute session flow (75 bars)">⚡ 5m Seeding</button>
-              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--ink);border-color:var(--line)" onclick="window.reseedSentinelFlow()">🔄 Sync Live</button>
+              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750" onclick="window.syncLiveSentinelFeed()" title="Force-sync genuine 1m candles from Dhan broker feed">🔄 Sync Broker Feed</button>
+              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--spark);border-color:rgba(56,189,248,.4);font-weight:750" onclick="window.loadEODSentinelSnapshot()" title="Load last verified exchange closing session snapshot">📥 Load EOD Snapshot</button>
             </div>
           </div>
 

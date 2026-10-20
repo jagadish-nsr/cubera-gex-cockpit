@@ -1556,19 +1556,59 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
 
 @app.post("/api/sentinel-tape/reseed")
 async def reseed_sentinel_tape(payload: dict = Body(...)):
-    """Force re-seed Sentinel flow bars in simulator mode only."""
+    """Sentinel tape data refresh endpoint.
+
+    Supported actions (via 'action' param):
+      'sync_live'   — Force-sync genuine broker candles (Dhan WS/API). No simulation required.
+      'load_eod'    — Force-reload last verified EOD snapshot. No simulation required.
+      'reseed_sim'  — Regenerate synthetic simulation bars. Requires simulation_mode=True.
+
+    Legacy callers omitting 'action' retain the old behaviour (simulation_mode gate).
+    """
     sym = payload.get("symbol", "NIFTY").upper()
     tf = payload.get("timeframe", "1m")
+    action = payload.get("action", "")
     sim_mode = payload.get("simulation_mode", False)
+
+    inst_id = f"{sym}-FUT"
+    dash = _load_active_dashboard(sym)
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
+    cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0.0)
+    pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0.0)
+
+    if action == "sync_live":
+        # Genuine broker sync — no simulation_mode gate
+        try:
+            from sentinel.feed.live import sync_live_sentinel_if_needed
+            synced = sync_live_sentinel_if_needed(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+            if synced:
+                return {"status": "ok", "message": f"Synced live broker feed for {sym}"}
+            # Fallback to EOD snapshot if live is unavailable (market closed)
+            from sentinel.feed.history import ensure_sentinel_session_data
+            ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+            msg = f"Loaded EOD snapshot for {sym} (live feed unavailable)" if ok else f"No live or EOD data available for {sym}"
+            return {"status": "ok" if ok else "offline", "message": msg}
+        except Exception as exc:
+            logger.warning("sync_live action failed for %s: %s", sym, exc)
+            return {"status": "error", "message": f"Live sync error: {exc}"}
+
+    if action == "load_eod":
+        # EOD snapshot load — no simulation_mode gate
+        try:
+            from sentinel.feed.history import ensure_sentinel_session_data
+            ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+            msg = f"Loaded verified EOD snapshot for {sym}" if ok else f"No EOD snapshot available for {sym}"
+            return {"status": "ok" if ok else "offline", "message": msg}
+        except Exception as exc:
+            logger.warning("load_eod action failed for %s: %s", sym, exc)
+            return {"status": "error", "message": f"EOD load error: {exc}"}
+
+    # Legacy path / explicit 'reseed_sim': simulator reseed — requires simulation_mode=True
     if not sim_mode:
         return {"status": "ignored", "message": "Demo reseed disabled outside of Simulator Mode"}
-    dash = _load_active_dashboard(sym)
-    spot = float(dash.levels.spot or 0.0)
-    inst_id = f"{sym}-FUT"
-    cw = float(dash.levels.call_wall or 0)
-    pw = float(dash.levels.put_wall or 0)
     seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw, force=True, simulation_mode=True)
     return {"status": "ok", "message": f"Reseeded simulator flow for {sym} ({tf})"}
+
 
 
 @app.get("/api/signal-efficiency")

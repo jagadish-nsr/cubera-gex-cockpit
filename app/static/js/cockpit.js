@@ -2933,6 +2933,57 @@
     }
   };
 
+  /**
+   * Force-sync genuine 1m candles from the Dhan broker feed.
+   * Falls back to EOD snapshot if market is closed. No simulation_mode required.
+   */
+  window.syncLiveSentinelFeed = async function () {
+    try {
+      showToast("Syncing genuine candles from Dhan broker feed...", "🔄");
+      const res = await fetch("/api/sentinel-tape/reseed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: state.symbol, action: "sync_live" }),
+      });
+      const data = await res.json();
+      if (data.status === "offline") {
+        showToast(data.message || "Broker feed offline — no live data available", "⚠️");
+      } else {
+        showToast(data.message || "Broker feed synced", "✅");
+      }
+      loadSentinelTape();
+    } catch (e) {
+      console.error("Error syncing live sentinel feed:", e);
+      showToast("Sync error — check console", "❌");
+    }
+  };
+
+  /**
+   * Reload last verified EOD session snapshot from exchange journal.
+   * Computes derived metrics (CVD, VWAP bands) internally on authentic OHLCV.
+   * No simulation_mode required.
+   */
+  window.loadEODSentinelSnapshot = async function () {
+    try {
+      showToast("Loading verified EOD session snapshot...", "📥");
+      const res = await fetch("/api/sentinel-tape/reseed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: state.symbol, action: "load_eod" }),
+      });
+      const data = await res.json();
+      if (data.status === "offline") {
+        showToast(data.message || "No EOD snapshot available", "⚠️");
+      } else {
+        showToast(data.message || "EOD snapshot loaded", "✅");
+      }
+      loadSentinelTape();
+    } catch (e) {
+      console.error("Error loading EOD sentinel snapshot:", e);
+      showToast("Load error — check console", "❌");
+    }
+  };
+
   window.switchSentinelProfile = function (profile) {
     sentinelState.profile = profile;
     const profs = ["Full", "Pure", "CVD", "Trend"];

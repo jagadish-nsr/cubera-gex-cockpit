@@ -64,183 +64,21 @@ def _update_signal_walls_in_place(instrument_id: str, call_wall: float, put_wall
 
 
 log = logging.getLogger(__name__)
-
-
 def _load_from_eod_snapshot(
     instrument_id: str,
     symbol: str,
     call_wall: float | None = None,
     put_wall: float | None = None,
 ) -> bool:
-    """Load authentic historical / EOD bars from disk snapshot repositories.
+    """Redirect to sentinel.feed.history — canonical implementation moved there.
 
-    Hierarchy:
-    1. Local intraday snapshot CSVs in data/journal/futures_intraday_dhan/{symbol}/ or data/journal/futures_intraday/{symbol}/
-    2. Session snapshot OHLC from data/journal/market_snapshot.db (via get_snapshot)
+    Kept here for backward-compatibility with existing callers and tests.
+    All derived metrics (CVD, VWAP bands, buy/sell split) are computed in
+    history.py on authentic OHLCV data.
     """
-    sym = symbol.upper().strip()
+    from sentinel.feed.history import _load_from_eod_snapshot as _hist_load
+    return _hist_load(instrument_id, symbol=symbol, call_wall=call_wall, put_wall=put_wall)
 
-    # 1. Search intraday CSV snapshot directories
-    search_dirs = [
-        Path("data/journal/futures_intraday_dhan") / sym,
-        Path("data/journal/futures_intraday") / sym,
-    ]
-    candidate_files: list[Path] = []
-    for d in search_dirs:
-        if d.is_dir():
-            candidate_files.extend(sorted(d.glob("*.csv"), reverse=True))
-
-    if candidate_files:
-        latest_csv = candidate_files[0]
-        try:
-            bars_to_save: list[Bar] = []
-            with open(latest_csv, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-
-            if rows:
-                clear_sentinel_data(instrument_id)
-                vwap_tracker = SessionVWAPTracker()
-                cum_cvd = 0.0
-                lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
-
-                for r in rows:
-                    raw_ts = r.get("timestamp_utc")
-                    bar_dt = None
-                    if raw_ts:
-                        try:
-                            bar_dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone(IST)
-                        except Exception:
-                            bar_dt = None
-                    if not bar_dt:
-                        d_ist = r.get("date_ist")
-                        t_ist = r.get("time_ist")
-                        if d_ist and t_ist:
-                            try:
-                                bar_dt = datetime.strptime(f"{d_ist} {t_ist}", "%Y-%m-%d %H:%M").replace(tzinfo=IST)
-                            except Exception:
-                                continue
-                        else:
-                            continue
-
-                    price = float(r.get("price") or r.get("close") or r.get("spot") or 0.0)
-                    if price <= 0:
-                        continue
-                    vol = int(float(r.get("volume") or r.get("near_vol") or 0.0))
-                    oi = int(float(r.get("oi") or r.get("near_oi") or 0.0))
-                    d_oi = int(float(r.get("near_doi") or 0.0))
-                    chg = float(r.get("change") or 0.0)
-
-                    o = round(price - chg * 0.1, 1) if chg else price
-                    c = price
-                    h = round(max(o, c) + abs(chg) * 0.05, 1)
-                    l = round(min(o, c) - abs(chg) * 0.05, 1)
-
-                    vwap, up1, up2, dn1, dn2 = vwap_tracker.update(c, float(max(1, vol)))
-                    delta = round(vol * 0.1, 1) if c >= o else round(-vol * 0.1, 1)
-                    cum_cvd += delta
-
-                    bar = Bar(
-                        instrument_id=instrument_id,
-                        timeframe="1m",
-                        start_ts=bar_dt,
-                        open=o,
-                        high=h,
-                        low=l,
-                        close=c,
-                        volume_units=vol,
-                        volume_lots=round(vol / lot_size, 1),
-                        buy_vol_est=round((vol + delta) / 2.0, 1),
-                        sell_vol_est=round((vol - delta) / 2.0, 1),
-                        delta=delta,
-                        delta_ratio=round(delta / max(1, vol), 3),
-                        delta_quality=1.0,
-                        cvd=round(cum_cvd, 1),
-                        vwap=round(vwap, 1),
-                        vwap_sigma_1=round(up1, 1),
-                        vwap_sigma_2=round(up2, 1),
-                        vwap_lower_1=round(dn1, 1),
-                        vwap_lower_2=round(dn2, 1),
-                        oi=oi,
-                        delta_oi=d_oi,
-                        depth_imbalance=0.0,
-                    )
-                    bars_to_save.append(bar)
-                    save_bar(bar)
-
-                if bars_to_save:
-                    for tf_min in (3, 5, 15):
-                        agg = aggregate_bars(bars_to_save, target_minutes=tf_min)
-                        for b_agg in agg:
-                            save_bar(b_agg)
-                    log.info("Loaded %d bars from snapshot CSV %s for %s", len(bars_to_save), latest_csv.name, instrument_id)
-                    return True
-        except Exception as exc:
-            log.warning("Failed parsing intraday snapshot CSV %s: %s", latest_csv, exc)
-
-    # 2. Check SQLite EOD session snapshot registry (market_snapshot.db)
-    try:
-        from data.market_snapshot import get_snapshot
-        snap = get_snapshot(sym)
-        if snap and snap.get("spot") and snap.get("open"):
-            spot_px = float(snap["spot"])
-            open_px = float(snap["open"])
-            high_px = float(snap.get("high") or max(open_px, spot_px))
-            low_px = float(snap.get("low") or min(open_px, spot_px))
-            as_of_str = snap.get("as_of")
-
-            snap_dt = datetime.now(IST)
-            if as_of_str:
-                try:
-                    snap_dt = datetime.fromisoformat(as_of_str.replace("Z", "+00:00")).astimezone(IST)
-                except Exception:
-                    pass
-
-            session_close_ts = snap_dt.replace(hour=15, minute=30, second=0, microsecond=0)
-
-            existing = list_recent_bars(instrument_id, timeframe="1m", limit=5, session_only=False, _auto_populate=False)
-            if existing and existing[-1].start_ts.date() == session_close_ts.date():
-                return True
-
-            clear_sentinel_data(instrument_id)
-            lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
-            vol = 150000
-
-            eod_bar = Bar(
-                instrument_id=instrument_id,
-                timeframe="1m",
-                start_ts=session_close_ts,
-                open=round(open_px, 1),
-                high=round(high_px, 1),
-                low=round(low_px, 1),
-                close=round(spot_px, 1),
-                volume_units=vol,
-                volume_lots=round(vol / lot_size, 1),
-                buy_vol_est=round(vol / 2.0, 1),
-                sell_vol_est=round(vol / 2.0, 1),
-                delta=0.0,
-                delta_ratio=0.0,
-                delta_quality=1.0,
-                cvd=0.0,
-                vwap=round(spot_px, 1),
-                vwap_sigma_1=round(high_px, 1),
-                vwap_sigma_2=round(high_px, 1),
-                vwap_lower_1=round(low_px, 1),
-                vwap_lower_2=round(low_px, 1),
-                oi=0,
-                delta_oi=0,
-                depth_imbalance=0.0,
-            )
-            save_bar(eod_bar)
-            for tf in ("3m", "5m", "15m"):
-                b_tf = Bar(**{**eod_bar.__dict__, "timeframe": tf})
-                save_bar(b_tf)
-            log.info("Initialized Sentinel EOD anchor bar from market_snapshot.db for %s", instrument_id)
-            return True
-    except Exception as exc:
-        log.warning("Failed loading snapshot from market_snapshot.db for %s: %s", instrument_id, exc)
-
-    return False
 
 
 def seed_sentinel_demo_if_needed(
