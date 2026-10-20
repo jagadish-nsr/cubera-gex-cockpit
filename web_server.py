@@ -307,6 +307,38 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     return dash
 
 
+def _extract_active_gamma_flip(dash, sym: str) -> Optional[float]:
+    """Safely extract the zero-crossing Gamma Flip level with authentic persistent fallback chain.
+
+    Priority:
+    1. dash.levels.gamma_flip (authenticated snapshot / runtime level)
+    2. dash.levels.flip (numerical zero-crossing from sticky-strike solver if present)
+    3. SQLite market_snapshot database table (persisted EOD/intraday flip)
+    4. dash.raw_agg.get('gamma_flip')
+    """
+    lv = getattr(dash, "levels", None)
+    if lv:
+        f = getattr(lv, "gamma_flip", None)
+        if f is not None and float(f) > 0:
+            return float(f)
+        f = getattr(lv, "flip", None)
+        if f is not None and float(f) > 0:
+            return float(f)
+    try:
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(sym)
+        if snap and snap.get("gamma_flip"):
+            f = float(snap["gamma_flip"])
+            if f > 0:
+                return f
+    except Exception:
+        pass
+    raw = getattr(dash, "raw_agg", {}) or {}
+    if raw.get("gamma_flip") and float(raw["gamma_flip"]) > 0:
+        return float(raw["gamma_flip"])
+    return None
+
+
 def _cluster_ideas_by_strike(ideas: List[TradeIdea]) -> List[StrikeCluster]:
     clusters: Dict[float, List[TradeIdea]] = {}
     for idea in ideas:
@@ -693,7 +725,7 @@ async def get_cockpit_data(
     spot = float(dash.levels.spot or 0.0)
 
     # 8 KPI cards (including Max Pain and IOAS Directional Bias)
-    flip_val = float(getattr(dash.levels, "flip", 0.0) or 0.0)
+    flip_val = _extract_active_gamma_flip(dash, sym)
     net_gex_val = float(getattr(dash.levels, "total_net_gex", 0.0) or 0.0)
     pcr_val = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95)
     mp_val = float(getattr(dash.levels, "max_pain", 0.0) or spot)
@@ -704,10 +736,17 @@ async def get_cockpit_data(
     pin_score = max(10, min(100, int(round(100 - (pin_dist / max(spot, 1.0)) * 2800))))
     bias_color = "var(--go)" if bias_res.score > 0.8 else ("var(--stop)" if bias_res.score < -0.8 else "var(--spark)")
 
+    if flip_val:
+        dist_flip = flip_val - spot
+        dist_sign = "+" if dist_flip >= 0 else ""
+        flip_sub = f"{dist_sign}{dist_flip:,.0f} pts · Volatility Pivot"
+    else:
+        flip_sub = "No Zero-Crossing in ±10%"
+
     kpis = {
         "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": "Major Overhead Resistance"},
         "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": "Major Floor Support"},
-        "gamma_flip": {"val": flip_val, "sub": "Volatility Pivot Barrier"},
+        "gamma_flip": {"val": flip_val if flip_val else 0.0, "sub": flip_sub, "raw": flip_val},
         "max_pain": {"val": float(mp_val), "sub": f"Pin: {pin_score}/100"},
         "directional_bias": {
             "val": f"{bias_res.score:+.2f}",
@@ -724,6 +763,16 @@ async def get_cockpit_data(
     ladder = []
     step = 50 if sym == "NIFTY" else (100 if sym == "BANKNIFTY" else 100)
     center = round(spot / step) * step
+    ladder_strikes = [center + (offset * step) for offset in range(-5, 6)]
+
+    closest_flip_stk = min(ladder_strikes, key=lambda s: abs(s - flip_val)) if flip_val else None
+    is_flip_in_band = (flip_val is not None and closest_flip_stk is not None and abs(closest_flip_stk - flip_val) <= step)
+
+    closest_mp_stk = min(ladder_strikes, key=lambda s: abs(s - mp_val)) if mp_val else None
+    is_mp_in_band = (mp_val is not None and closest_mp_stk is not None and abs(closest_mp_stk - mp_val) <= step)
+
+    closest_magnet_stk = min(ladder_strikes, key=lambda s: abs(s - magnet_val)) if magnet_val else None
+    is_magnet_in_band = (magnet_val is not None and closest_magnet_stk is not None and abs(closest_magnet_stk - magnet_val) <= step)
 
     contracts_df = getattr(dash, "contracts", None)
     strike_oi_map = {}
@@ -760,9 +809,9 @@ async def get_cockpit_data(
             "net_gex": net_stk_gex,
             "is_call_wall": (stk == dash.levels.call_wall),
             "is_put_wall": (stk == dash.levels.put_wall),
-            "is_gamma_flip": (abs(stk - flip_val) < step / 2),
-            "is_max_pain": (abs(stk - mp_val) < step / 2),
-            "is_magnet": (abs(stk - magnet_val) < step / 2),
+            "is_gamma_flip": (stk == closest_flip_stk) if is_flip_in_band else False,
+            "is_max_pain": (stk == closest_mp_stk) if is_mp_in_band else False,
+            "is_magnet": (stk == closest_magnet_stk) if is_magnet_in_band else False,
         })
 
     # Gamma Blast Verdict (Evaluated dynamically via app.gammablast)
@@ -872,6 +921,7 @@ async def get_cockpit_data(
     return {
         "symbol": sym,
         "spot": spot,
+        "gamma_flip": flip_val or 0.0,
         "kpis": kpis,
         "gamma_blast": gamma_blast,
         "ladder": ladder,
@@ -1577,7 +1627,7 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
         "timeframe": tf,
         "call_wall": float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0),
         "put_wall": float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0),
-        "gamma_flip": float(getattr(getattr(dash, "levels", None), "flip", 0.0) or 0.0),
+        "gamma_flip": float(_extract_active_gamma_flip(dash, sym) or 0.0),
         "kpis": {
             "cvd_regime": "BUYER_DOMINATED" if total_net_cvd >= 0 else "SELLER_DOMINATED",
             "net_cvd": f"{total_net_cvd:+,.0f}",
@@ -2464,7 +2514,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
     gap_pts = float(pm_state.get("gap_pts") or 0.0)
     cw = float(getattr(d_levels, "call_wall", 24600.0) or 24600.0)
     pw = float(getattr(d_levels, "put_wall", 24400.0) or 24400.0)
-    flip = float(getattr(d_levels, "flip", 24500.0) or 24500.0)
+    flip = float(_extract_active_gamma_flip(dash, sym) or 24500.0)
 
     try:
         shocks = calculate_pre_market_option_shocks(
@@ -3618,7 +3668,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "india_vix": real_vix,
                     "call_wall": float(dash.levels.call_wall or 0),
                     "put_wall": float(dash.levels.put_wall or 0),
-                    "gamma_flip": float(getattr(dash.levels, "flip", 0.0) or 0.0),
+                    "gamma_flip": float(_extract_active_gamma_flip(dash, sym) or 0.0),
                     "is_market_open": True,
                     "feed_mode": "LIVE_WEBSOCKET",
                     "latest_bar": latest_bar_dict,

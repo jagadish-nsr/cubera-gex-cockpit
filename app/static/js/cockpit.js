@@ -651,7 +651,25 @@
 
       if (data.kpis.call_wall) document.getElementById("kpi-call-wall").textContent = `₹${data.kpis.call_wall.val.toLocaleString("en-IN")}`;
       if (data.kpis.put_wall) document.getElementById("kpi-put-wall").textContent = `₹${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
-      if (data.kpis.gamma_flip) document.getElementById("kpi-gamma-flip").textContent = `₹${data.kpis.gamma_flip.val.toLocaleString("en-IN")}`;
+
+      if (data.kpis.gamma_flip) {
+        const gfEl = document.getElementById("kpi-gamma-flip");
+        const gfSubEl = document.getElementById("kpi-gamma-flip-sub");
+        const rawGf = data.kpis.gamma_flip.raw !== undefined ? data.kpis.gamma_flip.raw : data.kpis.gamma_flip.val;
+        const numGf = Number(rawGf);
+        if (numGf > 0) {
+          gfEl.textContent = `₹${Math.round(numGf).toLocaleString("en-IN")}`;
+        } else if (typeof data.kpis.gamma_flip.val === "string" && data.kpis.gamma_flip.val.startsWith("₹")) {
+          gfEl.textContent = data.kpis.gamma_flip.val;
+        } else if (data.kpis.gamma_flip.val && data.kpis.gamma_flip.val !== "None" && data.kpis.gamma_flip.val !== 0) {
+          gfEl.textContent = String(data.kpis.gamma_flip.val);
+        } else {
+          gfEl.textContent = "None (Unbounded)";
+        }
+        if (gfSubEl && data.kpis.gamma_flip.sub) {
+          gfSubEl.textContent = data.kpis.gamma_flip.sub;
+        }
+      }
 
       const mpEl = document.getElementById("kpi-max-pain");
       const mpSubEl = document.getElementById("kpi-max-pain-sub");
@@ -860,6 +878,17 @@
       }
 
       // Gamma Price Ladder
+      const ladderFlipVal = document.getElementById("ladder-flip-val");
+      if (ladderFlipVal) {
+        const rawGf = (data.kpis && data.kpis.gamma_flip && data.kpis.gamma_flip.raw) || data.gamma_flip;
+        const numGf = Number(rawGf);
+        if (numGf > 0) {
+          ladderFlipVal.textContent = `₹${Math.round(numGf).toLocaleString("en-IN")}`;
+        } else {
+          ladderFlipVal.textContent = "None (Unbounded)";
+        }
+      }
+
       const tbody = document.getElementById("gamma-ladder-body");
       if (tbody) {
         tbody.innerHTML = "";
