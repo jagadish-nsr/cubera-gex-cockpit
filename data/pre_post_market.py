@@ -989,7 +989,11 @@ def get_post_market_state(
                 "settled_at": persisted.get("settled_at") or "15:40:00",
                 "closing_cvd": float(persisted.get("closing_cvd") or 0.0),
                 "orderflow_bias": persisted.get("orderflow_bias") or "",
-                "status_text": persisted.get("status_text") or "Session Concluded · Final Settlement Reconciled",
+                "status_text": (
+                    "Session Concluded · Final Settlement Reconciled"
+                    if any(k in (persisted.get("status_text") or "") for k in ("Equilibrium Discovered", "Pre-Market", "Pre-Open", "Pre-Open Auction"))
+                    else (persisted.get("status_text") or "Session Concluded · Final Settlement Reconciled")
+                ),
                 "day_range": persisted.get("day_range") or "",
                 "net_change_pts": net_pts,
                 "net_change_pct": net_pct,

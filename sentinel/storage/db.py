@@ -244,7 +244,12 @@ def list_recent_bars(
     today_str = now_ist.strftime("%Y-%m-%d")
     m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
     m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
-    is_active_market_day = (now_ist.weekday() < 5) and (m_open <= now_ist <= m_close)
+    try:
+        from data.holidays import is_trading_day
+        is_today_trading = is_trading_day(now_ist.date())
+    except Exception:
+        is_today_trading = now_ist.weekday() < 5
+    is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
 
     try:
         if session_only:

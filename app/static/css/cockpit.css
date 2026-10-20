@@ -42,6 +42,49 @@
   --shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6);
   --shadow-lg: 0 12px 40px -4px rgba(0, 0, 0, 0.75);
   --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --header-bg: rgba(7, 11, 18, 0.88);
+  --brand-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+
+/* Light Theme Variables — Institutional Crisp Mode */
+[data-theme="light"],
+body.theme-light {
+  --bg: #f1f5f9;
+  --surface-1: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #e2e8f0;
+  --surface-hover: #e2e8f0;
+  --line: rgba(100, 116, 139, 0.22);
+  --line-strong: rgba(100, 116, 139, 0.40);
+  --line-focus: #0284c7;
+  --ink: #0f172a;
+  --ink-mute: #475569;
+  --ink-faint: #64748b;
+  
+  --go: #16a34a;
+  --go-bg: rgba(22, 163, 74, 0.10);
+  --go-glow: rgba(22, 163, 74, 0.25);
+  
+  --stop: #dc2626;
+  --stop-bg: rgba(220, 38, 38, 0.10);
+  --stop-glow: rgba(220, 38, 38, 0.25);
+  
+  --spark: #0284c7;
+  --spark-bg: rgba(2, 132, 199, 0.10);
+  --spark-glow: rgba(2, 132, 199, 0.25);
+  
+  --warn: #d97706;
+  --warn-bg: rgba(217, 119, 6, 0.10);
+  --warn-glow: rgba(217, 119, 6, 0.25);
+  
+  --purple: #9333ea;
+  --purple-bg: rgba(147, 51, 234, 0.10);
+  --purple-glow: rgba(147, 51, 234, 0.25);
+
+  --shadow: 0 4px 20px -2px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 12px 32px -4px rgba(15, 23, 42, 0.14);
+  --header-bg: rgba(255, 255, 255, 0.92);
+  --brand-shadow: none;
 }
 
 *, *::before, *::after {
@@ -151,13 +194,13 @@ body {
 }
 
 .brand-title {
-  color: #ffffff;
+  color: var(--ink);
   font-weight: 900;
   letter-spacing: 0.05em;
   font-size: 1.42rem;
   line-height: 1.1;
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
-  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  text-shadow: var(--brand-shadow);
 }
 
 .brand-gex-badge {
@@ -434,7 +477,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 90;
-  background: rgba(7, 11, 18, 0.88);
+  background: var(--header-bg);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--line);
   padding: 12px 24px 0 24px;
@@ -2131,4 +2174,132 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   color: var(--warn);
   background: var(--warn-bg);
 }
+
+/* =========================================================================
+   Light Theme Component Overrides & Polished Aesthetics
+   ========================================================================= */
+
+[data-theme="light"] .brand-gex-badge {
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+  border-color: rgba(2, 132, 199, 0.35);
+  box-shadow: none;
+}
+
+[data-theme="light"] .tab-btn:hover {
+  color: var(--ink);
+  background: rgba(15, 23, 42, 0.05);
+}
+
+[data-theme="light"] .tab-btn:hover .tab-icon {
+  color: var(--spark);
+  filter: none;
+}
+
+[data-theme="light"] .tab-btn.active {
+  color: var(--spark);
+  background: rgba(2, 132, 199, 0.08);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--spark);
+}
+
+[data-theme="light"] .ladder-table td,
+[data-theme="light"] .dual-wing-ladder td,
+[data-theme="light"] .block-tape-table td,
+[data-theme="light"] .shock-table td,
+[data-theme="light"] .ck-ladder-table td,
+[data-theme="light"] .conf-matrix-table td {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="light"] .ck-ladder-table tr:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+[data-theme="light"] .comm-card {
+  background: var(--surface-1);
+}
+
+[data-theme="light"] .comm-bite-box {
+  background: var(--surface-2);
+  border: 1px dashed var(--line);
+}
+
+[data-theme="light"] .marquee-telemetry {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-mute);
+}
+
+[data-theme="light"] .marquee-action-tag {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+[data-theme="light"] .alert-tape-marquee-container {
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="light"] .badge-done {
+  background: var(--surface-3);
+  color: var(--ink-mute);
+}
+
+[data-theme="light"] .badge-active {
+  color: #ffffff;
+}
+
+[data-theme="light"] .btn-secondary {
+  background: var(--surface-1);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+[data-theme="light"] .btn-secondary:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+/* Theme Toggle Button Styling */
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: var(--transition);
+}
+
+.theme-toggle-btn:hover {
+  border-color: var(--spark);
+  box-shadow: 0 0 10px var(--spark-glow);
+}
+
+.theme-toggle-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-block;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.theme-toggle-btn:hover .theme-toggle-icon {
+  transform: rotate(20deg) scale(1.15);
+}
+
+.theme-toggle-label {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 
