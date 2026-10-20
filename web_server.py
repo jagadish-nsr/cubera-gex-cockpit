@@ -582,6 +582,120 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
         return BiasResult(score=0.0, regime="Neutral ⏳", signals=[], headline="Neutral equilibrium")
 
 
+def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
+    """Compute accurate market session phase, next event countdown, and reopening status."""
+    from datetime import datetime, timezone, timedelta
+    from data.holidays import is_trading_day
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if now_ist is None:
+        now_ist = datetime.now(ist)
+    elif now_ist.tzinfo is None:
+        now_ist = now_ist.replace(tzinfo=ist)
+
+    today = now_ist.date()
+    t_min = now_ist.hour * 60 + now_ist.minute
+    is_today_trading = is_trading_day(today)
+
+    # 1. Determine next trading session day & opening datetime (09:15 IST)
+    if is_today_trading and t_min < 9 * 60 + 15:
+        target_date = today
+    else:
+        target_date = today + timedelta(days=1)
+        while not is_trading_day(target_date):
+            target_date += timedelta(days=1)
+
+    days_diff = (target_date - today).days
+    day_name = target_date.strftime("%a")
+    if days_diff == 0:
+        when_str = "Today"
+    elif days_diff == 1:
+        when_str = f"Tomorrow ({day_name})"
+    else:
+        fmt_d = target_date.strftime("%d-%b")
+        when_str = f"{day_name} ({fmt_d})"
+
+    open_dt = datetime(target_date.year, target_date.month, target_date.day, 9, 15, tzinfo=ist)
+    pre_dt = datetime(target_date.year, target_date.month, target_date.day, 9, 0, tzinfo=ist)
+    secs_to_open = max(0, int((open_dt - now_ist).total_seconds()))
+    hours_open = secs_to_open // 3600
+    mins_open = (secs_to_open % 3600) // 60
+
+    # 2. Check if currently inside trading hours (09:15 - 15:40)
+    is_live = is_today_trading and (9 * 60 + 15 <= t_min < 15 * 60 + 40)
+
+    if not is_today_trading:
+        phase_badge = "MARKET CLOSED (Weekend)" if today.weekday() >= 5 else "MARKET CLOSED (Holiday)"
+        phase_title = "Market Closed"
+        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+    elif t_min < 9 * 60:
+        phase_badge = "PRE-MARKET PREP (Opens 09:00)"
+        phase_title = "Pre-Market Preparation"
+        secs_to_pre = max(0, int((pre_dt - now_ist).total_seconds()))
+        h_pre, m_pre = secs_to_pre // 3600, (secs_to_pre % 3600) // 60
+        exec_phase_countdown = f"Pre-Open in {h_pre}h {m_pre}m · Bell at 09:15 IST"
+    elif t_min < 9 * 60 + 8:
+        phase_badge = "PRE-OPEN ORDER ENTRY (09:00–09:08)"
+        phase_title = "Pre-Open Auction"
+        rem_m = 9 * 60 + 8 - t_min
+        exec_phase_countdown = f"Equilibrium Discovery in {rem_m}m · Bell 09:15"
+    elif t_min < 9 * 60 + 15:
+        phase_badge = "EQUILIBRIUM DISCOVERY (09:08–09:15)"
+        phase_title = "Pre-Open Equilibrium"
+        rem_m = 9 * 60 + 15 - t_min
+        exec_phase_countdown = f"Opening Bell in {rem_m}m (09:15 IST)"
+    elif t_min < 9 * 60 + 45:
+        phase_badge = "INITIAL DRIVE (09:15–09:45)"
+        phase_title = "Initial Balance Range"
+        rem_m = 9 * 60 + 45 - t_min
+        exec_phase_countdown = f"Initial Balance Lock in {rem_m}m"
+    elif t_min < 11 * 60 + 30:
+        phase_badge = "MORNING TREND (09:45–11:30)"
+        phase_title = "Morning Volatility Drive"
+        rem_m = 11 * 60 + 30 - t_min
+        h, m = rem_m // 60, rem_m % 60
+        exec_phase_countdown = f"Midday Consolidation in {h}h {m}m" if h > 0 else f"Midday in {m}m"
+    elif t_min < 13 * 60 + 30:
+        phase_badge = "MIDDAY CONSOLIDATION (11:30–13:30)"
+        phase_title = "Midday Range Drift"
+        rem_m = 13 * 60 + 30 - t_min
+        h, m = rem_m // 60, rem_m % 60
+        exec_phase_countdown = f"Afternoon Session in {h}h {m}m" if h > 0 else f"Afternoon in {m}m"
+    elif t_min < 14 * 60 + 30:
+        phase_badge = "AFTERNOON EXPANSION (13:30–14:30)"
+        phase_title = "European Open Expansion"
+        rem_m = 14 * 60 + 30 - t_min
+        exec_phase_countdown = f"Power Hour in {rem_m}m (14:30 IST)"
+    elif t_min < 15 * 60 + 30:
+        phase_badge = "POWER HOUR (14:30–15:30)"
+        phase_title = "Power Hour Settlement"
+        rem_m = 15 * 60 + 30 - t_min
+        exec_phase_countdown = f"Cash Session Closes in {rem_m}m (15:30 IST)"
+    elif t_min < 15 * 60 + 40:
+        phase_badge = "CAS AUCTION & F&O CLOSE (15:30–15:40)"
+        phase_title = "Closing Auction Session"
+        rem_m = 15 * 60 + 40 - t_min
+        exec_phase_countdown = f"F&O Session Closes in {rem_m}m (15:40 IST)"
+    elif t_min < 16 * 60:
+        phase_badge = "POST-CLOSE SETTLEMENT (15:40–16:00)"
+        phase_title = "Post-Market Settlement"
+        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+    else:
+        phase_badge = f"MARKET CLOSED (Reopens {when_str})"
+        phase_title = "Market Closed (EOD)"
+        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+
+    return {
+        "is_market_open": is_live,
+        "phase_badge": phase_badge,
+        "phase_title": phase_title,
+        "exec_phase_countdown": exec_phase_countdown,
+        "reopen_target": when_str,
+        "hours_until_open": hours_open,
+        "mins_until_open": mins_open,
+    }
+
+
 # --------------------------------------------------------------------------
 # API REST Endpoints
 # --------------------------------------------------------------------------
@@ -637,6 +751,8 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         "pct_change": 0.0,
     }
 
+    sched = compute_session_schedule_info(now_ist)
+
     return {
         "symbol": sym,
         "label": idx.label,
@@ -648,7 +764,9 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         "day_ohlc": real_ohlc,
         "india_vix": real_vix,
         "session_phase": sess_phase,
-        "session_label": sess_label,
+        "session_label": sched["phase_badge"],
+        "session_schedule": sched,
+        "next_phase_countdown": sched["exec_phase_countdown"],
         "is_market_open": is_live,
         "feed_mode": feed_mode,
         "feed_title": session_title,
@@ -932,6 +1050,8 @@ async def get_cockpit_data(
         "total_cockpit_cards": total_cockpit_cards,
         "pre_market": pm_state,
         "orderflow_alerts": orderflow_alerts,
+        "session_schedule": compute_session_schedule_info(_get_ist_now()),
+        "next_phase_countdown": compute_session_schedule_info(_get_ist_now())["exec_phase_countdown"],
         "market_breadth": {
             "advances": adv,
             "declines": dec,
