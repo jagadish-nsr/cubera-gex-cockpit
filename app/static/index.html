@@ -212,7 +212,7 @@
               <span id="theme-toggle-icon" class="theme-toggle-icon">🌙</span>
               <span id="theme-toggle-label" class="theme-toggle-label">Dark</span>
             </button>
-            <span id="session-phase-badge" class="badge-active" style="padding:5px 12px;font-size:0.74rem">POWER HOUR (09:15–15:30)</span>
+            <span id="session-phase-badge" class="badge-active" style="padding:5px 12px;font-size:0.74rem">MARKET STATUS</span>
           </div>
         </div>
 
@@ -354,15 +354,15 @@
           <div class="exec-strip">
             <div class="exec-item">
               <span class="exec-label">Executive Session Status</span>
-              <span id="cockpit-exec-status" class="exec-val" style="color:var(--ink-mute)">Session Closed · Snapshot Locked at ₹23,146.15</span>
+              <span id="cockpit-exec-status" class="exec-val" style="color:var(--ink-mute)">Loading session status...</span>
             </div>
             <div class="exec-item">
               <span class="exec-label">Market Breadth</span>
-              <span id="cockpit-breadth-val" class="exec-val">11 Adv / 3 Dec (3.67x)</span>
+              <span id="cockpit-breadth-val" class="exec-val">—</span>
             </div>
             <div class="exec-item">
               <span class="exec-label">Next Phase Countdown</span>
-              <span id="cockpit-phase-countdown" class="exec-val" style="color:var(--ink-mute)">Market Closed · Reopens Tomorrow (Wed) 09:15 IST</span>
+              <span id="cockpit-phase-countdown" class="exec-val" style="color:var(--ink-mute)">Calculating countdown...</span>
             </div>
           </div>
 
@@ -463,42 +463,42 @@
           <div class="kpi-grid">
             <div class="kpi-card go">
               <small>Call Wall (Resistance)</small>
-              <b id="kpi-call-wall">₹24,600</b>
+              <b id="kpi-call-wall">—</b>
               <span>Major Overhead Ceiling</span>
             </div>
             <div class="kpi-card stop">
               <small>Put Wall (Support)</small>
-              <b id="kpi-put-wall">₹24,400</b>
+              <b id="kpi-put-wall">—</b>
               <span>Major Floor Support</span>
             </div>
             <div class="kpi-card spark">
               <small>Gamma Flip</small>
-              <b id="kpi-gamma-flip">₹24,480</b>
+              <b id="kpi-gamma-flip">—</b>
               <span id="kpi-gamma-flip-sub">Volatility Pivot Barrier</span>
             </div>
             <div class="kpi-card warn">
               <small>Max Pain Strike</small>
-              <b id="kpi-max-pain">₹24,500</b>
-              <span id="kpi-max-pain-sub">Pin: 85/100</span>
+              <b id="kpi-max-pain">—</b>
+              <span id="kpi-max-pain-sub">—</span>
             </div>
             <div class="kpi-card" id="card-directional-bias">
               <small>Directional Bias (IOAS)</small>
-              <b id="kpi-directional-bias">+1.25</b>
-              <span id="kpi-directional-bias-mode">Moderately Bullish</span>
+              <b id="kpi-directional-bias">—</b>
+              <span id="kpi-directional-bias-mode">Quant Directional Score</span>
             </div>
             <div class="kpi-card purple">
               <small>Regime Classification</small>
-              <b id="kpi-regime">BULL_TREND</b>
-              <span id="kpi-regime-mode">Mode: Positive Gamma Pin</span>
+              <b id="kpi-regime">—</b>
+              <span id="kpi-regime-mode">—</span>
             </div>
             <div class="kpi-card warn">
               <small>Net Dealer Gamma</small>
-              <b id="kpi-net-gex">+145,200</b>
+              <b id="kpi-net-gex">—</b>
               <span>Dealer Gamma Units</span>
             </div>
             <div class="kpi-card">
               <small>Put-Call Ratio (PCR)</small>
-              <b id="kpi-pcr">1.18</b>
+              <b id="kpi-pcr">—</b>
               <span>Bullish Open Interest Bias</span>
             </div>
           </div>
@@ -2074,6 +2074,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=5.3"></script>
+  <script src="/static/js/cockpit.js?v=5.4"></script>
 </body>
 </html>

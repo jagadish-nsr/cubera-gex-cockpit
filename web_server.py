@@ -624,10 +624,25 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
     # 2. Check if currently inside trading hours (09:15 - 15:40)
     is_live = is_today_trading and (9 * 60 + 15 <= t_min < 15 * 60 + 40)
 
+    h_name = None
     if not is_today_trading:
-        phase_badge = "MARKET CLOSED (Weekend)" if today.weekday() >= 5 else "MARKET CLOSED (Holiday)"
-        phase_title = "Market Closed"
-        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+        try:
+            from data.holidays import get_holiday_name
+            h_name = get_holiday_name(today)
+        except Exception:
+            h_name = None
+        if h_name:
+            phase_badge = f"MARKET CLOSED ({h_name.upper()})"
+            phase_title = f"Market Closed · {h_name}"
+            exec_phase_countdown = f"Market Closed ({h_name}) · Reopens {when_str} 09:15 IST"
+        elif today.weekday() >= 5:
+            phase_badge = "MARKET CLOSED (Weekend)"
+            phase_title = "Market Closed (Weekend)"
+            exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+        else:
+            phase_badge = "MARKET CLOSED (Holiday)"
+            phase_title = "Market Closed (Holiday)"
+            exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
     elif t_min < 9 * 60:
         phase_badge = "PRE-MARKET PREP (Opens 09:00)"
         phase_title = "Pre-Market Preparation"
@@ -693,6 +708,7 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
         "reopen_target": when_str,
         "hours_until_open": hours_open,
         "mins_until_open": mins_open,
+        "holiday_name": h_name,
     }
 
 
@@ -721,15 +737,21 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     except Exception:
         sess_phase, sess_label = "CLOSED", "Closed"
 
+    now_ist = _get_ist_now()
+    sched = compute_session_schedule_info(now_ist)
+    h_name = sched.get("holiday_name")
+
     is_live = config.is_market_open()
     feed_mode = "LIVE_WEBSOCKET" if is_live else "OFFLINE_AUTOSWITCH"
-    session_title = "🟢 Live Market Open" if is_live else "Market Closed"
-    feed_badge = "🟢 WebSocket Live" if is_live else "Offline Auto-Switch"
+    session_title = "🟢 Live Market Open" if is_live else sched.get("phase_title", "Market Closed")
+    feed_badge = "🟢 WebSocket Live" if is_live else ("Holiday Auto-Switch" if h_name else "Offline Auto-Switch")
     feed_source = "0ms Direct Memory" if is_live else "Session Snapshot"
     pollers_status = "Active (1s Push)" if is_live else "Paused"
-    feed_subtext = "Live direct exchange tick stream" if is_live else "Auto-switched to post-market snapshot"
+    feed_subtext = "Live direct exchange tick stream" if is_live else (
+        f"Exchange Holiday ({h_name}) · Snapshot Active" if h_name
+        else "Auto-switched to post-market snapshot"
+    )
     pm_st = get_pre_market_state(sym)
-    now_ist = _get_ist_now()
     now_m = now_ist.hour * 60 + now_ist.minute
     is_pre_bell_ephemeral = (sess_phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")) or (bool(pm_st.get("is_discovered")) and 9 * 60 <= now_m <= 9 * 60 + 22)
 
@@ -1036,6 +1058,16 @@ async def get_cockpit_data(
     ratio = round(adv / max(1, dec), 2) if (adv > 0 or dec > 0) else 1.0
     sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
 
+    sched = compute_session_schedule_info(_get_ist_now())
+    h_name = sched.get("holiday_name")
+    if not is_open:
+        exec_status_text = (
+            f"Session Closed · {h_name} · Snapshot Locked at ₹{spot:,.1f}" if h_name
+            else f"Session Closed · Snapshot Locked at ₹{spot:,.1f}"
+        )
+    else:
+        exec_status_text = f"{kpis.get('regime', {}).get('val', 'Normal')} Mode · Spot ₹{spot:,.1f}"
+
     return {
         "symbol": sym,
         "spot": spot,
@@ -1050,8 +1082,9 @@ async def get_cockpit_data(
         "total_cockpit_cards": total_cockpit_cards,
         "pre_market": pm_state,
         "orderflow_alerts": orderflow_alerts,
-        "session_schedule": compute_session_schedule_info(_get_ist_now()),
-        "next_phase_countdown": compute_session_schedule_info(_get_ist_now())["exec_phase_countdown"],
+        "session_schedule": sched,
+        "next_phase_countdown": sched["exec_phase_countdown"],
+        "exec_session_status": exec_status_text,
         "market_breadth": {
             "advances": adv,
             "declines": dec,

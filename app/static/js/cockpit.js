@@ -575,7 +575,7 @@
           feedStatusBadge.style.background = "rgba(239,68,68,0.15)";
         }
         if (sessionTitleDisplay) {
-          sessionTitleDisplay.textContent = "Market Closed";
+          sessionTitleDisplay.textContent = (data.session_schedule && data.session_schedule.phase_title) || data.feed_title || "Market Closed";
           sessionTitleDisplay.style.color = "#f87171";
         }
         if (sessionSubstateDisplay) {
@@ -695,8 +695,12 @@
 
       const execStatusEl = document.getElementById("cockpit-exec-status");
       if (execStatusEl) {
-        if (!state.isMarketOpen) {
-          execStatusEl.textContent = `Session Closed · Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")}`;
+        if (data.exec_session_status) {
+          execStatusEl.textContent = data.exec_session_status;
+          execStatusEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
+        } else if (!state.isMarketOpen) {
+          const holidayStr = data.session_schedule && data.session_schedule.holiday_name ? ` · ${data.session_schedule.holiday_name}` : "";
+          execStatusEl.textContent = `Session Closed${holidayStr} · Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")}`;
           execStatusEl.style.color = "var(--ink-mute)";
         } else {
           execStatusEl.textContent = `${data.kpis.regime.val} Mode · Spot ₹${data.spot.toLocaleString("en-IN")}`;
@@ -4929,7 +4933,9 @@
     } else if (day === 6) {
       targetDayName = "Mon";
     } else if (day === 0) {
-      targetDayName = tMin < 9 * 60 + 15 ? "Today (Mon)" : "Tomorrow (Mon)";
+      targetDayName = "Tomorrow (Mon)";
+    } else if (day === 1 && tMin < 9 * 60 + 15) {
+      targetDayName = "Today (Mon)";
     } else {
       const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
       const nextDayName = dayNames[(day + 1) % 7];

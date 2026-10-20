@@ -39,20 +39,78 @@ HEADERS = {
     "Referer": "https://www.nseindia.com/",
 }
 
-_calendar_cache: dict[int, set[date]] = {}   # year -> set of holiday dates
+_calendar_cache: dict[int, set[date]] = {}        # year -> set of holiday dates
+_calendar_names_cache: dict[int, dict[date, str]] = {}  # year -> {date: holiday name}
+
+# Standard official NSE trading holiday names (fallback/canonical dictionary)
+NSE_HOLIDAY_NAMES: dict[str, str] = {
+    # 2025
+    "2025-02-26": "Mahashivratri",
+    "2025-03-14": "Holi",
+    "2025-03-31": "Id-Ul-Fitr (Ramzan Id)",
+    "2025-04-10": "Shri Mahavir Jayanti",
+    "2025-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2025-04-18": "Good Friday",
+    "2025-05-01": "Maharashtra Day",
+    "2025-06-07": "Bakri Id",
+    "2025-08-15": "Independence Day",
+    "2025-08-27": "Ganesh Chaturthi",
+    "2025-10-02": "Mahatma Gandhi Jayanti / Dussehra",
+    "2025-10-21": "Diwali (Laxmi Pujan)",
+    "2025-10-22": "Diwali Balipratipada",
+    "2025-11-05": "Guru Nanak Jayanti",
+    "2025-12-25": "Christmas",
+    # 2026
+    "2026-01-15": "Makar Sankranti / Pongal",
+    "2026-01-26": "Republic Day",
+    "2026-02-15": "Mahashivratri",
+    "2026-03-03": "Holi",
+    "2026-03-21": "Id-Ul-Fitr (Ramzan Id)",
+    "2026-03-26": "Shri Ram Navami",
+    "2026-03-31": "Mahavir Jayanti",
+    "2026-04-03": "Good Friday",
+    "2026-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2026-05-01": "Maharashtra Day",
+    "2026-05-28": "Bakri Id (Id-Ul-Zuha)",
+    "2026-06-26": "Muharram",
+    "2026-08-15": "Independence Day",
+    "2026-09-14": "Milad-un-Nabi (Id-e-Milad)",
+    "2026-10-02": "Mahatma Gandhi Jayanti",
+    "2026-10-20": "Dussehra / Vijayadashami",
+    "2026-11-08": "Diwali (Laxmi Pujan)",
+    "2026-11-10": "Diwali Balipratipada",
+    "2026-11-24": "Guru Nanak Jayanti",
+    "2026-12-25": "Christmas",
+    # 2027
+    "2027-01-26": "Republic Day",
+    "2027-03-06": "Mahashivratri",
+    "2027-03-23": "Holi",
+    "2027-04-14": "Dr. Baba Saheb Ambedkar Jayanti",
+    "2027-04-16": "Shri Ram Navami",
+    "2027-04-20": "Mahavir Jayanti",
+    "2027-05-01": "Maharashtra Day",
+    "2027-08-15": "Independence Day",
+    "2027-10-02": "Mahatma Gandhi Jayanti",
+    "2027-10-09": "Dussehra / Vijayadashami",
+    "2027-10-28": "Diwali (Laxmi Pujan)",
+    "2027-10-30": "Diwali Balipratipada",
+    "2027-11-14": "Guru Nanak Jayanti",
+    "2027-12-25": "Christmas",
+}
 
 
 def _cache_path(year: int) -> Path:
     return HOLIDAY_DIR / f"{year}.json"
 
 
-def _fetch_nse_holidays(year: int) -> set[date]:
+def _fetch_nse_holidays(year: int) -> tuple[set[date], dict[date, str]]:
     """Fetch NSE trading holidays for the given year via the NSE API.
-    Returns a set of holiday dates. Falls back to an empty set on any error so
-    expiry calculation degrades gracefully to naive (unadjusted) dates.
+    Returns (set_of_dates, dict_of_date_to_name). Falls back to standard dictionary
+    on error so calculations degrade gracefully.
     """
     import urllib.request
     holidays: set[date] = set()
+    names: dict[date, str] = {}
     try:
         req = urllib.request.Request(NSE_HOLIDAY_URL, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -62,18 +120,33 @@ def _fetch_nse_holidays(year: int) -> set[date]:
         for h in fo:
             # Prefer "tradingDate" field (YYYY-MM-DD or DD-Mon-YYYY)
             raw = h.get("tradingDate") or h.get("tradeDate") or ""
+            desc = (h.get("holidayDescription") or h.get("description") or h.get("holiday") or "").strip()
             for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d/%m/%Y"):
                 try:
                     d = date.fromisoformat(raw) if fmt == "%Y-%m-%d" else __import__("datetime").datetime.strptime(raw, fmt).date()
                     if d.year == year:
                         holidays.add(d)
+                        if desc:
+                            names[d] = desc
                     break
                 except (ValueError, AttributeError):
                     continue
         log.info("Holiday calendar: fetched %d holidays for %d from NSE", len(holidays), year)
     except Exception as exc:  # noqa: BLE001
-        log.warning("Holiday calendar: NSE fetch failed for %d: %s — using no-holiday fallback", year, exc)
-    return holidays
+        log.warning("Holiday calendar: NSE fetch failed for %d: %s — using standard fallback", year, exc)
+
+    # Supplement missing names from static canonical list
+    for iso_str, name in NSE_HOLIDAY_NAMES.items():
+        try:
+            d = date.fromisoformat(iso_str)
+            if d.year == year:
+                holidays.add(d)
+                if d not in names:
+                    names[d] = name
+        except Exception:
+            pass
+
+    return holidays, names
 
 
 def _load_or_fetch(year: int) -> set[date]:
@@ -88,32 +161,46 @@ def _load_or_fetch(year: int) -> set[date]:
         try:
             data = json.loads(path.read_text())
             holidays = {date.fromisoformat(d) for d in data.get("holidays", [])}
+            names_raw = data.get("names", {})
+            names: dict[date, str] = {date.fromisoformat(k): v for k, v in names_raw.items()}
+            # Supplement from standard dictionary if names are missing
+            for d in holidays:
+                d_str = str(d)
+                if d not in names and d_str in NSE_HOLIDAY_NAMES:
+                    names[d] = NSE_HOLIDAY_NAMES[d_str]
+
+            _calendar_names_cache[year] = names
             # Treat current-year cache as valid for today (re-fetch at most daily)
-            if year < date.today().year:
-                _calendar_cache[year] = holidays
-                return holidays
-            # Current/future year: refresh if fetched_date is not today
-            if data.get("fetched_date") == str(date.today()):
+            if year < date.today().year or data.get("fetched_date") == str(date.today()):
                 _calendar_cache[year] = holidays
                 return holidays
         except Exception:  # noqa: BLE001
             pass
 
     # Fetch from NSE
-    holidays = _fetch_nse_holidays(year)
-    _save_to_disk(year, holidays)
+    holidays, names = _fetch_nse_holidays(year)
+    _save_to_disk(year, holidays, names)
     _calendar_cache[year] = holidays
+    _calendar_names_cache[year] = names
     return holidays
 
 
-def _save_to_disk(year: int, holidays: set[date]) -> None:
+def _save_to_disk(year: int, holidays: set[date], names: dict[date, str] | None = None) -> None:
     path = _cache_path(year)
+    if names is None:
+        names = _calendar_names_cache.get(year, {})
+    # Ensure all holidays have names from standard dictionary if available
+    serializable_names: dict[str, str] = {}
+    for d in holidays:
+        d_str = str(d)
+        serializable_names[d_str] = names.get(d) or NSE_HOLIDAY_NAMES.get(d_str) or "Trading Holiday"
     try:
         path.write_text(json.dumps({
             "year": year,
             "fetched_date": str(date.today()),
             "source": "NSE API (FO holiday calendar)",
             "holidays": sorted(str(d) for d in holidays),
+            "names": serializable_names,
         }, indent=2))
     except Exception as exc:  # noqa: BLE001
         log.warning("Holiday calendar: could not write cache for %d: %s", year, exc)
@@ -123,6 +210,17 @@ def is_holiday(d: date) -> bool:
     """Return True if ``d`` is in the NSE F&O holiday calendar."""
     holidays = _load_or_fetch(d.year)
     return d in holidays
+
+
+def get_holiday_name(d: date) -> Optional[str]:
+    """Return the descriptive name of the holiday (e.g. 'Dussehra / Vijayadashami') if d is a holiday, else None."""
+    if not is_holiday(d):
+        return None
+    d_str = str(d)
+    names = _calendar_names_cache.get(d.year, {})
+    if d in names:
+        return names[d]
+    return NSE_HOLIDAY_NAMES.get(d_str, "Trading Holiday")
 
 
 def is_trading_day(d: date) -> bool:

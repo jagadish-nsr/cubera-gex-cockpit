@@ -112,6 +112,12 @@ def in_nse_session(now_utc: datetime) -> bool:
     ist = _ist(now_utc)
     if ist.weekday() >= 5:
         return False
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(ist.date()):
+            return False
+    except Exception:
+        pass
     minute = ist.hour * 60 + ist.minute
     return _OPEN_IST[0] * 60 + _OPEN_IST[1] <= minute <= _CLOSE_IST[0] * 60 + _CLOSE_IST[1]
 
