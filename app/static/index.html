@@ -114,12 +114,12 @@
             <span id="feed-status-badge" style="font-size:.68rem;color:var(--go);font-weight:700;background:var(--go-bg);padding:2px 7px;border-radius:4px">🟢 WebSocket Live</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">
-            <span>Status: <b id="session-title-display" style="color:#4ade80">Live Market Open</b></span>
+            <span id="session-title-display">Ingestion: WebSocket Stream</span>
             <span>Push: <b style="color:var(--ink)">&lt; 1ms</b></span>
             <span>Cache: <b style="color:var(--spark)">0ms Memory</b></span>
           </div>
           <div id="session-substate-display" style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">
-            Regular Session (09:15–15:30 IST)
+            Live direct exchange tick stream
           </div>
         </div>
 
@@ -2074,6 +2074,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=5.4"></script>
+  <script src="/static/js/cockpit.js?v=5.5"></script>
 </body>
 </html>

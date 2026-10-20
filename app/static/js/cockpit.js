@@ -570,16 +570,16 @@
           feedBanner.style.background = "rgba(239,68,68,0.04)";
         }
         if (feedStatusBadge) {
-          feedStatusBadge.textContent = "🛑 Offline Auto-Switch";
+          feedStatusBadge.textContent = data.feed_badge || "🛑 Offline Snapshot";
           feedStatusBadge.style.color = "#f87171";
           feedStatusBadge.style.background = "rgba(239,68,68,0.15)";
         }
         if (sessionTitleDisplay) {
-          sessionTitleDisplay.textContent = (data.session_schedule && data.session_schedule.phase_title) || data.feed_title || "Market Closed";
-          sessionTitleDisplay.style.color = "#f87171";
+          sessionTitleDisplay.textContent = data.feed_title || "Ingestion: Offline Snapshot";
+          sessionTitleDisplay.style.color = "var(--ink-mute)";
         }
         if (sessionSubstateDisplay) {
-          sessionSubstateDisplay.textContent = data.feed_subtext || "Feed Mode: Offline Auto-Switch · Status: Market Closed · Source: Session Snapshot · Pollers: Paused";
+          sessionSubstateDisplay.textContent = data.feed_subtext || "Tick stream paused · Broker pollers idle";
         }
       } else {
         if (quoteBoxLabel) quoteBoxLabel.textContent = "Spot Live Quote";
@@ -607,11 +607,11 @@
           feedStatusBadge.style.background = "var(--go-bg)";
         }
         if (sessionTitleDisplay) {
-          sessionTitleDisplay.textContent = "Live Market Open";
+          sessionTitleDisplay.textContent = data.feed_title || "Ingestion: WebSocket Stream";
           sessionTitleDisplay.style.color = "#4ade80";
         }
         if (sessionSubstateDisplay) {
-          sessionSubstateDisplay.textContent = "Regular Session (09:15–15:30 IST)";
+          sessionSubstateDisplay.textContent = data.feed_subtext || "Live direct exchange tick stream";
         }
       }
 
@@ -697,15 +697,13 @@
       if (execStatusEl) {
         if (data.exec_session_status) {
           execStatusEl.textContent = data.exec_session_status;
-          execStatusEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
         } else if (!state.isMarketOpen) {
-          const holidayStr = data.session_schedule && data.session_schedule.holiday_name ? ` · ${data.session_schedule.holiday_name}` : "";
-          execStatusEl.textContent = `Session Closed${holidayStr} · Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")}`;
-          execStatusEl.style.color = "var(--ink-mute)";
+          const reg = data.kpis && data.kpis.regime ? data.kpis.regime.val : "Normal";
+          execStatusEl.textContent = `Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")} · ${reg} Mode`;
         } else {
           execStatusEl.textContent = `${data.kpis.regime.val} Mode · Spot ₹${data.spot.toLocaleString("en-IN")}`;
-          execStatusEl.style.color = "var(--go)";
         }
+        execStatusEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
       }
 
       if (data.market_breadth) {
@@ -4941,7 +4939,7 @@
       const nextDayName = dayNames[(day + 1) % 7];
       targetDayName = `Tomorrow (${nextDayName})`;
     }
-    return `Market Closed · Reopens ${targetDayName} 09:15 IST`;
+    return `Reopens ${targetDayName} 09:15 IST`;
   }
 
   // -------------------------------------------------------------------------
