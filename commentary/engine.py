@@ -317,8 +317,28 @@ class SessionCommentaryEngine:
 
         # Fresh temporary engine to evaluate clean chronological session state
         temp_engine = SessionCommentaryEngine(sym)
+
+        # Look up authenticated auction discovery record for this session date
+        auc_open = None
+        auc_prev_close = None
+        try:
+            from data.pre_post_market import get_persisted_auction_record
+            auc_rec = get_persisted_auction_record(sym, session_date)
+            if auc_rec and auc_rec.get("is_discovered"):
+                auc_open = float(auc_rec.get("discovered_spot") or 0.0)
+                auc_prev_close = float(auc_rec.get("prev_close") or 0.0)
+        except Exception:
+            pass
+
+        if auc_open and auc_prev_close:
+            gap_pts = round(auc_open - auc_prev_close, 2)
+            temp_engine.gap_det._open_price = auc_open
+            temp_engine.gap_det._prior_close = auc_prev_close
+            temp_engine.gap_det._initial_gap_pts = gap_pts
+            temp_engine.gap_det._initial_gap_fired = True
+
         created_entries: list[CommentaryEntry] = []
-        prev_spot = float(df.iloc[0]["spot"])
+        prev_spot = auc_prev_close if (auc_prev_close and auc_prev_close > 0) else float(df.iloc[0]["spot"])
 
         for idx, row in df.iterrows():
             t_str = str(row.get("time_ist", "09:15"))
@@ -336,7 +356,17 @@ class SessionCommentaryEngine:
                 for r in sig_rows if r[0] <= as_of_dt.isoformat()
             ]
 
-            vwap_val = cur_bars[-1]["vwap"] if cur_bars else float(row["spot"])
+            spot = float(row["spot"])
+
+            if cur_bars:
+                fut_close = cur_bars[-1]["close"]
+                fut_vwap = cur_bars[-1]["vwap"]
+                # Translate futures VWAP to spot space using contemporaneous basis
+                basis = fut_close - spot
+                vwap_val = round(fut_vwap - basis, 1)
+            else:
+                vwap_val = spot
+
             pcr_val = float(row.get("pcr_oi", 1.0) or 1.0)
 
             extra_facts: dict[str, Any] = {
@@ -346,7 +376,6 @@ class SessionCommentaryEngine:
                 "pcr_oi": pcr_val,
             }
 
-            spot = float(row["spot"])
             cw = float(row["call_wall"])
             pw = float(row["put_wall"])
             flip = float(row.get("flip", spot))
@@ -356,7 +385,7 @@ class SessionCommentaryEngine:
                 as_of=as_of_dt,
                 symbol=sym,
                 spot=spot,
-                prior_close=prev_spot if idx > 0 else spot,
+                prior_close=prev_spot if idx > 0 else (auc_prev_close or spot),
                 atm_iv=0.14,
                 expected_move_1d=120.0,
                 call_wall=cw,
