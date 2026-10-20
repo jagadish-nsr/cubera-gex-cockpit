@@ -474,7 +474,7 @@
             <div class="kpi-card spark">
               <small>Gamma Flip</small>
               <b id="kpi-gamma-flip">₹24,480</b>
-              <span>Volatility Pivot Barrier</span>
+              <span id="kpi-gamma-flip-sub">Volatility Pivot Barrier</span>
             </div>
             <div class="kpi-card warn">
               <small>Max Pain Strike</small>
@@ -587,9 +587,14 @@
 
           <!-- Gamma Price Ladder -->
           <div class="ladder-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-              <h3 style="font-size:1.05rem;font-weight:800">🗺️ Gamma Price Ladder (Spot Centered)</h3>
-              <span style="font-size:0.74rem;color:var(--ink-mute)">Real-time dealer positioning by strike</span>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <div>
+                <h3 style="font-size:1.05rem;font-weight:800;display:inline-block;margin-right:8px">🗺️ Gamma Price Ladder (Spot Centered)</h3>
+                <span style="font-size:0.74rem;color:var(--ink-mute)">Real-time dealer positioning by strike</span>
+              </div>
+              <div id="ladder-flip-pill" style="font-size:0.72rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.25);padding:3px 10px;border-radius:5px;font-family:var(--mono);font-weight:700">
+                🔀 Gamma Flip: <span id="ladder-flip-val">--</span>
+              </div>
             </div>
             <table class="ladder-table">
               <thead>
@@ -2069,6 +2074,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=5.1"></script>
+  <script src="/static/js/cockpit.js?v=5.2"></script>
 </body>
 </html>

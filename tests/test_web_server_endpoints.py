@@ -126,6 +126,7 @@ def test_get_cockpit_data_levels_and_tape():
     assert "call_wall" in data["kpis"]
     assert "put_wall" in data["kpis"]
     assert "gamma_flip" in data["kpis"]
+    assert data["kpis"]["gamma_flip"]["val"] > 0
     assert "max_pain" in data["kpis"]
     assert "directional_bias" in data["kpis"]
     assert "gamma_blast" in data
@@ -133,6 +134,8 @@ def test_get_cockpit_data_levels_and_tape():
     assert len(data["ladder"]) == 11
     assert "is_max_pain" in data["ladder"][0]
     assert "is_magnet" in data["ladder"][0]
+    assert "is_gamma_flip" in data["ladder"][0]
+    assert any(r["is_gamma_flip"] for r in data["ladder"])
     assert "orderflow_alerts" in data
     assert "pre_market" in data
     assert "cockpit_recommendations" in data
