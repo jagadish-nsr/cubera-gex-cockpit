@@ -6,7 +6,7 @@
   <title>Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
   <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.1">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function() {
@@ -459,7 +459,7 @@
             </details>
           </div>
 
-          <!-- 6-Card KPI Strip -->
+          <!-- 8-Card Quantitative KPI Strip -->
           <div class="kpi-grid">
             <div class="kpi-card go">
               <small>Call Wall (Resistance)</small>
@@ -475,6 +475,16 @@
               <small>Gamma Flip</small>
               <b id="kpi-gamma-flip">₹24,480</b>
               <span>Volatility Pivot Barrier</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>Max Pain Strike</small>
+              <b id="kpi-max-pain">₹24,500</b>
+              <span id="kpi-max-pain-sub">Pin: 85/100</span>
+            </div>
+            <div class="kpi-card" id="card-directional-bias">
+              <small>Directional Bias (IOAS)</small>
+              <b id="kpi-directional-bias">+1.25</b>
+              <span id="kpi-directional-bias-mode">Moderately Bullish</span>
             </div>
             <div class="kpi-card purple">
               <small>Regime Classification</small>
@@ -1717,18 +1727,18 @@
             </div>
             <div class="noa-kpi-card">
               <small>IV Rank (30D)</small>
-              <b id="noa-kpi-ivr">28%</b>
-              <span>Normal Vol Zone</span>
+              <b id="noa-kpi-ivr">—</b>
+              <span id="noa-kpi-ivr-sub">—</span>
             </div>
             <div class="noa-kpi-card">
               <small>India VIX</small>
-              <b id="noa-kpi-vix">13.45</b>
-              <span style="color:var(--spark)">Low Vol</span>
+              <b id="noa-kpi-vix">—</b>
+              <span id="noa-kpi-vix-sub" style="color:var(--spark)">—</span>
             </div>
             <div class="noa-kpi-card">
               <small>Aggregate Bias</small>
-              <b id="noa-kpi-bias" style="color:var(--go)">+2.4</b>
-              <span>MOMENTUM_BULLISH</span>
+              <b id="noa-kpi-bias">—</b>
+              <span id="noa-kpi-bias-sub">MOMENTUM_BULLISH</span>
             </div>
           </div>
 
@@ -2059,6 +2069,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=5.0"></script>
+  <script src="/static/js/cockpit.js?v=5.1"></script>
 </body>
 </html>

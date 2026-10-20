@@ -649,13 +649,30 @@
         return;
       }
 
-      document.getElementById("kpi-call-wall").textContent = `₹${data.kpis.call_wall.val.toLocaleString("en-IN")}`;
-      document.getElementById("kpi-put-wall").textContent = `₹${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
-      document.getElementById("kpi-gamma-flip").textContent = `₹${data.kpis.gamma_flip.val.toLocaleString("en-IN")}`;
-      document.getElementById("kpi-regime").textContent = data.kpis.regime.val;
-      document.getElementById("kpi-regime-mode").textContent = data.kpis.regime.sub;
-      document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
-      document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
+      if (data.kpis.call_wall) document.getElementById("kpi-call-wall").textContent = `₹${data.kpis.call_wall.val.toLocaleString("en-IN")}`;
+      if (data.kpis.put_wall) document.getElementById("kpi-put-wall").textContent = `₹${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
+      if (data.kpis.gamma_flip) document.getElementById("kpi-gamma-flip").textContent = `₹${data.kpis.gamma_flip.val.toLocaleString("en-IN")}`;
+
+      const mpEl = document.getElementById("kpi-max-pain");
+      const mpSubEl = document.getElementById("kpi-max-pain-sub");
+      if (mpEl && data.kpis.max_pain) mpEl.textContent = `₹${data.kpis.max_pain.val.toLocaleString("en-IN")}`;
+      if (mpSubEl && data.kpis.max_pain) mpSubEl.textContent = data.kpis.max_pain.sub;
+
+      const dbEl = document.getElementById("kpi-directional-bias");
+      const dbModeEl = document.getElementById("kpi-directional-bias-mode");
+      if (dbEl && data.kpis.directional_bias) {
+        dbEl.textContent = data.kpis.directional_bias.val;
+        const rawScore = parseFloat(data.kpis.directional_bias.raw !== undefined ? data.kpis.directional_bias.raw : data.kpis.directional_bias.val);
+        dbEl.style.color = rawScore > 0.8 ? "var(--go)" : (rawScore < -0.8 ? "var(--stop)" : "var(--spark)");
+      }
+      if (dbModeEl && data.kpis.directional_bias) dbModeEl.textContent = data.kpis.directional_bias.sub;
+
+      if (data.kpis.regime) {
+        document.getElementById("kpi-regime").textContent = data.kpis.regime.val;
+        document.getElementById("kpi-regime-mode").textContent = data.kpis.regime.sub;
+      }
+      if (data.kpis.net_gex) document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
+      if (data.kpis.pcr_oi) document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
 
       const execStatusEl = document.getElementById("cockpit-exec-status");
       if (execStatusEl) {
@@ -854,7 +871,9 @@
           if (row.is_call_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(239,68,68,.15);color:var(--stop)">CALL WALL</span>';
           if (row.is_put_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.15);color:var(--go)">PUT WALL</span>';
           if (row.is_gamma_flip) badgeHtml += '<span class="ladder-badge" style="background:rgba(56,189,248,.15);color:var(--spark)">GAMMA FLIP</span>';
-          if (row.is_spot) badgeHtml += '<span class="ladder-badge" style="background:var(--spark);color:#000">SPOT PIN</span>';
+          if (row.is_max_pain) badgeHtml += '<span class="ladder-badge" style="background:rgba(234,179,8,.15);color:var(--warn)">MAX PAIN</span>';
+          if (row.is_magnet) badgeHtml += '<span class="ladder-badge" style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET PIN</span>';
+          if (row.is_spot) badgeHtml += '<span class="ladder-badge" style="background:var(--spark);color:#000">ATM SPOT</span>';
 
           tr.innerHTML = `
             <td>₹${row.strike.toLocaleString("en-IN")}</td>
@@ -3874,10 +3893,14 @@
         if (data.kpis.iv_rank) {
           const el = document.getElementById("noa-kpi-ivr");
           if (el) el.textContent = data.kpis.iv_rank.val;
+          const sub = document.getElementById("noa-kpi-ivr-sub");
+          if (sub && data.kpis.iv_rank.sub) sub.textContent = data.kpis.iv_rank.sub;
         }
         if (data.kpis.india_vix) {
           const el = document.getElementById("noa-kpi-vix");
           if (el) el.textContent = data.kpis.india_vix.val;
+          const sub = document.getElementById("noa-kpi-vix-sub");
+          if (sub && data.kpis.india_vix.sub) sub.textContent = data.kpis.india_vix.sub;
         }
         if (data.kpis.bias_gauge) {
           const el = document.getElementById("noa-kpi-bias");
@@ -3885,6 +3908,8 @@
             el.textContent = data.kpis.bias_gauge.val;
             el.style.color = parseFloat(data.kpis.bias_gauge.val) >= 0 ? "var(--go)" : "var(--stop)";
           }
+          const sub = document.getElementById("noa-kpi-bias-sub");
+          if (sub && data.kpis.bias_gauge.sub) sub.textContent = data.kpis.bias_gauge.sub;
         }
       }
 

@@ -138,7 +138,7 @@ class TestSentinelLive(unittest.TestCase):
         if mock_market_now.weekday() >= 5:
             mock_market_now = mock_market_now - timedelta(days=mock_market_now.weekday() - 3)
 
-        with patch("sentinel.storage.db.datetime") as mock_dt:
+        with patch("sentinel.storage.db.datetime") as mock_dt, patch("data.holidays.is_trading_day", return_value=True):
             mock_dt.now.return_value = mock_market_now
             mock_dt.fromisoformat = datetime.fromisoformat
             mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)

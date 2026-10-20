@@ -705,11 +705,11 @@ body {
   font-family: var(--mono);
 }
 
-/* 6-Card KPI Strip */
+/* 8-Card Quantitative KPI Strip */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 10px;
   margin-bottom: 24px;
 }
 
@@ -1502,9 +1502,14 @@ body {
 }
 
 /* Responsive Breakpoints */
+@media (max-width: 1400px) {
+  .kpi-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
 @media (max-width: 1280px) {
   .kpi-grid {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
   }
   .noa-kpi-grid {
     grid-template-columns: repeat(3, 1fr);
