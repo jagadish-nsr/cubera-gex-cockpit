@@ -632,17 +632,17 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
         except Exception:
             h_name = None
         if h_name:
-            phase_badge = f"MARKET CLOSED ({h_name.upper()})"
-            phase_title = f"Market Closed · {h_name}"
-            exec_phase_countdown = f"Market Closed ({h_name}) · Reopens {when_str} 09:15 IST"
+            phase_badge = f"🏖️ HOLIDAY · {h_name.upper()}"
+            phase_title = f"Exchange Holiday · {h_name}"
+            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
         elif today.weekday() >= 5:
-            phase_badge = "MARKET CLOSED (Weekend)"
+            phase_badge = "WEEKEND · CLOSED"
             phase_title = "Market Closed (Weekend)"
-            exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
         else:
-            phase_badge = "MARKET CLOSED (Holiday)"
+            phase_badge = "MARKET CLOSED"
             phase_title = "Market Closed (Holiday)"
-            exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
     elif t_min < 9 * 60:
         phase_badge = "PRE-MARKET PREP (Opens 09:00)"
         phase_title = "Pre-Market Preparation"
@@ -694,11 +694,11 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
     elif t_min < 16 * 60:
         phase_badge = "POST-CLOSE SETTLEMENT (15:40–16:00)"
         phase_title = "Post-Market Settlement"
-        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+        exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
     else:
-        phase_badge = f"MARKET CLOSED (Reopens {when_str})"
+        phase_badge = "MARKET CLOSED (EOD)"
         phase_title = "Market Closed (EOD)"
-        exec_phase_countdown = f"Market Closed · Reopens {when_str} 09:15 IST"
+        exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
 
     return {
         "is_market_open": is_live,
@@ -743,14 +743,11 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     is_live = config.is_market_open()
     feed_mode = "LIVE_WEBSOCKET" if is_live else "OFFLINE_AUTOSWITCH"
-    session_title = "🟢 Live Market Open" if is_live else sched.get("phase_title", "Market Closed")
-    feed_badge = "🟢 WebSocket Live" if is_live else ("Holiday Auto-Switch" if h_name else "Offline Auto-Switch")
+    session_title = "Ingestion: WebSocket Stream" if is_live else "Ingestion: Offline Snapshot"
+    feed_badge = "🟢 WebSocket Live" if is_live else "🛑 Offline Snapshot"
     feed_source = "0ms Direct Memory" if is_live else "Session Snapshot"
     pollers_status = "Active (1s Push)" if is_live else "Paused"
-    feed_subtext = "Live direct exchange tick stream" if is_live else (
-        f"Exchange Holiday ({h_name}) · Snapshot Active" if h_name
-        else "Auto-switched to post-market snapshot"
-    )
+    feed_subtext = "Live direct exchange tick stream" if is_live else "Tick stream paused · Broker pollers idle"
     pm_st = get_pre_market_state(sym)
     now_m = now_ist.hour * 60 + now_ist.minute
     is_pre_bell_ephemeral = (sess_phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")) or (bool(pm_st.get("is_discovered")) and 9 * 60 <= now_m <= 9 * 60 + 22)
@@ -1059,14 +1056,11 @@ async def get_cockpit_data(
     sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
 
     sched = compute_session_schedule_info(_get_ist_now())
-    h_name = sched.get("holiday_name")
+    regime_val = kpis.get("regime", {}).get("val", "Normal")
     if not is_open:
-        exec_status_text = (
-            f"Session Closed · {h_name} · Snapshot Locked at ₹{spot:,.1f}" if h_name
-            else f"Session Closed · Snapshot Locked at ₹{spot:,.1f}"
-        )
+        exec_status_text = f"Snapshot Locked at ₹{spot:,.1f} · {regime_val} Mode"
     else:
-        exec_status_text = f"{kpis.get('regime', {}).get('val', 'Normal')} Mode · Spot ₹{spot:,.1f}"
+        exec_status_text = f"{regime_val} Mode · Spot ₹{spot:,.1f}"
 
     return {
         "symbol": sym,
