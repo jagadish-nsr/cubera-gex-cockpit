@@ -628,6 +628,38 @@ def test_standalone_tradingview_popout_endpoint():
     status, _, content = asyncio.run(asgi_request("GET", "/chart/tradingview?symbol=SENSEX&timeframe=15m"))
     assert status == 200
     assert "SENSEX GEX Index Chart" in content.decode("utf-8")
+    assert "btn-popout-theme" in content.decode("utf-8")
+    assert "theme-light" in content.decode("utf-8")
+
+
+def test_dark_light_theme_mode_toggle():
+    """Verify that index.html contains theme toggle buttons, early FOUC prevention, and static assets define light mode."""
+    # 1. Check index.html
+    status, headers, content = asyncio.run(asgi_request("GET", "/"))
+    assert status == 200
+    html = content.decode("utf-8")
+    assert 'id="btn-theme-toggle"' in html, "Header theme toggle button missing"
+    assert 'id="btn-sidebar-theme-toggle"' in html, "Sidebar theme toggle button missing"
+    assert "cubera_theme" in html, "Early theme initializer missing in <head>"
+    assert 'data-theme' in html, "data-theme attribute logic missing"
+
+    # 2. Check cockpit.css has light mode tokens
+    status, _, content = asyncio.run(asgi_request("GET", "/static/css/cockpit.css"))
+    assert status == 200
+    css = content.decode("utf-8")
+    assert '[data-theme="light"]' in css, "Light theme CSS rules missing in cockpit.css"
+    assert "theme-light" in css, "theme-light class missing in cockpit.css"
+    assert "--bg: #f1f5f9" in css, "Light theme background variable missing"
+
+    # 3. Check cockpit.js has theme functions
+    status, _, content = asyncio.run(asgi_request("GET", "/static/js/cockpit.js"))
+    assert status == 200
+    js = content.decode("utf-8")
+    assert "function applyTheme" in js, "applyTheme function missing in cockpit.js"
+    assert "function toggleTheme" in js, "toggleTheme function missing in cockpit.js"
+    assert "btn-theme-toggle" in js, "Theme toggle event binding missing in cockpit.js"
+    assert "cubera_theme" in js, "Theme localStorage persistence missing in cockpit.js"
+
 
 
 

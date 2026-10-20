@@ -2175,3 +2175,131 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   background: var(--warn-bg);
 }
 
+/* =========================================================================
+   Light Theme Component Overrides & Polished Aesthetics
+   ========================================================================= */
+
+[data-theme="light"] .brand-gex-badge {
+  background: rgba(2, 132, 199, 0.12);
+  color: #0284c7;
+  border-color: rgba(2, 132, 199, 0.35);
+  box-shadow: none;
+}
+
+[data-theme="light"] .tab-btn:hover {
+  color: var(--ink);
+  background: rgba(15, 23, 42, 0.05);
+}
+
+[data-theme="light"] .tab-btn:hover .tab-icon {
+  color: var(--spark);
+  filter: none;
+}
+
+[data-theme="light"] .tab-btn.active {
+  color: var(--spark);
+  background: rgba(2, 132, 199, 0.08);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+}
+
+[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: var(--spark);
+}
+
+[data-theme="light"] .ladder-table td,
+[data-theme="light"] .dual-wing-ladder td,
+[data-theme="light"] .block-tape-table td,
+[data-theme="light"] .shock-table td,
+[data-theme="light"] .ck-ladder-table td,
+[data-theme="light"] .conf-matrix-table td {
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="light"] .ck-ladder-table tr:hover {
+  background: rgba(15, 23, 42, 0.03);
+}
+
+[data-theme="light"] .comm-card {
+  background: var(--surface-1);
+}
+
+[data-theme="light"] .comm-bite-box {
+  background: var(--surface-2);
+  border: 1px dashed var(--line);
+}
+
+[data-theme="light"] .marquee-telemetry {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink-mute);
+}
+
+[data-theme="light"] .marquee-action-tag {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+[data-theme="light"] .alert-tape-marquee-container {
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="light"] .badge-done {
+  background: var(--surface-3);
+  color: var(--ink-mute);
+}
+
+[data-theme="light"] .badge-active {
+  color: #ffffff;
+}
+
+[data-theme="light"] .btn-secondary {
+  background: var(--surface-1);
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+[data-theme="light"] .btn-secondary:hover {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+/* Theme Toggle Button Styling */
+.theme-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  transition: var(--transition);
+}
+
+.theme-toggle-btn:hover {
+  border-color: var(--spark);
+  box-shadow: 0 0 10px var(--spark-glow);
+}
+
+.theme-toggle-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-block;
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.theme-toggle-btn:hover .theme-toggle-icon {
+  transform: rotate(20deg) scale(1.15);
+}
+
+.theme-toggle-label {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+

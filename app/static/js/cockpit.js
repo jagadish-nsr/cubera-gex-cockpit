@@ -15,6 +15,7 @@
     riskPct: 1.5,
     activeTab: "tab-cockpit",
     soundEnabled: true,
+    theme: localStorage.getItem("cubera_theme") || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
     alertBellEnabled: localStorage.getItem("cubera_alert_bell_muted") !== "true",
     lastAlertScenarios: {},
     lastAlertScenario: null,
@@ -174,6 +175,96 @@
       setTimeout(() => toast.remove(), 300);
     }, 4000);
   }
+
+  // -------------------------------------------------------------------------
+  // Dark / Light Theme Mode Management Engine
+  // -------------------------------------------------------------------------
+  function applyTheme(theme, showNotification = false) {
+    const nextTheme = theme === "light" ? "light" : "dark";
+    state.theme = nextTheme;
+    try {
+      localStorage.setItem("cubera_theme", nextTheme);
+    } catch (e) {}
+
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    if (document.body) {
+      document.body.classList.toggle("theme-light", nextTheme === "light");
+      document.body.classList.toggle("theme-dark", nextTheme === "dark");
+    }
+
+    // Top header toggle button
+    const btnToggle = document.getElementById("btn-theme-toggle");
+    const iconSpan = document.getElementById("theme-toggle-icon");
+    const labelSpan = document.getElementById("theme-toggle-label");
+    if (btnToggle) {
+      if (iconSpan && labelSpan) {
+        iconSpan.textContent = nextTheme === "light" ? "☀️" : "🌙";
+        labelSpan.textContent = nextTheme === "light" ? "Light" : "Dark";
+      } else {
+        btnToggle.textContent = nextTheme === "light" ? "☀️ Theme: Light" : "🌙 Theme: Dark";
+      }
+      btnToggle.setAttribute("title", `Theme: ${nextTheme.toUpperCase()} (Click or Ctrl+Shift+D to toggle)`);
+    }
+
+    // Sidebar toggle button
+    const sideBtn = document.getElementById("btn-sidebar-theme-toggle");
+    const sideIcon = document.getElementById("sidebar-theme-toggle-icon");
+    const sideLabel = document.getElementById("sidebar-theme-toggle-label");
+    if (sideBtn) {
+      if (sideIcon && sideLabel) {
+        sideIcon.textContent = nextTheme === "light" ? "☀️" : "🌙";
+        sideLabel.textContent = nextTheme === "light" ? "Theme Mode: Light" : "Theme Mode: Dark";
+      } else {
+        sideBtn.textContent = nextTheme === "light" ? "☀️ Theme: Light" : "🌙 Theme: Dark";
+      }
+    }
+
+    // Update LightweightCharts dynamic theme if active
+    const isLight = nextTheme === "light";
+    const chartLayoutOptions = {
+      layout: {
+        background: { color: isLight ? "#ffffff" : "#0c1424" },
+        textColor: isLight ? "#334155" : "#94a3b8"
+      },
+      grid: {
+        vertLines: { color: isLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" },
+        horzLines: { color: isLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }
+      },
+      rightPriceScale: {
+        borderColor: isLight ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)"
+      }
+    };
+
+    if (cockpitGexChart) {
+      try {
+        cockpitGexChart.applyOptions(chartLayoutOptions);
+      } catch (e) {}
+    }
+    if (state.sentinelChart) {
+      try {
+        state.sentinelChart.applyOptions(chartLayoutOptions);
+      } catch (e) {}
+    }
+
+    // If TradingView widget is rendered, re-render it with matching theme
+    if (cockpitChartState && cockpitChartState.engine === "tradingview") {
+      try {
+        renderTradingViewWidget(cockpitChartState.symbol, cockpitChartState.timeframe);
+      } catch (e) {}
+    }
+
+    if (showNotification) {
+      showToast(`${nextTheme === "light" ? "☀️ Light" : "🌙 Dark"} mode enabled`);
+    }
+  }
+
+  function toggleTheme() {
+    const next = state.theme === "light" ? "dark" : "light";
+    applyTheme(next, true);
+  }
+
+  window.applyTheme = applyTheme;
+  window.toggleTheme = toggleTheme;
 
   // -------------------------------------------------------------------------
   // Client-Side 1-Second State Machine Ticker
@@ -981,6 +1072,11 @@
     wrapper.style.height = "100%";
     mount.appendChild(wrapper);
 
+    const isLight = state.theme === "light";
+    const tvTheme = isLight ? "light" : "dark";
+    const tvBg = isLight ? "#ffffff" : "#0c1424";
+    const tvGrid = isLight ? "rgba(15, 23, 42, 0.06)" : "rgba(56, 189, 248, 0.06)";
+
     if (typeof TradingView !== "undefined" && TradingView.widget) {
       try {
         new TradingView.widget({
@@ -988,18 +1084,18 @@
           symbol: tvSymbol,
           interval: interval,
           timezone: "Asia/Kolkata",
-          theme: "dark",
+          theme: tvTheme,
           style: "1",
           locale: "en",
-          toolbar_bg: "#0c1424",
+          toolbar_bg: tvBg,
           enable_publishing: false,
           allow_symbol_change: false, // Strict symbol binding to selected index
           container_id: tvMountId,
           hide_side_toolbar: false,
           withdateranges: true,
           save_image: false,
-          backgroundColor: "#0c1424",
-          gridColor: "rgba(56, 189, 248, 0.06)",
+          backgroundColor: tvBg,
+          gridColor: tvGrid,
         });
         return;
       } catch (err) {
@@ -1007,7 +1103,7 @@
       }
     }
 
-    wrapper.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvSymbol)}&interval=${interval}&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;border-radius:6px" allowfullscreen></iframe>`;
+    wrapper.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvSymbol)}&interval=${interval}&theme=${tvTheme}&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;border-radius:6px" allowfullscreen></iframe>`;
   }
 
   async function loadCockpitGexCanvas(symbol, tf) {
@@ -1018,14 +1114,21 @@
 
     if (!cockpitGexChart) {
         mount.innerHTML = "";
+        const isCanvasLight = state.theme === "light";
         cockpitGexChart = window.LightweightCharts.createChart(mount, {
           width: mount.clientWidth || 850,
           height: cockpitChartState.height,
-          layout: { background: { color: "#0c1424" }, textColor: "#94a3b8" },
-          grid: { vertLines: { color: "rgba(56,189,248,0.06)" }, horzLines: { color: "rgba(56,189,248,0.06)" } },
+          layout: {
+            background: { color: isCanvasLight ? "#ffffff" : "#0c1424" },
+            textColor: isCanvasLight ? "#334155" : "#94a3b8"
+          },
+          grid: {
+            vertLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" },
+            horzLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }
+          },
           crosshair: { mode: window.LightweightCharts.CrosshairMode.Normal },
           rightPriceScale: {
-            borderColor: "rgba(51, 65, 85, 0.45)",
+            borderColor: isCanvasLight ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)",
             autoScale: true,
             scaleMargins: { top: 0.08, bottom: 0.25 },
           },
@@ -2533,14 +2636,21 @@
       if (mount && window.LightweightCharts) {
         if (!state.sentinelChart) {
           mount.innerHTML = "";
+          const isSentLight = state.theme === "light";
           state.sentinelChart = window.LightweightCharts.createChart(mount, {
             width: mount.clientWidth || 850,
             height: sentinelState.chartHeight,
-            layout: { background: { color: "#0c1424" }, textColor: "#94a3b8" },
-            grid: { vertLines: { color: "rgba(56,189,248,0.06)" }, horzLines: { color: "rgba(56,189,248,0.06)" } },
+            layout: {
+              background: { color: isSentLight ? "#ffffff" : "#0c1424" },
+              textColor: isSentLight ? "#334155" : "#94a3b8"
+            },
+            grid: {
+              vertLines: { color: isSentLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" },
+              horzLines: { color: isSentLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }
+            },
             crosshair: { mode: window.LightweightCharts.CrosshairMode.Normal },
             rightPriceScale: {
-              borderColor: "rgba(51, 65, 85, 0.45)",
+              borderColor: isSentLight ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)",
               autoScale: true,
               scaleMargins: { top: 0.08, bottom: 0.38 },
             },
@@ -4611,6 +4721,29 @@
       });
     }
 
+    // Theme Mode Toggle (Header & Sidebar buttons, plus Ctrl+Shift+D shortcut)
+    const btnTheme = document.getElementById("btn-theme-toggle");
+    if (btnTheme) {
+      btnTheme.addEventListener("click", () => {
+        toggleTheme();
+      });
+    }
+
+    const btnSidebarTheme = document.getElementById("btn-sidebar-theme-toggle");
+    if (btnSidebarTheme) {
+      btnSidebarTheme.addEventListener("click", () => {
+        toggleTheme();
+      });
+    }
+
+    // Global keyboard shortcut: Ctrl+Shift+D or Cmd+Shift+D to toggle theme
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "D" || e.key === "d")) {
+        e.preventDefault();
+        toggleTheme();
+      }
+    });
+
     // Voice broadcast
     const btnVoice = document.getElementById("btn-play-voice");
     if (btnVoice) {
@@ -4752,6 +4885,9 @@
         bellBtn.className = "tape-ctrl-btn muted";
       }
     }
+    // Apply initialized theme state
+    applyTheme(state.theme, false);
+
     // Mount Cockpit TradingView chart immediately
     renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
     refreshAll();
