@@ -140,7 +140,8 @@ def test_evaluate_dashboard_gamma_blast_non_expiry():
     dash.dte_now = 3.5
     dash.expiries = []
     dash.oi_strikes = []
-    dash.fetched_at = None
+    from datetime import datetime, timezone
+    dash.fetched_at = datetime(2026, 10, 19, 5, 0, tzinfo=timezone.utc)  # 10:30 IST market hours
 
     res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
     assert res["is_expiry"] is False

@@ -1549,12 +1549,12 @@ def _compute_trade_score(
     if pre_market_regime:
         pm_reg = str(pre_market_regime).upper()
         is_gap_unfilled = (gap_fill_status != "FILLED")
-        if pm_reg == "GAP_UP_RUNAWAY":
+        if pm_reg in ("GAP_UP_RUNAWAY", "CALL_WALL_BREACH_SQUEEZE"):
             if side == "CE" and ("MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper):
                 score += 5   # Confirmed strong open-drive gap up
             elif side == "PE" and "MOMENTUM" in pt_upper and is_gap_unfilled:
                 score -= 6   # Penalize short momentum fighting an unfilled bullish gap
-        elif pm_reg == "GAP_DOWN_TRAP":
+        elif pm_reg in ("GAP_DOWN_TRAP", "PUT_WALL_BREAKDOWN_CASCADE"):
             if side == "PE" and ("MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper):
                 score += 5   # Confirmed strong open-drive gap down
             elif side == "CE" and "MOMENTUM" in pt_upper and is_gap_unfilled:
@@ -1565,11 +1565,11 @@ def _compute_trade_score(
         elif pm_reg == "PUT_WALL_BREAKDOWN_TEST":
             if side == "PE" and ("GAMMA SQUEEZE" in pt_upper or "STRUCTURE" in pt_upper):
                 score += 6   # Put Wall under immediate defense/breakdown pressure
-        elif pm_reg == "AUCTION_BALANCED":
+        elif pm_reg in ("AUCTION_BALANCED", "GAP_UP_INTO_POS_GAMMA", "GAP_DOWN_INTO_POS_GAMMA"):
             if "ICEBERG" in pt_upper or "VANNA" in pt_upper or "CHARM" in pt_upper:
-                score += 4   # Balanced open favors mean-reversion
+                score += 4   # Balanced or positive gamma open favors mean-reversion
             elif "MOMENTUM" in pt_upper:
-                score -= 3   # Flat opens have lower morning follow-through
+                score -= 3   # Mean-reversion regimes have lower morning momentum follow-through
 
     # Clamp to [15, 95]
     score = max(15, min(95, score))
@@ -2957,8 +2957,12 @@ def generate_trade_recommendations(
     pm_regime = ""
     pm_fill = ""
     if pm_state is not None:
-        pm_regime = str(getattr(pm_state, "gap_regime", "") or "").upper()
-        pm_fill = str(getattr(pm_state, "gap_fill_status", "") or "UNFILLED").upper()
+        if isinstance(pm_state, dict):
+            pm_regime = str(pm_state.get("gap_regime") or "").upper()
+            pm_fill = str(pm_state.get("gap_fill_status") or "UNFILLED").upper()
+        else:
+            pm_regime = str(getattr(pm_state, "gap_regime", "") or "").upper()
+            pm_fill = str(getattr(pm_state, "gap_fill_status", "") or "UNFILLED").upper()
 
     # Concurrent strategy evaluation: evaluate CE and PE pipelines simultaneously in parallel threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:

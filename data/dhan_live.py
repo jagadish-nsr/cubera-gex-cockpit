@@ -182,7 +182,7 @@ def _trade_time(cell) -> "datetime | None":
     return None
 
 
-def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
+def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20, skip_cache: bool = False) -> dict | None:
     """Day OHLC (+ ltp) for the index spot via ``/marketfeed/quote`` — the accurate basis for the
     daily candle (a snapshot-reconstructed high/low understates the true range).
 
@@ -199,12 +199,19 @@ def fetch_index_ohlc(symbol: str = "NIFTY", timeout: int = 20) -> dict | None:
     import json
     from pathlib import Path
     cache_ohlc = Path(f"data/.cache/last_ohlc_{symbol.upper()}.json")
-    if not config.is_market_open() and cache_ohlc.exists():
+    if not skip_cache and not config.is_market_open() and cache_ohlc.exists():
         try:
             with open(cache_ohlc, "r") as f:
                 cached = json.load(f)
             if cached and isinstance(cached, dict):
-                return cached
+                # Ensure cache is from today; invalidate stale prior-day cache
+                from datetime import datetime, timezone, timedelta
+                now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+                as_of = str(cached.get("as_of") or "")
+                if as_of and as_of[:10] != now_ist.strftime("%Y-%m-%d"):
+                    cached = None
+                if cached:
+                    return cached
         except Exception:
             pass
 

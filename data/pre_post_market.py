@@ -510,6 +510,34 @@ def get_pre_market_state(
     snap = get_snapshot(symbol) or {}
     fallback_spot = float(snap.get("spot") or snap.get("prev_close") or 0.0)
     prev_close_val = float(snap.get("prev_close") or fallback_spot)
+    cw_val = float(snap.get("call_wall") or 0.0)
+    pw_val = float(snap.get("put_wall") or 0.0)
+    flip_val = float(snap.get("gamma_flip") or 0.0)
+    net_gex_val = float(snap.get("net_gex") or 0.0)
+
+    # Extract institutional FII positioning
+    fii_bias = "NEUTRAL"
+    fii_net_fut = 0
+    try:
+        from analytics.trade_ideas import compute_fii_positioning_context
+        fii_info = compute_fii_positioning_context()
+        fii_bias = fii_info.get("fii_bias", "NEUTRAL")
+        fii_net_fut = fii_info.get("net_fut", 0)
+    except Exception:
+        pass
+
+    # Extract prior session closing CVD
+    prior_cvd = 0.0
+    prior_of_bias = "Neutral"
+    try:
+        from sentinel.storage.db import list_daily_cvd
+        hist = list_daily_cvd(f"{symbol.upper()}-FUT", limit=2)
+        if hist:
+            prior_rec = hist[-2] if len(hist) >= 2 and hist[-1].get("trade_date") == today_str else hist[-1]
+            prior_cvd = float(prior_rec.get("closing_cvd", 0.0))
+            prior_of_bias = "Bullish Accumulation (+)" if prior_cvd > 0 else "Bearish Distribution (-)"
+    except Exception:
+        pass
 
     state = {
         "symbol": symbol.upper(),
@@ -520,6 +548,13 @@ def get_pre_market_state(
         "is_discovered": False,
         "discovered_spot": fallback_spot,
         "prev_close": prev_close_val,
+        "call_wall": cw_val,
+        "put_wall": pw_val,
+        "gamma_flip": flip_val,
+        "fii_bias": fii_bias,
+        "fii_net_fut": fii_net_fut,
+        "prior_session_cvd": prior_cvd,
+        "prior_session_orderflow": prior_of_bias,
         "gap_pts": 0.0,
         "gap_pct": 0.0,
         "gap_fill_status": "UNFILLED",
@@ -528,13 +563,17 @@ def get_pre_market_state(
         "regime_badge": "⚖️ BALANCED AUCTION",
         "regime_color": "var(--spark)",
         "discovered_at": None,
-        "status_text": "Awaiting Pre-Open Session (09:00)",
+        "status_text": (
+            f"Pre-Market Setup · FII: {fii_bias} ({fii_net_fut:+d} fut) · Walls: {cw_val:,.0f} / {pw_val:,.0f}"
+            if cw_val > 0 and pw_val > 0
+            else f"Pre-Market Setup · FII: {fii_bias} ({fii_net_fut:+d} fut)"
+        ),
         "_polled_at": time.time(),
     }
 
     # If before 09:07:30, pre-open equilibrium matching has not occurred yet
     if phase_code == "PRE_MARKET_ENTRY":
-        state["status_text"] = "Pre-Open Order Collection Active · Price discovery at ~09:08:00"
+        state["status_text"] = f"Pre-Open Auction Collection (09:00–09:08) · FII: {fii_bias} ({fii_net_fut:+d} fut) · Matching at ~09:08:00"
         with _CACHE_LOCK:
             _PRE_MARKET_CACHE[symbol.upper()] = state
         return state
@@ -547,7 +586,8 @@ def get_pre_market_state(
 
     try:
         from data.dhan_live import fetch_index_ohlc
-        ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
+        skip_c = (phase_code in ("PRE_MARKET_DISCOVERY", "PRE_MARKET_ENTRY") or force_refresh)
+        ohlc = fetch_index_ohlc(symbol.upper(), timeout=4, skip_cache=skip_c)
         if ohlc:
             open_px = float(ohlc.get("open") or 0.0)
             prev_close = float(ohlc.get("prev_close") or ohlc.get("close") or fallback_spot)
@@ -574,7 +614,7 @@ def get_pre_market_state(
                 else:
                     is_filled = True
 
-                gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot)
+                gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
 
                 state["is_discovered"] = True
                 state["discovered_spot"] = disc_spot
@@ -603,15 +643,6 @@ def get_pre_market_state(
                 state["status_text"] = "Awaiting Equilibrium Auction Matching (09:08)..."
     except Exception as e:
         log.debug(f"Pre-market poll failed for {symbol}: {e}")
-    try:
-        from sentinel.storage.db import list_daily_cvd
-        hist = list_daily_cvd(f"{symbol.upper()}-FUT", limit=2)
-        if hist:
-            prior_rec = hist[-2] if len(hist) >= 2 and hist[-1].get("trade_date") == today_str else hist[-1]
-            state["prior_session_cvd"] = prior_rec.get("closing_cvd", 0.0)
-            state["prior_session_orderflow"] = "Bullish Accumulation (+)" if prior_rec.get("closing_cvd", 0.0) > 0 else "Bearish Distribution (-)"
-    except Exception:
-        pass
 
     with _CACHE_LOCK:
         _PRE_MARKET_CACHE[symbol.upper()] = state
@@ -635,45 +666,88 @@ def classify_opening_gap(
     call_wall: float = 0.0,
     put_wall: float = 0.0,
     flip: float = 0.0,
+    net_gex: float = 0.0,
 ) -> dict:
     """Classify discovered opening gap relative to GEX boundaries and generate strategic briefing."""
+    is_pos_gamma = (flip > 0 and spot >= flip) or (net_gex > 0)
+
     # 1. Structural wall tests
     if call_wall > 0 and spot >= call_wall - 15.0:
-        regime = "SHORT_GAMMA_WALL_TEST"
-        badge = "🚨 CALL WALL BREACH"
-        color = "var(--warn)"
-        briefing = (
-            f"Indicative open at ₹{spot:,.0f} directly challenges Call Wall (₹{call_wall:,.0f}). "
-            f"Dealers face short gamma acceleration — watch for explosive buy squeeze at 09:15 bell."
-        )
-        favored_play = "MOMENTUM CALLS"
+        if spot >= call_wall + 10.0:
+            regime = "CALL_WALL_BREACH_SQUEEZE"
+            badge = "🚀 CALL WALL BREACH (SQUEEZE)"
+            color = "var(--go)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} has breached above the Call Wall (₹{call_wall:,.0f}). "
+                f"Call writers face severe short gamma squeeze; expect explosive upside momentum if 09:15 opening print holds."
+            )
+            favored_play = "GAMMA SQUEEZE BREAKOUT"
+        else:
+            regime = "SHORT_GAMMA_WALL_TEST"
+            badge = "🚨 CALL WALL BREACH"
+            color = "var(--warn)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} directly challenges Call Wall (₹{call_wall:,.0f}). "
+                f"Dealers face short gamma acceleration — watch for explosive buy squeeze at 09:15 bell."
+            )
+            favored_play = "MOMENTUM CALLS"
     elif put_wall > 0 and spot <= put_wall + 15.0:
-        regime = "PUT_WALL_BREAKDOWN_TEST"
-        badge = "⚠️ PUT WALL DEFENSE"
-        color = "var(--stop)"
-        briefing = (
-            f"Indicative open at ₹{spot:,.0f} tests Put Wall support (₹{put_wall:,.0f}). "
-            f"Option writers must absorb sell volume; failure triggers long gamma liquidation."
-        )
-        favored_play = "PUT EXHAUSTION / REVERSAL"
+        if spot <= put_wall - 10.0:
+            regime = "PUT_WALL_BREAKDOWN_CASCADE"
+            badge = "🔴 PUT WALL BREAKDOWN"
+            color = "var(--stop)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} has cracked below Put Wall support (₹{put_wall:,.0f}). "
+                f"Dealers face unhedged short gamma acceleration; failure to reclaim triggers cascading liquidation."
+            )
+            favored_play = "NEGATIVE GAMMA CASCADE"
+        else:
+            regime = "PUT_WALL_BREAKDOWN_TEST"
+            badge = "⚠️ PUT WALL DEFENSE"
+            color = "var(--stop)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} tests Put Wall support (₹{put_wall:,.0f}). "
+                f"Option writers must absorb sell volume; failure triggers long gamma liquidation."
+            )
+            favored_play = "PUT EXHAUSTION / REVERSAL"
     elif gap_pct >= 0.40:
-        regime = "GAP_UP_RUNAWAY"
-        badge = "🚀 GAP & GO (BULLISH)"
-        color = "var(--go)"
-        briefing = (
-            f"Strong positive opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
-            f"Momentum favors upside continuation if 09:15 opening 3m range holds above ₹{spot - 20:,.0f}."
-        )
-        favored_play = "CE MOMENTUM"
+        if is_pos_gamma and call_wall > 0 and spot < call_wall - 35.0:
+            regime = "GAP_UP_INTO_POS_GAMMA"
+            badge = "⚖️ GAP INTO POSITIVE GAMMA"
+            color = "var(--go)"
+            briefing = (
+                f"Positive opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) opens within positive dealer gamma (Flip: ₹{flip:,.0f}). "
+                f"Dealer hedging dampens runaway momentum. Look for initial gap fade back toward Session VWAP before initiating longs."
+            )
+            favored_play = "VWAP DIP BUY / GAP FADE"
+        else:
+            regime = "GAP_UP_RUNAWAY"
+            badge = "🚀 GAP & GO (BULLISH)"
+            color = "var(--go)"
+            briefing = (
+                f"Strong positive opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
+                f"Momentum favors upside continuation if 09:15 opening 3m range holds above ₹{spot - 20:,.0f}."
+            )
+            favored_play = "CE MOMENTUM"
     elif gap_pct <= -0.40:
-        regime = "GAP_DOWN_TRAP"
-        badge = "🔴 GAP & GO (BEARISH)"
-        color = "var(--stop)"
-        briefing = (
-            f"Significant downward gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
-            f"Bearish momentum dominant; watch for continuation puts or bounce failure at previous close."
-        )
-        favored_play = "PE MOMENTUM"
+        if is_pos_gamma and put_wall > 0 and spot > put_wall + 30.0:
+            regime = "GAP_DOWN_INTO_POS_GAMMA"
+            badge = "⚖️ GAP DOWN IN POSITIVE GAMMA"
+            color = "var(--warn)"
+            briefing = (
+                f"Downward opening rotation of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) into positive dealer gamma buffer. "
+                f"Institutional put writing cushions downside; expect mean-reversion bounce toward Session VWAP."
+            )
+            favored_play = "EXHAUSTION BOUNCE / PUT SPREAD"
+        else:
+            regime = "GAP_DOWN_TRAP"
+            badge = "🔴 GAP & GO (BEARISH)"
+            color = "var(--stop)"
+            briefing = (
+                f"Significant downward gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
+                f"Bearish momentum dominant; watch for continuation puts or bounce failure at previous close."
+            )
+            favored_play = "PE MOMENTUM"
     elif abs(gap_pct) <= 0.15:
         regime = "AUCTION_BALANCED"
         badge = "⚖️ BALANCED AUCTION"
@@ -1302,19 +1376,47 @@ def render_pre_market_commentary_card(symbol: str, data: Any = None, session_dat
                         unsafe_allow_html=True,
                     )
         else:
+            prev_cl = float(pm.get("prev_close") or (getattr(getattr(data, "levels", None), "prev_close", 0.0) if data else 0.0) or 0.0)
+            fii_b = pm.get("fii_bias") or "NEUTRAL"
+            fii_n = pm.get("fii_net_fut") or 0
+            prior_cvd = pm.get("prior_session_cvd") or 0.0
+            prior_of = pm.get("prior_session_orderflow") or "Neutral"
+            fii_color = "var(--go)" if fii_b == "BULLISH" else ("var(--stop)" if fii_b == "BEARISH" else "var(--spark)")
+            cvd_color = "var(--go)" if prior_cvd > 0 else ("var(--stop)" if prior_cvd < 0 else "var(--ink-mute)")
+            phase_desc = "Pre-Open Order Auction (09:00–09:08 IST)" if pm.get("phase_code") == "PRE_MARKET_ENTRY" else "Early Pre-Market Preparation (06:30–09:00 IST)"
+
             st.markdown(
                 textwrap.dedent(f'''
-                <div class="ck pre-bell-card" style="border-left-color:var(--spark);margin-bottom:12px">
-                    <div style="display:flex;justify-content:space-between;align-items:center">
+                <div class="ck pre-bell-card" style="border-left:4px solid var(--spark);margin-bottom:12px">
+                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
                         <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.05rem">⏳</span>
-                            <b style="font-size:.90rem;color:var(--spark)">Pre-Open Discovery Active (09:00 – 09:15 IST)</b>
+                            <span style="font-size:1.1rem">🌅</span>
+                            <b style="font-size:.92rem;color:var(--ink)">Early Pre-Market Tactical Setup</b>
+                            <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">{phase_desc}</span>
                         </div>
-                        <span style="font-size:.70rem;color:var(--ink-mute);font-family:var(--mono)">Awaiting equilibrium price discovery</span>
+                        <span class="sentinel-chip" style="background:var(--surface-2);color:var(--spark);border:1px solid var(--spark);font-size:.70rem">⏳ AWAITING 09:08 DISCOVERY</span>
                     </div>
-                    <div style="font-size:.78rem;color:var(--ink-mute);margin-top:6px">
-                        Order collection active. Price discovery occurs between 09:07:30 and 09:12:00 IST on NSE Cash matching engine.
-                        Pre-bell tactical briefing, gap classification, and Target Engine option shocks will populate here automatically.
+                    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:8px">
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Previous Close</small>
+                            <b style="font-size:1.05rem;font-family:var(--mono)">₹{prev_cl:,.1f}</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Key GEX Walls</small>
+                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} CW / {pw:,.0f} PW</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">FII Positioning</small>
+                            <b style="font-size:.95rem;color:{fii_color}">{fii_b} ({fii_n:+d} fut)</b>
+                        </div>
+                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Prior Session CVD</small>
+                            <b style="font-size:.95rem;color:{cvd_color};font-family:var(--mono)">{prior_cvd:+,.0f}</b>
+                        </div>
+                    </div>
+                    <div style="font-size:.80rem;line-height:1.45;color:var(--ink-mute);background:var(--surface);padding:8px 12px;border-radius:8px;border:1px solid var(--line)">
+                        <b>Morning Tactical Baseline:</b> Pre-open equilibrium auction runs from 09:00 to 09:08 IST on the NSE Cash matching engine.
+                        Equilibrium price discovery, GEX wall alignment, opening gap classification, and Black-76 option MTM shocks will stream here automatically upon 09:08 matching.
                     </div>
                 </div>
                 ''').strip(),

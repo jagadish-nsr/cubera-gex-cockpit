@@ -115,6 +115,26 @@ class TestPrePostMarket(unittest.TestCase):
         ba_res = classify_opening_gap(gap_pts=15.0, gap_pct=0.07, spot=22515.0, call_wall=23000.0, put_wall=22000.0)
         self.assertEqual(ba_res["regime"], "AUCTION_BALANCED")
 
+        # 6. Call Wall Breach Squeeze (> CW + 10)
+        cws_res = classify_opening_gap(gap_pts=150.0, gap_pct=0.66, spot=22720.0, call_wall=22700.0, put_wall=22400.0)
+        self.assertEqual(cws_res["regime"], "CALL_WALL_BREACH_SQUEEZE")
+        self.assertEqual(cws_res["favored_play"], "GAMMA SQUEEZE BREAKOUT")
+
+        # 7. Put Wall Breakdown Cascade (< PW - 10)
+        pwc_res = classify_opening_gap(gap_pts=-150.0, gap_pct=-0.67, spot=22380.0, call_wall=22700.0, put_wall=22400.0)
+        self.assertEqual(pwc_res["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
+        self.assertEqual(pwc_res["favored_play"], "NEGATIVE GAMMA CASCADE")
+
+        # 8. Gap Up into Positive Gamma below Call Wall (Fade favored)
+        gup_res = classify_opening_gap(gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0, flip=22450.0)
+        self.assertEqual(gup_res["regime"], "GAP_UP_INTO_POS_GAMMA")
+        self.assertIn("FADE", gup_res["favored_play"])
+
+        # 9. Gap Down into Positive Gamma above Put Wall (Bounce favored)
+        gdp_res = classify_opening_gap(gap_pts=-100.0, gap_pct=-0.44, spot=22400.0, call_wall=22700.0, put_wall=22300.0, flip=22350.0)
+        self.assertEqual(gdp_res["regime"], "GAP_DOWN_INTO_POS_GAMMA")
+        self.assertIn("BOUNCE", gdp_res["favored_play"])
+
     def test_estimate_pre_bell_option_ltps(self):
         # Discovered gap +80 pts from 22600 to 22680
         candidates = [

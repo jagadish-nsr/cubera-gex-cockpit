@@ -2347,9 +2347,15 @@ async def get_session_commentary(symbol: Optional[str] = None):
     pm_state["call_wall"] = cw
     pm_state["put_wall"] = pw
     pm_state["walls"] = f"{cw:,.0f} / {pw:,.0f}"
-    pm_state["favored_play"] = pm_state.get("favored_play") or "Dip Buying near VWAP"
-    pm_state["regime_badge"] = pm_state.get("regime_badge") or "GAP EXTENSION BULL"
-    pm_state["briefing"] = pm_state.get("briefing") or "Opening above prior session high with dealer call wall absorption at 24,600. Volatility crush expected in first 15 mins."
+    pm_state["favored_play"] = pm_state.get("favored_play") or ("Dip Buying near VWAP" if gap_pts >= 0 else "Fade Rallies to VWAP")
+    pm_state["regime_badge"] = pm_state.get("regime_badge") or ("📈 MODERATE GAP" if gap_pts != 0 else "⚖️ BALANCED AUCTION")
+    if not pm_state.get("briefing"):
+        if gap_pts > 0:
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} (+{gap_pts:,.1f} pts). Structural Call Wall resistance at {cw:,.0f} and Put Wall support at {pw:,.0f}."
+        elif gap_pts < 0:
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Structural Put Wall support at {pw:,.0f} and Call Wall resistance at {cw:,.0f}."
+        else:
+            pm_state["briefing"] = f"Balanced opening at ₹{disc_spot:,.0f} between Call Wall {cw:,.0f} and Put Wall {pw:,.0f}."
 
     post_state = dict(get_post_market_state(sym, session_date=active_session_date) or {})
     if post_state:

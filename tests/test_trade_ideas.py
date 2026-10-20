@@ -897,3 +897,92 @@ def test_off_market_hours_recommendation_gating(monkeypatch):
         assert batch_replay is not None
 
 
+def test_pre_market_regime_confluence_scoring():
+    """Verify that pre-market opening regimes and dictionary states influence conviction scoring."""
+    from analytics.trade_ideas import _compute_trade_score
+
+    # 1. Neutral baseline score
+    score_base, _, _ = _compute_trade_score(
+        side="CE",
+        play_type="ATM Momentum Play",
+        bias_score=0.2,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="",
+    )
+
+    # 2. Bullish Call Wall breach squeeze should boost CE Momentum
+    score_squeeze, _, _ = _compute_trade_score(
+        side="CE",
+        play_type="ATM Momentum Play",
+        bias_score=0.2,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="CALL_WALL_BREACH_SQUEEZE",
+    )
+    assert score_squeeze == score_base + 5
+
+    # 3. Unfilled gap up should penalize PE Momentum
+    score_pe_base, _, _ = _compute_trade_score(
+        side="PE",
+        play_type="ATM Momentum Play",
+        bias_score=-0.2,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="",
+    )
+    score_pe_penalized, _, _ = _compute_trade_score(
+        side="PE",
+        play_type="ATM Momentum Play",
+        bias_score=-0.2,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="GAP_UP_RUNAWAY",
+        gap_fill_status="UNFILLED",
+    )
+    assert score_pe_penalized == score_pe_base - 6
+
+    # 4. Positive gamma gap up favors mean reversion / iceberg
+    score_rev_base, _, _ = _compute_trade_score(
+        side="PE",
+        play_type="Iceberg Absorption Play",
+        bias_score=0.0,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="",
+    )
+    score_rev_boosted, _, _ = _compute_trade_score(
+        side="PE",
+        play_type="Iceberg Absorption Play",
+        bias_score=0.0,
+        spot=24500.0,
+        vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        sentinel_signals=None,
+        leg_doi=0.0,
+        pre_market_regime="GAP_UP_INTO_POS_GAMMA",
+    )
+    assert score_rev_boosted == score_rev_base + 4
+
+
