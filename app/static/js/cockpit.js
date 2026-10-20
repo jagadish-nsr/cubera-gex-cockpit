@@ -557,7 +557,8 @@
           feedBadge.style.borderColor = "rgba(255,255,255,0.1)";
         }
         if (sessionPhaseBadge) {
-          sessionPhaseBadge.textContent = "MARKET CLOSED (Weekend / Holiday)";
+          const badgeText = (data.session_schedule && data.session_schedule.phase_badge) || data.session_label || "MARKET CLOSED";
+          sessionPhaseBadge.textContent = badgeText.toUpperCase();
           sessionPhaseBadge.className = "badge-active";
           sessionPhaseBadge.style.background = "rgba(239,68,68,0.15)";
           sessionPhaseBadge.style.color = "#f87171";
@@ -714,10 +715,16 @@
 
       const cdEl = document.getElementById("cockpit-phase-countdown");
       if (cdEl) {
-        if (!state.isMarketOpen) {
-          cdEl.textContent = "Market Closed (Reopens Mon 09:15 IST)";
-          cdEl.style.color = "var(--ink-mute)";
+        if (data.next_phase_countdown) {
+          cdEl.textContent = data.next_phase_countdown;
+        } else if (data.session_schedule && data.session_schedule.exec_phase_countdown) {
+          cdEl.textContent = data.session_schedule.exec_phase_countdown;
+        } else if (!state.isMarketOpen) {
+          cdEl.textContent = getClientReopenCountdown();
+        } else {
+          cdEl.textContent = "Live Regular Session (to 15:30 IST)";
         }
+        cdEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
       }
 
       // Pre-Market Discovery Summary & 5-Strike Opening Shocks
@@ -4904,6 +4911,31 @@
   function refreshAll() {
     loadStatus();
     refreshActiveTab();
+  }
+
+  function getClientReopenCountdown() {
+    const now = new Date();
+    // Convert to IST offset UTC+5.5
+    const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const istDate = new Date(utc + (3600000 * 5.5));
+    const day = istDate.getDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+    const hours = istDate.getHours();
+    const mins = istDate.getMinutes();
+    const tMin = hours * 60 + mins;
+
+    let targetDayName = "Tomorrow";
+    if (day === 5 && tMin >= 15 * 60 + 40) {
+      targetDayName = "Mon";
+    } else if (day === 6) {
+      targetDayName = "Mon";
+    } else if (day === 0) {
+      targetDayName = tMin < 9 * 60 + 15 ? "Today (Mon)" : "Tomorrow (Mon)";
+    } else {
+      const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+      const nextDayName = dayNames[(day + 1) % 7];
+      targetDayName = `Tomorrow (${nextDayName})`;
+    }
+    return `Market Closed · Reopens ${targetDayName} 09:15 IST`;
   }
 
   // -------------------------------------------------------------------------
