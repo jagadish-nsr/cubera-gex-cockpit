@@ -34,147 +34,337 @@ The Indian financial markets operate under distinct microstructure regimes acros
 
 ---
 
-## Part 1: Pre-Open Market Microstructure (09:00 – 09:15 IST)
+## Part 1: Pre-Open Market Microstructure & Trader Action Playbook (06:30 – 09:15 IST)
 
-### 1.1 NSE Pre-Open Auction Architecture
-The National Stock Exchange (NSE) executes a single-price call auction for the Cash Equity segment prior to regular market open:
-- **09:00:00 – 09:07:59 IST (Order Collection)**: Institutional and retail participants place, modify, and cancel orders in the equity cash book. No trade execution occurs.
-- **09:08:00 – 09:12:00 IST (Order Matching & Equilibrium Determination)**: Order books are frozen with random closure between 09:07 and 09:08. The exchange matches orders at the single price that maximizes traded volume (Equilibrium Opening Price).
-- **09:12:00 – 09:15:00 IST (Buffer Period)**: Transition window to ensure smooth order queue migration into continuous trading.
-- **Derivatives Asymmetry**: The F&O segment does **NOT** participate in the pre-open auction. Equity derivatives (Index Futures and Options) open strictly at **09:15:00 IST**.
+### 1.1 The Master Morning Pre-Bell Architecture (06:30 – 09:15 IST)
+
+The pre-market window is not merely a waiting period; it is the single most asymmetric information window of the trading day. The Cockpit orchestrates automated ingestion across three distinct morning phases:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                             MORNING PRE-BELL SEQUENCE ARCHITECTURE                               │
+├───────────────────┬─────────────────────────┬────────────────────────────────────────────────────┤
+│ Time Window (IST) │ Phase Name              │ Data Engine & Microstructure Mechanics             │
+├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+│ 06:30 – 09:00:00  │ PRE_MARKET_SETUP        │ Ingests overnight GEX walls, FII derivatives       │
+│                   │                         │ positioning, and prior session cumulative volume   │
+│                   │                         │ delta (CVD). Prepares baseline bias.               │
+├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+│ 09:00 – 09:07:59  │ PRE_MARKET_ENTRY        │ NSE Cash Equity call auction order accumulation.    │
+│                   │                         │ Orders entered/cancelled; zero execution.          │
+│                   │                         │ Live countdown to equilibrium matching.            │
+├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+│ 09:07:30 – 09:08  │ PRE_MARKET_DISCOVERY    │ Adaptive 3.0s polling engages on Dhan quote feed.  │
+│                   │                         │ Detects single clearing equilibrium price.         │
+├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+│ 09:08:15 IST      │ 🔔 DISCOVERY LOCK-IN    │ Four-tone chime sounds. Equilibrium open locked.   │
+│                   │                         │ Black-76 forward model reprices option chain.      │
+├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
+│ 09:08 – 09:14:59  │ 7-MIN ALPHA WINDOW      │ Cash open is known; options remain frozen at       │
+│                   │                         │ yesterday's close. Trader executes pre-bell        │
+│                   │                         │ tactical playbook before derivatives open at 09:15.│
+└───────────────────┴─────────────────────────┴────────────────────────────────────────────────────┘
+```
+
+#### The NSE Pre-Open Call Auction Mechanics:
+- **Cash Equity Single-Price Auction**: The National Stock Exchange (NSE) accumulates buy and sell orders between 09:00:00 and 09:07:59. At random closure (~09:07:30 to 09:08:00), the exchange's matching engine solves for the single clearing price that maximizes executable volume.
+- **Derivatives Asymmetry**: **The F&O segment does NOT participate in this auction.** Index futures and option contracts remain frozen at yesterday's settlement price until **09:15:00 IST**.
+- **The Asymmetry Edge**: Between 09:08:15 and 09:15:00 IST, the trader knows where the underlying cash index will open, while option contract order books are completely empty. This 7-minute window allows the Cockpit to project theoretical option opening prices, calculate straddle decay or expansion, classify the market regime, and formulate precise execution orders before the bell rings.
 
 ---
 
-### 1.2 The 09:07:30 Adaptive Discovery Engine
-Rather than polling continually throughout 09:00–09:07 (wasting API rate limits while books are fluctuating), the Cockpit initiates **Adaptive Polling** at **09:07:30 IST**:
+### 1.2 Quantitative Decoding: What Pre-Market Data Means to the Trader
+
+Every metric displayed on the Cockpit's Pre-Market Briefing Banner represents an actionable institutional signal:
 
 ```
-[09:07:30 IST Trigger] ──▶ Poll Dhan /marketfeed/quote (IDX_I:13 / 25)
-                                     │
-                 ┌───────────────────┴───────────────────┐
-                 ▼                                       ▼
-        [open_px == 0.0]                       [open_px > 0.0 discovered]
-                 │                                       │
-        Sleep 3.0s & Retry                      Extract Discovered Spot
-                                                Calculate Gap Pts & % vs Prev Close
-                                                         │
-                                                ┌────────┴────────┐
-                                                ▼                 ▼
-                                        Trigger Audio Chime   Render Pre-Bell
-                                        (C5-E5-G5-C6 Bell)   Tactical Briefing
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            PRE-MARKET DATA INTERPRETATION DECODER                                │
+├─────────────────────────┬───────────────────────────────────┬────────────────────────────────────┤
+│ Pre-Market Metric       │ What the Metric Quantifies        │ What This Means to the Trader      │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Discovered Spot         │ Single-price volume-maximizing    │ The true anchor for the day's open.│
+│ (S_disc)                │ equilibrium clearing price of cash│ Validates overnight macro news,    │
+│                         │ index constituents.               │ earnings, or global gap risk.      │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Overnight Gap           │ S_disc - S_prev_close             │ Quantifies opening directional     │
+│ (Points & Percentage)   │ Absolute and percentage shift     │ impulse. Gaps > 0.40% signal trend;│
+│                         │ from previous official close.     │ gaps < 0.15% signal rotational chop│
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Structural GEX Walls    │ Highest concentration of dealer   │ Resistance ceiling. Dealers long   │
+│ • Call Wall (CW)        │ open interest and gamma exposure. │ gamma below it; short gamma if     │
+│                         │                                   │ breached above it.                 │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Structural GEX Walls    │ Deepest dealer put open interest  │ Support floor. Dealers long gamma  │
+│ • Put Wall (PW)         │ and put writer commitment.        │ above it; short gamma if breakdown │
+│                         │                                   │ cascades below it.                 │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Gamma Flip              │ Spot level where aggregate dealer │ Above Flip: POSITIVE GAMMA         │
+│ Boundary (GF)           │ gamma shifts from positive to     │ (dealers buy dips/sell rips; chop).│
+│                         │ negative.                         │ Below Flip: NEGATIVE GAMMA         │
+│                         │                                   │ (dealers sell dips; explosive vol).│
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ ATM Straddle Shock %    │ Percentage change in total ATM    │ Net straddle expansion vs crush.   │
+│                         │ premium (CE + PE) from yesterday  │ Negative: Theta crush dominant.    │
+│                         │ to synthetic 09:15 open.          │ Positive: Volatility expansion.    │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ FII Net Derivatives     │ Institutional participant open    │ Contextual institutional bias.     │
+│ Position                │ interest in index futures (net    │ Warns against fighting major FII   │
+│                         │ long vs short contracts).         │ distribution (> 200k short fut).   │
+├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
+│ Prior Session CVD       │ Cumulative Volume Delta from the  │ Persistent buying vs selling       │
+│ & Orderflow Bias        │ preceding day's closing session.  │ pressure carrying into open.       │
+└─────────────────────────┴───────────────────────────────────┴────────────────────────────────────┘
 ```
 
-#### Polling Rules:
-1. **Target Feed**: Dhan Quote REST endpoint querying `IDX_I` (`securityId: 13` for NIFTY, `25` for BANKNIFTY).
-2. **Interval**: Fixed **3.0 seconds** during `PRE_MARKET_DISCOVERY` (bypassing normal 60s off-hours sleep).
-3. **Discovery Condition**:
-   $$\text{is\_discovered} = \left(S_{\text{open}} > 0\right) \land \left(|S_{\text{open}} - S_{\text{prev\_close}}| > 0.01 \lor \text{time} \ge 09:08:00\right)$$
-4. **Cache Longevity**: Once discovered, the opening price is cached in `_PRE_MARKET_CACHE` for the remainder of the session.
+#### Detailed Deep-Dive on Key Insights:
+
+#### 1. Spot Proximity to Walls & Gamma Regime (Positive vs. Negative Gamma):
+- **Positive Gamma ($S_{\text{disc}} > GF$ and inside walls)**: 
+  - *Market Maker Mechanics*: Market makers are net long options. To delta-hedge, they must **sell as price rises** and **buy as price falls**.
+  - *Trader Insight*: Volatility will be dampened. Breakouts will struggle to follow through. The market will tend to pin or mean-revert towards VWAP. **Favor fading edges and selling credit.**
+- **Negative Gamma ($S_{\text{disc}} < GF$ or outside walls)**:
+  - *Market Maker Mechanics*: Market makers are net short options. To delta-hedge, they must **sell as price falls** and **buy as price rises** (pro-cyclical feedback loop).
+  - *Trader Insight*: Extreme volatility expansion. Moves accelerate violently. Bids vanish during sell-offs, and asks vanish during rallies. **Favor directional momentum and debit spreads; do NOT fight momentum.**
+
+#### 2. The ATM Straddle Shock % (Decay vs. Expansion):
+The Cockpit models overnight time decay ($T_{\text{open}} = T_{\text{prev}} - 0.5/252$) alongside jump volatility adjustments:
+$$\text{Straddle Shock \%} = \frac{(V_{\text{open,CE}} + V_{\text{open,PE}}) - (V_{\text{prev,CE}} + V_{\text{prev,PE}})}{V_{\text{prev,CE}} + V_{\text{prev,PE}}} \times 100$$
+
+- **Straddle Crush ($< -5.0\%$)**: 
+  - *Occurs When*: Market opens flat ($|Gap| \le 0.15\%$) or within normal overnight variance.
+  - *Trader Insight*: Implied volatility and overnight theta bleed immediately strip value from both calls and puts at 09:15:00. **Option buyers will lose money immediately even if they pick the right direction.** Option writers collect overnight decay.
+- **Straddle Expansion ($> +5.0\%$)**: 
+  - *Occurs When*: Discovered open gaps significantly ($> 0.35\%$), forcing the in-the-money wing's intrinsic gain to outstrip theta loss.
+  - *Trader Insight*: Overnight gamma jump. Volatility expansion favors option buyers. Option writers who sold straddles/strangles face immediate margin expansion and delta imbalances.
+
+#### 3. 7-Strike Synthetic Option Repricing Grid:
+Because option chain quotes remain frozen at yesterday's close until 09:15:00, retail traders entering market orders at open frequently suffer 20% to 50% slippage. The Cockpit solves this by evaluating Black-76 forward prices across seven strikes:
+$$K \in \{K_{\text{atm}} - 3s, \dots, K_{\text{atm}}, \dots, K_{\text{atm}} + 3s\}$$
+- **Projected Open LTP**: The exact theoretical price where the contract should trade at 09:15:00.
+- **Shock Pts & Shock %**: Projected change relative to yesterday's close.
+- **Delta ($\Delta$)**: The directional exposure per point move in the underlying.
+- *Trader Action*: Instead of hitting market orders at 09:15:00, traders can place limit orders right at or slightly below the Projected Open LTP during the pre-bell window, capturing fills without adverse spread widening.
 
 ---
 
-### 1.3 Morning Chime Bell Notification
-When the discovery condition evaluates to `True`, the Cockpit automatically sounds an audio chime to alert the trader:
-- **Audio Synthesis**: Pure client-side Web Audio API oscillator sequence (no external MP3/WAV dependencies).
-- **Musical Structure**: Ascending harmonic 4-tone sequence:
-  - Tone 1: $C_5 = 523.25\text{ Hz}$ at $t = 0.00\text{s}$
-  - Tone 2: $E_5 = 659.25\text{ Hz}$ at $t = 0.12\text{s}$
-  - Tone 3: $G_5 = 783.99\text{ Hz}$ at $t = 0.24\text{s}$
-  - Tone 4: $C_6 = 1046.50\text{ Hz}$ at $t = 0.36\text{s}$
-- **Envelope**: Exponential decay over 400ms per note with 0.22 master gain.
-- **Deduplication**: Monitored by `_CHIME_TRIGGERED_DAYS` keyed on `(symbol, YYYY-MM-DD)` to ensure it triggers exactly once per day.
+### 1.3 The Complete 8-Regime Gamma-Aware Opening Taxonomy
+
+At 09:08:15 IST, the discovery engine compares $S_{\text{disc}}$ against $S_{\text{prev}}$, $CW$, $PW$, and $GF$ to classify the session into one of eight mutually exclusive, institutional opening regimes:
+
+```
+┌─────────────────────────────────┬─────────────────────────────────┬──────────────┬───────────────────────────────────────────────────────┐
+│ Regime Identifier               │ Quantitative Trigger Condition  │ Badge Color  │ Institutional Microstructure Thesis                   │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ CALL_WALL_BREACH_SQUEEZE        │ S_disc >= Call Wall             │ 🚀 Green     │ Discovered open breaches Call Wall. Call writers face │
+│                                 │                                 │ (var(--go))  │ forced short gamma buy-ins; explosive breakout risk.  │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ PUT_WALL_BREAKDOWN_CASCADE      │ S_disc <= Put Wall              │ 💥 Red       │ Discovered open crashes below Put Wall. Put writers   │
+│                                 │                                 │ (var(--stop))│ forced to liquidate; delta-dump cascade active.       │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ GAP_UP_INTO_POS_GAMMA           │ (CW - 50) <= S_disc < CW        │ 🛡️ Yellow    │ Bullish gap approaching Call Wall, but under dealer   │
+│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ positive gamma. Dealers sell rips; fade resistance.   │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ GAP_DOWN_INTO_POS_GAMMA         │ PW < S_disc <= (PW + 50)        │ 🛡️ Yellow    │ Bearish gap approaching Put Wall, but in positive     │
+│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ gamma cushion. Dealers buy dips; expect support hold. │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ AUCTION_BALANCED                │ |Gap %| <= 0.15%                │ ⚖️ Blue      │ Flat, balanced opening. Straddle theta crush dominant.│
+│                                 │                                 │(var(--spark))│ Rotational two-sided mean reversion around VWAP.      │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ MODERATE_DRIFT                  │ 0.15% < |Gap %| < 0.40%         │ ↔️ Blue      │ Mild directional drift within structural boundaries.  │
+│                                 │ AND inside walls                │(var(--spark))│ Structural rotation towards next key liquidity pocket.│
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ GAP_UP_RUNAWAY                  │ Gap % >= +0.40%                 │ 📈 Green     │ Large runaway gap-up driven by external catalyst.     │
+│                                 │ AND S_disc < CW                 │ (var(--go))  │ Strong open-drive momentum; watch for 09:15 hold.     │
+├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
+│ GAP_DOWN_TRAP                   │ Gap % <= -0.40%                 │ 📉 Red       │ Large runaway gap-down driven by external catalyst.   │
+│                                 │ AND S_disc > PW                 │ (var(--stop))│ Heavy institutional liquidation; watch for gap-trap.  │
+└─────────────────────────────────┴─────────────────────────────────┴──────────────┴───────────────────────────────────────────────────────┘
+```
 
 ---
 
-### 1.4 The 7-Minute Pre-Bell Alpha Window (09:08 – 09:15 IST)
-Between ~09:08:15 and 09:15:00 IST, an exploitable information asymmetry exists:
-> **The Cash Index opening equilibrium is known, but Option Chain prices are frozen at yesterday's close.**
+### 1.4 Trader Action Playbook: Tactical Execution Protocol by Regime
 
-The Cockpit converts this 7-minute window into high-value tactical preparedness:
+For each regime, the Cockpit outlines a battle-tested institutional execution protocol:
 
-#### A. Opening Gap Classification Taxonomy
-The engine compares the discovered opening price ($S_{\text{disc}}$) against structural GEX levels:
-- **Call Wall ($CW$)**: Strike with highest dealer net positive gamma.
-- **Put Wall ($PW$)**: Strike with highest dealer net negative gamma.
-- **Gamma Flip ($GF$)**: Zero-gamma transition boundary.
-
-```
-┌──────────────────────────┬───────────────────────────────┬─────────────────────────────────────────────┐
-│ Gap Regime               │ Classification Condition      │ Strategic Briefing & Favored Play           │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ SHORT_GAMMA_WALL_TEST    │ S >= Call Wall - 15 pts       │ Call Wall directly challenged; dealers face │
-│                          │                               │ short gamma squeeze. Play: MOMENTUM CALLS   │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ PUT_WALL_BREAKDOWN_TEST  │ S <= Put Wall + 15 pts        │ Support breakdown risk; option writers      │
-│                          │                               │ absorb volume. Play: PUT REVERSAL / FADE    │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ GAP_UP_RUNAWAY           │ Gap % >= +0.40%               │ Bullish runaway momentum; watch for 09:15   │
-│                          │                               │ opening 3m range hold. Play: CE MOMENTUM    │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ GAP_DOWN_TRAP            │ Gap % <= -0.40%               │ Bearish expansion dominant; look for bounce │
-│                          │                               │ failure into prev close. Play: PE MOMENTUM  │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ AUCTION_BALANCED         │ |Gap %| <= 0.15%              │ Flat open; initial two-sided mean reversion │
-│                          │                               │ around VWAP. Play: RANGE ACCUMULATION       │
-├──────────────────────────┼───────────────────────────────┼─────────────────────────────────────────────┤
-│ MODERATE_DRIFT           │ 0.15% < |Gap %| < 0.40%       │ Mild rotation; structural continuation.     │
-│                          │                               │ Play: CE / PE STRUCTURAL                    │
-└──────────────────────────┴───────────────────────────────┴─────────────────────────────────────────────┘
-```
-
-#### B. Target Engine Black-76 Pre-Bell Option Shock Modeling
-Because option contracts cannot trade until 09:15, traders often enter the open blind to expected option prices. The Cockpit calculates exact synthetic opening option prices using the **Target Engine Black-76 Analytical Forward Pricing Engine** (`calculate_pre_market_option_shocks` in `data/pre_post_market.py`):
-
-1. **ATM and Strike Selection**:
-   The engine identifies the newly discovered ATM strike $K_{\text{atm}} = \operatorname{round}(S_{\text{disc}} / \text{step}) \times \text{step}$ and selects seven strikes spanning $K_{\text{atm}} \pm 3 \times \text{step}$.
-
-2. **Analytical Forward Pricing**:
-   For each call and put contract:
-   - Evaluates previous theoretical price $V_{\text{prev}} = \text{price}(F = S_{\text{prev}}, K, T = \text{DTE}/365, \sigma = \sigma_{\text{atm}})$.
-   - Evaluates synthetic opening price $V_{\text{open}} = \text{price}(F = S_{\text{disc}}, K, T = \text{DTE}/365, \sigma = \sigma_{\text{atm}})$.
-   - Calculates estimated point shock $\Delta V = V_{\text{open}} - V_{\text{prev}}$ and projected opening percentage change $\Delta V / V_{\text{prev}} \times 100$.
-
-3. **ATM Straddle Shock % (Expansion vs. Crush)**:
-   Measures the net percentage change in the ATM straddle premium $(V_{\text{atm,CE}} + V_{\text{atm,PE}})$:
-   $$\text{Straddle Shock \%} = \frac{(V_{\text{open,CE}} + V_{\text{open,PE}}) - (V_{\text{prev,CE}} + V_{\text{prev,PE}})}{V_{\text{prev,CE}} + V_{\text{prev,PE}}} \times 100$$
-   - **Straddle Expansion ($> +5\%$)**: Significant gap up or gap down driving gamma expansion across both wings.
-   - **Straddle Crush ($< -5\%$)**: Flat auction open resulting in immediate overnight theta crush.
-
-4. **Interactive Display Matrix**:
-   Rendered in the Pre-Market Briefing card in the Cockpit banner:
-   - ATM Straddle expansion/crush chip.
-   - 7-strike projected opening matrix showing Contract, Prev Close, Projected Open, Shock Pts, and Shock %.
-
-5. **Recommendation Anchoring**:
-   The active recommendation batch automatically anchors spot triggers and invalidations to the 09:08 discovered price, ensuring tactical preparedness before the 09:15 bell rings.
+#### 🟢 Playbook 1: Call Wall Breach Squeeze (`🚀 CALL WALL BREACH (SQUEEZE)`)
+- **Microstructure Thesis**: Call writers hold the largest concentrated short gamma position on the board at the Call Wall. When spot opens above this wall, all short calls flip deeply into the money ($\Delta \to 1.0$). To hedge, dealers are forced to buy index futures in size, creating a self-reinforcing upward gamma squeeze.
+- **09:15:00 Execution Trigger**:
+  1. Observe the opening 3-minute candle (09:15 – 09:18 IST).
+  2. If the 3-minute candle closes green **above the Call Wall** and orderflow CVD is positive, trigger long entry.
+- **Preferred Vehicle & Strike**:
+  - *Aggressive*: Buy ATM Call Option (delta $\approx 0.50 - 0.55$).
+  - *Institutional / Defined Risk*: Bull Call Spread (Buy ATM Call, Sell OTM Call at $CW + 100$).
+- **Profit Target (Take-Profit)**:
+  - Target 1: $CW + 0.5 \times \text{Expected Move 1D}$ (approx $+50$ to $+75$ pts on NIFTY).
+  - Target 2: $CW + 1.0 \times \text{Expected Move 1D}$.
+- **Invalidation Boundary (Stop-Loss)**:
+  - Spot falls back and closes below the Call Wall (e.g. $S < CW - 10\text{ pts}$). Exit immediately; failure to hold the Call Wall triggers a bull trap.
+- **⚠️ Cardinal Rule**: **NEVER SELL CALLS.** Do not attempt to fade a Call Wall breach on the open. Short gamma squeezes can expand 200+ points without pullback.
 
 ---
 
-### 1.5 Day-Session Pre-Market Confluence Engine & Gap-Fill Tracking
-The 09:08 discovered equilibrium price and opening gap regime remain authoritative anchors for options strategy evaluation throughout the entire 09:15–15:30 trading session:
+#### 🔴 Playbook 2: Put Wall Breakdown Cascade (`💥 PUT WALL BREAKDOWN (CASCADE)`)
+- **Microstructure Thesis**: The Put Wall represents the foundational floor of the options structure. When spot breaks below it, put writers face massive delta risk ($\Delta \to -1.0$). Option sellers are forced to dump underlying futures to cover margin requirements, triggering a cascading liquidation waterfall into negative gamma.
+- **09:15:00 Execution Trigger**:
+  1. Observe the opening 3-minute candle (09:15 – 09:18 IST).
+  2. If the candle closes red **below the Put Wall** with expanding negative CVD and high volume, enter short.
+- **Preferred Vehicle & Strike**:
+  - *Aggressive*: Buy ATM Put Option (delta $\approx -0.50$ to $-0.55$).
+  - *Institutional / Defined Risk*: Bear Put Spread (Buy ATM Put, Sell OTM Put at $PW - 100$).
+- **Profit Target (Take-Profit)**:
+  - Target 1: $PW - 0.5 \times \text{Expected Move 1D}$ (approx $-50$ to $-75$ pts on NIFTY).
+  - Target 2: $PW - 1.0 \times \text{Expected Move 1D}$.
+- **Invalidation Boundary (Stop-Loss)**:
+  - Spot recovers and closes back above the Put Wall ($S > PW + 10\text{ pts}$). Exit immediately; reclaim indicates an institutional bear trap / spring.
+- **⚠️ Cardinal Rule**: **NEVER SELL NAKED PUTS.** Do not "buy the dip" blindly when the Put Wall is violated.
 
-1. **Trade Quality Factor 13 (Pre-Market Regime & Gap Confluence)**:
-   The Trade Quality Score engine directly incorporates the morning opening regime:
-   - **`GAP_UP_RUNAWAY` (Gap > +0.40%)**: Boosts Call Momentum & Institutional Structure plays (+5 pts) if the gap remains unfilled; penalizes Put Momentum (-6 pts) as shorting into an unfilled open-drive gap has low expectancy.
-   - **`GAP_DOWN_TRAP` (Gap < -0.40%)**: Boosts Put Momentum & Structure (+5 pts) if the gap remains unfilled; penalizes Call Momentum (-6 pts).
-   - **`SHORT_GAMMA_WALL_TEST` / `PUT_WALL_BREAKDOWN_TEST`**: Boosts Gamma Squeeze setups (+6 pts) as dealers face immediate delta hedging acceleration.
-   - **`AUCTION_BALANCED` (Flat Open ±0.15%)**: Boosts Mean-Reversion plays (+4 pts, Iceberg Absorption, Vanna-Charm theta compression); trims Momentum setups (-3 pts) due to lower morning follow-through.
+---
 
-2. **Dynamic Intraday Gap-Fill Tracking**:
-   As live price bars print throughout the session, `get_pre_market_state(symbol)` dynamically monitors intraday `high` and `low`:
-   - For a **Gap Up** ($S_{\text{disc}} > S_{\text{prev}}$): The gap is declared **`FILLED`** the moment live session $\text{Low} \le S_{\text{prev}}$.
-   - For a **Gap Down** ($S_{\text{disc}} < S_{\text{prev}}$): The gap is declared **`FILLED`** the moment live session $\text{High} \ge S_{\text{prev}}$.
-   - Once filled, directional penalties are lifted, and mean-reversion strategy scoring engages.
+#### 🛡️ Playbook 3: Gap-Up into Positive Gamma Resistance (`🛡️ GAP-UP INTO POS GAMMA`)
+- **Microstructure Thesis**: Spot gaps up +0.2% to +0.4%, approaching within 50 points of the Call Wall, but remains *below* the wall while in positive gamma ($S > GF$). In positive gamma, dealers are volatility suppressors—they sell into rallies to rebalance long deltas. The Call Wall acts as an impenetrable brick ceiling.
+- **09:15:00 Execution Trigger**:
+  1. Monitor initial 09:15 – 09:20 rally test of the Call Wall.
+  2. Look for price rejection at Call Wall (long upper wick, exhaustion tape, negative delta divergence).
+- **Preferred Vehicle & Strike**:
+  - *Income / Credit*: Bear Call Credit Spread (Sell $CW$ Call, Buy $CW + 100$ Call for protection).
+  - *Directional Fade*: Buy ATM Put targeting mean-reversion down to Session VWAP.
+- **Profit Target (Take-Profit)**:
+  - Target 1: Session VWAP.
+  - Target 2: Previous Session Close (100% Gap Fill).
+- **Invalidation Boundary (Stop-Loss)**:
+  - Spot breaks cleanly above Call Wall ($S > CW + 15\text{ pts}$). If breached, regime flips to Squeeze Playbook 1!
 
-3. **Intraday Opening Baseline & Gap Fill Tracker Strip (09:25 – 15:30 IST)**:
-   After 09:25 IST, the large pre-bell 7-strike matrix transitions into a sleek, compact HUD strip above the recommendations matrix:
+---
+
+#### 🛡️ Playbook 4: Gap-Down into Positive Gamma Support (`🛡️ GAP-DOWN INTO POS GAMMA`)
+- **Microstructure Thesis**: Spot gaps down -0.2% to -0.4%, approaching within 50 points of the Put Wall, but holds *above* the wall while in positive gamma territory ($S > GF$). Market makers hold long gamma buffers; as price tests the Put Wall, dealers aggressively buy underlying assets, cushioning the market and driving an intraday mean-reversion bounce.
+- **09:15:00 Execution Trigger**:
+  1. Monitor 09:15 – 09:20 test of the Put Wall.
+  2. Confirm absorption at the Put Wall (long lower wick, bid delta absorption, inability of bears to push lower).
+- **Preferred Vehicle & Strike**:
+  - *Income / Credit*: Bull Put Credit Spread (Sell $PW$ Put, Buy $PW - 100$ Put for protection).
+  - *Directional Reversal*: Buy ATM Call targeting bounce to Session VWAP.
+- **Profit Target (Take-Profit)**:
+  - Target 1: Session VWAP.
+  - Target 2: Previous Session Close (100% Gap Fill).
+- **Invalidation Boundary (Stop-Loss)**:
+  - 3-minute candle close below Put Wall ($S < PW - 15\text{ pts}$). If violated, regime flips to Breakdown Playbook 2!
+
+---
+
+#### ⚖️ Playbook 5: Balanced Auction / Flat Open (`⚖️ BALANCED AUCTION`)
+- **Microstructure Thesis**: The discovered price opens virtually flat ($|Gap| \le 0.15\%$), comfortably centered between Call Wall resistance and Put Wall support. Overnight straddle premiums undergo violent theta crush (typically $-5\%$ to $-12\%$). Neither bulls nor bears have overnight edge; market makers pin price to harvest premium.
+- **09:15:00 Execution Trigger**:
+  1. Allow the initial 15-minute range (09:15 – 09:30 IST) to establish High and Low.
+  2. Confirm that price remains bounded inside the morning range without testing walls.
+- **Preferred Vehicle & Strike**:
+  - *Non-Directional Income*: Iron Condor (Sell $CW$ Call / Buy $CW+100$ Call; Sell $PW$ Put / Buy $PW-100$ Put).
+  - *Expiry Day / Low Volatility*: Iron Fly centered at ATM strike.
+  - *Intraday Tactical*: Fade edges (Sell near 15m high, Buy near 15m low) targeting Session VWAP.
+- **Profit Target (Take-Profit)**:
+  - Harvest 30% to 50% of credit received on short option structures.
+- **Invalidation Boundary (Stop-Loss)**:
+  - Sustained breakout outside the 15-minute opening range with expanding volume (> 1.5x average).
+
+---
+
+#### 📈 Playbook 6: Runaway Open-Drive Trend (`📈 GAP-UP RUNAWAY` / `📉 GAP-DOWN TRAP`)
+- **Microstructure Thesis**: A massive macro or earnings gap ($> +0.40\%$ or $< -0.40\%$) that opens far beyond normal value area distribution. Often accompanied by heavy institutional futures positioning alignment.
+- **09:15:00 Execution Trigger**:
+  1. Inspect the 09:15 – 09:18 opening candle.
+  2. An **Open-Drive** pattern occurs when the candle has virtually zero wick in the direction of the open (e.g. Low = Open on gap-up, High = Open on gap-down) and high aggressive volume.
+- **Preferred Vehicle & Strike**:
+  - Directional Momentum Debit Spread (Bull Call Spread for Runaway Up; Bear Put Spread for Trap Down).
+- **Profit Target (Take-Profit)**:
+  - Target: $1.0\times$ to $1.5\times$ 1-day Expected Move.
+- **Invalidation Boundary (Stop-Loss)**:
+  - Price retraces and closes back inside the previous day's value area / extreme range.
+
+---
+
+#### ↔️ Playbook 7: Moderate Structural Rotation (`↔️ MODERATE DRIFT`)
+- **Microstructure Thesis**: Opening gap between 0.15% and 0.40% inside structural boundaries. Represents standard rotational inventory adjustment without institutional urgency.
+- **09:15:00 Execution Trigger**:
+  1. Wait for 09:20 – 09:30 IST to establish directional relationship with Session VWAP.
+  2. If price holds above VWAP, enter structural long on pullback; if below VWAP, enter short.
+- **Preferred Vehicle & Strike**:
+  - ATM Calendar or Vertical Spread aligned with VWAP bias.
+
+---
+
+### 1.5 The 7-Minute Pre-Bell Operational Checklist (09:08:00 – 09:14:59 IST)
+
+To execute with institutional discipline, follow this strict minute-by-minute protocol every trading morning:
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                            THE TRADER'S 7-MINUTE PRE-BELL PROTOCOL                               │
+├──────────────┬────────────────────────┬──────────────────────────────────────────────────────────┤
+│ Clock (IST)  │ Operational Step       │ Exact Action to Take                                     │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:08:15 IST │ 1. Listen for Chime    │ Confirm discovery audio chime sounds.                    │
+│              │    & Read Spot         │ Note Discovered Spot (S_disc) and Gap (Pts / %).         │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:09:00 IST │ 2. Identify Regime     │ Check Regime Badge on Pre-Market Banner:                 │
+│              │    & Straddle Shock %  │ • Squeeze / Breakdown / Pos Gamma / Balanced?            │
+│              │                        │ • Is Straddle Shock crushed (< -5%) or expanding?        │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:10:00 IST │ 3. Inspect 7-Strike    │ Look at ATM strike and adjacent +/- 1 strike:            │
+│              │    Repricing Grid      │ • Check Projected Open LTP for target CE and PE.         │
+│              │                        │ • Note expected jump / shock percentage.                 │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:11:00 IST │ 4. Select Playbook     │ Match regime to Playbooks 1 through 7:                   │
+│              │    & Formulate Plan    │ • Momentum Breakout vs Mean-Reversion Fade vs Income?    │
+│              │                        │ • Note Invalidation Spot boundary (hard stop level).     │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:12:30 IST │ 5. Pre-Populate Order  │ Open broker terminal / trading pad:                      │
+│              │    Pad in Broker       │ • Select target strike contract.                         │
+│              │                        │ • Set limit price equal to Projected Open LTP.           │
+│              │                        │ • Do NOT submit yet—wait for confirmation!               │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:14:30 IST │ 6. Mental Alignment    │ Review Cardinal Rules:                                   │
+│              │    & Risk Check        │ • If Squeeze: NEVER sell calls.                          │
+│              │                        │ • If Balanced: Do NOT chase open; wait for 15m range.    │
+├──────────────┼────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 09:15:00 IST │ 7. 🔔 Bell Rings!      │ Watch first 1-min & 3-min candle print. Verify candle    │
+│              │    Confirm & Fire      │ holds above Invalidation before triggering order!        │
+└──────────────┴────────────────────────┴──────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 1.6 Day-Session Intraday Gap-Fill Tracking & Dynamic Strategy Transition
+
+The 09:08 discovered price remains an authoritative structural anchor throughout the continuous trading session (09:15 – 15:30 IST):
+
+1. **Trade Quality Engine Confluence (Factor 13)**:
+   - In [`analytics/trade_ideas.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/analytics/trade_ideas.py#L2957-L2970), the recommendation scoring engine actively rewards setups aligned with the opening regime:
+     - `CALL_WALL_BREACH_SQUEEZE` / `GAP_UP_RUNAWAY`: Grants **+5 to +8 points** bonus to Bull Momentum & Call Spreads; applies heavy penalty (**-6 to -10 points**) to Put buying setups while gap remains unfilled.
+     - `PUT_WALL_BREAKDOWN_CASCADE` / `GAP_DOWN_TRAP`: Grants **+5 to +8 points** bonus to Bear Momentum & Put Spreads; penalizes Call buying.
+     - `AUCTION_BALANCED`: Boosts Mean-Reversion, Iceberg Absorption, and Theta Income strategies (+4 pts); penalizes high-beta directional momentum setups (-3 pts).
+
+2. **Real-Time Dynamic Gap-Fill Monitoring**:
+   As 1-minute and 5-minute bars print, `get_pre_market_state(symbol)` continuously inspects the session high and low:
+   - **For an Opening Gap-Up** ($S_{\text{disc}} > S_{\text{prev}}$): The gap is declared **`FILLED`** the moment session $\text{Low} \le S_{\text{prev}}$.
+   - **For an Opening Gap-Down** ($S_{\text{disc}} < S_{\text{prev}}$): The gap is declared **`FILLED`** the moment session $\text{High} \ge S_{\text{prev}}$.
+
+3. **Intraday Strategy Transition Upon Gap Fill**:
+   The moment the gap is declared `FILLED`:
+   - Directional runaway bonuses and counter-trend penalties are immediately lifted.
+   - The market has completed its overnight inventory rebalancing and re-entered the prior day's value area.
+   - The Cockpit automatically elevates **Mean-Reversion and VWAP Absorption** setups, warning traders that morning open-drive momentum has concluded and two-sided rotational auction dynamics have resumed.
+
+4. **Intraday Opening Baseline HUD Strip (09:25 – 15:30 IST)**:
+   After 09:25 IST, the extensive pre-bell 7-strike matrix seamlessly contracts into a persistent, compact telemetry HUD banner positioned directly above the Live Recommendations Table:
    ```
-   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚨 CALL WALL BREACH]  [⚡ GAP UNFILLED]
-   Opening gap holding +80.0 pts — directional momentum favored (MOMENTUM CALLS).
+   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚀 CALL WALL BREACH]  [⚡ GAP UNFILLED]
+   Opening gap holding +80.0 pts — directional momentum favored (Playbook 1: Call Squeeze).
    ```
-   When filled, the strip instantly transitions to:
+   When the gap is filled later in the session, the HUD immediately updates:
    ```
-   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚨 CALL WALL BREACH]  [✅ GAP FILLED]
+   🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚀 CALL WALL BREACH]  [✅ GAP FILLED]
    Opening gap filled — mean-reversion cycle active, auction re-established inside prior range.
    ```
 

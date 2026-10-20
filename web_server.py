@@ -2592,6 +2592,33 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
       color: #ffffff;
       border-color: #38bdf8;
     }}
+    body.theme-light {{
+      background: #f1f5f9;
+      color: #0f172a;
+    }}
+    body.theme-light #popout-header {{
+      background: #ffffff;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    }}
+    body.theme-light .btn-group {{
+      background: #f8fafc;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+    }}
+    body.theme-light .tf-btn, body.theme-light .eng-btn {{
+      background: #ffffff;
+      color: #475569;
+      border: 1px solid rgba(0, 0, 0, 0.1);
+    }}
+    body.theme-light .tf-btn.active, body.theme-light .eng-btn.active {{
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #0284c7;
+    }}
+    body.theme-light #popout-sym {{
+      background: #ffffff !important;
+      color: #0f172a !important;
+      border: 1px solid #cbd5e1 !important;
+    }}
     #chart-container {{
       width: 100vw;
       height: calc(100vh - 48px);
@@ -2627,6 +2654,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
         <option value="SENSEX" {'selected' if sym == 'SENSEX' else ''}>SENSEX</option>
       </select>
       <button class="tf-btn" style="color:#38bdf8;border-color:rgba(56,189,248,0.4)" title="Fit chart view to recent candles" onclick="fitView()">🎯 Fit</button>
+      <button id="btn-popout-theme" class="tf-btn" onclick="togglePopoutTheme()" title="Toggle Dark/Light Mode">🌙 Dark</button>
     </div>
   </div>
 
@@ -2638,6 +2666,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
     let currentSym = "{sym}";
     let currentTf = "{tf}";
     let currentEng = "{eng}";
+    let currentTheme = localStorage.getItem("cubera_theme") || "dark";
     let gexChart = null;
     let candleSeries = null;
     let vwapSeries = null;
@@ -2650,12 +2679,34 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
     let popoutPw = 0;
     let lastCandlesCount = 0;
 
+    function applyPopoutTheme(t) {{
+      currentTheme = t;
+      localStorage.setItem("cubera_theme", t);
+      const isL = t === "light";
+      document.body.classList.toggle("theme-light", isL);
+      document.body.classList.toggle("theme-dark", !isL);
+      const btn = document.getElementById("btn-popout-theme");
+      if (btn) btn.textContent = isL ? "☀️ Light" : "🌙 Dark";
+      if (gexChart) {{
+        gexChart.applyOptions({{
+          layout: {{ background: {{ color: isL ? "#ffffff" : "#080c14" }}, textColor: isL ? "#334155" : "#94a3b8" }},
+          grid: {{ vertLines: {{ color: isL ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }}, horzLines: {{ color: isL ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }} }},
+          rightPriceScale: {{ borderColor: isL ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)" }}
+        }});
+      }}
+    }}
+
+    function togglePopoutTheme() {{
+      applyPopoutTheme(currentTheme === "light" ? "dark" : "light");
+    }}
+
     function renderWidget() {{
       const mount = document.getElementById("tv-mount");
       mount.innerHTML = "";
       const tvSym = currentSym === "SENSEX" ? "BSE:SENSEX" : "NSE:" + currentSym;
       const intervalMap = {{ "1m": "1", "5m": "5", "15m": "15" }};
       const interval = intervalMap[currentTf] || "5";
+      const isL = currentTheme === "light";
 
       if (typeof TradingView !== "undefined" && TradingView.widget) {{
         try {{
@@ -2664,23 +2715,23 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
             symbol: tvSym,
             interval: interval,
             timezone: "Asia/Kolkata",
-            theme: "dark",
+            theme: isL ? "light" : "dark",
             style: "1",
             locale: "en",
-            toolbar_bg: "#0c1424",
+            toolbar_bg: isL ? "#ffffff" : "#0c1424",
             enable_publishing: false,
             allow_symbol_change: true,
             container_id: "tv-mount",
             hide_side_toolbar: false,
             withdateranges: true,
             save_image: false,
-            backgroundColor: "#080c14",
-            gridColor: "rgba(56, 189, 248, 0.06)",
+            backgroundColor: isL ? "#ffffff" : "#080c14",
+            gridColor: isL ? "rgba(15, 23, 42, 0.06)" : "rgba(56, 189, 248, 0.06)",
           }});
           return;
         }} catch(e) {{}}
       }}
-      mount.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${{encodeURIComponent(tvSym)}}&interval=${{interval}}&theme=dark&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;"></iframe>`;
+      mount.innerHTML = `<iframe src="https://s.tradingview.com/widgetembed/?symbol=${{encodeURIComponent(tvSym)}}&interval=${{interval}}&theme=${{isL ? 'light' : 'dark'}}&style=1&timezone=Asia%2FKolkata&locale=en" style="width:100%;height:100%;border:none;"></iframe>`;
     }}
 
     async function renderGex() {{
@@ -2688,14 +2739,15 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
       if (!window.LightweightCharts) return;
       if (!gexChart) {{
         mount.innerHTML = "";
+        const isL = currentTheme === "light";
         gexChart = window.LightweightCharts.createChart(mount, {{
           width: mount.clientWidth || window.innerWidth,
           height: mount.clientHeight || (window.innerHeight - 48),
-          layout: {{ background: {{ color: "#080c14" }}, textColor: "#94a3b8" }},
-          grid: {{ vertLines: {{ color: "rgba(56,189,248,0.06)" }}, horzLines: {{ color: "rgba(56,189,248,0.06)" }} }},
+          layout: {{ background: {{ color: isL ? "#ffffff" : "#080c14" }}, textColor: isL ? "#334155" : "#94a3b8" }},
+          grid: {{ vertLines: {{ color: isL ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }}, horzLines: {{ color: isL ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }} }},
           crosshair: {{ mode: window.LightweightCharts.CrosshairMode.Normal }},
           rightPriceScale: {{
-            borderColor: "rgba(51, 65, 85, 0.45)",
+            borderColor: isL ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)",
             autoScale: true,
             scaleMargins: {{ top: 0.08, bottom: 0.20 }},
           }},
@@ -2871,6 +2923,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
       applyActiveView();
     }}
 
+    applyPopoutTheme(currentTheme);
     applyActiveView();
   </script>
 </body>

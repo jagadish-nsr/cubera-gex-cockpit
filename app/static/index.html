@@ -7,6 +7,19 @@
   <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
   <link rel="stylesheet" href="/static/css/cockpit.css">
+  <script>
+    // Early theme initialization to prevent flash of wrong theme (FOUC)
+    (function() {
+      try {
+        var saved = localStorage.getItem('cubera_theme');
+        var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', theme);
+        if (theme === 'light') {
+          document.documentElement.classList.add('theme-light');
+        }
+      } catch (e) {}
+    })();
+  </script>
   <script src="/static/lightweight-charts.standalone.js"></script>
   <script src="https://s3.tradingview.com/tv.js"></script>
 </head>
@@ -45,7 +58,7 @@
         <div class="quote-box">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <span id="quote-box-label" style="font-size:0.68rem;text-transform:uppercase;color:var(--ink-mute);font-weight:750">Spot Close (EOD)</span>
-            <span id="quote-source-badge" style="font-size:0.65rem;color:var(--ink-mute);background:rgba(255,255,255,0.06);padding:1px 6px;border-radius:4px;font-family:var(--mono)">EOD Close</span>
+            <span id="quote-source-badge" style="font-size:0.65rem;color:var(--ink-mute);background:var(--surface-3);border:1px solid var(--line);padding:1px 6px;border-radius:4px;font-family:var(--mono)">EOD Close</span>
           </div>
           <div class="quote-spot">
             <span id="quote-status-dot" class="offline-dot"></span>
@@ -112,6 +125,12 @@
 
         <!-- Refresh Button -->
         <button id="btn-force-refresh" class="btn btn-secondary btn-block">🔄 Force Re-sync Snapshot</button>
+        
+        <!-- Sidebar Theme Toggle Button -->
+        <button id="btn-sidebar-theme-toggle" class="btn btn-secondary btn-block theme-toggle-btn" title="Toggle Theme (Dark / Light)">
+          <span id="sidebar-theme-toggle-icon">🌙</span>
+          <span id="sidebar-theme-toggle-label">Theme Mode: Dark</span>
+        </button>
 
         <hr style="border:none;border-top:1px solid var(--line);margin:4px 0">
 
@@ -189,6 +208,10 @@
               <span>User Manual ↗</span>
             </a>
             <button id="btn-sound-toggle" class="btn btn-secondary" style="font-size:0.75rem">🔔 Audio Chimes: ON</button>
+            <button id="btn-theme-toggle" class="btn btn-secondary theme-toggle-btn" style="font-size:0.75rem" title="Toggle Dark / Light Theme (Ctrl+Shift+D)" aria-label="Toggle Dark / Light Theme">
+              <span id="theme-toggle-icon" class="theme-toggle-icon">🌙</span>
+              <span id="theme-toggle-label" class="theme-toggle-label">Dark</span>
+            </button>
             <span id="session-phase-badge" class="badge-active" style="padding:5px 12px;font-size:0.74rem">POWER HOUR (09:15–15:30)</span>
           </div>
         </div>
@@ -411,7 +434,7 @@
                 <div style="display:flex;align-items:center;gap:8px">
                   <span class="matrix-chevron" style="color:var(--spark);font-size:0.72rem;display:inline-block;transition:transform 0.2s">▼</span>
                   <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>
-                  <span style="font-size:0.65rem;color:var(--ink-faint);background:rgba(255,255,255,0.05);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>
+                  <span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>
                 </div>
                 <span id="pm-straddle-badge" style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹210.0 ➔ <b>₹218.4</b> (<span style="color:var(--go);font-weight:700">+4.0%</span>)</span>
               </summary>
@@ -689,13 +712,13 @@
               <div style="font-weight:750;color:#10b981;font-size:0.92rem;margin-bottom:6px">
                 🚀 Bull Target (<span id="te-bull-horizon-badge">120m</span>)
               </div>
-              <div id="te-bull-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+              <div id="te-bull-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,620.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Stop: <span id="te-bull-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,395.0</span>
               </div>
-              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Target): <b id="te-bull-ptouch" style="color:#10b981">68.4%</b><br>
                 • P(Close Beyond): <b id="te-bull-pclose" style="color:#38bdf8">42.1%</b><br>
                 • Forecast ATM IV: <b id="te-bull-iv" style="color:#facc15">14.12%</b><br>
@@ -708,13 +731,13 @@
               <div style="font-weight:750;color:#3b82f6;font-size:0.92rem;margin-bottom:6px">
                 ⚖️ Base / Range Target (<span id="te-base-horizon-badge">120m</span>)
               </div>
-              <div id="te-base-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+              <div id="te-base-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,535.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Band Stop: <span id="te-base-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
               </div>
-              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Pin): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
                 • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">58.6%</b><br>
                 • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">13.85%</b><br>
@@ -727,13 +750,13 @@
               <div style="font-weight:750;color:#ef4444;font-size:0.92rem;margin-bottom:6px">
                 🔻 Bear Target (<span id="te-bear-horizon-badge">120m</span>)
               </div>
-              <div id="te-bear-target-val" style="font-size:1.45rem;font-weight:900;color:#f8fafc;font-family:var(--mono)">
+              <div id="te-bear-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,395.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Stop: <span id="te-bear-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,550.0</span>
               </div>
-              <div style="font-size:0.75rem;color:#cbd5e1;line-height:1.6;border-top:1px solid rgba(255,255,255,0.06);padding-top:6px">
+              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">32.0%</b><br>
                 • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">18.5%</b><br>
                 • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">15.40%</b><br>
