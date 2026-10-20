@@ -40,10 +40,15 @@ def main(ignore_session: bool = False):
     fa = datetime.now(timezone.utc)
     ist = fa + timedelta(hours=5, minutes=30)
 
-    # Only record live session reads (09:15-15:30 IST, weekdays). Off-hours runs
+    # Only record live session reads (09:15-15:30 IST, trading days). Off-hours runs
     # are stale end-of-day OI and pollute the dealer-sign scoring (see VALIDATION).
+    try:
+        from data.holidays import is_trading_day
+        is_trade_day = is_trading_day(ist.date())
+    except Exception:
+        is_trade_day = ist.weekday() < 5
     minute = ist.hour * 60 + ist.minute
-    in_session = ist.weekday() < 5 and 9 * 60 + 15 <= minute <= 15 * 60 + 30
+    in_session = is_trade_day and 9 * 60 + 15 <= minute <= 15 * 60 + 30
     if not ignore_session and not in_session:
         try:
             sys.stdout.reconfigure(encoding="utf-8")

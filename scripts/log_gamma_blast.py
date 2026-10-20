@@ -39,8 +39,13 @@ def _ist_now() -> datetime:
 
 
 def _in_window(ist: datetime) -> bool:
-    if ist.weekday() >= 5:
-        return False
+    try:
+        from data.holidays import is_trading_day
+        if not is_trading_day(ist.date()):
+            return False
+    except Exception:
+        if ist.weekday() >= 5:
+            return False
     m = ist.hour * 60 + ist.minute
     return _WIN_START_IST[0] * 60 + _WIN_START_IST[1] <= m <= _WIN_END_IST[0] * 60 + _WIN_END_IST[1]
 

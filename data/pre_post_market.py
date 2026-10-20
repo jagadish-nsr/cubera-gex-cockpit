@@ -383,7 +383,18 @@ def get_current_session_phase(now: datetime | None = None) -> tuple[str, str, in
 
     now_ist = now or datetime.now(IST)
     if not is_trading_day(now_ist.date()):
-        return ("OFF_HOURS", "Exchange Closed (Weekend / Holiday)", 0)
+        try:
+            from data.holidays import get_holiday_name
+            h_name = get_holiday_name(now_ist.date())
+        except Exception:
+            h_name = None
+        if h_name:
+            label = f"Exchange Closed ({h_name})"
+        elif now_ist.weekday() >= 5:
+            label = "Exchange Closed (Weekend)"
+        else:
+            label = "Exchange Closed (Holiday)"
+        return ("OFF_HOURS", label, 0)
 
     t_min = now_ist.hour * 60 + now_ist.minute
     t_sec = now_ist.second

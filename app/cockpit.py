@@ -3920,7 +3920,12 @@ def _get_cached_sentinel_data(inst_id: str, timeframe: str = "1m", limit: int = 
     today_dt = now_ist.date()
     m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
     m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
-    is_live_hours = (now_ist.weekday() < 5) and (m_open <= now_ist <= m_close)
+    try:
+        from data.holidays import is_trading_day
+        is_today_trading = is_trading_day(today_dt)
+    except Exception:
+        is_today_trading = now_ist.weekday() < 5
+    is_live_hours = is_today_trading and (m_open <= now_ist <= m_close)
 
     if hit and (now - hit[0] < ttl):
         # Bust cache if cached bars belong to a prior trading day during today's live session

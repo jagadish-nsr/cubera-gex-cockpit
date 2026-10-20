@@ -64,8 +64,13 @@ def _ist_now():
 
 
 def _market_open(ist) -> bool:
-    if ist.weekday() >= 5:                    # Sat/Sun
-        return False
+    try:
+        from data.holidays import is_trading_day
+        if not is_trading_day(ist.date()):
+            return False
+    except Exception:
+        if ist.weekday() >= 5:
+            return False
     mins = ist.hour * 60 + ist.minute
     return 9 * 60 + 15 <= mins <= 15 * 60 + 30
 
