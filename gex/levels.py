@@ -41,6 +41,8 @@ class Levels:
     flip_result: FlipResult | None = None
     flags: list[str] = field(default_factory=list)
     per_strike: pd.DataFrame | None = None
+    atm_iv: float | None = None
+    pcr_oi: float | None = None
 
 
 def compute_levels(
@@ -177,6 +179,30 @@ def compute_levels(
             f"OI is {snapshot.oi_age_hours():.1f}h old (> {oi_stale_hours}h threshold) — stale"
         )
 
+    # 8. Compute authentic ATM IV and PCR from contract set
+    calc_atm_iv = None
+    calc_pcr_oi = None
+    try:
+        c_df = snapshot.contracts
+        if c_df is not None and not c_df.empty:
+            c_oi = float(c_df[c_df["type"] == "C"]["oi"].sum())
+            p_oi = float(c_df[c_df["type"] == "P"]["oi"].sum())
+            if c_oi > 0:
+                calc_pcr_oi = round(p_oi / c_oi, 4)
+
+            c_valid = c_df.dropna(subset=["iv"])
+            c_valid = c_valid[c_valid["iv"] > 0.01]
+            if not c_valid.empty:
+                near_exp = c_valid["expiry"].min()
+                near_df = c_valid[c_valid["expiry"] == near_exp].copy()
+                near_df["_dist"] = (near_df["strike"] - spot).abs()
+                atm_rows = near_df.nsmallest(4, "_dist")
+                iv_s = atm_rows["iv"].dropna()
+                if not iv_s.empty:
+                    calc_atm_iv = round(float(iv_s.mean()), 4)
+    except Exception:
+        pass
+
     return Levels(
         spot=spot,
         call_wall=core.call_wall(per_strike),
@@ -196,6 +222,8 @@ def compute_levels(
         flip_result=flip_res,
         flags=flags,
         per_strike=per_strike,
+        atm_iv=calc_atm_iv,
+        pcr_oi=calc_pcr_oi,
     )
 
 
