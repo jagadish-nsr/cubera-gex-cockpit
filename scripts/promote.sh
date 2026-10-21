@@ -48,7 +48,7 @@ fi
 
 # 1.2 Run Python endpoint tests & critical models
 echo "  • Executing Web Server Endpoint Integration Tests..."
-python3 -m pytest -q "${DEV_DIR}/tests/test_web_server_endpoints.py"
+python3 -m pytest -q --timeout=120 "${DEV_DIR}/tests/test_web_server_endpoints.py"
 
 echo "  • Executing Quant & Market Parity Tests..."
 python3 -m pytest -q "${DEV_DIR}/tests/test_cockpit_market_hours.py" \
