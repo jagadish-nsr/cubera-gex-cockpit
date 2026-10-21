@@ -1118,7 +1118,7 @@ async def get_cockpit_data(
     # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
     if is_open or simulation_mode:
         try:
-            recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
+            recs = generate_trade_recommendations(dash, bias_result=bias_res)
             all_recs = []
             if recs:
                 all_recs = getattr(recs, "all_recommendations", None) or (
@@ -1131,7 +1131,7 @@ async def get_cockpit_data(
                 if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
                     fresh_ideas.append(idea)
         except Exception as e:
-            logger.debug(f"Cockpit fresh ideas check: {e}")
+            log.warning("Cockpit fresh ideas check: %s", e)
 
     cockpit_cards = []
     for r in pinned_records:
