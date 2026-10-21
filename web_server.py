@@ -1662,7 +1662,7 @@ async def get_recommendations(
     spot = float(dash.levels.spot or 0.0)
 
     bias_res = _compute_active_directional_bias(dash, sym)
-    recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
+    recs = generate_trade_recommendations(dash, bias_result=bias_res)
 
     try:
         evaluate_recommendation_lifecycle(sym, spot)
