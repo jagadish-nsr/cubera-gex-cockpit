@@ -1985,7 +1985,7 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
             msg = f"Loaded EOD snapshot for {sym} (live feed unavailable)" if ok else f"No live or EOD data available for {sym}"
             return {"status": "ok" if ok else "offline", "message": msg}
         except Exception as exc:
-            logger.warning("sync_live action failed for %s: %s", sym, exc)
+            log.warning("sync_live action failed for %s: %s", sym, exc)
             return {"status": "error", "message": f"Live sync error: {exc}"}
 
     if action == "load_eod":
@@ -1996,7 +1996,7 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
             msg = f"Loaded verified EOD snapshot for {sym}" if ok else f"No EOD snapshot available for {sym}"
             return {"status": "ok" if ok else "offline", "message": msg}
         except Exception as exc:
-            logger.warning("load_eod action failed for %s: %s", sym, exc)
+            log.warning("load_eod action failed for %s: %s", sym, exc)
             return {"status": "error", "message": f"EOD load error: {exc}"}
 
     # Legacy path / explicit 'reseed_sim': simulator reseed — requires simulation_mode=True
@@ -2022,7 +2022,7 @@ async def get_signal_efficiency(
         from sentinel.engine.efficiency import compute_signal_efficiency, calculate_model_calibration_and_expectancy
         eff_report = compute_signal_efficiency(instrument_id=inst_filter, period_type=ptype, limit_periods=30)
     except Exception as e:
-        logger.warning("compute_signal_efficiency failed: %s", e)
+        log.warning("compute_signal_efficiency failed: %s", e)
         eff_report = None
 
     if eff_report and eff_report.total_signals > 0:
@@ -2243,7 +2243,7 @@ async def get_market_intel(symbol: Optional[str] = None):
             "news_categories": categories,
         }
     except Exception as e:
-        logger.exception("Error in get_market_intel: %s", e)
+        log.exception("Error in get_market_intel: %s", e)
         return {
             "symbol": sym,
             "macro_verdict": "⚖️ Balanced Sector Dispersion: 9/11 Green Amid Bearish Catalysts",
@@ -2779,7 +2779,7 @@ async def log_market_alert(payload: dict = Body(...)):
         save_commentary_entry(entry, symbol=sym)
         return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": now_ist.strftime("%H:%M:%S IST")}
     except Exception as e:
-        logger.warning("Error saving commentary market alert: %s", e)
+        log.warning("Error saving commentary market alert: %s", e)
         return {"status": "error", "message": str(e)}
 
 
@@ -2829,7 +2829,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
                 raw_entries = get_recent_commentary_entries(sym, limit=100)
                 session_entries = [e for e in raw_entries if to_ist(e.get("ts")).strftime("%Y-%m-%d") == active_session_date]
         except Exception as ex:
-            logger.warning("Commentary synthesis error: %s", ex)
+            log.warning("Commentary synthesis error: %s", ex)
 
     # Pre-market state & projected shocks for Morning Anchor (whole day on commentary tab)
     pm_state = dict(get_pre_market_state(sym) or {})
@@ -2850,7 +2850,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
             atm_iv=_extract_active_atm_iv(dash),
         )
     except Exception as ex:
-        logger.warning("calculate_pre_market_option_shocks failed: %s", ex)
+        log.warning("calculate_pre_market_option_shocks failed: %s", ex)
         shocks = {
             "atm_strike": round(disc_spot / 50) * 50,
             "atm_straddle_prev": 210.0,
