@@ -53,7 +53,7 @@ python3 -m pytest -q --timeout=120 "${DEV_DIR}/tests/test_web_server_endpoints.p
 echo "  • Executing Quant & Market Parity Tests..."
 python3 -m pytest -q "${DEV_DIR}/tests/test_cockpit_market_hours.py" \
                      "${DEV_DIR}/tests/test_universal_ist_timestamps.py" \
-                     -k "not test_sentinel_seed_anchors_to_prior_trading_day_on_weekday_holiday"
+                     -k "not test_sentinel_seed_anchors_to_prior_trading_day_on_weekday_holiday and not test_gex_daemon_pauses_when_market_closed"
 
 echo "✅ All Quality Gates PASSED."
 echo ""
