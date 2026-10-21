@@ -1118,7 +1118,7 @@ async def get_cockpit_data(
     # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
     if is_open or simulation_mode:
         try:
-            recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
+            recs = generate_trade_recommendations(dash, bias_result=bias_res)
             all_recs = []
             if recs:
                 all_recs = getattr(recs, "all_recommendations", None) or (
@@ -1131,7 +1131,7 @@ async def get_cockpit_data(
                 if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
                     fresh_ideas.append(idea)
         except Exception as e:
-            logger.debug(f"Cockpit fresh ideas check: {e}")
+            log.warning("Cockpit fresh ideas check: %s", e)
 
     cockpit_cards = []
     for r in pinned_records:
@@ -1229,7 +1229,11 @@ async def get_cockpit_data(
         },
         "is_market_open": is_open,
         "market_state": "OPEN" if is_open else "CLOSED",
-        "as_of_time": getattr(dash, "as_of_time", None) or (dash.fetched_at.strftime("%H:%M:%S IST") if getattr(dash, "fetched_at", None) else ("15:30:00 IST" if not is_open else None)),
+        "as_of_time": getattr(dash, "as_of_time", None) or (
+            dash.fetched_at.astimezone(IST).strftime("%H:%M:%S IST")
+            if getattr(dash, "fetched_at", None)
+            else ("15:30:00 IST" if not is_open else _get_ist_now().strftime("%H:%M:%S IST"))
+        ),
         "fetched_at": str(getattr(dash, "fetched_at", "") or ""),
     }
 
@@ -1662,7 +1666,7 @@ async def get_recommendations(
     spot = float(dash.levels.spot or 0.0)
 
     bias_res = _compute_active_directional_bias(dash, sym)
-    recs = generate_trade_recommendations(dash, sym, bias_result=bias_res)
+    recs = generate_trade_recommendations(dash, bias_result=bias_res)
 
     try:
         evaluate_recommendation_lifecycle(sym, spot)
