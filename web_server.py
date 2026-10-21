@@ -1229,7 +1229,11 @@ async def get_cockpit_data(
         },
         "is_market_open": is_open,
         "market_state": "OPEN" if is_open else "CLOSED",
-        "as_of_time": getattr(dash, "as_of_time", None) or (dash.fetched_at.strftime("%H:%M:%S IST") if getattr(dash, "fetched_at", None) else ("15:30:00 IST" if not is_open else None)),
+        "as_of_time": getattr(dash, "as_of_time", None) or (
+            dash.fetched_at.astimezone(IST).strftime("%H:%M:%S IST")
+            if getattr(dash, "fetched_at", None)
+            else ("15:30:00 IST" if not is_open else _get_ist_now().strftime("%H:%M:%S IST"))
+        ),
         "fetched_at": str(getattr(dash, "fetched_at", "") or ""),
     }
 
