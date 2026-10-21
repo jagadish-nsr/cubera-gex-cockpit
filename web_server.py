@@ -19,6 +19,7 @@ from pathlib import Path
 import sys
 import time
 from typing import Any, Dict, List, Optional
+import pandas as pd
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -552,18 +553,77 @@ def _is_recently_triggered(triggered_at_val: Any, max_age_seconds: float = 600.0
         return False
 
 
+def _extract_active_pcr(dash: Any) -> float:
+    """Extract authentic Put-Call Ratio (OI) from dashboard data."""
+    if not dash:
+        return 1.0
+    lvl_pcr = getattr(dash.levels, "pcr_oi", None) or getattr(dash.levels, "pcr", None) if hasattr(dash, "levels") and dash.levels else None
+    if lvl_pcr is not None and float(lvl_pcr) > 0:
+        return float(lvl_pcr)
+    raw = getattr(dash, "raw_agg", None) or getattr(dash, "oi_volume", None) or {}
+    pcr = raw.get("pcr_oi") or raw.get("pcr")
+    if pcr is not None and float(pcr) > 0:
+        return float(pcr)
+    if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) and not dash.contracts.empty:
+        try:
+            df = dash.contracts
+            c_oi = float(df[df["type"] == "C"]["oi"].sum())
+            p_oi = float(df[df["type"] == "P"]["oi"].sum())
+            if c_oi > 0:
+                return round(p_oi / c_oi, 4)
+        except Exception:
+            pass
+    return 1.0
+
+
+def _extract_active_atm_iv(dash: Any) -> float:
+    """Extract authentic At-The-Money Implied Volatility (decimal, e.g. 0.129 for 12.9%)."""
+    if not dash:
+        return 0.14
+    lvl_iv = getattr(dash.levels, "atm_iv", None) if hasattr(dash, "levels") and dash.levels else None
+    if lvl_iv is not None and float(lvl_iv) > 0.01:
+        return float(lvl_iv)
+    if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) and not dash.contracts.empty:
+        try:
+            df = dash.contracts.dropna(subset=["iv"])
+            df = df[df["iv"] > 0.01]
+            if not df.empty:
+                spot = float(dash.levels.spot if hasattr(dash, "levels") and dash.levels else 0)
+                if spot <= 0:
+                    spot = float(df["strike"].median())
+                near_exp = df["expiry"].min()
+                near_df = df[df["expiry"] == near_exp].copy()
+                near_df["_dist"] = (near_df["strike"] - spot).abs()
+                atm_contracts = near_df.nsmallest(4, "_dist")
+                iv_vals = atm_contracts["iv"].dropna()
+                if not iv_vals.empty:
+                    v = float(iv_vals.mean())
+                    if 0.02 < v < 1.5:
+                        return round(v, 4)
+        except Exception:
+            pass
+    if hasattr(dash, "india_vix") and dash.india_vix and "last" in dash.india_vix:
+        try:
+            vix = float(dash.india_vix["last"] or 0)
+            if vix > 1.0:
+                return round(vix / 100.0, 4)
+        except Exception:
+            pass
+    return 0.14
+
+
 def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
     """Evaluate authentic IOAS 8-Signal Directional Bias (including Max Pain Gravitation)."""
     spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     cw = float(dash.levels.call_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     pw = float(dash.levels.put_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     mp = float(dash.levels.max_pain or 0.0) if dash and hasattr(dash, "levels") and dash.levels else spot
-    pcr = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95) if dash and hasattr(dash, "levels") and dash.levels else 0.95
+    pcr = _extract_active_pcr(dash)
     call_doi = getattr(dash, "call_doi", None) or (getattr(dash.levels, "call_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
     put_doi = getattr(dash, "put_doi", None) or (getattr(dash.levels, "put_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
     oi_strikes = getattr(dash, "oi_strikes", None)
     india_vix = getattr(dash, "india_vix", None)
-    atm_iv = float(getattr(dash.levels, "atm_iv", None) or 0.14) if dash and hasattr(dash, "levels") and dash.levels else 0.14
+    atm_iv = _extract_active_atm_iv(dash)
     try:
         return compute_directional_bias(
             spot=spot,
@@ -864,7 +924,7 @@ async def get_cockpit_data(
     # 8 KPI cards (including Max Pain and IOAS Directional Bias)
     flip_val = _extract_active_gamma_flip(dash, sym)
     net_gex_val = float(getattr(dash.levels, "total_net_gex", 0.0) or 0.0)
-    pcr_val = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95)
+    pcr_val = _extract_active_pcr(dash)
     mp_val = float(getattr(dash.levels, "max_pain", 0.0) or spot)
     magnet_val = float(getattr(dash.levels, "magnet", 0.0) or 0.0)
 
@@ -1315,7 +1375,7 @@ async def reprice_target_engine(payload: dict = Body(...)):
     _, T_horizon = calculate_horizon_t(now_dt, tgt_mins, sel_expiry)
 
     # Resolve strike IV & live LTP from contracts_df
-    strike_iv = float(getattr(dash.levels, "atm_iv", 0.15) or 0.15)
+    strike_iv = _extract_active_atm_iv(dash)
     market_ltp = None
     contracts_df = getattr(dash, "contracts", None)
     if contracts_df is not None and not contracts_df.empty:
@@ -1882,7 +1942,7 @@ async def get_signal_efficiency(
     if eff_report and eff_report.total_signals > 0:
         dash = _load_active_dashboard(sym, "weekly")
         spot = float(dash.levels.spot or 24500.0)
-        atm_iv = float(getattr(dash.levels, "atm_iv", 0.14) or 0.14)
+        atm_iv = _extract_active_atm_iv(dash)
         dte = float(getattr(dash, "dte_now", 3.0) or 3.0)
         try:
             calib = calculate_model_calibration_and_expectancy(eff_report, spot=spot, atm_iv=atm_iv, dte_days=dte)
@@ -2133,7 +2193,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     spot = float(dash.levels.spot or 24500.0)
 
     # Expected move calculation
-    atm_iv = float(getattr(dash.levels, "atm_iv", 0.14) or 0.14)
+    atm_iv = _extract_active_atm_iv(dash)
     dte = 4.0
     exp_move = spot * atm_iv * (dte / 365.0) ** 0.5
     exp_high = spot + exp_move
@@ -2189,7 +2249,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         term_structure = [{"expiry": "Active Expiry", "iv": round(atm_iv * 100.0, 1)}]
 
     # Options Analytics 6 Top KPI Cards
-    pcr = float(getattr(dash.levels, "pcr_oi", None) or (dash.raw_agg.get("pcr") if hasattr(dash, "raw_agg") and dash.raw_agg else 0.95) or 0.95)
+    pcr = _extract_active_pcr(dash)
     max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else spot
     vix = float(dash.india_vix.get("last", 13.5)) if dash.india_vix else 13.5
 
