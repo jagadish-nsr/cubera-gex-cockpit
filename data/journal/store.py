@@ -161,6 +161,32 @@ def _get_read_conn() -> sqlite3.Connection:
         # don't crash on first launch before any trade is logged.
         conn = sqlite3.connect(":memory:", check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        # Bootstrap minimal schema so queries return empty results instead of crashing
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                trade_id          TEXT PRIMARY KEY,
+                symbol            TEXT NOT NULL,
+                strategy_name     TEXT NOT NULL,
+                status            TEXT NOT NULL DEFAULT 'OPEN',
+                entry_ts          TEXT NOT NULL,
+                exit_ts           TEXT,
+                legs_json         TEXT NOT NULL,
+                entry_spot        REAL NOT NULL,
+                entry_levels_json TEXT NOT NULL,
+                entry_regime_json TEXT NOT NULL,
+                entry_net_premium REAL NOT NULL,
+                exit_net_premium  REAL,
+                gross_pnl         REAL,
+                brokerage_cost    REAL NOT NULL,
+                slippage_cost     REAL NOT NULL,
+                net_realized_pnl  REAL,
+                exit_reason       TEXT,
+                notes             TEXT NOT NULL DEFAULT '',
+                lot_size          INTEGER NOT NULL,
+                exit_by           TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.commit()
         return conn
 
 
