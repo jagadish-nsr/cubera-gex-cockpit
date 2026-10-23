@@ -131,11 +131,13 @@ def test_get_cockpit_data_levels_and_tape():
     assert "directional_bias" in data["kpis"]
     assert "gamma_blast" in data
     assert "ladder" in data
-    assert len(data["ladder"]) == 11
+    # ATM ±6 plus walls/magnet/max-pain so key GEX levels stay on-chart
+    assert len(data["ladder"]) >= 11
     assert "is_max_pain" in data["ladder"][0]
     assert "is_magnet" in data["ladder"][0]
     assert "is_gamma_flip" in data["ladder"][0]
     assert any(r["is_gamma_flip"] for r in data["ladder"])
+    assert any(r.get("is_call_wall") or r.get("is_put_wall") for r in data["ladder"])
     assert "orderflow_alerts" in data
     assert "pre_market" in data
     assert "cockpit_recommendations" in data
