@@ -343,6 +343,7 @@
       state.ws.onmessage = (event) => {
         try {
           const tick = JSON.parse(event.data);
+          paintWallKpisFromTick(tick);
           if (tick.type === "TICK" && tick.is_market_open) {
             handleLiveTick(tick);
           } else if (tick.type === "STATUS") {
@@ -400,6 +401,14 @@
     if (clockEl && tick.ist_time) {
       const cleanTime = String(tick.ist_time).replace(/\bIST\b/gi, "").trim();
       clockEl.textContent = `${cleanTime} IST`;
+    }
+    if (tick.india_vix && tick.india_vix.last != null) {
+      const vixEl = document.getElementById("vix-display");
+      if (vixEl) {
+        const vixPct = Number(tick.india_vix.pct_change);
+        const vixPctTxt = Number.isFinite(vixPct) ? vixPct.toFixed(2) : "0.00";
+        vixEl.textContent = `${Number(tick.india_vix.last).toFixed(2)} (${vixPct > 0 ? "+" : ""}${vixPctTxt}%)`;
+      }
     }
 
     // Feed Dhan live tick data into TradingView chart components
@@ -515,10 +524,12 @@
           requestedSym !== (state.symbol || "").toUpperCase()) {
         return;
       }
-      state.spot = data.spot;
-
-      document.getElementById("spot-price-display").textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
-      document.getElementById("futures-price-display").textContent = `₹${data.future_price.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      const wsLive = state.ws && state.ws.readyState === 1 && data.is_market_open;
+      if (!wsLive) {
+        state.spot = data.spot;
+        document.getElementById("spot-price-display").textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+        document.getElementById("futures-price-display").textContent = `₹${data.future_price.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      }
       document.getElementById("header-index-label").textContent = data.label;
       if (document.getElementById("header-clock") && data.ist_time) {
         const cleanTime = String(data.ist_time).replace(/\bIST\b/gi, "").trim();
@@ -532,8 +543,10 @@
       if (ohlc) {
         document.getElementById("day-hl-display").textContent = `${ohlc.high.toLocaleString("en-IN")} / ${ohlc.low.toLocaleString("en-IN")}`;
       }
-      if (data.india_vix) {
-        document.getElementById("vix-display").textContent = `${data.india_vix.last.toFixed(2)} (${data.india_vix.pct_change > 0 ? "+" : ""}${data.india_vix.pct_change}%)`;
+      if (data.india_vix && !wsLive) {
+        const vixPct = Number(data.india_vix.pct_change);
+        const vixPctTxt = Number.isFinite(vixPct) ? vixPct.toFixed(2) : "0.00";
+        document.getElementById("vix-display").textContent = `${Number(data.india_vix.last).toFixed(2)} (${vixPct > 0 ? "+" : ""}${vixPctTxt}%)`;
       }
 
       // Market Hours & Feed Mode Handling
@@ -639,6 +652,41 @@
     }
   }
 
+  function paintStrikeKpi(elId, node, subId) {
+    const el = document.getElementById(elId);
+    if (!el || !node) return;
+    const val = Number(node.val);
+    if (Number.isFinite(val) && val > 0) {
+      el.textContent = `₹${Math.round(val).toLocaleString("en-IN")}`;
+    }
+    if (subId && node.sub) {
+      const subEl = document.getElementById(subId);
+      if (subEl) subEl.textContent = node.sub;
+    }
+  }
+
+  function paintWallKpisFromTick(tick) {
+    if (!tick) return;
+    const tickSym = (tick.symbol || "").toUpperCase();
+    const activeSym = (state.symbol || "").toUpperCase();
+    if (tickSym && activeSym && tickSym !== activeSym) return;
+    const cw = Number(tick.call_wall);
+    const pw = Number(tick.put_wall);
+    const cwEl = document.getElementById("kpi-call-wall");
+    const pwEl = document.getElementById("kpi-put-wall");
+    if (cwEl && Number.isFinite(cw) && cw > 0) {
+      cwEl.textContent = `₹${Math.round(cw).toLocaleString("en-IN")}`;
+    }
+    if (pwEl && Number.isFinite(pw) && pw > 0) {
+      pwEl.textContent = `₹${Math.round(pw).toLocaleString("en-IN")}`;
+    }
+    const gfEl = document.getElementById("kpi-gamma-flip");
+    const gf = Number(tick.gamma_flip);
+    if (gfEl && Number.isFinite(gf) && gf > 0 && (gfEl.textContent || "").trim() === "—") {
+      gfEl.textContent = `₹${Math.round(gf).toLocaleString("en-IN")}`;
+    }
+  }
+
   async function loadCockpit() {
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
@@ -650,8 +698,9 @@
         return;
       }
 
-      if (data.kpis.call_wall) document.getElementById("kpi-call-wall").textContent = `₹${data.kpis.call_wall.val.toLocaleString("en-IN")}`;
-      if (data.kpis.put_wall) document.getElementById("kpi-put-wall").textContent = `₹${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
+      if (!data.kpis) return;
+      paintStrikeKpi("kpi-call-wall", data.kpis.call_wall, "kpi-call-wall-sub");
+      paintStrikeKpi("kpi-put-wall", data.kpis.put_wall, "kpi-put-wall-sub");
 
       if (data.kpis.gamma_flip) {
         const gfEl = document.getElementById("kpi-gamma-flip");
@@ -1771,10 +1820,13 @@
 
   async function loadTargetEngine() {
     try {
+      const requestedSym = (state.symbol || "").toUpperCase();
       const horizon = state.teHorizon || 120;
       const mode = state.teMode || "heuristic";
-      const res = await fetch(`/api/target-engine?symbol=${state.symbol}&window=${state.window}&horizon=${horizon}&mode=${mode}`);
+      const res = await fetch(`/api/target-engine?symbol=${requestedSym}&window=${state.window}&horizon=${horizon}&mode=${mode}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       document.getElementById("dial-verdict").textContent = data.dial.verdict;
       document.getElementById("dial-score-num").textContent = `${data.dial.score} / 100`;
@@ -3548,8 +3600,11 @@
 
   async function loadSignalEfficiency() {
     try {
-      const res = await fetch(`/api/signal-efficiency?symbol=${state.symbol}&period_type=${effState.period}&scope=${effState.scope}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/signal-efficiency?symbol=${requestedSym}&period_type=${effState.period}&scope=${effState.scope}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Top 5-KPI Strip
       const kTotal = document.getElementById("eff-kpi-total");
@@ -3752,8 +3807,11 @@
 
   async function loadMarketIntel() {
     try {
-      const res = await fetch(`/api/market-intel?symbol=${state.symbol}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/market-intel?symbol=${requestedSym}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Macro Verdict & Narrative
       const verdictEl = document.getElementById("intel-verdict");
@@ -3902,8 +3960,11 @@
 
   async function loadOptionsAnalytics() {
     try {
-      const res = await fetch(`/api/options-analytics?symbol=${state.symbol}&window=${state.window}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/options-analytics?symbol=${requestedSym}&window=${state.window}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Top 6-Card KPI Strip
       if (data.kpis) {
@@ -4128,8 +4189,11 @@
 
   async function loadScorecard() {
     try {
-      const res = await fetch(`/api/scorecard?symbol=${state.symbol}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/scorecard?symbol=${requestedSym}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       document.getElementById("scorecard-kpi-pnl").textContent = data.kpis.realized_pnl;
       document.getElementById("scorecard-kpi-trades").textContent = `${data.kpis.total_trades} Trades`;
@@ -4228,8 +4292,11 @@
 
   async function loadCommentary() {
     try {
-      const res = await fetch(`/api/session-commentary?symbol=${state.symbol}`);
+      const requestedSym = (state.symbol || "").toUpperCase();
+      const res = await fetch(`/api/session-commentary?symbol=${requestedSym}`);
       const data = await res.json();
+      if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
+          requestedSym !== (state.symbol || "").toUpperCase()) return;
       state.commentaryData = data;
 
       const titleEl = document.getElementById("commentary-phase-title");
@@ -4739,11 +4806,18 @@
       decayMins.addEventListener("input", updateRepricer);
     }
 
-    // Force Re-sync Snapshot
+    // Force Re-sync Snapshot — wakes the background chain ingest; does not block on Dhan.
     const btnSync = document.getElementById("btn-force-refresh");
     if (btnSync) {
-      btnSync.addEventListener("click", () => {
+      btnSync.addEventListener("click", async () => {
         showToast("Synchronizing live market snapshot...");
+        try {
+          await fetch("/api/ops/resync-snapshot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ symbol: state.symbol, window: state.window }),
+          });
+        } catch (e) {}
         refreshAll();
       });
     }

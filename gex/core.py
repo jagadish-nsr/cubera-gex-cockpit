@@ -96,9 +96,31 @@ def total_net_gex(per_strike: pd.DataFrame) -> float:
     return float(per_strike["net_gex"].sum())
 
 
-def regime(per_strike: pd.DataFrame) -> str:
+def writer_imbalance_net(
+    per_strike: pd.DataFrame,
+    dealer_sign_model: str = "short_call_short_put",
+) -> float:
+    """Call-minus-put GEX — the same sign convention as ``gex.flip``.
+
+    Under ``short_call_short_put`` both legs are stored negative (writer gamma),
+    so ``sum(net_gex)`` is always ≤ 0 and cannot classify regime. Recover
+    ``call_mag - put_mag`` so the total can actually change sign and agrees
+    with the gamma-flip zero-crossing.
+    """
+    if dealer_sign_model == "short_call_short_put":
+        return float((-per_strike["call_gex"] + per_strike["put_gex"]).sum())
+    return float(per_strike["net_gex"].sum())
+
+
+def regime(
+    per_strike: pd.DataFrame,
+    dealer_sign_model: str | None = None,
+) -> str:
     """POSITIVE (pin/fade) vs NEGATIVE (momentum/amplify) vs FLAT (exactly 0)."""
-    total = total_net_gex(per_strike)
+    if dealer_sign_model is None:
+        total = total_net_gex(per_strike)
+    else:
+        total = writer_imbalance_net(per_strike, dealer_sign_model)
     if total > 0:
         return "POSITIVE"
     if total < 0:

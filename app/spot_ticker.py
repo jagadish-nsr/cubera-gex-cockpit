@@ -45,6 +45,16 @@ def latest(symbol: str) -> dict | None:
     return rec["ohlc"]
 
 
+def latest_quote(symbol: str) -> dict | None:
+    """Compiled spot/futures/VIX quote, or None. Memory read only — never blocks."""
+    rec = _STORE.get(symbol)
+    if not rec:
+        return None
+    if (time.time() - rec.get("at", 0)) > STALE_AFTER_S:
+        return None
+    return rec.get("quote")
+
+
 def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     """Compile a complete instant market quote dictionary without blocking."""
     snap = None

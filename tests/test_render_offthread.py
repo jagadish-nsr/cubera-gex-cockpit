@@ -71,6 +71,23 @@ def test_spot_ticker_read_is_instant_and_never_blocks():
     assert (time.time() - t) < 0.05
 
 
+def test_spot_ticker_latest_quote_is_instant():
+    from app import spot_ticker
+    spot_ticker._STORE.clear()
+    t = time.time()
+    assert spot_ticker.latest_quote("NIFTY") is None
+    assert (time.time() - t) < 0.05
+    spot_ticker._STORE["NIFTY"] = {
+        "ohlc": {"ltp": 22600.0},
+        "quote": {"spot": 22600.0, "fut_px": 22620.0},
+        "at": time.time(),
+        "err": None,
+    }
+    q = spot_ticker.latest_quote("NIFTY")
+    assert q["spot"] == 22600.0
+    spot_ticker._STORE.clear()
+
+
 def test_spot_ticker_drops_a_stale_tick():
     from app import spot_ticker
     spot_ticker._STORE["NIFTY"] = {"ohlc": {"ltp": 1.0}, "at": time.time() - 999, "err": None}
@@ -96,3 +113,22 @@ def test_event_is_stable_per_symbol():
     lf._FORCE.clear()
     assert lf._event("NIFTY") is lf._event("NIFTY")
     assert lf._event("NIFTY") is not lf._event("SENSEX")
+
+
+def test_live_fetcher_window_keys_are_independent():
+    from app import live_fetcher as lf
+    lf._STORE.clear()
+    lf._STORE["NIFTY"] = {"data": "default"}
+    lf._STORE[("NIFTY", "current_week")] = {"data": "week"}
+    assert lf.latest("NIFTY")["data"] == "default"
+    assert lf.latest("NIFTY", "current_week")["data"] == "week"
+    assert lf.latest("NIFTY", "monthly") is None
+
+
+def test_force_with_window_does_not_wake_default_key():
+    from app import live_fetcher as lf
+    lf._FORCE.clear()
+    lf.force("NIFTY", window="current_week")
+    assert lf._event(("NIFTY", "current_week")).is_set()
+    assert not lf._event("NIFTY").is_set()
+    lf._event(("NIFTY", "current_week")).clear()

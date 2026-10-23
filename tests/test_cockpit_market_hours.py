@@ -162,6 +162,68 @@ def test_gamma_blast_concluded_when_market_closed():
         assert "closed" in gb["description"].lower()
 
 
+def test_live_hours_reads_published_store_without_dhan():
+    """HTTP path must read live_fetcher.latest and never call load_dashboard(use_demo=False)."""
+    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
+    from unittest.mock import MagicMock
+
+    _DASH_MEM_CACHE.clear()
+    fake = MagicMock()
+    fake.levels.spot = 22600.0
+    fake.levels.call_wall = 23000.0
+    fake.levels.put_wall = 22500.0
+    fake.india_vix = {"last": 12.0}
+
+    with patch("config.is_market_open", return_value=True):
+        with patch("web_server.load_dashboard") as mock_load:
+            with patch("web_server._ensure_chain_ingest"):
+                with patch("app.live_fetcher.latest", return_value={"data": fake, "err": None}):
+                    with patch("app.spot_ticker.latest", return_value=None):
+                        dash = _load_active_dashboard("NIFTY", "current_week")
+    assert dash.levels.call_wall == 23000.0
+    mock_load.assert_not_called()
+
+
+def test_live_hours_cold_start_uses_pickle_not_live_dhan():
+    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
+    from unittest.mock import MagicMock
+
+    _DASH_MEM_CACHE.clear()
+    fake = MagicMock()
+    fake.levels.spot = 22600.0
+    fake.levels.call_wall = 23000.0
+    fake.levels.put_wall = 22500.0
+
+    with patch("config.is_market_open", return_value=True):
+        with patch("web_server.load_dashboard") as mock_load:
+            with patch("web_server._ensure_chain_ingest"):
+                with patch("app.live_fetcher.latest", return_value=None):
+                    with patch("web_server._from_lkgs", return_value=None):
+                        with patch("web_server._unpickle_latest_snap", return_value=fake):
+                            with patch("web_server._overlay_live_spot", side_effect=lambda d, s: d):
+                                dash = _load_active_dashboard("NIFTY", "current_week")
+    assert dash is fake
+    mock_load.assert_not_called()
+
+
+def test_live_hours_demo_fallback_never_sets_use_demo_false():
+    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
+    from unittest.mock import MagicMock
+
+    _DASH_MEM_CACHE.clear()
+    fake = MagicMock()
+    with patch("config.is_market_open", return_value=True):
+        with patch("web_server.load_dashboard", return_value=fake) as mock_load:
+            with patch("web_server._ensure_chain_ingest"):
+                with patch("app.live_fetcher.latest", return_value=None):
+                    with patch("web_server._from_lkgs", return_value=None):
+                        with patch("web_server._unpickle_latest_snap", return_value=None):
+                            _load_active_dashboard("NIFTY", "current_week")
+    assert mock_load.called
+    _, kwargs = mock_load.call_args
+    assert kwargs.get("use_demo") is True
+
+
 def test_market_snapshot_rejects_corrupted_walls():
     """Verify save_snapshot and _load_active_dashboard reject corrupt outlier walls (e.g. 17000 for NIFTY)."""
     from web_server import _load_active_dashboard, _DASH_MEM_CACHE

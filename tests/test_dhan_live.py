@@ -32,6 +32,13 @@ def _sample_chain():
     }}}
 
 
+def test_to_nse_rows_converts_share_oi_to_lots():
+    rows, _ = dhan_live._to_nse_rows(_sample_chain(), "2026-07-23", lot_size=65)
+    ce = next(r["CE"] for r in rows if r["strikePrice"] == 24300.0 and "CE" in r)
+    assert ce["openInterest"] == pytest.approx(1000 / 65)
+    assert ce["changeinOpenInterest"] == pytest.approx(200 / 65)
+
+
 def test_to_nse_rows_maps_fields_and_spot():
     rows, spot = dhan_live._to_nse_rows(_sample_chain(), "2026-07-23")
     assert spot == 24360.0
