@@ -43,6 +43,7 @@ class Levels:
     per_strike: pd.DataFrame | None = None
     atm_iv: float | None = None
     pcr_oi: float | None = None
+    pcr_near: float | None = None
 
 
 def compute_levels(
@@ -182,6 +183,7 @@ def compute_levels(
     # 8. Compute authentic ATM IV and PCR from contract set
     calc_atm_iv = None
     calc_pcr_oi = None
+    calc_pcr_near = None
     try:
         c_df = snapshot.contracts
         if c_df is not None and not c_df.empty:
@@ -190,19 +192,31 @@ def compute_levels(
             if c_oi > 0:
                 calc_pcr_oi = round(p_oi / c_oi, 4)
 
+            # Near-spot PCR (nearest expiry, 21 closest strikes) — what traders
+            # actually watch. Full-chain PCR is dominated by far-OTM call junk.
+            near_exp = c_df["expiry"].min()
+            near_df = c_df[c_df["expiry"] == near_exp].copy()
+            near_strikes = sorted(near_df["strike"].unique(), key=lambda k: abs(float(k) - spot))[:21]
+            band = near_df[near_df["strike"].isin(near_strikes)]
+            band_c = float(band[band["type"] == "C"]["oi"].sum())
+            band_p = float(band[band["type"] == "P"]["oi"].sum())
+            if band_c > 0:
+                calc_pcr_near = round(band_p / band_c, 4)
+
             c_valid = c_df.dropna(subset=["iv"])
             c_valid = c_valid[c_valid["iv"] > 0.01]
             if not c_valid.empty:
-                near_exp = c_valid["expiry"].min()
-                near_df = c_valid[c_valid["expiry"] == near_exp].copy()
-                near_df["_dist"] = (near_df["strike"] - spot).abs()
-                atm_rows = near_df.nsmallest(4, "_dist")
+                near_exp_iv = c_valid["expiry"].min()
+                near_iv_df = c_valid[c_valid["expiry"] == near_exp_iv].copy()
+                near_iv_df["_dist"] = (near_iv_df["strike"] - spot).abs()
+                atm_rows = near_iv_df.nsmallest(4, "_dist")
                 iv_s = atm_rows["iv"].dropna()
                 if not iv_s.empty:
                     calc_atm_iv = round(float(iv_s.mean()), 4)
     except Exception:
         pass
 
+    sign_model = snapshot.dealer_sign_model
     return Levels(
         spot=spot,
         call_wall=core.call_wall(per_strike),
@@ -210,8 +224,8 @@ def compute_levels(
         magnet=core.magnet(per_strike),
         flip=flip_res.flip,
         max_pain=mp,
-        total_net_gex=core.total_net_gex(per_strike),
-        regime=core.regime(per_strike),
+        total_net_gex=core.writer_imbalance_net(per_strike, sign_model),
+        regime=core.regime(per_strike, sign_model),
         dealer_sign_model=snapshot.dealer_sign_model,
         expiry_window=snapshot.expiry_window,
         oi_timestamp=snapshot.oi_timestamp,
@@ -224,6 +238,7 @@ def compute_levels(
         per_strike=per_strike,
         atm_iv=calc_atm_iv,
         pcr_oi=calc_pcr_oi,
+        pcr_near=calc_pcr_near,
     )
 
 

@@ -83,7 +83,7 @@ class DashboardData:
 
 def _live_greeks(contracts, spot: float, lot: float) -> dict:
     """Current dealer VANNA & CHARM exposure |Σ greek·(callOI−putOI)| over the ~21 nearest strikes
-    of the nearest expiry, ×lot to match the Dhan cache scale (Dhan OI is already in shares) —
+    of the nearest expiry, ×lot (OI is stored in lots; lot converts to share-equivalent) —
     plus days-to-expiry. The gauge uses charm ≤1.5 DTE (sharper there, Study #8/T1b) else vanna.
     Returns {vanna, charm, dte} (values may be None) — non-essential, never raises."""
     import numpy as np

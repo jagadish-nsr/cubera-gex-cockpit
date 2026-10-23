@@ -92,3 +92,19 @@ def test_total_net_gex_and_regime():
     df = core.per_strike_gex(_fixture_contracts(), SPOT, 100, "long_call_short_put")
     assert core.total_net_gex(df) == -420_000
     assert core.regime(df) == "NEGATIVE"
+
+
+def test_scsp_writer_imbalance_matches_us_net():
+    """SCSP stores both legs negative; regime must use call-minus-put, not sum(net)."""
+    us = core.per_strike_gex(_fixture_contracts(), SPOT, 100, "long_call_short_put")
+    scsp = core.per_strike_gex(_fixture_contracts(), SPOT, 100, "short_call_short_put")
+    assert (scsp["call_gex"] <= 0).all()
+    assert (scsp["put_gex"] <= 0).all()
+    assert (scsp["net_gex"] <= 0).all()
+    # Naive sum is always negative and is NOT the regime signal.
+    assert core.total_net_gex(scsp) < 0
+    imbalance = core.writer_imbalance_net(scsp, "short_call_short_put")
+    assert imbalance == core.total_net_gex(us) == -420_000
+    assert core.regime(scsp, "short_call_short_put") == "NEGATIVE"
+    assert core.call_wall(scsp) == core.call_wall(us) == 105
+    assert core.put_wall(scsp) == core.put_wall(us) == 95

@@ -38,6 +38,24 @@ DHAN_OPT_FLAG = {"NIFTY": "WEEK", "BANKNIFTY": "MONTH", "SENSEX": "WEEK"}
 DHAN_SEGMENT = {"NIFTY": "NSE_FNO", "BANKNIFTY": "NSE_FNO", "SENSEX": "BSE_FNO"}
 _SCRIP_MASTER = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
+
+def _lot_size_for_symbol(symbol: str | None) -> int:
+    """Index lot size from config. Used to convert Dhan share-OI into lots."""
+    try:
+        from config import get_index
+        return int(get_index(symbol).lot_size)
+    except Exception:
+        return 1
+
+
+def oi_shares_to_lots(oi: float | None, lot_size: int) -> float | None:
+    """Dhan OI is shares; GEX / NSE parsers expect lots (contracts)."""
+    if oi is None:
+        return None
+    if not lot_size or lot_size <= 1:
+        return float(oi)
+    return float(oi) / float(lot_size)
+
 # --- Live option-chain adapter constants ------------------------------------
 # Base URL for the live option-chain endpoints (v2 REST)
 _DHAN_BASE_URL = "https://api.dhan.co/v2"
@@ -721,10 +739,14 @@ def parse_dhan_option_chain(
             if leg is None:
                 continue
 
-            # OI and DOI — Dhan provides current OI and previous_oi directly
+            # OI and DOI — Dhan reports OI in SHARES (lots × lot_size). Convert
+            # to lots so GEX's contract_size multiplier is not applied twice.
             oi      = float(leg.get("oi") or leg.get("open_interest") or 0)
             prev_oi = float(leg.get("previous_oi") or 0)
-            # doi = change in OI from previous session (positive = build-up)
+            lot_size = _lot_size_for_symbol(symbol)
+            if lot_size > 1:
+                oi = oi / lot_size
+                prev_oi = prev_oi / lot_size
             doi = oi - prev_oi
 
             vol = float(leg.get("volume") or 0)

@@ -94,6 +94,13 @@ class TestParseDhanOptionChain:
         assert len(rows) == 3  # 2 (24000 CE+PE) + 1 (24500 CE only)
         assert spot == pytest.approx(24050.75)
 
+    def test_oi_converted_from_shares_to_lots(self):
+        from config import get_index
+        lot = get_index("NIFTY").lot_size
+        rows, _ = parse_dhan_option_chain(_SAMPLE_RAW, "NIFTY", _EXPIRY, _FETCHED_AT)
+        call_24k = next(r for r in rows if r["type"] == "C" and r["strike"] == 24000.0)
+        assert call_24k["oi"] == pytest.approx(10000 / lot)
+
     def test_types_normalised(self):
         rows, _ = parse_dhan_option_chain(_SAMPLE_RAW, "NIFTY", _EXPIRY, _FETCHED_AT)
         types = {r["type"] for r in rows}

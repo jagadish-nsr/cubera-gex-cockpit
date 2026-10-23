@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone, timedelta
 import json
@@ -154,6 +155,23 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
+@app.on_event("startup")
+async def _start_ingest_lanes():
+    """One chain ingest per index + spot WS. HTTP/WS handlers only read the stores."""
+    try:
+        from app.spot_ticker import warmup_all
+        warmup_all()
+    except Exception as exc:
+        log.warning("spot ticker warmup failed: %s", exc)
+    if not config.is_market_open():
+        return
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        try:
+            _ensure_chain_ingest(sym, _ACTIVE_STATE.get("window") or "current_week")
+        except Exception as exc:
+            log.warning("chain ingest start failed for %s: %s", sym, exc)
+
+
 # --------------------------------------------------------------------------
 # Helper Utility Functions
 # --------------------------------------------------------------------------
@@ -168,6 +186,23 @@ def _safe_float(val: Any, default: float = 0.0) -> float:
         return float(val)
     except (ValueError, TypeError):
         return default
+
+
+def _fmt_gex(val: float) -> str:
+    """Compact dealer-GEX for KPI display (avoids 14-digit noise)."""
+    a = abs(float(val))
+    sign = "-" if val < 0 else ""
+    if a >= 1e12:
+        return f"{sign}{a / 1e12:.2f}T"
+    if a >= 1e9:
+        return f"{sign}{a / 1e9:.2f}B"
+    if a >= 1e6:
+        return f"{sign}{a / 1e6:.2f}M"
+    return f"{val:,.0f}"
+
+
+def _same_strike(a: float, b: float, step: float) -> bool:
+    return abs(float(a) - float(b)) <= max(0.51, float(step) * 0.01)
 
 
 def _resolve_expiry_scope(symbol: str, window: str):
@@ -192,119 +227,180 @@ def _resolve_expiry_scope(symbol: str, window: str):
 
 
 _DASH_MEM_CACHE: Dict[tuple, tuple] = {}
+_CHAIN_INTERVAL_S = 30
+_CHAIN_LEAD_S = 10.0
+_WS_LIVE_SLEEP_S = 0.12
+_WS_HEARTBEAT_S = 1.0
+
+
+def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
+    """Wake/start the single background chain fetcher. Never pulls Dhan on this thread."""
+    from app.live_fetcher import ensure
+    ensure(symbol, False, None, _CHAIN_INTERVAL_S, _CHAIN_LEAD_S, window=window)
+
+
+def _unpickle_latest_snap(sym: str):
+    import pickle
+    snap_path = ROOT_DIR / "data" / "journal" / f"latest_snap_{sym}.pkl"
+    if not snap_path.exists():
+        return None
+    try:
+        with open(snap_path, "rb") as f:
+            snap_wrapper = pickle.load(f)
+        if isinstance(snap_wrapper, dict) and "data" in snap_wrapper:
+            return snap_wrapper["data"]
+        if isinstance(snap_wrapper, DashboardData):
+            return snap_wrapper
+    except Exception as e:
+        log.warning("Could not load %s: %s", snap_path, e)
+    return None
+
+
+def _from_lkgs(sym: str, reason: str):
+    try:
+        from resilience.lkgs import get_lkgs_manager
+        deg_data, _, _, _ = get_lkgs_manager().get_degraded_snapshot(sym, reason=reason)
+        return deg_data
+    except Exception:
+        return None
+
+
+def _overlay_sqlite_kpis(dash, sym: str):
+    if dash is None:
+        return dash
+    try:
+        from data.market_snapshot import get_snapshot
+        db_snap = get_snapshot(sym)
+        if not db_snap or not db_snap.get("spot"):
+            return dash
+        if getattr(dash, "levels", None):
+            min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
+            if float(db_snap["spot"]) > min_valid:
+                dash.levels.spot = float(db_snap["spot"])
+            if db_snap.get("call_wall") and float(db_snap["call_wall"]) > min_valid:
+                dash.levels.call_wall = float(db_snap["call_wall"])
+            if db_snap.get("put_wall") and float(db_snap["put_wall"]) > min_valid:
+                dash.levels.put_wall = float(db_snap["put_wall"])
+            if db_snap.get("gamma_flip") and float(db_snap["gamma_flip"]) > min_valid:
+                dash.levels.gamma_flip = float(db_snap["gamma_flip"])
+            if db_snap.get("max_pain") and float(db_snap["max_pain"]) > min_valid:
+                dash.levels.max_pain = float(db_snap["max_pain"])
+        if db_snap.get("vix") and getattr(dash, "india_vix", None) is not None:
+            if isinstance(dash.india_vix, dict):
+                dash.india_vix = dict(dash.india_vix)
+                dash.india_vix["last"] = float(db_snap["vix"])
+    except Exception as e:
+        log.debug("Snapshot reconciliation note: %s", e)
+    return dash
+
+
+def _overlay_live_spot(dash, sym: str):
+    """Stamp live index/futures prints onto a published GEX snapshot. No network."""
+    if dash is None or getattr(dash, "levels", None) is None:
+        return dash
+    try:
+        from app.spot_ticker import latest as spot_latest
+        ohlc = spot_latest(sym)
+    except Exception:
+        ohlc = None
+    if not ohlc:
+        return dash
+    ltp = ohlc.get("ltp") or ohlc.get("close")
+    if not ltp or float(ltp) <= 0:
+        return dash
+    dash = copy.copy(dash)
+    dash.levels = copy.copy(dash.levels)
+    dash.levels.spot = float(ltp)
+    fut = None
+    try:
+        from app import spot_ticker as _st
+        rec = _st._STORE.get(sym) or {}
+        fut = rec.get("fut") or {}
+        quote = rec.get("quote") or {}
+        fut_px = quote.get("fut_px") or (fut.get("price") if fut else None)
+        if fut_px:
+            dash.levels.future_price = float(fut_px)
+        vix = (ohlc.get("vix") or {}) if isinstance(ohlc.get("vix"), dict) else None
+        if vix and vix.get("last") is not None and isinstance(getattr(dash, "india_vix", None), dict):
+            dash.india_vix = dict(dash.india_vix)
+            dash.india_vix["last"] = float(vix["last"])
+            if vix.get("pct_change") is not None:
+                dash.india_vix["pct_change"] = float(vix["pct_change"])
+    except Exception:
+        pass
+    return dash
 
 
 def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> DashboardData:
-    """Load dashboard data respecting market status and authentic off-market snapshots.
-    During active market hours:
-      Loads live dashboard (or falls back cleanly).
-    During off-market hours:
-      1. Serves authentic persistent snapshot from data/journal/latest_snap_<SYM>.pkl if present.
-      2. Overlays spot, walls, max pain, VIX from data/journal/market_snapshot.db (SQLite EOD registry).
-      3. Zero Dhan network calls are executed.
+    """Read the published GEX snapshot. Never calls Dhan on this thread.
+
+    Live hours: background ``live_fetcher`` is the only chain ingest. This function
+    reads its in-memory store, then LKGS, then the on-disk pickle, then demo.
+    Spot/futures ticks overlay from ``spot_ticker`` (separate WS ingest).
+
+    Off-market: pickle → LKGS → SQLite KPI overlay → demo. Zero broker calls.
     """
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper().strip()
     win = window or _ACTIVE_STATE["window"]
     ckey = (sym, win)
-    now_t = time.time()
-
-    if ckey in _DASH_MEM_CACHE:
-        ts, cached_dash = _DASH_MEM_CACHE[ckey]
-        if not config.is_market_open():
-            return cached_dash
-        elif now_t - ts < 15.0:
-            return cached_dash
-
     is_open = config.is_market_open()
+
+    if not is_open and ckey in _DASH_MEM_CACHE:
+        return _DASH_MEM_CACHE[ckey][1]
+
     dash = None
+    from_live_store = False
 
-    if not is_open:
-        from pathlib import Path
-        import pickle
-        snap_path = ROOT_DIR / "data" / "journal" / f"latest_snap_{sym}.pkl"
-        if snap_path.exists():
-            try:
-                with open(snap_path, "rb") as f:
-                    snap_wrapper = pickle.load(f)
-                if isinstance(snap_wrapper, dict) and "data" in snap_wrapper:
-                    dash = snap_wrapper["data"]
-                elif isinstance(snap_wrapper, DashboardData):
-                    dash = snap_wrapper
-            except Exception as e:
-                log.warning(f"Could not load {snap_path}: {e}")
-
+    if is_open:
+        from app import live_fetcher
+        _ensure_chain_ingest(sym, win)
+        pub = live_fetcher.latest(sym, win)
+        if pub and pub.get("data") is not None:
+            dash = pub["data"]
+            from_live_store = True
         if dash is None:
-            try:
-                from resilience.lkgs import get_lkgs_manager
-                lkgs = get_lkgs_manager()
-                deg_data, is_deg, _, _ = lkgs.get_degraded_snapshot(sym, reason="Off-Market Session Snapshot")
-                if deg_data is not None:
-                    dash = deg_data
-            except Exception:
-                pass
-
+            dash = _from_lkgs(sym, "Awaiting first live chain publish")
         if dash is None:
-            # Off-market hours safety: do not trigger live network calls if no snapshots exist;
-            # fall back to synthetic structure so UI renders offline without hitting broker APIs.
-            try:
-                dash = load_dashboard(symbol=sym, window=win, use_demo=True)
-            except Exception as e:
-                log.warning(f"Could not load offline fallback dashboard for {sym}: {e}")
-
+            dash = _unpickle_latest_snap(sym)
+        if dash is not None:
+            if not from_live_store:
+                dash = _overlay_sqlite_kpis(dash, sym)
+            dash = _overlay_live_spot(dash, sym)
+            return dash
         try:
-            from data.market_snapshot import get_snapshot
-            db_snap = get_snapshot(sym)
-            if db_snap and db_snap.get("spot"):
-                if getattr(dash, "levels", None):
-                    min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
-                    if float(db_snap["spot"]) > min_valid:
-                        dash.levels.spot = float(db_snap["spot"])
-                    if db_snap.get("call_wall") and float(db_snap["call_wall"]) > min_valid:
-                        dash.levels.call_wall = float(db_snap["call_wall"])
-                    if db_snap.get("put_wall") and float(db_snap["put_wall"]) > min_valid:
-                        dash.levels.put_wall = float(db_snap["put_wall"])
-                    if db_snap.get("gamma_flip") and float(db_snap["gamma_flip"]) > min_valid:
-                        dash.levels.gamma_flip = float(db_snap["gamma_flip"])
-                    if db_snap.get("max_pain") and float(db_snap["max_pain"]) > min_valid:
-                        dash.levels.max_pain = float(db_snap["max_pain"])
-                if db_snap.get("vix") and getattr(dash, "india_vix", None) is not None:
-                    if isinstance(dash.india_vix, dict):
-                        dash.india_vix["last"] = float(db_snap["vix"])
+            dash = load_dashboard(symbol=sym, window=win, use_demo=True)
+        except Exception:
+            dash = None
+        return dash
+
+    dash = _unpickle_latest_snap(sym)
+    if dash is None:
+        dash = _from_lkgs(sym, "Off-Market Session Snapshot")
+    if dash is None:
+        try:
+            dash = load_dashboard(symbol=sym, window=win, use_demo=True)
         except Exception as e:
-            log.debug(f"Snapshot reconciliation note: {e}")
+            log.warning("Could not load offline fallback dashboard for %s: %s", sym, e)
+    dash = _overlay_sqlite_kpis(dash, sym)
+    _DASH_MEM_CACHE[ckey] = (time.time(), dash)
+    return dash
 
-    else:
-        try:
-            dash = load_dashboard(symbol=sym, window=win, use_demo=False)
-        except Exception as err:
-            log.warning(f"Live dashboard load failed ({err}), falling back to authentic persistent snapshot")
-            # Fall back to persistent offline snapshot instead of synthetic demo
-            snap_path = ROOT_DIR / "data" / "journal" / f"latest_snap_{sym}.pkl"
-            if snap_path.exists():
-                try:
-                    with open(snap_path, "rb") as f:
-                        snap_wrapper = pickle.load(f)
-                    dash = snap_wrapper.get("data") if isinstance(snap_wrapper, dict) else snap_wrapper
-                except Exception:
-                    pass
 
-        if dash is None:
-            try:
-                from resilience.lkgs import get_lkgs_manager
-                lkgs = get_lkgs_manager()
-                deg_data, _, _, _ = lkgs.get_degraded_snapshot(sym, reason="Live Fallback Snapshot")
-                if deg_data is not None:
-                    dash = deg_data
-            except Exception:
-                pass
+async def _aload_active_dashboard(
+    symbol: str, window: Optional[str] = None, timeout: float = 25.0
+) -> Optional[DashboardData]:
+    """Async wrapper: snapshot reads are memory/sqlite/pickle only (no broker I/O)."""
+    try:
+        return _load_active_dashboard(symbol, window)
+    except Exception as exc:
+        log.warning("dashboard read failed for %s: %s", symbol, exc)
+        return None
 
-        if dash is None:
-            try:
-                dash = load_dashboard(symbol=sym, window=win, use_demo=True)
-            except Exception:
-                pass
 
-    _DASH_MEM_CACHE[ckey] = (now_t, dash)
+def _dash_or_503(dash: Optional[DashboardData], symbol: str) -> DashboardData:
+    """Fail loud when a live/off-market load returned nothing usable."""
+    if dash is None or getattr(dash, "levels", None) is None:
+        raise HTTPException(status_code=503, detail="Dashboard unavailable")
     return dash
 
 
@@ -557,6 +653,9 @@ def _extract_active_pcr(dash: Any) -> float:
     """Extract authentic Put-Call Ratio (OI) from dashboard data."""
     if not dash:
         return 1.0
+    near = getattr(dash.levels, "pcr_near", None) if hasattr(dash, "levels") and dash.levels else None
+    if near is not None and float(near) > 0:
+        return float(near)
     lvl_pcr = getattr(dash.levels, "pcr_oi", None) or getattr(dash.levels, "pcr", None) if hasattr(dash, "levels") and dash.levels else None
     if lvl_pcr is not None and float(lvl_pcr) > 0:
         return float(lvl_pcr)
@@ -646,7 +745,7 @@ def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
         try:
             d_float = float(d_val)
             if d_float >= 0.0:
-                return max(0.2, d_float)
+                return max(0.0, d_float)
         except Exception:
             pass
     if hasattr(dash, "expiries") and dash.expiries:
@@ -656,7 +755,7 @@ def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
             today_date = _get_ist_now().date()
             diff_days = (exp_date - today_date).days
             if diff_days >= 0:
-                return max(0.2, float(diff_days))
+                return max(0.0, float(diff_days))
         except Exception:
             pass
     if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) and not dash.contracts.empty:
@@ -667,7 +766,7 @@ def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
                 today_date = _get_ist_now().date()
                 diff_days = (exp_date - today_date).days
                 if diff_days >= 0:
-                    return max(0.2, float(diff_days))
+                    return max(0.0, float(diff_days))
         except Exception:
             pass
     return default_days
@@ -843,7 +942,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
-    dash = _load_active_dashboard(sym, win)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
 
     spot = float(dash.levels.spot or 0.0)
     fut = float(getattr(dash.levels, "future_price", None) or spot)
@@ -953,6 +1052,8 @@ async def select_index(payload: dict = Body(...)):
         _ACTIVE_STATE["symbol"] = sym
     if win:
         _ACTIVE_STATE["window"] = win
+    if config.is_market_open():
+        _ensure_chain_ingest(_ACTIVE_STATE["symbol"], _ACTIVE_STATE["window"])
     return {"status": "ok", "symbol": _ACTIVE_STATE["symbol"], "window": _ACTIVE_STATE["window"]}
 
 
@@ -979,8 +1080,28 @@ async def get_cockpit_data(
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
-    dash = _load_active_dashboard(sym, win)
+    dash = await _aload_active_dashboard(sym, win)
+    if dash is None or getattr(dash, "levels", None) is None:
+        return JSONResponse(
+            status_code=503,
+            content={"symbol": sym, "spot": 0, "kpis": {}, "error": "dashboard_unavailable"},
+        )
     spot = _extract_active_spot(dash, sym)
+
+    # ── Session Commentary: evaluate live ticks on every cockpit poll ──────
+    # evaluate_live() runs in a background thread so it never blocks the API
+    # response. This replaces the old Streamlit tab_commentary.py trigger.
+    if config.is_market_open():
+        import threading as _threading
+        def _run_commentary_eval(_sym=sym, _dash=dash):
+            try:
+                from commentary.engine import get_session_commentary_engine
+                engine = get_session_commentary_engine(_sym)
+                engine.evaluate_live(_sym, _dash)
+            except Exception as _exc:
+                log.debug("Commentary evaluate_live error: %s", _exc)
+        _threading.Thread(target=_run_commentary_eval, daemon=True).start()
+    # ── end commentary hook ────────────────────────────────────────────────
 
     # 8 KPI cards (including Max Pain and IOAS Directional Bias)
     flip_val = _extract_active_gamma_flip(dash, sym)
@@ -1001,9 +1122,27 @@ async def get_cockpit_data(
     else:
         flip_sub = "No Zero-Crossing in ±10%"
 
+    put_role = str(getattr(dash.view, "put_wall_role", "") or "support")
+    call_role = str(getattr(dash.view, "call_wall_role", "") or "resistance")
+    put_sub = {
+        "support": "Major Floor Support",
+        "speed bump": "Speed bump (below flip)",
+        "unknown": "Put-side concentration",
+    }.get(put_role, put_role)
+    call_sub = {
+        "resistance": "Major Overhead Resistance",
+    }.get(call_role, call_role)
+
+    pcr_full = getattr(dash.levels, "pcr_oi", None) if dash.levels else None
+    pcr_near = getattr(dash.levels, "pcr_near", None) if dash.levels else None
+    if pcr_near and pcr_full and abs(float(pcr_near) - float(pcr_full)) > 0.02:
+        pcr_sub = f"ATM band · Full chain {float(pcr_full):.2f}"
+    else:
+        pcr_sub = "Put-Call Open Interest Ratio (ATM band)"
+
     kpis = {
-        "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": "Major Overhead Resistance"},
-        "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": "Major Floor Support"},
+        "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": call_sub},
+        "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": put_sub},
         "gamma_flip": {"val": flip_val if flip_val else 0.0, "sub": flip_sub, "raw": flip_val},
         "max_pain": {"val": float(mp_val), "sub": f"Pin: {pin_score}/100"},
         "directional_bias": {
@@ -1013,24 +1152,28 @@ async def get_cockpit_data(
             "color": bias_color,
         },
         "regime": {"val": str(dash.view.regime or "NEUTRAL").upper(), "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}"},
-        "net_gex": {"val": f"{net_gex_val:,.0f}", "sub": "Dealer Gamma Exposure"},
-        "pcr_oi": {"val": f"{pcr_val:.2f}", "sub": "Put-Call Open Interest Ratio"},
+        "net_gex": {"val": _fmt_gex(net_gex_val), "sub": "Writer imbalance (call−put GEX)"},
+        "pcr_oi": {"val": f"{pcr_val:.2f}", "sub": pcr_sub},
     }
 
-    # Gamma Price Ladder (11 strikes centered around spot)
+    # Gamma Price Ladder: ATM band plus key GEX levels so walls/max-pain are never off-chart.
     ladder = []
-    step = 50 if sym == "NIFTY" else (100 if sym == "BANKNIFTY" else 100)
+    step = float(idx.strike_step or (50 if sym == "NIFTY" else 100))
     center = round(spot / step) * step
-    ladder_strikes = [center + (offset * step) for offset in range(-5, 6)]
+    strike_set = {center + (offset * step) for offset in range(-6, 7)}
+    for key in (dash.levels.call_wall, dash.levels.put_wall, magnet_val, mp_val):
+        if key and float(key) > 0:
+            strike_set.add(float(key))
+    ladder_strikes = sorted(strike_set)
 
     closest_flip_stk = min(ladder_strikes, key=lambda s: abs(s - flip_val)) if flip_val else None
     is_flip_in_band = (flip_val is not None and closest_flip_stk is not None and abs(closest_flip_stk - flip_val) <= step)
 
     closest_mp_stk = min(ladder_strikes, key=lambda s: abs(s - mp_val)) if mp_val else None
-    is_mp_in_band = (mp_val is not None and closest_mp_stk is not None and abs(closest_mp_stk - mp_val) <= step)
+    is_mp_in_band = True
 
     closest_magnet_stk = min(ladder_strikes, key=lambda s: abs(s - magnet_val)) if magnet_val else None
-    is_magnet_in_band = (magnet_val is not None and closest_magnet_stk is not None and abs(closest_magnet_stk - magnet_val) <= step)
+    is_magnet_in_band = True
 
     contracts_df = getattr(dash, "contracts", None)
     strike_oi_map = {}
@@ -1057,11 +1200,18 @@ async def get_cockpit_data(
         except Exception:
             pass
 
-    for offset in range(-5, 6):
-        stk = center + (offset * step)
-        is_spot = (stk == center)
-        if stk in per_strike_map:
-            prow = per_strike_map[stk]
+    for stk in ladder_strikes:
+        is_spot = abs(stk - center) < 0.51
+        prow = per_strike_map.get(stk)
+        if prow is None:
+            prow = per_strike_map.get(float(stk))
+        if prow is None:
+            # float-key mismatch: pick nearest per-strike row within a rupee
+            for k, row in per_strike_map.items():
+                if abs(k - stk) < 0.51:
+                    prow = row
+                    break
+        if prow is not None:
             call_gex = float(prow.get("call_gex") or 0.0)
             put_gex = float(prow.get("put_gex") or 0.0)
             net_stk_gex = float(prow.get("net_gex") or 0.0)
@@ -1074,8 +1224,12 @@ async def get_cockpit_data(
             put_gex = 0.0
             net_stk_gex = 0.0
 
-        c_oi = strike_oi_map.get(stk, {}).get("C", 0.0)
-        p_oi = strike_oi_map.get(stk, {}).get("P", 0.0)
+        oi_cell = strike_oi_map.get(stk) or next(
+            (v for k, v in strike_oi_map.items() if abs(k - stk) < 0.51),
+            {"C": 0.0, "P": 0.0},
+        )
+        c_oi = oi_cell.get("C", 0.0)
+        p_oi = oi_cell.get("P", 0.0)
 
         ladder.append({
             "strike": stk,
@@ -1086,8 +1240,8 @@ async def get_cockpit_data(
             "call_oi": c_oi,
             "put_oi": p_oi,
             "net_oi": c_oi - p_oi,
-            "is_call_wall": (stk == dash.levels.call_wall),
-            "is_put_wall": (stk == dash.levels.put_wall),
+            "is_call_wall": _same_strike(stk, dash.levels.call_wall or 0, step),
+            "is_put_wall": _same_strike(stk, dash.levels.put_wall or 0, step),
             "is_gamma_flip": (stk == closest_flip_stk) if is_flip_in_band else False,
             "is_max_pain": (stk == closest_mp_stk) if is_mp_in_band else False,
             "is_magnet": (stk == closest_magnet_stk) if is_magnet_in_band else False,
@@ -1250,7 +1404,7 @@ async def get_target_engine(
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
-    dash = _load_active_dashboard(sym, win)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     horizon_val = int(horizon) if horizon else 120
     res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
     spot = float(dash.levels.spot or 0.0)
@@ -1433,7 +1587,7 @@ async def reprice_target_engine(payload: dict = Body(...)):
     """Target/Stop-Loss Option Repricer, PnL per lot, R:R ratio, and Greek attribution."""
     sym = payload.get("symbol", "NIFTY").upper()
     win = payload.get("window", "current_week")
-    dash = _load_active_dashboard(sym, win)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     idx = config.get_index(sym)
     lot_sz = idx.lot_size
     base_fut = float(getattr(dash.levels, "future_price", None) or dash.levels.spot or 24500.0)
@@ -1662,7 +1816,7 @@ async def get_recommendations(
             "effectiveness": eff_metrics,
         }
 
-    dash = _load_active_dashboard(sym, win)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     spot = float(dash.levels.spot or 0.0)
 
     bias_res = _compute_active_directional_bias(dash, sym)
@@ -1790,7 +1944,7 @@ def _to_ist_chart_timestamp(dt_val) -> int:
 async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[str] = "1m"):
     """Sentinel Tape Tab: Microstructure KPIs, Candlestick + CVD 60 FPS Canvas, 10-Day Closing Suite, Live Block Tape."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
-    dash = _load_active_dashboard(sym, "weekly")
+    dash = await _aload_active_dashboard(sym, "weekly")
     spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
     tf = timeframe or "1m"
 
@@ -1967,7 +2121,7 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
     sim_mode = payload.get("simulation_mode", False)
 
     inst_id = f"{sym}-FUT"
-    dash = _load_active_dashboard(sym)
+    dash = await _aload_active_dashboard(sym)
     spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
     cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0.0)
     pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0.0)
@@ -2026,8 +2180,8 @@ async def get_signal_efficiency(
         eff_report = None
 
     if eff_report and eff_report.total_signals > 0:
-        dash = _load_active_dashboard(sym, "weekly")
-        spot = float(dash.levels.spot or 24500.0)
+        dash = await _aload_active_dashboard(sym, "weekly")
+        spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
         atm_iv = _extract_active_atm_iv(dash)
         dte = float(getattr(dash, "dte_now", 3.0) or 3.0)
         try:
@@ -2145,7 +2299,7 @@ async def get_market_intel(symbol: Optional[str] = None):
         news_snap = fetch_news()
 
         # Compute authentic spot change pct from dashboard day_ohlc / levels
-        dash = _load_active_dashboard(sym, "weekly")
+        dash = await _aload_active_dashboard(sym, "weekly")
         spot = _extract_active_spot(dash, sym)
         spot_chg = 0.0
         ref_px = None
@@ -2278,7 +2432,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     """Options Analytics Tab: 6 KPIs, Bias, Expected Move, Buildup Matrix, 25Δ IV Skew, Term Structure, Arb table."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
-    dash = _load_active_dashboard(sym, win)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     spot = _extract_active_spot(dash, sym)
 
     # Expected move calculation
@@ -2359,9 +2513,9 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else spot
     vix = float(dash.india_vix.get("last", 13.5)) if dash.india_vix else 13.5
 
-    # Dynamic IV Rank relative to historical volatility baseline (10.0 - 25.0%)
+    # ATM IV mapped onto a 10–25% band (NOT a 30-day historical rank).
     iv_rank = round(min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0)), 0)
-    iv_rank_sub = "Elevated Vol" if iv_rank >= 65 else ("Low Vol Compress" if iv_rank <= 30 else "Normal Vol Zone")
+    iv_rank_sub = "Elevated vs 10–25% band" if iv_rank >= 65 else ("Low vs 10–25% band" if iv_rank <= 30 else "Inside 10–25% band")
 
     # Dynamic Pinning Score
     mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
@@ -2372,7 +2526,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
 
     kpis = {
         "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "Contango (Normal)"},
-        "pcr": {"val": f"{pcr:.2f}", "sub": "BULLISH" if pcr > 1.0 else "BEARISH"},
+        "pcr": {"val": f"{pcr:.2f}", "sub": ("ATM put-heavy" if pcr > 1.0 else "ATM call-heavy")},
         "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": f"Pin: {pin_score}/100"},
         "iv_rank": {"val": f"{iv_rank:.0f}%", "sub": iv_rank_sub},
         "india_vix": {"val": f"{vix:.2f}", "sub": "Low Vol" if vix < 15 else "Elevated"},
@@ -2522,7 +2676,7 @@ async def get_journal(symbol: Optional[str] = None):
     open_trades = journal_store.list_open_trades(symbol=sym if sym != "ALL" else None)
     closed_trades = journal_store.list_closed_trades(symbol=sym if sym != "ALL" else None)
 
-    dash = _load_active_dashboard(sym, "weekly")
+    dash = await _aload_active_dashboard(sym, "weekly")
     spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
 
     # Format open positions with simulated live tick MTM
@@ -2746,6 +2900,18 @@ async def clear_cache():
     return {"status": "ok", "message": "LKGS memory cache cleared successfully"}
 
 
+@app.post("/api/ops/resync-snapshot")
+async def resync_snapshot(payload: Optional[dict] = Body(default=None)):
+    """Non-blocking request for an off-grid chain pull. HTTP never waits on Dhan."""
+    body = payload or {}
+    sym = (body.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    win = body.get("window") or _ACTIVE_STATE["window"]
+    from app.live_fetcher import force
+    _ensure_chain_ingest(sym, win)
+    force(sym, window=win)
+    return {"status": "ok", "message": f"Background chain pull requested for {sym} ({win})"}
+
+
 @app.post("/api/commentary/log-market-alert")
 async def log_market_alert(payload: dict = Body(...)):
     """Log an institutional market state transition alert into Session Commentary with 30m TTL."""
@@ -2787,7 +2953,7 @@ async def log_market_alert(payload: dict = Body(...)):
 async def get_session_commentary(symbol: Optional[str] = None):
     """Session Commentary Tab: Strictly single trading session date narrative, Morning Anchor pre-market card, and post-market scorecard."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
-    dash = _load_active_dashboard(sym, "weekly")
+    dash = await _aload_active_dashboard(sym, "weekly")
     story_mgr = StoryStateManager()
     now_ist = _get_ist_now()
     phase = story_mgr.determine_phase(now_ist).replace("_", " ").title()
@@ -3945,60 +4111,90 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
     listener_task = asyncio.create_task(listen_for_client_messages())
 
     try:
+        last_sig = None
+        last_send = 0.0
+        last_bar_at = 0.0
+        latest_bar_dict = None
         while True:
             sym = active_sym_box[0]
             win = _ACTIVE_STATE["window"]
-            dash = _load_active_dashboard(sym, win)
-            spot = float(dash.levels.spot or 0.0)
             is_live = config.is_market_open()
 
-            from data.market_snapshot import get_snapshot
-            db_snap = get_snapshot(sym) or {}
-            real_vix = dash.india_vix or {
-                "last": float(db_snap.get("vix") or 14.04),
-                "change": 0.0,
-                "pct_change": 0.0,
-            }
+            from app.spot_ticker import latest_quote
+            from app.live_fetcher import latest as chain_latest
+            quote = latest_quote(sym)
+            pub = chain_latest(sym, win) or {}
+            dash = pub.get("data")
+            lv = getattr(dash, "levels", None) if dash is not None else None
 
-            # Fetch latest synthesized bar from Sentinel for live chart streaming
-            latest_bar_dict = None
-            try:
-                from sentinel.storage.db import list_recent_bars
-                b_list = list_recent_bars(f"{sym}-FUT", timeframe="1m", limit=1, session_only=is_live, _auto_populate=False)
-                if b_list:
-                    b = b_list[-1]
-                    latest_bar_dict = {
-                        "time": _to_ist_chart_timestamp(b.start_ts),
-                        "open": b.open,
-                        "high": b.high,
-                        "low": b.low,
-                        "close": b.close,
-                        "vwap": b.vwap,
-                        "delta": b.delta,
-                        "cvd": b.cvd,
-                    }
-            except Exception:
-                pass
+            if quote and quote.get("spot"):
+                spot = float(quote["spot"])
+                fut = float(quote.get("fut_px") or spot)
+                real_vix = {
+                    "last": float(quote["vix"]) if quote.get("vix") is not None else float(
+                        (getattr(dash, "india_vix", None) or {}).get("last") or 14.04
+                    ),
+                    "change": 0.0,
+                    "pct_change": float(quote["vix_chg"]) if quote.get("vix_chg") is not None else 0.0,
+                }
+            elif lv is not None:
+                spot = float(lv.spot or 0.0)
+                fut = float(getattr(lv, "future_price", None) or spot)
+                real_vix = getattr(dash, "india_vix", None) or {"last": 14.04, "change": 0.0, "pct_change": 0.0}
+            else:
+                await asyncio.sleep(0.25)
+                continue
+
+            cw = float(getattr(lv, "call_wall", 0) or 0) if lv is not None else 0.0
+            pw = float(getattr(lv, "put_wall", 0) or 0) if lv is not None else 0.0
+            flip = float(_extract_active_gamma_flip(dash, sym) or 0.0) if dash is not None else 0.0
+
+            now_t = time.time()
+            if is_live and now_t - last_bar_at >= 1.0:
+                try:
+                    from sentinel.storage.db import list_recent_bars
+                    b_list = list_recent_bars(f"{sym}-FUT", timeframe="1m", limit=1, session_only=True, _auto_populate=False)
+                    if b_list:
+                        b = b_list[-1]
+                        latest_bar_dict = {
+                            "time": _to_ist_chart_timestamp(b.start_ts),
+                            "open": b.open,
+                            "high": b.high,
+                            "low": b.low,
+                            "close": b.close,
+                            "vwap": b.vwap,
+                            "delta": b.delta,
+                            "cvd": b.cvd,
+                        }
+                except Exception:
+                    pass
+                last_bar_at = now_t
 
             if is_live:
+                sig = (round(spot, 1), round(fut, 1), int(cw or 0), int(pw or 0))
+                if sig == last_sig and (now_t - last_send) < _WS_HEARTBEAT_S:
+                    await asyncio.sleep(_WS_LIVE_SLEEP_S)
+                    continue
                 tick_payload = {
                     "type": "TICK",
-                    "timestamp": time.time(),
+                    "timestamp": now_t,
                     "ist_time": _get_ist_now().strftime("%H:%M:%S IST"),
                     "symbol": sym,
                     "spot": spot,
-                    "future_price": float(getattr(dash.levels, "future_price", spot) or spot),
-                    "basis": float(getattr(dash.levels, "future_price", spot) or spot) - spot,
+                    "future_price": fut,
+                    "basis": fut - spot,
                     "india_vix": real_vix,
-                    "call_wall": float(dash.levels.call_wall or 0),
-                    "put_wall": float(dash.levels.put_wall or 0),
-                    "gamma_flip": float(_extract_active_gamma_flip(dash, sym) or 0.0),
+                    "call_wall": cw,
+                    "put_wall": pw,
+                    "gamma_flip": flip,
                     "is_market_open": True,
                     "feed_mode": "LIVE_WEBSOCKET",
                     "latest_bar": latest_bar_dict,
                 }
                 await websocket.send_json(tick_payload)
-                await asyncio.sleep(1.0)
+                last_sig = sig
+                last_send = now_t
+                await asyncio.sleep(_WS_LIVE_SLEEP_S)
             else:
                 # Off-market hours: calm STATUS heartbeat (no fake TICKs, zero quote flickering)
                 status_payload = {
@@ -4007,9 +4203,12 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "ist_time": _get_ist_now().strftime("%H:%M:%S IST"),
                     "symbol": sym,
                     "spot": spot,
-                    "future_price": float(getattr(dash.levels, "future_price", spot) or spot),
-                    "basis": float(getattr(dash.levels, "future_price", spot) or spot) - spot,
+                    "future_price": fut,
+                    "basis": fut - spot,
                     "india_vix": real_vix,
+                    "call_wall": cw,
+                    "put_wall": pw,
+                    "gamma_flip": flip,
                     "is_market_open": False,
                     "feed_mode": "OFFLINE_AUTOSWITCH",
                 }

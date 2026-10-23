@@ -22,7 +22,7 @@ from __future__ import annotations
 import threading
 import time
 
-from data.dhan import DHAN_BASE, DHAN_UNDERLYING, _headers
+from data.dhan import DHAN_BASE, DHAN_UNDERLYING, _headers, oi_shares_to_lots
 
 # --- Dhan index underlyings (option chain uses the INDEX segment, not FNO) -------------
 IDX_SEG = "IDX_I"
@@ -354,9 +354,9 @@ def fetch_option_quotes(symbol: str, strikes, expiry_iso: str | None = None,
     one strike ahead. That makes a ~10s OI/premium cadence affordable — the score's *fuel* reading
     (writer covering + premium expansion) no longer has to sit at the chain's 1-5 min beat.
 
-    Verified live (20-Jul-2026): an NSE_FNO quote for two option ids returns ``oi`` (in SHARES, like
-    the rest of the Dhan feed — 7,129,460 = 109,684 lots × 65), ``last_price``, ``volume`` and
-    ``last_trade_time``. Returns {strike: {call_oi, put_oi, call_ltp, put_ltp}} + ``as_of``, or None.
+    Verified live (20-Jul-2026): an NSE_FNO quote for two option ids returns ``oi`` in SHARES
+    (7,129,460 = 109,684 lots × 65). This helper converts OI to lots before returning so it
+    matches the chain snapshot. Also returns last_price / as_of.
     """
     c = _option_contracts(symbol, expiry_iso)
     if not c.get("seg") or not c.get("by_strike"):
@@ -377,13 +377,18 @@ def fetch_option_quotes(symbol: str, strikes, expiry_iso: str | None = None,
             return None
         cells = (r.json() or {}).get("data", {}).get(c["seg"], {})
         out: dict = {"as_of": None, "expiry": c["expiry"]}
+        try:
+            import config as _cfg
+            lot = int(_cfg.get_index(symbol).lot_size)
+        except Exception:
+            lot = 1
         for sid, cell in cells.items():
             if sid not in where or not cell:
                 continue
             k, side = where[sid]
             row = out.setdefault(k, {})
             pre = "call" if side == "CE" else "put"
-            row[f"{pre}_oi"] = _num(cell.get("oi"))
+            row[f"{pre}_oi"] = oi_shares_to_lots(_num(cell.get("oi")), lot)
             row[f"{pre}_ltp"] = _num(cell.get("last_price"))
             ts = _trade_time(cell)
             if ts:
@@ -468,7 +473,7 @@ def _ddmmyyyy(iso: str) -> str:
     return f"{d}-{m}-{y}"
 
 
-def _to_nse_rows(dhan_json: dict, expiry_iso: str) -> tuple[list[dict], float | None]:
+def _to_nse_rows(dhan_json: dict, expiry_iso: str, lot_size: int = 1) -> tuple[list[dict], float | None]:
     """One Dhan chain response -> NSE-shaped rows for ONE expiry + the underlying spot.
 
     RAISES ValueError if the documented structure (an ``oc`` strike map + a spot) is absent, so
@@ -490,8 +495,8 @@ def _to_nse_rows(dhan_json: dict, expiry_iso: str) -> tuple[list[dict], float | 
             s = cell.get(side_key) or {}
             if not s:
                 continue
-            oi = _num(s.get(_F["oi"]))
-            poi = _num(s.get(_F["prev_oi"]))
+            oi = oi_shares_to_lots(_num(s.get(_F["oi"])), lot_size)
+            poi = oi_shares_to_lots(_num(s.get(_F["prev_oi"])), lot_size)
             ltp = _num(s.get(_F["ltp"]))
             pclose = _num(s.get(_F["prev_close"]))
             rows.append({
@@ -553,7 +558,8 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
             if not r.ok:
                 errors.append(f"{e}: HTTP {r.status_code}")
                 continue
-            rows, sp = _to_nse_rows(r.json(), e)
+            lot = int(config.get_index(symbol).lot_size)
+            rows, sp = _to_nse_rows(r.json(), e, lot_size=lot)
             merged.extend(rows)
             spot = spot or sp
         except Exception as ex:  # noqa: BLE001
@@ -596,7 +602,8 @@ def ping(symbol: str = "NIFTY") -> dict:
         if not r.ok:
             return {"ok": False, "expiries": len(exps), "spot": None,
                     "error": f"chain HTTP {r.status_code}"}
-        _, spot = _to_nse_rows(r.json(), exps[0])
+        import config as _cfg
+        _, spot = _to_nse_rows(r.json(), exps[0], lot_size=int(_cfg.get_index(symbol).lot_size))
         return {"ok": True, "expiries": len(exps), "spot": spot, "error": None}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "expiries": 0, "spot": None, "error": f"{type(e).__name__}: {str(e)[:150]}"}
