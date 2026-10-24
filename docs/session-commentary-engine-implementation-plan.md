@@ -83,14 +83,14 @@ Before writing code:
 | **Black-76 pricer / Greeks** | **Yes** | [`target_engine/pricer.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/target_engine/pricer.py) | **Reused:** Evaluates strike implied volatility, delta, and target/invalidation probabilities. |
 | **Scenario scoring & Trade Recommendations** | **Yes** | [`analytics/trade_ideas.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/analytics/trade_ideas.py), [`target_engine/scenarios.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/target_engine/scenarios.py) | **Extended:** 14 institutional candidate strategies (7 CE, 7 PE), signal latching, live telemetry, and pre-market regime weighting. |
 | **Pre-Market Equilibrium & Gap Regimes** | **Yes** | [`data/pre_post_market.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/pre_post_market.py) | **Reused:** 09:00–09:08 equilibrium discovery, 5 auction regimes, and dynamic `gap_fill_status`. |
-| **Backtest / PointInTimeView / Replay** | **Yes** | [`commentary/qa/replay.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/qa/replay.py), [`app/market_simulator.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/market_simulator.py) | **Reused:** PointInTimeView enforces strict zero look-ahead guards with simulated tick playback. |
+| **Backtest / PointInTimeView** | **Yes** | [`commentary/qa/replay.py`](commentary/qa/replay.py) | **Test harness only.** Walks stored commentary with no look-ahead. `app/market_simulator.py` was removed. It is not a product screen, and this process has no `simulation_mode`. |
 | **Futures price + OI + depth feeds** | **Yes** | [`app/ws_spot_feed.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/ws_spot_feed.py), [`app/spot_ticker.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/spot_ticker.py), [`data/dhan_live.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/dhan_live.py) | **Reused:** WebSocket tick feed (<1ms push) provides spot ticks, futures OI, and option quotes. |
-| **Dual Streaming Modes (Live / Offline)** | **Yes** | [`app/cockpit.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/cockpit.py) (`is_live_session`) | **Reused:** Live WebSocket streaming during market hours; Offline Auto-Switch serving authenticated local snapshots when closed. |
+| **Dual Streaming Modes (Live / Offline)** | **Yes** | `config.is_market_open` and `web_server.py` | **Reused:** Live feed during the F&O session (09:15–15:40 IST). Closed hours serve the last stored snapshot. |
 | **Bank Nifty / heavyweight / breadth feeds** | **Yes** | [`data/sectors.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/sectors.py), [`data/indices.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/indices.py) | **Reused:** Sector breadth and relative strength feed divergence detectors. |
 | **News ingestion & Macro Catalysts** | **Yes** | [`data/news.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/news.py), [`commentary/detectors/news.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/news.py) | **Reused:** Published timestamp matching with $[-10\text{m}, +3\text{m}]$ lead/lag window. |
 | **Narrator & Fact Verifier** | **Yes** | [`commentary/narrator/`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/narrator/) | **Net-New:** Deterministic template library, strict numeric verification, and storytelling formatter. |
 | **Pinned Positions / Bookmarked Trades** | **Yes** | [`data/journal/recommendations_store.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/journal/recommendations_store.py), [`commentary/detectors/pinned.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/detectors/pinned.py) | **Extended:** Real-time tracking of pinned ideas for Target 1 approach, target hit, and invalidation. |
-| **Persistence, API & Presentation** | **Yes** | [`commentary/storage/db.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/storage/db.py), [`app/tab_commentary.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/tab_commentary.py) | **Net-New:** SQLite WAL database, freeflowing storytelling stream, and isolated `@st.fragment`. |
+| **Persistence, API & Presentation** | **Yes** | [`commentary/storage/db.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/commentary/storage/db.py), `web_server.py` | SQLite WAL store and the web commentary stream. |
 
 ---
 
@@ -109,15 +109,14 @@ The engine operates deterministically across two production streaming modes:
 │ • Active during Market Hours (09:15–15:30)│ • Automatically engages when market closes│
 │ • Pre-Open Discovery (09:00–09:08 IST)    │   (evenings, weekends, holidays).         │
 │ • Extended Settlement (15:30–15:40 IST)   │ • Pauses external network polling.        │
-│ • Historical Replay Simulation (<1ms push)│ • Serves authenticated SQLite WAL snapshot│
-│ • Evaluates detectors on live ticks.      │ • Instant offline review & replay grading │
-│ • Streams verified entries via @st.fragment│ • Zero latency, zero blank cards/errors. │
+│ • Evaluates detectors on live ticks.      │ • Serves the last SQLite snapshot.        │
+│ • Streams verified entries on the web UI │ • Closed hours keep the last snapshot.   │
 └───────────────────────────────────────────┴───────────────────────────────────────────┘
 ```
 
 ```
   Data Sources:
-  [Real-Time WebSocket Tick Feed]  OR  [Authenticated SQLite WAL / Replay Snapshot]
+  [Real-Time WebSocket Tick Feed]  OR  [Last stored SQLite snapshot]
   (Spot, Futures OI, Depth, ATM IV, Pre-Market Equilibrium, Pinned Recommendations)
                            │
                            ▼
@@ -431,10 +430,8 @@ ISSUED -> TRIGGERED -> (TARGET_HIT | STOPPED | EXPIRED_AFTER_TRIGGER)
 - `commentary_suppressed`: `suppress_id`, `event_id`, `ts`, `symbol`, `event_type`, `reason`
 - `session_recaps`: `session_date`, `symbol`, `recap_text`, `open_threads_json`, `stats_json`
 
-**UI Component Architecture ([`app/tab_commentary.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/app/tab_commentary.py)):**
-- Embedded directly in Cockpit as the dedicated **"🎙️ Session Commentary"** tab.
-- Runs inside an isolated `@st.fragment` guaranteeing non-blocking zero-latency updates without full-app reruns.
-- Filter options: *All Entries*, *Actionable Bites Only*, *Pinned Recommendations*.
+**UI:** the web cockpit commentary stream (`web_server.py`, `app/static/js/cockpit.js`).
+- Filter options: all entries, actionable bites, pinned recommendations.
 
 ---
 

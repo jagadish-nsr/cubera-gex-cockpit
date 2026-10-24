@@ -30,7 +30,7 @@ The application maintains a persistent binary WebSocket connection streaming pac
 | :--- | :--- | :--- | :--- |
 | **`/marketfeed/quote`** | `POST` | `last_price`, `ohlc`, `volume`, `oi`, `prev_close`, `depth` | Static fallback quote and baseline spot calibration. |
 | **`/optionchain`** | `POST` | Array of strikes with `call_oi`, `put_oi`, `call_ltp`, `put_ltp`, `call_volume`, `put_volume`, `call_iv`, `put_iv` | Full option chain snapshot for GEX solver and profile generation. |
-| **`/charts/historical`** | `POST` | `start_time`, `open`, `high`, `low`, `close`, `volume` | Intraday (1-min) and daily historical candles for VWAP, ATR, and Sentinel orderflow replay. |
+| **`/charts/historical`** | `POST` | `start_time`, `open`, `high`, `low`, `close`, `volume` | Intraday (1-min) and daily historical candles for VWAP, ATR, and the sentinel tape. |
 | **Dhan Scrip Master Cache** | `GET` | `SEM_SMST_SECURITY_ID`, `SEM_INSTRUMENT_NAME`, `SEM_EXPIRY_DATE`, `SEM_STRIKE_PRICE`, `SEM_OPTION_TYPE` | Local CSV cache used for $O(1)$ resolution of exchange Security IDs. |
 
 ---

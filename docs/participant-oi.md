@@ -26,7 +26,7 @@ https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_DDMMYYYY.csv
 | Logic + journal | `app/participant_oi.py` | flat market-wide journal `data/journal/participant_oi/YYYY-MM-DD.csv` (1 row/participant, gitignored) · `save/load/available/latest` · `derive_signals` · `capture_latest` (newest, walk-back) · `backfill(n_days)` · `participant_series` · `series_drift` |
 | Daily capture | `scripts/log_participant_oi.py` | `capture_latest`; `--backfill N` for history; exit-1 on miss (for the scheduler) |
 | Scheduler | `run_participant_oi.bat` + `setup_participant_oi_scheduler.ps1` | `GEX-ParticipantOI` weekday task ~20:00 IST (post-publication), wake-to-run + S4U — run the `.ps1` once as admin |
-| Dashboard | `app/dashboard.py::_participant_oi_section` + `_fii_drift_readout` | FII net-fut, option-writing, dealer-sign hint, multi-day FII drift |
+| Dashboard | web cockpit participant-OI card | FII net futures, option writing, multi-day FII drift |
 | IC research | `scripts/analyze_participant_ic.py` | FII futures → next-day Nifty return (point-in-time Spearman) |
 | Tests | `tests/test_participant_oi.py` | 13 hand-checks (parse/derive/journal/capture/backfill/series/drift) |
 

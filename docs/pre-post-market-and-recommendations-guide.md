@@ -29,7 +29,7 @@ The Indian financial markets operate under distinct microstructure regimes acros
 
 > [!NOTE]
 > **Streamlined 2-Mode Streaming Architecture**: The legacy 4-tier selectbox (3s/10s/30s/Manual) has been consolidated into two strict operating modes:
-> 1. **🟢 WebSocket Live Feed**: Active during trading hours (09:15–15:30 IST), Pre-Market Discovery (09:07:30–09:15 IST), F&O Extended Window (15:30–15:40 IST), and historical Replay Mode. Push latency is <1ms from Dhan binary feed with 0ms in-memory cache and 1s sub-element `@st.fragment` rendering.
+> 1. **🟢 WebSocket Live Feed**: Active during trading hours (09:15–15:40 IST), Pre-Market Discovery (09:07:30–09:15 IST), and the F&O window through 15:40 IST. Push latency is <1ms from the Dhan binary feed. There is no replay mode on this feed.
 > 2. **🛑 Offline Snapshot Mode**: Active during off-hours, weekends, holidays, and post-market settlement. Background API pollers are paused to conserve rate limits and prevent phantom ticks; the UI serves authentic closing data cached from the SQLite snapshot registry with manual on-demand refresh.
 
 ---

@@ -1,2 +1,3 @@
-"""Streamlit dashboard (v1a). UI in dashboard.py; streamlit-free pipeline in
-data_access.py so the data path is unit-testable without a UI."""
+"""Shared services for the web cockpit: chain load, live feeds, and studies.
+The decision screen is web_server.py. There is no Streamlit UI in this process.
+"""

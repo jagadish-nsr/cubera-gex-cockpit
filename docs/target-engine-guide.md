@@ -298,7 +298,7 @@ An institutional-grade, real-time streaming options execution matrix placed dire
   - **Left Wing (Calls / CE):** Live LTP, Invalidation Stop-Loss ($V_{\text{sl}}$), Primary Target ($V_{\text{tgt1}}$), Secondary Extension ($V_{\text{tgt2}}$), Risk-Reward ratio ($R:R$), and ₹ PnL per lot.
   - **Center Pillar (Strike):** Prominently styled strike price with glowing `★ ATM` badge on the active ATM strike and point offset indicators.
   - **Right Wing (Puts / PE):** Symmetrical mirror layout displaying Live LTP, Invalidation Stop-Loss ($V_{\text{sl}}$), Primary Target ($V_{\text{tgt1}}$), Secondary Extension ($V_{\text{tgt2}}$), Risk-Reward ratio ($R:R$), and ₹ PnL per lot.
-- **WebSocket Streaming & Isolation:** Powered by `@st.fragment(run_every=2)`, updating every 2 seconds via in-memory Dhan v2 WebSocket quotes with zero full-page reload and pulsing live indicators (`● live`).
+- **Live quotes:** the web cockpit reprices from the in-memory chain. A leg with no last or mid is not paper-traded.
 - **Flexible Matrix Views:** Fast toggle between **Dual-Wing Matrix**, **Calls (CE) Only**, and **Puts (PE) Only** (featuring expanded Greeks and volatility skew metrics).
 
 ### 4.5 Section 5: Ranked Candidate Strategy Cards

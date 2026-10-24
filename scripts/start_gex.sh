@@ -8,8 +8,8 @@ echo "Starting GEX Daemon (option chain & participant OI)..."
 python3 scripts/gex_daemon.py &
 DAEMON_PID=$!
 
-echo "Starting Indian GEX Dashboard (3-Tab)..."
-python3 -m streamlit run app/dashboard.py
+echo "Starting the web cockpit..."
+python3 web_server.py --port 8640
 
-# Cleanup when streamlit exits
+# Cleanup when the server exits
 kill $DAEMON_PID

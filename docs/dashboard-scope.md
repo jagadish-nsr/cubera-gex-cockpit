@@ -74,8 +74,8 @@ Decided: **show illustrative candidate structures**, loudly gated.
   + entry-context snapshot + status.
 - `journal/pnl.py` — mark-to-market + realised P&L, net of costs; point-in-time honest.
 - `journal/scorecard.py` — aggregate stats (descriptive).
-- `app/` — Streamlit multipage app (Dashboard / Structures / Journal) + `run_app.bat`
-  one-click launcher. Add `streamlit` to `requirements.txt`.
+- `app/` — shared services for the web cockpit (`web_server.py`, `app/static/`).
+  `run_prod.sh` serves port 8640. `run_dev.sh` serves port 8650.
 - Reused unchanged: `gex/`, `regime/`, `data/nse.py`, `data/parity.py`, `config.py`.
 
 ---

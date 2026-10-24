@@ -9,7 +9,7 @@ import json
 import re
 import pytest
 from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from web_server import app, _to_ist_chart_timestamp, _fmt_snapshot_as_of, _is_pre_bell_ephemeral
 import config
@@ -602,29 +602,43 @@ class TestSingleTimezoneAuthority:
 
 
 # ==============================================================================
-# RULE OF ZERO SYNTHETIC NOISE OUTSIDE SIMULATOR
+# RULE OF ZERO SYNTHETIC BARS ON THIS SERVER
 # ==============================================================================
 class TestZeroSyntheticNoiseOutsideSimulator:
-    """Verifies that no mock/demo fluctuations or synthetic seeds execute outside Simulator Mode."""
+    """This server never writes a synthetic sentinel session."""
 
-    def test_reseed_endpoint_gated_outside_simulator(self):
-        """Verify POST /api/sentinel-tape/reseed rejects execution when simulation_mode is False or omitted."""
-        # 1. simulation_mode = False explicitly
+    def test_reseed_ignores_a_synthetic_action(self):
+        """reseed_sim is not an action on this server, even if a caller sends simulation_mode."""
         status, _, content = asyncio.run(
-            asgi_request("POST", "/api/sentinel-tape/reseed", body={"symbol": "NIFTY", "simulation_mode": False})
+            asgi_request(
+                "POST",
+                "/api/sentinel-tape/reseed",
+                body={"symbol": "NIFTY", "action": "reseed_sim", "simulation_mode": True},
+            )
         )
         assert status == 200
         data = json.loads(content)
         assert data.get("status") == "ignored"
-        assert "disabled outside of Simulator Mode" in data.get("message", "")
+        assert "live feed" in data.get("message", "")
 
-        # 2. simulation_mode omitted
-        status, _, content = asyncio.run(
-            asgi_request("POST", "/api/sentinel-tape/reseed", body={"symbol": "NIFTY"})
-        )
+    def test_reseed_default_syncs_the_live_feed(self):
+        """A body with no action, including a leftover simulation_mode flag, syncs the live feed."""
+        dash = type("Dash", (), {})()
+        dash.levels = type("Levels", (), {"call_wall": 23000.0, "put_wall": 22500.0})()
+        with patch("web_server._aload_active_dashboard", new=AsyncMock(return_value=dash)):
+            with patch("sentinel.feed.live.sync_live_sentinel_if_needed", return_value=True) as sync:
+                status, _, content = asyncio.run(
+                    asgi_request(
+                        "POST",
+                        "/api/sentinel-tape/reseed",
+                        body={"symbol": "NIFTY", "simulation_mode": True},
+                    )
+                )
         assert status == 200
         data = json.loads(content)
-        assert data.get("status") == "ignored"
+        assert data.get("status") == "ok"
+        assert sync.called
+        assert "simulator" not in data.get("message", "").lower()
 
     def test_spot_quote_stability_zero_decimal_flicker(self):
         """Verify spot prices across consecutive calls are 100% deterministic with zero artificial jitter."""

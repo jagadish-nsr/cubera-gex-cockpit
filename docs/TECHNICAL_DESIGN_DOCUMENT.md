@@ -20,7 +20,7 @@ The **Cubera GEX Cockpit** is an ultra-low-latency, quantitative decision-suppor
 ### 1.2 Non-Negotiable Core Tenets
 The system is built on five foundational engineering principles:
 * **Advisory & Decision-Support Only**: The platform is strictly an analytical cockpit. It executes zero automated live market orders. All trade ideas and suggestion bites are conditional setups with explicit stop-losses and invalidation criteria.
-* **Strict Zero-Fabrication Contract**: Outside of an explicit `simulation_mode == True` flag, synthetic price jitter, fake candles, or mock records are categorically prohibited. When markets are closed, all APIs freeze to authentic exchange closing snapshots.
+* **Strict Zero-Fabrication Contract**: This process has no `simulation_mode` flag and no synthetic bar writer. A missing quote is an empty state or the last stored snapshot. A replay or simulator, when it exists, is a separate application on its own port and does not write this process’s databases.
 * **Indian Market Microstructure Realities**: The US retail-buying / dealer-short-gamma assumption is treated as an unverified landmine in Indian markets due to pervasive retail option selling. The system prioritizes sign-free indicators (CVD, OI footprints, volume buildup streaks, magnet drift) over unverified dealer-sign assumptions.
 * **Rigorous IST Time Alignment**: All telemetry, timestamps, and charts enforce Indian Standard Time (`UTC+05:30`). Lightweight Charts rendering in UTC are supplied epoch timestamps adjusted by $+19,800$ seconds (+5h 30m) to display authentic trading hours (`09:15` to `15:30 IST`).
 * **Graceful Multi-Session Persistence**: Database architecture utilizes SQLite in WAL (Write-Ahead Logging) mode with dedicated read/write connection separation and thread-safe locks, allowing seamless off-market analysis without polling broker APIs.
@@ -583,11 +583,10 @@ cubera-gex-cockpit/
 │   ├── pcr_bands.py                # Put-Call Ratio statistical bands
 │   ├── strike_ladder.py            # Strike-by-strike footprint ladder
 │   └── trade_ideas.py              # Institutional Recommendations Engine (Score >= 75)
-├── app/                            # Presentation, UI Assets & Legacy Streamlit Shells
+├── app/                            # Shared services and the web cockpit assets
 │   ├── big_money_live.py           # Real-time institutional transaction tape
-│   ├── dashboard.py                # Multi-tab Streamlit exploratory shell
-│   ├── simple_dashboard.py         # One-click executive Streamlit dashboard
-│   └── static/                     # High-Performance Web Frontend
+│   ├── data_access.py              # Chain load used by web_server.py
+│   └── static/                     # Web frontend
 │       ├── css/cockpit.css         # Cybernetic Dark Mode design system
 │       ├── js/cockpit.js           # Vanilla JS reactive client engine
 │       ├── index.html              # 11-Tab institutional Single Page Application
@@ -627,7 +626,7 @@ cubera-gex-cockpit/
 │   └── lkgs.py                     # Last Known Good State caching and recovery
 ├── sentinel/                       # OrderFlow Microstructure Engine
 │   ├── engine/                     # Microstructure aggregation, CVD, and absorption
-│   ├── feed/                       # Tick parser and demo seeders
+│   ├── feed/                       # Tick parser. Loads live bars or the last EOD snapshot.
 │   └── storage/db.py               # SQLite store for sentinel bars and signal outcomes
 ├── target_engine/                  # Probability-Weighted Tri-Scenario Engine
 │   ├── contracts.py                # Data contracts and candidate structure schemas
@@ -644,12 +643,10 @@ cubera-gex-cockpit/
 
 ### 6.1 Off-Market Hours API Quota Gating
 To protect broker rate limits and credentials:
-* Between `15:35` and `09:14 IST` and throughout weekends, all outbound REST queries to Dhan and NSE are suspended.
-* Web server endpoints transparently read from the latest session snapshots in `data/journal/market_snapshot.db`, `data/journal/recommendations.db`, and `data/sentinel.db`.
-* Only public RSS news scrapers run during off-market hours to monitor pre-market overnight macro catalysts.
+* F&O quote calls follow `config.is_market_open` (09:15–15:40 IST, weekdays). Cockpit book data reads the latest stored snapshot when that is false. Recommendations stay closed. Public news RSS may still run.
 
 ### 6.2 Zero-Fabrication Enforcement
-* Simulated test records are isolated strictly to automated test environments or explicitly designated simulation sessions (`simulation_mode == True`).
+* This process does not generate a synthetic session. Tests that need a fixture call `load_dashboard(..., use_demo=True)` inside the test process. That flag is not a product mode and is not on the Streamlit or web screens.
 * Price jitter timers, random noise generators, and prototype dummy rows are barred from production entry points.
 
 ### 6.3 Concurrency & Database Locking Discipline

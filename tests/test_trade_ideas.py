@@ -846,8 +846,6 @@ def test_recommendation_latch_manager():
 
 def test_format_time_since_active():
     from analytics.trade_ideas import format_time_since_active
-    from app.cockpit import format_time_since_active as cockpit_format
-    assert cockpit_format is format_time_since_active
 
     t_ref = 1700000000.0
 
@@ -918,25 +916,6 @@ def test_target_bounds_and_realistic_rr():
         # R:R must be realistic (< 20.0, not 172.7!)
         rr_val = float(idea.risk_reward_ratio.split(":")[-1].strip())
         assert rr_val < 20.0
-
-
-def test_off_market_hours_recommendation_gating(monkeypatch):
-    """Verify that recommendation generation is gated off outside market hours."""
-    from unittest.mock import patch
-    import config
-    from app.cockpit import _get_active_recommendation_batch, _REC_BATCH_CACHE
-
-    _REC_BATCH_CACHE.clear()
-    monkeypatch.setattr(config, "is_market_open", lambda: False)
-
-    data = MockDashboardData(spot=24500.0, symbol="NIFTY")
-    session_state = {}
-
-    with patch("streamlit.session_state", session_state):
-        # When market is closed and no cache exists, must return None without generating
-        batch = _get_active_recommendation_batch("NIFTY", data)
-        assert batch is None
-        assert "NIFTY" not in _REC_BATCH_CACHE
 
 
 def test_pre_market_regime_confluence_scoring():

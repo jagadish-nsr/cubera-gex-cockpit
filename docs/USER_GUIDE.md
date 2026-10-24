@@ -244,12 +244,8 @@ Trading and recommendation generation follow official Indian market session timi
 ## 🚀 Running the Terminal Locally
 
 ### Launch Commands & Default Ports:
-- **Unified Master Cockpit (Served at `http://localhost:8630`):**
-  - **macOS / Linux:** Run `./run_cockpit.sh` (or `python3 -m streamlit run app/cockpit.py --server.port 8630`)
-  - **Windows:** Double-click `run_cockpit.bat`
-- **Simple Dashboard (Served at `http://localhost:8610`):**
-  - **macOS / Linux:** Run `./run_simple.sh` or `./run_simple.command`
-  - **Windows:** Double-click `run_simple.bat`
+- **Web cockpit (production, `http://localhost:8640`):** `./run_prod.sh` or `python3 web_server.py --port 8640`
+- **Dev (`http://localhost:8650`):** `./run_dev.sh`
 
 ---
 

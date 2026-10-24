@@ -58,8 +58,8 @@ Off-window / weekend / holiday fires are harmless — `--once` skips outside
 Start-ScheduledTask -TaskName NiftyGEX-TimeSeries
 ```
 Check `data\journal\timeseries_run.log` for a success line and that a
-`data\journal\timeseries\YYYY-MM-DD.csv` was created. Opening the dashboard
-(`run_app.bat`) and refreshing will show the intraday chart fill in.
+`data\journal\timeseries\YYYY-MM-DD.csv` was created. Opening the web cockpit
+(`./run_prod.sh`, http://localhost:8640) shows the intraday chart fill in.
 
 ## Recurring maintenance
 - **DST (twice a year):** the scheduler defaults to **BST (04:45)**. When UK

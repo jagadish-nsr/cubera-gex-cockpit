@@ -1,6 +1,6 @@
 # ⚡ OrderFlow Sentinel Stream — Signals Field Guide & Reference Manual
 
-> **Module:** Sentinel Engine v2.0 (Tab 3 · `sentinel/` & `app/cockpit.py`)  
+> **Module:** Sentinel Engine v2.0 (`sentinel/` and the web cockpit)  
 > **Market Microstructure:** Native Indian Market Mode (`short_call_short_put` / Systematic Option Writing & Delta Hedging)  
 > **Applicable Indices:** NIFTY 50, BANK NIFTY, SENSEX futures and option chains  
 > **Persistence & Storage:** SQLite WAL Mode (`data/sentinel_db.db` & `data/sentinel.db`)  

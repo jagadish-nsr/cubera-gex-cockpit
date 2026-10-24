@@ -3,7 +3,6 @@
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 import config
-from sentinel.feed.demo import step_sentinel_live_feed
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -69,42 +68,6 @@ def test_is_market_open_weekday_holidays():
     # Tuesday, 2026-10-20 (NSE Holiday) during trading hours -> Closed
     dt_holiday_tue = datetime(2026, 10, 20, 11, 30, 0, tzinfo=IST)
     assert config.is_market_open(dt_holiday_tue) is False
-
-
-def test_sentinel_seed_anchors_to_prior_trading_day_on_weekday_holiday():
-    from sentinel.feed.demo import seed_sentinel_demo_if_needed
-    from sentinel.storage.db import list_recent_bars
-
-    # Simulate running on Friday, 2026-10-02 (Gandhi Jayanti)
-    fake_holiday_now = datetime(2026, 10, 2, 11, 30, 0, tzinfo=IST)
-    inst_id = "HOLIDAY-NIFTY-FUT"
-    try:
-        with patch("sentinel.feed.demo.datetime") as mock_dt:
-            mock_dt.now.return_value = fake_holiday_now
-            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-            mock_dt.fromisoformat = datetime.fromisoformat
-            seed_sentinel_demo_if_needed(inst_id, spot=22500.0, force=True)
-
-        bars = list_recent_bars(inst_id, "1m", 5)
-        assert len(bars) > 0
-        # Must anchor to 2026-10-01 (Thursday, the preceding trading day before Gandhi Jayanti)
-        assert bars[-1].start_ts.strftime("%Y-%m-%d") == "2026-10-01"
-    finally:
-        from sentinel.storage.db import clear_sentinel_data
-        clear_sentinel_data(inst_id)
-
-
-def test_step_sentinel_live_feed_pauses_after_hours():
-    # Mock market closed
-    with patch("config.is_market_open", return_value=False):
-        with patch("sentinel.feed.demo._live_feed_engine.step") as mock_step:
-            # Without force: should return immediately and not step
-            step_sentinel_live_feed("NIFTY-FUT", 24550.0, 24700.0, 24400.0, force=False)
-            assert not mock_step.called
-
-            # With force=True: should step even after hours
-            step_sentinel_live_feed("NIFTY-FUT", 24550.0, 24700.0, 24400.0, force=True)
-            assert mock_step.called
 
 
 def test_web_server_load_active_dashboard_cold_fallback_uses_demo_when_closed():
@@ -184,26 +147,31 @@ def test_live_hours_reads_published_store_without_dhan():
     mock_load.assert_not_called()
 
 
-def test_live_hours_cold_start_uses_pickle_not_live_dhan():
+def test_live_hours_cold_start_skips_pickle_and_does_not_call_dhan():
+    """A live cold start must not unpickle (that holds the GIL and stalls ticks)
+    and must not pull Dhan on the request. The miss falls through to the demo fixture."""
     from web_server import _load_active_dashboard, _DASH_MEM_CACHE
     from unittest.mock import MagicMock
 
     _DASH_MEM_CACHE.clear()
-    fake = MagicMock()
-    fake.levels.spot = 22600.0
-    fake.levels.call_wall = 23000.0
-    fake.levels.put_wall = 22500.0
+    pickled = MagicMock(name="pickle")
+    fixture = MagicMock(name="demo")
+    fixture.levels.spot = 22600.0
 
     with patch("config.is_market_open", return_value=True):
-        with patch("web_server.load_dashboard") as mock_load:
+        with patch("web_server.load_dashboard", return_value=fixture) as mock_load:
             with patch("web_server._ensure_chain_ingest"):
                 with patch("app.live_fetcher.latest", return_value=None):
                     with patch("web_server._from_lkgs", return_value=None):
-                        with patch("web_server._unpickle_latest_snap", return_value=fake):
+                        with patch("web_server._unpickle_latest_snap", return_value=pickled) as mock_unpickle:
                             with patch("web_server._overlay_live_spot", side_effect=lambda d, s: d):
-                                dash = _load_active_dashboard("NIFTY", "current_week")
-    assert dash is fake
-    mock_load.assert_not_called()
+                                with patch("web_server._refresh_book_view", side_effect=lambda d: d):
+                                    dash = _load_active_dashboard("NIFTY", "current_week")
+    assert dash is fixture
+    mock_unpickle.assert_not_called()
+    mock_load.assert_called_once()
+    _, kwargs = mock_load.call_args
+    assert kwargs.get("use_demo") is True
 
 
 def test_live_hours_demo_fallback_never_sets_use_demo_false():

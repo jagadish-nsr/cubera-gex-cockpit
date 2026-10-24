@@ -55,7 +55,7 @@ In a financial trading cockpit where intraday decisions depend on live option ch
 | **Config File** | `.env.production` (or `.env`) | `.env.development` |
 | **Telemetry / UI Badge** | Green / Minimal Institutional Status | Amber / High-Visibility `[DEV MODE :8650]` Badge |
 | **Data Writers** | Authoritative writer to `data/gex.db`, `data/sentinel.db` | Reads shared DB; writes to test sandbox or dry-run |
-| **Dhan API & NSE** | Real live credentials & rate gate | Shared read tokens / Simulator mode enabled |
+| **Dhan API & NSE** | Real live credentials and the rate gate | Same read tokens. No simulator mode. Dev does not write the production databases. |
 
 ---
 

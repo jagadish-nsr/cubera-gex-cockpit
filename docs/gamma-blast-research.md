@@ -1,7 +1,7 @@
 # Gamma Blast — Research & Validation Notes
 
 Status: research + design record for the dashboard "Gamma-blast crossover watch"
-(`app/gammablast.py`, the panel in `app/dashboard.py`, and the 1-min capture in
+(`app/gammablast.py`, the blast card on the web cockpit, and the 1-min capture in
 `scripts/log_gamma_blast.py`). **Decision-support only — not financial advice, no
 auto-execution.** The production book is `short_call_short_put`. Both legs are stored
 negative. The balance is call-gamma magnitude minus put-gamma magnitude.

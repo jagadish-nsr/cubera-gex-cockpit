@@ -628,7 +628,9 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     """Read the published GEX snapshot. Never calls Dhan on this thread.
 
     Live hours: background ``live_fetcher`` is the only chain ingest. This function
-    reads its in-memory store, then LKGS, then the on-disk pickle, then demo.
+    reads its in-memory store, then LKGS. It does not unpickle here: unpickling holds
+    the GIL and stalls the tick loop. If both miss, the demo fixture is returned so
+    this request does not call Dhan.
     Spot/futures ticks overlay from ``spot_ticker`` (separate WS ingest).
 
     Off-market: pickle → LKGS → SQLite KPI overlay → demo. Zero broker calls.
@@ -682,7 +684,8 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
 async def _aload_active_dashboard(
     symbol: str, window: Optional[str] = None, timeout: float = 25.0
 ) -> Optional[DashboardData]:
-    """Async wrapper: snapshot reads are memory/sqlite/pickle only (no broker I/O)."""
+    """Async wrapper. Live hours read the published store or LKGS, else the demo
+    fixture. Off-market reads pickle, LKGS, or the demo fixture. No broker I/O."""
     try:
         return _load_active_dashboard(symbol, window)
     except Exception as exc:
@@ -1371,6 +1374,48 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
     }
 
 
+def _price(*vals) -> float:
+    """First positive number in vals, else 0."""
+    for v in vals:
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            return n
+    return 0.0
+
+
+def _status_day_ohlc(dash, quote: dict | None, snap: dict | None, spot: float, market_open: bool) -> dict:
+    """Day range for /api/status.
+
+    While the session is open, Dhan's OHLC ``close`` is the previous session and is
+    stored as ``prev_close``. After the close, the last trade is the session close.
+    """
+    raw = getattr(dash, "day_ohlc", None) if dash is not None else None
+    if not isinstance(raw, dict):
+        raw = {}
+    q = quote or {}
+    db = snap or {}
+    ltp = _price(raw.get("ltp"), q.get("spot"), spot)
+    prev = _price(raw.get("prev_close"), q.get("prev_close"), db.get("prev_close"))
+    close = _price(raw.get("close"))
+    if close <= 0 and not market_open:
+        close = _price(ltp, prev, spot)
+    out = {
+        "open": _price(raw.get("open"), q.get("open"), db.get("open"), spot),
+        "high": _price(raw.get("high"), q.get("high"), db.get("high"), spot),
+        "low": _price(raw.get("low"), q.get("low"), db.get("low"), spot),
+        "close": close,
+        "ltp": ltp,
+    }
+    if prev > 0:
+        out["prev_close"] = prev
+    if raw.get("as_of"):
+        out["as_of"] = raw["as_of"]
+    return out
+
+
 # --------------------------------------------------------------------------
 # API REST Endpoints
 # --------------------------------------------------------------------------
@@ -1426,13 +1471,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     from data.market_snapshot import get_snapshot
     db_snap = get_snapshot(sym) or {}
-    real_ohlc = (getattr(dash, "day_ohlc", None) if dash is not None else None) or {
-        "open": float(q.get("open") or db_snap.get("open") or spot),
-        "high": float(q.get("high") or db_snap.get("high") or spot),
-        "low": float(q.get("low") or db_snap.get("low") or spot),
-        "close": float(q.get("prev_close") or db_snap.get("prev_close") or spot),
-        "ltp": spot,
-    }
+    real_ohlc = _status_day_ohlc(dash, q, db_snap, spot, is_live)
     vix_from_dash = getattr(dash, "india_vix", None) if dash is not None else None
     real_vix = {
         "last": float(
@@ -1529,7 +1568,6 @@ async def save_dhan_token(payload: dict = Body(...)):
 async def get_cockpit_data(
     symbol: Optional[str] = None,
     window: Optional[str] = None,
-    simulation_mode: Optional[bool] = False,
 ):
     """Cockpit Tab: Executive strip, 8 KPIs, Gamma Blast, Ladder, Candidate structures, Pinned setups."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
@@ -1793,8 +1831,7 @@ async def get_cockpit_data(
 
     fresh_ideas = []
     is_open = config.is_market_open()
-    # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
-    if is_open or simulation_mode:
+    if is_open:
         try:
             recs = _latest_rec_batch(sym, win)
             all_recs = []
@@ -2332,10 +2369,9 @@ async def get_recommendations(
     window: Optional[str] = None,
     capital: Optional[float] = None,
     risk: Optional[float] = None,
-    simulation_mode: Optional[bool] = False,
 ):
     """Recommendations Tab: Sizing HUD, Higher Conviction (>85), Fallback (75-85), Clusters, State Machine.
-    Off-market hours: Returns 'Session Closed · Off-Market Hours' notice unless simulation_mode=True.
+    Off-market hours return Session Closed and empty clusters.
     """
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
@@ -2358,24 +2394,23 @@ async def get_recommendations(
     eff_metrics = get_strategy_effectiveness_metrics(sym)
     eff_summary = summarize_effectiveness(eff_metrics if isinstance(eff_metrics, list) else [])
 
-    if not is_open and not simulation_mode:
+    if not is_open:
         from data.market_snapshot import get_snapshot
         snap = get_snapshot(sym) or {}
-        spot = float(snap.get("spot") or 23146.15)
+        spot = float(snap.get("spot") or 0)
         return {
             "symbol": sym,
             "spot": spot,
             "hud": hud,
             "is_market_closed": True,
-            "simulation_mode": False,
             "closed_notice": {
                 "title": "Session Closed · Off-Market Hours",
                 "message": (
                     "Broker API polling and NSE live feeds are paused after market hours. "
                     "Real-time recommendations and Sentinel marks-to-market "
-                    "run strictly during active trading hours (09:15 – 15:30 IST) or when Replay Mode is enabled."
+                    "run during the F&O session (09:15 – 15:40 IST)."
                 ),
-                "action_prompt": "You can explore simulated option setups based on the last session's closing GEX matrix.",
+                "action_prompt": "",
             },
             "top_recommended_side": "NONE",
             "executive_summary": "Session Closed. Live intraday recommendation engines are paused.",
@@ -2418,7 +2453,6 @@ async def get_recommendations(
         "spot": spot,
         "hud": hud,
         "is_market_closed": not is_open,
-        "simulation_mode": bool(simulation_mode),
         "top_recommended_side": recs.top_recommended_side,
         "executive_summary": recs.executive_summary,
         "ce_fallback_active": getattr(recs, "ce_fallback_active", False) or len(high_ce_clusters) == 0,
@@ -2726,34 +2760,31 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
 
 @app.post("/api/sentinel-tape/reseed")
 async def reseed_sentinel_tape(payload: dict = Body(...)):
-    """Sentinel tape data refresh endpoint.
+    """Refresh the sentinel tape from the live broker feed or the last EOD snapshot.
 
-    Supported actions (via 'action' param):
-      'sync_live'   — Force-sync genuine broker candles (Dhan WS/API). No simulation required.
-      'load_eod'    — Force-reload last verified EOD snapshot. No simulation required.
-      'reseed_sim'  — Regenerate synthetic simulation bars. Requires simulation_mode=True.
-
-    Legacy callers omitting 'action' retain the old behaviour (simulation_mode gate).
+    Actions: 'sync_live' (default) and 'load_eod'. Any other action is ignored.
+    This server does not write synthetic bars.
     """
     sym = payload.get("symbol", "NIFTY").upper()
-    tf = payload.get("timeframe", "1m")
-    action = payload.get("action", "")
-    sim_mode = payload.get("simulation_mode", False)
+    action = str(payload.get("action") or "sync_live")
+
+    if action not in ("sync_live", "load_eod"):
+        return {
+            "status": "ignored",
+            "message": "This server loads the live feed or the last EOD snapshot.",
+        }
 
     inst_id = f"{sym}-FUT"
     dash = await _aload_active_dashboard(sym)
-    spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
     cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0.0)
     pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0.0)
 
     if action == "sync_live":
-        # Genuine broker sync — no simulation_mode gate
         try:
             from sentinel.feed.live import sync_live_sentinel_if_needed
             synced = sync_live_sentinel_if_needed(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
             if synced:
                 return {"status": "ok", "message": f"Synced live broker feed for {sym}"}
-            # Fallback to EOD snapshot if live is unavailable (market closed)
             from sentinel.feed.history import ensure_sentinel_session_data
             ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
             msg = f"Loaded EOD snapshot for {sym} (live feed unavailable)" if ok else f"No live or EOD data available for {sym}"
@@ -2762,22 +2793,14 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
             log.warning("sync_live action failed for %s: %s", sym, exc)
             return {"status": "error", "message": f"Live sync error: {exc}"}
 
-    if action == "load_eod":
-        # EOD snapshot load — no simulation_mode gate
-        try:
-            from sentinel.feed.history import ensure_sentinel_session_data
-            ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
-            msg = f"Loaded verified EOD snapshot for {sym}" if ok else f"No EOD snapshot available for {sym}"
-            return {"status": "ok" if ok else "offline", "message": msg}
-        except Exception as exc:
-            log.warning("load_eod action failed for %s: %s", sym, exc)
-            return {"status": "error", "message": f"EOD load error: {exc}"}
-
-    # Legacy path / explicit 'reseed_sim': simulator reseed — requires simulation_mode=True
-    if not sim_mode:
-        return {"status": "ignored", "message": "Demo reseed disabled outside of Simulator Mode"}
-    seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw, force=True, simulation_mode=True)
-    return {"status": "ok", "message": f"Reseeded simulator flow for {sym} ({tf})"}
+    try:
+        from sentinel.feed.history import ensure_sentinel_session_data
+        ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+        msg = f"Loaded verified EOD snapshot for {sym}" if ok else f"No EOD snapshot available for {sym}"
+        return {"status": "ok" if ok else "offline", "message": msg}
+    except Exception as exc:
+        log.warning("load_eod action failed for %s: %s", sym, exc)
+        return {"status": "error", "message": f"EOD load error: {exc}"}
 
 
 

@@ -2847,7 +2847,7 @@
               <div style="font-size:1.1rem;font-weight:800;color:var(--ink);margin-bottom:6px">Session Closed · Off-Market Hours</div>
               <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 auto;max-width:580px;line-height:1.5">
                 Broker API polling and NSE live feeds are paused after market hours.
-                Recommendations run during active trading hours (09:15 – 15:30 IST).
+                Recommendations run during the F&O session (09:15 – 15:40 IST).
               </p>
             </div>
           `;
@@ -3598,7 +3598,7 @@
         if (sel) sel.value = tf;
       }
       const targetTf = tf || sentinelState.timeframe || "1m";
-      showToast(`Re-seeding ${targetTf} flow data...`, "⚡");
+      showToast(`Syncing the live ${targetTf} feed...`, "⚡");
       const res = await fetch("/api/sentinel-tape/reseed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3614,7 +3614,7 @@
 
   /**
    * Force-sync genuine 1m candles from the Dhan broker feed.
-   * Falls back to EOD snapshot if market is closed. No simulation_mode required.
+   * Falls back to the EOD snapshot when the market is closed.
    */
   window.syncLiveSentinelFeed = async function () {
     try {
@@ -3638,9 +3638,7 @@
   };
 
   /**
-   * Reload last verified EOD session snapshot from exchange journal.
-   * Computes derived metrics (CVD, VWAP bands) internally on authentic OHLCV.
-   * No simulation_mode required.
+   * Reload the last verified EOD session snapshot.
    */
   window.loadEODSentinelSnapshot = async function () {
     try {

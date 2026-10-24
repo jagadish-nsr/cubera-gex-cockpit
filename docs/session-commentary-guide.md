@@ -1,6 +1,6 @@
 # 🎙️ Session Commentary & Suggestion Bites — Comprehensive Guide & Field Manual
 
-> **Module:** Session Commentary Engine (Tab 10 · `commentary/` & `app/tab_commentary.py`)  
+> **Module:** Session Commentary Engine (`commentary/` and the web cockpit)  
 > **Market Microstructure:** Native Indian Market Mode (`short_call_short_put` / Delta-Hedging & Strike Defense)  
 > **Applicable Indices:** NIFTY 50, BANK NIFTY, SENSEX  
 > **Storage & Engine:** SQLite WAL Mode (`data/commentary.db`) · Deterministic Template Narrator · Fact Verifier  
@@ -204,9 +204,9 @@ Commentary data is stored in [`data/commentary.db`](file:///Users/jagadish/MyPro
 
 ---
 
-## 6. UI Ergonomics in the Cockpit (Tab 10)
+## 6. UI on the web cockpit
 
-The **Session Commentary Tab** (`app/tab_commentary.py`) provides an institutional newsroom interface:
+The **session commentary** on the web cockpit is the newsroom view of `commentary/`:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -232,8 +232,7 @@ The **Session Commentary Tab** (`app/tab_commentary.py`) provides an institution
 ```
 
 ### Key UI Features:
-1. **Isolated Streaming Fragment (`@st.fragment`)**:
-   Tab 10 refreshes its narrative feed independently every 3 seconds without re-rendering the outer application or disrupting chart views.
+1. **Web commentary stream:** the narrative feed updates from the server without a full page reload.
 2. **Category Filter Chips**:
    Toggle views instantly between `ALL`, `🎯 Trade Tracking`, `🛡️ Wall Events`, `⚡ OrderFlow`, and `📰 Macro/News`.
 3. **Pinned Recommendation Indicators**:

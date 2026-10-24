@@ -107,12 +107,11 @@ Dhan WS ─► collector (always-on) ─► JSONL event store ─► dashboard t
   directional history.
 - **`app/big_money_live.py`** — the always-on background SERVICE: `Collector` (daemon thread:
   decode → save raw → filter → append Event, with reconnect + per-symbol tick counts) and
-  `load_raw_ticks`. Auto-started from the dashboard via `cache_resource`; also usable standalone.
+  `load_raw_ticks`. One process-wide collector; also usable standalone.
 - **`scripts/run_big_money_collector.py`** — a headless one-shot runner of the same pipeline
   (reconnects; token 24h-capped → repaste `data/.dhan_token` and it resumes). `--dry-run` prints
   without storing; `--print-floor`/`--burst-floor` override floors for calibration.
-- **`app/simple_dashboard.py`** — `_get_big_money_collector` (the cache_resource singleton),
-  `_big_money_tape_html` (full-width tape card) + `_bm_status_html` (the live health strip).
+- **`web_server.py`** — the tape card on the web cockpit reads the same event store.
 
 **Write ownership (avoid double-writing raw).** Two concurrent sockets on one token are fine (verified
 live), but two collectors both saving raw would double-append the same CSV. So the **raw archive is owned
@@ -189,19 +188,16 @@ python scripts/big_money_rollup.py 2026-07-23
 python scripts/big_money_rollup.py --migrate         # import any legacy JSONL first
 ```
 
-## Day readout + replay on the dashboard
+## Day readout on the dashboard
 
 The tape card also carries a **"Day so far"** readout for the selected symbol — the same aggregate the
 standalone analysis page shows, folded in: event/print/burst counts, day OI trend (build/unwind),
 **build-up ₹ split**, **net conviction + positioning share**, and the heaviest prices. It's computed by
 `app/big_money_analysis.py::analyse` (shared with `scripts/big_money_analysis.py`).
 
-**Replay (from raw ticks):** the sidebar *🎬 Replay big-money* picks a captured day + a clock (IST
-scrub); the tape then **re-derives that symbol's events tick-by-tick from the raw archive** (the source
-of truth, via `rederive_events(..., upto_epoch=…)`) up to the clock and shows the tape + readout *as of
-that moment*. So you can scrub a captured session and watch big money build — and, because it re-derives
-through the *current* detector, a detector fix (e.g. the conviction window) shows up in the replay of an
-already-captured day.
+The sidebar clock that scrubbed a captured day was removed on 24 Oct 2026. This app shows the live tape.
+`scripts/rederive_events.py` can still walk a raw archive from the command line for a detector check.
+That script is not a screen, and a future replay application does not write this process’s databases.
 
 ## Mid-day flow-bias on the dashboard
 

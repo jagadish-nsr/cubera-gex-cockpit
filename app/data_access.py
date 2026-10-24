@@ -1,4 +1,4 @@
-"""Dashboard data pipeline — NO streamlit import, so it is unit-testable offline.
+"""Dashboard data pipeline. No UI framework import, so it is unit-testable offline.
 
 load_dashboard() runs the full chain: pull (NSE or demo) -> snapshot -> filter
 window -> compute_levels -> regime view, and returns a small bundle the UI renders.
@@ -153,12 +153,10 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
         else:
             note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
 
-    if idx.symbol == "SENSEX":
-        from data.demo import build_demo_payload
-        payload = build_demo_payload(symbol="SENSEX")
-        source = "demo-fallback (no Dhan token)"
-        note = "No Dhan token present — showing synthetic SENSEX demo data. Paste a Dhan access token to enable live BSE feed."
-        return payload, source, None, note
+    if idx.symbol == "SENSEX" and pref != "nse":
+        raise RuntimeError(
+            "No live SENSEX chain. This process does not substitute a synthetic book."
+        )
 
 
     payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
@@ -343,9 +341,6 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 except Exception:
                     pass
 
-            if idx.symbol == "SENSEX":
-                log.warning("Falling back to synthetic demo bundle for SENSEX: %s", exc)
-                return load_dashboard(window=window, use_demo=True, symbol=idx.symbol, sign_model=sign_model)
             raise
 
 
