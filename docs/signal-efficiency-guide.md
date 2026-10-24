@@ -83,11 +83,11 @@ The analytics engine dissects signal efficiency across two critical dimensions:
 ### 3.2 By GEX Wall Alignment
 * **`CONFIRMED_AT_WALL`:**
   * Signals triggered in proximity to a **Call Wall**, **Put Wall**, or **Gamma Flip level**.
-  * Historically exhibits the highest win rate and edge ratio because dealer hedging flows (positive gamma pinning or negative gamma acceleration) reinforce the orderflow thesis.
+  * A signal near a gamma concentration. The concentration is context for the orderflow print. It is not a dealer pin or a dealer chase.
 * **`NEUTRAL`:**
   * Signals occurring in open space between major strikes.
 * **`COUNTER_TREND`:**
-  * Signals fighting prevailing dealer delta hedging. Higher risk, requires rapid invalidation discipline.
+  * A print against the recent tape. Invalidation is the user's stop. It is not a fight with a dealer hedge.
 
 ---
 
@@ -98,7 +98,7 @@ The analytics engine dissects signal efficiency across two critical dimensions:
 | **Primary Use** | Session review & intraday regime debugging | Multi-week edge consistency & strategy verification |
 | **Sample Size** | 5 to 25 signals per session | 30 to 120 signals per weekly cycle |
 | **Noise Filtering** | Identifies specific high-impact sessions (e.g. RBI policy days) | Smooths single-session chop to evaluate baseline rules |
-| **Expiry Cycle** | Tracks 0-DTE gamma pinning dynamics | Tracks weekly expiry settlement flow (Tue for Nifty, Thu for Sensex) |
+| **Expiry Cycle** | Near-the-money gamma is high because time is short. That is not a pin. | Weekly expiry is Tuesday for Nifty, last Tuesday for Bank Nifty, Thursday for Sensex. |
 
 ---
 

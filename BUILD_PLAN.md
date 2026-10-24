@@ -3,8 +3,10 @@
 **Status:** Spec for Claude Code to implement
 **Underlying:** NIFTY index options (NSE). Bank Nifty / FinNifty / stocks = later.
 **Mode:** Signal + suggestions (human confirm). NO auto-execution.
-**Lineage:** Engine copied from the SPX project (`../GEX`); only the data layer +
-India config differ. Full rationale in `docs/nifty-nse-adapter-scope.md`.
+**Lineage:** Historical note. An early draft was copied from an SPX tree.
+Production is the Nifty book-balance engine in this repository. Do not
+reintroduce an SPX multiplier, a second sign model, or that draft's playbook.
+`docs/nifty-nse-adapter-scope.md` is the retired scope for that draft.
 
 > Decision-support, not financial advice. Read `CLAUDE.md` first — especially the
 > dealer-sign landmine.

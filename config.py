@@ -1,9 +1,8 @@
-"""Named, explicit configuration for the Nifty/Sensex GEX engine.
+"""Named, explicit configuration for the Nifty / Bank Nifty / Sensex GEX engine.
 
-Same discipline as the SPX project: anything that changes a number the user might
-trade on lives here as a named constant and is echoed onto every output. India-
-specific values are marked VERIFY — they must be checked live, never assumed from
-memory (NSE changes lot sizes and expiry rules by circular).
+Anything that changes a number the user might trade on lives here as a named
+constant and is echoed onto every output. Lot size and the expiry calendar are
+marked VERIFY. They come from the current NSE or BSE circular, not from memory.
 """
 
 from __future__ import annotations
@@ -27,10 +26,20 @@ except ImportError:
 # expiries, and the per-strike OI band half-width. The pure GEX engine is
 # index-agnostic and reused unchanged; only these knobs change.
 #
-# ⚠️ lot_size + has_weekly are "VERIFY LIVE, never guess" landmines (CLAUDE.md):
-# NSE revises lot sizes and expiry rules by circular. The dealer-sign model is
-# the SAME unvalidated landmine for BOTH NSE indices (India retail-SELLING flow);
-# Bank Nifty is, if anything, more retail-heavy — no extra trust there.
+# Current contract lots. This table is the only source. Do not hardcode a lot,
+# and do not branch on `"NIFTY" in symbol` — that string is also inside BANKNIFTY.
+#
+#   NIFTY      65    every Tuesday
+#   BANKNIFTY  30    last Tuesday of the month (no weeklies)
+#   SENSEX     20    every Thursday
+#
+# User-confirmed 2026-10-24. Retired sizes that must not come back: Nifty 75,
+# Bank Nifty 35, Sensex 10. NSE and BSE still change these by circular; if a
+# circular moves one, change it here and only here.
+#
+# If the scheduled expiry is an exchange holiday, use the previous trading day
+# (data/expiry.py + data/holidays.py). Do not leave it on the holiday, and do
+# not roll it forward. Sensex borrows Nifty's vanna gauge (regime_proxy="NIFTY").
 @dataclass(frozen=True)
 class Index:
     symbol: str        # option-chain symbol ("NIFTY" / "BANKNIFTY" / "SENSEX")
@@ -43,22 +52,37 @@ class Index:
     strike_step: int = 50         # standard strike interval (Nifty: 50, Bank Nifty: 100, Sensex: 100)
 
 
-# CONFIRMED 2026-07 (user-verified against broker):
-#  - NIFTY: lot 65 (SEBI revision effective Jan-2026 onward, was 75); WEEKLY +
-#    monthly, expiry Tuesday.
-#  - BANKNIFTY: lot 30 (NSE circular NSE/FAOP/70616, eff. Jan-2026 cycle, was 35);
-#    MONTHLY ONLY (last Tuesday) — NSE discontinued Bank Nifty weeklies on
-#    20-Nov-2024 under SEBI's single-weekly-per-exchange rule. Bigger index
-#    (~3000-pt strikes are 100 apart), so a wider OI band than Nifty.
-#  - SENSEX: lot 20 (BSE F&O); WEEKLY + monthly; expiry THURSDAY (BSE/BFO).
-#    SENSEX is Dhan-only (BSE). Its own vanna doesn't grade its move cleanly so it
-#    borrows NIFTY's vanna for the v1 regime gauge (regime_proxy="NIFTY").
+# CONFIRMED against the table above. Do not duplicate these numbers elsewhere.
 INDICES: dict[str, Index] = {
     "NIFTY":     Index("NIFTY",     "Nifty 50",   65,  True,  2000, "NSE", strike_step=50),
     "BANKNIFTY": Index("BANKNIFTY", "Bank Nifty", 30,  False, 4000, "NSE", strike_step=100),
     "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  6000, "BSE", regime_proxy="NIFTY", strike_step=100),
 }
 DEFAULT_INDEX = "NIFTY"
+
+
+def index_key(symbol: str | None) -> str:
+    """Map a symbol or a futures id such as NIFTY-FUT to NIFTY, BANKNIFTY, or SENSEX.
+
+    BANKNIFTY is tested before NIFTY. The shorter name is contained in the longer one.
+    """
+    raw = (symbol or "").upper().replace("-FUT", "").strip()
+    if raw in INDICES:
+        return raw
+    for key in ("BANKNIFTY", "SENSEX", "NIFTY"):
+        if key in raw:
+            return key
+    return DEFAULT_INDEX
+
+
+def strike_step_for(symbol: str | None) -> int:
+    """Listed strike step from INDICES. Never branch on a NIFTY substring."""
+    return int(INDICES[index_key(symbol)].strike_step)
+
+
+def fallback_spot_for(symbol: str | None) -> float:
+    """Last-resort display spot when every live source is empty. Not a quote."""
+    return {"NIFTY": 24500.0, "BANKNIFTY": 54000.0, "SENSEX": 73000.0}[index_key(symbol)]
 
 
 def get_index(symbol: str | None) -> Index:
@@ -101,10 +125,12 @@ SIMULATION_MODE: bool = os.environ.get("SIMULATION_MODE", "false").strip().lower
 
 
 # --- Dealer gamma sign convention -------------------------------------------
-# Native Indian Market Mode: Indian index option participants and prop desks
-# are systematic net sellers of both legs (short_call_short_put / SCSP).
-# Calls and Puts are written heavily; Gamma Flip represents the Writer Equilibrium
-# (|Call GEX| == |Put GEX|).
+# short_call_short_put stores both legs negative. Regime, flip, and the net-GEX
+# KPI then use call magnitude minus put magnitude (writer imbalance). That is a
+# book-balance ratio for a writer-heavy market. It is NOT a validated claim that
+# a hedging dealer is short both sides, and it does not mean the tape will pin
+# or break. Findings in docs/findings-summary.md: signed GEX direction is null;
+# |GEX| versus forward vol is the sign-free result that held.
 DEALER_SIGN_MODEL = os.environ.get("DEALER_SIGN_MODEL", "short_call_short_put")
 
 # --- Contract multiplier (default index lot size) ---------------------------
@@ -129,6 +155,11 @@ FLIP_GRID_STEP = 0.0025  # 0.25% steps
 # Near-dated gamma drives intraday action, so weight each contract's GEX by its
 # days-to-expiry. Explicit + logged + tunable (gex/weighting.py). 'equal' = off.
 #   'exp' with a 5-day half-life: a 5-DTE contract counts half a 0-DTE one.
+# Checked 2026-10-24 on the 2026-10-23 chains. The live window is one expiry
+# (Nifty Tuesday, Bank Nifty month-end Tuesday, Sensex Thursday), so equal and
+# exp print the same walls and the same flip. Nifty "all" (27 Oct + 3 Nov) moved
+# the flip by about 3 points and left both walls where they were. Leave this
+# on "equal" until a multi-expiry book actually moves a wall.
 EXPIRY_WEIGHTING = "equal"           # equal | exp | inverse | nearest
 EXPIRY_WEIGHT_HALFLIFE_DAYS = 5.0  # only used by 'exp'
 

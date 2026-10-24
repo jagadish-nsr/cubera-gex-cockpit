@@ -1,7 +1,8 @@
-# Future Phase — Nifty / NSE Adapter (scope, not yet built)
+# Retired scope — Nifty / NSE adapter
 
-**Status:** Scoping only. No code. A candidate future phase *after* the SPX
-engine is validated and Phases 2–5 are done.
+**Status:** Obsolete. The NSE path is production. This file is the early
+scope that assumed an SPX parent. Do not rebuild from it, and do not treat
+its dealer-sign section as a reason to add a second convention.
 
 **Goal:** Run the *exact same* GEX engine on **Nifty (NSE)** by adding one new
 data adapter + a few India-specific config values — without touching the maths.
@@ -110,21 +111,17 @@ These are the same "check, don't assume" gates we applied to Polygon:
 
 ---
 
-## 6. The big honest caveat — dealer-sign model may NOT transfer ⚠️
-The whole engine rests on a **dealer positioning assumption**: dealers are *long
-call gamma, short put gamma* (already a named param, `DEALER_SIGN_MODEL`). That's
-the standard read for **US index** market-maker structure.
+## 6. One book, closed comparison
 
-India's microstructure is different: heavy **retail option *selling***, prop
-desks, and a different hedging ecosystem. It is an **open research question**
-whether the same sign convention holds for Nifty. If it doesn't, the walls/flip
-could be **inverted or distorted** — a silent, dangerous error.
+This section used to say the engine assumes dealers are long call gamma and
+short put gamma, and that a later edit should test both signs. That comparison
+is closed.
 
-**Therefore, before trusting any Nifty output:** treat `DEALER_SIGN_MODEL` as
-*unknown* for India, test both conventions, and **validate the computed flip/walls
-against realised Nifty behaviour and a third-party Indian read** (the same
-empirical-verification discipline as SPX). Do not assume the US model is correct
-just because the code runs.
+Production stores both legs negative (`short_call_short_put`). Walls are the
+largest call-gamma and put-gamma magnitudes. The flip and the regime total are
+call magnitude minus put magnitude. Any other value of `DEALER_SIGN_MODEL`
+raises. Who hedges on NSE is unmeasured. Do not restore the US long-call /
+short-put reading from this scope note.
 
 ---
 

@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import config
 from sentinel.storage.db import _get_read_conn, _DB_PATH
 
 
@@ -336,7 +337,7 @@ def calculate_model_calibration_and_expectancy(
         })
 
     # 3. Black-76 Options Expectancy Curve
-    step = 50.0 if "NIFTY" in eff_report.instrument_id else 100.0
+    step = float(config.strike_step_for(eff_report.instrument_id))
     atm_strike = round(spot / step) * step
     t0 = max(dte_days, 0.1) / 365.0
     p0_ce = price(F=spot, K=atm_strike, T=t0, sigma=eff_iv, r=0.065, option_type="CE")

@@ -19,11 +19,12 @@ class _Levels:
 
 def test_calm_range_iron_condor():
     L = _Levels(spot=23800, call_wall=24000, put_wall=23600)
-    cs = suggest_structure(L, "calm", lot_size=65)
+    cs = suggest_structure(L, "calm", lot_size=65, strike_step=50)
     assert "condor" in cs.name.lower()
-    # short call sits AT/ABOVE the call wall, and it is a SELL (not a long put)
     sell_calls = [leg for leg in cs.legs if leg[:2] == ("SELL", "C")]
-    assert sell_calls and sell_calls[0][2] >= 24000
+    sell_puts = [leg for leg in cs.legs if leg[:2] == ("SELL", "P")]
+    assert sell_calls[0][2] == 24050  # one step above the call-gamma strike
+    assert sell_puts[0][2] == 23550   # one step below the put-gamma strike
     assert cs.exit_by  # forced exit-by present
 
 
@@ -76,4 +77,47 @@ def test_suggest_structures_multiple_options():
     assert len(wild_candidates) == 2
     assert "strangle" in wild_candidates[0].name.lower()
     assert "bull call" in wild_candidates[1].name.lower()  # positive bias score
+    sell_calls = [leg for leg in wild_candidates[1].legs if leg[:2] == ("SELL", "C")]
+    assert sell_calls[0][2] == 23250  # short sits one step above the call-gamma strike
+
+
+class _Bundle:
+    def __init__(self, **kw):
+        self.symbol = kw.get("symbol", "NIFTY")
+        self.vanna_now = kw.get("vanna_now", 1.0)
+        self.charm_now = kw.get("charm_now")
+        self.dte_now = kw.get("dte_now", 3.0)
+        self.proxy_symbol = kw.get("proxy_symbol")
+        self.proxy_vanna = kw.get("proxy_vanna")
+        self.view = type("V", (), {"mode_label": "CALL-HEAVY"})()
+
+
+def test_structure_uses_absolute_gex_bucket_not_the_sign(monkeypatch):
+    from app.intraday_features import structure_vol_regime
+    monkeypatch.setattr(
+        "app.intraday_features.regime_now", lambda *a, **k: {"tag": "wild"},
+    )
+    assert structure_vol_regime(_Bundle()) == "wild"
+
+
+def test_structure_waits_when_the_gauge_is_missing(monkeypatch):
+    from app.intraday_features import structure_vol_regime
+    monkeypatch.setattr("app.intraday_features.regime_now", lambda *a, **k: None)
+    assert structure_vol_regime(_Bundle()) == "mid"
+    assert structure_vol_regime(None) == "mid"
+
+
+def test_sensex_structure_borrows_nifty_concentration(monkeypatch):
+    from app.intraday_features import structure_vol_regime
+    seen = {}
+
+    def fake(store, value, **k):
+        seen["store"] = store
+        seen["value"] = value
+        return {"tag": "calm"}
+
+    monkeypatch.setattr("app.intraday_features.intraday_vol_regime", fake)
+    tag = structure_vol_regime(_Bundle(symbol="SENSEX", proxy_symbol="NIFTY", proxy_vanna=12.0))
+    assert tag == "calm"
+    assert seen == {"store": "NIFTY", "value": 12.0}
 

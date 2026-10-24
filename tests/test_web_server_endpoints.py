@@ -11,7 +11,7 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
-from web_server import app, _to_ist_chart_timestamp
+from web_server import app, _to_ist_chart_timestamp, _fmt_snapshot_as_of, _is_pre_bell_ephemeral
 import config
 import data.journal.store as journal_store
 
@@ -130,6 +130,22 @@ def test_get_cockpit_data_levels_and_tape():
     assert "max_pain" in data["kpis"]
     assert "directional_bias" in data["kpis"]
     assert "gamma_blast" in data
+    assert "participant_holdings" in data
+    assert "dealer_sign_hint" not in data["participant_holdings"]
+    assert "value_area" in data
+    assert isinstance(data["value_area"].get("text"), str)
+    assert "crossover_watch" in data
+    assert len(data["crossover_watch"]["anchors"]) == 2
+    assert "magnet_path" in data
+    assert "strike_doi" in data
+    assert "prior_marks" in data
+    assert "futures_state" in data
+    joined = json.dumps(data["crossover_watch"]).lower()
+    assert "pin" not in joined
+    assert "blast" not in joined
+    if data["futures_state"]:
+        assert "bias" not in data["futures_state"]
+        assert "arrow" not in data["futures_state"]["state"].lower()
     assert "ladder" in data
     # ATM ±6 plus walls/magnet/max-pain so key GEX levels stay on-chart
     assert len(data["ladder"]) >= 11
@@ -139,12 +155,110 @@ def test_get_cockpit_data_levels_and_tape():
     assert any(r["is_gamma_flip"] for r in data["ladder"])
     assert any(r.get("is_call_wall") or r.get("is_put_wall") for r in data["ladder"])
     assert "orderflow_alerts" in data
+    assert "strike_step" in data
+    assert data["strike_step"] > 0
+    assert "market_alert" in data
     assert "pre_market" in data
     assert "cockpit_recommendations" in data
     assert "pinned_count" in data
     assert "fresh_count" in data
     assert "total_cockpit_cards" in data
     assert data["total_cockpit_cards"] == data["pinned_count"] + data["fresh_count"]
+    assert data["structures"]["bucket"] in ("calm", "wild", "mid")
+    assert data["structures"]["candidates"]
+    assert "name" in data["structures"]["candidates"][0]
+    assert "legs" in data["structures"]["candidates"][0]
+    assert "standing_oi" in data
+    assert "available" in data["standing_oi"]
+    assert "is_put_oi" in data["ladder"][0]
+    assert "is_call_oi" in data["ladder"][0]
+    if data["standing_oi"]["available"]:
+        assert data["standing_oi"]["put_centre"] > 0
+        assert data["standing_oi"]["call_centre"] > 0
+        assert any(r["is_put_oi"] for r in data["ladder"])
+        assert any(r["is_call_oi"] for r in data["ladder"])
+    assert re.match(r"^\d{2}:\d{2}:\d{2} IST$", data["as_of_time"] or "")
+    assert "snapshot_as_of" in data
+    now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    tape_hms = datetime.strptime(data["as_of_time"].replace(" IST", ""), "%H:%M:%S").time()
+    tape_dt = datetime.combine(now_ist.date(), tape_hms, tzinfo=now_ist.tzinfo)
+    assert abs((now_ist - tape_dt).total_seconds()) < 30, data["as_of_time"]
+
+
+def test_fmt_snapshot_as_of_includes_date_when_not_today():
+    """Oct 2 21:15 UTC is 03-Oct 02:45 IST — must not be painted as today's tape clock."""
+    fetched = datetime(2026, 10, 2, 21, 15, 2, tzinfo=timezone.utc)
+    now = datetime(2026, 10, 23, 9, 3, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    assert _fmt_snapshot_as_of(fetched, now) == "03-Oct 02:45:02 IST"
+    same_day = datetime(2026, 10, 23, 3, 45, 2, tzinfo=timezone.utc)
+    assert _fmt_snapshot_as_of(same_day, now) == "09:15:02 IST"
+
+
+def test_pre_bell_flag_window():
+    ist = timezone(timedelta(hours=5, minutes=30))
+    assert _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 3, tzinfo=ist), "PRE_MARKET_ENTRY", {})
+    assert _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 20, tzinfo=ist), "REGULAR_SESSION", {})
+    assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 23, tzinfo=ist), "REGULAR_SESSION", {})
+    assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 10, 0, tzinfo=ist), "REGULAR_SESSION", {})
+    assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 16, 30, tzinfo=ist), "OFF_HOURS", {})
+
+
+def test_standing_oi_centre_matches_the_hand_check():
+    from web_server import _standing_oi
+
+    class Dash:
+        oi_strikes = [
+            {"strike": 23900, "put_oi": 300, "call_oi": 10},
+            {"strike": 24000, "put_oi": 100, "call_oi": 100},
+            {"strike": 24100, "put_oi": 0, "call_oi": 500},
+            {"strike": 25000, "put_oi": 9999, "call_oi": 0},
+        ]
+        contracts = None
+
+    pack = _standing_oi(Dash(), spot=24000, band_pts=200)
+    assert pack["available"] is True
+    assert pack["put_centre"] == 23925.0
+    assert abs(pack["call_centre"] - 24080.3) < 0.1
+    assert pack["put_top"] == 23900.0
+    assert pack["call_top"] == 24100.0
+
+
+def test_standing_oi_says_when_the_snapshot_has_no_open_interest():
+    from web_server import _standing_oi
+
+    class Dash:
+        oi_strikes = None
+        contracts = None
+
+    pack = _standing_oi(Dash(), spot=24000, band_pts=200)
+    assert pack["available"] is False
+    assert pack["put_centre"] is None
+    assert "No per-strike" in pack["note"]
+
+
+def test_cockpit_structure_shorts_sit_outside_the_gamma_strikes(monkeypatch):
+    from web_server import _concentration_structures
+
+    monkeypatch.setattr("app.intraday_features.structure_vol_regime", lambda data: "calm")
+
+    class Levels:
+        spot, call_wall, put_wall = 22600, 22700, 22500
+
+    class Dash:
+        levels = Levels()
+        expiries = []
+        view = None
+
+    class Idx:
+        lot_size = 65
+        strike_step = 50
+
+    pack = _concentration_structures(Dash(), Idx())
+    assert pack["bucket"] == "calm"
+    sells = {leg["right"]: leg["strike"] for leg in pack["candidates"][0]["legs"] if leg["action"] == "SELL"}
+    assert sells["CE"] == 22750
+    assert sells["PE"] == 22450
+    assert "6,500" in pack["candidates"][0]["risk_note"]
 
 
 def test_cockpit_recommendations_pinned_and_fresh_setups():
@@ -220,6 +334,10 @@ def test_recommendations_and_1click_execution():
     rec_data = json.loads(content)
     # Off-market path returns is_market_closed=True with closed_notice; live path returns higher_conviction
     assert "is_market_closed" in rec_data or "higher_conviction" in rec_data or "trade_setups" in rec_data
+    assert isinstance(rec_data["effectiveness_summary"]["total_tracked"], int)
+    assert rec_data["effectiveness_summary"]["avg_realized_rr"] is None or isinstance(
+        rec_data["effectiveness_summary"]["avg_realized_rr"], (int, float)
+    )
 
     # Execute 1-click paper trade execution (always live, market-state independent)
     exec_payload = {
@@ -279,6 +397,16 @@ def test_options_analytics_kpi_and_smile():
     assert "kpis" in data
     assert "iv_skew_curve" in data
     assert "buildup_matrix" in data
+    assert "bias_rows" in data
+    assert "location_alerts" in data
+    mon = data["parity_monitor"]
+    assert isinstance(mon["deviations"], list)
+    assert isinstance(mon["alerted"], bool)
+    assert isinstance(mon["summary"], str)
+    text = content.decode()
+    assert "23,148" not in text
+    assert "Synthetic Spot" not in text
+    assert "Box Spread" not in text
 
 
 def test_journal_and_scorecard():
@@ -294,6 +422,85 @@ def test_journal_and_scorecard():
     s_data = json.loads(s_content)
     assert "kpis" in s_data
     assert "equity_curve" in s_data
+    assert "strategy_breakdown" in s_data
+    assert "sentinel_outcomes" in s_data
+
+
+def test_effectiveness_empty_sample_has_no_stand_in_rates(monkeypatch):
+    """A zero-count journal must not invent hit rates or a 1:2.8 payoff."""
+    from data.journal import recommendations_store as store
+
+    class _Cur:
+        def __init__(self, sql):
+            self.sql = sql
+
+        def fetchone(self):
+            if "AVG" in self.sql:
+                return (None,)
+            return (0,)
+
+    class _Conn:
+        def execute(self, sql, params=()):
+            return _Cur(sql)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_get_read_conn", lambda: _Conn())
+    rows = store.get_strategy_effectiveness_metrics("NIFTY")
+    assert rows
+    assert all(row["total"] == 0 and row["avg_rr"] is None for row in rows)
+    summary = store.summarize_effectiveness(rows)
+    assert summary["total_tracked"] == 0
+    assert summary["target_hit_rate"] == 0.0
+    assert summary["avg_realized_rr"] is None
+
+
+def test_paper_structure_refuses_when_a_leg_has_no_last_price(monkeypatch):
+    """Missing chain last prices stay unbooked. Premium is not invented from width."""
+
+    class _Levels:
+        spot = 24000.0
+        call_wall = 24100.0
+        put_wall = 23900.0
+        flip = 24000.0
+        max_pain = 24000.0
+
+    class _Dash:
+        levels = _Levels()
+        contracts = None
+        view = None
+
+    async def _load(sym, win):
+        return _Dash()
+
+    monkeypatch.setattr("web_server._aload_active_dashboard", _load)
+    monkeypatch.setattr(
+        "web_server._concentration_structures",
+        lambda dash, idx, bias_score=0, sentinel_signals=None: {
+            "bucket": "middle",
+            "candidates": [{
+                "name": "Call credit",
+                "legs": [{"action": "SELL", "right": "CE", "strike": 24100}],
+                "exit_by": "",
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "web_server._compute_active_directional_bias",
+        lambda dash, sym: type("Bias", (), {"score": 0.0})(),
+    )
+    status, _, content = asyncio.run(asgi_request(
+        "POST",
+        "/api/journal/paper-structure",
+        body={"symbol": "NIFTY", "window": "weekly", "variant": 0},
+    ))
+    assert status == 409
+    assert b"Nothing was booked" in content
 
 
 def test_ops_calendar_timeline_windows():

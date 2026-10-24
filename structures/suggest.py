@@ -1,15 +1,10 @@
-"""Map the VOL-REGIME + walls -> an ILLUSTRATIVE option structure.
+"""Map absolute-GEX concentration and the gamma strikes to an illustrative structure.
 
-Driven by the sign-free VOL-REGIME (the |vanna|/|charm| gauge — HIGH dealer-gamma concentration =
-calm/pinning, LOW = wild/trending; validated |GEX|/vanna -> forward realized vol), NOT the
-unvalidated dealer-sign. Walls pick the strikes. Every suggestion carries a forced exit-by (no
-hold-to-expiry) and a defined-risk note.
-
-Principle: SELL premium in a CALM (high-concentration) regime, BUY convexity in a WILD (low-
-concentration) regime; direction is NOT forecastable so the wild structure is non-directional.
-The REGIME read is validated; the structure MAPPING is illustrative textbook only — paper/learning
-only. We deliberately do NOT fabricate premiums; risk is the spread's defined width (the broker
-shows the actual credit/debit).
+The input is the |GEX| bucket (high / low / mid), not the call−put sign. High concentration
+has meant calmer forward vol in the sample; low concentration, wider swings. A short strike,
+when one is used, sits one step outside the call-gamma or put-gamma concentration. Every
+suggestion carries a forced exit and a defined-risk width. The broker shows the actual
+credit or debit. The user confirms. No order is sent.
 """
 
 from __future__ import annotations
@@ -41,6 +36,7 @@ def suggest_structure(
     is_expiry_day: bool = False,
     bias_score: float | None = None,
     sentinel_signals: list[Any] | None = None,
+    strike_step: int = 50,
 ) -> CandidateStructure:
     """Return the primary candidate structure (backwards-compatible)."""
     return suggest_structures(
@@ -52,6 +48,7 @@ def suggest_structure(
         is_expiry_day=is_expiry_day,
         bias_score=bias_score,
         sentinel_signals=sentinel_signals,
+        strike_step=strike_step,
     )[0]
 
 
@@ -64,10 +61,12 @@ def suggest_structures(
     is_expiry_day: bool = False,
     bias_score: float | None = None,
     sentinel_signals: list[Any] | None = None,
+    strike_step: int = 50,
 ) -> list[CandidateStructure]:
     """Return 1-2 candidate structures: primary + optional alternate structure."""
     candidates = _base_structures(
-        levels, vol_regime, lot_size, spread_width, nearest_expiry, bias_score=bias_score
+        levels, vol_regime, lot_size, spread_width, nearest_expiry,
+        bias_score=bias_score, strike_step=strike_step,
     )
     if is_expiry_day:
         note = _expiry_note(vol_regime)
@@ -95,17 +94,22 @@ def suggest_structures(
 
 
 def _expiry_note(vol_regime) -> str:
-    """Expiry-day reading: gamma is huge, so the pin (and the blast tail) intensify."""
+    """Expiry-day reading. Concentration is the vol context. It is not a pin call."""
     if vol_regime == "calm":
-        return ("EXPIRY DAY: HIGH dealer-gamma concentration -> strong PIN toward the magnet / "
-                "max pain (a premium-sellers' day). A late, decisive break of a wall can flip it "
-                "into a GAMMA BLAST (sharp move) — that's the tail risk, not the base case.")
+        return ("EXPIRY DAY: HIGH gamma concentration. A PIN toward the crowded strikes is the "
+                "historical base case for this bucket, and a late break can become a GAMMA BLAST. "
+                "The blast is the tail. Do not sell the magnet.")
     if vol_regime == "wild":
-        return ("EXPIRY DAY + LOW gamma concentration -> GAMMA-BLAST risk: moves can explode in "
-                "the last hour. Buying OTM beyond the wall is a low-probability lottery (theta "
-                "crush is brutal) — tiny size only, if at all.")
-    return ("EXPIRY DAY: mixed / neutral gamma — both a pin and a blast are possible and it's very "
-            "hard to trade. Best to wait.")
+        return ("EXPIRY DAY + LOW gamma concentration -> GAMMA-BLAST risk: moves can widen in "
+                "the last hour. Buying beyond the concentration is a low-probability lottery "
+                "(theta crush is brutal) — tiny size only, if at all.")
+    return ("EXPIRY DAY: mixed gamma concentration — both a PIN and a BLAST are possible. "
+            "Wait.")
+
+
+def _beyond(wall: float, step: int, side: int) -> int:
+    """One listed strike outside the gamma concentration. side +1 is above, -1 is below."""
+    return _round_strike(wall, step) + side * step
 
 
 def _base_structures(
@@ -115,12 +119,16 @@ def _base_structures(
     spread_width: int = 100,
     nearest_expiry=None,
     bias_score: float | None = None,
+    strike_step: int = 50,
 ) -> list[CandidateStructure]:
     exit_by = "exit at least 1 trading day before expiry" + (
         f" ({nearest_expiry})" if nearest_expiry else ""
     )
-    cw = _round_strike(levels.call_wall)
-    pw = _round_strike(levels.put_wall)
+    step = int(strike_step) if int(strike_step) > 0 else 50
+    cw = _round_strike(levels.call_wall, step)
+    pw = _round_strike(levels.put_wall, step)
+    short_call = _beyond(levels.call_wall, step, +1)
+    short_put = _beyond(levels.put_wall, step, -1)
     spot = levels.spot
     risk_def = f"{spread_width} x {lot_size} = Rs {spread_width * lot_size:,}"
 
@@ -129,45 +137,47 @@ def _base_structures(
         return [
             CandidateStructure(
                 name="No trade — wait",
-                rationale="Neutral / unclear vol regime (MID concentration). De-size and wait for the "
-                "regime to pick a side before committing to a premium-selling or -buying structure.",
+                rationale="Absolute GEX is in the middle bucket. De-size and wait. "
+                "The call−put label is not a trade.",
                 risk_note="—",
                 exit_by=exit_by,
             )
         ]
 
-    # --- CALM (high concentration / pinning) -> SELL premium, defined risk --
+    # --- CALM (high |GEX|) -> defined-risk short premium, shorts outside the strikes --
     if vol_regime == "calm":
         if pw <= spot <= cw:
             ic_legs = [
-                ("SELL", "C", cw), ("BUY", "C", cw + spread_width),
-                ("SELL", "P", pw), ("BUY", "P", pw - spread_width),
+                ("SELL", "C", short_call), ("BUY", "C", short_call + spread_width),
+                ("SELL", "P", short_put), ("BUY", "P", short_put - spread_width),
             ]
             primary = CandidateStructure(
                 name="Iron condor (sell premium)",
                 legs=ic_legs,
-                rationale=f"HIGH gamma concentration -> calm / range-bound between {pw:,} and "
-                f"{cw:,}. Sell premium with the short strikes just outside the walls; profit if "
-                "price stays in the range (pinning favours premium sellers).",
+                rationale=f"Absolute GEX is in the high-concentration bucket, which has meant "
+                f"calmer forward vol. Spot is between the put-gamma strike {pw:,} and the "
+                f"call-gamma strike {cw:,}. Short strikes sit one step outside those "
+                f"concentrations ({short_put:,} put / {short_call:,} call). You confirm.",
                 risk_note=f"Defined risk per side ~ {risk_def} minus the credit collected.",
                 exit_by=exit_by,
             )
 
-            # Alternate: single-sided credit spread away from spot drift
             mid = (pw + cw) / 2.0
             if spot >= mid:
-                alt_legs = [("SELL", "C", cw), ("BUY", "C", cw + spread_width)]
+                alt_legs = [("SELL", "C", short_call), ("BUY", "C", short_call + spread_width)]
                 alt_name = "Bear call spread (alt: sell upside wall)"
                 alt_rationale = (
-                    f"Alternative to condor: Spot ({spot:,.0f}) is trading in the upper half of the range. "
-                    f"Sell resistance at Call Wall {cw:,} with defined risk ({risk_def})."
+                    f"Alternative to the condor. Spot ({spot:,.0f}) is in the upper half of the "
+                    f"concentrations. Short call at {short_call:,}, one step above the call-gamma "
+                    f"strike, defined risk ({risk_def})."
                 )
             else:
-                alt_legs = [("SELL", "P", pw), ("BUY", "P", pw - spread_width)]
+                alt_legs = [("SELL", "P", short_put), ("BUY", "P", short_put - spread_width)]
                 alt_name = "Bull put spread (alt: sell downside floor)"
                 alt_rationale = (
-                    f"Alternative to condor: Spot ({spot:,.0f}) is trading in the lower half of the range. "
-                    f"Sell floor at Put Wall {pw:,} with defined risk ({risk_def})."
+                    f"Alternative to the condor. Spot ({spot:,.0f}) is in the lower half of the "
+                    f"concentrations. Short put at {short_put:,}, one step below the put-gamma "
+                    f"strike, defined risk ({risk_def})."
                 )
 
             alt = CandidateStructure(
@@ -182,41 +192,39 @@ def _base_structures(
         return [
             CandidateStructure(
                 name="Wait — no clean range setup",
-                rationale=f"Calm regime, but price is OUTSIDE the wall band ({pw:,}-{cw:,}). The "
-                "textbook condor isn't cleanly set up — wait for price to return into the range "
-                "before selling premium.",
+                rationale=f"High concentration, but spot is outside the gamma strikes "
+                f"({pw:,}-{cw:,}). Wait until spot is back between them before selling premium.",
                 risk_note="—",
                 exit_by=exit_by,
             )
         ]
 
-    # --- WILD (low concentration / trending) -> BUY convexity (direction not forecastable) --
+    # --- WILD (low |GEX|) -> buy convexity. Direction is not a forecast. --
     strangle_legs = [("BUY", "C", cw), ("BUY", "P", pw)]
     primary = CandidateStructure(
         name="Long strangle (buy premium, either way)",
         legs=strangle_legs,
-        rationale=f"LOW gamma concentration -> wild / trending: a big move is likely but the "
-        f"DIRECTION isn't forecastable. Buy a strangle at the walls ({pw:,} put / {cw:,} call) for "
-        "convexity — profit if price breaks hard EITHER way.",
+        rationale=f"Absolute GEX is in the low-concentration bucket, which has meant wider "
+        f"swings. Direction is not a forecast. Buy the put-gamma strike {pw:,} and the "
+        f"call-gamma strike {cw:,}.",
         risk_note="Defined risk = debit paid. Theta bleeds if quiet — small size only.",
         exit_by=exit_by,
     )
 
-    # Alternate directional debit spread
     bullish = (bias_score is not None and bias_score > 1.0) or (spot > (pw + cw) / 2.0)
     if bullish:
-        alt_legs = [("BUY", "C", pw), ("SELL", "C", cw)]
+        alt_legs = [("BUY", "C", pw), ("SELL", "C", short_call)]
         alt_name = "Bull call debit spread (alt: momentum break)"
         alt_rationale = (
-            f"Alternative to strangle: Upward positioning bias detected. Buy near Put Wall {pw:,} "
-            f"and cap at Call Wall {cw:,} for directional expansion."
+            f"Alternative to the strangle. Buy the {pw:,} call and sell {short_call:,}, "
+            f"one step above the call-gamma strike. Direction is still not a forecast."
         )
     else:
-        alt_legs = [("BUY", "P", cw), ("SELL", "P", pw)]
+        alt_legs = [("BUY", "P", cw), ("SELL", "P", short_put)]
         alt_name = "Bear put debit spread (alt: breakdown)"
         alt_rationale = (
-            f"Alternative to strangle: Downward positioning bias detected. Buy near Call Wall {cw:,} "
-            f"and cap at Put Wall {pw:,} for directional breakdown."
+            f"Alternative to the strangle. Buy the {cw:,} put and sell {short_put:,}, "
+            f"one step below the put-gamma strike. Direction is still not a forecast."
         )
 
     alt = CandidateStructure(

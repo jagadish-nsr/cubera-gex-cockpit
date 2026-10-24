@@ -1,21 +1,20 @@
-# gex-indian — Nifty GEX Engine
+# gex — Nifty, Bank Nifty, and Sensex GEX
 
-The **Nifty (NSE)** port of the SPX GEX engine. Pulls the live Nifty option chain,
-computes dealer gamma-exposure levels (call/put walls, gamma flip, magnet, max
-pain), classifies the regime, and emits a one-sentence playbook for Nifty index
-options. Decision-support only — **not financial advice, no order execution.**
+Decision support for NSE and BSE index options. Pulls the live chain, computes
+call-gamma and put-gamma concentration, the call−put balance (flip and signed
+total), and max pain, and prints a one-sentence book-balance line. **Not
+financial advice. No order execution.**
 
-> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)** — a plain-language
-> setup guide. The dashboard runs the same on both platforms (served at
-> **http://localhost:8610**): **Windows** — double-click `run_simple.bat`; **macOS/Linux** —
-> `./run_simple.command` (first run: `chmod +x run_simple.command`, or in Finder right-click →
-> Open). Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
-> on macOS use cron/launchd, or just leave the dashboard open (it self-captures while running).
+> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
+> The dashboard is served at **http://localhost:8610**: **Windows** — double-click `run_simple.bat`;
+> **macOS/Linux** — `./run_simple.command` (first run: `chmod +x run_simple.command`).
+> Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
+> on macOS use cron/launchd, or leave the dashboard open (it self-captures while running).
 
-> Read `CLAUDE.md` first, especially the **dealer-sign landmine**: the US
-> long-call / short-put-gamma convention may NOT hold for India's retail-selling
-> microstructure and must be re-validated empirically before any wall/flip output
-> is trusted. Treat the dealer sign as UNKNOWN, not as the US default.
+> Read `CLAUDE.md` first. The engine has one convention: call-gamma magnitude
+> minus put-gamma magnitude. Walls are concentration strikes. That is not a
+> claim about who delta-hedges, and it is not a pin forecast. Lot size and the
+> expiry calendar are still VERIFY-live.
 
 ## Status
 - ✅ **Live pipeline:** Dhan REST option chain (primary) → NSE (automatic fallback),
@@ -132,11 +131,18 @@ and *expected move size*, not next-move *direction*.**
 - `docs/tick-data-ic-research.md`, `docs/big-money-tape.md` — the big-money tape + the
   literature review on tick-data predictive IC (contemporaneous strong, predictive ~0).
 
-## Verify-live before trusting (never guess — see `BUILD_PLAN.md` §3)
-1. NSE data source + pricing.   2. Current Nifty lot size.
-3. Current NSE expiry rules.    4. Dealer-sign model for India (the landmine).
+## Verify-live before trusting
+Current lots, user-confirmed 2026-10-24, live in `config.INDICES` only:
 
-## Reused from the SPX project
-`gex/`, `regime/`, `data/schema.py`, `data/parity.py`, and the synthetic fixture
-tests. Bug fixes in these may need porting to/from `../GEX` (two copies can
-diverge; a shared core package is a future option).
+| Index | Lot | Expiry |
+|---|---|---|
+| NIFTY | 65 | every Tuesday |
+| BANKNIFTY | 30 | last Tuesday of the month |
+| SENSEX | 20 | every Thursday |
+
+If that date is an exchange holiday, the expiry is the previous trading day (`data/expiry.py`). Retired and wrong if used now: Nifty 75, Bank Nifty 35, Sensex 10. Also confirm open interest is in lots before `contract_size` is applied.
+
+## Engine convention
+`gex/` uses one book-balance convention (`short_call_short_put`). Do not add a
+second sign model. Older notes in `docs/` that compare a long-call/short-put
+reading are research history, not the production path.

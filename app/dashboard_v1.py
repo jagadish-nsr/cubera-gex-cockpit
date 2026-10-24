@@ -316,10 +316,10 @@ def render_gex_v1_tab():
         above = price > L.spot
         if kind == "put":
             emoji = "🟢" if not above else "🟠"
-            desc = "support (below price)" if not above else "now OVERHEAD — price fell below it"
+            desc = "put-gamma concentration, below spot" if not above else "put-gamma concentration, now above spot"
         else:
             emoji = "🔴" if above else "🟠"
-            desc = "resistance (above price)" if above else "BELOW price — broke above it"
+            desc = "call-gamma concentration, above spot" if above else "call-gamma concentration, now below spot"
         return emoji, desc
 
     pe, p_desc = _wall(L.put_wall, "put")
@@ -335,20 +335,19 @@ def render_gex_v1_tab():
     flip_txt = f"{L.flip:,.0f}" if L.flip else "the flip"
     if L.spot < lo:
         st.caption(
-            f"⚠️ Price is **below both walls** — the nearest dealer levels "
-            f"(**{lo:,.0f}, {hi:,.0f}**) are **overhead**. In a calm (positive-gamma) "
-            f"regime price often gets pulled **up** toward them; but a break below the "
-            f"flip (**{flip_txt}**) can turn it into a downside trend."
+            f"Price is below both gamma strikes "
+            f"(**{lo:,.0f}, {hi:,.0f}**). Those strikes are concentrations, not a floor. "
+            f"The call−put balance is **{flip_txt}**."
         )
     elif L.spot > hi:
         st.caption(
-            f"⚠️ Price is **above both walls** (**{lo:,.0f}, {hi:,.0f}**) — extended; "
-            "dealers lean against further upside."
+            f"Price is above both gamma strikes (**{lo:,.0f}, {hi:,.0f}**). "
+            "That is a location on the book. It is not a ceiling."
         )
     else:
         st.caption(
-            f"Likely band when range-bound: **{lo:,.0f} – {hi:,.0f}** ({hi - lo:,.0f} pts "
-            "wide). Stops go just **beyond** the walls, never at them."
+            f"Spot is between the gamma strikes **{lo:,.0f} – {hi:,.0f}** ({hi - lo:,.0f} pts "
+            "wide). Stops go just beyond the strikes, never at the magnet."
         )
 
     for note in _structure_notes(L):
@@ -494,41 +493,26 @@ def _structure_notes(L) -> list[str]:
     """
     notes: list[str] = []
     lo, hi = min(L.put_wall, L.call_wall), max(L.put_wall, L.call_wall)
-    neg = L.regime == "NEGATIVE"
 
     # 1. Inverted sandwich: heaviest puts sit ABOVE heaviest calls.
     if L.put_wall > L.call_wall:
         msg = (
-            f"⚠️ **Inverted walls — put wall ({L.put_wall:,.0f}) is ABOVE the call wall "
-            f"({L.call_wall:,.0f}).** The normal support-below / resistance-above sandwich "
-            "is flipped: the heaviest puts are **overhead**, typical of a **falling / "
-            "bearish structure** where price has slipped below the put concentration. "
-            "Don't read the put wall as a floor here"
-        )
-        msg += (
-            " — in this NEGATIVE regime, dealer hedging at that strike **amplifies** moves "
-            "rather than cushioning them." if neg else
-            ", treat it as overhead supply until reclaimed."
+            f"Inverted walls — put wall ({L.put_wall:,.0f}) is above the call wall "
+            f"({L.call_wall:,.0f}). The put-gamma strike is above the call-gamma strike. "
+            "That is a map of where gamma sits. It is not a floor or a ceiling."
         )
         notes.append(msg)
 
     # 2. Magnet (strongest pin) sitting OUTSIDE the wall range.
     if L.magnet > hi:
         notes.append(
-            f"🧲 **Magnet ({L.magnet:,.0f}) is above both walls** — the strongest pin sits "
-            "above the wall band, i.e. gamma is **top-heavy** (call-dominated up high). "
-            + ("In this POSITIVE regime price tends to get pulled **up** toward it."
-               if not neg else
-               "In this NEGATIVE regime that pull is weak — treat the magnet as an "
-               "unreliable target, not a destination.")
+            f"Magnet ({L.magnet:,.0f}) is above both gamma strikes. "
+            "That is where absolute gamma peaks. It is not a destination."
         )
     elif L.magnet < lo:
         notes.append(
-            f"🧲 **Magnet ({L.magnet:,.0f}) is below both walls** — the strongest pin sits "
-            "below the wall band, i.e. gamma is **bottom-heavy**. "
-            + ("In this POSITIVE regime price tends to get pulled **down** toward it."
-               if not neg else
-               "In this NEGATIVE regime that pull is weak — an unreliable target.")
+            f"Magnet ({L.magnet:,.0f}) is below both gamma strikes. "
+            "That is where absolute gamma peaks. It is not a destination."
         )
     return notes
 
@@ -537,12 +521,14 @@ def _trade_explainer(L, data, is_expiry_day=False):
     """Illustrative VOL-REGIME -> structure mapping. The regime read is validated (|vanna|/charm →
     forward vol); the specific STRUCTURE is illustrative textbook, NOT a validated recommendation."""
     from structures.suggest import suggest_structure
-    from app.intraday_features import regime_now
+    from app.intraday_features import structure_vol_regime
 
-    vr = regime_now(data.symbol, data.vanna_now, data.charm_now, data.dte_now)
-    tag = vr["tag"] if vr else None
+    tag = structure_vol_regime(data)
     nearest = data.expiries[0] if data.expiries else None
-    cs = suggest_structure(L, tag, lot_size=config.get_index(data.symbol).lot_size,
+    idx = config.get_index(data.symbol)
+    cs = suggest_structure(L, tag, lot_size=idx.lot_size,
+                           spread_width=int(idx.strike_step) * 2,
+                           strike_step=int(idx.strike_step),
                            nearest_expiry=nearest, is_expiry_day=is_expiry_day)
 
     with st.expander("💡 What trade fits this regime?  (ILLUSTRATIVE — paper only)",
@@ -746,16 +732,16 @@ def _pin_strength_tag(stats):
     s = stats
     if s["strong"]:
         st.success(
-            f"🎯 **Strong-pin regime today** — |net GEX| {s['cur']:,.0f} is ABOVE the "
-            f"~{s['thr']:,.0f} threshold, where the morning magnet-pull has historically "
-            f"been stronger (IC {_pin_fmt(s['ic_hi'])} vs {_pin_fmt(s['ic_lo'])} in low-gamma). "
-            "The pin/magnet is more likely to hold. Exploratory.")
+            f"**High |GEX| today** — {s['cur']:,.0f} is above the "
+            f"~{s['thr']:,.0f} sample median. In the research sample that has meant "
+            f"calmer forward vol (morning IC {_pin_fmt(s['ic_hi'])} vs {_pin_fmt(s['ic_lo'])} "
+            "when |GEX| was low). It does not mean the magnet will hold.")
     else:
         st.info(
-            f"🎯 **Weak-pin regime today** — |net GEX| {s['cur']:,.0f} is BELOW the "
-            f"~{s['thr']:,.0f} threshold; the magnet-pull has historically been weaker here "
-            f"(IC {_pin_fmt(s['ic_lo'])} vs {_pin_fmt(s['ic_hi'])} in high-gamma). Lean less on "
-            "the magnet. Exploratory.")
+            f"**Lower |GEX| today** — {s['cur']:,.0f} is below the "
+            f"~{s['thr']:,.0f} sample median. The morning magnet-gap IC was weaker "
+            f"in that bucket ({_pin_fmt(s['ic_lo'])} vs {_pin_fmt(s['ic_hi'])}). "
+            "Exploratory. Not a pin.")
 
 
 def _ic_readout(data, stats=None):
@@ -792,12 +778,12 @@ def _ic_readout(data, stats=None):
             )
 
             if stats:
-                st.markdown("**🎯 Pin strength — GEX conditioning (live):**")
+                st.markdown("**Absolute GEX versus the sample median:**")
                 g1, g2 = st.columns(2)
                 g1.metric("Today |net GEX|", f"{stats['cur']:,.0f}",
-                          "HIGH-gamma → strong pin" if stats["strong"] else "LOW-gamma → weak pin",
+                          "Above the median" if stats["strong"] else "Below the median",
                           delta_color="off")
-                g2.metric("Strong-pin threshold", f"> {stats['thr']:,.0f}",
+                g2.metric("Sample median", f"> {stats['thr']:,.0f}",
                           f"morning IC {_pin_fmt(stats['ic_hi'])} vs {_pin_fmt(stats['ic_lo'])}",
                           delta_color="off")
                 st.caption(
@@ -1084,8 +1070,8 @@ def _magnet_drift_section(data, stats=None):
         st.caption(f"Today's magnet is {info.get('current_gap', 0):+,.0f} "
                    f"{info.get('current_state', '')} the {info['n']}-day anchor ({anchor:,.0f}).")
 
-    st.caption("The magnet marks where dealer gamma (big-player option positioning) "
-               "concentrates; its multi-day drift is the positioning *trend*. "
+    st.caption("The magnet is the strike with the largest absolute gamma. "
+               "Its multi-day drift is a positioning map. It is not a pin. "
                "Exploratory, not a live signal.")
 
 
@@ -1541,16 +1527,16 @@ def _gex_regime_banner(data):
 
 
 _POSTURE = {
-    "calm": ("🟦 **Range-bound / pinning** — MEAN-REVERSION favoured", [
-        "Fade extremes back toward the **magnet**; breakouts here tend to fail.",
-        "Sell premium near the **walls**; tighter stops; you can size UP.",
+    "calm": ("High concentration — calmer forward vol in the sample", [
+        "This is a volatility context. It is not a fade to the magnet.",
+        "A short strike, if you use one, sits one step outside the gamma concentration. Defined risk. You confirm.",
     ]),
-    "wild": ("🟧 **Trending / expansion** — MOMENTUM favoured", [
-        "Respect a **break of a wall**; fading the move is dangerous here.",
-        "Buy premium / trade directional; stops **beyond** the walls; size DOWN (bigger swings).",
+    "wild": ("Low concentration — wider swings in the sample", [
+        "Direction is not a forecast.",
+        "Buy convexity if you trade it. Size down. You confirm.",
     ]),
-    "mid": ("⬜ **Neutral vol regime** — no strong tilt", [
-        "Trade the levels with modest size; wait for a clearer regime to lean.",
+    "mid": ("Middle concentration — wait", [
+        "De-size. The call−put label is not a trade.",
     ]),
 }
 
@@ -1589,10 +1575,9 @@ def _posture_example(tag, L):
         return f"{x:,.0f}" if x is not None and x == x else "—"
     cw, pw, mag, sp = L.call_wall, L.put_wall, L.magnet, L.spot
     if tag == "calm":
-        return (f"<b>Examples:</b> a push up to the call wall <b>{f(cw)}</b> → <b>fade</b> back "
-                f"toward the magnet <b>{f(mag)}</b> (buy put-spread / sell call-spread); or "
-                f"<b>sell a strangle</b> around <b>{f(pw)} / {f(cw)}</b> — pinning favours "
-                f"premium sellers. Stops just <i>outside</i> the walls.")
+        return (f"<b>Example:</b> high concentration, spot between <b>{f(pw)}</b> and "
+                f"<b>{f(cw)}</b>. A defined-risk short sits one step outside those strikes. "
+                f"The magnet <b>{f(mag)}</b> is the largest combined gamma. It is not a target to fade.")
     if tag == "wild":
         return (f"<b>Examples:</b> a clean <b>break above {f(cw)}</b> → go <b>long / buy calls</b> "
                 f"(stop back under {f(cw)}); a <b>break below {f(pw)}</b> → <b>short / buy puts</b>. "
@@ -1608,7 +1593,7 @@ def _gex_vol_regime_section(data):
     wilder/trending. Not a direction call (that's the unvalidated dealer-sign landmine)."""
     from app.gex_history import vol_regime
 
-    st.markdown("#### 🌡️ Volatility regime (dealer gamma · EOD outlook)")
+    st.markdown("#### Volatility regime (absolute GEX · forward vol)")
     try:
         vr = vol_regime(data.symbol)
     except Exception:  # noqa: BLE001 - optional/analytical

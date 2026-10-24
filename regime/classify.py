@@ -1,14 +1,18 @@
-"""Regime classification with wall-strength judged RELATIVE to the gamma flip.
+"""Book-balance view of Nifty GEX. Does not turn the ratio into a pin forecast.
 
-Core ideas (gex-math + options-structures skills, BUILD_PLAN §4):
-  - The flip splits the tape: spot >= flip is the positive-gamma (pin/fade) zone;
-    spot < flip is the negative-gamma (momentum/amplify) zone.
-  - A put wall ABOVE the flip is real support; BELOW the flip it's a speed bump.
-  - When the aggregate regime sign DISAGREES with the spot-vs-flip zone, that's a
-    CONFLICT -> de-size, do not blindly fade a thesis-aligned move (CLAUDE.md).
+The regime sign and the flip are the same object: call-gamma magnitude minus
+put-gamma magnitude (see gex.core.writer_imbalance_net and gex.flip). On NSE
+that is which side of the written book is larger. It is not a measurement that
+a dealer is long gamma and will fade the tape.
 
-This module is pure: it consumes already-computed levels and emits a view. It
-does NOT fetch data or deliver alerts.
+  - POSITIVE = call gamma larger than put gamma (call-heavy book).
+  - NEGATIVE = put gamma larger than call gamma (put-heavy book).
+  - Spot vs flip is the same ratio, evaluated at the current price.
+  - Disagreement between the aggregate sign and the local side is a CONFLICT:
+    de-size. Walls are concentration strikes, not floors or ceilings.
+
+Calm versus wild vol is a separate, sign-free |GEX| read. This module does not
+emit it.
 """
 
 from __future__ import annotations
@@ -26,19 +30,19 @@ class RegimeView:
     flip: float | None
     flip_dist_pts: int | None        # flip - spot, rounded to points (signed)
     flip_side: str | None            # "below" | "above" | None
-    in_positive_zone: bool | None    # spot >= flip
+    in_positive_zone: bool | None    # spot >= flip (call side of the balance)
     call_wall: float
     call_wall_dist_pts: int          # call_wall - spot
     put_wall: float
     put_wall_dist_pts: int           # put_wall - spot
-    call_wall_role: str              # "resistance"
-    put_wall_role: str               # "support" | "speed bump" | "unknown"
+    call_wall_role: str              # "call concentration"
+    put_wall_role: str               # "put concentration" | "put concentration, below balance" | "unknown"
     magnet: float | None
     max_pain: float | None
     conflict: bool
     bias: str
     headline: str
-    mode_label: str = ""             # plain words: RANGE-BOUND | TRENDING | CAUTION
+    mode_label: str = ""             # CALL-HEAVY | PUT-HEAVY | CAUTION | NEUTRAL
     mode_plain: str = ""             # one-sentence plain-English description
     notes: list[str] = field(default_factory=list)
 
@@ -66,19 +70,19 @@ def classify(
         flip_side = "below" if flip < spot else "above"
         in_pos = spot >= flip
 
-    # --- wall distances + roles relative to flip ---------------------------
+    # --- wall distances. Roles name concentration, not a floor. -----------
     call_dist = round(call_wall - spot)
     put_dist = round(put_wall - spot)
-    call_role = "resistance"
+    call_role = "call concentration"
     if flip is None:
         put_role = "unknown"
+    elif put_wall < flip:
+        put_role = "put concentration, below balance"
+        notes.append(
+            f"Put-gamma strike {put_wall:g} is below the call−put balance {flip:g}."
+        )
     else:
-        put_role = "support" if put_wall >= flip else "speed bump"
-        if put_role == "speed bump":
-            notes.append(
-                f"Put wall {put_wall:g} is below the flip {flip:g} — speed bump, "
-                "not firm support (trapdoor risk if breached)."
-            )
+        put_role = "put concentration"
 
     # --- conflict: aggregate regime sign vs local flip zone ----------------
     conflict = False
@@ -89,19 +93,19 @@ def classify(
             conflict = True
     if conflict:
         notes.append(
-            f"CONFLICT: aggregate regime {regime} disagrees with spot-vs-flip zone "
-            "(de-size; do not blindly fade)."
+            f"CONFLICT: aggregate book {regime} disagrees with spot-vs-balance "
+            "(de-size; the ratio is not stable)."
         )
 
-    # --- bias -------------------------------------------------------------
+    # --- bias: name the book. Do not prescribe a fade or a chase. ---------
     if conflict:
-        bias = "regime/flip conflict, de-size and wait for confirmation"
+        bias = "book/flip conflict, de-size and wait for confirmation"
     elif regime == "FLAT":
-        bias = "neutral, no clear edge"
+        bias = "call and put gamma balanced"
     elif regime == "POSITIVE" and (in_pos is None or in_pos):
-        bias = "range fade"
+        bias = "call gamma larger than put gamma"
     else:
-        bias = "momentum, trade with the break (reduce size)"
+        bias = "put gamma larger than call gamma"
 
     # --- plain-language mode (for non-experts) ----------------------------
     mode_label, mode_plain = _plain_mode(
@@ -136,45 +140,42 @@ def classify(
 
 
 def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magnet):
-    """Plain-English market mode. GEX reads BEHAVIOUR (calm vs wild), not a
-    guaranteed direction — so we describe geography + a hedged tilt, never a
-    bald bullish/bearish call."""
+    """Name the call-versus-put book. Vol (calm vs wild) is |GEX|, not this sign."""
+    del in_pos, magnet  # spot and the walls carry the geography
     if conflict or flip is None:
         return (
             "CAUTION",
-            "Signals are mixed (or the calm/wild switch is unclear). Better to wait "
-            "than force a trade.",
+            "The call−put balance is mixed or has no zero-crossing in range. "
+            "Read the strikes as a map and wait.",
         )
     if regime == "FLAT":
-        return ("NEUTRAL", "No clear edge right now.")
+        return ("NEUTRAL", "Call gamma and put gamma are balanced.")
 
-    if regime == "POSITIVE":  # calm / mean-reverting
+    if regime == "POSITIVE":
         if put_wall <= spot <= call_wall:
-            toward = f" toward {magnet:,.0f}" if magnet is not None else ""
             return (
-                "RANGE-BOUND",
-                f"Likely to stay range-bound between {put_wall:,.0f} (support) and "
-                f"{call_wall:,.0f} (resistance). Moves to the edges tend to fade back"
-                f"{toward}.",
+                "CALL-HEAVY",
+                f"Call gamma is larger than put gamma. Spot sits between the put-gamma "
+                f"strike {put_wall:,.0f} and the call-gamma strike {call_wall:,.0f}. "
+                f"Balance {flip:,.0f}. Concentration map, not a fade signal.",
             )
         if spot > call_wall:
             return (
-                "RANGE-BOUND (above resistance)",
-                f"Price is above the call wall {call_wall:,.0f} — dealers lean against "
-                "it, so upside is sticky; a clean break can squeeze though.",
+                "CALL-HEAVY (above call strike)",
+                f"Spot is above the call-gamma strike {call_wall:,.0f}. "
+                "That strike is where call gamma peaks, not a ceiling dealers must defend.",
             )
         return (
-            "RANGE-BOUND (below support)",
-            f"Price is below the put wall {put_wall:,.0f} — support is weak here; "
-            "watch for a snap back into the range.",
+            "CALL-HEAVY (below put strike)",
+            f"Spot is below the put-gamma strike {put_wall:,.0f}. "
+            "The book is still call-heavy versus put gamma.",
         )
 
-    # NEGATIVE / wild: moves amplify; tilt follows the break direction
     return (
-        "TRENDING (volatile)",
-        f"Big, fast moves likely (1.5–2x normal). Below the gamma flip {flip:,.0f}, "
-        "so down-moves can accelerate (a 'trapdoor'). Trade WITH the move, smaller "
-        "size — don't sell options here.",
+        "PUT-HEAVY",
+        f"Put gamma is larger than call gamma. Balance {flip:,.0f}. "
+        f"Put-gamma strike {put_wall:,.0f}, call-gamma strike {call_wall:,.0f}. "
+        "This does not by itself mean the downside will accelerate.",
     )
 
 

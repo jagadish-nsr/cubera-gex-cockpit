@@ -40,7 +40,7 @@ def test_summary_and_verdict_pinning():
     s = summarise(score(rows))
     assert s["pos_days"] == 6
     assert abs(s["pos_pin_rate"] - 5 / 6) < 1e-9
-    assert "CONSISTENT" in verdict(s)
+    assert "Historical pin rate" in verdict(s)
 
 
 def test_verdict_insufficient_data():

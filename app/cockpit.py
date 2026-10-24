@@ -1038,13 +1038,11 @@ def _stale_label(fetched_at: datetime) -> str:
 # ---------------------------------------------------------------------------
 
 def is_live_session() -> bool:
-    """True when live market streaming should be active (regular trading hours, pre-open discovery, F&O extended, or replay mode).
+    """True when live market streaming should be active (regular trading hours, pre-open discovery, or F&O extended).
     Strictly two modes:
       1. Live WebSocket Mode (exchange-push, near real-time, in-memory cache)
       2. Offline Auto-Switch Mode (market closed, authenticated snapshot / cache)
     """
-    if st.session_state.get("replay_mode_active", False):
-        return True
     if config.is_market_open():
         return True
     try:
@@ -1072,15 +1070,6 @@ _UPDATING_KEYS: set = set()
 def _load_data(symbol: str, window: str, force: bool = False):
     """Load GEX dashboard data. Graceful failure: returns (data, error_str).
     Fast in-memory TTL cache with Stale-While-Revalidate for sub-millisecond tab rendering."""
-    if st.session_state.get("replay_mode_active", False):
-        try:
-            from app.market_simulator import get_active_replay_snapshot
-            rep_data = get_active_replay_snapshot(symbol, window)
-            if rep_data is not None:
-                return rep_data, None
-        except Exception as exc:
-            log.warning("market_simulator failed for %s: %s", symbol, exc)
-
     now_t = time.time()
     ckey = (symbol, window)
     if not force:
@@ -1516,69 +1505,6 @@ def _quick_close_trade(trade_id: str) -> None:
     st.toast(f"✅ Closed trade {trade_id[-6:]}", icon="🚪")
 
 
-def _render_cockpit_simulator_bar(symbol: str, window: str) -> None:
-    rep_clock = st.session_state.get("replay_clock", "13:45")
-    rep_source = st.session_state.get("replay_source_type", "scenario")
-    if rep_source == "scenario":
-        from app.market_simulator import SCENARIOS
-        scen_meta = SCENARIOS.get(st.session_state.get("replay_scenario_id", "expiry_gamma_blast"), {})
-        rep_label = scen_meta.get("title", "Preset Scenario")
-    else:
-        rep_label = f"Historical Day {st.session_state.get('replay_historical_day', 'Captured')}"
-
-    iq = get_instant_quote(symbol)
-    spot_val = float(iq.get("spot", 0.0) if iq else 0.0)
-    if not spot_val:
-        from data.market_snapshot import get_snapshot
-        snap = get_snapshot(symbol)
-        spot_val = float(snap.get("spot", 0.0) if snap else 0.0)
-
-    st.markdown(
-        f'<div class="ck banner unval" style="background:#fff4e5;border-color:#f0a83a;color:#8a4b08;'
-        f'display:flex;justify-content:space-between;align-items:center;padding:10px 14px;margin-bottom:12px;border-radius:8px;">'
-        f'<div>🎬 <b>MARKET SIMULATOR ACTIVE:</b> {rep_label} &nbsp;·&nbsp; '
-        f'⏰ <b>Simulated Clock:</b> <span style="font-family:monospace;font-size:1.05rem;font-weight:700;">{rep_clock} IST</span> &nbsp;·&nbsp; '
-        f'📍 <b>Spot:</b> <b style="font-size:1.05rem;">{spot_val:,.2f}</b></div>'
-        f'<div><span class="chip warn">REPLAY</span></div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Quick in-tab replay controls
-    c_p1, c_p2, c_p3, c_p4, c_p5 = st.columns([1.5, 1.5, 1.5, 1.5, 2.5])
-    from app.market_simulator import TIMESTAMPS_5M
-    curr_idx = TIMESTAMPS_5M.index(rep_clock) if rep_clock in TIMESTAMPS_5M else 0
-    with c_p1:
-        if st.button("⏮ 09:15 Open", key="ck_rep_open", use_container_width=True):
-            st.session_state["replay_clock"] = "09:15"
-            st.session_state.pop("sentinel_chart_df", None)
-            st.rerun()
-    with c_p2:
-        if st.button("⏪ -15m", key="ck_rep_prev", use_container_width=True):
-            new_idx = max(0, curr_idx - 3)
-            st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-            st.session_state.pop("sentinel_chart_df", None)
-            st.rerun()
-    with c_p3:
-        if st.button("⏩ +5m", key="ck_rep_next", use_container_width=True):
-            new_idx = min(len(TIMESTAMPS_5M) - 1, curr_idx + 1)
-            st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-            st.session_state.pop("sentinel_chart_df", None)
-            st.rerun()
-    with c_p4:
-        if st.button("⏩ +15m", key="ck_rep_next15", use_container_width=True):
-            new_idx = min(len(TIMESTAMPS_5M) - 1, curr_idx + 3)
-            st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-            st.session_state.pop("sentinel_chart_df", None)
-            st.rerun()
-    with c_p5:
-        if st.button("🛑 Exit Simulator", key="ck_rep_exit", use_container_width=True):
-            st.session_state["replay_mode_active"] = False
-            st.session_state["replay_mode_toggle"] = False
-            st.session_state.pop("sentinel_chart_df", None)
-            st.rerun()
-
-
 def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noqa: C901
     """Fast-lane 0ms Instant Status Strip and 6-Card KPI Grid."""
     data, _ = _load_data(symbol, window)
@@ -1586,9 +1512,7 @@ def _render_cockpit_top_strip_and_kpis(symbol: str, window: str) -> None:  # noq
     view = getattr(data, "view", None) if data else None
     idx = config.get_index(symbol)
 
-    vol_regime = getattr(view, "mode_label", "mid").lower() if view else "mid"
-    vol_regime_key = "calm" if ("calm" in vol_regime or "range" in vol_regime) else ("wild" if ("wild" in vol_regime or "trend" in vol_regime) else "mid")
-    chip_label = {"calm": "🟢 Range-bound", "wild": "⚡ Trending", "mid": "⏳ Neutral"}.get(vol_regime_key, "Neutral")
+    chip_label = getattr(view, "mode_label", None) or "Neutral"
 
     cb = get_circuit_breaker(symbol)
 
@@ -1875,8 +1799,8 @@ def _render_cockpit_ladder_and_playbook(symbol: str, window: str) -> None:
     raw_spot = getattr(levels, "spot", None) if levels else None
     spot = float(iq["spot"]) if (iq and iq.get("spot") is not None) else float(raw_spot if raw_spot is not None else 24500.0)
     idx = config.get_index(symbol)
-    vol_regime = getattr(view, "mode_label", "mid").lower() if view else "mid"
-    vol_regime_key = "calm" if ("calm" in vol_regime or "range" in vol_regime) else ("wild" if ("wild" in vol_regime or "trend" in vol_regime) else "mid")
+    from app.intraday_features import structure_vol_regime
+    vol_regime_key = structure_vol_regime(data)
     sentinel_inst = f"{symbol}-FUT"
     recent_sigs = list_recent_signals(sentinel_inst, limit=4)
     bias_score = st.session_state.get(f"bias_score_{symbol}")
@@ -1894,7 +1818,12 @@ def _render_cockpit_ladder_and_playbook(symbol: str, window: str) -> None:
         )
         headline = getattr(view, "headline", "") or getattr(view, "mode_plain", "")
         if not headline:
-            headline = f"Market is in Positive Gamma above {levels.put_wall or 24400:,.0f} with Bullish OrderFlow Continuation. Premium selling favoured; buy dips near VWAP ({spot-30:,.0f}) or Put Wall ({levels.put_wall or 24400:,.0f})."
+            pw = getattr(levels, "put_wall", None) or 0
+            cw = getattr(levels, "call_wall", None) or 0
+            headline = (
+                f"Call−put balance. Call-gamma strike {cw:,.0f}, "
+                f"put-gamma strike {pw:,.0f}. Concentration map, not a fade."
+            )
 
         st.markdown(
             f'<div class="ck playbook-box">'
@@ -1906,11 +1835,12 @@ def _render_cockpit_ladder_and_playbook(symbol: str, window: str) -> None:
         st.markdown('</div></div>', unsafe_allow_html=True)
 
     with col_struct:
-        strike_step = getattr(idx, "strike_step", 50 if symbol == "NIFTY" else 100)
+        strike_step = int(idx.strike_step)
         candidates = suggest_structures(
             levels, vol_regime_key,
             lot_size=idx.lot_size,
-            spread_width=int(strike_step * 2),
+            spread_width=strike_step * 2,
+            strike_step=strike_step,
             bias_score=bias_score,
             sentinel_signals=recent_sigs,
         )
@@ -2439,15 +2369,15 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
             gap_fill_status = pm.get("gap_fill_status", "UNFILLED")
             reg_badge = pm.get("regime_badge") or f"⚖️ {gap_regime}"
             reg_color = pm.get("regime_color") or "var(--spark)"
-            favored_play = pm.get("favored_play") or "BALANCED"
+            favored_play = pm.get("favored_play") or "MAP ONLY"
             sign_str = "+" if gap_pts >= 0 else ""
 
             if gap_fill_status == "FILLED":
                 fill_badge = '<span class="sentinel-chip" style="background:rgba(34,197,94,.12);color:var(--go);border:1px solid rgba(34,197,94,.3);font-size:.70rem">✅ GAP FILLED</span>'
-                fill_note = "Opening gap filled — mean-reversion cycle active, auction re-established inside prior range."
+                fill_note = "The open has traded back through the previous close. That is a fill. It is not a mean-reversion order."
             else:
                 fill_badge = '<span class="sentinel-chip" style="background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3);font-size:.70rem">⚡ GAP UNFILLED</span>'
-                fill_note = f"Opening gap holding {sign_str}{gap_pts:,.1f} pts — directional momentum favored ({favored_play})."
+                fill_note = f"The open is still {sign_str}{gap_pts:,.1f} pts from the previous close. Play: {favored_play}."
 
             st.markdown(
                 f'''
@@ -2482,7 +2412,7 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                         <div style="display:flex;align-items:center;gap:8px">
                             <span style="font-size:1.05rem">🏁</span>
-                            <b style="font-size:.92rem;color:#8b5cf6">Post-Market Settlement & Pinning Scorecard</b>
+                            <b style="font-size:.92rem;color:#8b5cf6">Post-Market Settlement</b>
                             <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">CAS 30-min VWAP Reconciled</span>
                         </div>
                         <span class="sentinel-chip" style="background:var(--surface-2);color:#8b5cf6;border:1px solid #8b5cf6;font-size:.72rem">EOD SETTLED</span>
@@ -2497,12 +2427,12 @@ def _render_pre_post_market_banner(symbol: str, data: Any) -> None:
                             <b style="font-size:1.1rem;font-family:var(--mono)">{drift_pts:+.1f} pts</b>
                         </div>
                         <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Nearest Wall Target</small>
-                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} CW</b>
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call-gamma strike</small>
+                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f}</b>
                         </div>
                         <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Dealer Pinning Status</small>
-                            <b style="font-size:.95rem;color:var(--go)">Pin Defended</b>
+                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Put-gamma strike</small>
+                            <b style="font-size:.95rem;font-family:var(--mono)">{pw:,.0f}</b>
                         </div>
                     </div>
                 </div>
@@ -3321,15 +3251,14 @@ def _render_recommendation_cluster_card(
 def _render_strategy_effectiveness_strip(symbol: str) -> None:
     """Display lifecycle analytics and AI/ML ground-truth tracking metrics."""
     strat_metrics = get_strategy_effectiveness_metrics(symbol)
-    if isinstance(strat_metrics, list) and strat_metrics:
-        total_setups = sum(m.get("total", 0) for m in strat_metrics)
-        total_t1 = sum(m.get("t1_hits", 0) for m in strat_metrics)
-        total_sl = sum(m.get("sl_hits", 0) for m in strat_metrics)
-        total_inv = sum(m.get("invals", 0) for m in strat_metrics)
-        tgt_rate = round((total_t1 / total_setups * 100.0), 1) if total_setups > 0 else 0.0
-        sl_rate = round((total_sl / total_setups * 100.0), 1) if total_setups > 0 else 0.0
-        inval_rate = round((total_inv / total_setups * 100.0), 1) if total_setups > 0 else 0.0
-        avg_rr = "1 : 2.8"
+    if isinstance(strat_metrics, list):
+        from data.journal.recommendations_store import summarize_effectiveness
+        summary = summarize_effectiveness(strat_metrics)
+        total_setups = summary["total_tracked"]
+        tgt_rate = summary["target_hit_rate"]
+        sl_rate = summary["stop_loss_rate"]
+        inval_rate = summary["spot_invalidation_rate"]
+        avg_rr = f"1 : {summary['avg_realized_rr']:.1f}" if summary["avg_realized_rr"] is not None else "—"
     elif isinstance(strat_metrics, dict):
         total_setups = strat_metrics.get("total_setups", 0)
         tgt_rate = strat_metrics.get("target_hit_rate_pct", 0.0)
@@ -3433,7 +3362,7 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
         pass
 
     # Off-market hours: APIs are paused. Do not synthesize fresh trade ideas without live market data.
-    if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
+    if not config.is_market_open():
         cached = _REC_BATCH_CACHE.get(symbol)
         if cached is not None:
             c_batch = cached[3]
@@ -3444,7 +3373,7 @@ def _get_active_recommendation_batch(symbol: str, data: Any) -> Any:
     now_t = time.time()
     cached = _REC_BATCH_CACHE.get(symbol)
     curr_bias_val = float(bias_score) if bias_score is not None else 0.0
-    step = 50.0 if "NIFTY" in symbol and "BANK" not in symbol else 100.0
+    step = float(config.strike_step_for(symbol))
     spot_thresh = step * 0.35  # ~17.5 pts on NIFTY, 35.0 pts on BANKNIFTY
     if cached is not None:
         c_ts, c_spot, c_bias, c_batch = cached
@@ -3631,14 +3560,14 @@ def _render_trade_recommendations(symbol: str, window: str) -> None:
 
     batch = _get_active_recommendation_batch(symbol, data)
     if batch is None:
-        if not config.is_market_open() and not st.session_state.get("replay_mode_active"):
+        if not config.is_market_open():
             st.markdown(
                 '<div class="ck card" style="padding:28px 24px;text-align:center;margin-top:10px">'
                 '<div style="font-size:1.6rem;margin-bottom:8px">🌙</div>'
                 '<b style="font-size:.95rem;color:var(--ink)">Session Closed · Off-Market Hours</b>'
                 '<p style="font-size:.78rem;color:var(--ink-mute);margin:6px auto 0;max-width:540px">'
                 'Broker API polling and NSE live feeds are paused after market hours. '
-                'Real-time intraday option recommendations, gamma breakout triggers, and Sentinel MTM tracking '
+                'Real-time recommendations and Sentinel marks-to-market '
                 'run strictly during active trading hours (09:15 – 15:30 IST) or when Replay Mode is enabled.'
                 '</p></div>',
                 unsafe_allow_html=True,
@@ -3865,11 +3794,7 @@ def _tab_trade_recommendations(symbol: str, window: str) -> None:
 
 def _tab_cockpit(symbol: str, window: str) -> None:
     """Tab 1: Strategic Cockpit — Executive Telemetry, Playbook, Ladder & Pinned Setups."""
-    # 1. Market Simulator Strip & Stepper (if active)
-    if st.session_state.get("replay_mode_active", False):
-        _render_cockpit_simulator_bar(symbol, window)
-
-    # 2. Executive Status Strip & 6-Card KPI Grid (1s live pulse, 0ms instant quote)
+    # Executive Status Strip & 6-Card KPI Grid (1s live pulse, 0ms instant quote)
     if _is_spot_live():
         _fragment_cockpit_kpis_live(symbol, window)
     else:
@@ -5228,9 +5153,6 @@ def _fragment_profile_trend_follower(symbol: str, inst_id: str, cw: float, pw: f
 @st.fragment(run_every=3)
 def _fragment_sentinel_kpi_strip(symbol: str, inst_id: str, timeframe: str, ref_px: float, cw: float, pw: float) -> None:
     """Card 1: Microstructure KPI strip auto-updating every 3 seconds independently."""
-    if st.session_state.get("replay_mode_active"):
-        step_sentinel_live_feed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
-
     bars, signals, _ = _get_cached_sentinel_data(inst_id, timeframe=timeframe, limit=10)
     latest_bar = bars[-1] if bars else None
     if not latest_bar:
@@ -5415,10 +5337,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
     from app.ws_spot_feed import is_ws_live
     market_open = config.is_market_open()
     ws_alive = is_ws_live()
-    if st.session_state.get("replay_mode_active"):
-        feed_badge = '<span style="font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(245,158,11,0.12);color:#d97706;font-weight:700;border:1px solid rgba(245,158,11,0.25)" title="Simulation / Replay Mode">Replay Mode</span>'
-        stream_title = "⚡ Replay OrderFlow Stream"
-    elif market_open and ws_alive:
+    if market_open and ws_alive:
         feed_badge = '<span style="display:inline-flex;align-items:center;gap:4px;font-size:0.68rem;padding:2px 6px;border-radius:4px;background:rgba(15,157,107,0.12);color:#0f9d6b;font-weight:700;border:1px solid rgba(15,157,107,0.25)"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#0f9d6b;box-shadow:0 0 6px #0f9d6b"></span> Dhan WS Live</span>'
         stream_title = "⚡ Live OrderFlow Stream"
     elif market_open:
@@ -5494,7 +5413,7 @@ def _fragment_sentinel_stream_card(symbol: str, inst_id: str, sig_filter: str) -
                 f'</div>'
             )
         elif sig.invalidation_level > 0:
-            step = 50 if "NIFTY" in sig.instrument_id else 100
+            step = config.strike_step_for(sig.instrument_id)
             opt_k = round(sig.invalidation_level / step) * step
             opt_side = "CE" if sig.bias == "LONG" else "PE"
             trade_params_html = (
@@ -5779,14 +5698,10 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
     inst_id = f"{symbol}-FUT"
     ref_px = fut_px if (inst_id.endswith("-FUT") and fut_px) else spot
 
-    # In Replay Mode or outside live market hours, ensure completed intraday bars exist; during active live hours, sync genuine flow with seamless demo fallback
     import config
-    if st.session_state.get("replay_mode_active"):
+    synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
+    if not synced:
         seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
-    else:
-        synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw)
-        if not synced:
-            seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw)
 
     # 1. Static Top Controls Bar
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([2, 3, 2])
@@ -5801,14 +5716,10 @@ def _tab_sentinel_tape(symbol: str, window: str) -> None:  # noqa: C901
         )
     with ctrl_col3:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        btn_label = "⚡ Re-Seed Flow" if st.session_state.get("replay_mode_active") else "🔄 Sync Live Flow"
-        if st.button(btn_label, key=f"btn_reseed_{symbol}", use_container_width=True):
-            if st.session_state.get("replay_mode_active"):
+        if st.button("🔄 Sync Live Flow", key=f"btn_reseed_{symbol}", use_container_width=True):
+            synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw, force=True)
+            if not synced:
                 seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
-            else:
-                synced = sync_live_sentinel_if_needed(inst_id, symbol=symbol, call_wall=cw, put_wall=pw, force=True)
-                if not synced:
-                    seed_sentinel_demo_if_needed(inst_id, spot=ref_px, call_wall=cw, put_wall=pw, force=True)
             st.rerun()
 
     # 2. Independent Card 1: Microstructure KPI Strip (auto-updates every 3s independently)
@@ -6332,8 +6243,7 @@ def _render_market_intelligence(data, spot: float, spot_chg_pct: float = 0.0, sy
 
         confound_html = (
             '<div style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:8px 10px;font-size:.70rem;color:var(--ink-mute);line-height:1.4">'
-            '<b>Phase B Confound Control:</b> Intraday headline bursts with keyword-weighted impact ≥ 6 flag exogenous shocks, '
-            'quarantining days where macro news overrides dealer delta-hedging.'
+            '<b>Phase B confound control:</b> A headline burst with impact of 6 or more is an outside shock. The positioning map does not override the headline.'
             '</div>'
             '</div></div></div>'
         )
@@ -6382,11 +6292,11 @@ def _render_analytics_guide() -> None:
                 <div style="background:var(--surface-2);padding:11px 13px;border-radius:8px;border:1px solid var(--line)">
                     <b style="color:var(--spark)">2. Key GEX Anchors & Strike Observations (Row 1 Right)</b><br>
                     <span style="font-size:.78rem;color:var(--ink-mute)">
-                    • <b>Call Wall (CW):</b> Maximum Call OI cluster. Primary institutional resistance ceiling.<br>
-                    • <b>Put Wall (PW):</b> Maximum Put OI cluster. Primary institutional support floor.<br>
-                    • <b>Max Pain (K*):</b> Strike minimizing total option payouts. Acts as gravitational magnet toward expiry.<br>
-                    • <b>Gamma Flip Level:</b> Boundary where market makers shift from stabilizing (buying dips) to accelerating (selling breaks).<br>
-                    • <i>Action:</i> Trade mean-reversion bounces off Walls; trade breakout Gamma Squeezes on 15m candle closes outside Walls.
+                    • <b>Call Wall (CW):</b> Largest call-gamma strike. A concentration, not a ceiling.<br>
+                    • <b>Put Wall (PW):</b> Largest put-gamma strike. A concentration, not a floor.<br>
+                    • <b>Max Pain (K*):</b> Settlement strike that minimises option payout. Not a magnet and not a pin.<br>
+                    • <b>Call−put balance:</b> Call magnitude minus put magnitude. Above or below it is book balance, not a hedge.<br>
+                    • <i>Action:</i> The strikes are a map. A close outside a strike is a location, not a squeeze.
                     </span>
                 </div>
 
@@ -6438,33 +6348,33 @@ def _render_analytics_guide() -> None:
                         </thead>
                         <tbody>
                             <tr style="border-bottom:1px dashed var(--line)">
-                                <td style="padding:5px 6px"><b>Call Wall Defense</b></td>
-                                <td style="padding:5px 6px">Spot near Call Wall; Bias ≤ +1.0; Short Buildup on Call</td>
-                                <td style="padding:5px 6px"><span style="color:var(--stop);font-weight:700">Sell Bear Call Spread</span> / Buy Put Spread</td>
-                                <td style="padding:5px 6px">15m close above Call Wall</td>
+                                <td style="padding:5px 6px"><b>At the call-gamma strike</b></td>
+                                <td style="padding:5px 6px">Spot is at the largest call-gamma strike. Location only.</td>
+                                <td style="padding:5px 6px">No automatic short. The user confirms.</td>
+                                <td style="padding:5px 6px">A later print back through the strike</td>
                             </tr>
                             <tr style="border-bottom:1px dashed var(--line)">
-                                <td style="padding:5px 6px"><b>Gamma Breakout Squeeze</b></td>
-                                <td style="padding:5px 6px">15m close above Call Wall; PCR &gt; 1.25; Bias ≥ +3.5</td>
-                                <td style="padding:5px 6px"><span style="color:var(--go);font-weight:700">Buy Bull Call Spread</span> / Outright Call</td>
-                                <td style="padding:5px 6px">Spot falls back inside Call Wall</td>
+                                <td style="padding:5px 6px"><b>Through the call-gamma strike</b></td>
+                                <td style="padding:5px 6px">A 15m close is beyond the call-gamma strike. Not a squeeze.</td>
+                                <td style="padding:5px 6px">No automatic long. The user confirms.</td>
+                                <td style="padding:5px 6px">The user stands aside</td>
                             </tr>
                             <tr style="border-bottom:1px dashed var(--line)">
-                                <td style="padding:5px 6px"><b>Put Wall Defense</b></td>
-                                <td style="padding:5px 6px">Spot near Put Wall; Bias ≥ -1.0; Short Buildup on Put</td>
-                                <td style="padding:5px 6px"><span style="color:var(--go);font-weight:700">Sell Bull Put Spread</span> / Buy Call Spread</td>
-                                <td style="padding:5px 6px">15m close below Put Wall</td>
+                                <td style="padding:5px 6px"><b>At the put-gamma strike</b></td>
+                                <td style="padding:5px 6px">Spot is at the largest put-gamma strike. Not a floor.</td>
+                                <td style="padding:5px 6px">No automatic long. The user confirms.</td>
+                                <td style="padding:5px 6px">A later print back through the strike</td>
                             </tr>
                             <tr style="border-bottom:1px dashed var(--line)">
-                                <td style="padding:5px 6px"><b>Put Wall Trapdoor Breakdown</b></td>
-                                <td style="padding:5px 6px">15m close below Put Wall; PCR &lt; 0.80; Bias ≤ -3.5</td>
-                                <td style="padding:5px 6px"><span style="color:var(--stop);font-weight:700">Buy Bear Put Spread</span> / Outright Put</td>
-                                <td style="padding:5px 6px">Spot recovers above Put Wall</td>
+                                <td style="padding:5px 6px"><b>Through the put-gamma strike</b></td>
+                                <td style="padding:5px 6px">A 15m close is beyond the put-gamma strike. Not a trapdoor.</td>
+                                <td style="padding:5px 6px">No automatic short. The user confirms.</td>
+                                <td style="padding:5px 6px">The user stands aside</td>
                             </tr>
                             <tr>
-                                <td style="padding:5px 6px"><b>0DTE Expiry Pinning</b></td>
-                                <td style="padding:5px 6px">Time &gt; 13:30 IST; Spot within 0.4% of Max Pain; Pin Score ≥ 80</td>
-                                <td style="padding:5px 6px"><span style="color:var(--spark);font-weight:700">Sell ATM Iron Butterfly</span> centered on Max Pain</td>
+                                <td style="padding:5px 6px"><b>Expiry, near the settlement strike</b></td>
+                                <td style="padding:5px 6px">After 13:30 IST. Spot within 0.4% of max pain. That is not a pin.</td>
+                                <td style="padding:5px 6px"><span style="color:var(--spark);font-weight:700">No automatic short premium.</span> The user confirms.</td>
                                 <td style="padding:5px 6px">Spot breaks beyond ATM Straddle</td>
                             </tr>
                         </tbody>
@@ -6508,7 +6418,7 @@ def _get_analytics_spot(symbol: str, levels) -> tuple[float, str]:
     except Exception:
         pass
 
-    return 24500.0 if "NIFTY" in symbol else 50000.0, "fallback"
+    return config.fallback_spot_for(symbol), "fallback"
 
 
 def _render_analytics_kpi_strip(symbol: str, window: str) -> None:
@@ -7886,204 +7796,6 @@ def _tab_ops_and_calendar(symbol: str, window: str) -> None:
         f'⏳ <b>Next Scheduled Phase:</b> {next_event_str}</div>',
         unsafe_allow_html=True,
     )
-
-    st.markdown("---")
-
-    # 3. Session Replay / Simulator Mode (Screen 6.2)
-    st.markdown("### 🎬 Session Replay & Market Simulator (Screen 6.2)")
-
-    from app.market_simulator import (
-        SCENARIOS,
-        TIMESTAMPS_5M,
-        KEY_PHASES,
-        get_available_historical_days,
-        generate_scenario_snapshot,
-        load_historical_snapshot,
-        sync_sentinel_simulation,
-    )
-
-    replay_active = st.toggle(
-        "Enable Replay / Simulator Mode",
-        value=st.session_state.get("replay_mode_active", False),
-        key="replay_mode_toggle",
-    )
-    st.session_state["replay_mode_active"] = replay_active
-
-    if replay_active:
-        st.markdown(
-            '<div class="ck banner unval" style="background:#fff4e5;border-color:#f0a83a;color:#8a4b08;padding:12px 16px;border-radius:8px;margin-bottom:14px;">'
-            '🟠 <b>REPLAY MODE ACTIVE</b> — Running in simulated time. Live feeds paused. '
-            'Order flow, GEX levels, price ladders, and Sentinel CVD reflect the chosen historical scenario or captured session.</div>',
-            unsafe_allow_html=True,
-        )
-
-        col_src, col_spd = st.columns([3, 2])
-        with col_src:
-            src_mode = st.radio(
-                "Simulation Source:",
-                ["🎯 Curated Market Scenarios", "🏛️ Captured Historical Days"],
-                index=0 if st.session_state.get("replay_source_type", "scenario") == "scenario" else 1,
-                horizontal=True,
-                key="rep_src_choice",
-            )
-        with col_spd:
-            speed = st.selectbox(
-                "Simulation Speed / Step Size:",
-                options=["1× Normal (1m)", "5× Fast (5m)", "15× Warp (15m)"],
-                index=1,
-                key="replay_speed_sel",
-            )
-            st.session_state["replay_speed"] = speed
-
-        if src_mode.startswith("🎯"):
-            st.session_state["replay_source_type"] = "scenario"
-            scen_keys = list(SCENARIOS.keys())
-            cur_scen = st.session_state.get("replay_scenario_id", scen_keys[0])
-            cur_idx = scen_keys.index(cur_scen) if cur_scen in scen_keys else 0
-
-            selected_scen_id = st.selectbox(
-                "Historical Scenario Archetype:",
-                scen_keys,
-                index=cur_idx,
-                format_func=lambda k: SCENARIOS[k]["title"],
-                key="rep_scen_select",
-            )
-            st.session_state["replay_scenario_id"] = selected_scen_id
-            scen_meta = SCENARIOS[selected_scen_id]
-
-            st.markdown(
-                f'<div style="background:var(--surface-2);border:1px solid var(--line);border-left:4px solid var(--spark);border-radius:8px;padding:12px 14px;margin:8px 0 14px 0;">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
-                f'<span style="font-weight:700;font-size:0.92rem;color:var(--ink);">{scen_meta["title"]}</span>'
-                f'<span class="chip warn">{scen_meta["badge"]}</span>'
-                f'</div>'
-                f'<p style="font-size:0.82rem;color:var(--ink-mute);margin:0 0 6px 0;line-height:1.4;">{scen_meta["description"]}</p>'
-                f'<div style="font-size:0.78rem;color:var(--ink);background:var(--ground);padding:6px 10px;border-radius:6px;">'
-                f'💡 <b>Playbook Setup:</b> {scen_meta["key_setup"]}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.session_state["replay_source_type"] = "historical"
-            hist_days = get_available_historical_days(symbol)
-            if not hist_days:
-                st.warning(f"No captured timeseries sessions found for {symbol} in data/journal/timeseries/.")
-                hist_days = ["2026-10-06"]
-            cur_day = st.session_state.get("replay_historical_day", hist_days[0])
-            cur_day_idx = hist_days.index(cur_day) if cur_day in hist_days else 0
-
-            selected_day = st.selectbox(
-                f"Recorded Trading Session for {symbol}:",
-                hist_days,
-                index=cur_day_idx,
-                key="rep_hist_day_select",
-            )
-            st.session_state["replay_historical_day"] = selected_day
-            st.caption(f"📁 Loaded historical minute-by-minute session data for **{selected_day}** from disk.")
-
-        # Interactive Timeline Slider
-        st.markdown("#### ⏱️ Point-in-Time Playback Clock (IST)")
-        curr_clock = st.session_state.get("replay_clock", "13:45")
-        slider_idx = TIMESTAMPS_5M.index(curr_clock) if curr_clock in TIMESTAMPS_5M else 54
-
-        def _on_slider_change():
-            st.session_state["replay_clock"] = st.session_state["rep_clock_slider"]
-            st.session_state.pop("sentinel_chart_df", None)
-
-        clock_val = st.select_slider(
-            "Scrub Simulation Time (09:15 to 15:30 IST):",
-            options=TIMESTAMPS_5M,
-            value=TIMESTAMPS_5M[slider_idx],
-            key="rep_clock_slider",
-            on_change=_on_slider_change,
-        )
-        st.session_state["replay_clock"] = clock_val
-
-        # Quick Market Phase Presets
-        st.markdown("<small style='color:var(--ink-mute);font-weight:700;'>QUICK PHASE PRESETS:</small>", unsafe_allow_html=True)
-        col_p1, col_p2, col_p3, col_p4, col_p5, col_p6 = st.columns(6)
-        with col_p1:
-            if st.button("🌅 09:15 Open", key="ops_phase_0915", use_container_width=True):
-                st.session_state["replay_clock"] = "09:15"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_p2:
-            if st.button("📐 10:00 Range", key="ops_phase_1000", use_container_width=True):
-                st.session_state["replay_clock"] = "10:00"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_p3:
-            if st.button("☕ 11:30 Midday", key="ops_phase_1130", use_container_width=True):
-                st.session_state["replay_clock"] = "11:30"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_p4:
-            if st.button("⚡ 13:45 Anchor", key="ops_phase_1345", use_container_width=True):
-                st.session_state["replay_clock"] = "13:45"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_p5:
-            if st.button("🚀 14:45 Blast", key="ops_phase_1445", use_container_width=True):
-                st.session_state["replay_clock"] = "14:45"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_p6:
-            if st.button("🏁 15:20 Close", key="ops_phase_1520", use_container_width=True):
-                st.session_state["replay_clock"] = "15:20"
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-
-        # Step Navigation & OrderFlow Synchronization
-        col_nav1, col_nav2, col_nav3, col_nav4 = st.columns([1.5, 1.5, 1.5, 2.5])
-        curr_step_idx = TIMESTAMPS_5M.index(clock_val) if clock_val in TIMESTAMPS_5M else 0
-        with col_nav1:
-            if st.button("⏪ Step -15m", key="ops_nav_prev", use_container_width=True):
-                new_idx = max(0, curr_step_idx - 3)
-                st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_nav2:
-            if st.button("⏩ Step +5m", key="ops_nav_next5", use_container_width=True):
-                new_idx = min(len(TIMESTAMPS_5M) - 1, curr_step_idx + 1)
-                st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_nav3:
-            if st.button("⏩ Step +15m", key="ops_nav_next15", use_container_width=True):
-                new_idx = min(len(TIMESTAMPS_5M) - 1, curr_step_idx + 3)
-                st.session_state["replay_clock"] = TIMESTAMPS_5M[new_idx]
-                st.session_state.pop("sentinel_chart_df", None)
-                st.rerun()
-        with col_nav4:
-            if st.button("🚀 Sync OrderFlow Tape & GEX", key="btn_run_replay", type="primary", use_container_width=True):
-                target_id = st.session_state.get("replay_scenario_id") if st.session_state.get("replay_source_type") == "scenario" else st.session_state.get("replay_historical_day")
-                sync_sentinel_simulation(symbol, st.session_state.get("replay_source_type", "scenario"), str(target_id), clock_val)
-                st.session_state.pop("sentinel_chart_df", None)
-                st.toast(f"✅ Replay synchronized to {clock_val} IST", icon="🚀")
-                st.rerun()
-
-        # Reconstructed Snapshot Telemetry
-        rep_snap = (
-            generate_scenario_snapshot(st.session_state.get("replay_scenario_id", "expiry_gamma_blast"), clock_val, symbol=symbol, window=window)
-            if st.session_state.get("replay_source_type", "scenario") == "scenario"
-            else load_historical_snapshot(st.session_state.get("replay_historical_day", "2026-10-06"), clock_val, symbol=symbol, window=window)
-        )
-
-        if rep_snap and rep_snap.levels:
-            lv = rep_snap.levels
-            st.markdown(
-                '<div class="noa-kpi-grid" style="margin-top:14px;">'
-                f'<div class="noa-kpi-card"><small>Simulated Spot</small><b>{lv.spot:,.2f}</b><span>Point-in-Time</span></div>'
-                f'<div class="noa-kpi-card"><small>Net GEX</small><b>{lv.total_net_gex / 1e7:+,.1f} Cr</b><span>{lv.regime}</span></div>'
-                f'<div class="noa-kpi-card"><small>Call Wall</small><b>{lv.call_wall:,.0f}</b><span>Resistance</span></div>'
-                f'<div class="noa-kpi-card"><small>Put Wall</small><b>{lv.put_wall:,.0f}</b><span>Support</span></div>'
-                f'<div class="noa-kpi-card"><small>Gamma Flip</small><b>{f"{lv.flip:,.0f}" if lv.flip else "N/A"}</b><span>Inflection</span></div>'
-                f'<div class="noa-kpi-card"><small>Max Pain</small><b>{lv.max_pain:,.0f}</b><span>Magnet</span></div>'
-                '</div>',
-                unsafe_allow_html=True,
-            )
-    else:
-        st.caption("Toggle switch above to simulate past market events or test options strategies under historical volatility.")
 
     st.markdown('</div>', unsafe_allow_html=True)
 

@@ -11,9 +11,9 @@
 
 ### 1.1 Purpose & Mission
 The **Cubera GEX Cockpit** is an ultra-low-latency, quantitative decision-support system tailored specifically for Indian index options markets (NSE Nifty 50, Bank Nifty, and BSE Sensex). The platform synthesizes:
-1. **Quantitative Dealer Gamma Exposure (GEX)**: Real-time Black-Scholes / Black-76 second- and third-order Greeks ($\Gamma$, $\text{Vanna}$, $\text{Charm}$) across full option chains to isolate structural dealer pinning, volatility flip points, and delta acceleration walls.
+1. **Call−put gamma book**: Black-Scholes gamma on the live chain, scaled by open interest and the index lot. Walls are the largest call-gamma and put-gamma strikes. The flip is where those magnitudes cross. The sign is call magnitude minus put magnitude. It is not a pin.
 2. **OrderFlow & Sentinel Microstructure**: Sub-second trade-by-trade tape aggregation, Cumulative Volume Delta (CVD), multi-timeframe volume profiling, iceberg absorption detection, and aggressive institutional block identification.
-3. **Probability Target Engine**: Tri-scenario mathematical forecasting (Bullish Expansion, Bearish Breakdown, Neutral Pinning) computing drift-adjusted first-passage-time barrier touch probabilities $P(\text{Touch Target})$ and Black-76 Greek repricing across candidate structures ($\pm 5$ strikes ATM).
+3. **Target Engine**: three scenarios (bull, base range, bear). Touch probability and Black-76 repricing are decision support. The base case is a range. It is not a pin.
 4. **Algorithmic Recommendations Engine**: Multi-strategy opportunity generation (Gamma Squeeze, Momentum, Absorption Fade, 0DTE Theta Harvest) with confluence clustering, dynamic quality scoring ($0 \text{--} 100$), and strict risk/reward profiling.
 5. **Institutional Session Commentary Engine**: Decoupled multi-detector event narration producing structured market stories and conditional suggestion bites, protected by a zero-hallucination factual verifier.
 
@@ -187,7 +187,7 @@ flowchart TB
 ### Module 2: Quantitative GEX & Volatility Regime Engine (`gex/`, `regime/`)
 
 #### 2.1 Mathematical Formulation
-The GEX module calculates dealer gamma exposure assuming dealers are net long calls and short puts (with sign-inversion safeguards for Indian retail dynamics).
+Both legs are stored negative (`short_call_short_put`). Walls are the largest call-gamma and put-gamma magnitudes. The regime total and the flip are call magnitude minus put magnitude. POSITIVE means call-heavy. NEGATIVE means put-heavy. Who hedges is unmeasured. A second sign model is rejected.
 
 1. **Option Greeks (Black-76 / Black-Scholes)**:
    For forward price $F$, strike $K$, annualized time-to-expiry $T$, risk-free rate $r$, and implied volatility $\sigma$:
@@ -197,13 +197,12 @@ The GEX module calculates dealer gamma exposure assuming dealers are net long ca
    $$\text{Charm} = \frac{\partial \Delta}{\partial T} = e^{-r T} n(d_1) \left[ \frac{d_2}{2 T} - \frac{r}{\sigma \sqrt{T}} \right]$$
 
 2. **Net Gamma Exposure ($GEX$)**:
-   $$\text{Call GEX}_K = \Gamma_{\text{call}, K} \times OI_{\text{call}, K} \times S^2 \times \text{LotSize} \times 0.01$$
-   $$\text{Put GEX}_K = -\Gamma_{\text{put}, K} \times OI_{\text{put}, K} \times S^2 \times \text{LotSize} \times 0.01$$
-   $$\text{Net GEX}_K = \text{Call GEX}_K + \text{Put GEX}_K$$
+   $$\text{magnitude}_K = \Gamma_K \times OI_K \times S^2 \times \text{LotSize} \times 0.01$$
+   Both stored legs are negative. The book balance is call magnitude minus put magnitude.
 
 3. **Structural Levels**:
-   * **Call Wall ($CW$)**: Strike with $\max(\text{Call GEX}_K)$ — dominant upside resistance.
-   * **Put Wall ($PW$)**: Strike with $\min(\text{Put GEX}_K)$ (maximum absolute put gamma) — dominant downside support.
+   * **Call-gamma strike**: largest call-gamma magnitude.
+   * **Put-gamma strike**: largest put-gamma magnitude.
    * **Absolute Gamma Flip ($GF$)**: The price level $S$ where total market gamma crosses zero:
      $$\text{Total GEX}(S) = 0$$
    * **Magnet**: The strike with maximum absolute total gamma exposure $\max(|\text{Net GEX}_K|)$, acting as a price attractor.
@@ -211,9 +210,9 @@ The GEX module calculates dealer gamma exposure assuming dealers are net long ca
      $$\text{Max Pain} = \arg\min_K \sum_i \left[ \max(0, S_i - K) \cdot OI_{\text{call}, i} + \max(0, K - S_i) \cdot OI_{\text{put}, i} \right]$$
 
 4. **Regime Classification (`regime/classify.py`)**:
-   * **Positive Gamma Regime ($S > GF$)**: Market volatility dampens. Dealers trade counter to trend (buying dips, selling rips). Expect mean reversion and wall pinning.
-   * **Negative Gamma Regime ($S < GF$)**: Market volatility expands. Dealers trade with the trend (selling falling markets, buying rising markets). Expect momentum breakouts, slippage, and trend acceleration.
-   * **Neutral Transition Zone ($|S - GF| \le 35\text{ pts}$)**: Structural inflection point prone to false breakouts and rapid shifts in dealer positioning.
+   * **Call-heavy book**: call-gamma magnitude is larger than put-gamma magnitude. This is not a forecast that dealers will fade the tape.
+   * **Put-heavy book**: put-gamma magnitude is larger. This is not a forecast that the move will accelerate.
+   * **Near the call−put balance**: the two books are close. De-size when the aggregate book and the local side of the balance disagree.
 
 ---
 
@@ -327,10 +326,10 @@ The engine generates a 10-strike ladder ($\pm 5$ strikes around spot) evaluating
 #### 5.2 Institutional Recommendation Engine (`analytics/trade_ideas.py`)
 Evaluates 7 distinct trading strategies, applying a strict quality threshold ($\text{Score} \ge 75$):
 1. **ATM Momentum Play**: High delta ($\approx 0.50$), tight bid-ask spread, aligned with CVD flow and VWAP expansion.
-2. **Institutional Structure Play**: Enters at support/resistance wall defense with confirmed delta absorption.
+2. **Structure at a gamma strike**: a location plus tape absorption. The strike is not a floor or a ceiling that gets defended.
 3. **Gamma Squeeze / Breakdown Lotto**: OTM convexity strike near major GEX acceleration levels when Gamma Blast score exceeds $60$.
 4. **OrderFlow Iceberg Absorption Fade**: Mean-reversion play fading exhausted sweeps at VWAP $\pm 1\sigma$ envelopes.
-5. **0DTE Vanna-Charm Afternoon Theta Compression**: Harvests rapid decay on expiry afternoons ($> 14:00$ IST) targeting pin strikes.
+5. **Expiry afternoon**: near-the-money gamma is high because time is short. The target is a strike on the map. It is not a pin harvest.
 6. **Volatility Dispersion / Long Gamma Explosion**: Exploits compressed IV prior to impending catalyst or flip break.
 7. **Zero-Cost Ratio Risk Reversal**: Synthesizes 1x2 ratio structures funding OTM convexity via ATM sales.
 
@@ -350,14 +349,14 @@ Fourteen decoupled, stateless detectors evaluate incoming market data snapshots 
 |:---|:---|:---|
 | **Walls** | `detectors/walls.py` | Spot approaching within 15 pts of Call/Put Wall; wall migrations; wall breaks. |
 | **Secondary Walls** | `detectors/secondary_walls.py` | Buildup shifts towards secondary backup resistance/support zones. |
-| **Pinned** | `detectors/pinned.py` | Spot tightly trapped within $\pm 10$ pts of Magnet / Max Pain in low-vol regime. |
+| **Near the magnet** | `detectors/pinned.py` | Spot within about 10 points of the magnet or max pain while absolute concentration is high. A location, not a trap. |
 | **VWAP Dynamics** | `detectors/vwap_dynamics.py` | VWAP crosses, retests, and rejections at $\pm 1\sigma / \pm 2\sigma$ envelopes. |
 | **Session Structure** | `detectors/session_structure.py` | Initial Balance (IB 09:15–10:15) high/low breakouts and range extensions. |
 | **Opening Gap** | `detectors/gap.py` | Overnight gap open size, gap fill probability, and auction acceptance. |
 | **Impulse** | `detectors/impulse.py` | High-velocity candle bars with anomalous volume and delta expansion. |
 | **Footprint** | `detectors/footprint.py` | Heavy institutional tape imbalances, trapped bids/asks at extremes. |
 | **Straddle Decay** | `detectors/straddle_decay.py` | ATM straddle premium burn rates vs theoretical time-decay curve. |
-| **Expiry Dynamics** | `detectors/expiry.py` | 0DTE afternoon gamma acceleration and pinning tendencies. |
+| **Expiry** | `detectors/expiry.py` | Closing session. Gamma is high near the money. That is not a squeeze and not a pin. |
 | **PCR Flow** | `detectors/pcr_flow.py` | Rapid intraday shifts in Put-Call Ratio ($\Delta \text{PCR} > 0.15$ in 15 mins). |
 | **Sector Breadth** | `detectors/sector_breadth.py` | Cross-sector confirmation across 14 NSE sectoral indices (e.g., Bank, IT, Auto). |
 | **Volatility** | `detectors/volatility.py` | Sudden spikes in India VIX or ATM implied volatility. |
@@ -620,7 +619,7 @@ cubera-gex-cockpit/
 │   └── maxpain.py                  # Expiry payout minimization solver
 ├── regime/                         # Volatility Regime & Execution Playbook
 │   ├── classify.py                 # Positive vs Negative Gamma regime classifier
-│   └── playbook.py                 # Actionable dealer positioning trading playbook
+│   └── playbook.py                 # Book-balance sentence. Not a hedge playbook.
 ├── resilience/                     # Fault Tolerance & Feed Health
 │   ├── adaptive_poller.py          # Adaptive rate limiting and request scheduling
 │   ├── circuit_breaker.py          # Automatic failover on connection failure

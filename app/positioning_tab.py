@@ -645,12 +645,12 @@ def _render_section_d(data) -> None:
         if gex_val is not None:
             gex_m = gex_val / 1_000_000
             g1.metric(
-                "⚡ Net Dealer GEX",
+                "Writer imbalance",
                 f"₹{gex_m:.1f}M",
-                "🟢 Positive (stabilising)" if gex_val > 0 else "🔴 Negative (amplifying)",
+                "Call-heavy" if gex_val > 0 else "Put-heavy",
                 delta_color="off",
-                help="Positive GEX → dealers buy dips / sell rallies (damping). "
-                     "Negative GEX → dealers amplify moves.",
+                help="Call magnitude minus put magnitude. "
+                     "Call-heavy and put-heavy are not a fade or a chase.",
             )
         if gamma_flip is not None:
             dist = gamma_flip - spot if spot else None
@@ -659,7 +659,7 @@ def _render_section_d(data) -> None:
                 f"{gamma_flip:,.0f}",
                 f"{dist:+,.0f} pts from spot" if dist is not None else "",
                 delta_color="off",
-                help="Level where dealer gamma flips sign. Below = negative gamma territory (volatile).",
+                help="Call−put balance. Above or below it is book balance, not a volatility forecast.",
             )
     else:
         st.info("GEX data not available — refresh a GEX tab first.")

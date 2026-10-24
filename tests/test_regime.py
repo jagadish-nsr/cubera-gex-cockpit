@@ -1,16 +1,15 @@
-"""Hand-checkable regime classification + one-sentence playbook (Phase 2 logic).
+"""Book-balance classification. The sign is call gamma minus put gamma.
 
-Wall-strength is judged RELATIVE to the flip (gex-math skill): a put wall above
-the flip is real support; below it, a speed bump. Regime sign that disagrees
-with the spot-vs-flip zone is a CONFLICT -> de-size (CLAUDE.md), never blindly
-fade a thesis-aligned move.
+A put-gamma strike below the flip is concentration on the put side of the
+balance, not a failed floor. Disagreement between the aggregate sign and the
+spot-vs-flip side is a CONFLICT -> de-size.
 """
 
 from regime.classify import classify
 
 
-def test_positive_range_fade():
-    # spot above flip, inside the wall channel -> positive-gamma range fade.
+def test_call_heavy_book_between_strikes():
+    # spot above flip, inside the wall channel -> call gamma larger than put gamma.
     v = classify(
         spot=7578, call_wall=7600, put_wall=7000, flip=7465,
         regime="POSITIVE", total_net_gex=40e9, magnet=7600, max_pain=7000,
@@ -20,17 +19,21 @@ def test_positive_range_fade():
     assert v.in_positive_zone is True   # spot >= flip
     assert v.call_wall_dist_pts == 22   # 7600 - 7578
     assert v.put_wall_dist_pts == -578  # 7000 - 7578
-    assert v.put_wall_role == "speed bump"   # put wall 7000 < flip 7465
+    assert v.put_wall_role == "put concentration, below balance"  # 7000 < flip 7465
+    assert v.call_wall_role == "call concentration"
     assert v.conflict is False
-    assert v.bias == "range fade"
-    assert v.headline == "Positive gamma, flip 113pts below, call wall 22 above — range fade"
-    assert v.mode_label == "RANGE-BOUND"
-    assert "range-bound between" in v.mode_plain.lower()
-    assert "7,000" in v.mode_plain and "7,600" in v.mode_plain  # support/resistance shown
+    assert v.bias == "call gamma larger than put gamma"
+    assert v.headline == (
+        "Call-heavy book, flip 113pts below, call wall 22 above — "
+        "call gamma larger than put gamma"
+    )
+    assert v.mode_label == "CALL-HEAVY"
+    assert "not a fade signal" in v.mode_plain.lower()
+    assert "7,000" in v.mode_plain and "7,600" in v.mode_plain
 
 
-def test_negative_momentum():
-    # spot below flip, negative regime -> momentum / trade with the break.
+def test_put_heavy_book():
+    # spot below flip, negative regime -> put gamma larger than call gamma.
     v = classify(
         spot=5000, call_wall=5200, put_wall=4800, flip=5100,
         regime="NEGATIVE", total_net_gex=-1e9,
@@ -39,10 +42,10 @@ def test_negative_momentum():
     assert v.flip_side == "above"
     assert v.in_positive_zone is False
     assert v.conflict is False
-    assert v.bias.startswith("momentum")
-    assert v.headline.startswith("Negative gamma, flip 100pts above")
-    assert v.mode_label == "TRENDING (volatile)"
-    assert "amplif" in v.mode_plain.lower() or "fast moves" in v.mode_plain.lower()
+    assert v.bias == "put gamma larger than call gamma"
+    assert v.headline.startswith("Put-heavy book, flip 100pts above")
+    assert v.mode_label == "PUT-HEAVY"
+    assert "does not by itself" in v.mode_plain.lower()
 
 
 def test_conflict_desizes():
@@ -76,5 +79,5 @@ def test_plain_mode_handles_none_magnet():
         spot=100, call_wall=110, put_wall=90, flip=95,
         regime="POSITIVE", total_net_gex=1e9,
     )
-    assert v.mode_label == "RANGE-BOUND"
+    assert v.mode_label == "CALL-HEAVY"
     assert v.mode_plain  # non-empty, no formatting crash

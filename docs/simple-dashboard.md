@@ -248,11 +248,11 @@ Hover any level for `name · value · what it is`.
 
 | Level | Colour | What it is |
 |---|---|---|
-| **Call wall** | red | Peak call gamma/OI — the biggest overhead positioning cluster. |
-| **Expiry pin** | amber (dashed) | Max pain — the strike where most option value expires worthless. |
-| **Magnet** | indigo | The gamma-weighted pull point. |
-| **Gamma flip** | grey | Where net dealer gamma changes sign (long-gamma above / short-gamma below, under the assumed sign model). |
-| **Put wall** | green | Peak put gamma/OI — the biggest support cluster. |
+| **Call wall** | red | Largest call-gamma strike. A concentration, not a ceiling. |
+| **Max pain** | amber (dashed) | Settlement strike that minimises writer payout. Not a pin. |
+| **Magnet** | indigo | Strike with the largest absolute gamma. Not a pull. |
+| **Gamma flip** | grey | Where call-gamma magnitude and put-gamma magnitude cross. Above it the call book is larger. Below it the put book is larger. |
+| **Put wall** | green | Largest put-gamma strike. A concentration, not a floor. |
 | **Spot** | ink | Now. |
 
 ### 4.4 The fixed axis and off-scale markers *(important)*
@@ -587,9 +587,10 @@ feed panel (also runs automatically when a >2 min gap is detected).
   range is a **lower bound**, which can **false-flag a day as "compressed / blast-friendly"**. On a
   **Dhan** feed the true day OHLC is used and this doesn't apply; the caption under the candle tells
   you which one you're looking at.
-- **The dealer-sign model is UNVALIDATED for India.** Gamma flip and the walls depend on it. Evidence
-  leans toward the inverted "model B" but it's a lean, not a verdict — `DEALER_SIGN_MODEL` stays on
-  the US default. Treat flip-based reads with extra suspicion.
+- **Book balance is call magnitude minus put magnitude.** Walls are where gamma
+  sits. The sign is not a pin forecast, and there is no second convention to
+  switch on. Who delta-hedges is unmeasured. Treat a flip-based trade with that
+  limit. Absolute GEX rank is the separate volatility context.
 - **Blast edge doesn't survive spread** ([B1]) — confirmation only.
 - **The ⚗️ study model (§6.3) is experimental**, on a small sample of expiries — a diagnostic shown
   beside the hero for comparison, not a validated signal, and it confirms late by design.

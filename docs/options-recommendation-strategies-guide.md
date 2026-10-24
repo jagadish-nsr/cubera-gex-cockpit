@@ -21,12 +21,12 @@ Rather than displaying a static number of trade ideas regardless of quality, the
 │ Strategy             │ Strike & Delta           │ R:R Ratio             │ Core Edge / Trigger                  │
 ├──────────────────────┼──────────────────────────┼───────────────────────┼──────────────────────────────────────┤
 │ 1. MOMENTUM          │ ATM (Δ ~0.50)            │ 1 : 2.5               │ Retest & bounce off Session VWAP     │
-│ 2. STRUCTURE         │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Wall defense & reversal bounce       │
-│ 3. GAMMA SQUEEZE     │ At GEX Wall (Δ ~0.28)    │ 1 : 3.5               │ Breach of Wall + aggressive CVD push │
+│ 2. STRUCTURE         │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Location at a gamma strike           │
+│ 3. STRIKE BREAK      │ Near a gamma strike (Δ ~0.28) │ 1 : 3.5            │ A print through the strike           │
 │ 4. ICEBERG FADE      │ ATM (Δ ~0.50)            │ 1 : 4.5               │ Passive limit absorption at ±1σ VWAP │
 │ 5. VANNA-CHARM       │ OTM ± 2 steps (Δ ~0.20)  │ 1 : 2.0               │ Expiry afternoon theta compression   │
 │ 6. VOL DISPERSION    │ ATM (Δ ~0.50)            │ 1 : 4.0               │ Compression breakout / long gamma    │
-│ 7. RATIO REVERSAL    │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Moderate trending wall rotation      │
+│ 7. RATIO REVERSAL    │ ATM ± 1 step (Δ ~0.40)   │ 1 : 3.0               │ Drift with a gamma strike on the path │
 └──────────────────────┴──────────────────────────┴───────────────────────┴──────────────────────────────────────┘
 ```
 
@@ -94,19 +94,19 @@ Capitalizes on the defensive behavior of institutional option writers who protec
 
 ---
 
-### Strategy 3: Gamma Squeeze / Breakdown Lotto (`GAMMA SQUEEZE`)
+### Strategy 3: Convex break at a gamma strike (`STRIKE BREAK`)
 
 #### 1. Concept & Objective
-Designed for explosive non-linear gains ($100\%$ to $250\%+$). Targets the exact moment when an institutional wall collapses. When a Call Wall is breached by high-volume aggressive buying, short call dealers enter negative gamma, forcing them to frantically buy underlying futures to hedge, triggering a violent **Gamma Blast** squeeze.
+A fast-move template when spot leaves a gamma concentration with heavy orderflow. The concentration is a map. It does not mean a dealer must buy futures.
 
 #### 2. Data Points Used
 - **Call Wall / Put Wall OI Concentration**: Relative ratio of wall OI vs average strike OI.
-- **Dealer Net Gamma Gradient ($\partial \text{GEX} / \partial S$)**: Speed at which dealer delta changes.
+- **Gamma slope along the ladder**: how fast absolute gamma changes from strike to strike. It is a shape of the book. It is not a dealer-delta speed.
 - **Aggressive OrderFlow Surge**: Spikes in CVD crossing the 90th percentile of intraday volume.
 - **India VIX Momentum**: Sudden intraday expansion in volatility.
 
 #### 3. Inference Made
-- If spot crosses the Call Wall with positive orderflow volume, market makers who sold calls must purchase spot/futures to rebalance deltas. This self-reinforcing buying spiral creates convex upward velocity, rapidly inflating OTM call premiums.
+- If spot leaves the call-gamma strike with heavy buy orderflow, premiums on that side can reprice quickly. That is an observation about the print. It is not a statement that a market maker must buy futures.
 
 #### 4. Strike Selection
 - **Call (CE)**: At the Call Wall strike: $K = CW$ (or $\text{ATM} + 2\cdot\text{step}$ if $CW \le S$).
@@ -145,7 +145,7 @@ Capitalizes on passive institutional liquidity absorption occurring at the outer
 ### Strategy 5: 0DTE Vanna-Charm Afternoon Theta Compression (`VANNA-CHARM`)
 
 #### 1. Concept & Objective
-Exploits second-order Greek acceleration ($\partial \Delta / \partial t$) during expiry sessions or late-cycle market sessions. When spot is pinned between the Put Wall and Call Wall with Gamma Flip near spot, dealer delta hedging dampens volatility, causing OTM options premiums to collapse towards zero.
+Expiry-afternoon theta template. Spot between the gamma strikes is a location. It is not a dealer pin, and it does not by itself mean premiums will collapse.
 
 #### 2. Strike Selection & Execution
 - **Call (CE)**: OTM Strike at $\text{ATM} + 2 \times \text{step}$ ($\Delta \approx 0.20$).
@@ -168,7 +168,7 @@ Deployed during compressed volatility regimes where India VIX drops or market co
 ### Strategy 7: Zero-Cost Ratio Risk Reversal (`RATIO REVERSAL`)
 
 #### 1. Concept & Objective
-Synthetic ratio structure where buying near-money options targets the expected resistance of the wall. Formulated for steady trending regimes where spot is expected to move toward the Call Wall or Put Wall without blasting through it, providing high percentage returns with zero theta drag on sideways chop.
+A ratio structure aimed at a gamma strike. The strike is a concentration. The structure does not assume spot must stop there, and it does not assume spot must travel to the other strike. The user confirms. Defined risk is the wing width times the lot.
 
 #### 2. Strike Selection & Execution
 - **Call (CE)**: Strike at $\text{ATM} + \text{step}$ ($\Delta \approx 0.40$).
@@ -208,7 +208,7 @@ $$\text{Final Conviction Score} = \text{Sigmoid}\left(\text{Base Score} + \sum \
 
 ### Confluence Factors:
 1. **ADX Trend Regime (`compute_adx`)**:
-   - `ADX >= 25` (Strong Trend): $+5\text{ pts}$ bonus for Momentum, $+10\text{ pts}$ for Gamma Squeeze.
+   - `ADX >= 25` (Strong Trend): $+5\text{ pts}$ bonus for Momentum, $+10\text{ pts}$ for a strike break.
    - `ADX < 20` (Choppy Range): $-10\text{ pts}$ penalty on Momentum; favors Iceberg Fade and Vanna-Charm.
 2. **CVD Divergence (`compute_cvd_divergence`)**:
    - `BULLISH_ABSORPTION`: Spot printing flat/lower lows while CVD rises $\to +8\text{ pts}$ on CE.

@@ -88,15 +88,16 @@ Historically, retail and discretionary trading setups have relied on crude heuri
 
 ### Supported Indices & Horizons
 - **Instruments:**
-  - `NIFTY 50` (50-point strike spacing, default underlying lot size 65 / 75).
-  - `BANK NIFTY` (100-point strike spacing, default underlying lot size 30 / 15).
-  - `SENSEX` (100-point strike spacing, default underlying lot size 20 / 10).
+  - `NIFTY 50` — every Tuesday, 50-point strikes, lot 65.
+  - `BANK NIFTY` — last Tuesday of the month, 100-point strikes, lot 30.
+  - `SENSEX` — every Thursday, 100-point strikes, lot 20.
+  A holiday moves that expiry to the previous trading day.
 - **Time Horizons ($h$):**
   - **$30\text{ mins}$ ($0.5\text{ hr}$):** Rapid orderflow continuation or scalping reaction.
   - **$60\text{ mins}$ ($1.0\text{ hr}$):** Morning trend extension following the 09:15–09:45 opening range.
   - **$120\text{ mins}$ ($2.0\text{ hr}$):** Default tactical intraday swing horizon.
   - **$240\text{ mins}$ ($4.0\text{ hr}$):** Mid-day rotation across structural GEX walls.
-  - **$375\text{ mins}$ (Full Session):** End-of-day settlement and closing auction pin target.
+  - **$375\text{ mins}$ (Full Session):** The close. A settlement location, not a pin target.
 
 ---
 
@@ -109,17 +110,17 @@ The engine extracts normalized, standardized signals from market state across 10
 3. **Cumulative Volume Delta Slope ($\text{CVD}_{15\text{m}}$):** 15-minute slope of buyer vs. seller aggression.
 4. **Put-Call Ratio Velocity ($\Delta\text{PCR}$):** Rate of change in session volume and OI PCR.
 5. **GEX Wall Proximity ($d_{\text{wall}}$):** Relative distance to the nearest Call Wall and Put Wall.
-6. **Dealer Gamma Regime ($\Gamma_{\text{net}}$):** Positive gamma (pinning/reversion) vs. Negative gamma (accelerating squeeze).
-7. **Gamma Flip Boundary ($GF$):** Directional bias conditioned on trading above or below the zero-gamma boundary.
+6. **Book balance ($\Gamma_{\text{net}}$):** Call-gamma magnitude minus put-gamma magnitude. Call-heavy and put-heavy are inventory words, not a pin or a squeeze.
+7. **Call−put balance ($GF$):** The price where that difference crosses zero. It is not a directional switch.
 8. **IV Skew Gradient:** Slope of OTM Put IV vs. OTM Call IV (institutional hedging demand).
 9. **Realized vs. Implied Volatility Spread ($\text{IV} - \text{RV}$):** Volatility risk premium indicator.
 10. **Pre-Market Gap Impulse:** Initial gap magnitude relative to the 20-day Average True Range (ATR).
 
 ### 3.2 Scenario Probability Engine (`target_engine/scenarios.py`)
 The directional features are combined through calibrated weights to compute logit scores for three mutually exclusive, collectively exhaustive scenarios:
-- **$\text{Bull}$:** Trending impulse breaking toward upper resistance or Call Wall.
-- **$\text{Base (Range)}$:** Mean-reversion, consolidation, or gamma pinning within the prevailing value area.
-- **$\text{Bear}$:** Downward impulse pressing toward lower support or Put Wall.
+- **Bull:** upside path. The call-gamma strike is a concentration on that path, not a ceiling the path must stop at.
+- **Base (Range):** a range inside the book. Live wall-proximity features are forced to zero, so a nearby gamma strike is not a pin boost.
+- **Bear:** downside path. The put-gamma strike is a concentration on that path, not a floor.
 
 The raw scores are transformed into valid probabilities using a Dirichlet-calibrated Softmax function:
 $$P(s) = \frac{e^{\lambda z_s}}{\sum_{j \in \{\text{bull}, \text{base}, \text{bear}\}} e^{\lambda z_j}}, \quad \sum P(s) = 1.0$$
@@ -280,7 +281,7 @@ Three distinct side-by-side cards display the underlying targets for each scenar
    - **Forecast ATM IV:** Projected implied volatility under the bullish regime.
    - **Structural Anchor Reason:** Explains why this target was selected (e.g., Call Wall, $0.6\sigma_h$ move).
 2. **Base / Range Target Card (Blue Accent):**
-   - **Target Pin:** Central expected pin strike (Max Pain or Wall Midpoint).
+   - **Range centre:** the base anchor. Max pain or the mid of the gamma strikes is a location, not an expected pin.
    - **Band Stop:** Outer boundary of the expected range.
    - **$P(\text{Touch Pin})$ & $P(\text{Stay in Band})$:** Reversion and containment metrics.
    - **Forecast ATM IV:** Projected volatility under sideways consolidation.

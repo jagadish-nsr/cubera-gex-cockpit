@@ -240,8 +240,9 @@ Effort: med–high. ⚠️ Direction is dead (research arc); the defensible vers
 (|vanna|→forward vol) into a decision. The dashboard currently stops at "SIDEWAYS/TRENDING".
 
 **Build:** a `_regime_posture_section` (dashboard) keyed to `intraday_vol_regime` tag + exp_rv:
-- **HIGH concentration (calm/pinning)** → mean-revert: fade extremes toward the magnet, sell
-  premium near the walls, tighter stops, size UP.
+- **HIGH concentration** → calmer forward vol in the sample. Do not fade to the
+  magnet because a label says positive gamma. Short strikes, if any, sit outside
+  the gamma concentrations. Defined risk. The user confirms.
 - **LOW concentration (trending/wild)** → respect the break: momentum/breakout, buy premium,
   stops BEYOND the walls, size DOWN.
 - **MID** → neutral / mixed, no vol-regime tilt.

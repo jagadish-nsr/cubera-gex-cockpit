@@ -8,10 +8,10 @@ Synthesizes:
 
 Evaluates 7 institutional options strategies for Calls (CE) and Puts (PE):
 - Strategy 1: ATM Momentum Play (Delta ~0.50, closest to Spot)
-- Strategy 2: Institutional Structure Play (Key buildup strike / wall defense)
-- Strategy 3: Gamma Squeeze / Breakdown Lotto (OTM convexity near major GEX acceleration walls)
-- Strategy 4: OrderFlow Iceberg Absorption Fade (Tape absorption at VWAP +/- 1sigma envelopes)
-- Strategy 5: 0DTE Vanna-Charm Afternoon Theta Compression (Expiry afternoon pinning harvest)
+- Strategy 2: Structure at a gamma strike (a concentration, not a floor or a ceiling)
+- Strategy 3: Strike break (convex break at a gamma strike, delta about 0.28)
+- Strategy 4: OrderFlow Iceberg Absorption (tape absorption; the name keeps FADE as an orderflow label)
+- Strategy 5: Expiry-afternoon vanna and charm (high gamma because time is short; not a pin harvest)
 - Strategy 6: Volatility Dispersion / Long Gamma Explosion (Compressed IV range-breakout convexity)
 - Strategy 7: Zero-Cost Ratio Risk Reversal (Synthetic 1x2 ratio asymmetry targeting walls)
 
@@ -73,7 +73,7 @@ class TradeIdea:
     symbol: str
     side: str                          # "CE" | "PE"
     play_type: str                     # e.g. "ATM Momentum Play", "OrderFlow Iceberg Absorption Fade"
-    play_badge: str                    # "MOMENTUM" | "STRUCTURE" | "GAMMA SQUEEZE" | "ICEBERG FADE" | "VANNA-CHARM" | "VOL DISPERSION" | "RATIO REVERSAL"
+    play_badge: str                    # "MOMENTUM" | "STRUCTURE" | "STRIKE BREAK" | "ICEBERG FADE" | "VANNA-CHARM" | "VOL DISPERSION" | "RATIO REVERSAL"
     strike: float
     option_symbol: str                 # e.g. "NIFTY 24500 CE"
     current_ltp: float                 # Estimated or live Option Premium
@@ -1161,7 +1161,12 @@ def update_trade_idea_live_telemetry(
     if idea.current_ltp > 0.0 and idea.stop_loss >= idea.current_ltp:
         idea.stop_loss = max(0.05, round(idea.current_ltp * 0.72, 2))
 
-    # 2. Live PnL relative to Entry
+    _refresh_trade_idea_pnl(idea, current_spot)
+    return idea
+
+
+def _refresh_trade_idea_pnl(idea: TradeIdea, current_spot: float) -> None:
+    """Recompute MTM, T1 progress, and invalidation buffer after LTP/target updates."""
     if idea.initial_ltp > 0:
         idea.live_pnl_pts = round(idea.current_ltp - idea.initial_ltp, 1)
         idea.live_pnl_pct = round((idea.live_pnl_pts / idea.initial_ltp) * 100.0, 1)
@@ -1169,7 +1174,6 @@ def update_trade_idea_live_telemetry(
         idea.live_pnl_pts = 0.0
         idea.live_pnl_pct = 0.0
 
-    # 3. Target 1 Progress %
     tgt1_pts = idea.target_1 - idea.initial_ltp
     if tgt1_pts > 0:
         prog = ((idea.current_ltp - idea.initial_ltp) / tgt1_pts) * 100.0
@@ -1177,7 +1181,6 @@ def update_trade_idea_live_telemetry(
     else:
         idea.target_progress_pct = 0.0
 
-    # 4. Spot Invalidation Buffer
     if current_spot > 0:
         if idea.side == "CE":
             idea.inval_buffer = current_spot - idea.spot_invalidation
@@ -1186,7 +1189,6 @@ def update_trade_idea_live_telemetry(
             idea.inval_buffer = idea.spot_invalidation - current_spot
             idea.inval_breached = (current_spot > idea.spot_invalidation)
 
-    # 5. Dynamic Time Since Last Active Counter
     if getattr(idea, "last_active_ts", 0.0) > 0 or getattr(idea, "first_active_ts", 0.0) > 0:
         now_sec = time.time()
         lbl, _, _ = format_time_since_active(
@@ -1201,6 +1203,53 @@ def update_trade_idea_live_telemetry(
         else:
             idea.time_since_active_sec = max(0.0, now_sec - idea.last_active_ts) if idea.last_active_ts > 0 else 0.0
 
+
+def refresh_trade_idea_live_mtm(
+    idea: TradeIdea,
+    symbol: str,
+    current_spot: float,
+    *,
+    reprice_targets: bool = True,
+    step: int = 50,
+) -> TradeIdea:
+    """Overlay live option LTP and (optionally) recompute T1/T2/SL from current premium + spot."""
+    update_trade_idea_live_telemetry(idea, symbol, current_spot)
+    if not reprice_targets:
+        return idea
+    ltp = float(idea.current_ltp or 0.0)
+    if ltp <= 0 or current_spot <= 0:
+        return idea
+    greeks = getattr(idea, "greek_attribution", None) or {}
+    atm_iv = float(greeks.get("iv") or greeks.get("sigma") or 0.14)
+    dte_days = float(getattr(idea, "dte_now", None) or 3.0)
+    try:
+        sl, t1, t2, p_t1, p_sl, ev, rr, _g = _reprice_trade_idea_targets(
+            side=idea.side,
+            strike=float(idea.strike),
+            current_ltp=ltp,
+            spot=float(current_spot),
+            inval_spot=float(idea.spot_invalidation or current_spot),
+            tgt1_spot=float(idea.target_1_spot or current_spot),
+            tgt2_spot=float(idea.target_2_spot or current_spot),
+            dte_days=dte_days,
+            atm_iv=atm_iv,
+            step=step,
+        )
+        idea.stop_loss = float(sl)
+        idea.target_1 = float(t1)
+        idea.target_2 = float(t2)
+        idea.p_touch_target_1 = float(p_t1)
+        idea.p_touch_sl = float(p_sl)
+        idea.net_ev_pts = float(ev)
+        idea.risk_reward_ratio = str(rr)
+    except Exception:
+        if idea.stop_loss >= ltp:
+            idea.stop_loss = max(0.05, round(ltp * 0.72, 2))
+        if idea.target_1 <= ltp:
+            idea.target_1 = round(ltp * 1.25, 1)
+        if idea.target_2 <= idea.target_1:
+            idea.target_2 = round(idea.target_1 * 1.25, 1)
+    _refresh_trade_idea_pnl(idea, current_spot)
     return idea
 
 
@@ -1224,7 +1273,7 @@ def _enrich_trade_idea(
     if adx_regime == "TRENDING" and idea.play_badge in ("MOMENTUM", "STRUCTURE"):
         idea.catalyst_tags.append(f"ADX Trending ({adx_5m:.0f})")
     elif adx_regime == "CHOP" and idea.play_badge in ("ICEBERG FADE", "VANNA-CHARM"):
-        idea.catalyst_tags.append("ADX Range Pinning")
+        idea.catalyst_tags.append("ADX chop")
 
     if cvd_divergence == "BULLISH" and idea.side == "CE":
         idea.catalyst_tags.append("Bullish CVD Div")
@@ -1241,7 +1290,7 @@ def _enrich_trade_idea(
     elif fii_macro_bias == "BEARISH" and idea.side == "PE":
         idea.catalyst_tags.append("FII Net Short")
 
-    if is_lunch_chop and idea.play_badge in ("MOMENTUM", "GAMMA SQUEEZE"):
+    if is_lunch_chop and idea.play_badge in ("MOMENTUM", "STRIKE BREAK"):
         idea.catalyst_tags.append("Lunch Chop Caution")
 
     idea.spread_alternative = _build_spread_alternative(idea, contracts_map, step, eff_iv)
@@ -1389,7 +1438,7 @@ def _compute_trade_score(
         score += 8  # Open interest expanding in direction of trade
 
     # 5. Play type specific bonuses & institutional condition tests
-    if "GAMMA SQUEEZE" in pt_upper:
+    if "STRIKE BREAK" in pt_upper:
         dist_to_wall = abs(spot - (call_wall if side == "CE" else put_wall))
         if dist_to_wall <= (spot * 0.006):  # within 0.6% of wall
             score += 12
@@ -1412,13 +1461,11 @@ def _compute_trade_score(
                 score += 10
 
     elif "VANNA" in pt_upper or "CHARM" in pt_upper or "THETA" in pt_upper:
-        # Edge: Pinning between walls & near Gamma Flip in low-VIX / calm market
-        is_pinned = (put_wall <= spot <= call_wall) or (abs(call_wall - put_wall) > 0 and put_wall * 0.998 <= spot <= call_wall * 1.002)
-        if is_pinned:
+        # Charm while spot sits between the gamma strikes. Near the balance is not a pin bonus.
+        inside_corridor = (put_wall <= spot <= call_wall) or (abs(call_wall - put_wall) > 0 and put_wall * 0.998 <= spot <= call_wall * 1.002)
+        if inside_corridor:
             score += 10
-        if flip > 0 and abs(spot - flip) <= max(35.0, spot * 0.002):
-            score += 8
-        if abs(bias_score) <= 2.5:  # Balanced market ideal for theta compression
+        if abs(bias_score) <= 2.5:
             score += 8
 
     elif "VOL" in pt_upper or "DISPERSION" in pt_upper:
@@ -1451,11 +1498,8 @@ def _compute_trade_score(
             no_edge = getattr(scenario_set, "no_edge", False)
 
             if no_edge or p_base >= 0.45:
-                # Range dominance / pinning edge
-                if "VANNA" in pt_upper or "CHARM" in pt_upper or "ICEBERG" in pt_upper:
-                    score += 10  # Range-pinning setups thrive in base regime
-                elif "MOMENTUM" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
-                    score -= 8   # Breakouts fail in range-dominant regimes
+                # A base path is a range on the scenario dial. It does not add a pin point.
+                pass
             else:
                 # Confirmed directional edge
                 if side == "CE":
@@ -1477,19 +1521,17 @@ def _compute_trade_score(
     if adx_regime:
         a_reg = str(adx_regime).upper()
         if a_reg == "CHOP":
-            if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
-                score -= 10  # Penalize breakouts in low-ADX range bound chop
-            elif "ICEBERG" in pt_upper or "VANNA" in pt_upper or "CHARM" in pt_upper or "VOL DISPERSION" in pt_upper:
-                score += 6   # Mean-reversion / fade edge thrives in chop
+            if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "STRIKE BREAK" in pt_upper:
+                score -= 10  # A chase is a poor fit when ADX says the tape is choppy
         elif a_reg == "TRENDING":
             if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper:
                 score += 8   # Trend follow-through confirmed by ADX > 25
             elif "ICEBERG" in pt_upper or "VANNA" in pt_upper:
-                score -= 8   # Fading strong trends is high-risk
+                score -= 8   # A chop setup is a poor fit when ADX says the tape is trending
 
     # 8. Time-of-Day / RVOL Lunch Hour Filter (Weight: -10 pts)
     if is_lunch_chop:
-        if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+        if "MOMENTUM" in pt_upper or "STRUCTURE" in pt_upper or "STRIKE BREAK" in pt_upper:
             score -= 10  # Suppress naked momentum during 11:30-13:30 low-volume theta bleed
 
     # 9. OrderFlow CVD Slope Divergence Filter (Weight: ±8 pts)
@@ -1537,7 +1579,7 @@ def _compute_trade_score(
     # 12. Intraday IV Percentile / Crush Gate (Weight: ±6 pts)
     if atm_iv is not None and atm_iv > 0:
         if atm_iv < 0.115:
-            if "MOMENTUM" in pt_upper or "VOL DISPERSION" in pt_upper or "GAMMA SQUEEZE" in pt_upper:
+            if "MOMENTUM" in pt_upper or "VOL DISPERSION" in pt_upper or "STRIKE BREAK" in pt_upper:
                 score += 4
         elif atm_iv > 0.165:
             if "MOMENTUM" in pt_upper:
@@ -1560,16 +1602,16 @@ def _compute_trade_score(
             elif side == "CE" and "MOMENTUM" in pt_upper and is_gap_unfilled:
                 score -= 6   # Penalize long momentum fighting an unfilled bearish gap
         elif pm_reg == "SHORT_GAMMA_WALL_TEST":
-            if side == "CE" and "GAMMA SQUEEZE" in pt_upper:
-                score += 6   # Call Wall under immediate pressure from pre-open equilibrium
+            if side == "CE" and "STRIKE BREAK" in pt_upper:
+                score += 6   # Open is at the call-gamma strike. Location only.
         elif pm_reg == "PUT_WALL_BREAKDOWN_TEST":
-            if side == "PE" and ("GAMMA SQUEEZE" in pt_upper or "STRUCTURE" in pt_upper):
-                score += 6   # Put Wall under immediate defense/breakdown pressure
-        elif pm_reg in ("AUCTION_BALANCED", "GAP_UP_INTO_POS_GAMMA", "GAP_DOWN_INTO_POS_GAMMA"):
+            if side == "PE" and ("STRIKE BREAK" in pt_upper or "STRUCTURE" in pt_upper):
+                score += 6   # Open is at the put-gamma strike. Location only.
+        elif pm_reg == "AUCTION_BALANCED":
             if "ICEBERG" in pt_upper or "VANNA" in pt_upper or "CHARM" in pt_upper:
-                score += 4   # Balanced or positive gamma open favors mean-reversion
+                score += 4   # Flat open. Not a call-heavy fade bonus.
             elif "MOMENTUM" in pt_upper:
-                score -= 3   # Mean-reversion regimes have lower morning momentum follow-through
+                score -= 3   # Flat open. Momentum follow-through is not assumed.
 
     # Clamp to [15, 95]
     score = max(15, min(95, score))
@@ -1644,7 +1686,7 @@ def compute_position_size(
     lots = int(math.ceil(raw_lots * conviction_mult)) if raw_lots > 0 else 0
 
     # Gamma Squeeze Lotto plays have fast time-decay / high convexity: cap to 2 lots for accounts < 10L
-    if play_badge == "GAMMA SQUEEZE" and lots > 2 and account_capital < 1_000_000.0:
+    if play_badge == "STRIKE BREAK" and lots > 2 and account_capital < 1_000_000.0:
         lots = min(lots, 2)
         rationale_tier += " · Lotto Cap (Max 2 Lots)"
 
@@ -1733,15 +1775,15 @@ def _generate_strategy_score_reason(
             else:
                 reasons.append("Passive limit asks absorbing retail buying")
 
-    elif "GAMMA SQUEEZE" in badge:
+    elif "STRIKE BREAK" in badge:
         wall = call_wall if side == "CE" else put_wall
         dist = abs(spot - wall)
         if side == "CE":
-            reasons.append(f"Testing Call Wall ₹{call_wall:,.0f} ({dist:,.0f} pts proximity)")
-            reasons.append("Short-gamma dealer acceleration forcing buy hedging")
+            reasons.append(f"Near the call-gamma strike ₹{call_wall:,.0f} ({dist:,.0f} pts). Not a measured hedge.")
+            reasons.append("A print through the strike is a location on the book, not a squeeze.")
         else:
-            reasons.append(f"Trapdoor breakdown threshold at Put Wall ₹{put_wall:,.0f} ({dist:,.0f} pts proximity)")
-            reasons.append("Dealer negative gamma cascading panic sell hedging")
+            reasons.append(f"Near the put-gamma strike ₹{put_wall:,.0f} ({dist:,.0f} pts). Not a floor.")
+            reasons.append("A print through the strike is a location on the book, not a cascade.")
 
     elif "MOMENTUM" in badge:
         vwap_diff = spot - session_vwap
@@ -1755,8 +1797,8 @@ def _generate_strategy_score_reason(
     elif "VANNA" in badge or "CHARM" in badge:
         range_pts = abs(call_wall - put_wall)
         flip_dist = abs(spot - flip)
-        reasons.append(f"Spot pinned in {range_pts:,.0f} pts range between walls (₹{put_wall:,.0f}–₹{call_wall:,.0f})")
-        reasons.append(f"Proximity to Gamma Flip ₹{flip:,.0f} ({flip_dist:,.0f} pts) accelerating 0DTE charm decay")
+        reasons.append(f"Spot between gamma strikes, {range_pts:,.0f} pts apart (₹{put_wall:,.0f}–₹{call_wall:,.0f})")
+        reasons.append(f"Call−put balance ₹{flip:,.0f} is {flip_dist:,.0f} pts away. Charm decay is not a pin.")
 
     elif "VOL DISPERSION" in badge or "VOL" in badge:
         comp_dist = abs(spot - session_vwap)
@@ -1766,12 +1808,12 @@ def _generate_strategy_score_reason(
     elif "RATIO" in badge:
         target_wall = call_wall if side == "CE" else put_wall
         wall_dist = abs(spot - target_wall)
-        reasons.append(f"Asymmetric drift targeting {'Call Wall' if side == 'CE' else 'Put Wall'} ₹{target_wall:,.0f} ({wall_dist:,.0f} pts away)")
+        reasons.append(f"Path runs toward the {'call-gamma' if side == 'CE' else 'put-gamma'} strike ₹{target_wall:,.0f} ({wall_dist:,.0f} pts away). That strike is a concentration, not a target the price must reach.")
         reasons.append(f"Structured R:R ({idea.risk_reward_ratio}) eliminating sideways theta decay")
 
     elif "STRUCTURE" in badge:
         wall = call_wall if side == "CE" else put_wall
-        reasons.append(f"Institutional structure play off {'Call Wall' if side == 'CE' else 'Put Wall'} ₹{wall:,.0f}")
+        reasons.append(f"Structure near the {'call-gamma' if side == 'CE' else 'put-gamma'} strike ₹{wall:,.0f}. The strike is not a floor or a ceiling.")
         reasons.append(f"Convex risk profile ({idea.risk_reward_ratio}) riding institutional order flow")
 
     else:
@@ -1799,10 +1841,10 @@ def _generate_strategy_score_reason(
 
     # 3. Gamma Regime relative to Flip
     if flip > 0:
-        if side == "CE" and spot > flip:
-            reasons.append(f"Positive gamma buffer (+{spot - flip:,.0f} pts above Flip)")
-        elif side == "PE" and spot < flip:
-            reasons.append(f"Negative gamma acceleration (-{flip - spot:,.0f} pts below Flip)")
+        side_word = "above" if spot >= flip else "below"
+        reasons.append(
+            f"Spot is {abs(spot - flip):,.0f} pts {side_word} the call−put balance. That is book balance, not a fade or a chase."
+        )
 
     # 4. Regime Confluence Context
     adx_reg = getattr(idea, "adx_regime", "NEUTRAL")
@@ -1980,7 +2022,7 @@ def _evaluate_ce_strategies(
             delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
             entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
             spot_invalidation=ce_atm_inval_spot,
-            spot_invalidation_text=f"Spot breakdown below ₹{ce_atm_inval_spot:,.0f} (invalidates VWAP support)",
+            spot_invalidation_text=f"Spot prints below ₹{ce_atm_inval_spot:,.0f} (through the VWAP level)",
             target_1=ce_atm_tgt1,
             target_1_spot=ce_atm_tgt1_spot,
             target_2=ce_atm_tgt2,
@@ -1992,7 +2034,7 @@ def _evaluate_ce_strategies(
             conviction_color=ce_atm_color,
             rationale=(
                 f"Capitalizes on pure delta momentum with {symbol} holding equilibrium. "
-                f"Delta ~{ce_atm_delta:.2f} provides rapid premium expansion with target towards Call Wall ({call_wall:,.0f}).{trend_tag}"
+                f"Delta ~{ce_atm_delta:.2f}. The call-gamma strike is {call_wall:,.0f}. That is a concentration on the path, not a ceiling.{trend_tag}"
             ),
             catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
             is_ws_live=ce_atm_ws,
@@ -2025,9 +2067,9 @@ def _evaluate_ce_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
             current_ltp=ce_struct_ltp,
             delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
-            entry_trigger=f"Passive buyer absorption confirmed at Put Wall (₹{put_wall:,.0f}) or breakout through Gamma Flip (₹{flip:,.0f}).",
+            entry_trigger=f"Tape absorption near the put-gamma strike (₹{put_wall:,.0f}), or a print through the call−put balance (₹{flip:,.0f}). The strike is not a floor.",
             spot_invalidation=ce_struct_inval_spot,
-            spot_invalidation_text=f"Structural breakdown below Put Wall @ ₹{ce_struct_inval_spot:,.0f}",
+            spot_invalidation_text=f"Spot prints below ₹{ce_struct_inval_spot:,.0f}",
             target_1=ce_struct_tgt1,
             target_1_spot=ce_struct_tgt1_spot,
             target_2=ce_struct_tgt2,
@@ -2038,10 +2080,10 @@ def _evaluate_ce_strategies(
             conviction_label=ce_struct_label,
             conviction_color=ce_struct_color,
             rationale=(
-                f"Tied to institutional Put-writer defense at {put_wall:,.0f}. "
-                f"Offers high asymmetry as spot rotates back towards upper distribution.{trend_tag}"
+                f"Spot is near the put-gamma strike ({put_wall:,.0f}). "
+                f"That location is not writer defense and not a floor.{trend_tag}"
             ),
-            catalyst_tags=["OI Buildup Support", "Wall Reversal", "High Asymmetry"],
+            catalyst_tags=["Put-gamma strike", "Tape", "Defined risk"],
             is_ws_live=ce_struct_ws,
             p_touch_target_1=ce_struct_pt1,
             p_touch_sl=ce_struct_psl,
@@ -2050,9 +2092,9 @@ def _evaluate_ce_strategies(
         )
     )
 
-    # 3. CE GAMMA SQUEEZE (h = 30 min)
+    # 3. CE STRIKE BREAK (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
-    ce_sq_score, _, _ = _score("Gamma Squeeze Lotto", ce_sq_doi)
+    ce_sq_score, _, _ = _score("Strike break", ce_sq_doi)
     eff_cw = call_wall if (spot < call_wall <= spot + 6 * step) else (spot + 2 * step)
     ce_sq_inval_spot = round(min(eff_cw - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     ce_sq_tgt1_spot = round(max(eff_cw + sigma_30, spot + max(sigma_30, step * 1.5)), 0)
@@ -2067,13 +2109,13 @@ def _evaluate_ce_strategies(
         TradeIdea(
             symbol=symbol,
             side="CE",
-            play_type="Gamma Squeeze Lotto Play",
-            play_badge="GAMMA SQUEEZE",
+            play_type="Strike break",
+            play_badge="STRIKE BREAK",
             strike=ce_squeeze_k,
             option_symbol=_format_option_symbol(symbol, expiry_tag, ce_squeeze_k, "CE"),
             current_ltp=ce_sq_ltp,
             delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
-            entry_trigger=f"Aggressive market buy orders breach Call Wall (₹{call_wall:,.0f}) with positive CVD volume spike.",
+            entry_trigger=f"Buyers print through the call-gamma strike (₹{call_wall:,.0f}) with positive CVD. A print through the strike is a location, not a squeeze.",
             spot_invalidation=ce_sq_inval_spot,
             spot_invalidation_text=f"Failed breakout: Spot drops back below ₹{ce_sq_inval_spot:,.0f}",
             target_1=ce_sq_tgt1,
@@ -2086,10 +2128,10 @@ def _evaluate_ce_strategies(
             conviction_label=ce_sq_label,
             conviction_color=ce_sq_color,
             rationale=(
-                f"Positioned for convex gamma explosion. A high-volume breach of Call Wall ({call_wall:,.0f}) "
-                f"forces short call-dealers to aggressively buy futures to delta-hedge.{trend_tag}"
+                f"Convex idea only if price holds beyond the call-gamma strike ({call_wall:,.0f}). "
+                f"A breach is a location on the book, not a measured dealer hedge.{trend_tag}"
             ),
-            catalyst_tags=["Dealer Short Covering", "Gamma Blast", "100%+ Multiplier"],
+            catalyst_tags=["Call-gamma strike", "Convex idea", "User confirms"],
             is_ws_live=ce_sq_ws,
             p_touch_target_1=ce_sq_pt1,
             p_touch_sl=ce_sq_psl,
@@ -2132,8 +2174,8 @@ def _evaluate_ce_strategies(
             conviction_label=ce_ice_label,
             conviction_color=ce_ice_color,
             rationale=(
-                f"Institutional passive limit orders absorbing aggressive sellers at {vwap_lower:,.0f}. "
-                f"Asymmetric mean-reversion back towards Session VWAP ({session_vwap:,.0f}).{trend_tag}"
+                f"The tape absorbed selling at {vwap_lower:,.0f}. Session VWAP is {session_vwap:,.0f}. "
+                f"That is order flow, not a gamma floor.{trend_tag}"
             ),
             catalyst_tags=["Iceberg Absorption", "Tape Divergence", "Ultra-Tight Stop"],
             is_ws_live=ce_atm_ws,
@@ -2166,7 +2208,7 @@ def _evaluate_ce_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
             current_ltp=ce_vc_ltp,
             delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
-            entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with Charm acceleration locking pin near Flip (₹{flip:,.0f}).",
+            entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
             spot_invalidation=ce_vc_inval_spot,
             spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
             target_1=ce_vc_tgt1,
@@ -2179,10 +2221,10 @@ def _evaluate_ce_strategies(
             conviction_label=ce_vc_label,
             conviction_color=ce_vc_color,
             rationale=(
-                f"Exploits late-cycle Charm compression (dDelta/dt). OTM call premium decays rapidly "
-                f"as spot remains pinned inside dealer inventory boundaries.{trend_tag}"
+                f"Charm decay while spot sits between the gamma strikes. "
+                f"The corridor is a map, not a dealer pin.{trend_tag}"
             ),
-            catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
+            catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
             is_ws_live=ce_vc_ws,
             p_touch_target_1=ce_vc_pt1,
             p_touch_sl=ce_vc_psl,
@@ -2259,7 +2301,7 @@ def _evaluate_ce_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
             current_ltp=ce_struct_ltp,
             delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
-            entry_trigger=f"Moderate upward drift targeting Call Wall (₹{call_wall:,.0f}) with positive institutional accumulation.",
+            entry_trigger=f"Upward drift with the call-gamma strike at ₹{call_wall:,.0f}. The strike is a concentration, not a magnet.",
             spot_invalidation=ce_rr_inval_spot,
             spot_invalidation_text=f"Spot invalidation below VWAP @ ₹{ce_rr_inval_spot:,.0f}",
             target_1=ce_rr_tgt1,
@@ -2272,10 +2314,10 @@ def _evaluate_ce_strategies(
             conviction_label=ce_rr_label,
             conviction_color=ce_rr_color,
             rationale=(
-                f"Synthetic ratio structure targeting Call Wall ({call_wall:,.0f}). "
+                f"Ratio structure with the call-gamma strike at {call_wall:,.0f}. The strike is not a destination. "
                 f"Eliminates sideways theta drag while capturing directional upside.{trend_tag}"
             ),
-            catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
+            catalyst_tags=["Ratio asymmetry", "Call-gamma strike", "Defined risk"],
             is_ws_live=ce_struct_ws,
             p_touch_target_1=ce_rr_pt1,
             p_touch_sl=ce_rr_psl,
@@ -2415,7 +2457,7 @@ def _evaluate_pe_strategies(
             delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
             entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
             spot_invalidation=pe_atm_inval_spot,
-            spot_invalidation_text=f"Spot breakout above ₹{pe_atm_inval_spot:,.0f} (invalidates VWAP resistance)",
+            spot_invalidation_text=f"Spot prints above ₹{pe_atm_inval_spot:,.0f} (through the VWAP level)",
             target_1=pe_atm_tgt1,
             target_1_spot=pe_atm_tgt1_spot,
             target_2=pe_atm_tgt2,
@@ -2427,7 +2469,7 @@ def _evaluate_pe_strategies(
             conviction_color=pe_atm_color,
             rationale=(
                 f"Downside acceleration vehicle when spot trades below Session Equilibrium. "
-                f"Delta ~{pe_atm_delta:.2f} rapidly monetizes drops towards Put Wall ({put_wall:,.0f}).{trend_tag}"
+                f"Delta ~{pe_atm_delta:.2f}. The put-gamma strike is {put_wall:,.0f}. That is a concentration on the path, not a floor.{trend_tag}"
             ),
             catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
             is_ws_live=pe_atm_ws,
@@ -2460,9 +2502,9 @@ def _evaluate_pe_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
             current_ltp=pe_struct_ltp,
             delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
-            entry_trigger=f"Aggressive seller rejection at Call Wall (₹{call_wall:,.0f}) with seller delta absorption on the tape.",
+            entry_trigger=f"Seller delta on the tape while spot is near the call-gamma strike (₹{call_wall:,.0f}). The strike is not a ceiling.",
             spot_invalidation=pe_struct_inval_spot,
-            spot_invalidation_text=f"Structural breach above Call Wall @ ₹{pe_struct_inval_spot:,.0f}",
+            spot_invalidation_text=f"Print back through ₹{pe_struct_inval_spot:,.0f}",
             target_1=pe_struct_tgt1,
             target_1_spot=pe_struct_tgt1_spot,
             target_2=pe_struct_tgt2,
@@ -2473,10 +2515,10 @@ def _evaluate_pe_strategies(
             conviction_label=pe_struct_label,
             conviction_color=pe_struct_color,
             rationale=(
-                f"Captures institutional rejection off Call Wall ({call_wall:,.0f}). "
-                f"Allows riding the rotation down towards equilibrium with strong risk containment.{trend_tag}"
+                f"Spot is near the call-gamma strike ({call_wall:,.0f}). "
+                f"That location is not a rejection and not a ceiling.{trend_tag}"
             ),
-            catalyst_tags=["Call Wall Rejection", "Short Buildup", "High Asymmetry"],
+            catalyst_tags=["Call-gamma strike", "Tape", "Defined risk"],
             is_ws_live=pe_struct_ws,
             p_touch_target_1=pe_struct_pt1,
             p_touch_sl=pe_struct_psl,
@@ -2485,9 +2527,9 @@ def _evaluate_pe_strategies(
         )
     )
 
-    # 3. PE GAMMA SQUEEZE (h = 30 min)
+    # 3. PE STRIKE BREAK (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
-    pe_sq_score, _, _ = _score("Gamma Squeeze Lotto", pe_sq_doi)
+    pe_sq_score, _, _ = _score("Strike break", pe_sq_doi)
     eff_pw = put_wall if (spot - 6 * step <= put_wall < spot) else (spot - 2 * step)
     pe_sq_inval_spot = round(max(eff_pw + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     pe_sq_tgt1_spot = round(min(eff_pw - sigma_30, spot - max(sigma_30, step * 1.5)), 0)
@@ -2502,13 +2544,13 @@ def _evaluate_pe_strategies(
         TradeIdea(
             symbol=symbol,
             side="PE",
-            play_type="Gamma Squeeze Lotto Play",
-            play_badge="GAMMA SQUEEZE",
+            play_type="Strike break",
+            play_badge="STRIKE BREAK",
             strike=pe_squeeze_k,
             option_symbol=_format_option_symbol(symbol, expiry_tag, pe_squeeze_k, "PE"),
             current_ltp=pe_sq_ltp,
             delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
-            entry_trigger=f"High-volume breakdown below Put Wall (₹{put_wall:,.0f}) with cascading negative market delta.",
+            entry_trigger=f"High-volume print through the put-gamma strike (₹{put_wall:,.0f}). A break is a location, not a cascade.",
             spot_invalidation=pe_sq_inval_spot,
             spot_invalidation_text=f"Trapdoor reversal: Spot recovers back above ₹{pe_sq_inval_spot:,.0f}",
             target_1=pe_sq_tgt1,
@@ -2521,10 +2563,10 @@ def _evaluate_pe_strategies(
             conviction_label=pe_sq_label,
             conviction_color=pe_sq_color,
             rationale=(
-                f"Trapdoor breakdown setup. If Put Wall ({put_wall:,.0f}) collapses, "
-                f"dealer gamma flips deeply negative, forcing panic short-hedging into the abyss.{trend_tag}"
+                f"Convex idea only if price holds beyond the put-gamma strike ({put_wall:,.0f}). "
+                f"A break is a location on the book, not a measured dealer hedge.{trend_tag}"
             ),
-            catalyst_tags=["Trapdoor Breakdown", "Dealer Panic Selling", "100%+ Multiplier"],
+            catalyst_tags=["Put-gamma strike", "Convex idea", "User confirms"],
             is_ws_live=pe_sq_ws,
             p_touch_target_1=pe_sq_pt1,
             p_touch_sl=pe_sq_psl,
@@ -2601,7 +2643,7 @@ def _evaluate_pe_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
             current_ltp=pe_vc_ltp,
             delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
-            entry_trigger=f"Spot pinned between walls (₹{put_wall:,.0f} - ₹{call_wall:,.0f}) with gamma decay locking pin near Flip (₹{flip:,.0f}).",
+            entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
             spot_invalidation=pe_vc_inval_spot,
             spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
             target_1=pe_vc_tgt1,
@@ -2614,10 +2656,10 @@ def _evaluate_pe_strategies(
             conviction_label=pe_vc_label,
             conviction_color=pe_vc_color,
             rationale=(
-                f"Captures accelerated OTM put theta/charm decay. Dealer inventory dampens realized "
-                f"volatility, compressing premium into expiration.{trend_tag}"
+                f"Charm decay while spot sits between the gamma strikes. "
+                f"The corridor is a map, not a dealer pin.{trend_tag}"
             ),
-            catalyst_tags=["0DTE Charm Decay", "Wall Pinning", "High Win Rate"],
+            catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
             is_ws_live=pe_vc_ws,
             p_touch_target_1=pe_vc_pt1,
             p_touch_sl=pe_vc_psl,
@@ -2694,7 +2736,7 @@ def _evaluate_pe_strategies(
             option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
             current_ltp=pe_struct_ltp,
             delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
-            entry_trigger=f"Moderate downward drift targeting Put Wall (₹{put_wall:,.0f}) with steady distribution tape.",
+            entry_trigger=f"Downward drift with the put-gamma strike at ₹{put_wall:,.0f}. The strike is a concentration, not a magnet.",
             spot_invalidation=pe_rr_inval_spot,
             spot_invalidation_text=f"Spot invalidation above VWAP @ ₹{pe_rr_inval_spot:,.0f}",
             target_1=pe_rr_tgt1,
@@ -2707,10 +2749,10 @@ def _evaluate_pe_strategies(
             conviction_label=pe_rr_label,
             conviction_color=pe_rr_color,
             rationale=(
-                f"Synthetic ratio downside structure targeting Put Wall ({put_wall:,.0f}). "
+                f"Ratio structure with the put-gamma strike at {put_wall:,.0f}. The strike is not a destination. "
                 f"Delivers high risk-adjusted return without severe chop decay.{trend_tag}"
             ),
-            catalyst_tags=["Ratio Asymmetry", "Wall Magnet", "Zero Theta Drag"],
+            catalyst_tags=["Ratio asymmetry", "Put-gamma strike", "Defined risk"],
             is_ws_live=pe_struct_ws,
             p_touch_target_1=pe_rr_pt1,
             p_touch_sl=pe_rr_psl,
@@ -2752,7 +2794,7 @@ def generate_trade_recommendations(
     Evaluates 7 institutional strategy playbooks per side:
     1. MOMENTUM: ATM Momentum Play (Delta ~0.50)
     2. STRUCTURE: Institutional Structure Play (Delta ~0.40)
-    3. GAMMA SQUEEZE: Gamma Squeeze / Breakdown Lotto (Delta ~0.28)
+    3. STRIKE BREAK: Convex break at a gamma strike (Delta ~0.28)
     4. ICEBERG FADE: OrderFlow Iceberg Absorption Fade (Delta ~0.50)
     5. VANNA-CHARM: 0DTE Vanna-Charm Theta Compression (Delta ~0.20)
     6. VOL DISPERSION: Volatility Dispersion / Long Gamma Explosion (Delta ~0.50)
@@ -3282,7 +3324,7 @@ def generate_trade_recommendations(
 
     regime_notes = []
     if adx_regime == "CHOP":
-        regime_notes.append("Range chop (ADX < 20) — mean-reversion & spreads favored")
+        regime_notes.append("ADX is below 20. The tape is choppy.")
     elif adx_regime == "TRENDING":
         regime_notes.append("Directional trend (ADX > 25) — momentum favored")
     if sec_breadth != "NEUTRAL":
@@ -3298,20 +3340,20 @@ def generate_trade_recommendations(
         mode_txt = "Secondary fallback mode" if ce_fallback else "High-conviction (Score > 85)"
         exec_summary = (
             f"Bullish conviction dominates ({len(qualified_ce)} Call strategies · {mode_txt}). "
-            f"Directional bias ({bias_score:+.1f}) and buyer flow favor Call upside towards Call Wall ({call_wall:,.0f}).{reg_suffix}"
+            f"Directional bias ({bias_score:+.1f}). Call-gamma strike {call_wall:,.0f} is a concentration, not a ceiling.{reg_suffix}"
         )
     elif qualified_pe and not qualified_ce:
         top_side = "PE"
         mode_txt = "Secondary fallback mode" if pe_fallback else "High-conviction (Score > 85)"
         exec_summary = (
             f"Bearish conviction dominates ({len(qualified_pe)} Put strategies · {mode_txt}). "
-            f"Directional bias ({bias_score:+.1f}) and seller pressure favor Put downside towards Put Wall ({put_wall:,.0f}).{reg_suffix}"
+            f"Directional bias ({bias_score:+.1f}). Put-gamma strike {put_wall:,.0f} is a concentration, not a floor.{reg_suffix}"
         )
     elif qualified_ce and qualified_pe:
         top_side = "BOTH"
         exec_summary = (
             f"Active two-way setups ({len(qualified_ce)} Calls, {len(qualified_pe)} Puts). "
-            f"Range boundaries and dispersion opportunities active between Put Wall ({put_wall:,.0f}) and Call Wall ({call_wall:,.0f}).{reg_suffix}"
+            f"Both sides are on the card. Put-gamma strike {put_wall:,.0f} and call-gamma strike {call_wall:,.0f} are concentrations, not boundaries that hold.{reg_suffix}"
         )
     else:
         top_side = "NEUTRAL"

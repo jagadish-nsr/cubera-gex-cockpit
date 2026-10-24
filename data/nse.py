@@ -1,19 +1,8 @@
-"""NSE Nifty options adapter — STUB.
+"""NSE index option-chain adapter.
 
-Mirrors the SPX project's data/polygon.py split:
-  - fetch_chain(...)        : live pull from the chosen NSE source  (NOT built)
-  - from_nse_results(...)   : pure mapping raw -> OptionsSnapshot   (skeleton)
-
-⚠️ The data SOURCE is the gating decision (docs/nifty-nse-adapter-scope.md §5).
-Pick ONE and verify live before implementing fetch_chain:
-  - Official NSE option-chain endpoint (free, but cookie/header-gated, rate-
-    limited, blocks bots — OK for a PoC, fragile as a daily driver).
-  - Broker API (Kite Connect / Upstox / Fyers / Angel / Dhan) — paid, stable;
-    verify option-chain + OI + greeks coverage and pricing LIVE.
-  - Data vendor (TrueData / GlobalDatafeeds / ...).
-
-What the engine needs per contract (same as SPX): strike, type, OI, IV (or a
-price to derive IV), expiry, plus the Nifty spot (NSE feeds usually include it).
+Maps a Dhan or NSE chain into OptionsSnapshot: strike, type (C/P), OI in lots,
+IV or a price to derive it, expiry, and the index spot. Lot size is applied by
+the GEX engine as contract_size, so this adapter must not leave OI in shares.
 """
 
 from __future__ import annotations

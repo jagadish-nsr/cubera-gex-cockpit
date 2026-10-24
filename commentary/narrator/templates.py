@@ -51,21 +51,21 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         spot = f.get("spot", 0.0)
         dist = f.get("dist_pts", 0.0)
         headline = f"{wtype} Tested at ₹{strike:,.0f}"
-        body = f"Spot ₹{spot:,.1f} is testing the key {wtype} at ₹{strike:,.0f} (within {dist:.1f} pts). Options defense active."
+        body = f"Spot ₹{spot:,.1f} is testing the {wtype} at ₹{strike:,.0f} (within {dist:.1f} pts). The strike is a concentration, not a defense."
 
     elif evt_type == "WALL_BREAK":
         wtype = f.get("wall_type", "WALL").replace("_", " ").title()
         strike = f.get("strike", 0.0)
         spot = f.get("spot", 0.0)
         headline = f"{wtype} Broken at ₹{strike:,.0f}"
-        body = f"Spot ₹{spot:,.1f} has closed beyond the {wtype} at ₹{strike:,.0f}, forcing dealer delta adjustments."
+        body = f"Spot ₹{spot:,.1f} has closed beyond the {wtype} at ₹{strike:,.0f}. The strike is behind price. That is not a measured hedge."
 
     elif evt_type == "WALL_MIGRATION":
         wtype = f.get("wall_type", "WALL").replace("_", " ").title()
         old_k = f.get("old_strike", 0.0)
         new_k = f.get("new_strike", 0.0)
         headline = f"{wtype} Migrated from ₹{old_k:,.0f} to ₹{new_k:,.0f}"
-        body = f"Dealer open interest repositioned as the {wtype} shifted from ₹{old_k:,.0f} to ₹{new_k:,.0f}."
+        body = f"Open interest at the {wtype} moved from ₹{old_k:,.0f} to ₹{new_k:,.0f}."
 
     elif evt_type == "FLIP_LEVEL_CROSS":
         spot = f.get("spot", 0.0)
@@ -78,7 +78,7 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         new_reg = f.get("new_regime", "")
         spot = f.get("spot", 0.0)
         headline = f"Regime Shift: {new_reg}"
-        body = f"Dealer positioning transitioned to {new_reg} at spot ₹{spot:,.1f}. Volatility expectations adjusted."
+        body = f"The book label is now {new_reg} at spot ₹{spot:,.1f}. Call-heavy and put-heavy are not a fade or a chase."
 
     elif evt_type == "ORB_ESTABLISHED":
         h = f.get("orb_high", 0.0)
@@ -137,8 +137,8 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         mp = f.get("max_pain", 0.0)
         spot = f.get("spot", 0.0)
         dist = f.get("dist_pts", 0.0)
-        headline = "Expiry Pinning"
-        body = f"Spot ₹{spot:,.1f} is pinned within {dist:.0f} pts of Max Pain (₹{mp:,.0f}). Late-cycle theta decay accelerating."
+        headline = "Spot near max pain"
+        body = f"Spot ₹{spot:,.1f} is within {dist:.0f} pts of the settlement strike (₹{mp:,.0f}). That is not a pin. Premium decay is the risk."
 
     elif evt_type == "EXPIRY_GAMMA_ACCELERATION":
         headline = "Expiry Gamma Acceleration"
@@ -155,7 +155,7 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
 
     elif evt_type == "DIVERGENCE_PRICE_PCR":
         headline = "Divergence"
-        body = "Price is rising while Put-Call Ratio trends lower: put support may be unwinding on the advance."
+        body = "Price is rising while the put-call ratio falls. That is a change in open interest, not proof that support is leaving."
 
     elif evt_type == "DIVERGENCE_SECTOR_BREADTH":
         headline = "Divergence"
@@ -222,10 +222,10 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         spot = f.get("spot", 0.0)
         if direction == "BULLISH":
             headline = f"PCR Surge: {old_pcr:.2f} → {new_pcr:.2f} (+{delta_pcr:+.2f})"
-            body = f"Put-Call Ratio expanded to {new_pcr:.2f} as aggressive put writing reinforces downside support at spot ₹{spot:,.1f}."
+            body = f"Put-call ratio expanded to {new_pcr:.2f}. More put open interest relative to calls at spot ₹{spot:,.1f}. That is not a floor."
         elif direction == "BEARISH":
             headline = f"PCR Contraction: {old_pcr:.2f} → {new_pcr:.2f} ({delta_pcr:+.2f})"
-            body = f"Put-Call Ratio softened to {new_pcr:.2f}, reflecting call writing buildup and reduced put support at spot ₹{spot:,.1f}."
+            body = f"Put-call ratio softened to {new_pcr:.2f}. More call open interest relative to puts at spot ₹{spot:,.1f}. That is not a ceiling."
         else:
             pcr = f.get("pcr", new_pcr)
             headline = f"PCR Skew Extended: {pcr:.2f}"
@@ -325,7 +325,7 @@ def render_bite_template(bite: SuggestionBite | dict[str, Any]) -> str:
     elif btype == "STAND-ASIDE":
         return "STAND-ASIDE for tomorrow's open: event risk overnight."
     elif btype == "HEDGE":
-        return "HEDGE. Short-gamma exposure into resistance; defined-risk spreads reduce tail risk."
+        return "HEDGE. Defined-risk spreads limit the loss if price runs through a gamma strike."
     return f"{btype}: Monitor level {trig:,.0f} with invalidation at {inval:,.0f}."
 
 

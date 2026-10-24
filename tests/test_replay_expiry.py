@@ -1,7 +1,7 @@
 """Replay must recognise a real expiry day so the gamma-blast view shows (the snapshot is dated to
 a synthetic REPLAY_DATE with a +2d synthetic expiry, so the live 'nearest==today' test can't work)."""
 
-from data import replay as rp
+from data import session_flags as rp
 
 
 def test_is_expiry_day_uses_feature_cache_when_covered(monkeypatch):

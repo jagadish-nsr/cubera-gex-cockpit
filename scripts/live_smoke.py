@@ -81,13 +81,12 @@ def main():
           f"(net GEX {levels.total_net_gex:,.0f})")
     print(f"  call wall {levels.call_wall:,.0f} | put wall {levels.put_wall:,.0f} | "
           f"flip {flip} | magnet {levels.magnet:,.0f} | max pain {levels.max_pain:,.0f}")
-    print(f"  lot size {config.CONTRACT_SIZE} (VERIFY) | dealer sign "
-          f"{levels.dealer_sign_model} (UNVERIFIED for India)")
+    print(f"  lot size {config.CONTRACT_SIZE} (VERIFY) | convention "
+          f"{levels.dealer_sign_model} (call magnitude minus put magnitude)")
     for f in levels.flags:
         print(f"  ! {f}")
     print("=" * 64)
-    print("\n  ⚠️  Nifty dealer-sign model is UNVALIDATED — do not trust walls/flip "
-          "until checked empirically.\n")
+    print("\n  Book balance only. Walls are gamma concentration, not a pin and not a breakout trigger.\n")
 
 
 if __name__ == "__main__":

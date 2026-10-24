@@ -52,7 +52,7 @@ def test_generate_recommendations_basic():
     assert len(batch.all_ce_candidates) == 7
     assert len(batch.all_pe_candidates) == 7
 
-    expected_badges = {"MOMENTUM", "STRUCTURE", "GAMMA SQUEEZE", "ICEBERG FADE", "VANNA-CHARM", "VOL DISPERSION", "RATIO REVERSAL"}
+    expected_badges = {"MOMENTUM", "STRUCTURE", "STRIKE BREAK", "ICEBERG FADE", "VANNA-CHARM", "VOL DISPERSION", "RATIO REVERSAL"}
     assert set(t.play_badge for t in batch.all_ce_candidates) == expected_badges
     assert set(t.play_badge for t in batch.all_pe_candidates) == expected_badges
 
@@ -259,6 +259,53 @@ def test_live_spot_delta_adjustment(monkeypatch):
         oi_map=oi_map, contracts_map=contracts_map, chain_spot=24500.0
     )
     assert ltp_p_tick == 105.4
+
+
+def test_refresh_trade_idea_live_mtm_reprices_targets(monkeypatch):
+    from analytics.trade_ideas import refresh_trade_idea_live_mtm
+    from app.spot_ticker import push_ws_option_tick
+
+    idea = TradeIdea(
+        symbol="NIFTY",
+        side="PE",
+        play_type="ATM Fade",
+        play_badge="MOMENTUM",
+        strike=22500.0,
+        option_symbol="NIFTY 22500 PE",
+        current_ltp=98.0,
+        delta_approx=-0.48,
+        entry_trigger="test",
+        spot_invalidation=22650.0,
+        spot_invalidation_text="above 22650",
+        target_1=120.0,
+        target_1_spot=22350.0,
+        target_2=145.0,
+        target_2_spot=22250.0,
+        stop_loss=72.0,
+        risk_reward_ratio="1 : 2.0",
+        quality_score=90,
+        conviction_label="HIGH",
+        conviction_color="var(--go)",
+        rationale="test",
+        rec_id="NIFTY_PE_22500_MOMENTUM",
+        initial_ltp=98.0,
+        initial_spot=22470.0,
+        greek_attribution={"iv": 0.14},
+    )
+    push_ws_option_tick("NIFTY", 22500.0, "PE", {"ltp": 112.5, "oi": 80000.0})
+    monkeypatch.setattr(
+        "app.spot_ticker.get_option_ws_quote",
+        lambda *a, **k: {"ltp": 112.5, "oi": 80000.0},
+    )
+    monkeypatch.setattr("app.spot_ticker._STORE", {"NIFTY": {"ohlc": {"ltp": 22470.0}}}, raising=False)
+
+    refresh_trade_idea_live_mtm(idea, "NIFTY", 22470.0, reprice_targets=True)
+    assert idea.current_ltp == 112.5
+    assert idea.is_ws_live is True
+    assert idea.target_1 > idea.current_ltp
+    assert idea.target_2 > idea.target_1
+    assert idea.stop_loss < idea.current_ltp
+    assert idea.live_pnl_pts == round(112.5 - 98.0, 1)
 
 
 def test_ws_option_tick_takes_priority(monkeypatch):
@@ -883,18 +930,13 @@ def test_off_market_hours_recommendation_gating(monkeypatch):
     monkeypatch.setattr(config, "is_market_open", lambda: False)
 
     data = MockDashboardData(spot=24500.0, symbol="NIFTY")
-    session_state = {"replay_mode_active": False}
+    session_state = {}
 
     with patch("streamlit.session_state", session_state):
         # When market is closed and no cache exists, must return None without generating
         batch = _get_active_recommendation_batch("NIFTY", data)
         assert batch is None
         assert "NIFTY" not in _REC_BATCH_CACHE
-
-        # When in replay mode, generation is allowed
-        session_state["replay_mode_active"] = True
-        batch_replay = _get_active_recommendation_batch("NIFTY", data)
-        assert batch_replay is not None
 
 
 def test_pre_market_regime_confluence_scoring():
@@ -958,7 +1000,7 @@ def test_pre_market_regime_confluence_scoring():
     )
     assert score_pe_penalized == score_pe_base - 6
 
-    # 4. Positive gamma gap up favors mean reversion / iceberg
+    # 4. A call-heavy gap is not a mean-reversion bonus.
     score_rev_base, _, _ = _compute_trade_score(
         side="PE",
         play_type="Iceberg Absorption Play",
@@ -971,7 +1013,7 @@ def test_pre_market_regime_confluence_scoring():
         leg_doi=0.0,
         pre_market_regime="",
     )
-    score_rev_boosted, _, _ = _compute_trade_score(
+    score_rev_same, _, _ = _compute_trade_score(
         side="PE",
         play_type="Iceberg Absorption Play",
         bias_score=0.0,
@@ -983,6 +1025,6 @@ def test_pre_market_regime_confluence_scoring():
         leg_doi=0.0,
         pre_market_regime="GAP_UP_INTO_POS_GAMMA",
     )
-    assert score_rev_boosted == score_rev_base + 4
+    assert score_rev_same == score_rev_base
 
 

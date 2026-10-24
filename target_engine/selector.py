@@ -53,7 +53,7 @@ def select_trade_candidates(
         return []
 
     idx_info = app_config.get_index(symbol)
-    lot_size = idx_info.lot_size if idx_info else 65
+    lot_size = int(idx_info.lot_size)
 
     now_dt = to_ist(scenario_set.ts)
     T_entry = calculate_fractional_t(now_dt, expiry, day_count=config.day_count)
@@ -83,7 +83,7 @@ def select_trade_candidates(
         return []
 
     atm_strike = min(strikes, key=lambda k: abs(k - spot))
-    strike_step = 50.0 if "NIFTY" in symbol.upper() else 100.0
+    strike_step = float(idx_info.strike_step)
 
     dominant = scenario_set.dominant_scenario
     candidates: List[TradeCandidate] = []

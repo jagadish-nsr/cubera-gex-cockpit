@@ -625,7 +625,7 @@ def render_target_engine_tab(symbol: str, window: str, data: Any = None):
                     Band Stop: <span style="color: #f87171;">{base_tar.stop:,.1f}</span>
                 </div>
                 <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.4;">
-                    • P(Touch Pin): <b>{base_tar.p_touch_target:.1%}</b><br>
+                    • P(Touch Target): <b>{base_tar.p_touch_target:.1%}</b><br>
                     • P(Stay in Band): <b>{base_tar.p_close_beyond:.1%}</b><br>
                     • Forecast ATM IV: <b>{base_iv.iv_at_horizon:.2%}</b><br>
                     • Anchor: <i>{base_tar.reason}</i>
@@ -660,8 +660,8 @@ def render_target_engine_tab(symbol: str, window: str, data: Any = None):
 
     # Extract contracts DataFrame, index configuration, and active expiries
     contracts_df = dash.contracts if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) else None
-    idx_info = config.get_index(symbol) if hasattr(config, "get_index") else None
-    lot_sz = idx_info.lot_size if idx_info else (65 if "NIFTY" in symbol else 30)
+    idx_info = config.get_index(symbol)
+    lot_sz = int(idx_info.lot_size)
 
     available_expiries = get_sidebar_active_expiries(
         symbol=symbol,
@@ -836,7 +836,7 @@ def render_target_engine_tab(symbol: str, window: str, data: Any = None):
             )
 
             if selected_item == CUSTOM_STRIKE_LABEL:
-                strike_step = 50.0 if "NIFTY" in symbol else 100.0
+                strike_step = float(idx_info.strike_step)
                 curr_strike_val = st.session_state.get(strike_key)
                 init_val = float(curr_strike_val) if (curr_strike_val is not None and not isinstance(curr_strike_val, str)) else float(atm_strike)
                 custom_strike_val = st.number_input(
@@ -954,7 +954,7 @@ def render_target_engine_tab(symbol: str, window: str, data: Any = None):
             with p_b3:
                 base_pin_val = targets["base"].target if "base" in targets else base_fut
                 base_band_val = targets["base"].stop if "base" in targets else base_fut + 50
-                if st.button(f"⚖️ Base / Pin Preset ({base_pin_val:,.0f})", key=f"btn_base_{symbol}"):
+                if st.button(f"⚖️ Base / Range ({base_pin_val:,.0f})", key=f"btn_base_{symbol}"):
                     st.session_state[f"inp_tgt_{symbol}"] = float(base_pin_val)
                     st.session_state[f"inp_sl_{symbol}"] = float(base_band_val)
             with p_b4:

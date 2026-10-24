@@ -1,7 +1,7 @@
-"""One-sentence playbook headline from a RegimeView.
+"""One-sentence book-balance line from a RegimeView.
 
-Target form (BUILD_PLAN §6 example):
-    "Positive gamma, flip 65pts below, call wall 30 above — range fade"
+Target form:
+    "Call-heavy book, flip 65pts below, call wall 30 above — call gamma larger than put gamma"
 
 Duck-typed on the view (no import of RegimeView) to avoid a circular import.
 """
@@ -10,7 +10,12 @@ from __future__ import annotations
 
 
 def one_sentence(view) -> str:
-    regime_word = f"{view.regime.title()} gamma"
+    if view.regime == "POSITIVE":
+        regime_word = "Call-heavy book"
+    elif view.regime == "NEGATIVE":
+        regime_word = "Put-heavy book"
+    else:
+        regime_word = "Balanced book"
 
     if view.flip is None:
         flip_part = "flip none (no zero-crossing in range)"

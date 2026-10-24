@@ -61,19 +61,12 @@ def extract_features(
     nearest_call_wall = call_walls[0] if call_walls else None
     nearest_put_wall = put_walls[0] if put_walls else None
 
-    # F1: Call-wall proximity (-1 to 0): closer resistance is bearish
-    if nearest_call_wall and nearest_call_wall.strike >= spot:
-        call_dist = nearest_call_wall.strike - spot
-        f1 = -float(np.clip(1.0 - (call_dist / (1.5 * sigma_1d)), 0.0, 1.0))
-    else:
-        f1 = 0.0
-
-    # F2: Put-wall proximity (0 to +1): closer support is bullish
-    if nearest_put_wall and nearest_put_wall.strike <= spot:
-        put_dist = spot - nearest_put_wall.strike
-        f2 = float(np.clip(1.0 - (put_dist / (1.5 * sigma_1d)), 0.0, 1.0))
-    else:
-        f2 = 0.0
+    # F1 / F2: strike proximity is a map, not a direction.
+    # A nearer call-gamma strike is not bearish resistance.
+    # A nearer put-gamma strike is not bullish support.
+    _ = nearest_call_wall
+    f1 = 0.0
+    f2 = 0.0
 
     # F3: Wall momentum: OI change at walls
     # Call wall OI falling = bullish (+), Put wall OI falling = bearish (-)
@@ -162,13 +155,9 @@ def extract_features(
         # 25-delta put IV minus call IV. Higher put skew = bearish (-)
         f14 = -float(np.tanh(skew_25d / 3.0))
 
-    # F15: Max pain pull: sign(maxpain - spot) * w(dte)
+    # F15: max pain is the settlement strike. Distance to it is not a directional pull.
+    _ = (max_pain, dte_days)
     f15 = 0.0
-    if max_pain and max_pain > 0:
-        # Weight ramps up as DTE approaches 0
-        w_dte = float(np.clip(1.0 - (dte_days / 4.0), 0.0, 1.0))
-        pain_diff = max_pain - spot
-        f15 = float(np.sign(pain_diff) * np.tanh(abs(pain_diff) / sigma_1d) * w_dte)
 
     # F16: Intraday trend (spot vs VWAP)
     f16 = 0.0

@@ -40,8 +40,10 @@ from analytics.trade_ideas import (
     generate_trade_recommendations,
     format_time_since_active,
     compute_position_size,
+    refresh_trade_idea_live_mtm,
     TradeIdea,
 )
+from analytics.market_alert import evaluate_market_alert
 
 @dataclass
 class StrikeCluster:
@@ -67,6 +69,11 @@ class StrikeCluster:
     def best_idea(self) -> TradeIdea:
         return max(self.ideas, key=lambda x: x.quality_score)
 from target_engine.runner import run_target_engine
+from target_engine.presenter import (
+    compose_confluence_dial,
+    compose_edge_label,
+    serialize_ranked_candidates,
+)
 from target_engine.pricer import price, greeks, implied_vol, greek_attribution
 from target_engine.levels import compute_touch_probability
 from target_engine.time_utils import calculate_fractional_t, calculate_horizon_t
@@ -79,6 +86,9 @@ from data.journal.recommendations_store import (
     record_event,
     evaluate_recommendation_lifecycle,
     get_strategy_effectiveness_metrics,
+    summarize_effectiveness,
+    get_unacknowledged_alerts,
+    acknowledge_alerts,
 )
 from commentary.story_state import StoryStateManager
 from commentary.storage.db import get_recent_commentary_entries, get_pinned_commentary_cache
@@ -87,8 +97,15 @@ from data.pre_post_market import (
     get_current_session_phase,
     get_pre_market_state,
     get_post_market_state,
+    attach_pre_market_shocks,
+    calculate_pre_market_option_shocks,
 )
-from sentinel.storage.db import list_recent_signals, ensure_historical_daily_cvd, list_recent_bars
+from sentinel.storage.db import (
+    list_recent_signals,
+    ensure_historical_daily_cvd,
+    list_recent_bars,
+    list_recent_outcomes,
+)
 from sentinel.feed.demo import seed_sentinel_demo_if_needed
 from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_expiries, is_expiry_crossed
 from analytics.iv_skew import skew_25delta
@@ -163,6 +180,15 @@ async def _start_ingest_lanes():
         warmup_all()
     except Exception as exc:
         log.warning("spot ticker warmup failed: %s", exc)
+    try:
+        from data.pre_post_market import ensure_pre_market_pollers
+        ensure_pre_market_pollers()
+    except Exception as exc:
+        log.warning("pre-market poller start failed: %s", exc)
+    try:
+        _ensure_rec_publisher()
+    except Exception as exc:
+        log.warning("rec publisher start failed: %s", exc)
     if not config.is_market_open():
         return
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
@@ -177,6 +203,44 @@ async def _start_ingest_lanes():
 # --------------------------------------------------------------------------
 def _get_ist_now() -> datetime:
     return datetime.now(IST)
+
+
+def _fmt_snapshot_as_of(fetched_at, now_ist: datetime | None = None) -> str:
+    """IST stamp of a GEX/chain snapshot. Includes the calendar date when it is not today.
+
+    Naive datetimes are treated as UTC (load_dashboard writes timezone.utc). That is
+    what produced a false '02:45:02 IST' tape clock from 2026-10-02 21:15 UTC.
+    """
+    now_ist = now_ist or _get_ist_now()
+    if not fetched_at:
+        return ""
+    dt = fetched_at
+    if isinstance(dt, str):
+        raw = dt.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except ValueError:
+            return str(fetched_at)
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ist_dt = dt.astimezone(IST)
+    if ist_dt.date() != now_ist.date():
+        return ist_dt.strftime("%d-%b %H:%M:%S IST")
+    return ist_dt.strftime("%H:%M:%S IST")
+
+
+def _is_pre_bell_ephemeral(
+    now_ist: datetime | None = None,
+    sess_phase: str | None = None,
+    pm_st: dict | None = None,
+) -> bool:
+    now_ist = now_ist or _get_ist_now()
+    if now_ist.weekday() >= 5:
+        return False
+    now_m = now_ist.hour * 60 + now_ist.minute
+    # Clock-only: 08:45–09:22 IST. Do not require PRE_MARKET phase — at 09:15
+    # the session is already REGULAR_SESSION and the card must still drop at 09:22.
+    return 8 * 60 + 45 <= now_m <= 9 * 60 + 22
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -205,6 +269,129 @@ def _same_strike(a: float, b: float, step: float) -> bool:
     return abs(float(a) - float(b)) <= max(0.51, float(step) * 0.01)
 
 
+def _standing_oi(dash, spot: float, band_pts: float) -> dict:
+    """Put-OI and call-OI centres of mass near spot. Missing OI stays missing."""
+    from app.oi_footprint import oi_weighted_levels
+
+    empty = {
+        "available": False,
+        "note": "No per-strike open interest on this snapshot.",
+        "put_centre": None,
+        "call_centre": None,
+        "put_top": None,
+        "call_top": None,
+        "band_pts": band_pts,
+    }
+    rows: list[dict] = []
+    oi_strikes = getattr(dash, "oi_strikes", None) or []
+    for row in oi_strikes:
+        if row.get("strike") is None:
+            continue
+        rows.append({
+            "strike": row.get("strike"),
+            "call_oi": row.get("call_oi") or 0.0,
+            "put_oi": row.get("put_oi") or 0.0,
+        })
+    if not rows:
+        contracts = getattr(dash, "contracts", None)
+        if contracts is not None and hasattr(contracts, "empty") and not contracts.empty:
+            acc: dict[float, dict] = {}
+            for _, crow in contracts.iterrows():
+                k = float(crow["strike"])
+                cell = acc.setdefault(k, {"strike": k, "call_oi": 0.0, "put_oi": 0.0})
+                right = str(crow["type"]).upper()
+                oi = float(crow.get("oi") or 0.0)
+                if right in ("C", "CE"):
+                    cell["call_oi"] += oi
+                elif right in ("P", "PE"):
+                    cell["put_oi"] += oi
+            rows = list(acc.values())
+    lv = oi_weighted_levels(rows, spot=float(spot), band_pts=float(band_pts)) if rows else None
+    if not lv or (lv.get("support_w") is None and lv.get("resistance_w") is None):
+        return empty
+
+    def _r(v):
+        return round(float(v), 1) if v is not None else None
+
+    return {
+        "available": True,
+        "note": (
+            f"Standing open interest within ±{float(band_pts):,.0f} pts of spot. "
+            "A concentration, not a floor or a ceiling."
+        ),
+        "put_centre": _r(lv.get("support_w")),
+        "call_centre": _r(lv.get("resistance_w")),
+        "put_top": _r(lv.get("support_top")),
+        "call_top": _r(lv.get("resistance_top")),
+        "band_pts": band_pts,
+    }
+
+
+def _concentration_structures(dash, idx, bias_score=None, sentinel_signals=None) -> dict:
+    """Illustrative structure from the absolute-GEX bucket. The call−put sign is not an input."""
+    from app.intraday_features import structure_vol_regime
+    from structures.suggest import suggest_structures
+
+    labels = {
+        "calm": "High concentration",
+        "wild": "Low concentration",
+        "mid": "Middle concentration — wait",
+    }
+    tag = "mid"
+    cands = []
+    try:
+        tag = structure_vol_regime(dash)
+        step = int(idx.strike_step)
+        expiries = list(getattr(dash, "expiries", None) or [])
+        nearest = expiries[0] if expiries else None
+        cands = suggest_structures(
+            dash.levels,
+            tag,
+            lot_size=int(idx.lot_size),
+            spread_width=step * 2,
+            strike_step=step,
+            nearest_expiry=nearest,
+            is_expiry_day=bool(nearest == _get_ist_now().date()),
+            bias_score=bias_score,
+            sentinel_signals=sentinel_signals,
+        )
+    except Exception as exc:
+        log.warning("structure suggestion: %s", exc)
+        tag = "mid"
+    view = getattr(dash, "view", None)
+    playbook = ""
+    if view is not None:
+        playbook = str(getattr(view, "headline", "") or getattr(view, "mode_plain", "") or "")
+    out = []
+    for c in cands:
+        out.append({
+            "name": c.name,
+            "legs": [
+                {"action": a, "right": "CE" if t == "C" else "PE", "strike": int(k)}
+                for a, t, k in (c.legs or [])
+            ],
+            "rationale": c.rationale,
+            "risk_note": c.risk_note,
+            "exit_by": c.exit_by,
+            "expiry_note": c.expiry_note or "",
+        })
+    if not out:
+        out = [{
+            "name": "No trade — wait",
+            "legs": [],
+            "rationale": "Concentration gauge unavailable. Wait.",
+            "risk_note": "—",
+            "exit_by": "",
+            "expiry_note": "",
+        }]
+    return {
+        "bucket": tag if tag in labels else "mid",
+        "bucket_label": labels.get(tag, labels["mid"]),
+        "playbook": playbook,
+        "candidates": out,
+    }
+
+
 def _resolve_expiry_scope(symbol: str, window: str):
     idx = config.get_index(symbol)
     today_ist = _get_ist_now().date()
@@ -231,6 +418,100 @@ _CHAIN_INTERVAL_S = 30
 _CHAIN_LEAD_S = 10.0
 _WS_LIVE_SLEEP_S = 0.12
 _WS_HEARTBEAT_S = 1.0
+_REC_BATCH: Dict[tuple, Any] = {}
+_REC_LOCK = __import__("threading").Lock()
+_REC_THREAD = None
+
+
+def _latest_rec_batch(symbol: str, window: str):
+    key = ((symbol or "").upper(), window or "current_week")
+    with _REC_LOCK:
+        return _REC_BATCH.get(key)
+
+
+def _rec_publisher_loop() -> None:
+    """Ingest-once: generate trade ideas off the HTTP/WS event loop."""
+    while True:
+        try:
+            if config.is_market_open():
+                from app.live_fetcher import latest as chain_latest
+                win = _ACTIVE_STATE.get("window") or "current_week"
+                for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                    dash = (chain_latest(sym, win) or {}).get("data")
+                    if dash is None or getattr(dash, "levels", None) is None:
+                        continue
+                    bias = _compute_active_directional_bias(dash, sym)
+                    batch = generate_trade_recommendations(dash, bias_result=bias)
+                    with _REC_LOCK:
+                        _REC_BATCH[(sym, win)] = batch
+                time.sleep(20.0)
+            else:
+                time.sleep(30.0)
+        except Exception as exc:
+            log.warning("rec publisher: %s", exc)
+            time.sleep(10.0)
+
+
+def _live_rec_quotes(sym: str, spot: float) -> list:
+    """Overlay WS option LTP onto cached recs and emit compact quotes for the telemetry tick."""
+    win = _ACTIVE_STATE.get("window") or "current_week"
+    batch = _latest_rec_batch(sym, win)
+    if batch is None:
+        return []
+    now = time.time()
+    with _REC_LOCK:
+        ideas = []
+        for attr in (
+            "ce_recommendations",
+            "pe_recommendations",
+            "higher_ce_recommendations",
+            "higher_pe_recommendations",
+            "lower_ce_recommendations",
+            "lower_pe_recommendations",
+            "bookmarked_recommendations",
+        ):
+            ideas.extend(list(getattr(batch, attr, None) or []))
+    out = []
+    seen = set()
+    for idea in ideas:
+        rid = getattr(idea, "rec_id", "") or ""
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        last = float(getattr(idea, "_mtm_reprice_at", 0.0) or 0.0)
+        do_reprice = (now - last) >= 1.0
+        try:
+            refresh_trade_idea_live_mtm(idea, sym, float(spot or 0.0), reprice_targets=do_reprice)
+            if do_reprice:
+                idea._mtm_reprice_at = now
+        except Exception:
+            continue
+        out.append({
+            "rec_id": rid,
+            "ltp": round(float(idea.current_ltp or 0.0), 1),
+            "target_1": round(float(idea.target_1 or 0.0), 1),
+            "target_2": round(float(idea.target_2 or 0.0), 1),
+            "stop_loss": round(float(idea.stop_loss or 0.0), 1),
+            "pnl_pts": round(float(getattr(idea, "live_pnl_pts", 0.0) or 0.0), 1),
+            "pnl_pct": round(float(getattr(idea, "live_pnl_pct", 0.0) or 0.0), 1),
+            "is_ws_live": bool(getattr(idea, "is_ws_live", False)),
+            "p_touch_target_1": round(float(getattr(idea, "p_touch_target_1", 0.0) or 0.0), 3),
+            "p_touch_sl": round(float(getattr(idea, "p_touch_sl", 0.0) or 0.0), 3),
+            "net_ev_pts": round(float(getattr(idea, "net_ev_pts", 0.0) or 0.0), 1),
+            "risk_reward_ratio": str(getattr(idea, "risk_reward_ratio", "") or ""),
+        })
+    return out
+
+
+def _ensure_rec_publisher() -> None:
+    global _REC_THREAD
+    import threading
+    t = _REC_THREAD
+    if t is not None and t.is_alive():
+        return
+    t = threading.Thread(target=_rec_publisher_loop, name="rec-publisher", daemon=True)
+    _REC_THREAD = t
+    t.start()
 
 
 def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
@@ -331,6 +612,18 @@ def _overlay_live_spot(dash, sym: str):
     return dash
 
 
+def _refresh_book_view(dash):
+    """Recompute the playbook from levels so a pickled snapshot does not keep the old pin wording."""
+    if dash is None or getattr(dash, "levels", None) is None:
+        return dash
+    try:
+        from regime.classify import from_levels
+        dash.view = from_levels(dash.levels)
+    except Exception as exc:
+        log.debug("book view refresh skipped: %s", exc)
+    return dash
+
+
 def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> DashboardData:
     """Read the published GEX snapshot. Never calls Dhan on this thread.
 
@@ -346,7 +639,7 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     is_open = config.is_market_open()
 
     if not is_open and ckey in _DASH_MEM_CACHE:
-        return _DASH_MEM_CACHE[ckey][1]
+        return _overlay_live_spot(_refresh_book_view(_DASH_MEM_CACHE[ckey][1]), sym)
 
     dash = None
     from_live_store = False
@@ -360,18 +653,17 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
             from_live_store = True
         if dash is None:
             dash = _from_lkgs(sym, "Awaiting first live chain publish")
-        if dash is None:
-            dash = _unpickle_latest_snap(sym)
+        # Never unpickle on the live HTTP/WS event loop — that GIL-stalls ticks.
         if dash is not None:
             if not from_live_store:
                 dash = _overlay_sqlite_kpis(dash, sym)
-            dash = _overlay_live_spot(dash, sym)
+            dash = _overlay_live_spot(_refresh_book_view(dash), sym)
             return dash
         try:
             dash = load_dashboard(symbol=sym, window=win, use_demo=True)
         except Exception:
             dash = None
-        return dash
+        return _refresh_book_view(dash)
 
     dash = _unpickle_latest_snap(sym)
     if dash is None:
@@ -382,6 +674,7 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
         except Exception as e:
             log.warning("Could not load offline fallback dashboard for %s: %s", sym, e)
     dash = _overlay_sqlite_kpis(dash, sym)
+    dash = _overlay_live_spot(_refresh_book_view(dash), sym)
     _DASH_MEM_CACHE[ckey] = (time.time(), dash)
     return dash
 
@@ -457,6 +750,10 @@ def _cluster_ideas_by_strike(ideas: List[TradeIdea]) -> List[StrikeCluster]:
 
 
 def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: float, lot_size: int) -> dict:
+    try:
+        refresh_trade_idea_live_mtm(idea, idea.symbol, float(spot or 0.0), reprice_targets=True)
+    except Exception:
+        pass
     pos_size = compute_position_size(
         idea,
         account_capital=capital,
@@ -540,6 +837,7 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
         "conviction_label": idea.conviction_label,
         "conviction_color": idea.conviction_color,
         "current_ltp": curr_ltp,
+        "is_ws_live": bool(getattr(idea, "is_ws_live", False)),
         "entry_ltp": entry_ltp,
         "target_1": idea.target_1,
         "target_2": idea.target_2,
@@ -773,7 +1071,7 @@ def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
 
 
 def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
-    """Evaluate authentic IOAS 8-Signal Directional Bias (including Max Pain Gravitation)."""
+    """Eight bias rows. PCR, gamma-strike midpoint, max pain, and open-interest change contribute 0."""
     spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     cw = float(dash.levels.call_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     pw = float(dash.levels.put_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
@@ -800,6 +1098,147 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
     except Exception as ex:
         log.warning("Directional bias calculation fallback for %s: %s", sym, ex)
         return BiasResult(score=0.0, regime="Neutral ⏳", signals=[], headline="Neutral equilibrium")
+
+
+def _chain_leg_ltp(contracts_df, strike: float, right: str) -> Optional[float]:
+    """Last price of one listed leg. None when the chain has no positive print."""
+    if contracts_df is None or not hasattr(contracts_df, "empty") or contracts_df.empty:
+        return None
+    if "strike" not in contracts_df.columns or "type" not in contracts_df.columns:
+        return None
+    want = "C" if str(right).upper().startswith("C") else "P"
+    try:
+        sub = contracts_df[
+            (contracts_df["strike"].astype(float) == float(strike))
+            & (contracts_df["type"].astype(str).str.upper().str.startswith(want))
+        ]
+    except Exception:
+        return None
+    if sub.empty:
+        return None
+    for col in ("ltp", "last_price", "close", "premium", "mid"):
+        if col in sub.columns:
+            val = float(sub[col].iloc[0] or 0)
+            if val > 0:
+                return round(val, 2)
+    return None
+
+
+def _atm_straddle_pts(contracts_df, spot: float):
+    """Call plus put premium at the listed strike nearest spot, nearest expiry.
+
+    Uses last price when the chain has one. Otherwise uses the stored mid.
+    Returns (points, source) or (None, None).
+    """
+    if contracts_df is None or not hasattr(contracts_df, "empty") or contracts_df.empty:
+        return None, None
+    if not {"expiry", "type", "strike"}.issubset(set(contracts_df.columns)):
+        return None, None
+    try:
+        import pandas as pd
+
+        df = contracts_df.copy()
+        source = None
+        if "ltp" in df.columns and pd.to_numeric(df["ltp"], errors="coerce").gt(0).any():
+            df["ltp"] = pd.to_numeric(df["ltp"], errors="coerce")
+            source = "last"
+        elif "mid" in df.columns and pd.to_numeric(df["mid"], errors="coerce").gt(0).any():
+            df["ltp"] = pd.to_numeric(df["mid"], errors="coerce")
+            source = "mid"
+        else:
+            return None, None
+        df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
+        df = df.dropna(subset=["strike", "ltp", "expiry"])
+        df = df[df["ltp"] > 0]
+        if df.empty:
+            return None, None
+        near = sorted(df["expiry"].unique())[0]
+        band = df[df["expiry"] == near]
+        atm = float(band.iloc[(band["strike"] - spot).abs().argmin()]["strike"])
+        ce = _chain_leg_ltp(band, atm, "C")
+        pe = _chain_leg_ltp(band, atm, "P")
+        if ce is None or pe is None:
+            return None, None
+        return round(ce + pe, 1), source
+    except Exception:
+        return None, None
+
+
+def _location_alerts(dash, spot: float, parity_report) -> list[dict]:
+    """Facts about the map: a gamma strike crossed since the previous close, or a parity gap.
+
+    PCR-versus-price labels are omitted. PCR is an open-interest mix.
+    """
+    alerts: list[dict] = []
+    levels = getattr(dash, "levels", None)
+    prev = float(getattr(levels, "prev_close", 0) or 0) if levels else 0.0
+    now = _get_ist_now().strftime("%H:%M IST")
+    if levels and prev > 0:
+        for name, wall in (
+            ("call-gamma", float(getattr(levels, "call_wall", 0) or 0)),
+            ("put-gamma", float(getattr(levels, "put_wall", 0) or 0)),
+        ):
+            if wall <= 0:
+                continue
+            crossed = (prev < wall <= spot) or (prev > wall >= spot)
+            if crossed:
+                alerts.append({
+                    "time": now,
+                    "badge": "STRIKE_CROSS",
+                    "badge_cls": "mark",
+                    "desc": (
+                        f"Spot {spot:,.0f} is across the {name} strike {wall:,.0f} "
+                        f"versus the previous close {prev:,.0f}."
+                    ),
+                })
+    for d in list(getattr(parity_report, "alerted", None) or [])[:8]:
+        alerts.append({
+            "time": now,
+            "badge": "PARITY",
+            "badge_cls": "mark",
+            "desc": (
+                f"Strike {float(d.strike):,.0f}: call {float(d.call_ltp):.1f}, "
+                f"put {float(d.put_ltp):.1f}, gap {float(d.discrepancy_pts):+.1f} pts "
+                f"({float(d.discrepancy_bps):+.1f} bps, {d.direction})."
+            ),
+        })
+    return alerts
+
+
+def _parity_payload(contracts_df, spot: float) -> dict:
+    from analytics.parity_arb import compute_parity_arb, ALERT_THRESHOLD_BPS
+
+    report = compute_parity_arb(contracts_df, spot)
+    deviations = []
+    for d in (report.deviations or [])[:15]:
+        deviations.append({
+            "strike": float(d.strike),
+            "call_ltp": round(float(d.call_ltp), 2),
+            "put_ltp": round(float(d.put_ltp), 2),
+            "synthetic_forward": round(float(d.synthetic_forward), 2),
+            "discrepancy_pts": round(float(d.discrepancy_pts), 2),
+            "discrepancy_bps": round(float(d.discrepancy_bps), 1),
+            "direction": d.direction,
+            "insight": d.insight,
+        })
+    n_alert = len(report.alerted or [])
+    if not deviations:
+        summary = report.summary or "No chain quotes for a parity check."
+    elif n_alert:
+        top = report.alerted[0]
+        summary = (
+            f"{n_alert} strikes exceed {ALERT_THRESHOLD_BPS:.0f} bps. "
+            f"Largest gap is {float(top.strike):,.0f} at {float(top.discrepancy_bps):+.1f} bps."
+        )
+    else:
+        summary = f"{len(report.deviations)} strikes are inside the {ALERT_THRESHOLD_BPS:.0f} bps parity tolerance."
+    return {
+        "summary": summary,
+        "alerted": n_alert > 0,
+        "max_deviation_bps": round(float(report.max_deviation_bps or 0.0), 1),
+        "deviations": deviations,
+        "report": report,
+    }
 
 
 def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
@@ -942,10 +1381,21 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     idx = config.get_index(sym)
-    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+    from app.spot_ticker import latest_quote
+    from app.live_fetcher import latest as chain_latest
 
-    spot = float(dash.levels.spot or 0.0)
-    fut = float(getattr(dash.levels, "future_price", None) or spot)
+    q = latest_quote(sym) or {}
+    pub = chain_latest(sym, win) or {}
+    dash = pub.get("data")
+    lv = getattr(dash, "levels", None) if dash is not None else None
+
+    spot = float(q.get("spot") or (getattr(lv, "spot", 0) if lv is not None else 0) or 0)
+    fut = float(q.get("fut_px") or (getattr(lv, "future_price", 0) if lv is not None else 0) or spot)
+    if spot <= 0:
+        dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+        spot = float(dash.levels.spot or 0.0)
+        fut = float(getattr(dash.levels, "future_price", None) or spot)
+        lv = dash.levels
     basis = fut - spot
 
     today_ist = _get_ist_now().date()
@@ -969,25 +1419,30 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     pollers_status = "Active (1s Push)" if is_live else "Paused"
     feed_subtext = "Live direct exchange tick stream" if is_live else "Tick stream paused · Broker pollers idle"
     pm_st = get_pre_market_state(sym)
-    now_m = now_ist.hour * 60 + now_ist.minute
-    is_pre_bell_ephemeral = (sess_phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")) or (bool(pm_st.get("is_discovered")) and 9 * 60 <= now_m <= 9 * 60 + 22)
+    is_pre_bell_ephemeral = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_st)
 
     from data.dhan import token_status
     dhan_st = token_status()
 
     from data.market_snapshot import get_snapshot
     db_snap = get_snapshot(sym) or {}
-    real_ohlc = dash.day_ohlc or {
-        "open": float(db_snap.get("open") or spot),
-        "high": float(db_snap.get("high") or spot),
-        "low": float(db_snap.get("low") or spot),
-        "close": float(db_snap.get("prev_close") or spot),
+    real_ohlc = (getattr(dash, "day_ohlc", None) if dash is not None else None) or {
+        "open": float(q.get("open") or db_snap.get("open") or spot),
+        "high": float(q.get("high") or db_snap.get("high") or spot),
+        "low": float(q.get("low") or db_snap.get("low") or spot),
+        "close": float(q.get("prev_close") or db_snap.get("prev_close") or spot),
         "ltp": spot,
     }
-    real_vix = dash.india_vix or {
-        "last": float(db_snap.get("vix") or 14.04),
+    vix_from_dash = getattr(dash, "india_vix", None) if dash is not None else None
+    real_vix = {
+        "last": float(
+            q["vix"] if q.get("vix") is not None
+            else ((vix_from_dash or {}).get("last") if isinstance(vix_from_dash, dict) else None)
+            or db_snap.get("vix")
+            or 14.04
+        ),
         "change": 0.0,
-        "pct_change": 0.0,
+        "pct_change": float(q["vix_chg"] if q.get("vix_chg") is not None else 0.0),
     }
 
     sched = compute_session_schedule_info(now_ist)
@@ -1111,27 +1566,23 @@ async def get_cockpit_data(
     magnet_val = float(getattr(dash.levels, "magnet", 0.0) or 0.0)
 
     bias_res = _compute_active_directional_bias(dash, sym)
-    pin_dist = abs(spot - mp_val) if (spot and mp_val) else 0.0
-    pin_score = max(10, min(100, int(round(100 - (pin_dist / max(spot, 1.0)) * 2800))))
     bias_color = "var(--go)" if bias_res.score > 0.8 else ("var(--stop)" if bias_res.score < -0.8 else "var(--spark)")
 
     if flip_val:
         dist_flip = flip_val - spot
         dist_sign = "+" if dist_flip >= 0 else ""
-        flip_sub = f"{dist_sign}{dist_flip:,.0f} pts · Volatility Pivot"
+        flip_sub = f"{dist_sign}{dist_flip:,.0f} pts · Call−put balance"
     else:
-        flip_sub = "No Zero-Crossing in ±10%"
+        flip_sub = "No zero-crossing in ±10%"
 
-    put_role = str(getattr(dash.view, "put_wall_role", "") or "support")
-    call_role = str(getattr(dash.view, "call_wall_role", "") or "resistance")
-    put_sub = {
-        "support": "Major Floor Support",
-        "speed bump": "Speed bump (below flip)",
-        "unknown": "Put-side concentration",
-    }.get(put_role, put_role)
-    call_sub = {
-        "resistance": "Major Overhead Resistance",
-    }.get(call_role, call_role)
+    put_role = str(getattr(dash.view, "put_wall_role", "") or "")
+    call_sub = "Call-gamma concentration"
+    if "below" in put_role:
+        put_sub = "Put-gamma concentration · below balance"
+    elif put_role == "unknown" or not put_role:
+        put_sub = "Put-gamma concentration"
+    else:
+        put_sub = "Put-gamma concentration · at or above balance"
 
     pcr_full = getattr(dash.levels, "pcr_oi", None) if dash.levels else None
     pcr_near = getattr(dash.levels, "pcr_near", None) if dash.levels else None
@@ -1144,7 +1595,7 @@ async def get_cockpit_data(
         "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": call_sub},
         "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": put_sub},
         "gamma_flip": {"val": flip_val if flip_val else 0.0, "sub": flip_sub, "raw": flip_val},
-        "max_pain": {"val": float(mp_val), "sub": f"Pin: {pin_score}/100"},
+        "max_pain": {"val": float(mp_val), "sub": f"{abs(spot - mp_val):,.0f} pts from spot · settlement strike"},
         "directional_bias": {
             "val": f"{bias_res.score:+.2f}",
             "sub": bias_res.regime,
@@ -1158,12 +1609,23 @@ async def get_cockpit_data(
 
     # Gamma Price Ladder: ATM band plus key GEX levels so walls/max-pain are never off-chart.
     ladder = []
-    step = float(idx.strike_step or (50 if sym == "NIFTY" else 100))
+    step = float(idx.strike_step)
+    standing_oi = _standing_oi(dash, spot, float(idx.band_pts))
     center = round(spot / step) * step
     strike_set = {center + (offset * step) for offset in range(-6, 7)}
-    for key in (dash.levels.call_wall, dash.levels.put_wall, magnet_val, mp_val):
+    try:
+        from analytics.session_map import load_prior_marks
+        session_day = _get_ist_now().strftime("%Y-%m-%d")
+        prior_marks = load_prior_marks(sym, session_day)
+    except Exception as exc:
+        log.debug("prior session marks: %s", exc)
+        prior_marks = None
+    for key in (dash.levels.call_wall, dash.levels.put_wall, magnet_val, mp_val,
+                standing_oi.get("put_centre"), standing_oi.get("call_centre"),
+                (prior_marks or {}).get("high"), (prior_marks or {}).get("low"),
+                (prior_marks or {}).get("close")):
         if key and float(key) > 0:
-            strike_set.add(float(key))
+            strike_set.add(round(float(key) / step) * step)
     ladder_strikes = sorted(strike_set)
 
     closest_flip_stk = min(ladder_strikes, key=lambda s: abs(s - flip_val)) if flip_val else None
@@ -1199,6 +1661,14 @@ async def get_cockpit_data(
                 per_strike_map[float(prow["strike"])] = prow
         except Exception:
             pass
+
+    def _listed(centre):
+        if not centre or float(centre) <= 0:
+            return None
+        return round(float(centre) / step) * step
+
+    put_oi_mark = _listed(standing_oi.get("put_centre"))
+    call_oi_mark = _listed(standing_oi.get("call_centre"))
 
     for stk in ladder_strikes:
         is_spot = abs(stk - center) < 0.51
@@ -1245,7 +1715,61 @@ async def get_cockpit_data(
             "is_gamma_flip": (stk == closest_flip_stk) if is_flip_in_band else False,
             "is_max_pain": (stk == closest_mp_stk) if is_mp_in_band else False,
             "is_magnet": (stk == closest_magnet_stk) if is_magnet_in_band else False,
+            "is_put_oi": put_oi_mark is not None and _same_strike(stk, put_oi_mark, step),
+            "is_call_oi": call_oi_mark is not None and _same_strike(stk, call_oi_mark, step),
+            "call_doi": None,
+            "put_doi": None,
+            "is_prior_high": False,
+            "is_prior_low": False,
+            "is_prior_close": False,
         })
+
+    try:
+        from analytics.session_map import (
+            crossover_watch, load_magnet_path, read_futures_state, strike_doi_table,
+        )
+    except Exception as exc:
+        log.debug("session map import: %s", exc)
+        crossover_watch = load_magnet_path = read_futures_state = strike_doi_table = None
+    doi_rows = []
+    if strike_doi_table is not None:
+        try:
+            doi_rows = strike_doi_table(getattr(dash, "oi_strikes", None), spot, float(idx.band_pts))
+        except Exception as exc:
+            log.debug("strike doi table: %s", exc)
+    for row in ladder:
+        cell = next((item for item in doi_rows if abs(item["strike"] - row["strike"]) <= step / 2), None)
+        if cell:
+            row["call_doi"] = cell["call_doi"]
+            row["put_doi"] = cell["put_doi"]
+    if prior_marks and ladder:
+        for flag, key in (
+            ("is_prior_high", "high"),
+            ("is_prior_low", "low"),
+            ("is_prior_close", "close"),
+        ):
+            level = float(prior_marks[key])
+            nearest = min(ladder, key=lambda row: abs(row["strike"] - level))
+            if abs(nearest["strike"] - level) <= step:
+                nearest[flag] = True
+    magnet_path = []
+    watch = {"anchors": []}
+    futures_state = None
+    if load_magnet_path is not None:
+        try:
+            magnet_path = load_magnet_path(sym)
+        except Exception as exc:
+            log.debug("magnet path: %s", exc)
+    if crossover_watch is not None:
+        try:
+            watch = crossover_watch(getattr(dash, "oi_strikes", None) or [], spot, magnet_val)
+        except Exception as exc:
+            log.debug("crossover watch: %s", exc)
+    if read_futures_state is not None:
+        try:
+            futures_state = read_futures_state(sym, _get_ist_now().strftime("%Y-%m-%d"))
+        except Exception as exc:
+            log.debug("futures state: %s", exc)
 
     # Gamma Blast Verdict (Evaluated dynamically via app.gammablast)
     try:
@@ -1256,7 +1780,7 @@ async def get_cockpit_data(
         gamma_blast = {
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: INACTIVE",
-            "description": "Dealer gamma pinned within absorption walls; no explosive squeeze imminent.",
+            "description": "No gamma-blast trigger. Concentration is a map, not a pin.",
             "score": 24,
             "is_expiry": False,
             "in_blast_window": False,
@@ -1272,15 +1796,19 @@ async def get_cockpit_data(
     # Freeze synthesis of fresh recommendations during off-market hours unless simulation_mode is enabled
     if is_open or simulation_mode:
         try:
-            recs = generate_trade_recommendations(dash, bias_result=bias_res)
+            recs = _latest_rec_batch(sym, win)
             all_recs = []
             if recs:
-                all_recs = getattr(recs, "all_recommendations", None) or (
-                    getattr(recs, "higher_ce_recommendations", [])
-                    + getattr(recs, "higher_pe_recommendations", [])
-                    + getattr(recs, "lower_ce_recommendations", [])
-                    + getattr(recs, "lower_pe_recommendations", [])
+                all_recs = list(getattr(recs, "ce_recommendations", None) or []) + list(
+                    getattr(recs, "pe_recommendations", None) or []
                 )
+                if not all_recs:
+                    all_recs = (
+                        list(getattr(recs, "higher_ce_recommendations", None) or [])
+                        + list(getattr(recs, "higher_pe_recommendations", None) or [])
+                        + list(getattr(recs, "lower_ce_recommendations", None) or [])
+                        + list(getattr(recs, "lower_pe_recommendations", None) or [])
+                    )
             for idea in all_recs:
                 if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
                     fresh_ideas.append(idea)
@@ -1321,7 +1849,19 @@ async def get_cockpit_data(
     total_cockpit_cards = pinned_count + fresh_count
 
     # Pre-Market Discovery Summary (09:07:30 Equilibrium & Opening Shock)
-    pm_state = get_pre_market_state(sym)
+    pm_state = dict(get_pre_market_state(sym) or {})
+    lv_pm = getattr(dash, "levels", None)
+    if lv_pm is not None:
+        pm_state["call_wall"] = float(getattr(lv_pm, "call_wall", 0) or 0)
+        pm_state["put_wall"] = float(getattr(lv_pm, "put_wall", 0) or 0)
+    pm_state = attach_pre_market_shocks(
+        pm_state,
+        contracts_df=getattr(dash, "contracts", None),
+        dte_days=_extract_active_dte(dash, default_days=3.0),
+        atm_iv=_extract_active_atm_iv(dash),
+    )
+    if not pm_state.get("regime_briefing"):
+        pm_state["regime_briefing"] = pm_state.get("status_text") or ""
 
     # OrderFlow Sentinel Stream Summary (Tape Alerts)
     inst_id = f"{sym}-FUT"
@@ -1331,12 +1871,17 @@ async def get_cockpit_data(
         {
             "type": s.type,
             "category": s.category,
+            "bias": getattr(s, "bias", ""),
             "score": s.score,
+            "status": getattr(s, "status", "NEW"),
             "rvol_tod": s.rvol_tod,
             "delta": s.delta,
             "invalidation_level": s.invalidation_level,
             "insight_text": s.insight_text,
+            "actionable_play": getattr(s, "actionable_play", "") or "",
+            "gex_alignment": getattr(s, "gex_alignment", "") or "",
             "time": s.bar_start_ts.strftime("%H:%M:%S") if hasattr(s.bar_start_ts, "strftime") else str(s.bar_start_ts),
+            "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
         }
         for s in sigs
     ]
@@ -1351,19 +1896,42 @@ async def get_cockpit_data(
     ratio = round(adv / max(1, dec), 2) if (adv > 0 or dec > 0) else 1.0
     sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
 
-    sched = compute_session_schedule_info(_get_ist_now())
+    now_ist = _get_ist_now()
+    try:
+        sess_phase, _, _ = get_current_session_phase(now_ist)
+    except Exception:
+        sess_phase = "CLOSED"
+    is_pre_bell = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_state)
+    snapshot_as_of = _fmt_snapshot_as_of(getattr(dash, "fetched_at", None), now_ist)
+    fetched_at = getattr(dash, "fetched_at", None)
+    stale_s = 0.0
+    if fetched_at is not None:
+        fa = fetched_at
+        if getattr(fa, "tzinfo", None) is None:
+            fa = fa.replace(tzinfo=timezone.utc)
+        stale_s = max(0.0, (datetime.now(timezone.utc) - fa.astimezone(timezone.utc)).total_seconds())
+    is_degraded = bool(getattr(dash, "is_degraded", False) or stale_s > 7200.0)
+
+    sched = compute_session_schedule_info(now_ist)
     regime_val = kpis.get("regime", {}).get("val", "Normal")
-    if not is_open:
+    if is_pre_bell:
+        exec_status_text = f"Pre-open · prior-session GEX · Spot ₹{spot:,.1f}"
+    elif not is_open:
         exec_status_text = f"Snapshot Locked at ₹{spot:,.1f} · {regime_val} Mode"
     else:
         exec_status_text = f"{regime_val} Mode · Spot ₹{spot:,.1f}"
 
-    return {
+    payload = {
         "symbol": sym,
         "spot": spot,
         "gamma_flip": flip_val or 0.0,
         "kpis": kpis,
         "gamma_blast": gamma_blast,
+        "crossover_watch": watch,
+        "magnet_path": magnet_path,
+        "futures_state": futures_state,
+        "prior_marks": prior_marks,
+        "strike_doi": doi_rows,
         "ladder": ladder,
         "pinned_setups": pinned_records,
         "cockpit_recommendations": cockpit_cards,
@@ -1372,7 +1940,9 @@ async def get_cockpit_data(
         "total_cockpit_cards": total_cockpit_cards,
         "pre_market": pm_state,
         "orderflow_alerts": orderflow_alerts,
+        "strike_step": float(idx.strike_step or 50),
         "session_schedule": sched,
+        "session_phase": sess_phase,
         "next_phase_countdown": sched["exec_phase_countdown"],
         "exec_session_status": exec_status_text,
         "market_breadth": {
@@ -1382,14 +1952,33 @@ async def get_cockpit_data(
             "sentiment": sentiment,
         },
         "is_market_open": is_open,
+        "is_pre_bell_ephemeral": is_pre_bell,
         "market_state": "OPEN" if is_open else "CLOSED",
-        "as_of_time": getattr(dash, "as_of_time", None) or (
-            dash.fetched_at.astimezone(IST).strftime("%H:%M:%S IST")
-            if getattr(dash, "fetched_at", None)
-            else ("15:30:00 IST" if not is_open else _get_ist_now().strftime("%H:%M:%S IST"))
-        ),
+        "as_of_time": now_ist.strftime("%H:%M:%S IST"),
+        "snapshot_as_of": snapshot_as_of,
+        "snapshot_stale_seconds": round(stale_s, 1),
+        "is_degraded": is_degraded,
         "fetched_at": str(getattr(dash, "fetched_at", "") or ""),
+        "structures": _concentration_structures(
+            dash, idx, bias_score=bias_res.score, sentinel_signals=sigs,
+        ),
+        "standing_oi": standing_oi,
     }
+    try:
+        from analytics.position_context import holdings_for, value_area_for
+        book_day = _get_ist_now().strftime("%Y-%m-%d")
+        payload["participant_holdings"] = holdings_for(None)
+        payload["value_area"] = value_area_for(sym, book_day, spot, getattr(dash, "source", None))
+    except Exception as exc:
+        log.debug("holdings or value area: %s", exc)
+        payload["participant_holdings"] = {"date": None, "rows": []}
+        payload["value_area"] = {"text": "No prior value area.", "inside": None}
+    try:
+        payload["market_alert"] = evaluate_market_alert(payload)
+    except Exception as exc:
+        log.debug("market_alert compose: %s", exc)
+        payload["market_alert"] = None
+    return payload
 
 
 @app.get("/api/target-engine")
@@ -1409,40 +1998,10 @@ async def get_target_engine(
     res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
     spot = float(dash.levels.spot or 0.0)
 
-    # Dynamic Confluence Dial derived from authentic target engine candidate rankings & features
-    top_score = 50.0
-    if res.candidates:
-        top_score = float(getattr(res.candidates[0], "rank_score", 50.0) or 50.0)
-
-    fv = getattr(res, "feature_vector", None)
-    feats = fv.features if fv and hasattr(fv, "features") else {}
-    cw_prox = feats.get("F1_call_wall_prox", 0.0)
-    pw_prox = feats.get("F2_put_wall_prox", 0.0)
-    pcr_lvl = feats.get("F5_pcr_level", 0.0)
-    atm_iv_f = feats.get("F13_atm_iv", 0.14)
-
-    gex_align = min(100, max(20, int(50 + (pw_prox - cw_prox) * 25)))
-    sent_cvd = min(100, max(20, int(top_score * 0.95)))
-    oi_shift = min(100, max(20, int(50 + pcr_lvl * 30)))
-    iv_context = min(100, max(20, int(100 - atm_iv_f * 250)))
-
-    verdict = "CONFLUENCE BULLISH" if top_score >= 60 else ("CONFLUENCE BEARISH" if top_score <= 40 else "CONFLUENCE NEUTRAL")
-    color = "var(--go)" if top_score >= 60 else ("var(--stop)" if top_score <= 40 else "var(--spark)")
-
-    dial = {
-        "score": int(round(top_score)),
-        "verdict": verdict,
-        "color": color,
-        "components": {
-            "GEX Alignment": gex_align,
-            "Sentinel CVD": sent_cvd,
-            "OI Shift Flow": oi_shift,
-            "IV Skew Context": iv_context,
-        },
-    }
-
-    # Scenario Set & Dominant Scenario Distribution
     sc_set = res.scenario_set
+    dial = compose_confluence_dial(sc_set, getattr(res, "feature_vector", None))
+    edge_label, honest_no_edge = compose_edge_label(sc_set)
+
     p_bull = float(sc_set.get_prob("bull"))
     p_base = float(sc_set.get_prob("base"))
     p_bear = float(sc_set.get_prob("bear"))
@@ -1450,8 +2009,8 @@ async def get_target_engine(
     scenario_info = {
         "dominant_scenario": sc_set.dominant_scenario.lower(),
         "conviction": float(sc_set.conviction),
-        "no_edge": bool(sc_set.no_edge),
-        "edge_label": "NO EDGE — RANGE DOMINANT" if sc_set.no_edge else "CONFIRMED EDGE",
+        "no_edge": honest_no_edge,
+        "edge_label": edge_label,
         "probabilities": {
             "bull": round(p_bull, 4),
             "base": round(p_base, 4),
@@ -1472,12 +2031,12 @@ async def get_target_engine(
         reason_txt = getattr(v, "reason", "") or "GEX / Volatility Anchor"
         fc_iv = float(iv_fcs[k].iv_at_horizon) if k in iv_fcs and hasattr(iv_fcs[k], "iv_at_horizon") else 0.14
         targets[k] = {
-            "target": tgt_val,
-            "stop": stop_val,
+            "target": round(tgt_val, 1),
+            "stop": round(stop_val, 1),
             "p_touch_target": round(p_touch, 4),
             "p_touch": round(p_touch, 4),
             "p_close_beyond": round(p_close, 4),
-            "points_away": tgt_val - spot,
+            "points_away": round(tgt_val - spot, 1),
             "horizon_minutes": getattr(v, "horizon_minutes", horizon_val),
             "reason": reason_txt,
             "forecast_iv": round(fc_iv, 4),
@@ -1490,9 +2049,14 @@ async def get_target_engine(
         contracts_df=getattr(dash, "contracts", None),
     )
     if not active_exps:
-        active_exps = [str(dash.levels.expiry) if hasattr(dash.levels, "expiry") and dash.levels.expiry else "2026-10-19"]
+        if dash.expiries:
+            active_exps = [str(dash.expiries[0])]
+        else:
+            active_exps = [datetime.now().date().isoformat()]
     exp_str = active_exps[0]
-    ladder_bundle = compute_strike_ladder(sym, spot, getattr(dash, "contracts", None), exp_str, 45, dash.levels)
+    ladder_bundle = compute_strike_ladder(
+        sym, spot, getattr(dash, "contracts", None), exp_str, horizon_val, dash.levels,
+    )
     strike_ladder_rows = []
     for r in ladder_bundle.rows:
         strike_ladder_rows.append({
@@ -1501,6 +2065,8 @@ async def get_target_engine(
             "ce": {
                 "ltp": round(float(r.ce.ltp), 1),
                 "delta": round(float(r.ce.delta), 2),
+                "iv": round(float(r.ce.iv) * 100.0, 1),
+                "live": bool(r.ce.is_ws_live),
                 "theta": round(float(r.ce.theta), 1),
                 "opt_sl": round(float(r.ce.opt_sl), 1),
                 "opt_tgt1": round(float(r.ce.opt_tgt1), 1),
@@ -1517,6 +2083,8 @@ async def get_target_engine(
             "pe": {
                 "ltp": round(float(r.pe.ltp), 1),
                 "delta": round(float(r.pe.delta), 2),
+                "iv": round(float(r.pe.iv) * 100.0, 1),
+                "live": bool(r.pe.is_ws_live),
                 "theta": round(float(r.pe.theta), 1),
                 "opt_sl": round(float(r.pe.opt_sl), 1),
                 "opt_tgt1": round(float(r.pe.opt_tgt1), 1),
@@ -1532,34 +2100,25 @@ async def get_target_engine(
             },
         })
 
-    # Ranked Candidate Setups
-    ranked_candidates = []
-    for c in res.candidates:
-        leg = c.legs[0] if c.legs else None
-        stk = leg.strike if leg else spot
-        op_type = leg.option_type if leg else "CE"
-        ent_ltp = leg.entry_premium if leg else 115.0
-        # Extract authentic modeled target and risk levels from scenario targets
-        sc_tgt = c.scenario_targets.get("bull") or c.scenario_targets.get("bear") or c.scenario_targets.get("base")
-        t1_val = round(float(sc_tgt.target_premium), 1) if sc_tgt and getattr(sc_tgt, "target_premium", 0.0) > 0 else round(float(ent_ltp * 1.35), 1)
-        max_l = getattr(c, "max_loss_pts", None)
-        sl_val = round(max(1.0, float(ent_ltp - max_l)), 1) if (max_l and max_l > 0) else round(float(ent_ltp * 0.70), 1)
-        rr_val = getattr(c, "risk_reward", 2.0) or 2.0
-        pt_val = getattr(sc_tgt, "p_touch_target", 0.65) if sc_tgt else 0.65
-        ranked_candidates.append({
-            "strike": stk,
-            "option_type": op_type,
-            "score": round(float(getattr(c, "rank_score", 82.0)), 1),
-            "entry_ltp": round(float(ent_ltp), 1),
-            "target_1": t1_val,
-            "stop_loss": sl_val,
-            "net_ev": round(float(getattr(c, "expected_value", 24.5)), 1),
-            "risk_reward": f"1 : {rr_val:.1f}",
-            "p_touch": round(float(pt_val), 2),
-        })
+    ranked_candidates = serialize_ranked_candidates(
+        res.candidates, dominant=str(sc_set.dominant_scenario or "base").lower(),
+    )
+    feat_rows = []
+    fv = getattr(res, "feature_vector", None)
+    feats = getattr(fv, "features", None) or {}
+    if isinstance(feats, dict):
+        for name, val in feats.items():
+            try:
+                feat_rows.append({"name": str(name), "value": round(float(val), 4)})
+            except (TypeError, ValueError):
+                continue
+    live_ticks = sum(
+        int(bool(r.ce.is_ws_live)) + int(bool(r.pe.is_ws_live))
+        for r in ladder_bundle.rows
+    )
 
     # 21-Strike ATM Band
-    stk_step = 50 if sym == "NIFTY" else 100
+    stk_step = int(idx.strike_step)
     atm_stk = round(spot / stk_step) * stk_step
     nearby_21_strikes = [int(atm_stk + i * stk_step) for i in range(-10, 11)]
 
@@ -1570,7 +2129,7 @@ async def get_target_engine(
         "lot_size": idx.lot_size,
         "atm_strike": atm_stk,
         "expiries": [{"id": e, "label": e} for e in active_exps],
-        "active_expiry": active_exps[0] if active_exps else "2026-10-19",
+        "active_expiry": active_exps[0] if active_exps else datetime.now().date().isoformat(),
         "nearby_strikes": nearby_21_strikes,
         "dial": dial,
         "scenario_set": scenario_info,
@@ -1578,7 +2137,13 @@ async def get_target_engine(
         "scoring_mode": mode,
         "targets": targets,
         "ladder": strike_ladder_rows,
+        "ladder_meta": {
+            "lot_size": int(idx.lot_size),
+            "live_ticks": live_ticks,
+            "rows": len(strike_ladder_rows),
+        },
         "candidates": ranked_candidates,
+        "features": feat_rows,
     }
 
 
@@ -1774,8 +2339,12 @@ async def get_recommendations(
     """
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
-    acct_cap = capital or _ACTIVE_STATE["account_capital"]
-    r_pct = risk or _ACTIVE_STATE["risk_pct"]
+    if capital is not None:
+        _ACTIVE_STATE["account_capital"] = float(capital)
+    if risk is not None:
+        _ACTIVE_STATE["risk_pct"] = float(risk)
+    acct_cap = float(_ACTIVE_STATE["account_capital"])
+    r_pct = float(_ACTIVE_STATE["risk_pct"])
 
     idx = config.get_index(sym)
     is_open = config.is_market_open()
@@ -1787,6 +2356,7 @@ async def get_recommendations(
         "lot_size": idx.lot_size,
     }
     eff_metrics = get_strategy_effectiveness_metrics(sym)
+    eff_summary = summarize_effectiveness(eff_metrics if isinstance(eff_metrics, list) else [])
 
     if not is_open and not simulation_mode:
         from data.market_snapshot import get_snapshot
@@ -1802,7 +2372,7 @@ async def get_recommendations(
                 "title": "Session Closed · Off-Market Hours",
                 "message": (
                     "Broker API polling and NSE live feeds are paused after market hours. "
-                    "Real-time intraday option recommendations, gamma breakout triggers, and Sentinel MTM tracking "
+                    "Real-time recommendations and Sentinel marks-to-market "
                     "run strictly during active trading hours (09:15 – 15:30 IST) or when Replay Mode is enabled."
                 ),
                 "action_prompt": "You can explore simulated option setups based on the last session's closing GEX matrix.",
@@ -1814,18 +2384,28 @@ async def get_recommendations(
             "higher_conviction": {"ce_clusters": [], "pe_clusters": []},
             "fallback_tier": {"ce_clusters": [], "pe_clusters": []},
             "effectiveness": eff_metrics,
+            "effectiveness_summary": eff_summary,
         }
 
-    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
-    spot = float(dash.levels.spot or 0.0)
-
-    bias_res = _compute_active_directional_bias(dash, sym)
-    recs = generate_trade_recommendations(dash, bias_result=bias_res)
-
-    try:
-        evaluate_recommendation_lifecycle(sym, spot)
-    except Exception:
-        pass
+    recs = _latest_rec_batch(sym, win)
+    from app.spot_ticker import latest_quote
+    q = latest_quote(sym) or {}
+    spot = float((recs.spot if recs is not None else 0) or q.get("spot") or 0)
+    if recs is None:
+        _ensure_rec_publisher()
+        from analytics.trade_ideas import RecommendationBatch
+        recs = RecommendationBatch(
+            symbol=sym,
+            spot=spot,
+            session_vwap=spot,
+            call_wall=0.0,
+            put_wall=0.0,
+            gamma_flip=0.0,
+            directional_bias_score=0.0,
+            bias_regime="Neutral",
+            executive_summary="Awaiting first recommendation publish from the background engine.",
+            top_recommended_side="NEUTRAL",
+        )
 
     # Cluster recommendations by strike
     high_ce_clusters = _cluster_ideas_by_strike(recs.higher_ce_recommendations)
@@ -1852,7 +2432,31 @@ async def get_recommendations(
             "pe_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in low_pe_clusters],
         },
         "effectiveness": eff_metrics,
+        "effectiveness_summary": eff_summary,
     }
+
+
+@app.get("/api/recommendations/alerts")
+async def recommendation_alerts():
+    """Unacknowledged pin lifecycle events: target, stop, or invalidation."""
+    rows = get_unacknowledged_alerts(only_bookmarked=True)
+    alerts = []
+    for row in rows:
+        alerts.append({
+            "event_id": row.get("event_id"),
+            "event_type": row.get("event_type") or "ALERT",
+            "message": row.get("message") or "",
+            "event_ts": row.get("event_ts") or "",
+            "rec_id": row.get("rec_id") or "",
+        })
+    return {"alerts": alerts}
+
+
+@app.post("/api/recommendations/alerts/ack")
+async def acknowledge_recommendation_alerts(payload: dict = Body(...)):
+    ids = payload.get("event_ids") or []
+    acknowledge_alerts([int(i) for i in ids if i is not None])
+    return {"status": "ok", "acknowledged": len(ids)}
 
 
 @app.post("/api/recommendations/bookmark")
@@ -2025,12 +2629,28 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
             "score": s.score,
             "rvol_tod": s.rvol_tod,
             "delta": s.delta,
+            "event_id": getattr(s, "event_id", ""),
             "invalidation_level": s.invalidation_level,
             "insight_text": s.insight_text,
             "time": s.bar_start_ts.strftime("%d-%b %H:%M:%S IST") if hasattr(s.bar_start_ts, "strftime") else str(s.bar_start_ts),
         }
         for s in sigs
     ]
+    try:
+        outcome_by_id = {o.event_id: o for o in list_recent_outcomes(inst_id, limit=80)}
+    except Exception:
+        outcome_by_id = {}
+    for row in signal_feed:
+        outcome = outcome_by_id.get(row.get("event_id"))
+        if outcome is None:
+            row["outcome"] = None
+            continue
+        row["outcome"] = {
+            "mfe": round(float(outcome.mfe_pts or 0), 1),
+            "mae": round(float(outcome.mae_pts or 0), 1),
+            "target_hit": bool(outcome.target_hit),
+            "stopped_out": bool(outcome.stopped_out),
+        }
 
     # Authentic Block Tape derived from session volume and delta spikes
     tape = []
@@ -2401,13 +3021,13 @@ async def get_market_intel(symbol: Optional[str] = None):
         return {
             "symbol": sym,
             "macro_verdict": "⚖️ Balanced Sector Dispersion: 9/11 Green Amid Bearish Catalysts",
-            "executive_narrative": "Institutional accumulation in Banking and Auto combined with moderate volatility creates supportive intraday conditions above structural dealer walls.",
+            "executive_narrative": "Sector breadth and the news tape. Gamma strikes are a concentration map, not a floor or a ceiling.",
             "risk_label": "🟢 LOW EXOGENOUS RISK",
             "risk_chip_cls": "go",
             "catalyst_risk_level": "LOW",
             "alignment": "CONFIRMING_BULLISH",
             "actionable_points": [
-                "🟢 Strong Breadth Confirmation: High probability of call wall tests and supportive gamma flips holding pullbacks.",
+                "🟢 Breadth is context. A gamma strike is not a level that holds a pullback.",
                 "📊 Primary sector driver today is Auto (+1.15%).",
                 "🗞️ Dominant news themes: Markets & Economy, Corporate & Earnings.",
             ],
@@ -2443,7 +3063,7 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     exp_low = spot - exp_move
 
     # Authentic Strike Buildup Matrix derived from snapshot oi_strikes
-    from analytics.buildup import build_strike_matrix, CLASSIFICATION_EMOJI
+    from analytics.buildup import build_strike_matrix
     step = 50 if sym == "NIFTY" else 100
     center = round(spot / step) * step
     buildup_rows = []
@@ -2456,31 +3076,17 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         stk = center + (off * step)
         if stk in matrix_map:
             sb = matrix_map[stk]
-            c_tag = CLASSIFICATION_EMOJI.get(sb.call_classification, sb.call_classification)
-            p_tag = CLASSIFICATION_EMOJI.get(sb.put_classification, sb.put_classification)
             pcr_val = round(sb.put_oi / max(1.0, sb.call_oi), 2)
             buildup_rows.append({
                 "strike": sb.strike,
                 "call_oi": int(sb.call_oi),
                 "call_doi": int(sb.call_doi),
-                "call_buildup": c_tag,
+                "call_buildup": "",
                 "put_oi": int(sb.put_oi),
                 "put_doi": int(sb.put_doi),
-                "put_buildup": p_tag,
+                "put_buildup": "",
                 "net_oi": int(sb.call_oi - sb.put_oi),
                 "pcr": pcr_val,
-            })
-        else:
-            buildup_rows.append({
-                "strike": stk,
-                "call_oi": 0,
-                "call_doi": 0,
-                "call_buildup": "Neutral",
-                "put_oi": 0,
-                "put_doi": 0,
-                "put_buildup": "Neutral",
-                "net_oi": 0,
-                "pcr": 1.0,
             })
 
     # Authentic Term Structure Curve grouped by expiry with per-expiry ATM IV
@@ -2511,80 +3117,59 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     # Options Analytics 6 Top KPI Cards
     pcr = _extract_active_pcr(dash)
     max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else spot
-    vix = float(dash.india_vix.get("last", 13.5)) if dash.india_vix else 13.5
+    vix = None
+    if isinstance(getattr(dash, "india_vix", None), dict) and dash.india_vix.get("last") is not None:
+        vix = float(dash.india_vix["last"])
 
     # ATM IV mapped onto a 10–25% band (NOT a 30-day historical rank).
     iv_rank = round(min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0)), 0)
     iv_rank_sub = "Elevated vs 10–25% band" if iv_rank >= 65 else ("Low vs 10–25% band" if iv_rank <= 30 else "Inside 10–25% band")
 
-    # Dynamic Pinning Score
     mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
-    pin_score = max(10, min(100, int(round(100 - (mp_dist / max(spot, 1.0)) * 2800))))
 
     # Dynamic IOAS Directional Bias
     bias_res = _compute_active_directional_bias(dash, sym)
 
+    if pcr > 1.25:
+        pcr_sub = "Put-heavy open interest"
+    elif pcr < 0.85:
+        pcr_sub = "Call-heavy open interest"
+    else:
+        pcr_sub = "Mixed open interest"
+
     kpis = {
-        "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "Contango (Normal)"},
-        "pcr": {"val": f"{pcr:.2f}", "sub": ("ATM put-heavy" if pcr > 1.0 else "ATM call-heavy")},
-        "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": f"Pin: {pin_score}/100"},
+        "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "ATM implied vol"},
+        "pcr": {"val": f"{pcr:.2f}", "sub": pcr_sub},
+        "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": f"{mp_dist:,.0f} pts from spot · settlement strike"},
         "iv_rank": {"val": f"{iv_rank:.0f}%", "sub": iv_rank_sub},
-        "india_vix": {"val": f"{vix:.2f}", "sub": "Low Vol" if vix < 15 else "Elevated"},
+        "india_vix": {"val": "—" if vix is None else f"{vix:.2f}", "sub": "India VIX"},
         "bias_gauge": {"val": f"{bias_res.score:+.2f}", "sub": bias_res.regime},
     }
+    bias_rows = [
+        {
+            "key": s.key,
+            "label": s.label,
+            "detail": s.detail,
+            "weight": s.weight,
+            "contribution": round(float(s.contribution), 2),
+        }
+        for s in (bias_res.signals or [])
+    ]
 
-    # Dynamic Intraday Shift Events Log
-    shift_events = []
-    try:
-        from analytics.divergence import detect_divergences
-        div_rep = detect_divergences(
-            spot=spot,
-            spot_prev=getattr(dash.levels, "prev_close", spot),
-            pcr=pcr,
-            pcr_prev=None,
-            pcr_prev_session=None,
-            atm_iv=atm_iv,
-            atm_iv_prev=None,
-            call_wall=dash.levels.call_wall,
-            put_wall=dash.levels.put_wall,
-            call_wall_prev=None,
-            put_wall_prev=None,
-        )
-        if div_rep and div_rep.active_divergences:
-            for d in div_rep.active_divergences[:5]:
-                shift_events.append({
-                    "time": _get_ist_now().strftime("%H:%M IST"),
-                    "badge": d.type,
-                    "badge_cls": "bear" if any(w in d.type for w in ["WALL", "DROP", "BREAK", "BEAR"]) else "bull",
-                    "desc": f"{d.description} — {d.detail}",
-                })
-    except Exception:
-        pass
-
-    if not shift_events:
-        now_time_str = _get_ist_now().strftime("%H:%M IST")
-        shift_events = [
-            {
-                "time": now_time_str,
-                "badge": "WALL_ANCHOR",
-                "badge_cls": "bull" if spot >= (dash.levels.put_wall or spot) else "bear",
-                "desc": f"Passive Put wall defense at ₹{dash.levels.put_wall:,.0f} · Call wall ceiling at ₹{dash.levels.call_wall:,.0f}",
-            },
-            {
-                "time": now_time_str,
-                "badge": "GEX_REGIME",
-                "badge_cls": "bull" if (dash.levels.total_net_gex or 0) >= 0 else "bear",
-                "desc": f"Dealer gamma {dash.view.regime} (PCR {pcr:.2f}) · Volatility barrier at ₹{dash.levels.flip or spot:,.0f}",
-            },
-        ]
-
-    # 25Δ Skew & Term Structure Curve
     contracts_df = getattr(dash, "contracts", None)
+    parity_pack = _parity_payload(contracts_df, spot)
+    parity_report = parity_pack.pop("report")
+    location_alerts = _location_alerts(dash, spot, parity_report)
+
+    # 25Δ Skew & Term Structure Curve. Missing quotes stay missing.
     skew_result = skew_25delta(contracts_df, spot) if contracts_df is not None else {}
-    skew_pct = round((skew_result.get("skew_25d") or 0.018) * 100.0, 1)
-    near_iv = round((skew_result.get("near_atm_iv") or atm_iv) * 100.0, 1)
-    next_iv = round((skew_result.get("next_atm_iv") or (atm_iv * 1.05)) * 100.0, 1)
-    term_diff = round(next_iv - near_iv, 1)
+    raw_skew = skew_result.get("skew_25d")
+    skew_pct = round(float(raw_skew) * 100.0, 1) if raw_skew is not None else None
+    raw_near = skew_result.get("near_atm_iv")
+    raw_next = skew_result.get("next_atm_iv")
+    near_iv = round(float(raw_near) * 100.0, 1) if raw_near is not None else None
+    next_iv = round(float(raw_next) * 100.0, 1) if raw_next is not None else None
+    term_diff = round(next_iv - near_iv, 1) if near_iv is not None and next_iv is not None else None
 
     iv_skew_curve = []
     if contracts_df is not None and not contracts_df.empty:
@@ -2603,8 +3188,12 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
                     for stk in strikes_u:
                         c_sub = sk_df[(sk_df["strike"] == stk) & (sk_df["type"].str.upper().str.startswith("C"))]
                         p_sub = sk_df[(sk_df["strike"] == stk) & (sk_df["type"].str.upper().str.startswith("P"))]
-                        c_iv = float(c_sub.iloc[0]["iv"]) if not c_sub.empty else (atm_iv * 100)
-                        p_iv = float(p_sub.iloc[0]["iv"]) if not p_sub.empty else (atm_iv * 100)
+                        if c_sub.empty or p_sub.empty:
+                            continue
+                        c_iv = float(c_sub.iloc[0]["iv"])
+                        p_iv = float(p_sub.iloc[0]["iv"])
+                        if c_iv <= 0 or p_iv <= 0:
+                            continue
                         iv_skew_curve.append({
                             "strike": int(stk),
                             "call_iv": round(c_iv if c_iv < 1.0 else c_iv / 100.0, 4) * 100.0,
@@ -2613,58 +3202,39 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         except Exception:
             pass
 
-    if not iv_skew_curve:
-        for off in range(-5, 6):
-            stk = center + (off * step)
-            c_iv = (atm_iv * 100) - (off * 0.25)
-            p_iv = (atm_iv * 100) + (off * 0.35)
-            iv_skew_curve.append({
-                "strike": int(stk),
-                "call_iv": round(c_iv, 1),
-                "put_iv": round(p_iv, 1),
-            })
+    straddle, straddle_source = _atm_straddle_pts(contracts_df, spot)
+    term_label = None
+    if term_diff is not None:
+        term_label = "Near expiry IV above the next" if term_diff < 0 else "Next expiry IV above the near"
 
     return {
         "symbol": sym,
         "spot": spot,
         "kpis": kpis,
+        "bias_rows": bias_rows,
         "expected_move": {
             "move_pts": round(exp_move, 1),
             "high": round(exp_high, 1),
             "low": round(exp_low, 1),
+            "straddle": straddle,
+            "straddle_source": straddle_source,
             "upper_barrier": round(dash.levels.call_wall or exp_high, 1),
             "lower_barrier": round(dash.levels.put_wall or exp_low, 1),
         },
         "skew_summary": {
             "skew_25d": skew_pct,
-            "skew_label": skew_result.get("skew_label", "Put Premium"),
+            "skew_label": skew_result.get("skew_label") or "—",
             "near_atm_iv": near_iv,
             "next_atm_iv": next_iv,
             "term_spread": term_diff,
-            "term_label": "Contango (Normal)" if term_diff >= 0 else "Backwardation",
+            "term_label": term_label,
         },
         "iv_skew_curve": iv_skew_curve,
         "buildup_matrix": buildup_rows,
         "term_structure": term_structure,
-        "shift_events": shift_events,
-        "parity_monitor": {
-            "summary": f"Parity Holds: Synthetic Basis {(float(getattr(dash.levels, 'spot', 0.0)) - float(getattr(dash.levels, 'flip', getattr(dash.levels, 'spot', 0.0)) or getattr(dash.levels, 'spot', 0.0))):+.1f} pts" if getattr(dash, "levels", None) else "Parity Holds: Basis 0.0 pts",
-            "alerted": False,
-        },
-        "divergences": [
-            {
-                "type": getattr(d, "type", "DIVERGENCE"),
-                "strike": float(getattr(d, "strike", spot) or spot),
-                "notes": f"{getattr(d, 'description', '')} — {getattr(d, 'detail', '')}",
-            }
-            for d in getattr(div_rep, "active_divergences", [])[:5]
-        ] if 'div_rep' in locals() and div_rep and getattr(div_rep, "active_divergences", None) else [
-            {
-                "type": "WALL_ANCHOR",
-                "strike": float(getattr(dash.levels, "put_wall", spot) or spot) if dash and hasattr(dash, "levels") and dash.levels else spot,
-                "notes": f"Put Wall support ₹{getattr(dash.levels, 'put_wall', spot):,.0f} · Call Wall resistance ₹{getattr(dash.levels, 'call_wall', spot):,.0f}" if dash and hasattr(dash, "levels") and dash.levels else "Levels balanced around spot",
-            }
-        ],
+        "shift_events": location_alerts,
+        "location_alerts": location_alerts,
+        "parity_monitor": parity_pack,
     }
 
 
@@ -2677,7 +3247,8 @@ async def get_journal(symbol: Optional[str] = None):
     closed_trades = journal_store.list_closed_trades(symbol=sym if sym != "ALL" else None)
 
     dash = await _aload_active_dashboard(sym, "weekly")
-    spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
+    default_lot = int(config.get_index(sym).lot_size) if sym != "ALL" else 0
 
     # Format open positions with simulated live tick MTM
     pos_list = []
@@ -2686,7 +3257,7 @@ async def get_journal(symbol: Optional[str] = None):
     for t in open_trades:
         entry_spot = float(t.entry_spot or spot)
         entry_prem = float(t.entry_net_premium or 0.0)
-        qty = int(t.lot_size or 50)
+        qty = int(t.lot_size or default_lot or 0)
         curr_est_prem = float(getattr(t, "current_premium", None) or entry_prem)
         unrealized = (curr_est_prem - entry_prem) * qty
         total_unrealized_mtm += unrealized
@@ -2704,7 +3275,7 @@ async def get_journal(symbol: Optional[str] = None):
             "notes": t.notes,
         })
 
-    tot_capital = sum(float(t.entry_net_premium or 0.0) * int(t.lot_size or 50) for t in open_trades)
+    tot_capital = sum(float(t.entry_net_premium or 0.0) * int(t.lot_size or default_lot or 0) for t in open_trades)
 
     return {
         "symbol": sym,
@@ -2736,15 +3307,16 @@ async def manual_trade(payload: dict = Body(...)):
     """Log a manual paper trade."""
     sym = payload.get("symbol", "NIFTY").upper()
     strat = payload.get("strategy_name", f"Manual {sym}")
-    qty = int(payload.get("lot_size", 50))
-    entry_prem = float(payload.get("entry_net_premium", 100.0))
+    idx = config.get_index(sym)
+    qty = int(payload.get("lot_size") or idx.lot_size)
+    entry_prem = float(payload.get("entry_net_premium", 0.0))
     notes = payload.get("notes", "Manual web journal entry")
 
     t = journal_store.open_trade(
         symbol=sym,
         strategy_name=strat,
         legs=[],
-        entry_spot=float(payload.get("entry_spot", 24500.0)),
+        entry_spot=float(payload.get("entry_spot") or 0.0),
         entry_levels={"symbol": sym},
         entry_regime={"symbol": sym},
         entry_net_premium=entry_prem,
@@ -2752,6 +3324,80 @@ async def manual_trade(payload: dict = Body(...)):
         notes=notes,
     )
     return {"status": "opened", "trade_id": t.trade_id}
+
+
+@app.post("/api/journal/paper-structure")
+async def paper_trade_structure(payload: dict = Body(...)):
+    """Paper-trade one candidate structure using chain last prices only."""
+    sym = str(payload.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    win = payload.get("window") or _ACTIVE_STATE["window"]
+    variant = int(payload.get("variant") or 0)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+    idx = config.get_index(sym)
+    bias = _compute_active_directional_bias(dash, sym)
+    pack = _concentration_structures(dash, idx, bias_score=bias.score)
+    cands = pack.get("candidates") or []
+    if variant < 0 or variant >= len(cands):
+        raise HTTPException(status_code=400, detail="No structure at that index.")
+    cand = cands[variant]
+    legs_in = cand.get("legs") or []
+    if not legs_in or cand.get("name", "").startswith("No trade"):
+        raise HTTPException(status_code=409, detail="This book state has no structure to paper-trade.")
+
+    contracts = getattr(dash, "contracts", None)
+    legs = []
+    missing = []
+    net = 0.0
+    for leg in legs_in:
+        ltp = _chain_leg_ltp(contracts, float(leg["strike"]), leg.get("right") or "CE")
+        if ltp is None:
+            missing.append(f"{int(leg['strike'])} {leg.get('right')}")
+            continue
+        action = leg.get("action") or "BUY"
+        net += ltp if action == "SELL" else -ltp
+        legs.append({
+            "action": action,
+            "type": "C" if str(leg.get("right", "")).upper().startswith("C") else "P",
+            "strike": float(leg["strike"]),
+            "ltp": ltp,
+        })
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No chain last price for {', '.join(missing)}. Nothing was booked.",
+        )
+
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 0) or 0)
+    levels = getattr(dash, "levels", None)
+    view = getattr(dash, "view", None)
+    trade = journal_store.open_trade(
+        symbol=sym,
+        strategy_name=cand.get("name") or "Structure",
+        legs=legs,
+        entry_spot=spot,
+        entry_levels={
+            "spot": spot,
+            "call_wall": float(getattr(levels, "call_wall", 0) or 0),
+            "put_wall": float(getattr(levels, "put_wall", 0) or 0),
+            "flip": float(getattr(levels, "flip", 0) or 0),
+            "max_pain": float(getattr(levels, "max_pain", 0) or 0),
+        },
+        entry_regime={
+            "regime": getattr(view, "regime", None) or pack.get("bucket") or "unknown",
+            "vol_regime": pack.get("bucket") or "unknown",
+        },
+        entry_net_premium=round(net, 2),
+        lot_size=int(idx.lot_size),
+        notes="Paper structure from the cockpit book-balance card.",
+        exit_by=cand.get("exit_by") or "",
+    )
+    return {
+        "status": "opened",
+        "trade_id": trade.trade_id,
+        "strategy": trade.strategy_name,
+        "net_premium": round(net, 2),
+        "lot_size": int(idx.lot_size),
+    }
 
 
 @app.get("/api/scorecard")
@@ -2802,27 +3448,42 @@ async def get_scorecard(symbol: Optional[str] = None):
             max_dd = dd
     max_dd_str = f"-₹{max_dd:,.0f}" if max_dd > 0 else "₹0"
 
-    # Genuine strategy/regime breakdown from actual closed trades
-    reg_map = {}
-    for t in closed:
-        r_name = getattr(t, "regime", None) or getattr(t, "strategy_name", "DISCRETIONARY") or "DISCRETIONARY"
-        if r_name not in reg_map:
-            reg_map[r_name] = {"trades": 0, "wins": 0, "pnl": 0.0}
-        reg_map[r_name]["trades"] += 1
-        p_val = _pnl(t)
-        reg_map[r_name]["pnl"] += p_val
-        if p_val > 0:
-            reg_map[r_name]["wins"] += 1
+    from data.journal.scorecard import compute_scorecard
 
-    regime_breakdown = [
-        {
-            "regime": r_name,
-            "trades": d["trades"],
-            "win_rate": f"{(d['wins'] / max(1, d['trades']) * 100):.1f}%",
-            "net_pnl": f"+₹{d['pnl']:,.0f}" if d["pnl"] >= 0 else f"-₹{abs(d['pnl']):,.0f}",
-        }
-        for r_name, d in reg_map.items()
-    ]
+    card = compute_scorecard(closed)
+
+    def _bucket_rows(bucket: dict, key_name: str) -> list[dict]:
+        rows = []
+        for name, d in (bucket or {}).items():
+            pnl = float(d.get("net_pnl") or 0.0)
+            rows.append({
+                key_name: name,
+                "trades": int(d.get("n") or 0),
+                "win_rate": f"{float(d.get('win_rate') or 0):.1f}%",
+                "net_pnl": f"+₹{pnl:,.0f}" if pnl >= 0 else f"-₹{abs(pnl):,.0f}",
+            })
+        return rows
+
+    regime_breakdown = _bucket_rows(card.get("by_regime") or {}, "regime")
+    strategy_breakdown = _bucket_rows(card.get("by_strategy") or {}, "strategy")
+
+    inst_id = f"{sym}-FUT"
+    sentinel_outcomes = []
+    try:
+        for o in list_recent_outcomes(inst_id, limit=20):
+            sentinel_outcomes.append({
+                "event_id": o.event_id,
+                "signal_type": o.signal_type,
+                "entry": round(float(o.entry_price or 0), 1),
+                "mfe": round(float(o.mfe_pts or 0), 1),
+                "mae": round(float(o.mae_pts or 0), 1),
+                "target_hit": bool(o.target_hit),
+                "stopped_out": bool(o.stopped_out),
+                "ret_5m": round(float(o.ret_5m_pts or 0), 1),
+                "ret_15m": round(float(o.ret_15m_pts or 0), 1),
+            })
+    except Exception as exc:
+        log.warning("sentinel outcomes for %s: %s", sym, exc)
 
     return {
         "symbol": sym,
@@ -2835,6 +3496,8 @@ async def get_scorecard(symbol: Optional[str] = None):
         },
         "equity_curve": eq_curve,
         "regime_breakdown": regime_breakdown,
+        "strategy_breakdown": strategy_breakdown,
+        "sentinel_outcomes": sentinel_outcomes,
         "closed_trades": [
             {
                 "trade_id": t.trade_id,
@@ -3007,21 +3670,30 @@ async def get_session_commentary(symbol: Optional[str] = None):
     flip = float(_extract_active_gamma_flip(dash, sym) or disc_spot)
 
     try:
-        shocks = calculate_pre_market_option_shocks(
-            discovered_spot=disc_spot,
-            prev_close=float(pm_state.get("prev_close") or (disc_spot - gap_pts)),
-            contracts_df=getattr(dash, "contracts", None),
-            symbol=sym,
-            dte_days=_extract_active_dte(dash, default_days=3.0),
-            atm_iv=_extract_active_atm_iv(dash),
-        )
+        if pm_state.get("is_discovered") and disc_spot > 0:
+            shocks = calculate_pre_market_option_shocks(
+                discovered_spot=disc_spot,
+                prev_close=float(pm_state.get("prev_close") or (disc_spot - gap_pts)),
+                contracts_df=getattr(dash, "contracts", None),
+                symbol=sym,
+                dte_days=_extract_active_dte(dash, default_days=3.0),
+                atm_iv=_extract_active_atm_iv(dash),
+            )
+        else:
+            shocks = {
+                "atm_strike": round(disc_spot / 50) * 50,
+                "atm_straddle_prev": None,
+                "atm_straddle_projected": None,
+                "straddle_shock_pct": None,
+                "projected_strikes": [],
+            }
     except Exception as ex:
         log.warning("calculate_pre_market_option_shocks failed: %s", ex)
         shocks = {
             "atm_strike": round(disc_spot / 50) * 50,
-            "atm_straddle_prev": 210.0,
-            "atm_straddle_projected": 218.4,
-            "straddle_shock_pct": 4.0,
+            "atm_straddle_prev": None,
+            "atm_straddle_projected": None,
+            "straddle_shock_pct": None,
             "projected_strikes": [],
         }
 
@@ -3029,15 +3701,17 @@ async def get_session_commentary(symbol: Optional[str] = None):
     pm_state["call_wall"] = cw
     pm_state["put_wall"] = pw
     pm_state["walls"] = f"{cw:,.0f} / {pw:,.0f}"
-    pm_state["favored_play"] = pm_state.get("favored_play") or ("Dip Buying near VWAP" if gap_pts >= 0 else "Fade Rallies to VWAP")
-    pm_state["regime_badge"] = pm_state.get("regime_badge") or ("📈 MODERATE GAP" if gap_pts != 0 else "⚖️ BALANCED AUCTION")
+    pm_state["favored_play"] = pm_state.get("favored_play") or "MAP ONLY"
+    pm_state["regime_badge"] = pm_state.get("regime_badge") or ("📈 MODERATE GAP" if gap_pts != 0 else "⚖️ FLAT OPEN")
+    if not pm_state.get("briefing") and pm_state.get("regime_briefing"):
+        pm_state["briefing"] = pm_state["regime_briefing"]
     if not pm_state.get("briefing"):
         if gap_pts > 0:
-            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} (+{gap_pts:,.1f} pts). Structural Call Wall resistance at {cw:,.0f} and Put Wall support at {pw:,.0f}."
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} (+{gap_pts:,.1f} pts). Call-gamma strike {cw:,.0f}. Put-gamma strike {pw:,.0f}. Neither strike is a floor or a ceiling."
         elif gap_pts < 0:
-            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Structural Put Wall support at {pw:,.0f} and Call Wall resistance at {cw:,.0f}."
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Put-gamma strike {pw:,.0f}. Call-gamma strike {cw:,.0f}. Neither strike is a floor or a ceiling."
         else:
-            pm_state["briefing"] = f"Balanced opening at ₹{disc_spot:,.0f} between Call Wall {cw:,.0f} and Put Wall {pw:,.0f}."
+            pm_state["briefing"] = f"Flat open at ₹{disc_spot:,.0f}. Call-gamma strike {cw:,.0f}. Put-gamma strike {pw:,.0f}."
 
     post_state = dict(get_post_market_state(sym, session_date=active_session_date) or {})
     if post_state:
@@ -3053,7 +3727,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
             if hi > 0 and lo > 0:
                 post_state["day_range"] = f"₹{hi:,.1f} / ₹{lo:,.1f}"
         if not post_state.get("next_key_levels") and cw > 0 and pw > 0:
-            post_state["next_key_levels"] = f"{cw:,.0f} CW / {pw:,.0f} PW"
+            post_state["next_key_levels"] = f"{cw:,.0f} call-gamma / {pw:,.0f} put-gamma"
 
     cards = []
     if session_entries:
@@ -3136,8 +3810,8 @@ async def get_session_commentary(symbol: Optional[str] = None):
                 "card_class": "comm-card-bullish",
                 "topic_class": "topic-bullish",
                 "icon": "🟢",
-                "body": f"Opening gap holding comfortably above Put Wall ({pw:,.0f}). Option writers actively defending credit spreads.",
-                "bites": [{"type": "WATCH", "pill_class": "bite-watch", "text": "Monitor 24,500 Call Wall test for potential gamma blast acceleration."}],
+                "body": f"Opening print relative to the put-gamma strike ({pw:,.0f}) and the call-gamma strike. Neither strike is a floor.",
+                "bites": [{"type": "WATCH", "pill_class": "bite-watch", "text": "Watch whether the open holds relative to the gamma strikes. That is a map, not a squeeze."}],
             },
             {
                 "time_str": f"{now_ist.strftime('%d %b')} · 11:30 IST",
@@ -3145,7 +3819,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
                 "card_class": "comm-card-wall",
                 "topic_class": "topic-wall",
                 "icon": "🟣",
-                "body": f"Consolidation inside ±1σ VWAP envelope. Dealer delta hedging remains neutral; Gamma Flip sitting at {flip:,.0f}.",
+                "body": f"Spot inside the session VWAP band. Call−put balance at {flip:,.0f}. That balance is not a hedge.",
                 "bites": [{"type": "PREPARE", "pill_class": "bite-prepare", "text": "Prepare for breakout expansion if volume climax crosses 1.8x RVOL."}],
             },
             {
@@ -4113,7 +4787,6 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
     try:
         last_sig = None
         last_send = 0.0
-        last_bar_at = 0.0
         latest_bar_dict = None
         while True:
             sym = active_sym_box[0]
@@ -4150,28 +4823,14 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
             flip = float(_extract_active_gamma_flip(dash, sym) or 0.0) if dash is not None else 0.0
 
             now_t = time.time()
-            if is_live and now_t - last_bar_at >= 1.0:
-                try:
-                    from sentinel.storage.db import list_recent_bars
-                    b_list = list_recent_bars(f"{sym}-FUT", timeframe="1m", limit=1, session_only=True, _auto_populate=False)
-                    if b_list:
-                        b = b_list[-1]
-                        latest_bar_dict = {
-                            "time": _to_ist_chart_timestamp(b.start_ts),
-                            "open": b.open,
-                            "high": b.high,
-                            "low": b.low,
-                            "close": b.close,
-                            "vwap": b.vwap,
-                            "delta": b.delta,
-                            "cvd": b.cvd,
-                        }
-                except Exception:
-                    pass
-                last_bar_at = now_t
 
             if is_live:
-                sig = (round(spot, 1), round(fut, 1), int(cw or 0), int(pw or 0))
+                rec_quotes = _live_rec_quotes(sym, spot)
+                opt_sig = tuple(
+                    (q.get("rec_id"), q.get("ltp"), q.get("target_1"), q.get("stop_loss"))
+                    for q in rec_quotes
+                )
+                sig = (round(spot, 1), round(fut, 1), int(cw or 0), int(pw or 0), opt_sig)
                 if sig == last_sig and (now_t - last_send) < _WS_HEARTBEAT_S:
                     await asyncio.sleep(_WS_LIVE_SLEEP_S)
                     continue
@@ -4190,8 +4849,9 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "is_market_open": True,
                     "feed_mode": "LIVE_WEBSOCKET",
                     "latest_bar": latest_bar_dict,
+                    "rec_quotes": rec_quotes,
                 }
-                await websocket.send_json(tick_payload)
+                await asyncio.wait_for(websocket.send_json(tick_payload), timeout=1.0)
                 last_sig = sig
                 last_send = now_t
                 await asyncio.sleep(_WS_LIVE_SLEEP_S)
@@ -4214,7 +4874,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                 }
                 await websocket.send_json(status_payload)
                 await asyncio.sleep(15.0)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     except Exception as exc:
         log.warning("WebSocket error: %s", exc)

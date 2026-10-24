@@ -217,15 +217,15 @@ _MOOD = {"calm": ("calm", "🟢 Calm &amp; range-bound"),
          "wild": ("wild", "🟧 Wild — wider swings"),
          "mid": ("mid", "⬜ Normal / mixed")}
 _PLAY = {
-    "calm": ("🎯 Sell premium near the walls",
-             "Quiet, pinning regime — fade extremes back toward the magnet and sell premium near the "
-             "walls. You can size up a little; keep stops just outside the walls."),
-    "wild": ("🚀 Trade the break, buy convexity",
-             "Trending regime — respect a wall break and don't fade it. Buy options for convexity "
-             "rather than selling premium; stops beyond the walls; size down (bigger swings)."),
-    "mid": ("🕒 No trade — wait",
-            "Neutral, unclear regime — no clear edge either way. De-size and wait for the market to "
-            "pick a side before selling or buying premium."),
+    "calm": ("High concentration — defined-risk premium",
+             "Absolute GEX is in the high bucket, which has meant calmer forward vol. "
+             "A short strike sits one step outside the call-gamma or put-gamma concentration. "
+             "Defined risk. You confirm."),
+    "wild": ("Low concentration — buy convexity, small size",
+             "Absolute GEX is in the low bucket, which has meant wider swings. "
+             "Direction is not a forecast. Buy convexity. Size down."),
+    "mid": ("No trade — wait",
+            "Concentration is in the middle bucket. De-size and wait."),
 }
 
 
@@ -463,18 +463,6 @@ def main():
                          "Starts with the dashboard; needs a Dhan token. It does NOT save raw ticks — "
                          "the raw archive is owned by the scheduled headless collector, so the two never "
                          "double-write. SENSEX needs the BSE live-data entitlement — 0 ticks without it.")
-        with st.expander("🎬 Replay big-money (from raw ticks)", expanded=False):
-            from app.big_money_live import available_raw_days
-            _rd = available_raw_days(symbol)
-            if not _rd:
-                st.caption(f"No captured raw ticks for {symbol} yet — run the collector a full session.")
-            else:
-                st.checkbox(f"Replay {symbol}'s captured tape", value=False, key="bm_replay_on",
-                            help="Scrub through a captured day's big-money tape, re-derived tick-by-tick "
-                                 "from the raw archive (the source of truth) up to the chosen clock.")
-                st.selectbox("Day", _rd[::-1], key="bm_replay_day")
-                _times = [f"{m // 60:02d}:{m % 60:02d}" for m in range(9 * 60 + 15, 15 * 60 + 31, 5)]
-                st.select_slider("Clock (IST)", options=_times, value=_times[-1], key="bm_replay_clock")
         st.divider()
         st.caption("⚡ Gamma-blast")
         preview_expiry = st.checkbox("👁️ Preview expiry mode", value=False,
@@ -487,44 +475,6 @@ def main():
                          "(likely to reach TRUE) and again on a Fast TRUE. Sound is best-effort — "
                          "the browser may need a click first, and auto-refresh keeps it checking.")
         st.divider()
-        with st.expander("🎬 Replay a stored day (offline)", expanded=False):
-            from data import replay as rp
-            rdays = rp.available_days(symbol)
-            if not rdays:
-                st.caption("No stored intraday days for this index yet (backfill first).")
-            else:
-                st.checkbox("Play replay", value=False, key="simp_replay_on",
-                            help="Step a real stored day through the whole UI so you can watch the "
-                                 "candle, TPO profile, trailing windows and regime develop with the "
-                                 "market closed. Turn ON Auto-refresh to make it advance. Isolated journal.")
-                # Practice mode: narrow to EXPIRY days and tag each TRUE / Fake gamma-blast (from the
-                # blast_ml study) — pick a known-TRUE day to rehearse the run, a Fake day the pin/cap.
-                gb_only = st.checkbox("🎯 Expiry days only · tag TRUE / Fake gamma-blast", value=False,
-                                      key="simp_replay_gbonly",
-                                      help="Filter the day list to expiries and label each by the "
-                                           "study outcome — TRUE = a sustaining blast fired that "
-                                           "afternoon, Fake = breaks pinned/capped. A reading drill.")
-                opts = rdays[::-1]
-                if gb_only:
-                    opts = [d for d in opts if rp.blast_label(symbol, d)]
-                    if not opts:
-                        st.caption("No labelled expiry days for this index (build the blast_ml dataset).")
-
-                def _dlabel(d):
-                    lab = rp.blast_label(symbol, d)
-                    return f"{d} · 🚀 TRUE GB" if lab == "TRUE" else f"{d} · 🪤 Fake GB" if lab == "FAKE" else d
-                st.selectbox("Day", opts or rdays[::-1], key="simp_replay_day", format_func=_dlabel)
-                st.selectbox("Speed (replay-min per tick)", [1, 5, 10, 20], index=1, key="simp_replay_speed")
-                if st.button("↺ Restart from open", width="stretch"):
-                    rp.reset(symbol)
-                    for k in ("simp_replay_idx", "simp_replay_of", "simp_hl", "simp_data"):
-                        st.session_state.pop(k, None)
-                    st.rerun()
-                _rsel = st.session_state.get("simp_replay_day")
-                if _rsel and rp.is_expiry_day(symbol, _rsel):
-                    st.caption("🚀 Expiry day — the **gamma-blast verdict** appears in the right column "
-                               "once the replay clock passes **13:45**. Use a higher speed to fast-forward.")
-                st.caption("Tip: turn on ⏱️ Auto-refresh (top) at 1-min to watch it play.")
         # API budget — several background lanes share one Dhan quota per endpoint; make it VISIBLE
         # rather than let a silent 429 show up as a stale panel (CLAUDE.md: make state visible).
         try:
@@ -582,35 +532,8 @@ def main():
     _render_live(*args)
 
 
-def _replay_step(symbol, auto):
-    """Advance the offline replay clock one step and rebuild the snapshot from a stored day, so the
-    UI develops with time. Writes an isolated replay journal (REPLAY_DATE) the profile/footprint read."""
-    from data import replay as rp
-    rday = st.session_state.get("simp_replay_day")
-    sts = rp.stamps(symbol, rday) if rday else []
-    if not sts:
-        return
-    tag = f"{symbol}:{rday}"
-    if st.session_state.get("simp_replay_of") != tag:          # day/symbol changed -> restart clean
-        rp.reset(symbol)
-        st.session_state["simp_replay_idx"] = min(45, len(sts) - 1)
-        st.session_state["simp_replay_of"] = tag
-        st.session_state.pop("simp_hl", None)
-    idx = int(st.session_state.get("simp_replay_idx", 45))
-    if auto:                                                    # advance while auto-refresh is on
-        idx = min(idx + int(st.session_state.get("simp_replay_speed", 5)), len(sts) - 1)
-    st.session_state["simp_replay_idx"] = idx
-    upto = sts[idx]
-    rp.ensure_journal(symbol, rday, upto)
-    st.session_state["simp_data"] = rp.build_snapshot(symbol, rday, upto)
-    st.session_state["simp_asof"] = None
-
-
 def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anchor_now, idx):
-    replay_on = bool(st.session_state.get("simp_replay_on") and st.session_state.get("simp_replay_day"))
-    if replay_on:
-        _replay_step(symbol, auto)
-    elif not use_demo:
+    if not use_demo:
         # The background thread does the ~12s pull off the render path and runs whether or not
         # live updates are on — so the render only ever READS the latest published snapshot
         # (instant, no network → no page dim), and 🔄 Refresh is a non-blocking *request* for an
@@ -651,8 +574,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     asof = st.session_state.get("simp_asof") or ist
     # feed transparency — which live source produced this snapshot (CLAUDE.md: make state visible)
     _src = data.source or "?"
-    _feed = ("🎬 Replay (stored day)" if "replay" in _src
-             else "🟢 Dhan (live)" if _src == "dhan"
+    _feed = ("🟢 Dhan (live)" if _src == "dhan"
              else "🟡 NSE (Dhan fallback)" if _src.startswith("nse (Dhan")
              else "🔵 NSE" if _src == "nse" else _src)
     _sched = (f"levels on the {auto_mins:g}-min grid · as of {asof:%H:%M} IST · spot 10s" if auto
@@ -662,12 +584,6 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
         st.caption(f"⚠ {data.source_note}")
     nearest = data.expiries[0] if data.expiries else None
     is_expiry = (nearest == ist.date()) if nearest else False
-    # Replay dates the snapshot to a synthetic REPLAY_DATE (isolated journal), and its synthetic
-    # near-expiry is +2d — so the live "nearest == today" test never fires. Ask instead whether the
-    # REAL stored day being replayed is an expiry, so a replayed 0-DTE day shows the blast view.
-    if "replay" in (data.source or "").lower():
-        from data import replay as rp
-        is_expiry = rp.is_expiry_day(symbol, st.session_state.get("simp_replay_day"))
     show_blast = is_expiry or preview_expiry          # preview forces the blast view (dev)
     if anchor_now:
         st.session_state["simp_force_anchor"] = True
@@ -676,8 +592,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     # range seed / OI windows read the day, so this app feeds its own history without the
     # logger. min_gap dedups rapid refreshes and any co-running writer (shared day file).
     save_gap = max(1.0, auto_mins - 1.0) if auto else 2.0
-    if "replay" not in (data.source or "").lower():           # replay writes its own journal
-        _persist_snapshot(data, symbol, save_gap)
+    _persist_snapshot(data, symbol, save_gap)
 
     # regime mood + expected day range (points). SENSEX borrows NIFTY's |vanna| regime (its own
     # doesn't grade its move — verified; NIFTY's does at 1.73x, corr 0.988); other indices use own.
@@ -750,18 +665,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
       <div class="mood"><span class="chip {mood_cls}"><span class="dot"></span>{mood_txt}</span>
       <div class="range">{rng_line}</div></div></div>''')
 
-    # live futures big-money tape (separate feed) — sits up top now; or scrub a captured day (replay)
-    _bm_replay = None
-    if st.session_state.get("bm_replay_on") and st.session_state.get("bm_replay_day"):
-        from app.big_money import IST as _IST
-        _rday, _clock = st.session_state["bm_replay_day"], st.session_state.get("bm_replay_clock", "15:30")
-        try:
-            _upto = int(datetime.strptime(f"{_rday} {_clock}", "%Y-%m-%d %H:%M")
-                        .replace(tzinfo=_IST).timestamp())
-            _bm_replay = {"day": _rday, "clock": _clock, "upto_epoch": _upto}
-        except (ValueError, TypeError):
-            _bm_replay = None
-    H.append(_big_money_tape_html(ist, symbol, replay=_bm_replay, spot=spot_live))
+    H.append(_big_money_tape_html(ist, symbol, spot=spot_live))
 
     # today's range so far — candle + developing TPO profile + prior/5D value + GEX ladder
     oh = _resolve_ohlc(data, hl, spot_live, day_ohlc=tick)
@@ -795,7 +699,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
     H.append(f'''<div class="candlecard card"><div class="rb-top"><span class="eyebrow">Value profile · candle · levels</span>
       <span class="rb-vals mono">{f(oh["l"])} – {f(oh["h"])}</span></div>{candle}{mp_legend}
       <div class="cc-read">{read}</div>{mp_chip}
-      <span class="rb-cav">{src_note}. Left = where price ACCEPTED (a map); right = dealer levels. Stops <i>just beyond</i> a wall — never at the magnet.</span></div>''')
+      <span class="rb-cav">{src_note}. Left = where price accepted. Right = gamma strikes. Stops go just beyond a strike, never at the magnet.</span></div>''')
 
     # Right column. On a BLAST day the verdict sits at the TOP, level with the candle: the cross
     # is read against the candle (did it break the level, is it holding?), so the two belong
@@ -808,11 +712,7 @@ def _render_live(symbol, use_demo, refresh, auto, auto_mins, preview_expiry, anc
         # Show the study model BESIDE the live hero, both live and in replay, so the two read on the same
         # tape. It carries its own call-vs-put premium chart. Clearly labelled EXPERIMENTAL / decision-
         # support — it does not replace the hero and never auto-executes.
-        if replay_on and st.session_state.get("simp_replay_day"):
-            H.append(_blast_hero_study_html(symbol, st.session_state["simp_replay_day"],
-                                            ist.strftime("%H:%M")))
-        else:
-            H.append(_blast_study_live_html(data, L, ist, spot_live, symbol))
+        H.append(_blast_study_live_html(data, L, ist, spot_live, symbol))
     H.append('<h2 class="lbl">Where the money is building</h2>')
     H.append(_footprint_html(data, L, idx, ist, is_expiry))
     H.append(_futures_html(data, symbol, ist, is_expiry))
@@ -1347,7 +1247,7 @@ def _bm_cvd_html(a) -> str:
         'DESCRIPTIVE order flow — its link to price flipped sign day-to-day, so <b>not</b> a forecast.')
 
 
-def _bm_sweepwatch_html(symbol, day, replay=None) -> str:
+def _bm_sweepwatch_html(symbol, day) -> str:
     """PRIOR-DAY SWEEP WATCH: the one stop-run signal that cleared the placebo on both NIFTY and BankNifty
     (day-clustered) — a fast breach of the prior day's high/low/close LEANS to fade back. Shows each level,
     its distance from the latest futures price, and — if swept today — when + the current state (faded /
@@ -1365,8 +1265,7 @@ def _bm_sweepwatch_html(symbol, day, replay=None) -> str:
     df = load_raw_ticks(symbol, day)
     if pv is None or df is None or getattr(df, "empty", True):
         return ""
-    upto = replay["upto_epoch"] if replay else None
-    r = scan_live(df, pv, upto_epoch=upto)
+    r = scan_live(df, pv, upto_epoch=None)
     if not r.get("levels") or r.get("spot") is None:
         return ""
     pill = {"faded": ("var(--go)", "✔ faded back"), "pending": ("var(--warn)", "● just swept — watch"),
@@ -1397,51 +1296,37 @@ def _bm_sweepwatch_html(symbol, day, replay=None) -> str:
         'Descriptive lean, <b>not</b> a signal; you confirm.</span></div>')
 
 
-def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot=None) -> str:
-    """Full-width 'big-money tape' card. LIVE: tails the event DB the collector writes (all symbols),
-    plus a 'day so far' readout for the selected symbol. REPLAY: re-derives the selected symbol's events
-    from its raw archive up to the replay clock (raw = source of truth) and shows the tape + readout as
-    of that moment. Honest: large PRINTS / BURSTS (inference, not orders); direction = aggressor side.
-    Decision-support; a readout, never a trade call."""
+def _big_money_tape_html(ist, symbol="NIFTY", limit: int = 20, spot=None) -> str:
+    """Full-width big-money tape. Tails the event file the collector writes.
+    Large prints and bursts are an inference of activity, not orders."""
     try:
         from app.big_money import load_events
-        from app.big_money_analysis import analyse, analyse_frame
-        import pandas as pd
+        from app.big_money_analysis import analyse
     except Exception:  # noqa: BLE001
         return ""
     status = st.session_state.get("_bm_status")
-    if replay:
-        from dataclasses import asdict
-        from app.big_money_live import rederive_events
-        day = replay["day"]
-        allrows = [asdict(e) for e in rederive_events(symbol, day, upto_epoch=replay["upto_epoch"])]
-        rows = sorted(allrows, key=lambda r: r.get("epoch", 0), reverse=True)[:limit]
-        readout = analyse_frame(pd.DataFrame(allrows), symbol, day) if allrows else None
-        sub = f'🎬 REPLAY {day} @ {replay["clock"]} · {symbol} (from raw)'
-    else:
-        day = ist.strftime("%Y-%m-%d")
-        rows = []
-        for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
-            try:
-                rows.extend(load_events(sym, day))
-            except Exception:  # noqa: BLE001
-                pass
-        rows.sort(key=lambda r: r.get("epoch", 0), reverse=True)
-        rows = rows[:limit]
+    day = ist.strftime("%Y-%m-%d")
+    rows = []
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
         try:
-            readout = analyse(day, symbol)
+            rows.extend(load_events(sym, day))
         except Exception:  # noqa: BLE001
-            readout = None
-        sub = 'NIFTY · BankNifty · SENSEX · current expiry · live'
+            pass
+    rows.sort(key=lambda r: r.get("epoch", 0), reverse=True)
+    rows = rows[:limit]
+    try:
+        readout = analyse(day, symbol)
+    except Exception:  # noqa: BLE001
+        readout = None
+    sub = 'NIFTY · BankNifty · SENSEX · current expiry · live'
 
     head = ('<div class="card" style="margin-top:14px"><div class="rb-top">'
             '<span class="eyebrow">🐋 Big-money futures tape</span>'
             f'<span class="rb-vals mono">{sub}</span></div>')
     if not rows:
-        note = ('No big-money events in this replay window yet — scrub later.' if replay else
-                'No big-money events yet today — big prints & bursts appear here as they fire during '
+        note = ('No big-money events yet today — big prints and bursts appear here as they fire during '
                 'market hours.')
-        extra = _bm_day_readout_html(readout) if replay else (_bm_rollover_html() + _bm_status_html(status, day))
+        extra = _bm_rollover_html() + _bm_status_html(status, day)
         return (head + extra + f'<div style="padding:10px 4px;color:var(--ink-2);font-size:.86rem">{note}'
                 '</div></div>')
 
@@ -1451,10 +1336,8 @@ def _big_money_tape_html(ist, symbol="NIFTY", replay=None, limit: int = 20, spot
     grids = (_bm_buildup_grid_html(readout, "time", "15-min")
              + _bm_print_scatter_html(readout) + _bm_burst_scatter_html(readout)
              + _bm_oi_trajectory_html(readout) + _bm_cvd_html(readout)
-             + _bm_value_profile_html(readout, spot=(None if replay else spot)))  # live spot ≠ past futures
-    sweepwatch = _bm_sweepwatch_html(symbol, day, replay)
-    if replay:
-        return head + _bm_day_readout_html(readout) + sweepwatch + grids + cav + '</div>'
+             + _bm_value_profile_html(readout, spot=spot))
+    sweepwatch = _bm_sweepwatch_html(symbol, day)
     return (head + _bm_flow_html(day) + _bm_rollover_html() + _bm_day_readout_html(readout)
             + sweepwatch + grids + _bm_status_html(status, day) + cav + '</div>')
 
@@ -1703,50 +1586,12 @@ def _blast_hero_stable(data, L, ist, spot_live=None, prof=None):
                 '<p class="instruct">Updating…</p></div>')
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _blast_study_rows(symbol: str, rday: str):
-    """The offline study model's full point-in-time replay for a stored day (app.blast_study.replay_day),
-    cached per day. Each row is the verdict computed from data up to that minute only (no lookahead), so
-    indexing it by the current replay clock gives the study model's read AS OF that minute. Returns [] on
-    any failure — the comparison card is a nicety, it must never break the replay."""
-    try:
-        from app.blast_study import replay_day
-        return replay_day(symbol, rday) or []
-    except Exception:  # noqa: BLE001
-        return []
-
-
 # how the study model's state reads on the card: (label, css lean class, icon)
 _STUDY_STATE = {
     "WATCH": ("Watching", "lean-warn", "👀"), "WATCH+": ("Break seen · holding for 3PM", "lean-warn", "👀"),
     "LEAN": ("Leaning", "lean-go", "🚀"), "RUN": ("RUN", "lean-go", "🚀"),
     "FADE": ("Fade · failed break", "lean-warn", "🪤"),
 }
-
-
-def _blast_hero_study_html(symbol: str, rday: str, now_hhmm: str) -> str:
-    """REPLAY-ONLY comparison card: the NEW (offline study) blast model's read at the current replay
-    minute, shown BENEATH the live hero so the two can be compared on the same tape. Reads the study
-    model's realized-delta commitment + the post-3PM move, and narrates the trade its exit discipline
-    would take (enter late-but-sure, spot-trail, hard 15:25 settlement stop). Point-in-time (only data
-    up to now_hhmm). Deliberately kept OFF the live board — this is a study/comparison surface only."""
-    rows = _blast_study_rows(symbol, rday)
-    if not rows:
-        return ('<div class="card hero"><span class="eyebrow">🟢 Study model · replay</span>'
-                '<p class="instruct">No captured ladder for this day, so the study model has nothing to '
-                'replay. Pick another expiry day.</p></div>')
-    upto = [r for r in rows if str(r["time_ist"])[:5] <= now_hhmm]
-    K = rows[0].get("spot")                                 # only for the empty-state header before 13:45
-    if not upto:
-        return _study_card_html([], K, [], "replay")
-    prem = [{"call_ltp": x["call_ltp"], "put_ltp": x["put_ltp"]} for x in upto]
-    return _study_card_html(upto, _blast_study_K(rows), prem, "replay")
-
-
-def _blast_study_K(rows):
-    """Recover the anchor strike from replay rows: spot − disp on the first row (disp = spot − K)."""
-    r = rows[0]
-    return round((r["spot"] - r["disp"]) / 50.0) * 50.0
 
 
 def _study_card_html(rows, K, prem_series, tag):
@@ -2240,101 +2085,32 @@ def _beep(kind):
         pass
 
 
-def _strangle_payoff_svg(kp, kc, credit, spot, lot):
-    """Expiry P/L diagram for a short strangle (sell put@kp + call@kc, net ``credit`` pts): a green
-    max-profit plateau between the sold strikes, sloping to the break-evens (strike ± credit) and
-    into red loss wings beyond. Amber dashes = the walls/sold strikes; grey dashes = break-evens;
-    the solid vertical = current spot."""
-    be_lo, be_hi = kp - credit, kc + credit
-    xlo, xhi = kp - 2 * credit, kc + 2 * credit
-    W, H, x0, x1, pad = 520, 150, 40, 502, 20
-    ymax = credit or 1.0
-
-    def X(px):
-        return x0 + (x1 - x0) * ((px - xlo) / (xhi - xlo))
-
-    def Y(pl):
-        return H / 2 - (H / 2 - pad) * (pl / ymax)
-    verts = [(xlo, -credit), (be_lo, 0.0), (kp, credit), (kc, credit), (be_hi, 0.0), (xhi, -credit)]
-    payoff = " ".join(f"{X(px):.0f},{Y(pl):.0f}" for px, pl in verts)
-    prof = (f"{X(be_lo):.0f},{Y(0):.0f} {X(kp):.0f},{Y(credit):.0f} {X(kc):.0f},{Y(credit):.0f} "
-            f"{X(be_hi):.0f},{Y(0):.0f}")
-    lossl = f"{X(xlo):.0f},{Y(0):.0f} {X(be_lo):.0f},{Y(0):.0f} {X(xlo):.0f},{Y(-credit):.0f}"
-    lossr = f"{X(be_hi):.0f},{Y(0):.0f} {X(xhi):.0f},{Y(0):.0f} {X(xhi):.0f},{Y(-credit):.0f}"
-    sx = X(min(max(spot, xlo), xhi))
-
-    def vg(px, col, dash):
-        return (f'<line x1="{X(px):.0f}" y1="{pad}" x2="{X(px):.0f}" y2="{H-pad}" '
-                f'stroke="{col}" stroke-width="1" stroke-dasharray="{dash}"/>')
-
-    def lbl(px, txt, col):
-        return (f'<text x="{X(px):.0f}" y="{H-4}" font-size="9" fill="{col}" '
-                f'text-anchor="middle" class="mono">{txt}</text>')
-    return f'''<figure><svg viewBox="0 0 {W} {H}" role="img" aria-label="Short-strangle expiry profit and loss.">
-      <polygon points="{lossl}" fill="var(--stop)" opacity=".16"/><polygon points="{lossr}" fill="var(--stop)" opacity=".16"/>
-      <polygon points="{prof}" fill="var(--go)" opacity=".22"/>
-      <line x1="{x0}" y1="{Y(0):.0f}" x2="{x1}" y2="{Y(0):.0f}" stroke="var(--line)"/>
-      {vg(kp,"var(--warn)","3 3")}{vg(kc,"var(--warn)","3 3")}
-      {vg(be_lo,"var(--ink-mute)","1 3")}{vg(be_hi,"var(--ink-mute)","1 3")}
-      <polyline points="{payoff}" fill="none" stroke="var(--spark)" stroke-width="2.3" stroke-linejoin="round"/>
-      <line x1="{sx:.0f}" y1="{pad}" x2="{sx:.0f}" y2="{H-pad}" stroke="var(--ink)" stroke-width="1.5"/>
-      <text x="{(X(kp)+X(kc))/2:.0f}" y="{Y(credit)+12:.0f}" font-size="9.5" fill="var(--go)" text-anchor="middle" font-weight="700" class="mono">+{_money(credit*lot)}</text>
-      <text x="{sx:.0f}" y="{pad-6:.0f}" font-size="8.5" fill="var(--ink)" text-anchor="middle">spot</text>
-      {lbl(be_lo, f"{be_lo:,.0f}", "var(--ink-mute)")}{lbl(kp, f"{kp:,.0f}", "var(--warn)")}
-      {lbl(kc, f"{kc:,.0f}", "var(--warn)")}{lbl(be_hi, f"{be_hi:,.0f}", "var(--ink-mute)")}
-    </svg></figure>'''
-
-
 def _play_card(vr, data, L, idx):
-    """Suggested-play card. For the CALM (pinning) regime it shows a concrete illustrative
-    short-strangle at the walls: sell the call at the call-wall + put at the put-wall, with the
-    P/L structure — max profit (net credit), the break-even band, the stop-loss (just beyond the
-    walls) and the max-loss note. Live premiums; paper only. The vol edge is validated (S11); the
-    walls are a map, not a fence (docs §4d)."""
+    """Suggested-play card from the absolute-GEX bucket. Short strikes sit one step outside
+    the gamma concentrations. Defined risk. Paper only. The user confirms."""
     tag = vr["tag"] if vr else "mid"
     head, body = _PLAY.get(tag, _PLAY["mid"])
     pnl = ""
-    if (tag == "calm" and _is_live(data) and data.oi_strikes
-            and L.call_wall and L.put_wall):
-        from app.gammablast import next_strike, strike_premiums
-        kc, kp, stepped = L.call_wall, L.put_wall, False
-        if kc == kp:            # walls COINCIDE → a straddle (a degenerate strangle: zero-width band,
-                                # and every move breaches a wall). Step ±1 listed strike out each side
-                                # to restore a real full-credit band and separated wall-stops.
-            kp = next_strike(data.oi_strikes, kc, "down") or kp
-            kc = next_strike(data.oi_strikes, L.call_wall, "up") or kc
-            stepped = kc != kp
-        cc = pp = None
-        try:
-            cc = strike_premiums(data.oi_strikes, kc)[0]   # call premium @ call strike
-            pp = strike_premiums(data.oi_strikes, kp)[1]   # put premium  @ put strike
-        except Exception:  # noqa: BLE001
-            pass
-        lot = getattr(idx, "lot_size", None)
-        if cc and pp and lot and kc != kp:
-            credit_pts = cc + pp
-            credit = credit_pts * lot
-            be_lo, be_hi = kp - credit_pts, kc + credit_pts
-            graph = _strangle_payoff_svg(kp, kc, credit_pts, L.spot, lot)
-            note = (f'<div class="pnl-note">⚠ Call &amp; put walls coincide at {f(L.call_wall)} '
-                    f'(a strong single-strike pin) — a straddle there has a zero-width credit band and '
-                    f'no valid wall-stop, so this steps ±1 strike out to {f(kp)}/{f(kc)}.</div>'
-                    if stepped else '')
-            pnl = f'''<div class="pnl"><div class="pnl-hd">Illustrative structure · short strangle · paper</div>
-              <div class="pnl-legs">SELL {f(kc)} CE @ {f(cc,1)} &nbsp;·&nbsp; SELL {f(kp)} PE @ {f(pp,1)}</div>{note}
-              {graph}
-              <div class="pnl-grid" style="margin-top:8px">
-                <div><small>Max profit · credit</small><b class="go">{_money(credit)} · {f(credit_pts,0)} pt</b></div>
-                <div><small>Keep full credit between</small><b class="mono">{f(kp)} – {f(kc)}</b></div>
-                <div><small>Break-even (expiry)</small><b class="mono">{f(be_lo)} – {f(be_hi)}</b></div>
-                <div><small>Stop · break of a wall</small><b class="stop">a conservative cut — inside the break-evens (a breach runs fast near expiry)</b></div>
-              </div></div>'''
+    if tag in ("calm", "wild") and L is not None and L.call_wall and L.put_wall:
+        from structures.suggest import suggest_structures
+        step = int(getattr(idx, "strike_step", 50) or 50)
+        lot = int(getattr(idx, "lot_size", 65) or 65)
+        cs = suggest_structures(
+            L, tag, lot_size=lot, spread_width=step * 2, strike_step=step,
+        )[0]
+        if cs.legs:
+            legs = " &nbsp;·&nbsp; ".join(
+                f"{a} {k:,.0f} {'CE' if t == 'C' else 'PE'}" for a, t, k in cs.legs
+            )
+            pnl = (
+                f'<div class="pnl"><div class="pnl-hd">Illustrative structure · paper</div>'
+                f'<div class="pnl-legs"><b>{cs.name}</b><br>{legs}</div>'
+                f'<div class="pnl-note">{cs.risk_note} {cs.exit_by}.</div></div>'
+            )
     return f'''<div class="card play"><span class="eyebrow">Suggested play · paper only</span>
       <div class="verdict-sm">{head}</div><p>{body}</p>{pnl}
-      <div class="play-exit">Illustrative — you decide. The walls (sold strikes) sit <i>inside</i> the
-      break-evens; you keep the full credit between them and only turn net-negative past a break-even.
-      The VOL edge is backtested +11%/trade in calm (thinning to +4% now); the walls are a map, <b>not</b>
-      a fence (§4d). Not advice.</div></div>'''
+      <div class="play-exit">Illustrative — you decide. Absolute GEX is the volatility context.
+      The gamma strikes are a concentration map. Not advice.</div></div>'''
 
 
 _FUT_CAP: dict = {}                 # symbol -> epoch of the last futures capture (claimed, not done)

@@ -93,11 +93,23 @@ class TestPrePostMarket(unittest.TestCase):
         state_again = get_pre_market_state("NIFTY", force_refresh=False, now=dt_disc)
         self.assertFalse(state_again.get("should_play_chime", False))
 
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.pre_post_market.ensure_pre_market_poller")
+    def test_http_reader_does_not_hit_dhan_during_discovery(self, mock_ensure, _persist, mock_fetch):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        dt = datetime(2026, 10, 13, 9, 8, 20, tzinfo=IST)
+        state = get_pre_market_state("NIFTY", force_refresh=False, now=dt)
+        mock_fetch.assert_not_called()
+        mock_ensure.assert_called()
+        self.assertFalse(state.get("is_discovered"))
+
     def test_classify_opening_gap_regimes(self):
         # 1. Call Wall test
         cw_res = classify_opening_gap(gap_pts=50.0, gap_pct=0.22, spot=22700.0, call_wall=22700.0, put_wall=22400.0)
         self.assertEqual(cw_res["regime"], "SHORT_GAMMA_WALL_TEST")
-        self.assertIn("CALL WALL", cw_res["badge"])
+        self.assertIn("CALL-GAMMA", cw_res["badge"])
 
         # 2. Put Wall test
         pw_res = classify_opening_gap(gap_pts=-80.0, gap_pct=-0.35, spot=22405.0, call_wall=22700.0, put_wall=22400.0)
@@ -118,22 +130,48 @@ class TestPrePostMarket(unittest.TestCase):
         # 6. Call Wall Breach Squeeze (> CW + 10)
         cws_res = classify_opening_gap(gap_pts=150.0, gap_pct=0.66, spot=22720.0, call_wall=22700.0, put_wall=22400.0)
         self.assertEqual(cws_res["regime"], "CALL_WALL_BREACH_SQUEEZE")
-        self.assertEqual(cws_res["favored_play"], "GAMMA SQUEEZE BREAKOUT")
+        self.assertIn("CALL STRIKE", cws_res["favored_play"])
+        self.assertNotIn("SQUEEZE", cws_res["favored_play"])
 
         # 7. Put Wall Breakdown Cascade (< PW - 10)
         pwc_res = classify_opening_gap(gap_pts=-150.0, gap_pct=-0.67, spot=22380.0, call_wall=22700.0, put_wall=22400.0)
         self.assertEqual(pwc_res["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
-        self.assertEqual(pwc_res["favored_play"], "NEGATIVE GAMMA CASCADE")
+        self.assertIn("PUT STRIKE", pwc_res["favored_play"])
+        self.assertNotIn("CASCADE", pwc_res["favored_play"])
 
-        # 8. Gap Up into Positive Gamma below Call Wall (Fade favored)
+        # 8. Gap up above the balance, still under the call strike. Not a fade.
         gup_res = classify_opening_gap(gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0, flip=22450.0)
         self.assertEqual(gup_res["regime"], "GAP_UP_INTO_POS_GAMMA")
-        self.assertIn("FADE", gup_res["favored_play"])
+        self.assertIn("NO FADE", gup_res["favored_play"])
 
-        # 9. Gap Down into Positive Gamma above Put Wall (Bounce favored)
+        # 9. Gap down while still above the balance. Not a bounce.
         gdp_res = classify_opening_gap(gap_pts=-100.0, gap_pct=-0.44, spot=22400.0, call_wall=22700.0, put_wall=22300.0, flip=22350.0)
         self.assertEqual(gdp_res["regime"], "GAP_DOWN_INTO_POS_GAMMA")
-        self.assertIn("BOUNCE", gdp_res["favored_play"])
+        self.assertIn("NO BOUNCE", gdp_res["favored_play"])
+        self.assertNotIn("Call gamma is larger", gup_res["briefing"])
+        self.assertNotIn("Call gamma is larger", gdp_res["briefing"])
+
+        heavy = classify_opening_gap(
+            gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0,
+            flip=22450.0, net_gex=1.0,
+        )
+        self.assertIn("Call gamma is larger", heavy["briefing"])
+        light = classify_opening_gap(
+            gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0,
+            flip=22450.0, net_gex=-1.0,
+        )
+        self.assertEqual(light["regime"], "GAP_UP_INTO_POS_GAMMA")
+        self.assertIn("Put gamma is larger", light["briefing"])
+        self.assertNotIn("Call gamma is larger", light["briefing"])
+
+    def test_settle_distance_is_not_a_stamped_pin(self):
+        from data.pre_post_market import settle_vs_gamma_strikes
+        near = settle_vs_gamma_strikes(22520.0, 22700.0, 22500.0, 50.0)
+        self.assertEqual(near["pin_target_wall"], "22,500 put-gamma")
+        self.assertLess(near["pin_efficiency_pct"], 100.0)
+        self.assertIn("not a pin", near["settle_note"])
+        missing = settle_vs_gamma_strikes(22600.0, 0.0, 0.0, 50.0)
+        self.assertIsNone(missing["pin_efficiency_pct"])
 
     def test_estimate_pre_bell_option_ltps(self):
         # Discovered gap +80 pts from 22600 to 22680

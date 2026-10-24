@@ -15,6 +15,7 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import config
 from sentinel.models import Bar
 
 log = logging.getLogger(__name__)
@@ -181,7 +182,7 @@ class BarAggregator:
         delta_ratio = delta / tot_vol if tot_vol > 0 else 0.0
 
         # Minimum threshold for micro-burst (e.g. at least 500 units and 35% delta bias)
-        min_burst_vol = 500 if "NIFTY" in self.instrument_id else 300
+        min_burst_vol = 500 if config.index_key(self.instrument_id) == "NIFTY" else 300
         if tot_vol >= min_burst_vol and abs(delta_ratio) >= 0.35:
             latest_depth = self.rolling_ticks[-1][5]
             recent_px = [t[1] for t in self.rolling_ticks]

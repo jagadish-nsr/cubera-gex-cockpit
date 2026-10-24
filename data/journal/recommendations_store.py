@@ -756,7 +756,7 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
     strategies = [
         ("MOMENTUM", "ATM Momentum Play (Δ ~0.50)"),
         ("STRUCTURE", "Institutional Structure Play (Δ ~0.40)"),
-        ("GAMMA SQUEEZE", "Gamma Squeeze / Breakdown Lotto (Δ ~0.28)"),
+        ("STRIKE BREAK", "Convex break at a gamma strike (Δ ~0.28)"),
         ("ICEBERG FADE", "OrderFlow Iceberg Absorption Fade (Δ ~0.50)"),
         ("VANNA-CHARM", "0DTE Vanna-Charm Compression (Δ ~0.20)"),
         ("VOL DISPERSION", "Vol Dispersion / Long Gamma Blast (Δ ~0.50)"),
@@ -793,59 +793,55 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
                     f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status = 'INVALIDATED'", b_params
                 ).fetchone()[0]
 
-                # If no recorded live trades yet, populate realistic empirical baseline metrics
-                if total == 0:
-                    baselines = {
-                        "MOMENTUM": (42, 31, 19, 6, 5, 2.8),
-                        "STRUCTURE": (35, 27, 18, 4, 4, 3.4),
-                        "GAMMA SQUEEZE": (18, 12, 10, 4, 2, 4.6),
-                        "ICEBERG FADE": (29, 22, 12, 4, 3, 2.5),
-                        "VANNA-CHARM": (24, 20, 9, 2, 2, 2.1),
-                        "VOL DISPERSION": (14, 9, 7, 3, 2, 4.8),
-                        "RATIO REVERSAL": (21, 17, 10, 2, 2, 3.2),
-                    }
-                    base_tot, base_t1, base_t2, base_sl, base_inv, base_rr = baselines.get(badge, (20, 14, 8, 3, 3, 2.5))
-                    t1_rate = round((base_t1 / base_tot) * 100, 1)
-                    t2_rate = round((base_t2 / base_tot) * 100, 1)
-                    sl_rate = round((base_sl / base_tot) * 100, 1)
-                    inv_rate = round((base_inv / base_tot) * 100, 1)
-                    avg_rr = f"1 : {base_rr:.1f}"
-                    results.append({
-                        "badge": badge,
-                        "name": name,
-                        "total": base_tot,
-                        "t1_hits": base_t1,
-                        "t1_rate": t1_rate,
-                        "t2_hits": base_t2,
-                        "t2_rate": t2_rate,
-                        "sl_hits": base_sl,
-                        "sl_rate": sl_rate,
-                        "invals": base_inv,
-                        "inv_rate": inv_rate,
-                        "avg_rr": avg_rr,
-                        "win_loss": round((base_t1) / max(1, base_sl + base_inv), 2),
-                    })
-                else:
-                    t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
-                    t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
-                    sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
-                    inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
-                    results.append({
-                        "badge": badge,
-                        "name": name,
-                        "total": total,
-                        "t1_hits": t1_hits,
-                        "t1_rate": t1_rate,
-                        "t2_hits": t2_hits,
-                        "t2_rate": t2_rate,
-                        "sl_hits": sl_hits,
-                        "sl_rate": sl_rate,
-                        "invals": invals,
-                        "inv_rate": inv_rate,
-                        "avg_rr": "1 : 2.8",
-                        "win_loss": round(t1_hits / max(1, sl_hits + invals), 2),
-                    })
+                t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
+                t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
+                sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
+                inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
+                avg_rr = None
+                if total > 0:
+                    rr_where = f"{badge_where} AND realized_rr IS NOT NULL"
+                    rr_row = conn.execute(
+                        f"SELECT AVG(realized_rr) FROM recommendation_records {rr_where}",
+                        b_params,
+                    ).fetchone()
+                    if rr_row and rr_row[0] is not None:
+                        avg_rr = round(float(rr_row[0]), 2)
+                results.append({
+                    "badge": badge,
+                    "name": name,
+                    "total": total,
+                    "t1_hits": t1_hits,
+                    "t1_rate": t1_rate,
+                    "t2_hits": t2_hits,
+                    "t2_rate": t2_rate,
+                    "sl_hits": sl_hits,
+                    "sl_rate": sl_rate,
+                    "invals": invals,
+                    "inv_rate": inv_rate,
+                    "avg_rr": avg_rr,
+                    "win_loss": round(t1_hits / max(1, sl_hits + invals), 2) if total else 0.0,
+                })
     except Exception as e:
         log.warning(f"Error computing strategy effectiveness: {e}")
 
     return results
+
+
+def summarize_effectiveness(rows: list[dict] | None) -> dict:
+    """Roll strategy rows into one strip. Rates stay 0 when nothing has been tracked."""
+    items = list(rows or [])
+    total = sum(int(m.get("total") or 0) for m in items)
+    t1 = sum(int(m.get("t1_hits") or 0) for m in items)
+    sl = sum(int(m.get("sl_hits") or 0) for m in items)
+    inv = sum(int(m.get("invals") or 0) for m in items)
+    rr_vals = [float(m["avg_rr"]) for m in items if isinstance(m.get("avg_rr"), (int, float))]
+    avg_rr = round(sum(rr_vals) / len(rr_vals), 2) if rr_vals else None
+    return {
+        "total_tracked": total,
+        "target_hit_rate": round(t1 / total * 100.0, 1) if total else 0.0,
+        "stop_loss_rate": round(sl / total * 100.0, 1) if total else 0.0,
+        "spot_invalidation_rate": round(inv / total * 100.0, 1) if total else 0.0,
+        "avg_realized_rr": avg_rr,
+        "has_samples": total > 0,
+        "by_strategy": items,
+    }

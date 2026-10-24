@@ -62,24 +62,25 @@
           </div>
           <div class="quote-spot">
             <span id="quote-status-dot" class="offline-dot"></span>
-            <span id="spot-price-display">₹23,146.2</span>
+            <span id="spot-price-display">—</span>
           </div>
           <div class="quote-meta-grid">
             <div class="quote-meta-item">
               <small>Near Futures</small>
-              <b id="futures-price-display">₹23,171.2</b>
+              <b id="futures-price-display">—</b>
+              <div id="futures-state" style="font-size:0.68rem;color:var(--ink-mute);margin-top:2px">—</div>
             </div>
             <div class="quote-meta-item">
               <small>Basis Spread</small>
-              <b id="basis-display" style="color:var(--go)">+25.0 pts</b>
+              <b id="basis-display">—</b>
             </div>
             <div class="quote-meta-item">
               <small>Day High / Low</small>
-              <span id="day-hl-display" style="font-family:var(--mono);font-size:0.72rem">23,215 / 23,085</span>
+              <span id="day-hl-display" style="font-family:var(--mono);font-size:0.72rem">—</span>
             </div>
             <div class="quote-meta-item">
               <small>India VIX</small>
-              <b id="vix-display" style="color:var(--spark)">14.04 (+0.0%)</b>
+              <b id="vix-display">—</b>
             </div>
           </div>
         </div>
@@ -376,13 +377,13 @@
             <div class="alert-marquee-viewport" title="Hover mouse to pause scrolling">
               <div id="alert-marquee-track" class="alert-marquee-track">
                 <span class="alert-marquee-item">
-                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Synchronizing Dealer GEX, Orderflow CVD, and Breadth metrics...
+                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Reading the call−put book, orderflow, and breadth...
                   <span class="marquee-action-tag">👉 ACTION: Monitoring opening flow</span>
                   <span class="marquee-telemetry">[Calibrating LKGS Snapshot]</span>
                 </span>
                 <span class="marquee-separator">✦✦✦</span>
                 <span class="alert-marquee-item">
-                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Synchronizing Dealer GEX, Orderflow CVD, and Breadth metrics...
+                  <span class="marquee-headline">EVALUATING MARKET REGIME:</span> Reading the call−put book, orderflow, and breadth...
                   <span class="marquee-action-tag">👉 ACTION: Monitoring opening flow</span>
                   <span class="marquee-telemetry">[Calibrating LKGS Snapshot]</span>
                 </span>
@@ -395,37 +396,37 @@
           </div>
 
           <!-- Pre-Bell Tactical Briefing & Opening Shocks (Discovered Equilibrium) -->
-          <div id="cockpit-pre-market-card" class="pre-bell-card">
+          <div id="cockpit-pre-market-card" class="pre-bell-card" style="display:none">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="font-size:1.15rem">🌅</span>
                 <b style="font-size:0.95rem;color:var(--warn)">Pre-Bell Tactical Briefing &amp; Opening Discovery</b>
-                <span id="pm-discovered-at" style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:07:30 IST Discovery</span>
+                <span id="pm-discovered-at" style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:08 IST Discovery</span>
               </div>
               <div>
-                <span id="pm-regime-badge" class="badge-active" style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">GAP EXTENSION BULL</span>
+                <span id="pm-regime-badge" class="badge-active" style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">PRE-OPEN SETUP</span>
               </div>
             </div>
             <div class="pre-bell-grid">
               <div class="pre-bell-item">
                 <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative Open</small>
-                <b id="pm-indicative-open" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">₹24,525.0</b>
+                <b id="pm-indicative-open" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">—</b>
               </div>
               <div class="pre-bell-item">
                 <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
-                <b id="pm-opening-gap" style="font-size:1.1rem;font-family:var(--mono);color:var(--go)">+65.0 pts (+0.27%)</b>
+                <b id="pm-opening-gap" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink-mute)">Awaiting 09:08 match</b>
               </div>
               <div class="pre-bell-item">
                 <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call / Put Wall</small>
-                <b id="pm-walls" style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">24,600 / 24,400</b>
+                <b id="pm-walls" style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">—</b>
               </div>
               <div class="pre-bell-item">
                 <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Favored Opening Play</small>
-                <b id="pm-favored-play" style="font-size:0.92rem;color:var(--spark)">Dip Buying near VWAP</b>
+                <b id="pm-favored-play" style="font-size:0.92rem;color:var(--spark)">—</b>
               </div>
             </div>
             <div id="pm-briefing-text" style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:9px 12px;border-radius:6px;border:1px solid var(--line);margin-bottom:10px">
-              Opening above prior session high with dealer call wall absorption at 24,600. Volatility crush expected in first 15 mins.
+              Prior-session walls and FII context. Equilibrium prints ~09:08 IST.
             </div>
 
             <!-- Projected Opening Option Shocks Table (5 Strikes around ATM) -->
@@ -436,7 +437,7 @@
                   <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>
                   <span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>
                 </div>
-                <span id="pm-straddle-badge" style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM Straddle: ₹210.0 ➔ <b>₹218.4</b> (<span style="color:var(--go);font-weight:700">+4.0%</span>)</span>
+                <span id="pm-straddle-badge" style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM Straddle: —</span>
               </summary>
               <div style="margin-top:8px;overflow-x:auto">
                 <table class="shock-table">
@@ -462,19 +463,19 @@
           <!-- 8-Card Quantitative KPI Strip -->
           <div class="kpi-grid">
             <div class="kpi-card go">
-              <small>Call Wall (Resistance)</small>
+              <small>Call-gamma concentration</small>
               <b id="kpi-call-wall">—</b>
-              <span id="kpi-call-wall-sub">Major Overhead Ceiling</span>
+              <span id="kpi-call-wall-sub">Call-gamma concentration</span>
             </div>
             <div class="kpi-card stop">
-              <small>Put Wall (Support)</small>
+              <small>Put-gamma concentration</small>
               <b id="kpi-put-wall">—</b>
-              <span id="kpi-put-wall-sub">Major Floor Support</span>
+              <span id="kpi-put-wall-sub">Put-gamma concentration</span>
             </div>
             <div class="kpi-card spark">
-              <small>Gamma Flip</small>
+              <small>Call−put balance</small>
               <b id="kpi-gamma-flip">—</b>
-              <span id="kpi-gamma-flip-sub">Volatility Pivot Barrier</span>
+              <span id="kpi-gamma-flip-sub">Call−put balance</span>
             </div>
             <div class="kpi-card warn">
               <small>Max Pain Strike</small>
@@ -492,14 +493,14 @@
               <span id="kpi-regime-mode">—</span>
             </div>
             <div class="kpi-card warn">
-              <small>Net Dealer Gamma</small>
+              <small>Writer imbalance</small>
               <b id="kpi-net-gex">—</b>
-              <span>Dealer Gamma Units</span>
+              <span id="kpi-net-gex-sub">Call−put GEX</span>
             </div>
             <div class="kpi-card">
               <small>Put-Call Ratio (PCR)</small>
               <b id="kpi-pcr">—</b>
-              <span>Bullish Open Interest Bias</span>
+              <span id="kpi-pcr-sub">Put-call open interest</span>
             </div>
           </div>
 
@@ -508,12 +509,17 @@
             <div>
               <div style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">⚡ Expiry Gamma Blast Model</div>
               <div id="gamma-blast-badge" style="font-size:1.15rem;font-weight:800;color:var(--go);margin:3px 0">GAMMA BLAST: INACTIVE</div>
-              <div id="gamma-blast-desc" style="font-size:0.8rem;color:var(--ink-mute)">Dealer gamma pinned within absorption walls; no explosive squeeze imminent.</div>
+              <div id="gamma-blast-desc" style="font-size:0.8rem;color:var(--ink-mute)">No gamma-blast trigger. Concentration is a map, not a pin.</div>
             </div>
             <div style="text-align:right">
               <div style="font-size:0.7rem;color:var(--ink-faint)">Blast Score</div>
-              <div id="gamma-blast-score" style="font-size:1.8rem;font-weight:900;font-family:var(--mono);color:var(--ink)">24 / 100</div>
+              <div id="gamma-blast-score" style="font-size:1.8rem;font-weight:900;font-family:var(--mono);color:var(--ink)">—</div>
             </div>
+          </div>
+          <div id="crossover-watch" class="repricer-card" style="margin-top:10px">
+            <div style="font-size:0.78rem;font-weight:750;margin-bottom:4px">Crossover watch</div>
+            <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:8px">Call premium minus put premium at the magnet and at the money. By parity that difference locates spot against the strike.</div>
+            <div id="crossover-watch-body" style="font-size:0.8rem;color:var(--ink-mute)">Waiting for paired premiums.</div>
           </div>
 
           <!-- TradingView Chart Card for Selected Index (1m, 5min, 15m Timeframes) -->
@@ -577,9 +583,9 @@
             <div id="cockpit-chart-legend-strip" style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
               <span id="legend-sym-tag" style="color:var(--spark);font-weight:700">INDEX: NIFTY 50</span>
               <span id="legend-tf-tag">Timeframe: 5m</span>
-              <span style="color:#ef4444">🟥 <b>Call Wall (<span id="cockpit-legend-cw-val">--</span>)</b></span>
-              <span style="color:#22c55e">🟩 <b>Put Wall (<span id="cockpit-legend-pw-val">--</span>)</b></span>
-              <span style="color:#eab308">🟨 <b>Gamma Flip (<span id="cockpit-legend-flip-val">--</span>)</b></span>
+              <span style="color:#ef4444">🟥 <b>Call gamma (<span id="cockpit-legend-cw-val">--</span>)</b></span>
+              <span style="color:#22c55e">🟩 <b>Put gamma (<span id="cockpit-legend-pw-val">--</span>)</b></span>
+              <span style="color:#eab308">🟨 <b>Call−put balance (<span id="cockpit-legend-flip-val">--</span>)</b></span>
               <span style="color:#c084fc">🟣 <b>VWAP Session Mean</b></span>
               <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
             </div>
@@ -590,11 +596,17 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
               <div>
                 <h3 style="font-size:1.05rem;font-weight:800;display:inline-block;margin-right:8px">🗺️ Gamma Price Ladder (Spot Centered)</h3>
-                <span style="font-size:0.74rem;color:var(--ink-mute)">Real-time dealer positioning by strike</span>
+                <span style="font-size:0.74rem;color:var(--ink-mute)">Gamma by strike. Concentration map.</span>
               </div>
               <div id="ladder-flip-pill" style="font-size:0.72rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.25);padding:3px 10px;border-radius:5px;font-family:var(--mono);font-weight:700">
-                🔀 Gamma Flip: <span id="ladder-flip-val">--</span>
+                🔀 Call−put balance: <span id="ladder-flip-val">--</span>
               </div>
+            </div>
+            <div id="standing-oi-strip" style="display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;margin-bottom:10px;font-size:0.82rem">
+              <span>Put OI centre <b id="standing-oi-put" style="font-family:var(--mono)">—</b></span>
+              <span>Call OI centre <b id="standing-oi-call" style="font-family:var(--mono)">—</b></span>
+              <span id="standing-oi-note" style="color:var(--ink-mute);font-size:0.74rem"></span>
+              <span id="value-area-line" style="color:var(--ink-mute);font-size:0.74rem">No prior value area.</span>
             </div>
             <table class="ladder-table">
               <thead>
@@ -603,13 +615,50 @@
                   <th>GEX Role / Wall Marker</th>
                   <th>Call Gamma Exposure</th>
                   <th>Put Gamma Exposure</th>
-                  <th>Net Dealer Gamma</th>
+                  <th>Net GEX</th>
+                  <th>ΔOI call / put</th>
                 </tr>
               </thead>
               <tbody id="gamma-ladder-body">
                 <!-- Dynamically rendered rows -->
               </tbody>
             </table>
+            <div style="margin-top:14px">
+              <div style="font-size:0.84rem;font-weight:750;margin-bottom:4px">Magnet path</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">Last magnet of each captured session. Combined gamma peak. Not a forecast that price will stay there.</div>
+              <div id="magnet-path-body" style="font-family:var(--mono);font-size:0.78rem;color:var(--ink-mute)">No captured sessions.</div>
+            </div>
+            <div style="margin-top:14px">
+              <div style="font-size:0.84rem;font-weight:750;margin-bottom:4px">Participant holdings <span id="participant-date" style="font-weight:500;color:var(--ink-mute)"></span></div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">End-of-day long and short contracts. Market-wide. Open interest is not buyer-versus-seller flow.</div>
+              <table class="ladder-table">
+                <thead>
+                  <tr>
+                    <th>Participant</th>
+                    <th>Fut long</th>
+                    <th>Fut short</th>
+                    <th>Call long</th>
+                    <th>Call short</th>
+                    <th>Put long</th>
+                    <th>Put short</th>
+                  </tr>
+                </thead>
+                <tbody id="participant-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="ladder-card" id="book-structure-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+              <h3 style="font-size:1.05rem;font-weight:800;margin:0">Illustrative structure</h3>
+              <span id="book-structure-bucket" style="font-size:0.72rem;font-weight:750;background:var(--surface-2);border:1px solid var(--line);padding:3px 10px;border-radius:5px">—</span>
+            </div>
+            <p id="book-structure-playbook" style="font-size:0.82rem;color:var(--ink);margin:0 0 8px"></p>
+            <div id="book-structure-variants" style="display:flex;gap:8px;margin-bottom:8px"></div>
+            <div id="book-structure-legs" style="font-family:var(--mono);font-size:0.84rem;font-weight:700;margin-bottom:6px"></div>
+            <p id="book-structure-why" style="font-size:0.8rem;color:var(--ink-mute);margin:0 0 4px"></p>
+            <p id="book-structure-risk" style="font-size:0.78rem;color:var(--ink);margin:0"></p>
+            <p style="font-size:0.72rem;color:var(--ink-mute);margin:8px 0 0">Paper only. You confirm. Nothing is sent.</p>
           </div>
 
           <!-- Bottom Row 2: Orderflow Sentinel Alerts + Active Paper Positions -->
@@ -629,7 +678,7 @@
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="font-size:1.05rem;font-weight:800">💼 Active Paper Positions</h3>
-                <span id="cockpit-open-mtm-badge" style="font-family:var(--mono);font-size:0.82rem;font-weight:800;color:var(--go)">MTM: +₹12,450</span>
+                <span id="cockpit-open-mtm-badge" style="font-family:var(--mono);font-size:0.82rem;font-weight:800;color:var(--ink-mute)">MTM: —</span>
               </div>
               <table class="block-tape-table">
                 <thead>
@@ -753,10 +802,10 @@
                 Band Stop: <span id="te-base-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
               </div>
               <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
-                • P(Touch Pin): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
+                • P(Touch Target): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
                 • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">58.6%</b><br>
                 • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">13.85%</b><br>
-                • Anchor: <i id="te-base-anchor" style="color:var(--ink-mute)">Gamma Flip / VWAP Pin</i>
+                • Anchor: <i id="te-base-anchor" style="color:var(--ink-mute)">Range centre</i>
               </div>
             </div>
 
@@ -775,7 +824,7 @@
                 • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">32.0%</b><br>
                 • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">18.5%</b><br>
                 • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">15.40%</b><br>
-                • Anchor: <i id="te-bear-anchor" style="color:var(--ink-mute)">Put Wall Speed Bump</i>
+                • Anchor: <i id="te-bear-anchor" style="color:var(--ink-mute)">Put-gamma strike</i>
               </div>
             </div>
           </div>
@@ -785,11 +834,11 @@
             <div>
               <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">T2 Institutional Confluence Dial</span>
               <div style="font-size:1.35rem;font-weight:800;color:var(--go);margin:4px 0" id="dial-verdict">CONFLUENCE BULLISH</div>
-              <div style="font-size:0.78rem;color:var(--ink-mute)">Concurrence across GEX, Sentinel CVD, OI flow, and IV Skew.</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">T2 conviction (0–100). Verdict follows the dominant scenario, not rank_score.</div>
             </div>
             <div style="text-align:right">
-              <div class="dial-score-num" id="dial-score-num">68 / 100</div>
-              <span style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH CONVICTION</span>
+              <div class="dial-score-num" id="dial-score-num">—</div>
+              <span id="dial-conviction-badge" style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH CONVICTION</span>
             </div>
           </div>
 
@@ -817,8 +866,8 @@
 
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.74rem;color:var(--ink-mute)">
             <div>
-              <span id="ladder-ws-status" style="color:var(--go);font-weight:700">🟢 11/11 Live WS Ticks</span> · 
-              Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">25</b> · 
+              <span id="ladder-ws-status" style="color:var(--ink-mute);font-weight:700">Chain snapshot</span> · 
+              Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">—</b> · 
               Spot: <b id="ladder-spot-display" style="color:var(--spark)">₹23,146.2</b> · 
               ATM: <b id="ladder-atm-display" style="color:var(--warn)">23,150</b>
             </div>
@@ -850,9 +899,15 @@
                 </tr>
               </thead>
               <tbody id="strike-ladder-body">
-                <!-- Dynamically populated 11 strikes -->
               </tbody>
             </table>
+          </div>
+
+          <div class="ladder-card" id="te-candidates-card" style="margin-top:14px">
+            <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 8px">Ranked structures</h3>
+            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Scored against the current book. Entry, target, and stop come from the matching scenario.</p>
+            <div id="te-candidates-body"></div>
+            <div id="te-features-body" style="margin-top:10px"></div>
           </div>
 
           <!-- Target Engine Target/SL Calculator & Repricer Suite -->
@@ -875,8 +930,9 @@
                 <select id="te-calc-expiry" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
               </div>
               <div>
-                <label class="form-label" style="font-size:0.72rem">🎯 Strike (21 ATM Band):</label>
+                <label class="form-label" style="font-size:0.72rem">Strike, or type a custom strike:</label>
                 <select id="te-calc-strike" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
+                <input id="te-calc-custom-strike" class="form-control" type="number" step="1" placeholder="Custom strike" style="font-size:0.8rem;padding:4px 8px;margin-top:6px" onchange="window.recalculateTargetSL()">
               </div>
               <div>
                 <label class="form-label" style="font-size:0.72rem">Option Type:</label>
@@ -913,7 +969,7 @@
               <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
                 <button id="te-btn-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull Preset (+1σ)</button>
                 <button id="te-btn-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear Preset (-1σ)</button>
-                <button id="te-btn-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Pin)</button>
+                <button id="te-btn-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
                 <button id="te-btn-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
               </div>
 
@@ -997,7 +1053,7 @@
               <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
                 <button id="te-slider-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull (+1σ)</button>
                 <button id="te-slider-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear (-1σ)</button>
-                <button id="te-slider-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Pin)</button>
+                <button id="te-slider-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
                 <button id="te-slider-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
               </div>
               <div class="slider-row">
@@ -1062,7 +1118,7 @@
           <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px 12px;margin:4px 0 14px;font-size:0.76rem;display:flex;justify-content:space-between">
             <span>Max Risk Budget: <b id="hud-risk-budget" style="color:var(--stop)">₹7,500 / trade</b></span>
             <span>Portfolio Outlay Cap (15%): <b id="hud-outlay-cap" style="color:var(--spark)">₹75,000</b></span>
-            <span>Contract Lot: <b id="hud-lot-size" style="color:var(--ink)">25 Qty/lot</b></span>
+            <span>Contract Lot: <b id="hud-lot-size" style="color:var(--ink)">—</b></span>
           </div>
 
           <!-- Strategy Effectiveness Telemetry Strip -->
@@ -1072,11 +1128,11 @@
               <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● AI/ML Logger Active (SQLite)</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:10px;font-size:0.76rem">
-              <div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b id="eff-total-tracked">38 setups</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="eff-tgt-rate" style="color:var(--go)">73.7%</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="eff-sl-rate" style="color:var(--stop)">15.8%</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="eff-inval-rate" style="color:var(--warn)">10.5%</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b id="eff-avg-rr" style="color:var(--spark)">1 : 2.8</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b id="eff-total-tracked">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="eff-tgt-rate" style="color:var(--go)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="eff-sl-rate" style="color:var(--stop)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="eff-inval-rate" style="color:var(--warn)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b id="eff-avg-rr" style="color:var(--spark)">—</b></div>
             </div>
           </div>
 
@@ -1183,8 +1239,8 @@
             </div>
             <div class="kpi-card">
               <small>Absorption Status</small>
-              <b id="sentinel-kpi-absorption" style="color:var(--go)">ACTIVE_AT_PUT_WALL</b>
-              <span>Passive Bid Walls Active</span>
+              <b id="sentinel-kpi-absorption" style="color:var(--go)">—</b>
+              <span>Tape volume. A gamma strike is not a floor.</span>
             </div>
           </div>
 
@@ -1192,7 +1248,7 @@
           <div class="repricer-card" style="padding:16px;margin-top:16px">
             <div class="tv-toolbar-wrap">
               <div style="display:flex;align-items:center;gap:8px">
-                <h3 id="sentinel-chart-title" style="font-size:1.02rem;font-weight:800;margin:0">📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, GEX Walls + CVD &amp; Delta</h3>
+                <h3 id="sentinel-chart-title" style="font-size:1.02rem;font-weight:800;margin:0">📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, gamma strikes + CVD &amp; Delta</h3>
                 <span id="sentinel-bar-count-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.70rem">Full Session (250 bars)</span>
               </div>
               <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
@@ -1528,7 +1584,7 @@
                 </table>
               </div>
               <div class="repricer-card" style="padding:14px">
-                <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">🧱 By GEX Wall Alignment</h3>
+                <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">🧱 By distance to gamma strikes</h3>
                 <table class="ladder-table" style="font-size:0.74rem">
                   <thead>
                     <tr>
@@ -1704,7 +1760,7 @@
 
               <!-- Phase B Confound Control Notice -->
               <div style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:9px 12px;font-size:0.70rem;color:var(--ink-mute);line-height:1.45;border:1px solid var(--line)">
-                <b style="color:var(--ink-2)">Phase B Confound Control:</b> Intraday headline bursts with keyword-weighted impact ≥ 6 flag exogenous shocks, quarantining days where macro news overrides dealer delta-hedging.
+                <b style="color:var(--ink-2)">Phase B confound control:</b> A headline burst with keyword-weighted impact of 6 or more flags an outside shock. The positioning map does not override the headline.
               </div>
             </div>
           </div>
@@ -1723,7 +1779,7 @@
             <div class="noa-kpi-card">
               <small>PCR (OI)</small>
               <b id="noa-kpi-pcr">1.18</b>
-              <span id="noa-kpi-pcr-regime" style="color:var(--go)">BULLISH</span>
+              <span id="noa-kpi-pcr-regime" style="color:var(--ink-mute)">Put-call open interest</span>
             </div>
             <div class="noa-kpi-card">
               <small>Max Pain Strike</small>
@@ -1755,9 +1811,24 @@
               <span id="exp-move-center" style="color:var(--ink);font-weight:800">Spot: ₹23,146.2</span>
               <span id="exp-move-high" style="color:var(--go)">Upper 1σ: —</span>
             </div>
-            <div style="background:var(--surface-3);height:8px;border-radius:4px;overflow:hidden;position:relative">
-              <div style="position:absolute;left:25%;width:50%;height:100%;background:linear-gradient(90deg, var(--stop), var(--spark), var(--go));border-radius:4px"></div>
+            <div id="exp-move-straddle" style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">ATM straddle: —</div>
+            <div style="background:var(--surface-3);height:8px;border-radius:4px;position:relative">
+              <div id="exp-move-marker" style="position:absolute;left:50%;top:-3px;width:2px;height:14px;background:var(--ink)"></div>
             </div>
+          </div>
+
+          <div class="ladder-card" style="margin-top:14px">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:8px">Book-balance rows</h3>
+            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Skew and India VIX move the score. The other rows are facts and contribute zero.</p>
+            <table class="ladder-table">
+              <thead><tr><th>Row</th><th>Read</th><th>Points</th></tr></thead>
+              <tbody id="bias-rows-body"></tbody>
+            </table>
+          </div>
+
+          <div class="ladder-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:8px">Call and put open interest</h3>
+            <div id="oi-bars"></div>
           </div>
 
           <!-- IV Skew & Term Structure Curve Panel -->
@@ -1792,11 +1863,9 @@
                 <tr>
                   <th>Strike</th>
                   <th>Call OI</th>
-                  <th>Call ΔOI (Shift)</th>
-                  <th>Call Classification</th>
+                  <th>Call ΔOI</th>
                   <th>Put OI</th>
-                  <th>Put ΔOI (Shift)</th>
-                  <th>Put Classification</th>
+                  <th>Put ΔOI</th>
                   <th>PCR</th>
                 </tr>
               </thead>
@@ -1823,37 +1892,18 @@
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="font-size:1.05rem;font-weight:800">⚖️ Put-Call Parity &amp; Synthetic Arbitrage</h3>
-                <span class="badge-active" style="font-size:0.7rem;background:var(--go-bg);color:var(--go)">No Mispricing</span>
+                <span id="noa-parity-badge" class="badge-active" style="font-size:0.7rem">Waiting for the chain</span>
               </div>
               <table class="block-tape-table">
                 <thead>
                   <tr>
-                    <th>Metric</th>
-                    <th>Value</th>
-                    <th>Benchmark</th>
-                    <th>Deviation</th>
+                    <th>Strike</th>
+                    <th>Call</th>
+                    <th>Put</th>
+                    <th>Gap</th>
                   </tr>
                 </thead>
-                <tbody id="noa-parity-body">
-                  <tr>
-                    <td>Synthetic Spot (C - P + K)</td>
-                    <td style="font-family:var(--mono);color:var(--spark)">₹23,148.0</td>
-                    <td style="font-family:var(--mono)">₹23,146.2</td>
-                    <td style="color:var(--go)">+1.8 pts (Normal)</td>
-                  </tr>
-                  <tr>
-                    <td>Theoretical Futures Basis</td>
-                    <td style="font-family:var(--mono);color:var(--go)">+28.5 pts</td>
-                    <td style="font-family:var(--mono)">+27.0 pts</td>
-                    <td style="color:var(--go)">In-Line Fair Value</td>
-                  </tr>
-                  <tr>
-                    <td>Box Spread Discrepancy</td>
-                    <td style="font-family:var(--mono)">0.15 pts</td>
-                    <td style="font-family:var(--mono)">&lt; 0.50 pts</td>
-                    <td style="color:var(--ink-mute)">Arb Inefficient</td>
-                  </tr>
-                </tbody>
+                <tbody id="noa-parity-body"></tbody>
               </table>
             </div>
           </div>
@@ -1870,7 +1920,7 @@
               </div>
               <div style="text-align:right">
                 <span style="font-size:0.7rem;color:var(--ink-faint);text-transform:uppercase">Total Unrealized MTM</span>
-                <div id="journal-total-mtm" style="font-size:1.4rem;font-weight:900;font-family:var(--mono);color:var(--go)">+₹12,450</div>
+                <div id="journal-total-mtm" style="font-size:1.4rem;font-weight:900;font-family:var(--mono);color:var(--ink-mute)">—</div>
               </div>
             </div>
 
@@ -1892,6 +1942,23 @@
                 <!-- Dynamically populated -->
               </tbody>
             </table>
+            <div id="journal-close-panel" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:8px">
+              <div style="font-size:0.78rem;margin-bottom:8px">Close <b id="journal-close-id">—</b></div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
+                <label style="font-size:0.75rem">Exit premium
+                  <input id="journal-close-prem" class="form-control" type="number" step="0.5" style="width:120px">
+                </label>
+                <label style="font-size:0.75rem">Reason
+                  <select id="journal-close-reason" class="form-control">
+                    <option value="MANUAL">MANUAL</option>
+                    <option value="TARGET">TARGET</option>
+                    <option value="STOP">STOP</option>
+                    <option value="FORCED_DATE">FORCED_DATE</option>
+                  </select>
+                </label>
+                <button id="journal-close-confirm" class="btn btn-primary" type="button">Confirm close</button>
+              </div>
+            </div>
           </div>
 
           <!-- Manual Paper Trade Logging Form -->
@@ -1928,27 +1995,27 @@
           <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
             <div class="kpi-card go">
               <small>Realized Net PnL</small>
-              <b id="scorecard-kpi-pnl">+₹84,250</b>
+              <b id="scorecard-kpi-pnl">—</b>
               <span>All Closed Trades</span>
             </div>
             <div class="kpi-card spark">
               <small>Total Closed Trades</small>
-              <b id="scorecard-kpi-trades">42 Trades</b>
+              <b id="scorecard-kpi-trades">—</b>
               <span>Paper Ledger</span>
             </div>
             <div class="kpi-card warn">
               <small>Win Rate</small>
-              <b id="scorecard-kpi-winrate">78.6%</b>
+              <b id="scorecard-kpi-winrate">—</b>
               <span>33 Wins / 9 Losses</span>
             </div>
             <div class="kpi-card purple">
               <small>Profit Factor</small>
-              <b id="scorecard-kpi-pf">3.12</b>
+              <b id="scorecard-kpi-pf">—</b>
               <span>Gross Wins / Gross Losses</span>
             </div>
             <div class="kpi-card stop">
               <small>Max Drawdown</small>
-              <b id="scorecard-kpi-dd">-₹14,500</b>
+              <b id="scorecard-kpi-dd">—</b>
               <span>Peak to Trough</span>
             </div>
           </div>
@@ -1975,10 +2042,22 @@
                   <th>Exit Reason</th>
                 </tr>
               </thead>
-              <tbody id="closed-trades-body">
-                <!-- Dynamically populated -->
-              </tbody>
+              <tbody id="closed-trades-body"></tbody>
             </table>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+            <div class="ladder-card">
+              <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">By book state</h3>
+              <table class="ladder-table"><thead><tr><th>State</th><th>Trades</th><th>Win rate</th><th>Net</th></tr></thead><tbody id="scorecard-regime-body"></tbody></table>
+            </div>
+            <div class="ladder-card">
+              <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">By strategy</h3>
+              <table class="ladder-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Win rate</th><th>Net</th></tr></thead><tbody id="scorecard-strategy-body"></tbody></table>
+            </div>
+          </div>
+          <div class="ladder-card" style="margin-top:14px">
+            <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">Sentinel forward ledger</h3>
+            <table class="ladder-table"><thead><tr><th>Signal</th><th>Entry</th><th>MFE</th><th>MAE</th><th>+5m</th><th>+15m</th><th>Status</th></tr></thead><tbody id="scorecard-sentinel-body"></tbody></table>
           </div>
         </div>
 
@@ -2028,7 +2107,7 @@
             <div>
               <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎙️ AI Audio Speech Synthesis &amp; Session Narrative</span>
               <div style="font-size:1.35rem;font-weight:800;color:var(--spark);margin:4px 0" id="commentary-phase-title">Power Hour Session Narrative</div>
-              <div style="font-size:0.78rem;color:var(--ink-mute)">Continuous institutional intraday storytelling &amp; dealer wall shift alerts.</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">Session narrative. Gamma-strike shifts are a map, not a hedge alert.</div>
             </div>
             <div style="display:flex;align-items:center;gap:12px">
               <button id="btn-play-voice" class="btn btn-success">▶ Play Voice Broadcast</button>
@@ -2074,6 +2153,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=5.8"></script>
+  <script src="/static/js/cockpit.js?v=6.22"></script>
 </body>
 </html>

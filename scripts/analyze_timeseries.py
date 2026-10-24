@@ -1,19 +1,14 @@
-"""Phase B (offline) — analyse the Phase A intraday time-series.
+"""Offline read of the captured intraday time-series.
 
-  python scripts/analyze_timeseries.py            # analyse every captured day
-  python scripts/analyze_timeseries.py --days 5    # only the last N days
+Historical comparison of two gamma labels. Production code accepts only
+short_call_short_put. Do not write a second sign model back into gex/ from
+this script.
 
-Runs on the captures in ``data/journal/timeseries/YYYY-MM-DD.csv``. Pure-function
-core (like score_sessions.py) so each number is hand-checkable; the CLI just
-prints. Read ``docs/phase-b-analysis.md`` and ``CLAUDE.md`` first — especially the
-dealer-sign landmine. This DESCRIBES the data and gives an honest, sample-size-
-aware read on the dealer-sign convention. It is NOT a predictor and NOT a verdict
-on its own.
+  python scripts/analyze_timeseries.py
 
-Data hygiene (non-negotiable, CLAUDE.md #6): we drop snapshots outside
-09:15-15:30 IST and drop frozen post-close repeats (spot AND volume unchanged from
-the previous row) before computing anything, so a dashboard left open after the
-close can't skew the statistics.
+Data hygiene: drop snapshots outside 09:15-15:30 IST and drop frozen post-close
+repeats (spot and volume unchanged from the previous row) before computing
+anything, so a dashboard left open after the close cannot skew the statistics.
 """
 
 from __future__ import annotations
@@ -299,9 +294,9 @@ def pcr_vol_crosscheck(days: dict[str, pd.DataFrame]):
     per-interval return is over the cadence, so RV magnitudes are NOT comparable across
     days of different cadence — treat pre/post-switch pools separately. Low PCR
     means call-heavy OI, which is the SAME state as net_gex>0 (the G+ bucket): so
-    if the low-PCR tercile is the WILDER one, it independently corroborates that
-    G+ behaves short-gamma (convention B / India-inverted), since the US default
-    (A) says G+ should be the CALM bucket.
+    if the low-PCR tercile is the WILDER one, call-heavy intervals were the wilder
+    bucket in this sample. That is a historical description. It does not add a
+    second sign model to the engine.
 
     Returns (rows, verdict) where rows = [(label, n, rv_pct, drift_pct), ...] for
     low/mid/high terciles, or (None, msg) if the pcr_oi column is unusable.
@@ -412,8 +407,8 @@ def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     add("")
     add("-" * 76)
     add("MODEL PREDICTIONS, SCORED PER CONVENTION  (P1 = the robust one)")
-    a = block("A  long_call_short_put  (US default)", "G-", "G+")
-    b = block("B  short_call_long_put  (India-inverted)", "G+", "G-")
+    a = block("A  call-heavy read as calm (retired)", "G-", "G+")
+    b = block("B  call-heavy read as wild (retired)", "G+", "G-")
 
     # Sign-free corroboration: PCR (owes nothing to the dealer-sign assumption).
     pcr_rows, pcr_verdict = pcr_vol_crosscheck(days)
@@ -431,7 +426,7 @@ def both_signs_report(days: dict[str, pd.DataFrame]) -> str:
     add("")
     add("-" * 76)
     enough = len(days) >= 10 and (len(gp) + len(gm)) >= 200
-    lean = ("B (inverted)" if b > a else "A (US default)" if a > b else "neither")
+    lean = ("B (call-heavy wilder)" if b > a else "A (call-heavy calmer)" if a > b else "neither")
     add(f"READ: convention {lean} fits realised behaviour better here "
         f"({b}/3 vs {a}/3 on B vs A). The discriminating signal is P1 (vol); the")
     add("autocorr legs are underpowered and wash out. Sample is "

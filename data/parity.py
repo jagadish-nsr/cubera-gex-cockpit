@@ -52,8 +52,8 @@ def imply_forward_and_rate(
     df["type"] = df["type"].str.upper()
     T = float(df["T"].iloc[0])
 
-    # An expiry DATE can carry both SPXW (PM) and SPX (AM) at the same strike;
-    # collapse duplicates by median mid so parity has one price per strike.
+    # Duplicate rows at one strike (two prints, a bad join) collapse to the median
+    # mid so parity has one price per strike.
     calls = df[df["type"] == "C"].groupby("strike")["mid"].median()
     puts = df[df["type"] == "P"].groupby("strike")["mid"].median()
     common = sorted(set(calls.index) & set(puts.index))
@@ -122,7 +122,7 @@ def _fit_df_forward(expiry_df: pd.DataFrame, center: float | None = None, band: 
     deep-ITM spread noise); otherwise use all paired strikes."""
     df = expiry_df.copy()
     df["type"] = df["type"].str.upper()
-    # collapse duplicate strikes (SPXW + SPX share dates) by median mid
+    # collapse duplicate strikes by median mid
     calls = df[df["type"] == "C"].groupby("strike")["mid"].median()
     puts = df[df["type"] == "P"].groupby("strike")["mid"].median()
     common = sorted(set(calls.index) & set(puts.index))

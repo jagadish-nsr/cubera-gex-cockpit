@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+import config
 from sentinel.models import Bar, SentinelSignal, SignalOutcome
 from sentinel.storage.db import (
     save_bar,
@@ -333,7 +334,7 @@ def seed_sentinel_demo_if_needed(
         (
             0.32, "ABSORPTION_BEAR", "BEARISH", "SHORT", 82, "HIGH", 3.4,
             ["NEAR_CALL_WALL", "ABOVE_VWAP_2SIGMA"],
-            f"Heavy aggressive buying absorbed at Call Wall {call_wall:,.0f}; upper wick formed with delta divergence.",
+            f"Aggressive buying absorbed at the call-gamma strike {call_wall:,.0f}. The wick is tape, not a ceiling.",
             3.0, "CONFIRMED_AT_WALL"
         ),
         (
@@ -351,7 +352,7 @@ def seed_sentinel_demo_if_needed(
         (
             0.68, "ABSORPTION_BULL", "BULLISH", "LONG", 84, "HIGH", 3.2,
             ["NEAR_PUT_WALL", "BELOW_VWAP_2SIGMA"],
-            f"Aggressive market selling absorbed at Put Wall {put_wall:,.0f}; responsive buyers defending structural support.",
+            f"Aggressive selling absorbed at the put-gamma strike {put_wall:,.0f}. Absorption is tape, not a floor.",
             -4.0, "CONFIRMED_AT_WALL"
         ),
         (
@@ -369,12 +370,12 @@ def seed_sentinel_demo_if_needed(
         (
             0.94, "CVD_DIVERGENCE_BEAR", "BEARISH", "SHORT", 73, "HIGH", 2.4,
             ["NEAR_CALL_WALL", "CVD_DIV_BEAR"],
-            f"Price testing near Call Wall {call_wall:,.0f} with waning CVD momentum; institutional distribution capping upside.",
+            f"Price is near the call-gamma strike {call_wall:,.0f} with waning CVD. The strike is not a ceiling.",
             3.0, "CONFIRMED_AT_WALL"
         ),
     ]
 
-    step = 50 if "NIFTY" in instrument_id else 100
+    step = config.strike_step_for(instrument_id)
     for rel_pos, sig_type, cat, bias, score, conf, rvol, tags, text, inval_off, gex_align in signal_templates:
         idx = int(rel_pos * (len(bars_to_save) - 1))
         idx = max(3, min(len(bars_to_save) - 2, idx))
@@ -550,7 +551,7 @@ class SentinelLiveFeedEngine:
                             delta_ratio=latest.delta_ratio,
                             oi_change=int(random.randint(8000, 24000)),
                             context_tags=["NEAR_CALL_WALL", "ABOVE_VWAP_1SIGMA"],
-                            insight_text=f"Aggressive buyer delta absorbed at Call Wall {call_wall:,.0f}; institutional supply defending resistance.",
+                            insight_text=f"Buyer delta absorbed at the call-gamma strike {call_wall:,.0f}. Absorption is tape, not a ceiling.",
                             invalidation_level=round(latest.high + 4.0, 1),
                             rule_set_version="v2.0",
                             status="CONFIRMED",
@@ -572,7 +573,7 @@ class SentinelLiveFeedEngine:
                             delta_ratio=latest.delta_ratio,
                             oi_change=int(random.randint(9000, 26000)),
                             context_tags=["NEAR_PUT_WALL", "BELOW_VWAP_1SIGMA"],
-                            insight_text=f"Aggressive market selling absorbed at Put Wall {put_wall:,.0f}; responsive buyers stepping in.",
+                            insight_text=f"Selling absorbed at the put-gamma strike {put_wall:,.0f}. Absorption is tape, not a floor.",
                             invalidation_level=round(latest.low - 4.0, 1),
                             rule_set_version="v2.0",
                             status="CONFIRMED",

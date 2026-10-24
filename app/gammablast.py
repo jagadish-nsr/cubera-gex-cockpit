@@ -301,7 +301,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         return {
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: INACTIVE",
-            "description": "Dealer gamma pinned within absorption walls; no explosive squeeze imminent.",
+            "description": "No spot on the book. The gamma-blast watch has nothing to mark.",
             "score": 24,
             "is_expiry": False,
             "in_blast_window": False,
@@ -337,7 +337,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         return {
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: SESSION CONCLUDED",
-            "description": "Market session closed at 15:30 IST. 0-DTE dealer gamma hedging is offline.",
+            "description": "Market session closed at 15:30 IST. The gamma-blast watch is off.",
             "score": 0,
             "is_expiry": False,
             "in_blast_window": False,
@@ -358,7 +358,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             is_expiry = first_exp.startswith(dt_ist.strftime("%Y-%m-%d"))
     else:
         try:
-            from data.replay import is_expiry_day
+            from data.session_flags import is_expiry_day
             is_expiry = is_expiry_day(symbol, dt_ist.strftime("%Y-%m-%d"))
         except Exception:
             pass
@@ -409,7 +409,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         return {
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: INACTIVE (NON-EXPIRY)",
-            "description": f"Non-expiry session ({dte_str} to nearest expiry). Dealer gamma risks remain bounded by calendar decay; 0-DTE blast inactive.",
+            "description": f"Non-expiry session ({dte_str} to nearest expiry). 0-DTE blast inactive.",
             "score": score,
             "is_expiry": False,
             "in_blast_window": in_blast_window,
@@ -426,8 +426,8 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             desc = f"0-DTE morning session. Spot testing {'Call' if cw_testing else 'Put'} barrier ({primary_strike:,.0f}). Blast acceleration window opens at 13:30 IST."
         else:
             state = "NO_TRIGGER"
-            badge = "GAMMA BLAST: INACTIVE (MORNING PIN)"
-            desc = "0-DTE session in morning positioning. Dealer gamma pinning spot within range; blast window activates at 13:30–15:15 IST."
+            badge = "GAMMA BLAST: INACTIVE (MORNING)"
+            desc = "0-DTE morning. No blast trigger yet. The blast window is 13:30–15:15 IST."
         return {
             "state": state,
             "badge": badge,
@@ -483,20 +483,20 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     if score >= 60:
         state = "TRIGGERED"
         if cw_breach or spot > (call_wall + put_wall) / 2:
-            badge = "GAMMA BLAST: ACTIVE (CALL SQUEEZE)"
-            desc = f"0-DTE Call Wall at ₹{call_wall:,.0f} overrun. Forced dealer short-gamma hedging is detonating upward squeeze."
+            badge = "GAMMA BLAST: ACTIVE"
+            desc = f"Spot is through the call-gamma strike at ₹{call_wall:,.0f}. That is a location on the book, not a measured hedge."
         else:
-            badge = "GAMMA BLAST: ACTIVE (PUT SQUEEZE)"
-            desc = f"0-DTE Put Wall at ₹{put_wall:,.0f} broken. Forced dealer long liquidation is detonating downward trapdoor."
+            badge = "GAMMA BLAST: ACTIVE"
+            desc = f"Spot is through the put-gamma strike at ₹{put_wall:,.0f}. That is a location on the book, not a measured hedge."
     elif score >= 35:
         state = "COILING"
         badge = "GAMMA BLAST: COILING / IMMINENT"
         target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
-        desc = f"Spot is hammering within {abs(spot - (primary_strike or spot)):.0f} pts of {target_name}. Pressure coiling for afternoon break."
+        desc = f"Spot is within {abs(spot - (primary_strike or spot)):.0f} pts of the {target_name}. Nearness is a map, not a coil that must break."
     else:
         state = "NO_TRIGGER"
         badge = "GAMMA BLAST: INACTIVE"
-        desc = f"Dealer gamma pinned within absorption walls ({put_wall:,.0f} PW – {call_wall:,.0f} CW); no explosive squeeze imminent."
+        desc = f"No blast trigger. Put-gamma strike {put_wall:,.0f}, call-gamma strike {call_wall:,.0f}. Concentration is a map, not a pin."
 
     return {
         "state": state,

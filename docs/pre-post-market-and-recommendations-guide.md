@@ -22,7 +22,7 @@ The Indian financial markets operate under distinct microstructure regimes acros
 │ 09:07:30–09:15│ PRE_MARKET_DISCOVERY    │ Adaptive Discovery   │ Equilibrium price discovery & Pre-Bell│
 │ 09:15 – 15:30 │ REGULAR_SESSION         │ 🟢 WebSocket Live    │ Continuous trading & intraday signals │
 │ 15:30 – 15:40 │ CAS_AND_FNO_EXTENDED    │ 🟢 WebSocket Live    │ 30m VWAP cash auction & F&O final run │
-│ 15:40 – 16:00 │ POST_MARKET_SETTLEMENT  │ 🛑 Offline Snapshot  │ Settlement divergence & pin scorecard │
+│ 15:40 – 16:00 │ POST_MARKET_SETTLEMENT  │ 🛑 Offline Snapshot  │ Settlement versus the continuous close │
 │ 16:00 – 09:00 │ OFF_HOURS               │ 🛑 Offline Snapshot  │ Overnight off-hours & holiday standby │
 └───────────────┴─────────────────────────┴──────────────────────┴───────────────────────────────────────┘
 ```
@@ -91,18 +91,18 @@ Every metric displayed on the Cockpit's Pre-Market Briefing Banner represents an
 │ (Points & Percentage)   │ Absolute and percentage shift     │ impulse. Gaps > 0.40% signal trend;│
 │                         │ from previous official close.     │ gaps < 0.15% signal rotational chop│
 ├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
-│ Structural GEX Walls    │ Highest concentration of dealer   │ Resistance ceiling. Dealers long   │
-│ • Call Wall (CW)        │ open interest and gamma exposure. │ gamma below it; short gamma if     │
-│                         │                                   │ breached above it.                 │
+│ Structural GEX Walls    │ Largest call-gamma and            │ A concentration on the book.       │
+│ • Call Wall (CW)        │ put-gamma strikes.                │ Not a ceiling. Not a hedge.        │
+│                         │                                   │                                    │
 ├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
-│ Structural GEX Walls    │ Deepest dealer put open interest  │ Support floor. Dealers long gamma  │
-│ • Put Wall (PW)         │ and put writer commitment.        │ above it; short gamma if breakdown │
-│                         │                                   │ cascades below it.                 │
+│ Put-gamma strike        │ Largest put-gamma magnitude.      │ A concentration below spot.        │
+│                         │                                   │ Not a floor.                       │
+│                         │                                   │                                    │
 ├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
-│ Gamma Flip              │ Spot level where aggregate dealer │ Above Flip: POSITIVE GAMMA         │
-│ Boundary (GF)           │ gamma shifts from positive to     │ (dealers buy dips/sell rips; chop).│
-│                         │ negative.                         │ Below Flip: NEGATIVE GAMMA         │
-│                         │                                   │ (dealers sell dips; explosive vol).│
+│ Call−put balance        │ Spot where call magnitude minus  │ Above it the local book is         │
+│                         │ put magnitude crosses zero.       │ call-heavy. Below it, put-heavy.   │
+│                         │                                   │ Neither word is a fade or a chase. │
+│                         │                                   │                                    │
 ├─────────────────────────┼───────────────────────────────────┼────────────────────────────────────┤
 │ ATM Straddle Shock %    │ Percentage change in total ATM    │ Net straddle expansion vs crush.   │
 │                         │ premium (CE + PE) from yesterday  │ Negative: Theta crush dominant.    │
@@ -119,13 +119,9 @@ Every metric displayed on the Cockpit's Pre-Market Briefing Banner represents an
 
 #### Detailed Deep-Dive on Key Insights:
 
-#### 1. Spot Proximity to Walls & Gamma Regime (Positive vs. Negative Gamma):
-- **Positive Gamma ($S_{\text{disc}} > GF$ and inside walls)**: 
-  - *Market Maker Mechanics*: Market makers are net long options. To delta-hedge, they must **sell as price rises** and **buy as price falls**.
-  - *Trader Insight*: Volatility will be dampened. Breakouts will struggle to follow through. The market will tend to pin or mean-revert towards VWAP. **Favor fading edges and selling credit.**
-- **Negative Gamma ($S_{\text{disc}} < GF$ or outside walls)**:
-  - *Market Maker Mechanics*: Market makers are net short options. To delta-hedge, they must **sell as price falls** and **buy as price rises** (pro-cyclical feedback loop).
-  - *Trader Insight*: Extreme volatility expansion. Moves accelerate violently. Bids vanish during sell-offs, and asks vanish during rallies. **Favor directional momentum and debit spreads; do NOT fight momentum.**
+#### 1. Spot relative to the gamma strikes
+- **Call-heavy book (regime POSITIVE):** call-gamma magnitude is larger than put-gamma magnitude. In the research sample, high absolute GEX lined up with calmer forward vol. That is context. It is not an instruction to fade the edges or to sell credit.
+- **Put-heavy book (regime NEGATIVE):** put-gamma magnitude is larger. That is a label on the book. It is not a momentum forecast and it is not a reason to chase.
 
 #### 2. The ATM Straddle Shock % (Decay vs. Expansion):
 The Cockpit models overnight time decay ($T_{\text{open}} = T_{\text{prev}} - 0.5/252$) alongside jump volatility adjustments:
@@ -156,20 +152,20 @@ At 09:08:15 IST, the discovery engine compares $S_{\text{disc}}$ against $S_{\te
 ┌─────────────────────────────────┬─────────────────────────────────┬──────────────┬───────────────────────────────────────────────────────┐
 │ Regime Identifier               │ Quantitative Trigger Condition  │ Badge Color  │ Institutional Microstructure Thesis                   │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
-│ CALL_WALL_BREACH_SQUEEZE        │ S_disc >= Call Wall             │ 🚀 Green     │ Discovered open breaches Call Wall. Call writers face │
-│                                 │                                 │ (var(--go))  │ forced short gamma buy-ins; explosive breakout risk.  │
+│ CALL_WALL_BREACH_SQUEEZE        │ S_disc >= Call Wall             │ 🚀 Green     │ Open is at or through the call-gamma strike.          │
+│                                 │                                 │ (var(--go))  │ Favored play: watch the hold. Not a squeeze.          │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
-│ PUT_WALL_BREAKDOWN_CASCADE      │ S_disc <= Put Wall              │ 💥 Red       │ Discovered open crashes below Put Wall. Put writers   │
-│                                 │                                 │ (var(--stop))│ forced to liquidate; delta-dump cascade active.       │
+│ PUT_WALL_BREAKDOWN_CASCADE      │ S_disc <= Put Wall              │ 💥 Red       │ Open is at or through the put-gamma strike.           │
+│                                 │                                 │ (var(--stop))│ Favored play: watch the hold. Not a cascade.          │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
-│ GAP_UP_INTO_POS_GAMMA           │ (CW - 50) <= S_disc < CW        │ 🛡️ Yellow    │ Bullish gap approaching Call Wall, but under dealer   │
-│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ positive gamma. Dealers sell rips; fade resistance.   │
+│ GAP_UP_INTO_POS_GAMMA           │ (CW - 50) <= S_disc < CW        │ 🛡️ Yellow    │ Gap up toward the call-gamma strike, still below it.  │
+│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ Call book is larger. That is not a fade.              │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
-│ GAP_DOWN_INTO_POS_GAMMA         │ PW < S_disc <= (PW + 50)        │ 🛡️ Yellow    │ Bearish gap approaching Put Wall, but in positive     │
-│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ gamma cushion. Dealers buy dips; expect support hold. │
+│ GAP_DOWN_INTO_POS_GAMMA         │ PW < S_disc <= (PW + 50)        │ 🛡️ Yellow    │ Gap down toward the put-gamma strike, still above it. │
+│                                 │ AND S_disc > Gamma Flip         │ (var(--warn))│ Call book is larger. That is not a floor.             │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
-│ AUCTION_BALANCED                │ |Gap %| <= 0.15%                │ ⚖️ Blue      │ Flat, balanced opening. Straddle theta crush dominant.│
-│                                 │                                 │(var(--spark))│ Rotational two-sided mean reversion around VWAP.      │
+│ AUCTION_BALANCED                │ |Gap %| <= 0.15%                │ ⚖️ Blue      │ Flat open. The only regime that still adjusts the     │
+│                                 │                                 │(var(--spark))│ flat-open score. It is not a pin to VWAP.             │
 ├─────────────────────────────────┼─────────────────────────────────┼──────────────┼───────────────────────────────────────────────────────┤
 │ MODERATE_DRIFT                  │ 0.15% < |Gap %| < 0.40%         │ ↔️ Blue      │ Mild directional drift within structural boundaries.  │
 │                                 │ AND inside walls                │(var(--spark))│ Structural rotation towards next key liquidity pocket.│
@@ -188,8 +184,9 @@ At 09:08:15 IST, the discovery engine compares $S_{\text{disc}}$ against $S_{\te
 
 For each regime, the Cockpit outlines a battle-tested institutional execution protocol:
 
-#### 🟢 Playbook 1: Call Wall Breach Squeeze (`🚀 CALL WALL BREACH (SQUEEZE)`)
-- **Microstructure Thesis**: Call writers hold the largest concentrated short gamma position on the board at the Call Wall. When spot opens above this wall, all short calls flip deeply into the money ($\Delta \to 1.0$). To hedge, dealers are forced to buy index futures in size, creating a self-reinforcing upward gamma squeeze.
+#### Playbook: open at or through the call-gamma strike (`CALL_WALL_BREACH_SQUEEZE`)
+- **What the code says:** the favored play is watch the hold above the call strike. The regime key still contains the word SQUEEZE so older logs stay readable. The briefing does not tell you to buy a squeeze.
+- **Reading:** a call that is in the money has a higher delta. That is option math. It is not evidence that a dealer must buy futures.
 - **09:15:00 Execution Trigger**:
   1. Observe the opening 3-minute candle (09:15 – 09:18 IST).
   2. If the 3-minute candle closes green **above the Call Wall** and orderflow CVD is positive, trigger long entry.
@@ -201,7 +198,7 @@ For each regime, the Cockpit outlines a battle-tested institutional execution pr
   - Target 2: $CW + 1.0 \times \text{Expected Move 1D}$.
 - **Invalidation Boundary (Stop-Loss)**:
   - Spot falls back and closes below the Call Wall (e.g. $S < CW - 10\text{ pts}$). Exit immediately; failure to hold the Call Wall triggers a bull trap.
-- **⚠️ Cardinal Rule**: **NEVER SELL CALLS.** Do not attempt to fade a Call Wall breach on the open. Short gamma squeezes can expand 200+ points without pullback.
+- **Caution:** do not sell calls just because price is through the call-gamma strike, and do not fade that location because a label said squeeze. The user confirms any trade. The app does not forecast a 200-point expansion.
 
 ---
 
@@ -223,7 +220,7 @@ For each regime, the Cockpit outlines a battle-tested institutional execution pr
 ---
 
 #### 🛡️ Playbook 3: Gap-Up into Positive Gamma Resistance (`🛡️ GAP-UP INTO POS GAMMA`)
-- **Microstructure Thesis**: Spot gaps up +0.2% to +0.4%, approaching within 50 points of the Call Wall, but remains *below* the wall while in positive gamma ($S > GF$). In positive gamma, dealers are volatility suppressors—they sell into rallies to rebalance long deltas. The Call Wall acts as an impenetrable brick ceiling.
+- **Reading**: Spot gaps up +0.2% to +0.4% and sits within 50 points below the call-gamma strike, with the call book larger than the put book. That is a location in the book. It is not a ceiling a dealer will sell.
 - **09:15:00 Execution Trigger**:
   1. Monitor initial 09:15 – 09:20 rally test of the Call Wall.
   2. Look for price rejection at Call Wall (long upper wick, exhaustion tape, negative delta divergence).
@@ -239,7 +236,7 @@ For each regime, the Cockpit outlines a battle-tested institutional execution pr
 ---
 
 #### 🛡️ Playbook 4: Gap-Down into Positive Gamma Support (`🛡️ GAP-DOWN INTO POS GAMMA`)
-- **Microstructure Thesis**: Spot gaps down -0.2% to -0.4%, approaching within 50 points of the Put Wall, but holds *above* the wall while in positive gamma territory ($S > GF$). Market makers hold long gamma buffers; as price tests the Put Wall, dealers aggressively buy underlying assets, cushioning the market and driving an intraday mean-reversion bounce.
+- **Reading**: Spot gaps down -0.2% to -0.4% and sits within 50 points above the put-gamma strike, with the call book larger than the put book. That is a location in the book. It is not a floor a dealer will buy.
 - **09:15:00 Execution Trigger**:
   1. Monitor 09:15 – 09:20 test of the Put Wall.
   2. Confirm absorption at the Put Wall (long lower wick, bid delta absorption, inability of bears to push lower).
@@ -255,7 +252,7 @@ For each regime, the Cockpit outlines a battle-tested institutional execution pr
 ---
 
 #### ⚖️ Playbook 5: Balanced Auction / Flat Open (`⚖️ BALANCED AUCTION`)
-- **Microstructure Thesis**: The discovered price opens virtually flat ($|Gap| \le 0.15\%$), comfortably centered between Call Wall resistance and Put Wall support. Overnight straddle premiums undergo violent theta crush (typically $-5\%$ to $-12\%$). Neither bulls nor bears have overnight edge; market makers pin price to harvest premium.
+- **Book reading:** a flat open (|gap| at or under 0.15%) between the gamma strikes is a location. Overnight premium change is a separate number. The code does not say market makers will pin the open.
 - **09:15:00 Execution Trigger**:
   1. Allow the initial 15-minute range (09:15 – 09:30 IST) to establish High and Low.
   2. Confirm that price remains bounded inside the morning range without testing walls.
@@ -360,12 +357,12 @@ The 09:08 discovered price remains an authoritative structural anchor throughout
    After 09:25 IST, the extensive pre-bell 7-strike matrix seamlessly contracts into a persistent, compact telemetry HUD banner positioned directly above the Live Recommendations Table:
    ```
    🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚀 CALL WALL BREACH]  [⚡ GAP UNFILLED]
-   Opening gap holding +80.0 pts — directional momentum favored (Playbook 1: Call Squeeze).
+   The open is still +80.0 pts from the previous close. Play: watch the hold.
    ```
    When the gap is filled later in the session, the HUD immediately updates:
    ```
    🌅 Day Baseline: Open ₹22,680.0 (+80.0 / +0.35%)  [🚀 CALL WALL BREACH]  [✅ GAP FILLED]
-   Opening gap filled — mean-reversion cycle active, auction re-established inside prior range.
+   The open has traded back through the previous close. That is a fill. It is not a mean-reversion order.
    ```
 
 ---
@@ -398,16 +395,17 @@ Once the session concludes after 15:30/15:40 IST, the Cockpit renders the **Post
 │ Settlement Divergence    │ S_settle - S_continuous     │ Measures closing auction slip│
 │                          │                              │ vs continuous 15:30 price    │
 ├──────────────────────────┼──────────────────────────────┼──────────────────────────────┤
-│ Dealer Pin Efficiency    │ 100 - (|S_settle - Wall|/30) │ How accurately market makers │
-│                          │                              │ pinned price to Call/Put Wall│
+│ Distance to the strike   │ 100 - (|S_settle - strike|/step)│ How close the settle printed to a │
+│                          │                              │ gamma strike. Not a hedge score.   │
 └──────────────────────────┴──────────────────────────────┴──────────────────────────────┘
 ```
 
-#### Dealer Pinning Efficiency Index:
-$$\text{Efficiency}_{\text{pin}} = \max\left(0, 100 - \frac{|S_{\text{settle}} - \text{Target Wall}|}{\text{Step Size}} \times 100\right)$$
+#### Distance of the settle to a gamma strike:
+$$\text{Closeness} = \max\left(0, 100 - \frac{|S_{\text{settle}} - \text{Strike}|}{\text{Step Size}} \times 100\right)$$
 
-- **$\ge 90\%$ (Perfect Pin)**: Dealers successfully neutralized delta/gamma risk at the structural wall, collecting maximum premium.
-- **$< 50\%$ (Gamma Blast Unpin)**: Dealers were overrun into the close, triggering forced gamma hedging liquidation.
+- A high number means the official settle printed near that strike.
+- A low number means it printed away from that strike.
+- Neither number says a dealer pinned the close or was forced to liquidate a hedge.
 
 ---
 
