@@ -2004,6 +2004,7 @@
         badge: "🌅 PRIOR-SESSION BOOK",
         theme: "alert-tape-spark",
         headline: "MORNING BRIEFING — PRIOR-SESSION BOOK",
+        meaning: "Yesterday's walls and flip, before the cash open.",
         body: brief || `Previous NSE close versus call wall ${tapeInr(cw)}, put wall ${tapeInr(pw)}, flip ${tapeInr(flip)}. This is the last published book.`,
         action: "Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
         diagnostics: `OI as of ${oi} · FII ${fii} · prior CVD ${cvdTxt} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)} · flip ${tapeInr(flip)}`,
@@ -2017,6 +2018,7 @@
         badge: discovered ? "🔔 PRE-OPEN DISCOVERED" : "🔔 PRE-OPEN SETUP",
         theme: "alert-tape-warn",
         headline: "PRE-OPEN — PRIOR-SESSION STRUCTURE",
+        meaning: "Auction is still on yesterday's walls until 09:15.",
         body: `Cash auction is running (09:00–09:15). Call wall ${tapeInr(cw)} / put wall ${tapeInr(pw)} / flip ${tapeInr(flip)} are last published gamma concentration. Equilibrium prints ~09:08.`,
         action: discovered
           ? "Map the 09:08 print vs walls. Do not chase until regular session 09:15."
@@ -2031,6 +2033,7 @@
         badge: "🌙 SESSION CLOSED",
         theme: "alert-tape-spark",
         headline: "SESSION CLOSED — EOD SETTLEMENT FROZEN",
+        meaning: "Last published book. Nothing here is a live hedge.",
         body: "Market session concluded at 15:30 IST. Walls and gamma profiles are frozen at the last published snapshot. The book is frozen. Nothing is being hedged live.",
         action: `Review EOD buildup and walls (CW: ${tapeInr(cw)}, PW: ${tapeInr(pw)}). Prepare the next-session plan.`,
         diagnostics: `Spot: ${tapeInr(spot)} · CW: ${tapeInr(cw)} · PW: ${tapeInr(pw)}${snapNote}`,
@@ -2043,6 +2046,7 @@
         badge: "📉 BELOW GEX MAGNET",
         theme: "alert-tape-stop",
         headline: "BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE",
+        meaning: "Spot is through the only gamma cluster. It is not a pin.",
         body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || pw)}. This is concentration, not a floor.`,
         action: "Do not treat the cluster as a pin. Wait for a reclaim or a fresh Sentinel absorption print.",
       },
@@ -2051,6 +2055,7 @@
         badge: "🔥 ABOVE GEX MAGNET",
         theme: "alert-tape-spark",
         headline: "ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE",
+        meaning: "Spot is through the only gamma cluster. It is not a squeeze.",
         body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || cw)}. A break of the cluster is a location, not a squeeze.`,
         action: "Do not treat the cluster as intact. Wait until spot is back inside one strike step.",
       },
@@ -2059,6 +2064,7 @@
         badge: "⚖️ AT GEX MAGNET",
         theme: "alert-tape-warn",
         headline: "AT GEX MAGNET — NO WALL CORRIDOR",
+        meaning: "Call and put concentration share one strike. There is no corridor.",
         body: `Call and put concentration sit on the same strike ${tapeInr(geo.magnet || cw)}. There is no corridor between two strikes.`,
         action: "Stand aside on fade templates until the call and put strikes split. Use Sentinel for tape.",
       },
@@ -2067,6 +2073,7 @@
         badge: "📉 PUT WALL BREACHED",
         theme: "alert-tape-stop",
         headline: "BELOW PUT-WALL CONCENTRATION",
+        meaning: "The put-gamma strike is already behind price.",
         body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the put-gamma strike ${tapeInr(pw)}. The strike is already behind price. It is not a floor.`,
         action: "Do not buy dips as if the strike is holding. Look for a reclaim or a confirmed absorption print.",
       },
@@ -2075,6 +2082,7 @@
         badge: "🔥 CALL WALL BREACHED",
         theme: "alert-tape-spark",
         headline: "ABOVE CALL-WALL CONCENTRATION",
+        meaning: "The call-gamma strike is already behind price.",
         body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the call-gamma strike ${tapeInr(cw)}. The strike is already behind price. It is not trapped-seller proof.`,
         action: "Do not treat the strike as intact. Wait for a close back inside the cluster or Sentinel exhaustion.",
       },
@@ -2083,6 +2091,7 @@
         badge: "🚨 PUT WALL TEST",
         theme: "alert-tape-stop",
         headline: "TESTING PUT-WALL CONCENTRATION",
+        meaning: "Within one strike step of the put wall. A touch is not a floor.",
         body: `Spot is within one strike step of the put-gamma strike ${tapeInr(pw)}. Watch absorption versus a sweep. A touch is not a floor.`,
         action: "Do not fade the strike. Cut the idea if price prints through by more than one step.",
       },
@@ -2091,6 +2100,7 @@
         badge: "🔥 CALL WALL TEST",
         theme: "alert-tape-spark",
         headline: "TESTING CALL-WALL CONCENTRATION",
+        meaning: "Within one strike step of the call wall. A touch is not a squeeze.",
         body: `Spot is within one strike step of the call-gamma strike ${tapeInr(cw)}. Watch absorption versus continuation. A touch is not a squeeze.`,
         action: "Do not assume a squeeze on a touch. Need a 5-min hold through the strike plus tape confirmation.",
       },
@@ -2099,6 +2109,7 @@
         badge: "⚖️ RANGE BETWEEN WALLS",
         theme: "alert-tape-warn",
         headline: "BETWEEN WALL CONCENTRATIONS",
+        meaning: "Spot is inside the corridor. The corridor is a map, not a fade.",
         body: `Spot is inside the corridor ${tapeInr(pw)}–${tapeInr(cw)}. The corridor is a map. It is not a reason to fade either strike.`,
         action: "Do not fade the edges because price is between the strikes. Use Sentinel tape for direction.",
       },
@@ -2107,6 +2118,7 @@
         badge: "⚖️ STRUCTURE UNCLEAR",
         theme: "alert-tape-warn",
         headline: "WALL GEOMETRY UNCLEAR",
+        meaning: "The strikes do not form a clean corridor around spot.",
         body: "Call/put concentrations do not form a clean corridor around spot. No pin or breach claim.",
         action: "Stand aside on wall templates. Use Sentinel tape and wait for structure.",
       },
@@ -2151,6 +2163,7 @@
       badge: base.badge,
       theme: base.theme,
       headline: base.headline,
+      meaning: base.meaning || "",
       body: base.body,
       action: base.action,
       diagnostics: `Spot ${tapeInr(spot)} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)}${flipBit}${blastBit}${sigBit} · ${bdiag} · ${regime}`,
@@ -2190,12 +2203,13 @@
     if (badgeEl) badgeEl.textContent = alert.badge;
 
     const track = document.getElementById("alert-marquee-track");
-    const paintSig = `${alert.scenario}|${alert.theme}|${alert.headline}|${alert.body}|${alert.action}`;
+    const paintSig = `${alert.scenario}|${alert.theme}|${alert.headline}|${alert.meaning}|${alert.body}|${alert.action}`;
     if (track && state.lastTapePaintSig !== paintSig) {
       state.lastTapePaintSig = paintSig;
+      const meaningHtml = alert.meaning ? `<span class="marquee-meaning">${alert.meaning}</span>` : "";
       const itemHtml = `
         <span class="alert-marquee-item">
-          <span class="marquee-headline">${alert.headline}:</span> ${alert.body}
+          <span class="marquee-headline">${alert.headline}</span>${meaningHtml} ${alert.body}
           <span class="marquee-action-tag">👉 ACTION: ${alert.action}</span>
           <span class="marquee-telemetry">[${alert.diagnostics}]</span>
         </span>

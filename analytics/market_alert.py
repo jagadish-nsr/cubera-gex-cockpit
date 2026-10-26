@@ -256,6 +256,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             badge="🌅 PRIOR-SESSION BOOK",
             theme="alert-tape-spark",
             headline="MORNING BRIEFING — PRIOR-SESSION BOOK",
+            meaning="Yesterday's walls and flip, before the cash open.",
             body=body,
             action="Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
             diagnostics=f"OI as of {oi} · FII {fii} · prior CVD {cvd_txt} · CW {_inr(cw)} · PW {_inr(pw)} · flip {_inr(flip)}",
@@ -268,6 +269,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             badge="🔔 PRE-OPEN DISCOVERED" if discovered else "🔔 PRE-OPEN SETUP",
             theme="alert-tape-warn",
             headline="PRE-OPEN — PRIOR-SESSION STRUCTURE",
+            meaning="Auction is still on yesterday's walls until 09:15.",
             body=(
                 f"Cash auction is running (09:00–09:15). Call wall {_inr(cw)} / put wall {_inr(pw)} / "
                 f"flip {_inr(flip)} are last published GEX concentration, not live hedging. "
@@ -287,6 +289,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             badge="🌙 SESSION CLOSED",
             theme="alert-tape-spark",
             headline="SESSION CLOSED — EOD SETTLEMENT FROZEN",
+            meaning="Last published book. Nothing here is a live hedge.",
             body=(
                 "Market session concluded at 15:30 IST. Walls and gamma profiles are frozen at the last "
                 "published snapshot. The book is frozen. Nothing is being hedged live."
@@ -301,6 +304,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "📉 BELOW GEX MAGNET",
             "theme": "alert-tape-stop",
             "headline": "BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE",
+            "meaning": "Spot is through the only gamma cluster. It is not a pin.",
             "body": (
                 f"Spot is {geo['through_pts']:.0f} pts through the single gamma cluster at {_inr(geo.get('magnet') or pw)}. "
                 "This is concentration, not a floor."
@@ -312,6 +316,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "🔥 ABOVE GEX MAGNET",
             "theme": "alert-tape-spark",
             "headline": "ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE",
+            "meaning": "Spot is through the only gamma cluster. It is not a squeeze.",
             "body": (
                 f"Spot is {geo['through_pts']:.0f} pts through the single gamma cluster at {_inr(geo.get('magnet') or cw)}. "
                 "A break of the cluster is a location, not a squeeze."
@@ -323,6 +328,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "⚖️ AT GEX MAGNET",
             "theme": "alert-tape-warn",
             "headline": "AT GEX MAGNET — NO WALL CORRIDOR",
+            "meaning": "Call and put concentration share one strike. There is no corridor.",
             "body": (
                 f"Call and put concentration sit on the same strike {_inr(geo.get('magnet') or cw)}. "
                 "There is no corridor between two strikes."
@@ -334,6 +340,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "📉 PUT WALL BREACHED",
             "theme": "alert-tape-stop",
             "headline": "BELOW PUT-WALL CONCENTRATION",
+            "meaning": "The put-gamma strike is already behind price.",
             "body": (
                 f"Spot is {geo['through_pts']:.0f} pts through the put-gamma strike {_inr(pw)}. "
                 "The strike is already behind price. It is not a floor."
@@ -345,6 +352,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "🔥 CALL WALL BREACHED",
             "theme": "alert-tape-spark",
             "headline": "ABOVE CALL-WALL CONCENTRATION",
+            "meaning": "The call-gamma strike is already behind price.",
             "body": (
                 f"Spot is {geo['through_pts']:.0f} pts through the call-gamma strike {_inr(cw)}. "
                 "The strike is already behind price. It is not trapped-seller proof."
@@ -356,6 +364,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "🚨 PUT WALL TEST",
             "theme": "alert-tape-stop",
             "headline": "TESTING PUT-WALL CONCENTRATION",
+            "meaning": "Within one strike step of the put wall. A touch is not a floor.",
             "body": (
                 f"Spot is within one strike step of the put-gamma strike {_inr(pw)}. "
                 "Watch absorption versus a sweep. A touch is not a floor."
@@ -367,6 +376,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "🔥 CALL WALL TEST",
             "theme": "alert-tape-spark",
             "headline": "TESTING CALL-WALL CONCENTRATION",
+            "meaning": "Within one strike step of the call wall. A touch is not a squeeze.",
             "body": (
                 f"Spot is within one strike step of the call-gamma strike {_inr(cw)}. "
                 "Watch absorption versus continuation. A touch is not a squeeze."
@@ -378,6 +388,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "⚖️ RANGE BETWEEN WALLS",
             "theme": "alert-tape-warn",
             "headline": "BETWEEN WALL CONCENTRATIONS",
+            "meaning": "Spot is inside the corridor. The corridor is a map, not a fade.",
             "body": (
                 f"Spot is inside the corridor {_inr(pw)}–{_inr(cw)}. "
                 "The corridor is a map. It is not a reason to fade either strike."
@@ -389,6 +400,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "⚖️ STRUCTURE UNCLEAR",
             "theme": "alert-tape-warn",
             "headline": "WALL GEOMETRY UNCLEAR",
+            "meaning": "The strikes do not form a clean corridor around spot.",
             "body": "Call/put concentrations do not form a clean corridor around spot. No pin or breach claim.",
             "action": "Stand aside on wall templates. Use Sentinel tape and wait for structure.",
         },
@@ -397,6 +409,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "badge": "⚖️ NO SPOT",
             "theme": "alert-tape-warn",
             "headline": "NO LIVE SPOT",
+            "meaning": "The tape cannot place price against the walls.",
             "body": "Tape cannot locate price vs walls.",
             "action": "Wait for a live quote.",
         },
@@ -449,6 +462,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         badge=base["badge"],
         theme=base["theme"],
         headline=base["headline"],
+        meaning=base.get("meaning") or "",
         body=base["body"],
         action=base["action"],
         diagnostics=(
