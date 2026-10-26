@@ -96,16 +96,39 @@ The Cockpit organizes quantitative index analytics into 11 tabbed workstations:
 
 To assess market state in the **Cubera GEX Cockpit**, read the **call−put book (GEX)** next to **tape (CVD / Orderflow Sentinel)**, **Target Engine confluence**, and **market breadth**.
 
-To automate this workflow, the **🗺️ Cockpit** tab features a live **Flashing Marquee Alert Tape** backed by a **3.0-second louder brass bell chime 🔔** that continuously evaluates the tape and alerts you to regime shifts in real time.
+To automate this workflow, the **🗺️ Cockpit** tab features a still **Alert Tape** backed by a **3.0-second louder brass bell chime 🔔**. The tape names where spot sits versus the gamma strikes. The text does not scroll. The full message wraps in the bar.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ [● LIVE 14:15:22 IST] [⚠️ BIG MOVE COMING]  ◀◀ ⚡ VOLATILITY EXPANSION: Market entering fast accelerator  [🔔 ON][🔔 Test]│
-│  (Fixed Left Anchor with Blinking Badge)   zone (Spot < Flip). Big swings expected. 👉 ACTION: Buy momentum  (Controls)│
-│                                            with tight stops. DO NOT sell naked options! ✦✦✦ [Net GEX: -42k] ▶▶         │
-│                                            ◄──────────── CONTINUOUS SIDEWAYS MARQUEE SCROLL ────────────►              │
+│ [● 14:15:22 IST] [⚖️ RANGE BETWEEN WALLS]                                              [🔔 ON] [🔔 Test] │
+│ BETWEEN WALL CONCENTRATIONS — Spot is inside the corridor. The corridor is a map, not a fade.          │
+│ Spot is inside the corridor ₹22,300–₹22,700. 👉 ACTION: Use Sentinel tape for direction.               │
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+The bold line is the headline. The clause after the dash is the stable meaning. The next sentence is the live reading (strikes, distance, and the action). A headline is a location on the positioning map. It is not a forecast that price will fade or run.
+
+A fresh Sentinel print (score at least 70, no older than 5 minutes) is written in front of the headline, for example **ABSORPTION · TESTING PUT-WALL CONCENTRATION**. The meaning beside it still describes the geometry. That prefix is omitted during the pre-open and after the close. On an expiry day, a gamma-blast score of 60 or more is added to the badge and the body. It does not change the headline or the meaning.
+
+### Alert tape headlines
+
+| Headline | Meaning on the tape | When it shows |
+|---|---|---|
+| **EVALUATING MARKET REGIME** | Waiting for the first book. | Before the first payload arrives. |
+| **MORNING BRIEFING — PRIOR-SESSION BOOK** | Yesterday's walls and flip, before the cash open. | Morning setup, before the cash pre-open. |
+| **PRE-OPEN — PRIOR-SESSION STRUCTURE** | Auction is still on yesterday's walls until 09:15. | Cash auction, 09:00–09:15. |
+| **SESSION CLOSED — EOD SETTLEMENT FROZEN** | Last published book. Nothing here is a live hedge. | After 15:30, or when the feed marks the session closed. |
+| **BETWEEN WALL CONCENTRATIONS** | Spot is inside the corridor. The corridor is a map, not a fade. | Put wall below spot, call wall above, and spot is more than one strike step from both. |
+| **TESTING PUT-WALL CONCENTRATION** | Within one strike step of the put wall. A touch is not a floor. | Spot is at the put-gamma strike and not yet a full step through it. |
+| **TESTING CALL-WALL CONCENTRATION** | Within one strike step of the call wall. A touch is not a squeeze. | Spot is at the call-gamma strike and not yet a full step through it. |
+| **BELOW PUT-WALL CONCENTRATION** | The put-gamma strike is already behind price. | Spot is at least one strike step under the put wall. |
+| **ABOVE CALL-WALL CONCENTRATION** | The call-gamma strike is already behind price. | Spot is at least one strike step over the call wall. |
+| **AT GEX MAGNET — NO WALL CORRIDOR** | Call and put concentration share one strike. There is no corridor. | Call and put concentration sit on the same strike, and spot is within one step of it. |
+| **BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE** | Spot is through the only gamma cluster. It is not a pin. | That single cluster is more than one strike step above spot. |
+| **ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE** | Spot is through the only gamma cluster. It is not a squeeze. | That single cluster is more than one strike step below spot. |
+| **WALL GEOMETRY UNCLEAR** | The strikes do not form a clean corridor around spot. | Walls are missing, inverted, or do not surround spot. |
+
+Session headlines override the live geometry. Morning briefing wins over the auction, the auction wins over the close, and the close wins over a live wall reading.
 
 ---
 
@@ -114,8 +137,8 @@ When opening the terminal during a live trading session, follow this 4-step tria
 
 ```
 Step 1: Check 🗺️ Cockpit KPI Strip & Alert Tape
-   ↳ Scenario Badge: Positive Gamma = Fade / Sideways; Negative Gamma = Momentum / Big Move.
-   ↳ Spot position relative to Gamma Flip, Call Wall, and Put Wall.
+   ↳ Read the headline and the short meaning beside it. That meaning is where spot sits versus the gamma strikes.
+   ↳ POSITIVE means the call book is larger. NEGATIVE means the put book is larger. Neither word is a fade or a momentum call.
 
 Step 2: Check ⚡ Sentinel Tape Top KPIs
    ↳ CVD Regime: BUYER_DOMINATED vs. SELLER_DOMINATED.

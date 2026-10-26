@@ -2094,6 +2094,16 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   color: var(--tape-accent, var(--spark));
 }
 
+.marquee-meaning {
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--ink-mute);
+}
+
+.marquee-meaning::before {
+  content: "— ";
+}
+
 .marquee-action-tag {
   display: inline-block;
   margin-left: 6px;

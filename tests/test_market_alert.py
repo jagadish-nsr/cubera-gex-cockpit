@@ -55,6 +55,7 @@ def test_heavy_sector_red_does_not_print_downtrend_when_below_magnet():
         now_ts=now,
     )
     assert alert["scenario"] == "BELOW_SUPPORT"
+    assert alert["meaning"] == "Spot is through the only gamma cluster. It is not a pin."
     assert "DOWNTREND" not in alert["badge"]
     assert "institutional selling" not in alert["body"].lower()
     assert "prior close" in alert["diagnostics"]
@@ -94,6 +95,8 @@ def test_fresh_sentinel_overlays_geometry():
     )
     assert alert["scenario"] == "TAPE_CONTINUATION_BEAR"
     assert alert["zone"] == "PINNED"
+    assert alert["headline"].startswith("CONTINUATION BEAR")
+    assert alert["meaning"] == "Spot is inside the corridor. The corridor is a map, not a fade."
     assert "Seller sweep" in alert["body"]
     assert "22,520" in alert["action"]
     assert "STRONG DOWNTREND" not in alert["headline"]
@@ -127,6 +130,7 @@ def test_morning_briefing_names_prior_session_book():
         }
     )
     assert alert["scenario"] == "MORNING_BRIEFING"
+    assert alert["meaning"] == "Yesterday's walls and flip, before the cash open."
     assert "22,600" in alert["body"]
     assert "2026-10-12T15:35:00+05:30" in alert["diagnostics"]
     assert alert["scenario"] != "PRE_OPEN_SETUP"
@@ -173,6 +177,7 @@ def test_pre_open_and_closed_short_circuit():
     assert pre["scenario"] == "PRE_OPEN_SETUP"
     closed = evaluate_market_alert({**base, "is_market_open": False, "market_state": "CLOSED"})
     assert closed["scenario"] == "MARKET_CLOSED"
+    assert closed["meaning"] == "Last published book. Nothing here is a live hedge."
 
 
 def test_expiry_blast_is_overlay_not_flip_accelerator():
