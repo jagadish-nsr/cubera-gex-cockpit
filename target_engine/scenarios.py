@@ -63,7 +63,8 @@ def score_scenarios(
     flag_penalty = 0.20 * len(fv.quality_flags)
     conviction = float(np.clip(agreement * (1.0 - flag_penalty), 0.0, 1.0))
 
-    # 3. Range regime score: high when price is pinned between close walls
+    # 3. Range score from caller-supplied wall features. Live extraction leaves both at 0:
+    # a nearby gamma strike is not a pin.
     f1 = abs(features.get("F1_call_wall_prox", 0.0))
     f2 = abs(features.get("F2_put_wall_prox", 0.0))
     range_regime_score = float(min(f1, f2))  # High when both walls are near

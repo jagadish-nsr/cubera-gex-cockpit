@@ -69,25 +69,32 @@ class TestDirectionalBias:
         assert result.score == 0.0
         assert "Neutral" in result.regime
 
-    def test_strongly_bullish_pcr(self):
-        """High PCR (>1.25) should push score bullish."""
+    def test_pcr_does_not_move_the_score(self):
+        """PCR states the open-interest mix. Only VIX moves this case."""
         from analytics.directional_bias import compute_directional_bias
         result = compute_directional_bias(
             spot=24000.0, call_wall=24500, put_wall=23500, max_pain=24100,
-            pcr=1.50,    # strongly bullish
-            india_vix={"last": 11.0},  # low VIX = calm = bullish
+            pcr=1.50,
+            india_vix={"last": 11.0},
         )
-        assert result.score > 2.0, f"Expected bullish score, got {result.score}"
+        pcr_row = next(s for s in result.signals if s.key == "s1_pcr_level")
+        assert pcr_row.value == 0.0
+        assert "put-heavy" in pcr_row.label
+        assert "not a direction" in pcr_row.label.lower()
+        assert result.score == 1.0
 
-    def test_strongly_bearish_pcr(self):
-        """Low PCR (<0.85) should push score bearish."""
+    def test_low_pcr_does_not_add_a_bearish_point(self):
+        """Call-heavy PCR is a fact. The bearish point here is high VIX only."""
         from analytics.directional_bias import compute_directional_bias
         result = compute_directional_bias(
             spot=24000.0, call_wall=24500, put_wall=23500, max_pain=23800,
-            pcr=0.60,    # strongly bearish
-            india_vix={"last": 25.0},  # high VIX = fear = bearish
+            pcr=0.60,
+            india_vix={"last": 25.0},
         )
-        assert result.score < -2.0, f"Expected bearish score, got {result.score}"
+        pcr_row = next(s for s in result.signals if s.key == "s1_pcr_level")
+        assert pcr_row.value == 0.0
+        assert "call-heavy" in pcr_row.label
+        assert result.score == -1.0
 
     def test_score_in_bounds(self):
         """Score must always be in [-10, +10]."""
@@ -113,23 +120,20 @@ class TestDirectionalBias:
         assert len(result.signals) == 8
 
     def test_wall_align_above_midpoint(self):
-        """Spot above wall midpoint → positive s4 contribution."""
+        """Spot above the gamma-strike midpoint is a location. It does not score."""
         from analytics.directional_bias import _s4_wall_align
-        # Midpoint = (25000 + 23000) / 2 = 24000; spot=24500 > 24000
         val, label, _ = _s4_wall_align(24500, 25000, 23000)
-        assert val > 0, "Expected positive (bullish) contribution"
+        assert val == 0.0
+        assert "location only" in label.lower()
 
-    def test_pcr_trend_bullish(self):
-        """Rising PCR trend (Δ > 0.05) should return positive signal."""
+    def test_pcr_trend_does_not_score(self):
+        """A PCR change is recorded and does not add a point."""
         from analytics.directional_bias import _s2_pcr_trend
-        val, label, _ = _s2_pcr_trend(1.30, 1.20)  # Δ = +0.10 > 0.05
-        assert val == 1.0
-
-    def test_pcr_trend_bearish(self):
-        """Falling PCR trend (Δ < -0.05) should return negative signal."""
-        from analytics.directional_bias import _s2_pcr_trend
-        val, label, _ = _s2_pcr_trend(1.00, 1.20)  # Δ = -0.20 < -0.05
-        assert val == -1.0
+        up, up_label, _ = _s2_pcr_trend(1.30, 1.20)
+        down, down_label, _ = _s2_pcr_trend(1.00, 1.20)
+        assert up == 0.0 and down == 0.0
+        assert "not a direction" in up_label.lower()
+        assert "not a direction" in down_label.lower()
 
     def test_pcr_trend_missing(self):
         """Missing PCR history returns 0 (fail-soft)."""
@@ -149,25 +153,21 @@ class TestDirectionalBias:
         val, _, _ = _s8_iv_rank({"last": 25.0}, None)
         assert val == -1.0
 
-    def test_oi_velocity_put_dominant(self):
-        """Put OI adding faster → bullish OI Velocity signal."""
+    def test_oi_velocity_does_not_score(self):
+        """Open-interest changes are shown and do not move the score."""
         from analytics.directional_bias import _s6_oi_velocity
-        val, _, _ = _s6_oi_velocity(100_000, 500_000)  # put >> call
-        assert val > 0
+        put_side, put_label, _ = _s6_oi_velocity(100_000, 500_000)
+        call_side, call_label, _ = _s6_oi_velocity(500_000, 50_000)
+        assert put_side == 0.0 and call_side == 0.0
+        assert "not a direction" in put_label.lower()
+        assert "not a direction" in call_label.lower()
 
-    def test_oi_velocity_call_dominant(self):
-        """Call OI adding faster → bearish OI Velocity signal."""
-        from analytics.directional_bias import _s6_oi_velocity
-        val, _, _ = _s6_oi_velocity(500_000, 50_000)  # call >> put
-        assert val < 0
-
-    def test_max_pain_grav_above(self):
-        """Spot below max pain → bullish (upward gravitational pull)."""
+    def test_max_pain_is_not_a_pull(self):
+        """Distance to max pain is a location. It does not score."""
         from analytics.directional_bias import _s5_maxpain_grav
-        # spot=23750, max_pain=24000 → dist=+10.2bps > 50bps? No, ~10bps
-        # Let's use spot=23000, max_pain=24000 → dist=(1000/23000)*10000 ≈ 435bps >> 50bps
-        val, _, _ = _s5_maxpain_grav(23000.0, 24000.0, band_bps=50.0)
-        assert val == 1.0
+        val, label, _ = _s5_maxpain_grav(23000.0, 24000.0, band_bps=50.0)
+        assert val == 0.0
+        assert "not a pull" in label.lower()
 
     def test_regime_labels(self):
         """Verify all regime labels are mapped correctly."""

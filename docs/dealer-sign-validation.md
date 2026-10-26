@@ -1,6 +1,12 @@
-# Dealer-Sign Validation — Findings
+# Dealer-sign validation — historical record
 
-Status: empirical findings record for the **dealer-sign landmine** (`CLAUDE.md`).
+**Production status (2026-10-24).** This file records an old two-convention test.
+The engine now rejects every sign model except `short_call_short_put`. The signed
+total is call-gamma magnitude minus put-gamma magnitude. Do not set
+`DEALER_SIGN_MODEL` back to `long_call_short_put`. The statistics below are not
+a reason to restore a second model. Who delta-hedges on NSE is still unmeasured.
+
+Status at the time of the study: a weak, non-significant lean, not a verdict.
 Reproduce with `python scripts/analyze_timeseries.py --both-signs`. **Decision-
 support only.** This is a *weak, non-significant lean*, **not** a verdict.
 
@@ -21,18 +27,16 @@ Israel–Iran war**. **Dealer sign stays UNVALIDATED.** Do not trade a flipped s
 > convention **B (inverted) scores 2/3 vs A 1/3**; G+ (net_gex>0) is the wilder
 > bucket and the **sign-free PCR tercile check independently corroborates B**
 > (low-PCR/call-heavy is wildest). Still **not significant** (Levene p ≈ 0.43).
-> The dashboard now surfaces this: the Market-mode header shows the calm-vs-wild
-> read **two-sided and leads with the inverted lean** (`_sign_calm_wild_note`),
-> rather than asserting the US-textbook "NEGATIVE ⇒ trending". The config sign is
-> deliberately **left on the US default** (a p≈0.43 lean does not justify silently
-> inverting every wall/flip/regime output).
+> The sentences below describe the study as it was run. They are not the
+> current engine. Production accepts only `short_call_short_put`. Do not put
+> the config back on a US reading, and do not add a second convention because
+> this lean was weak.
 
 ---
 
 ## 1. The question
 
-The engine uses the US convention `DEALER_SIGN_MODEL = long_call_short_put`, which
-*predicts*:
+The study scored a retired US reading, `long_call_short_put`, which *predicted*:
 
 | Engine regime | Dealer gamma | Predicted behaviour |
 |---|---|---|

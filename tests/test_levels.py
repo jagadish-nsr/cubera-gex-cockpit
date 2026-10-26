@@ -60,3 +60,23 @@ def test_generate_underlying_targets():
     # Probabilities must be within valid range
     assert 0.0 < bull.p_touch_target < 1.0
     assert 0.0 < bear.p_touch_target < 1.0
+
+
+def test_bear_target_stays_below_cash_when_futures_are_rich():
+    """Nifty fut often trades above cash; bear target must still be below spot."""
+    call_walls = [OptionWall(strike=22700.0, side="CALL", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    put_walls = [OptionWall(strike=22400.0, side="PUT", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    spot = 22544.0
+    targets = generate_underlying_targets(
+        spot=spot,
+        fut=22680.0,
+        atm_iv=0.12,
+        horizon_minutes=120,
+        call_walls=call_walls,
+        put_walls=put_walls,
+    )
+    assert targets["bear"].target < spot
+    assert targets["bear"].stop > spot
+    assert targets["bull"].target > spot
+    assert targets["bull"].stop < spot
+    assert targets["base"].stop in (22400.0, 22700.0)

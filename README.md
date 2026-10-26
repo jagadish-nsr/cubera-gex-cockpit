@@ -1,32 +1,29 @@
-# gex-indian — Nifty GEX Engine
+# gex — Nifty, Bank Nifty, and Sensex GEX
 
-The **Nifty (NSE)** port of the SPX GEX engine. Pulls the live Nifty option chain,
-computes dealer gamma-exposure levels (call/put walls, gamma flip, magnet, max
-pain), classifies the regime, and emits a one-sentence playbook for Nifty index
-options. Decision-support only — **not financial advice, no order execution.**
+Decision support for NSE and BSE index options. Pulls the live chain, computes
+call-gamma and put-gamma concentration, the call−put balance (flip and signed
+total), and max pain, and prints a one-sentence book-balance line. **Not
+financial advice. No order execution.**
 
-> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)** — a plain-language
-> setup guide. The dashboard runs the same on both platforms (served at
-> **http://localhost:8610**): **Windows** — double-click `run_simple.bat`; **macOS/Linux** —
-> `./run_simple.command` (first run: `chmod +x run_simple.command`, or in Finder right-click →
-> Open). Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
-> on macOS use cron/launchd, or just leave the dashboard open (it self-captures while running).
+> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
+> The web cockpit is at **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
+> Dev is **http://localhost:8650** (`./run_dev.sh`).
+> Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
+> on macOS use cron/launchd, or leave the server open (it self-captures while running).
 
-> Read `CLAUDE.md` first, especially the **dealer-sign landmine**: the US
-> long-call / short-put-gamma convention may NOT hold for India's retail-selling
-> microstructure and must be re-validated empirically before any wall/flip output
-> is trusted. Treat the dealer sign as UNKNOWN, not as the US default.
+> Read `CLAUDE.md` first. The engine has one convention: call-gamma magnitude
+> minus put-gamma magnitude. Walls are concentration strikes. That is not a
+> claim about who delta-hedges, and it is not a pin forecast. Lot size and the
+> expiry calendar are still VERIFY-live.
 
 ## Status
 - ✅ **Live pipeline:** Dhan REST option chain (primary) → NSE (automatic fallback),
   clock-aligned background fetch; a Dhan Market-Feed **websocket** drives the live
   big-money futures tape and the expiry-day blast tick capture.
-- ✅ **Daily dashboard** (`app/simple_dashboard.py` / `app/dashboard.py`) — the plain-language face: value
-  profile (TPO) + live candle + GEX level ladder, the **big-money tape**, OI
-  footprint / trailing-flow windows, positioning tabs, and on expiry the **gamma-blast** verdict (the
-  original hero **plus an experimental "study model" shown beside it** — realized-delta
-  + 3PM-window + an explicit exit discipline). One-click launchers for **Windows and
-  macOS/Linux**; the dashboard self-captures its own history while open.
+- ✅ **Web cockpit** (`web_server.py`, `app/static/`) — the decision screen: GEX ladder,
+  book-balance line, big-money tape, OI footprint, and the expiry gamma-blast card.
+  `./run_prod.sh` (port 8640) and `./run_dev.sh` (port 8650). The server self-captures
+  while it is open.
 - ✅ **Multi-index:** Nifty 50, Bank Nifty, Sensex (Sensex borrows Nifty's vanna regime).
 - ✅ CLI table + playbook (`cli.py`); intraday time-series + per-strike OI logging with
   Windows Task Scheduler setup (captures India VIX, USD/INR, a news-intensity gauge).
@@ -70,18 +67,13 @@ python3 cli.py --live            # live chain via DATA_SOURCE adapter in .env
 python3 cli.py --live --symbol SENSEX     # SENSEX (via Dhan)
 python3 cli.py --live --window 0dte
 ```
-Local dashboard — one-click: `run_simple.bat` (Windows) or `run_simple.command` (macOS/Linux).
-Or run it directly:
+Web cockpit:
 ```
-python3 -m streamlit run app/simple_dashboard.py --server.port 8610
+./run_prod.sh                              # http://localhost:8640
+python3 web_server.py --port 8640
 ```
-Or the multi-tab shell:
-```
-python3 -m streamlit run app/dashboard.py
-```
-Every output logs its assumptions: lot size (VERIFY), dealer-sign model
-(UNVERIFIED for India), expiry window, OI timestamp, and the parity-implied
-forward + carry.
+Every output logs its assumptions: lot size, sign convention `short_call_short_put`,
+expiry window, OI timestamp, and the parity-implied forward + carry.
 
 ## Tests
 ```
@@ -98,20 +90,19 @@ python -m pytest -q
 - `data/news.py` — news-intensity gauge (flags exogenous-catalyst days).
 - `config.py` — India config: `INDICES` registry, `DATA_SOURCE` flag, adapter
   credentials, dealer sign model, flip grid, OI staleness.
-- `app/` — the Streamlit dashboards (`simple_dashboard.py` is the daily face,
-  `dashboard.py` the technical one), live data access + fetch lanes, intraday capture,
-  and the sign-free modules: `oi_footprint`, `gammablast`, `blast_study` (the study
-  model) / `blast_ticks`, `big_money*` (the tape + WS feed), `stophunt`, `timeseries`,
-  `participant_oi`, `futures_buildup`, `magnet_trend`.
+- `app/` — shared services for the web cockpit: live data access, fetch lanes,
+  intraday capture, and `oi_footprint`, `gammablast`, `blast_study` / `blast_ticks`,
+  `big_money*` (the tape + WS feed), `stophunt`, `timeseries`, `participant_oi`,
+  `futures_buildup`, `magnet_trend`. The screen itself is `web_server.py` plus
+  `app/static/`.
 - `data/` — `nse.py` (NSE adapter), `dhan*.py` (Dhan REST + Market-Feed websocket),
-  `expiry.py`, `parity.py`, `replay.py` (stored-day replay), `news.py`.
+  `expiry.py`, `parity.py`, `session_flags.py` (expiry and blast labels), `news.py`.
 - `scripts/` — session/time-series logging, EOD captures, the headless collectors
   (`run_blast_ticks.py`, `run_big_money_collector.py`), and the point-in-time studies
   (`analyze_*`, `blast_study.py`, `preempt_study.py`).
-- Launchers — `run_simple.bat` (Windows) / `run_simple.command` (macOS/Linux) for the
-  dashboard; `setup_*scheduler*.bat` + `scripts/install_*.ps1` for Windows scheduled capture.
-- `docs/` — scoping, `simple-dashboard.md` (the in-app help), user guide, and the
-  research/findings notes below.
+- Launchers — `run_prod.sh` (port 8640) and `run_dev.sh` (port 8650);
+  `setup_*scheduler*.bat` + `scripts/install_*.ps1` for Windows scheduled capture.
+- `docs/` — user guide, the lessons register, and the research notes below.
 
 
 ## Research & findings (sign-free, decision-support only)
@@ -132,11 +123,18 @@ and *expected move size*, not next-move *direction*.**
 - `docs/tick-data-ic-research.md`, `docs/big-money-tape.md` — the big-money tape + the
   literature review on tick-data predictive IC (contemporaneous strong, predictive ~0).
 
-## Verify-live before trusting (never guess — see `BUILD_PLAN.md` §3)
-1. NSE data source + pricing.   2. Current Nifty lot size.
-3. Current NSE expiry rules.    4. Dealer-sign model for India (the landmine).
+## Verify-live before trusting
+Current lots, user-confirmed 2026-10-24, live in `config.INDICES` only:
 
-## Reused from the SPX project
-`gex/`, `regime/`, `data/schema.py`, `data/parity.py`, and the synthetic fixture
-tests. Bug fixes in these may need porting to/from `../GEX` (two copies can
-diverge; a shared core package is a future option).
+| Index | Lot | Expiry |
+|---|---|---|
+| NIFTY | 65 | every Tuesday |
+| BANKNIFTY | 30 | last Tuesday of the month |
+| SENSEX | 20 | every Thursday |
+
+If that date is an exchange holiday, the expiry is the previous trading day (`data/expiry.py`). Retired and wrong if used now: Nifty 75, Bank Nifty 35, Sensex 10. Also confirm open interest is in lots before `contract_size` is applied.
+
+## Engine convention
+`gex/` uses one book-balance convention (`short_call_short_put`). Do not add a
+second sign model. Older notes in `docs/` that compare a long-call/short-put
+reading are research history, not the production path.

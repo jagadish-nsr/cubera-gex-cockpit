@@ -1,12 +1,9 @@
-"""Append today's Nifty GEX snapshot to a session log — for the BEHAVIOURAL
-dealer-sign validation (see VALIDATION.md). Run once near the OPEN each trading
-day; fill the outcome columns at the CLOSE.
+"""Append today's Nifty GEX snapshot to a session log.
 
   python scripts/log_session.py
 
-Writes data/journal/sessions.csv (gitignored). After ~10 sessions we can tell
-whether positive-gamma days range and flip-breaks trend (sign confirmed), or the
-opposite (sign inverted -> flip config.DEALER_SIGN_MODEL).
+Writes data/journal/sessions.csv (gitignored). The signed total is call-gamma
+magnitude minus put-gamma magnitude. Do not flip DEALER_SIGN_MODEL from this log.
 """
 
 from __future__ import annotations

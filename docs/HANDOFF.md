@@ -1,9 +1,8 @@
 # Nifty GEX — Setup & Daily-Use Guide
 
-A plain-language handoff for running the **Simple dashboard** and turning on the
+A plain-language handoff for running the **web cockpit** and turning on the
 **automatic data collection** it reads. Decision-support only — paper trading; you
-confirm every trade. No coding needed; every step is a copy-paste command or a
-double-click.
+confirm every trade. No coding needed; every step is a copy-paste command.
 
 Project folder (everything below assumes this path):
 
@@ -24,29 +23,23 @@ capture use public NSE data.)*
 
 ---
 
-## 1. Open the dashboard (daily)
+## 1. Open the cockpit (daily)
 
-**Windows:** double-click `run_simple.bat` in the project folder. A black window opens and
-the dashboard appears in your browser. The first launch takes ~1 minute (it installs
-dependencies once); after that it's instant. **Close the black window to stop it.**
-
-**macOS / Linux:** double-click `run_simple.command` (first time only: right-click → **Open** to
-clear Gatekeeper, or run `chmod +x run_simple.command` once in Terminal). Same behaviour — a window
-opens and the dashboard appears in your browser; close the window / press Ctrl-C to stop it.
-
-Either way the dashboard is served at **http://localhost:8610**.
-
-Command-line equivalent (if you prefer typing) — forward slashes work on every OS:
+From the project folder:
 
 ```
-cd <the project folder>
-python -m streamlit run app/simple_dashboard.py --server.port 8610
+./run_prod.sh
 ```
-(On macOS use `python3` if `python` isn't found.)
 
-On the page: use the sidebar **🔄 Refresh** (or tick **⏱️ Auto-refresh**). On expiry
-day the gamma-blast panel lights up automatically. Tick **🔔 Sound alert on ignition**
-and **click the page once** to "arm" the sound (browsers block audio until you click).
+The page is **http://localhost:8640**. Close the terminal, or press Ctrl-C, to stop it.
+
+Windows equivalent:
+
+```
+python web_server.py --port 8640
+```
+
+On macOS use `python3` if `python` is not found. Dev (separate port, separate data) is `./run_dev.sh` at **http://localhost:8650**.
 
 ---
 
@@ -171,7 +164,7 @@ Unregister-ScheduledTask -TaskName NiftyGEX-ParticipantOI -Confirm:$false
 ```powershell
 # --- open the dashboard (daily) ---
 cd C:\Users\navee\Python\gex-indian
-python -m streamlit run app\simple_dashboard.py       # (or double-click run_simple.bat)
+python web_server.py --port 8640
 
 # --- turn on all data collection (ONCE, as Administrator) ---
 powershell -ExecutionPolicy Bypass -File setup_data_collection.ps1

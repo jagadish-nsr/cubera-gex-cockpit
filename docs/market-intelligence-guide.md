@@ -9,9 +9,9 @@
 
 ## 1. Overview & Trading Philosophy
 
-Gamma Exposure (GEX) is a **probability map of dealer hedging reflexivity, not a directional crystal ball**. In Indian markets:
+Gamma exposure is a map of where the option book is concentrated. It is not a forecast of who will hedge. In this market:
 1. **Sector Breadth Sets the Ground Truth**: When Nifty moves, is the rally broad-based or an isolated drag/lift by a single heavyweight like Reliance or HDFC Bank?
-2. **Exogenous Catalysts Override Dealer Flow**: Breaking geopolitical or macro headlines (e.g. crude shocks, RBI/Fed surprises, conflict) can breach dealer walls and render pure option sign tests misleading (Phase B Confound Control).
+2. **A headline can dominate the book**: a large macro headline is an outside shock. The positioning map does not override it.
 
 The **Market Intelligence Engine** integrates:
 - **Exchange Sector Breadth** (NSE `/api/allIndices` & Dhan `/marketfeed/quote`) across all 11 constituent sectors with realistic index weights.
@@ -39,7 +39,7 @@ The analytical engine categorizes intraday market structure into 5 distinct regi
 1. **🚀 CYCLICAL LEADERSHIP**: High-beta BFSI, IT, Energy & Auto advancing strongly while defensives lag. Signals risk-on institutional conviction and high continuation probability.
 2. **🛡️ DEFENSIVE ROTATION**: FMCG, Pharma and Healthcare outperforming while Banking and Auto stall or slide. Signals institutional risk-off hedging / smart money seeking safe havens.
 3. **🟢 BROAD EXPANSION**: Over 70% of sectors advancing concurrently across cyclicals and defensives. Strong confirmation that index rallies will respect call walls as breakout targets rather than fakeouts.
-4. **🔴 BROAD LIQUIDATION**: Over 70% of sectors slumping with negative weighted contribution. High risk of dealer gamma flip breakdown and stop-hunting cascades.
+4. **Broad liquidation**: more than 70% of sectors down, with a negative weighted contribution. That is a breadth fact. It is not a gamma-flip cascade.
 5. **⚖️ BALANCED DISPERSION / CHOP**: Mixed sectors with high dispersion. Favors range-bound mean-reversion tactics (e.g., Short Iron Condors / Strangles).
 
 ---
@@ -62,7 +62,7 @@ The analytical engine categorizes intraday market structure into 5 distinct regi
 - **Impact Scoring**: Weighted heuristic (3 = high shock, 2 = medium, 1 = normal).
 
 ### Phase B Confound Control
-Days with an aggregate fresh headline impact score $\ge 6$ or breaking shock catalysts are automatically flagged as **News-Dominated Days**. On these days, dealer delta-hedging can temporarily break down under exogenous order flow pressure.
+Days with an aggregate fresh headline impact score $\ge 6$ or breaking shock catalysts are automatically flagged as **News-Dominated Days**. On these days the headline is the dominant fact. The positioning map does not override it.
 
 ---
 

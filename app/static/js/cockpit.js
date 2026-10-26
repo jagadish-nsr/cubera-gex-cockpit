@@ -20,6 +20,9 @@
     lastAlertScenarios: {},
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
+    lastCockpitDash: null,
+    tapeLatch: null,
+    lastTapePaintSig: null,
     audioCtx: null,
     pendingAlertBell: false,
     pendingAlertBellTime: 0,
@@ -321,6 +324,18 @@
   // WebSocket Telemetry Connection
   // -------------------------------------------------------------------------
   function initWebSocket() {
+    if (state.wsReconnectTimer) {
+      clearTimeout(state.wsReconnectTimer);
+      state.wsReconnectTimer = null;
+    }
+    if (state.ws) {
+      try {
+        state.ws.onclose = null;
+        state.ws.onerror = null;
+        state.ws.close();
+      } catch (e) {}
+      state.ws = null;
+    }
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/ws/telemetry?symbol=${encodeURIComponent(state.symbol)}`;
@@ -362,14 +377,14 @@
           badge.textContent = "⚡ MTM 0ms";
           badge.style.color = "var(--ink-mute)";
         }
-        setTimeout(initWebSocket, 2500); // Auto-reconnect
+        state.wsReconnectTimer = setTimeout(initWebSocket, 2500);
       };
 
       state.ws.onerror = () => {
         if (state.ws) state.ws.close();
       };
     } catch (e) {
-      setTimeout(initWebSocket, 3000);
+      state.wsReconnectTimer = setTimeout(initWebSocket, 3000);
     }
   }
 
@@ -413,6 +428,51 @@
 
     // Feed Dhan live tick data into TradingView chart components
     feedDhanTickToTradingView(tick);
+    paintRecLiveQuotes(tick.rec_quotes);
+    patchCockpitDashFromTick(tick);
+    if (state.lastCockpitDash) updateMarketAlertTape(state.lastCockpitDash);
+  }
+
+  function paintRecLiveQuotes(quotes) {
+    if (!quotes || !quotes.length) return;
+    quotes.forEach((q) => {
+      const rid = q.rec_id;
+      if (!rid) return;
+      const ltpTxt = `₹${Number(q.ltp || 0).toFixed(1)}`;
+      const t1Txt = `₹${Number(q.target_1 || 0).toFixed(1)}`;
+      const t2Txt = `₹${Number(q.target_2 || 0).toFixed(1)}`;
+      const slTxt = `₹${Number(q.stop_loss || 0).toFixed(1)}`;
+      const pnlPts = Number(q.pnl_pts || 0);
+      const pnlPct = Number(q.pnl_pct || 0);
+      const pnlColor = pnlPts >= 0 ? "var(--go)" : "var(--stop)";
+      const pnlTxt = `MTM: ${pnlPts >= 0 ? "+" : ""}₹${pnlPts.toFixed(1)} (${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(1)}%)`;
+
+      const setTxt = (id, txt) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = txt;
+      };
+      setTxt(`rec-ltp-${rid}`, ltpTxt);
+      setTxt(`rec-t1-${rid}`, `T1: ${t1Txt}`);
+      setTxt(`rec-sl-${rid}`, `SL: ${slTxt}`);
+      setTxt(`rec-t1-grid-${rid}`, t1Txt);
+      setTxt(`rec-t2-grid-${rid}`, t2Txt);
+      const mtm = document.getElementById(`rec-mtm-${rid}`);
+      if (mtm) {
+        mtm.textContent = pnlTxt;
+        mtm.style.color = pnlColor;
+      }
+      const cockpitLtp = document.getElementById(`cockpit-rec-ltp-${rid}`);
+      const cockpitT1 = document.getElementById(`cockpit-rec-t1-${rid}`);
+      const cockpitSl = document.getElementById(`cockpit-rec-sl-${rid}`);
+      if (cockpitLtp) cockpitLtp.textContent = ltpTxt;
+      if (cockpitT1) cockpitT1.textContent = t1Txt;
+      if (cockpitSl) cockpitSl.textContent = slTxt;
+      const liveBadge = document.getElementById(`rec-live-badge-${rid}`);
+      if (liveBadge) {
+        liveBadge.textContent = q.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM";
+        liveBadge.style.color = q.is_ws_live ? "var(--spark)" : "var(--ink-mute)";
+      }
+    });
   }
 
   function feedDhanTickToTradingView(tick) {
@@ -514,6 +574,30 @@
   // -------------------------------------------------------------------------
   // Data Loaders for All 11 Tabs
   // -------------------------------------------------------------------------
+  function istMinutesNow() {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date());
+    const hour = Number((parts.find((p) => p.type === "hour") || {}).value || 0);
+    const minute = Number((parts.find((p) => p.type === "minute") || {}).value || 0);
+    return hour * 60 + minute;
+  }
+
+  function isClientPreBellWindow() {
+    const t = istMinutesNow();
+    return t >= 8 * 60 + 45 && t <= 9 * 60 + 22;
+  }
+
+  function syncCockpitPreBellCard(serverFlag) {
+    const el = document.getElementById("cockpit-pre-market-card");
+    if (!el) return;
+    const show = Boolean(serverFlag) && isClientPreBellWindow();
+    el.style.display = show ? "block" : "none";
+  }
+
   async function loadStatus() {
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
@@ -628,10 +712,10 @@
         }
       }
 
-      // Ephemeral 7-minute Pre-Bell Briefing on Cockpit Tab
-      const cockpitPmCard = document.getElementById("cockpit-pre-market-card");
-      if (cockpitPmCard) {
-        cockpitPmCard.style.display = data.is_pre_bell_ephemeral ? "block" : "none";
+      // Ephemeral Pre-Bell briefing: 08:45–09:22 IST, client clock is the hard stop
+      syncCockpitPreBellCard(data.is_pre_bell_ephemeral);
+      if (data.is_pre_bell_ephemeral && isClientPreBellWindow()) {
+        loadCockpit();
       }
 
       // Token manager status
@@ -687,11 +771,107 @@
     }
   }
 
+  function renderBookStructure(pack) {
+    const bucketEl = document.getElementById("book-structure-bucket");
+    const playEl = document.getElementById("book-structure-playbook");
+    const variantsEl = document.getElementById("book-structure-variants");
+    const legsEl = document.getElementById("book-structure-legs");
+    const whyEl = document.getElementById("book-structure-why");
+    const riskEl = document.getElementById("book-structure-risk");
+    if (!legsEl || !whyEl || !riskEl) return;
+    const candidates = (pack && pack.candidates) || [];
+    if (bucketEl) bucketEl.textContent = (pack && pack.bucket_label) || "Middle concentration — wait";
+    if (playEl) playEl.textContent = (pack && pack.playbook) || "";
+    if (variantsEl) variantsEl.innerHTML = "";
+    state.structureVariant = 0;
+    const paint = (idx) => {
+      state.structureVariant = idx;
+      const c = candidates[idx] || candidates[0];
+      if (!c) {
+        legsEl.textContent = "";
+        whyEl.textContent = "Concentration gauge unavailable. Wait.";
+        riskEl.textContent = "";
+        return;
+      }
+      const legs = (c.legs || []).map((leg) => {
+        const strike = Number(leg.strike).toLocaleString("en-IN");
+        return `${leg.action} ${strike} ${leg.right}`;
+      });
+      legsEl.textContent = c.name + (legs.length ? " · " + legs.join("  ·  ") : "");
+      whyEl.textContent = c.rationale || "";
+      const bits = [c.risk_note, c.exit_by, c.expiry_note].filter((s) => s && s !== "—");
+      riskEl.textContent = bits.join(" · ");
+    };
+    if (variantsEl && candidates.length > 1) {
+      candidates.forEach((c, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-secondary";
+        btn.style.fontSize = "0.72rem";
+        btn.style.padding = "4px 10px";
+        btn.textContent = i === 0 ? "Primary" : "Alternate";
+        btn.addEventListener("click", () => paint(i));
+        variantsEl.appendChild(btn);
+      });
+    }
+    if (variantsEl && candidates.some((c) => (c.legs || []).length)) {
+      const trade = document.createElement("button");
+      trade.type = "button";
+      trade.className = "btn btn-primary";
+      trade.style.fontSize = "0.72rem";
+      trade.style.padding = "4px 10px";
+      trade.textContent = "Paper-trade this structure";
+      trade.addEventListener("click", () => window.paperTradeStructure());
+      variantsEl.appendChild(trade);
+    }
+    paint(0);
+  }
+
+  window.paperTradeStructure = async function () {
+    try {
+      const res = await fetch("/api/journal/paper-structure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: state.symbol,
+          window: state.window,
+          variant: state.structureVariant || 0,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "Structure was not booked");
+        return;
+      }
+      playSuccessChime();
+      showToast(`Paper trade ${data.trade_id.slice(-6)} · net ${data.net_premium}`);
+      loadJournal();
+    } catch (e) {
+      showToast("Paper trade failed");
+    }
+  };
+
+  function paintParticipantHoldings(book) {
+    const body = document.getElementById("participant-body");
+    const dateEl = document.getElementById("participant-date");
+    if (dateEl) dateEl.textContent = book && book.date ? book.date : "";
+    if (!body) return;
+    const rows = (book && book.rows) || [];
+    const cell = (value) => value == null ? "—" : Number(value).toLocaleString("en-IN");
+    body.innerHTML = rows.length
+      ? rows.map((row) => `<tr><td>${row.participant}</td><td>${cell(row.fut_long)}</td><td>${cell(row.fut_short)}</td><td>${cell(row.opt_call_long)}</td><td>${cell(row.opt_call_short)}</td><td>${cell(row.opt_put_long)}</td><td>${cell(row.opt_put_short)}</td></tr>`).join("")
+      : '<tr><td colspan="7">No participant file.</td></tr>';
+  }
+
   async function loadCockpit() {
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
       const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "Cockpit data unavailable");
+        return;
+      }
       // Discard stale in-flight response if index switched
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
           requestedSym !== (state.symbol || "").toUpperCase()) {
@@ -699,6 +879,12 @@
       }
 
       if (!data.kpis) return;
+      state.lastCockpitDash = data;
+      if (state.spot > 0) data.spot = state.spot;
+      const valueLine = document.getElementById("value-area-line");
+      if (valueLine) valueLine.textContent = (data.value_area && data.value_area.text) || "No prior value area.";
+      paintParticipantHoldings(data.participant_holdings);
+      syncCockpitPreBellCard(data.is_pre_bell_ephemeral);
       paintStrikeKpi("kpi-call-wall", data.kpis.call_wall, "kpi-call-wall-sub");
       paintStrikeKpi("kpi-put-wall", data.kpis.put_wall, "kpi-put-wall-sub");
 
@@ -739,8 +925,17 @@
         document.getElementById("kpi-regime").textContent = data.kpis.regime.val;
         document.getElementById("kpi-regime-mode").textContent = data.kpis.regime.sub;
       }
-      if (data.kpis.net_gex) document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
-      if (data.kpis.pcr_oi) document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
+      if (data.kpis.net_gex) {
+        document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
+        const netSub = document.getElementById("kpi-net-gex-sub");
+        if (netSub && data.kpis.net_gex.sub) netSub.textContent = data.kpis.net_gex.sub;
+      }
+      if (data.kpis.pcr_oi) {
+        document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
+        const pcrSub = document.getElementById("kpi-pcr-sub");
+        if (pcrSub && data.kpis.pcr_oi.sub) pcrSub.textContent = data.kpis.pcr_oi.sub;
+      }
+      renderBookStructure(data.structures);
 
       const execStatusEl = document.getElementById("cockpit-exec-status");
       if (execStatusEl) {
@@ -781,29 +976,47 @@
       // Pre-Market Discovery Summary & 5-Strike Opening Shocks
       if (data.pre_market) {
         const pm = data.pre_market;
-        const discSpot = pm.discovered_spot || state.spot;
-        const gapPts = pm.gap_pts || 0;
-        const gapPct = pm.gap_pct || 0;
+        const discovered = Boolean(pm.is_discovered && Number(pm.discovered_spot) > 0);
+        const discSpot = discovered ? Number(pm.discovered_spot) : 0;
+        const gapPts = discovered ? Number(pm.gap_pts || 0) : 0;
+        const gapPct = discovered ? Number(pm.gap_pct || 0) : 0;
         const signStr = gapPts >= 0 ? "+" : "";
 
         const discEl = document.getElementById("pm-indicative-open");
-        if (discEl) discEl.textContent = `₹${discSpot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+        if (discEl) {
+          discEl.textContent = discovered
+            ? `₹${discSpot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`
+            : (pm.prev_close ? `Prev ₹${Number(pm.prev_close).toLocaleString("en-IN", { minimumFractionDigits: 1 })}` : "—");
+        }
         const gapEl = document.getElementById("pm-opening-gap");
         if (gapEl) {
-          gapEl.textContent = `${signStr}${gapPts.toFixed(1)} pts (${signStr}${gapPct.toFixed(2)}%)`;
-          gapEl.style.color = gapPts >= 0 ? "var(--go)" : "var(--stop)";
+          if (discovered) {
+            gapEl.textContent = `${signStr}${gapPts.toFixed(1)} pts (${signStr}${gapPct.toFixed(2)}%)`;
+            gapEl.style.color = gapPts >= 0 ? "var(--go)" : "var(--stop)";
+          } else {
+            gapEl.textContent = "Awaiting 09:08 match";
+            gapEl.style.color = "var(--ink-mute)";
+          }
         }
         const wallsEl = document.getElementById("pm-walls");
-        if (wallsEl) wallsEl.textContent = `${data.kpis.call_wall.val.toLocaleString("en-IN")} / ${data.kpis.put_wall.val.toLocaleString("en-IN")}`;
+        if (wallsEl) {
+          const cw = Number(pm.call_wall || (data.kpis && data.kpis.call_wall && data.kpis.call_wall.val) || 0);
+          const pw = Number(pm.put_wall || (data.kpis && data.kpis.put_wall && data.kpis.put_wall.val) || 0);
+          wallsEl.textContent = cw > 0 && pw > 0
+            ? `${cw.toLocaleString("en-IN")} / ${pw.toLocaleString("en-IN")}`
+            : "—";
+        }
         const playEl = document.getElementById("pm-favored-play");
-        if (playEl) playEl.textContent = pm.favored_play || "Dip Buying near VWAP";
+        if (playEl) playEl.textContent = discovered ? (pm.favored_play || "—") : "Setup only · no open yet";
         const badgeEl = document.getElementById("pm-regime-badge");
         if (badgeEl) {
-          badgeEl.textContent = pm.regime_badge || "PRE-MARKET DISCOVERY";
+          badgeEl.textContent = discovered ? (pm.regime_badge || "PRE-MARKET DISCOVERY") : "PRE-OPEN SETUP";
           if (pm.regime_color) badgeEl.style.color = pm.regime_color;
         }
         const briefingEl = document.getElementById("pm-briefing-text");
-        if (briefingEl && pm.regime_briefing) briefingEl.textContent = pm.regime_briefing;
+        if (briefingEl) briefingEl.textContent = pm.regime_briefing || pm.briefing || pm.status_text || "Prior-session gamma strikes. Equilibrium prints around 09:08 IST.";
+        const atEl = document.getElementById("pm-discovered-at");
+        if (atEl) atEl.textContent = discovered && pm.discovered_at ? `${pm.discovered_at} IST Discovery` : "09:08 IST Discovery";
 
         // Straddle badge
         const straddleEl = document.getElementById("pm-straddle-badge");
@@ -930,6 +1143,32 @@
       if (gbBadge) gbBadge.style.color = themeColor;
       if (gbCard) gbCard.style.borderLeftColor = themeColor;
 
+      const crossBody = document.getElementById("crossover-watch-body");
+      if (crossBody) {
+        const anchors = (data.crossover_watch && data.crossover_watch.anchors) || [];
+        crossBody.innerHTML = anchors.length
+          ? anchors.map((a) => {
+              const strike = a.strike == null ? "—" : `₹${Number(a.strike).toLocaleString("en-IN")}`;
+              const prem = (a.call == null || a.put == null) ? "" : ` · call ${a.call} / put ${a.put}`;
+              return `<div style="margin-bottom:6px"><b>${a.name} ${strike}</b>${prem}<div style="color:var(--ink-mute)">${a.location}</div></div>`;
+            }).join("")
+          : "No paired premiums on this read.";
+      }
+      const magnetBody = document.getElementById("magnet-path-body");
+      if (magnetBody) {
+        const path = data.magnet_path || [];
+        magnetBody.textContent = path.length
+          ? path.map((row) => `${row.date}  ₹${Number(row.magnet).toLocaleString("en-IN")}`).join("   ·   ")
+          : "No captured sessions.";
+      }
+      const futState = document.getElementById("futures-state");
+      if (futState) {
+        const fut = data.futures_state;
+        futState.textContent = fut
+          ? `${fut.state}${fut.as_of ? ` · ${fut.as_of}` : ""}`
+          : "No futures open-interest change on this read.";
+      }
+
       // Update Cockpit TradingView Live Chart
       if (typeof updateCockpitChart === "function") {
         updateCockpitChart(data);
@@ -959,8 +1198,16 @@
           if (row.is_put_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.15);color:var(--go)">PUT WALL</span>';
           if (row.is_gamma_flip) badgeHtml += '<span class="ladder-badge" style="background:rgba(56,189,248,.15);color:var(--spark)">GAMMA FLIP</span>';
           if (row.is_max_pain) badgeHtml += '<span class="ladder-badge" style="background:rgba(234,179,8,.15);color:var(--warn)">MAX PAIN</span>';
-          if (row.is_magnet) badgeHtml += '<span class="ladder-badge" style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET PIN</span>';
+          if (row.is_magnet) badgeHtml += '<span class="ladder-badge" style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET</span>';
+          if (row.is_put_oi) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.08);color:var(--go)">PUT OI</span>';
+          if (row.is_call_oi) badgeHtml += '<span class="ladder-badge" style="background:rgba(239,68,68,.08);color:var(--stop)">CALL OI</span>';
           if (row.is_spot) badgeHtml += '<span class="ladder-badge" style="background:var(--spark);color:#000">ATM SPOT</span>';
+          if (row.is_prior_high) badgeHtml += '<span class="ladder-badge">PRIOR HIGH</span>';
+          if (row.is_prior_low) badgeHtml += '<span class="ladder-badge">PRIOR LOW</span>';
+          if (row.is_prior_close) badgeHtml += '<span class="ladder-badge">PRIOR CLOSE</span>';
+          const doiText = (row.call_doi == null && row.put_doi == null)
+            ? "—"
+            : `${row.call_doi == null ? "—" : (row.call_doi > 0 ? "+" : "") + Number(row.call_doi).toLocaleString("en-IN")} / ${row.put_doi == null ? "—" : (row.put_doi > 0 ? "+" : "") + Number(row.put_doi).toLocaleString("en-IN")}`;
 
           tr.innerHTML = `
             <td>₹${row.strike.toLocaleString("en-IN")}</td>
@@ -968,10 +1215,26 @@
             <td style="color:var(--stop)">${row.call_gex.toLocaleString("en-IN")}</td>
             <td style="color:var(--go)">${row.put_gex.toLocaleString("en-IN")}</td>
             <td style="color:${row.net_gex >= 0 ? "var(--go)" : "var(--stop)"}">${row.net_gex >= 0 ? "+" : ""}${row.net_gex.toLocaleString("en-IN")}</td>
+            <td style="font-family:var(--mono)">${doiText}</td>
           `;
           tbody.appendChild(tr);
         });
       }
+
+      const oi = data.standing_oi || {};
+      const fmtCentre = (v) => (v == null || v === "" ? "—" : `₹${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 1 })}`);
+      const putOiEl = document.getElementById("standing-oi-put");
+      const callOiEl = document.getElementById("standing-oi-call");
+      const oiNoteEl = document.getElementById("standing-oi-note");
+      if (putOiEl) {
+        putOiEl.textContent = fmtCentre(oi.put_centre);
+        if (oi.put_top) putOiEl.textContent += ` · largest ${fmtCentre(oi.put_top)}`;
+      }
+      if (callOiEl) {
+        callOiEl.textContent = fmtCentre(oi.call_centre);
+        if (oi.call_top) callOiEl.textContent += ` · largest ${fmtCentre(oi.call_top)}`;
+      }
+      if (oiNoteEl) oiNoteEl.textContent = oi.note || "";
 
       // Active Cockpit Recommendations (Pinned + Fresh within 10m)
       const pinnedContainer = document.getElementById("pinned-setups-container");
@@ -1034,9 +1297,9 @@
                   <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
                 </div>
                 <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
-                  <span>LTP: <b style="color:var(--ink)">₹${ltp}</b></span>
-                  <span>T1: <b style="color:var(--go)">₹${t1}</b></span>
-                  <span>SL: <b style="color:var(--stop)">₹${sl}</b></span>
+                  <span>LTP: <b id="cockpit-rec-ltp-${c.rec_id}" style="color:var(--ink)">₹${ltp}</b></span>
+                  <span>T1: <b id="cockpit-rec-t1-${c.rec_id}" style="color:var(--go)">₹${t1}</b></span>
+                  <span>SL: <b id="cockpit-rec-sl-${c.rec_id}" style="color:var(--stop)">₹${sl}</b></span>
                 </div>
                 <div style="display:flex;justify-content:flex-end;gap:6px">
                   ${
@@ -1454,7 +1717,7 @@
           lineWidth: 2,
           lineStyle: 1,
           axisLabelVisible: true,
-          title: "Call Wall (Resistance)",
+          title: "Call gamma",
         });
       }
       if (data.put_wall > 0) {
@@ -1465,7 +1728,7 @@
           lineWidth: 2,
           lineStyle: 1,
           axisLabelVisible: true,
-          title: "Put Wall (Support)",
+          title: "Put gamma",
         });
       }
       if (data.gamma_flip > 0) {
@@ -1591,176 +1854,320 @@
   // -------------------------------------------------------------------------
   // Institutional Market Alert State Evaluator & Marquee Tape Renderer
   // -------------------------------------------------------------------------
+  const TAPE_HOLD_MS = 75000;
+  const TAPE_SIGNAL_MIN_SCORE = 70;
+  const TAPE_SIGNAL_MAX_AGE_S = 300;
+
+  function tapeInr(val) {
+    return `₹${Math.round(Number(val) || 0).toLocaleString("en-IN")}`;
+  }
+
+  function classifyTapeZone(spot, cw, pw, step) {
+    spot = Number(spot) || 0;
+    cw = Number(cw) || 0;
+    pw = Number(pw) || 0;
+    step = Math.max(Number(step) || 50, 1);
+    if (spot <= 0) return { zone: "UNKNOWN", label: "No spot", through_pts: 0, step };
+    const sameWall = cw > 0 && pw > 0 && Math.abs(cw - pw) <= Math.max(0.51, step * 0.01);
+    if (sameWall) {
+      const mag = cw;
+      const dist = spot - mag;
+      if (dist < -step) return { zone: "BELOW_MAGNET", through_pts: mag - spot, step, magnet: mag };
+      if (dist > step) return { zone: "ABOVE_MAGNET", through_pts: spot - mag, step, magnet: mag };
+      return { zone: "TEST_MAGNET", through_pts: Math.abs(dist), step, magnet: mag };
+    }
+    if (pw > 0 && spot <= pw - step) return { zone: "BELOW_PUT_WALL", through_pts: pw - spot, step };
+    if (cw > 0 && spot >= cw + step) return { zone: "ABOVE_CALL_WALL", through_pts: spot - cw, step };
+    if (pw > 0 && Math.abs(spot - pw) <= step) return { zone: "TEST_PUT", through_pts: Math.abs(spot - pw), step };
+    if (cw > 0 && Math.abs(spot - cw) <= step) return { zone: "TEST_CALL", through_pts: Math.abs(spot - cw), step };
+    if (pw > 0 && cw > pw && pw < spot && spot < cw) return { zone: "PINNED", through_pts: 0, step };
+    return { zone: "UNSITUATED", through_pts: 0, step };
+  }
+
+  function tapeAlertEpoch(alert, nowTs) {
+    if (!alert) return null;
+    if (alert.ts != null && Number.isFinite(Number(alert.ts))) {
+      let val = Number(alert.ts);
+      if (val > 1e12) val /= 1000;
+      return val;
+    }
+    const clock = String(alert.time || "").trim().split(" ")[0];
+    if (!clock || clock.split(":").length < 2) return null;
+    const parts = clock.split(":");
+    const now = new Date(nowTs * 1000);
+    const ist = new Date(now.getTime() + (now.getTimezoneOffset() * 60000) + 19800000);
+    ist.setHours(Number(parts[0]) || 0, Number(parts[1]) || 0, Number(parts[2]) || 0, 0);
+    return ist.getTime() / 1000;
+  }
+
+  function pickFreshTapeSignal(alerts, nowTs) {
+    let best = null;
+    let bestTs = -1;
+    (alerts || []).forEach((alert) => {
+      const status = String(alert.status || "NEW").toUpperCase();
+      if (status === "FAILED" || status === "REPLACED") return;
+      if (Number(alert.score || 0) < TAPE_SIGNAL_MIN_SCORE) return;
+      const ts = tapeAlertEpoch(alert, nowTs);
+      if (ts == null) return;
+      const age = nowTs - ts;
+      if (age < 0 || age > TAPE_SIGNAL_MAX_AGE_S) return;
+      if (ts >= bestTs) {
+        bestTs = ts;
+        best = Object.assign({}, alert, { _ts: ts, _age_s: age });
+      }
+    });
+    return best;
+  }
+
+  function patchCockpitDashFromTick(tick) {
+    if (!state.lastCockpitDash || !tick) return;
+    const dash = state.lastCockpitDash;
+    if (tick.spot) dash.spot = tick.spot;
+    if (tick.ist_time) dash.as_of_time = tick.ist_time;
+    dash.kpis = dash.kpis || {};
+    if (Number(tick.call_wall) > 0) {
+      dash.kpis.call_wall = Object.assign({}, dash.kpis.call_wall || {}, { val: Number(tick.call_wall) });
+    }
+    if (Number(tick.put_wall) > 0) {
+      dash.kpis.put_wall = Object.assign({}, dash.kpis.put_wall || {}, { val: Number(tick.put_wall) });
+    }
+    if (Number(tick.gamma_flip) > 0) {
+      dash.kpis.gamma_flip = Object.assign({}, dash.kpis.gamma_flip || {}, {
+        val: Number(tick.gamma_flip),
+        raw: Number(tick.gamma_flip),
+      });
+    }
+    if (tick.is_market_open === false) dash.is_market_open = false;
+    if (tick.is_market_open === true) dash.is_market_open = true;
+  }
+
   function evaluateMarketAlertState(dash) {
     if (!dash || !dash.kpis) return null;
-
     const spot = Number(dash.spot || 0);
     if (spot <= 0) return null;
 
     const kpis = dash.kpis || {};
-    const cw = Number(kpis.call_wall ? kpis.call_wall.val : 0) || (spot + 100);
-    const pw = Number(kpis.put_wall ? kpis.put_wall.val : 0) || (spot - 100);
-    const flip = Number(kpis.gamma_flip ? kpis.gamma_flip.val : 0) || spot;
+    const cw = Number(kpis.call_wall ? kpis.call_wall.val : 0);
+    const pw = Number(kpis.put_wall ? kpis.put_wall.val : 0);
+    const flip = Number((kpis.gamma_flip && (kpis.gamma_flip.raw !== undefined ? kpis.gamma_flip.raw : kpis.gamma_flip.val)) || dash.gamma_flip || 0);
+    const step = Number(dash.strike_step || 50) || 50;
     const regime = String(kpis.regime ? kpis.regime.val : "NEUTRAL").toUpperCase();
     const blast = dash.gamma_blast || {};
     const blastScore = Number(blast.score || 0);
-    const breadth = dash.market_breadth || { advances: 7, declines: 7, ratio: 1.0 };
+    const isExpiryBlast = Boolean(blast.is_expiry) && blastScore >= 60;
+    const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
-    const totalBreadth = adv + dec;
     const ratio = Number(breadth.ratio || 1.0);
+    const nowTs = Date.now() / 1000;
 
-    // Dynamic majority threshold: If sector mode (<=16 items), >=60% is supermajority (>=9). If stock mode (>16), >=28.
-    const isHeavyDec = totalBreadth <= 16 ? (dec >= 9 && ratio <= 0.65) : (dec >= 28 && ratio <= 0.65);
-    const isHeavyAdv = totalBreadth <= 16 ? (adv >= 9 && ratio >= 1.5) : (adv >= 28 && ratio >= 1.5);
+    const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
+    const isPreBell = Boolean(dash.is_pre_bell_ephemeral);
+    const clockMatch = String(dash.as_of_time || "").match(/^(\d{2}:\d{2}:\d{2})/);
+    const timeStr = clockMatch
+      ? `${clockMatch[1]} IST`
+      : new Date().toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" }) + " IST";
+    const snapAsOf = String(dash.snapshot_as_of || "").trim();
+    const snapNote = snapAsOf && !snapAsOf.startsWith(timeStr.slice(0, 8))
+      ? ` · GEX snapshot ${snapAsOf}`
+      : "";
+    const geo = classifyTapeZone(spot, cw, pw, step);
+    const zone = geo.zone;
+    const nearFlip = flip > 0 && Math.abs(spot - flip) <= step;
+    const sig = (isPreBell || isClosed) ? null : pickFreshTapeSignal(dash.orderflow_alerts, nowTs);
+    const bdiag = `sectors ${adv}/${dec} vs prior close (context, not flow) · ratio ${ratio.toFixed(2)}x`;
 
-    const isClosed = dash && (dash.is_market_open === false || dash.market_state === "CLOSED");
-    let timeStr = "";
-    if (dash && (dash.as_of_time || dash.as_of)) {
-      timeStr = dash.as_of_time || dash.as_of;
-    } else if (dash && dash.fetched_at) {
-      try {
-        const fd = new Date(dash.fetched_at);
-        timeStr = fd.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
-      } catch (e) {}
+    const pack = (fields) => Object.assign({
+      timestamp: timeStr,
+      zone,
+      through_pts: Math.round((geo.through_pts || 0) * 10) / 10,
+      signal_type: (sig && sig.type) || "",
+      signal_score: sig ? Number(sig.score || 0) : 0,
+    }, fields);
+
+    if (isPreBell) {
+      const discovered = Boolean(dash.pre_market && dash.pre_market.is_discovered);
+      return pack({
+        scenario: "PRE_OPEN_SETUP",
+        badge: discovered ? "🔔 PRE-OPEN DISCOVERED" : "🔔 PRE-OPEN SETUP",
+        theme: "alert-tape-warn",
+        headline: "PRE-OPEN — PRIOR-SESSION STRUCTURE",
+        body: `Cash auction is running (09:00–09:15). Call wall ${tapeInr(cw)} / put wall ${tapeInr(pw)} / flip ${tapeInr(flip)} are last published gamma concentration. Equilibrium prints ~09:08.`,
+        action: discovered
+          ? "Map the 09:08 print vs walls. Do not chase until regular session 09:15."
+          : "Hold the prior-session map. Wait for 09:08 equilibrium before treating any gap as real.",
+        diagnostics: `Spot: ${tapeInr(spot)} · CW: ${tapeInr(cw)} · PW: ${tapeInr(pw)}${snapNote}`,
+      });
     }
-    if (!timeStr) {
-      timeStr = isClosed ? "15:30:00 IST" : new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata" }) + " IST";
-    }
 
-    // 0. Off-Market Session Closed
     if (isClosed) {
-      return {
+      return pack({
         scenario: "MARKET_CLOSED",
         badge: "🌙 SESSION CLOSED",
         theme: "alert-tape-spark",
         headline: "SESSION CLOSED — EOD SETTLEMENT FROZEN",
-        body: `Market session concluded at 15:30 IST. Key institutional levels, walls, and gamma profiles are frozen at the final closing settlement. No live dealer hedging active.`,
-        action: `Review EOD institutional participant buildup, final walls (CW: ₹${cw.toLocaleString("en-IN")}, PW: ₹${pw.toLocaleString("en-IN")}), and prepare for next session opening plan.`,
-        diagnostics: `Closing Spot: ₹${spot.toLocaleString("en-IN")} · Final CW: ₹${cw.toLocaleString("en-IN")} · Final PW: ₹${pw.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
+        body: "Market session concluded at 15:30 IST. Walls and gamma profiles are frozen at the last published snapshot. The book is frozen. Nothing is being hedged live.",
+        action: `Review EOD buildup and walls (CW: ${tapeInr(cw)}, PW: ${tapeInr(pw)}). Prepare the next-session plan.`,
+        diagnostics: `Spot: ${tapeInr(spot)} · CW: ${tapeInr(cw)} · PW: ${tapeInr(pw)}${snapNote}`,
+      });
     }
 
-    // 1. Wall Breakdown / Speed Bump Trapdoor (Spot within 30 pts of Put Wall AND (Put Wall < Flip OR spot <= pw + 10))
-    if (Math.abs(spot - pw) <= 30 && (pw < flip || spot <= pw + 10)) {
-      return {
-        scenario: "WALL_BREAKDOWN",
-        badge: "🚨 TRAPDOOR BREAKDOWN",
+    const zoneCopy = {
+      BELOW_MAGNET: {
+        scenario: "BELOW_SUPPORT",
+        badge: "📉 BELOW GEX MAGNET",
         theme: "alert-tape-stop",
-        headline: "FRAGILE SUPPORT TEST (TRAPDOOR RISK)",
-        body: `Price is testing Put Wall support at ₹${pw.toLocaleString("en-IN")}, but it sits below the Gamma Flip ('Speed Bump'). If breached, there is no dealer floor.`,
-        action: `Cut longs immediately if ₹${pw.toLocaleString("en-IN")} breaks; look for rapid downward acceleration.`,
-        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Put Wall: ₹${pw.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 2. Wall Absorption Breakout Test (Spot within 30 pts of Call Wall)
-    if (Math.abs(spot - cw) <= 30 && spot >= cw - 30) {
-      return {
-        scenario: "WALL_BREAKOUT",
-        badge: "🔥 BREAKOUT IMMINENT",
+        headline: "BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE",
+        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || pw)}. This is concentration, not a floor.`,
+        action: "Do not treat the cluster as a pin. Wait for a reclaim or a fresh Sentinel absorption print.",
+      },
+      ABOVE_MAGNET: {
+        scenario: "ABOVE_RESISTANCE",
+        badge: "🔥 ABOVE GEX MAGNET",
         theme: "alert-tape-spark",
-        headline: "RESISTANCE BREAKOUT TEST",
-        body: `Price is hammering the Call Wall at ₹${cw.toLocaleString("en-IN")} with aggressive buying absorption. Trapped call sellers are losing inventory control.`,
-        action: `Watch ₹${cw.toLocaleString("en-IN")} closely. If a 5-min candle closes above the wall, enter for a short squeeze surge.`,
-        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Call Wall: ₹${cw.toLocaleString("en-IN")} · Wall Gap: ${Math.round(cw - spot)} pts`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 3. Volatility Expansion Imminent (Blast Score >= 60 OR Spot actively crossing Flip accelerator zone)
-    const isCrossingFlip = flip > 0 && Math.abs(spot - flip) <= 35 && spot < flip;
-    if (blastScore >= 60 || isCrossingFlip) {
-      const isBlastTrigger = blastScore >= 60;
-      return {
-        scenario: "VOLATILITY_EXPANSION",
-        badge: isBlastTrigger ? "⚡ GAMMA BLAST DETONATION" : "⚠️ BIG MOVE COMING",
-        theme: "alert-tape-stop",
-        headline: isBlastTrigger ? "0-DTE GAMMA BLAST DETONATION" : "VOLATILITY EXPANSION IMMINENT",
-        body: isBlastTrigger
-          ? `Expiry Gamma Blast model fired with Blast Score ${blastScore}/100. Forced dealer short-gamma hedging is detonating non-linear squeeze velocity.`
-          : "Market has entered the fast accelerator zone (Spot < Flip). Aggressive dealer short-gamma hedging will amplify velocity (1.5x–2x normal swings).",
-        action: "Buy breakout momentum with strict stops. DO NOT sell naked options (high risk of violent explosion).",
-        diagnostics: `Spot: ₹${spot.toLocaleString("en-IN")} · Flip: ₹${flip.toLocaleString("en-IN")} · Blast Score: ${blastScore}/100`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 4A. Strong Bull Uptrend (Triple Confluence: Broad sector buying + price above flip)
-    if (isHeavyAdv && spot >= flip) {
-      return {
-        scenario: "STRONG_UPTREND",
-        badge: "🚀 STRONG UPTREND",
-        theme: "alert-tape-go",
-        headline: "STRONG UPTREND — BUYERS IN CONTROL",
-        body: `Triple Confirmation verified: Institutional buyers dominating flow, sector breadth broadly positive (${adv} Adv / ${dec} Dec), and price riding comfortably above key levels.`,
-        action: "Buy call options or enter longs on minor dips. DO NOT try to short or pick market tops!",
-        diagnostics: `Breadth: ${ratio}x Bullish (${adv} Advancers) · Call Wall: ₹${cw.toLocaleString("en-IN")} · Put Floor: ₹${pw.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 4B. Strong Bear Downtrend (Triple Confluence: Broad sector selling dumping inventory)
-    if (isHeavyDec) {
-      return {
-        scenario: "STRONG_DOWNTREND",
-        badge: "📉 STRONG DOWNTREND",
-        theme: "alert-tape-stop",
-        headline: "STRONG DOWNTREND — SELLERS IN CONTROL",
-        body: `Triple Confirmation verified: Heavy institutional selling dumping inventory across sectors (${dec} Decliners), with spot pinned below key barriers.`,
-        action: "Stick with put options or short trades on bounces. DO NOT try to catch falling knives!",
-        diagnostics: `Breadth: ${ratio}x Bearish (${dec} Decliners) · Put Wall: ₹${pw.toLocaleString("en-IN")}`,
-        timestamp: timeStr,
-      };
-    }
-
-    // 5. Fakeout Warning (Spot in upper range but market breadth ratio < 0.8)
-    if (cw > pw && adv < dec && ratio < 0.8 && spot > (pw + cw) / 2) {
-      return {
-        scenario: "FAKEOUT_WARNING",
-        badge: "⚠️ CAUTION: FAKEOUT",
+        headline: "ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE",
+        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || cw)}. A break of the cluster is a location, not a squeeze.`,
+        action: "Do not treat the cluster as intact. Wait until spot is back inside one strike step.",
+      },
+      TEST_MAGNET: {
+        scenario: "TEST_MAGNET",
+        badge: "⚖️ AT GEX MAGNET",
         theme: "alert-tape-warn",
-        headline: "LOW-QUALITY SQUEEZE WARNING",
-        body: `Spot is ticking up without broad market backing (only ${adv} advancers vs ${dec} decliners). Low institutional commitment.`,
-        action: "Stand aside or tighten stops. DO NOT chase this move — high risk of a bull trap reversal.",
-        diagnostics: `Breadth Divergence (${ratio}x) · Mixed Sectors (${adv} Adv / ${dec} Dec)`,
-        timestamp: timeStr,
-      };
+        headline: "AT GEX MAGNET — NO WALL CORRIDOR",
+        body: `Call and put concentration sit on the same strike ${tapeInr(geo.magnet || cw)}. There is no corridor between two strikes.`,
+        action: "Stand aside on fade templates until the call and put strikes split. Use Sentinel for tape.",
+      },
+      BELOW_PUT_WALL: {
+        scenario: "BELOW_SUPPORT",
+        badge: "📉 PUT WALL BREACHED",
+        theme: "alert-tape-stop",
+        headline: "BELOW PUT-WALL CONCENTRATION",
+        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the put-gamma strike ${tapeInr(pw)}. The strike is already behind price. It is not a floor.`,
+        action: "Do not buy dips as if the strike is holding. Look for a reclaim or a confirmed absorption print.",
+      },
+      ABOVE_CALL_WALL: {
+        scenario: "ABOVE_RESISTANCE",
+        badge: "🔥 CALL WALL BREACHED",
+        theme: "alert-tape-spark",
+        headline: "ABOVE CALL-WALL CONCENTRATION",
+        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the call-gamma strike ${tapeInr(cw)}. The strike is already behind price. It is not trapped-seller proof.`,
+        action: "Do not treat the strike as intact. Wait for a close back inside the cluster or Sentinel exhaustion.",
+      },
+      TEST_PUT: {
+        scenario: "TEST_PUT",
+        badge: "🚨 PUT WALL TEST",
+        theme: "alert-tape-stop",
+        headline: "TESTING PUT-WALL CONCENTRATION",
+        body: `Spot is within one strike step of the put-gamma strike ${tapeInr(pw)}. Watch absorption versus a sweep. A touch is not a floor.`,
+        action: "Do not fade the strike. Cut the idea if price prints through by more than one step.",
+      },
+      TEST_CALL: {
+        scenario: "TEST_CALL",
+        badge: "🔥 CALL WALL TEST",
+        theme: "alert-tape-spark",
+        headline: "TESTING CALL-WALL CONCENTRATION",
+        body: `Spot is within one strike step of the call-gamma strike ${tapeInr(cw)}. Watch absorption versus continuation. A touch is not a squeeze.`,
+        action: "Do not assume a squeeze on a touch. Need a 5-min hold through the strike plus tape confirmation.",
+      },
+      PINNED: {
+        scenario: "SIDEWAYS_CHOP",
+        badge: "⚖️ RANGE BETWEEN WALLS",
+        theme: "alert-tape-warn",
+        headline: "BETWEEN WALL CONCENTRATIONS",
+        body: `Spot is inside the corridor ${tapeInr(pw)}–${tapeInr(cw)}. The corridor is a map. It is not a reason to fade either strike.`,
+        action: "Do not fade the edges because price is between the strikes. Use Sentinel tape for direction.",
+      },
+      UNSITUATED: {
+        scenario: "UNSITUATED",
+        badge: "⚖️ STRUCTURE UNCLEAR",
+        theme: "alert-tape-warn",
+        headline: "WALL GEOMETRY UNCLEAR",
+        body: "Call/put concentrations do not form a clean corridor around spot. No pin or breach claim.",
+        action: "Stand aside on wall templates. Use Sentinel tape and wait for structure.",
+      },
+    };
+    const base = Object.assign({}, zoneCopy[zone] || zoneCopy.UNSITUATED);
+
+    if (sig) {
+      const insight = String(sig.insight_text || String(sig.type || "SIGNAL").replace(/_/g, " "));
+      let action = String(sig.actionable_play || "").trim() || base.action;
+      const inval = Number(sig.invalidation_level || 0);
+      if (inval > 0 && action.toLowerCase().indexOf("invalidat") < 0) {
+        action = `${action} Invalidation ${tapeInr(inval)}.`;
+      }
+      const cat = String(sig.category || "").toUpperCase();
+      let theme = base.theme;
+      if (cat === "BULLISH") theme = "alert-tape-go";
+      else if (cat === "BEARISH") theme = "alert-tape-stop";
+      else if (cat === "CAUTION") theme = "alert-tape-warn";
+      const sigName = String(sig.type || "SIGNAL").replace(/_/g, " ");
+      base.scenario = "TAPE_" + String(sig.type || "SIGNAL");
+      base.badge = `📡 ${sigName} · ${base.badge.split(" ").slice(1).join(" ")}`;
+      base.theme = theme;
+      base.headline = `${sigName} · ${base.headline}`;
+      base.body = `${insight} Geometry: ${base.body}`;
+      base.action = action;
     }
 
-    // 6. Sideways Chop (Gamma Pin)
-    return {
-      scenario: "SIDEWAYS_CHOP",
-      badge: "⚖️ SIDEWAYS CHOP",
-      theme: "alert-tape-warn",
-      headline: "SIDEWAYS CHOP — MARKET PINNED",
-      body: `Market is safely cushioned between Put Wall (₹${pw.toLocaleString("en-IN")}) and Call Wall (₹${cw.toLocaleString("en-IN")}). Option dealers are absorbing shocks and pinning price.`,
-      action: "Fade edges — buy near Put Wall support, sell near Call Wall resistance. DO NOT chase breakout trades!",
-      diagnostics: `Sandwiched: ₹${pw.toLocaleString("en-IN")} - ₹${cw.toLocaleString("en-IN")} · Net GEX: ${regime}`,
-      timestamp: timeStr,
-    };
+    if (isExpiryBlast) {
+      base.badge = `⚡ 0DTE BLAST ${blastScore} · ${base.badge}`;
+      base.body = `Expiry gamma-blast score ${blastScore}/100 (parity crossover watch, not dealer sign). ${base.body}`;
+    }
+
+    let flipBit = flip > 0 ? ` · Flip ${tapeInr(flip)}` : "";
+    if (nearFlip) flipBit += " · within 1 step of flip (writer-imbalance map, unvalidated)";
+    let blastBit = ` · Blast ${blastScore}/100`;
+    if (blast.is_expiry) blastBit += " 0DTE";
+    let sigBit = "";
+    if (sig) sigBit = ` · ${String(sig.type).replace(/_/g, " ")} ${Number(sig.score || 0)}/${Math.max(1, Math.round(sig._age_s || 0))}s`;
+
+    return pack({
+      scenario: base.scenario,
+      badge: base.badge,
+      theme: base.theme,
+      headline: base.headline,
+      body: base.body,
+      action: base.action,
+      diagnostics: `Spot ${tapeInr(spot)} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)}${flipBit}${blastBit}${sigBit} · ${bdiag} · ${regime}`,
+    });
   }
 
   function updateMarketAlertTape(dash) {
-    const alert = evaluateMarketAlertState(dash);
+    const candidate = evaluateMarketAlertState(dash);
     const container = document.getElementById("cockpit-alert-tape");
-    if (!container || !alert) return;
+    if (!container || !candidate) return;
 
-    // Apply color theme
+    const now = Date.now();
+    const latch = state.tapeLatch;
+    let alert = candidate;
+    if (latch && latch.scenario && latch.zone) {
+      const zoneChanged = candidate.zone !== latch.zone;
+      const held = (now - latch.at) < TAPE_HOLD_MS;
+      if (!zoneChanged && held && candidate.scenario !== latch.scenario) {
+        alert = Object.assign({}, latch.alert, {
+          timestamp: candidate.timestamp,
+          diagnostics: candidate.diagnostics,
+          through_pts: candidate.through_pts,
+        });
+      }
+    }
+    state.tapeLatch = {
+      scenario: alert.scenario,
+      zone: alert.zone,
+      at: (latch && latch.scenario === alert.scenario && latch.zone === alert.zone) ? latch.at : now,
+      alert,
+    };
+
     container.className = `alert-tape-marquee-container ${alert.theme}`;
-
-    // Update timestamp and badge
     const tsEl = document.getElementById("alert-tape-timestamp");
     if (tsEl) tsEl.textContent = alert.timestamp;
-
     const badgeEl = document.getElementById("alert-tape-badge");
     if (badgeEl) badgeEl.textContent = alert.badge;
 
-    // Generate seamless dual-loop marquee track
     const track = document.getElementById("alert-marquee-track");
-    if (track) {
+    const paintSig = `${alert.scenario}|${alert.theme}|${alert.headline}|${alert.body}|${alert.action}`;
+    if (track && state.lastTapePaintSig !== paintSig) {
+      state.lastTapePaintSig = paintSig;
       const itemHtml = `
         <span class="alert-marquee-item">
           <span class="marquee-headline">${alert.headline}:</span> ${alert.body}
@@ -1769,6 +2176,10 @@
         </span>
       `;
       track.innerHTML = `${itemHtml}<span class="marquee-separator">✦✦✦</span>${itemHtml}`;
+    } else if (track) {
+      track.querySelectorAll(".marquee-telemetry").forEach((el) => {
+        el.textContent = `[${alert.diagnostics}]`;
+      });
     }
 
     // Symbol-isolated state transition detection & 3.0s Louder Brass Bell Alert
@@ -1818,6 +2229,34 @@
     loadTargetEngine();
   };
 
+  function renderRankedCandidates(candidates, features) {
+    const body = document.getElementById("te-candidates-body");
+    const feat = document.getElementById("te-features-body");
+    if (body) {
+      if (!candidates.length) {
+        body.innerHTML = '<div style="color:var(--ink-mute);font-size:0.8rem">No ranked structure on this read.</div>';
+      } else {
+        body.innerHTML = candidates.slice(0, 4).map((c) => `
+          <div style="display:grid;grid-template-columns:1.4fr repeat(5, 1fr);gap:8px;font-size:0.78rem;padding:6px 0;border-top:1px solid var(--line)">
+            <div><b>${c.structure_type || "Structure"}</b><div style="color:var(--ink-mute)">${c.option_type} ${Number(c.strike).toLocaleString("en-IN")} · ${c.scenario}</div></div>
+            <div>Score<br><b>${c.score}</b></div>
+            <div>Entry<br><b>₹${c.entry_ltp}</b></div>
+            <div>T1<br><b>₹${c.target_1}</b></div>
+            <div>Stop<br><b>₹${c.stop_loss}</b></div>
+            <div>R:R<br><b>${c.risk_reward}</b></div>
+          </div>`).join("");
+      }
+    }
+    if (feat) {
+      if (!features.length) {
+        feat.innerHTML = "";
+      } else {
+        feat.innerHTML = `<div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:4px">Feature values used by the dial</div>` +
+          features.slice(0, 12).map((f) => `<span style="display:inline-block;margin:0 10px 4px 0;font-size:0.72rem;font-family:var(--mono)">${f.name} ${f.value}</span>`).join("");
+      }
+    }
+  }
+
   async function loadTargetEngine() {
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
@@ -1828,14 +2267,25 @@
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
           requestedSym !== (state.symbol || "").toUpperCase()) return;
 
-      document.getElementById("dial-verdict").textContent = data.dial.verdict;
+      const dialVerdict = document.getElementById("dial-verdict");
+      if (dialVerdict) {
+        dialVerdict.textContent = data.dial.verdict;
+        if (data.dial.color) dialVerdict.style.color = data.dial.color;
+      }
       document.getElementById("dial-score-num").textContent = `${data.dial.score} / 100`;
+      const convBadge = document.getElementById("dial-conviction-badge");
+      if (convBadge) {
+        convBadge.textContent = data.dial.conviction_label || "CONVICTION";
+        const vc = (data.dial.verdict || "").toUpperCase();
+        convBadge.style.background = vc.includes("BEAR") ? "var(--stop-bg)" : (vc.includes("BULL") ? "var(--go-bg)" : "var(--spark-bg, rgba(250,204,21,.12))");
+        convBadge.style.color = data.dial.color || "var(--ink)";
+      }
 
       // 1. Dominant Scenario & Multi-Color Segmented Probability Bar
       if (data.scenario_set) {
         const sc = data.scenario_set;
-        const domScen = sc.dominant_scenario ? sc.dominant_scenario.toUpperCase() : "BULL";
-        const probs = sc.probabilities || { bull: 0.624, base: 0.251, bear: 0.125 };
+        const domScen = sc.dominant_scenario ? sc.dominant_scenario.toUpperCase() : "—";
+        const probs = sc.probabilities || {};
         const pBull = probs.bull || 0;
         const pBase = probs.base || 0;
         const pBear = probs.bear || 0;
@@ -1849,9 +2299,10 @@
 
         const edgeBadge = document.getElementById("te-edge-badge");
         if (edgeBadge) {
-          edgeBadge.textContent = sc.edge_label || (sc.no_edge ? "NO EDGE — RANGE DOMINANT" : "CONFIRMED EDGE");
-          edgeBadge.style.background = sc.no_edge ? "#78350f" : "#064e3b";
-          edgeBadge.style.borderColor = sc.no_edge ? "rgba(245,158,11,0.4)" : "rgba(16,185,129,0.3)";
+          const noEdge = !!(sc.no_edge || (sc.edge_label || "").includes("NO") || (sc.edge_label || "").includes("RANGE LED"));
+          edgeBadge.textContent = sc.edge_label || (noEdge ? "NO EDGE — RANGE DOMINANT" : "CONFIRMED EDGE");
+          edgeBadge.style.background = noEdge ? "#78350f" : "#064e3b";
+          edgeBadge.style.borderColor = noEdge ? "rgba(245,158,11,0.4)" : "rgba(16,185,129,0.3)";
         }
 
         const convEl = document.getElementById("te-conviction-val");
@@ -1905,9 +2356,9 @@
           const pCloseEl = document.getElementById("te-bull-pclose");
           if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
           const ivEl = document.getElementById("te-bull-iv");
-          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          if (ivEl) ivEl.textContent = b.forecast_iv == null ? "—" : `${(b.forecast_iv * 100).toFixed(2)}%`;
           const ancEl = document.getElementById("te-bull-anchor");
-          if (ancEl) ancEl.textContent = b.reason || "Call Wall Extension";
+          if (ancEl) ancEl.textContent = b.reason || "—";
         }
         if (data.targets.base) {
           const b = data.targets.base;
@@ -1920,9 +2371,9 @@
           const pCloseEl = document.getElementById("te-base-pclose");
           if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
           const ivEl = document.getElementById("te-base-iv");
-          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          if (ivEl) ivEl.textContent = b.forecast_iv == null ? "—" : `${(b.forecast_iv * 100).toFixed(2)}%`;
           const ancEl = document.getElementById("te-base-anchor");
-          if (ancEl) ancEl.textContent = b.reason || "Gamma Flip Pin";
+          if (ancEl) ancEl.textContent = b.reason || "Range centre";
         }
         if (data.targets.bear) {
           const b = data.targets.bear;
@@ -1935,26 +2386,27 @@
           const pCloseEl = document.getElementById("te-bear-pclose");
           if (pCloseEl) pCloseEl.textContent = `${((b.p_close_beyond || 0) * 100).toFixed(1)}%`;
           const ivEl = document.getElementById("te-bear-iv");
-          if (ivEl) ivEl.textContent = `${((b.forecast_iv || 0.14) * 100).toFixed(2)}%`;
+          if (ivEl) ivEl.textContent = b.forecast_iv == null ? "—" : `${(b.forecast_iv * 100).toFixed(2)}%`;
           const ancEl = document.getElementById("te-bear-anchor");
-          if (ancEl) ancEl.textContent = b.reason || "Put Wall Speed Bump";
+          if (ancEl) ancEl.textContent = b.reason || "Put-gamma strike";
         }
       }
 
       // Update Reference Anchors Status Strip
+      const fmtLvl = (v) => `₹${Number(v).toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
       const ceInvalEl = document.getElementById("ladder-ce-inval");
-      if (ceInvalEl && data.targets && data.targets.bear) ceInvalEl.textContent = `₹${data.targets.bear.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (ceInvalEl && data.targets && data.targets.bull) ceInvalEl.textContent = fmtLvl(data.targets.bull.stop);
       const ceTgt1El = document.getElementById("ladder-ce-tgt1");
-      if (ceTgt1El && data.targets && data.targets.base) ceTgt1El.textContent = `₹${data.targets.base.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (ceTgt1El && data.targets && data.targets.base) ceTgt1El.textContent = fmtLvl(data.targets.base.target);
       const ceTgt2El = document.getElementById("ladder-ce-tgt2");
-      if (ceTgt2El && data.targets && data.targets.bull) ceTgt2El.textContent = `₹${data.targets.bull.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (ceTgt2El && data.targets && data.targets.bull) ceTgt2El.textContent = fmtLvl(data.targets.bull.target);
 
       const peInvalEl = document.getElementById("ladder-pe-inval");
-      if (peInvalEl && data.targets && data.targets.bull) peInvalEl.textContent = `₹${data.targets.bull.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (peInvalEl && data.targets && data.targets.bear) peInvalEl.textContent = fmtLvl(data.targets.bear.stop);
       const peTgt1El = document.getElementById("ladder-pe-tgt1");
-      if (peTgt1El && data.targets && data.targets.base) peTgt1El.textContent = `₹${(data.spot - (data.targets.base.points_away || 35)).toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (peTgt1El && data.targets && data.targets.base) peTgt1El.textContent = fmtLvl(data.targets.base.target);
       const peTgt2El = document.getElementById("ladder-pe-tgt2");
-      if (peTgt2El && data.targets && data.targets.bear) peTgt2El.textContent = `₹${data.targets.bear.target.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+      if (peTgt2El && data.targets && data.targets.bear) peTgt2El.textContent = fmtLvl(data.targets.bear.target);
 
       const spotDisp = document.getElementById("ladder-spot-display");
       if (spotDisp) spotDisp.textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
@@ -1974,8 +2426,14 @@
 
           const cePnlClr = (ce.tgt1_inr || 0) >= 0 ? "var(--go)" : "var(--stop)";
           const pePnlClr = (pe.tgt1_inr || 0) >= 0 ? "var(--go)" : "var(--stop)";
-          const ceRrCls = (ce.rr_str && ce.rr_str.includes("2.")) ? "rr-high" : "rr-med";
-          const peRrCls = (pe.rr_str && pe.rr_str.includes("2.")) ? "rr-high" : "rr-med";
+          const ceRrCls = "rr-med";
+          const peRrCls = "rr-med";
+          const greekLine = (wing) => {
+            if (wing.delta == null && wing.iv == null) return "";
+            const d = wing.delta == null ? "" : `Δ ${Number(wing.delta).toFixed(2)}`;
+            const iv = wing.iv == null ? "" : `IV ${Number(wing.iv).toFixed(1)}%`;
+            return [d, iv].filter(Boolean).join(" · ");
+          };
 
           const strikeTag = row.is_atm
             ? `₹${row.strike.toLocaleString("en-IN")} <span class="atm-star">ATM</span>`
@@ -1983,22 +2441,29 @@
 
           tr.innerHTML = `
             <td style="color:${cePnlClr};font-weight:700">₹${(ce.tgt1_inr || 0).toLocaleString("en-IN")}<div class="sub-pts" style="color:var(--ink-faint)">T2: ₹${(ce.tgt2_inr || 0).toLocaleString("en-IN")}</div></td>
-            <td><span class="rr-badge-ladder ${ceRrCls}">${ce.rr_str || "1 : 2.0"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${ce.p_touch_tgt1 || 65}%</div></td>
+            <td><span class="rr-badge-ladder ${ceRrCls}">${ce.rr_str || "—"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${ce.p_touch_tgt1 == null ? "—" : ce.p_touch_tgt1 + "%"}</div></td>
             <td style="color:var(--go);font-weight:700">₹${(ce.opt_tgt2 || 0).toFixed(1)}<div class="sub-pts" style="color:var(--go)">+${(ce.tgt2_pts || 0).toFixed(1)}</div></td>
             <td style="color:#4ade80;font-weight:700">₹${(ce.opt_tgt1 || 0).toFixed(1)}<div class="sub-pts" style="color:#4ade80">+${(ce.tgt1_pts || 0).toFixed(1)}</div></td>
             <td style="color:var(--stop);font-weight:700">₹${(ce.opt_sl || 0).toFixed(1)}<div class="sub-pts" style="color:var(--stop)">-${(ce.sl_pts || 0).toFixed(1)}</div></td>
-            <td style="color:var(--spark);font-weight:700">₹${(ce.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">Δ ${ce.delta || 0.5}</div></td>
+            <td style="color:var(--spark);font-weight:700">₹${(ce.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">${greekLine(ce)}</div></td>
             <td class="col-strike">${strikeTag}</td>
-            <td style="color:var(--spark);font-weight:700">₹${(pe.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">Δ ${pe.delta || -0.5}</div></td>
+            <td style="color:var(--spark);font-weight:700">₹${(pe.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">${greekLine(pe)}</div></td>
             <td style="color:var(--stop);font-weight:700">₹${(pe.opt_sl || 0).toFixed(1)}<div class="sub-pts" style="color:var(--stop)">-${(pe.sl_pts || 0).toFixed(1)}</div></td>
             <td style="color:#4ade80;font-weight:700">₹${(pe.opt_tgt1 || 0).toFixed(1)}<div class="sub-pts" style="color:#4ade80">+${(pe.tgt1_pts || 0).toFixed(1)}</div></td>
             <td style="color:var(--go);font-weight:700">₹${(pe.opt_tgt2 || 0).toFixed(1)}<div class="sub-pts" style="color:var(--go)">+${(pe.tgt2_pts || 0).toFixed(1)}</div></td>
-            <td><span class="rr-badge-ladder ${peRrCls}">${pe.rr_str || "1 : 2.0"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${pe.p_touch_tgt1 || 65}%</div></td>
+            <td><span class="rr-badge-ladder ${peRrCls}">${pe.rr_str || "—"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${pe.p_touch_tgt1 == null ? "—" : pe.p_touch_tgt1 + "%"}</div></td>
             <td style="color:${pePnlClr};font-weight:700">₹${(pe.tgt1_inr || 0).toLocaleString("en-IN")}<div class="sub-pts" style="color:var(--ink-faint)">T2: ₹${(pe.tgt2_inr || 0).toLocaleString("en-IN")}</div></td>
           `;
           ladderBody.appendChild(tr);
         });
-        // Cache teData for preset calculations and synchronizations
+        const lotChip = document.getElementById("ladder-lot-size");
+        if (lotChip) lotChip.textContent = data.lot_size ? String(data.lot_size) : "—";
+        const wsChip = document.getElementById("ladder-ws-status");
+        if (wsChip) {
+          const live = (data.ladder_meta && data.ladder_meta.live_ticks) || 0;
+          wsChip.textContent = live > 0 ? `${live} live ticks` : "Chain snapshot";
+        }
+        renderRankedCandidates(data.candidates || [], data.features || []);
         state.teData = data;
 
         // Update Preset Buttons with active target levels
@@ -2012,7 +2477,7 @@
         }
         const btnBase = document.getElementById("te-btn-preset-base");
         if (btnBase && data.targets && data.targets.base) {
-          btnBase.textContent = `⚖️ Base (Pin: ₹${Math.round(data.targets.base.target)})`;
+          btnBase.textContent = `⚖️ Base (Range: ₹${Math.round(data.targets.base.target)})`;
         }
 
         // Populate Expiry and 21-Strike Band in Target / SL Calculator
@@ -2108,9 +2573,9 @@
 
     const targets = (state.teData && state.teData.targets) ? state.teData.targets : {};
     const bTgt = targets.bull ? targets.bull.target : baseSpot + 60.0;
-    const bSl = targets.bull ? (baseSpot - Math.abs(targets.bull.points_away || 35.0)) : baseSpot - 35.0;
+    const bSl = targets.bull && targets.bull.stop ? targets.bull.stop : baseSpot - 35.0;
     const bearTgt = targets.bear ? targets.bear.target : baseSpot - 60.0;
-    const bearSl = targets.bear ? (baseSpot + Math.abs(targets.bear.points_away || 35.0)) : baseSpot + 35.0;
+    const bearSl = targets.bear && targets.bear.stop ? targets.bear.stop : baseSpot + 35.0;
     const basePin = targets.base ? targets.base.target : baseSpot;
     const baseSl = baseSpot - 25.0;
 
@@ -2203,7 +2668,11 @@
       const hSlider = document.getElementById("te-slider-holding-mins");
       const ivSelect = document.getElementById("te-select-iv-shock");
 
-      const strike = strikeSel ? parseFloat(strikeSel.value) : (state.spot || 24500);
+      const customStrikeEl = document.getElementById("te-calc-custom-strike");
+      const customStrike = customStrikeEl && customStrikeEl.value !== "" ? parseFloat(customStrikeEl.value) : NaN;
+      const strike = Number.isFinite(customStrike)
+        ? customStrike
+        : (strikeSel ? parseFloat(strikeSel.value) : state.spot);
       const expiry = expSel ? expSel.value : "current_week";
       const side = typeRadio ? typeRadio.value : "CE";
       const targetSpot = tgtInput ? parseFloat(tgtInput.value) : (state.spot + 60);
@@ -2318,20 +2787,21 @@
     }
   };
 
-  let recSimulationMode = false;
-  window.enableRecSimulationMode = function() {
-    recSimulationMode = true;
-    loadRecommendations();
-  };
-  window.exitRecSimulationMode = function() {
-    recSimulationMode = false;
+  window.updateSizerPreferences = function () {
+    const cap = document.getElementById("sizer-cap-select");
+    const risk = document.querySelector('input[name="sizer_risk_radio"]:checked');
+    if (cap) state.capital = parseFloat(cap.value);
+    if (risk) state.riskPct = parseFloat(risk.value);
     loadRecommendations();
   };
 
   async function loadRecommendations() {
     try {
-      const res = await fetch(`/api/recommendations?symbol=${state.symbol}&window=${state.window}&capital=${state.capital}&risk=${state.riskPct}&simulation_mode=${recSimulationMode}`);
+      const res = await fetch(`/api/recommendations?symbol=${state.symbol}&window=${state.window}&capital=${state.capital}&risk=${state.riskPct}`);
       const data = await res.json();
+      const lotEl = document.getElementById("hud-lot-size");
+      const lot = data.hud && data.hud.lot_size;
+      if (lotEl && lot) lotEl.textContent = `${lot} Qty/lot`;
 
       // Check if off-market closed card needs to be shown
       let noticeContainer = document.getElementById("rec-closed-notice-container");
@@ -2345,34 +2815,40 @@
       }
 
       // Populate effectiveness metrics if present
-      if (data.effectiveness) {
-        const eff = data.effectiveness;
+      if (data.hud) {
+        const riskInr = Number(data.hud.max_risk_budget || 0);
+        const capInr = Number(data.hud.account_capital || 0);
+        const budgetEl = document.getElementById("hud-risk-budget");
+        const sizerBudget = document.getElementById("sizer-budget-val");
+        const outlayEl = document.getElementById("hud-outlay-cap");
+        if (budgetEl) budgetEl.textContent = `₹${riskInr.toLocaleString("en-IN")} / trade`;
+        if (sizerBudget) sizerBudget.textContent = `₹${riskInr.toLocaleString("en-IN")} / trade`;
+        if (outlayEl) outlayEl.textContent = `₹${Math.round(capInr * 0.15).toLocaleString("en-IN")}`;
+      }
+      if (data.effectiveness_summary) {
+        const eff = data.effectiveness_summary;
         const totalTrackedEl = document.getElementById("eff-total-tracked");
         const tgtRateEl = document.getElementById("eff-tgt-rate");
         const slRateEl = document.getElementById("eff-sl-rate");
         const invalRateEl = document.getElementById("eff-inval-rate");
         const avgRrEl = document.getElementById("eff-avg-rr");
-        if (totalTrackedEl) totalTrackedEl.textContent = `${eff.total_tracked || 38} setups`;
-        if (tgtRateEl) tgtRateEl.textContent = `${eff.target_hit_rate || 73.7}%`;
-        if (slRateEl) slRateEl.textContent = `${eff.stop_loss_rate || 15.8}%`;
-        if (invalRateEl) invalRateEl.textContent = `${eff.spot_invalidation_rate || 10.5}%`;
-        if (avgRrEl) avgRrEl.textContent = eff.avg_realized_rr || "1 : 2.8";
+        if (totalTrackedEl) totalTrackedEl.textContent = `${eff.total_tracked} setups`;
+        if (tgtRateEl) tgtRateEl.textContent = `${eff.target_hit_rate}%`;
+        if (slRateEl) slRateEl.textContent = `${eff.stop_loss_rate}%`;
+        if (invalRateEl) invalRateEl.textContent = `${eff.spot_invalidation_rate}%`;
+        if (avgRrEl) avgRrEl.textContent = eff.avg_realized_rr == null ? "—" : `1 : ${eff.avg_realized_rr}`;
       }
 
-      if (data.is_market_closed && !data.simulation_mode) {
+      if (data.is_market_closed) {
         if (noticeContainer) {
           noticeContainer.innerHTML = `
             <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:32px 24px;text-align:center;margin-bottom:24px">
               <div style="font-size:2rem;margin-bottom:10px">🌙</div>
               <div style="font-size:1.1rem;font-weight:800;color:var(--ink);margin-bottom:6px">Session Closed · Off-Market Hours</div>
-              <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 auto 16px;max-width:580px;line-height:1.5">
+              <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 auto;max-width:580px;line-height:1.5">
                 Broker API polling and NSE live feeds are paused after market hours.
-                Real-time intraday option recommendations, gamma breakout triggers, and Sentinel MTM tracking
-                run strictly during active trading hours (09:15 – 15:30 IST) or when Replay Mode is enabled.
+                Recommendations run during the F&O session (09:15 – 15:40 IST).
               </p>
-              <button class="btn btn-primary" onclick="window.enableRecSimulationMode()" style="font-size:0.84rem;padding:8px 18px;font-weight:750">
-                ⚡ Explore Simulated Setups in Replay Mode
-              </button>
             </div>
           `;
         }
@@ -2381,24 +2857,8 @@
         renderClusterList("fallback-ce-container", [], "CE", false);
         renderClusterList("fallback-pe-container", [], "PE", false);
         return;
-      } else if (data.simulation_mode) {
-        if (noticeContainer) {
-          noticeContainer.innerHTML = `
-            <div style="background:rgba(56,189,248,0.08);border:1px solid var(--spark);border-radius:8px;padding:12px 18px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center">
-              <div style="display:flex;align-items:center;gap:10px">
-                <span style="font-size:1.2rem">⚡</span>
-                <div>
-                  <b style="color:var(--spark);font-size:0.88rem">SIMULATED REPLAY MODE ACTIVE</b>
-                  <div style="color:var(--ink-mute);font-size:0.75rem">Exploring algorithmic trade ideas calculated against last session closing GEX matrix.</div>
-                </div>
-              </div>
-              <button class="btn btn-secondary" onclick="window.exitRecSimulationMode()" style="font-size:0.76rem;padding:5px 12px">Exit Simulation</button>
-            </div>
-          `;
-        }
-      } else {
-        if (noticeContainer) noticeContainer.innerHTML = "";
       }
+      if (noticeContainer) noticeContainer.innerHTML = "";
 
       // Render Higher Conviction: CE on Left, PE on Right
       renderClusterList("higher-ce-container", data.higher_conviction ? data.higher_conviction.ce_clusters : [], "CE", false);
@@ -2605,14 +3065,14 @@
         </div>
 
         <div class="rec-ltp-block">
-          <span class="rec-ltp-large" style="color:var(--ink)">₹${best.current_ltp.toFixed(1)}</span>
-          <span style="font-size:0.72rem;background:var(--spark-bg);color:var(--spark);padding:2px 6px;border-radius:4px;font-family:var(--mono);font-weight:700">⚡ WS 0ms</span>
+          <span id="rec-ltp-${best.rec_id}" class="rec-ltp-large" style="color:var(--ink)">₹${best.current_ltp.toFixed(1)}</span>
+          <span id="rec-live-badge-${best.rec_id}" style="font-size:0.72rem;background:var(--spark-bg);color:${best.is_ws_live ? "var(--spark)" : "var(--ink-mute)"};padding:2px 6px;border-radius:4px;font-family:var(--mono);font-weight:700">${best.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM"}</span>
           <span style="font-size:0.72rem;background:var(--surface-2);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${best.entry_ltp.toFixed(1)}</span>
-          <span style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${best.pnl_pts >= 0 ? "var(--go)" : "var(--stop)"}">
+          <span id="rec-mtm-${best.rec_id}" style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${best.pnl_pts >= 0 ? "var(--go)" : "var(--stop)"}">
             MTM: ${best.pnl_pts >= 0 ? "+" : ""}₹${best.pnl_pts.toFixed(1)} (${best.pnl_pct >= 0 ? "+" : ""}${best.pnl_pct.toFixed(1)}%)
           </span>
-          <span style="font-size:0.72rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${best.target_1.toFixed(1)}</span>
-          <span style="font-size:0.72rem;background:rgba(239,68,68,.1);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${best.stop_loss.toFixed(1)}</span>
+          <span id="rec-t1-${best.rec_id}" style="font-size:0.72rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${best.target_1.toFixed(1)}</span>
+          <span id="rec-sl-${best.rec_id}" style="font-size:0.72rem;background:rgba(239,68,68,.1);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${best.stop_loss.toFixed(1)}</span>
         </div>
 
         <!-- Position Sizing Outlay Strip -->
@@ -2641,12 +3101,12 @@
           </div>
           <div class="rec-lvl-item">
             <small>Target 1</small>
-            <b style="color:var(--go)">₹${best.target_1.toFixed(1)}</b>
+            <b id="rec-t1-grid-${best.rec_id}" style="color:var(--go)">₹${best.target_1.toFixed(1)}</b>
             <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_1_pnl_inr.toLocaleString("en-IN")}</span>
           </div>
           <div class="rec-lvl-item">
             <small>Target 2</small>
-            <b style="color:var(--go)">₹${best.target_2.toFixed(1)}</b>
+            <b id="rec-t2-grid-${best.rec_id}" style="color:var(--go)">₹${best.target_2.toFixed(1)}</b>
             <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_2_pnl_inr.toLocaleString("en-IN")}</span>
           </div>
           <div class="rec-lvl-item">
@@ -3138,7 +3598,7 @@
         if (sel) sel.value = tf;
       }
       const targetTf = tf || sentinelState.timeframe || "1m";
-      showToast(`Re-seeding ${targetTf} flow data...`, "⚡");
+      showToast(`Syncing the live ${targetTf} feed...`, "⚡");
       const res = await fetch("/api/sentinel-tape/reseed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3154,7 +3614,7 @@
 
   /**
    * Force-sync genuine 1m candles from the Dhan broker feed.
-   * Falls back to EOD snapshot if market is closed. No simulation_mode required.
+   * Falls back to the EOD snapshot when the market is closed.
    */
   window.syncLiveSentinelFeed = async function () {
     try {
@@ -3178,9 +3638,7 @@
   };
 
   /**
-   * Reload last verified EOD session snapshot from exchange journal.
-   * Computes derived metrics (CVD, VWAP bands) internally on authentic OHLCV.
-   * No simulation_mode required.
+   * Reload the last verified EOD session snapshot.
    */
   window.loadEODSentinelSnapshot = async function () {
     try {
@@ -3219,7 +3677,7 @@
 
     const titleEl = document.getElementById("sentinel-chart-title");
     const descMap = {
-      "Full": "📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, GEX Walls + CVD & Delta",
+      "Full": "📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, gamma strikes + CVD & Delta",
       "Pure": "📊 🎯 Pure Price: Clean Candlesticks Auto-Scaled Directly to Price Action with GEX Walls Only",
       "CVD": "📊 🌊 CVD Focus: Candlesticks + Session VWAP with Magnified Cumulative Volume Delta Subplot",
       "Trend": "📊 📈 Trend Follower: EMA 9 & 21 Ribbon, VWAP Envelopes, GEX Walls Paired with Delta Volume",
@@ -3504,9 +3962,12 @@
     const container = document.getElementById("sentinel-signals-stream-container");
     if (!container || !state.sentinelSignals) return;
 
-    const filtered = category === "ALL"
-      ? state.sentinelSignals
-      : state.sentinelSignals.filter((s) => s.category.toUpperCase().includes(category) || s.type.toUpperCase().includes(category));
+    let filtered = state.sentinelSignals;
+    if (category === "HIGH_CONF") {
+      filtered = filtered.filter((s) => Number(s.score) >= 70);
+    } else if (category && category !== "ALL") {
+      filtered = filtered.filter((s) => s.category.toUpperCase().includes(category) || s.type.toUpperCase().includes(category));
+    }
 
     container.innerHTML = "";
     if (filtered.length === 0) {
@@ -3531,7 +3992,8 @@
         <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono);border-top:1px dashed var(--line);padding-top:4px">
           <span>Delta: <b style="color:${s.delta >= 0 ? "var(--go)" : "var(--stop)"}">${s.delta >= 0 ? "+" : ""}${s.delta}</b></span>
           <span>RVOL: <b>${s.rvol_tod}x</b></span>
-          <span>Inval: <b>₹${s.invalidation_level.toLocaleString("en-IN")}</b></span>
+          <span>Inval: <b>₹${Number(s.invalidation_level || 0).toLocaleString("en-IN")}</b></span>
+          <span>${s.outcome ? (s.outcome.target_hit ? "Target" : s.outcome.stopped_out ? "Stopped" : `MFE ${s.outcome.mfe} / MAE ${s.outcome.mae}`) : "Open"}</span>
         </div>
       `;
       container.appendChild(card);
@@ -3980,7 +4442,7 @@
           const sub = document.getElementById("noa-kpi-pcr-regime");
           if (sub) {
             sub.textContent = data.kpis.pcr.sub;
-            sub.style.color = data.kpis.pcr.sub === "BULLISH" ? "var(--go)" : "var(--stop)";
+            sub.style.color = "var(--ink-mute)";
           }
         }
         if (data.kpis.max_pain) {
@@ -4016,6 +4478,32 @@
         document.getElementById("exp-move-low").textContent = `Lower 1σ: ₹${data.expected_move.low.toLocaleString("en-IN")}`;
         document.getElementById("exp-move-center").textContent = `Spot: ₹${data.spot.toLocaleString("en-IN")}`;
         document.getElementById("exp-move-high").textContent = `Upper 1σ: ₹${data.expected_move.high.toLocaleString("en-IN")}`;
+        const straddleEl = document.getElementById("exp-move-straddle");
+        if (straddleEl) {
+          const src = data.expected_move.straddle_source === "mid" ? " (mid)" : "";
+          straddleEl.textContent = data.expected_move.straddle == null
+            ? "ATM straddle: no paired quotes"
+            : `ATM straddle${src}: ₹${data.expected_move.straddle}`;
+        }
+      }
+      const biasBody = document.getElementById("bias-rows-body");
+      if (biasBody) {
+        biasBody.innerHTML = (data.bias_rows || []).map((row) => `
+          <tr>
+            <td>${row.key}</td>
+            <td>${row.label}${row.detail ? `<div style="color:var(--ink-mute);font-size:0.72rem">${row.detail}</div>` : ""}</td>
+            <td style="font-family:var(--mono)">${Number(row.contribution).toFixed(2)}</td>
+          </tr>`).join("") || '<tr><td colspan="3">No bias rows on this read.</td></tr>';
+      }
+      const oiHost = document.getElementById("oi-bars");
+      if (oiHost && data.buildup_matrix) {
+        const maxOi = Math.max(1, ...data.buildup_matrix.map((b) => Math.max(b.call_oi || 0, b.put_oi || 0)));
+        oiHost.innerHTML = data.buildup_matrix.map((b) => `
+          <div style="display:grid;grid-template-columns:72px 1fr 1fr;gap:6px;align-items:center;margin-bottom:4px;font-size:0.72rem">
+            <span style="font-family:var(--mono)">${Number(b.strike).toLocaleString("en-IN")}</span>
+            <div style="background:var(--surface-3);height:8px"><div style="width:${(b.call_oi / maxOi) * 100}%;height:8px;background:var(--stop)"></div></div>
+            <div style="background:var(--surface-3);height:8px"><div style="width:${(b.put_oi / maxOi) * 100}%;height:8px;background:var(--go)"></div></div>
+          </div>`).join("") + '<div style="font-size:0.7rem;color:var(--ink-mute)">Left bar is call open interest. Right bar is put open interest.</div>';
       }
 
       const tbody = document.getElementById("buildup-matrix-body");
@@ -4026,12 +4514,10 @@
           tr.innerHTML = `
             <td style="font-weight:750">₹${b.strike.toLocaleString("en-IN")}</td>
             <td>${b.call_oi.toLocaleString("en-IN")}</td>
-            <td style="color:${b.call_doi >= 0 ? "var(--go)" : "var(--stop)"}">${b.call_doi >= 0 ? "+" : ""}${b.call_doi.toLocaleString("en-IN")}</td>
-            <td style="font-size:0.72rem;color:var(--ink-mute)">${b.call_buildup}</td>
+            <td style="font-family:var(--mono)">${b.call_doi >= 0 ? "+" : ""}${b.call_doi.toLocaleString("en-IN")}</td>
             <td>${b.put_oi.toLocaleString("en-IN")}</td>
-            <td style="color:${b.put_doi >= 0 ? "var(--go)" : "var(--stop)"}">${b.put_doi >= 0 ? "+" : ""}${b.put_doi.toLocaleString("en-IN")}</td>
-            <td style="font-size:0.72rem;color:var(--ink-mute)">${b.put_buildup}</td>
-            <td style="font-weight:750;color:var(--spark)">${b.pcr}</td>
+            <td style="font-family:var(--mono)">${b.put_doi >= 0 ? "+" : ""}${b.put_doi.toLocaleString("en-IN")}</td>
+            <td style="font-weight:750">${b.pcr}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -4039,38 +4525,59 @@
 
       // Populate Intraday Shift Events Log
       const shiftContainer = document.getElementById("noa-shift-events-container");
-      if (shiftContainer && data.shift_events) {
+      if (shiftContainer) {
+        const events = data.location_alerts || data.shift_events || [];
         shiftContainer.innerHTML = "";
-        data.shift_events.forEach((ev) => {
+        if (!events.length) {
+          shiftContainer.innerHTML = '<div style="color:var(--ink-mute);font-size:0.8rem">No strike cross or parity gap on this read.</div>';
+        }
+        events.forEach((ev) => {
           const item = document.createElement("div");
           item.className = "shift-event-item";
-          const badgeClr = ev.badge_cls === "bull" ? "var(--go)" : "var(--spark)";
           item.innerHTML = `
             <div style="display:flex;align-items:center;gap:8px">
-              <span style="font-size:0.7rem;color:var(--ink-faint);font-family:var(--mono)">${ev.time}</span>
-              <span style="font-size:0.68rem;padding:2px 7px;border-radius:4px;background:rgba(56,189,248,0.12);color:${badgeClr};font-weight:750;font-family:var(--mono)">${ev.badge}</span>
+              <span style="font-size:0.7rem;color:var(--ink-faint);font-family:var(--mono)">${ev.time || ""}</span>
+              <span style="font-size:0.68rem;padding:2px 7px;border-radius:4px;background:var(--surface-3);font-weight:750;font-family:var(--mono)">${ev.badge}</span>
               <span style="font-size:0.76rem;color:var(--ink)">${ev.desc}</span>
             </div>
-            <span style="font-size:0.68rem;color:var(--ink-mute)">● Verified</span>
           `;
           shiftContainer.appendChild(item);
         });
+      }
+      const parityBody = document.getElementById("noa-parity-body");
+      const parityBadge = document.getElementById("noa-parity-badge");
+      if (parityBody && data.parity_monitor) {
+        const mon = data.parity_monitor;
+        if (parityBadge) parityBadge.textContent = mon.summary || "Parity";
+        const rows = mon.deviations || [];
+        parityBody.innerHTML = rows.length ? rows.map((d) => `
+          <tr>
+            <td>₹${Number(d.strike).toLocaleString("en-IN")}</td>
+            <td>${Number(d.call_ltp).toFixed(1)}</td>
+            <td>${Number(d.put_ltp).toFixed(1)}</td>
+            <td>${Number(d.discrepancy_pts).toFixed(1)} pts · ${Number(d.discrepancy_bps).toFixed(1)} bps</td>
+          </tr>`).join("") : '<tr><td colspan="4">No paired call and put quotes.</td></tr>';
       }
 
       // Populate IV Skew & Term Structure Panel
       if (data.skew_summary) {
         const sk = data.skew_summary;
         const d25El = document.getElementById("noa-skew-25d");
-        if (d25El) d25El.textContent = `${sk.skew_25d >= 0 ? "+" : ""}${sk.skew_25d.toFixed(1)}%`;
+        if (d25El) d25El.textContent = sk.skew_25d == null ? "—" : `${sk.skew_25d >= 0 ? "+" : ""}${Number(sk.skew_25d).toFixed(1)}%`;
         const atmIvEl = document.getElementById("noa-skew-atm-iv");
-        if (atmIvEl) atmIvEl.textContent = `${sk.near_atm_iv.toFixed(1)}%`;
+        if (atmIvEl) atmIvEl.textContent = sk.near_atm_iv == null ? "—" : `${Number(sk.near_atm_iv).toFixed(1)}%`;
         const termEl = document.getElementById("noa-skew-term-spread");
         if (termEl) {
-          termEl.textContent = `${sk.term_spread >= 0 ? "+" : ""}${sk.term_spread.toFixed(2)}% (${sk.term_label})`;
-          termEl.style.color = sk.term_spread >= 0 ? "var(--go)" : "var(--stop)";
+          if (sk.term_spread == null) {
+            termEl.textContent = "—";
+            termEl.style.color = "var(--ink-mute)";
+          } else {
+            termEl.textContent = `${sk.term_spread >= 0 ? "+" : ""}${Number(sk.term_spread).toFixed(2)}%${sk.term_label ? ` (${sk.term_label})` : ""}`;
+            termEl.style.color = sk.term_spread >= 0 ? "var(--go)" : "var(--stop)";
+          }
         }
         const badgeEl = document.getElementById("noa-skew-badge");
-        if (badgeEl) badgeEl.textContent = sk.skew_regime;
+        if (badgeEl) badgeEl.textContent = sk.skew_label || "—";
       }
 
       if (data.iv_skew_curve) {
@@ -4083,7 +4590,11 @@
 
   function renderIVSkewCurve(points) {
     const container = document.getElementById("iv-skew-chart-container");
-    if (!container || !points || points.length === 0) return;
+    if (!container) return;
+    if (!points || points.length === 0) {
+      container.textContent = "No chain IV for this window.";
+      return;
+    }
 
     const width = container.clientWidth || 800;
     const height = 220;
@@ -4175,7 +4686,7 @@
                 ${pos.unrealized_pnl >= 0 ? "+" : ""}₹${pos.unrealized_pnl.toLocaleString("en-IN")}
               </td>
               <td>
-                <button class="btn btn-danger" style="font-size:0.68rem;padding:3px 8px" onclick="window.closePosition('${pos.trade_id}', ${pos.current_prem})">Close</button>
+                <button class="btn btn-danger" style="font-size:0.68rem;padding:3px 8px" onclick="window.beginClosePosition('${pos.trade_id}', ${pos.current_prem})">Close</button>
               </td>
             `;
             tbody.appendChild(tr);
@@ -4200,6 +4711,23 @@
       document.getElementById("scorecard-kpi-winrate").textContent = data.kpis.win_rate;
       document.getElementById("scorecard-kpi-pf").textContent = data.kpis.profit_factor;
       document.getElementById("scorecard-kpi-dd").textContent = data.kpis.max_drawdown;
+
+      const fillBreakdown = (id, rows, key) => {
+        const body = document.getElementById(id);
+        if (!body) return;
+        body.innerHTML = (rows || []).length
+          ? rows.map((r) => `<tr><td>${r[key]}</td><td>${r.trades}</td><td>${r.win_rate}</td><td>${r.net_pnl}</td></tr>`).join("")
+          : '<tr><td colspan="4">No closed trades.</td></tr>';
+      };
+      fillBreakdown("scorecard-regime-body", data.regime_breakdown, "regime");
+      fillBreakdown("scorecard-strategy-body", data.strategy_breakdown, "strategy");
+      const sentBody = document.getElementById("scorecard-sentinel-body");
+      if (sentBody) {
+        const rows = data.sentinel_outcomes || [];
+        sentBody.innerHTML = rows.length
+          ? rows.map((o) => `<tr><td>${o.signal_type}</td><td>${o.entry}</td><td>${o.mfe}</td><td>${o.mae}</td><td>${o.ret_5m}</td><td>${o.ret_15m}</td><td>${o.target_hit ? "Target" : o.stopped_out ? "Stopped" : "Open"}</td></tr>`).join("")
+          : '<tr><td colspan="7">No evaluated sentinel signals.</td></tr>';
+      }
 
       // Render Cumulative Equity Curve SVG
       const eqContainer = document.getElementById("equity-curve-container");
@@ -4287,6 +4815,8 @@
     }
   }
 
+  window.loadCommentary = loadCommentary;
+
   state.commentaryFilter = "ALL";
   state.commentaryData = null;
 
@@ -4372,16 +4902,16 @@
               <b style="font-size:1.05rem;font-family:var(--mono);color:${(pm.gap_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(pm.gap_pts || 0) >= 0 ? "+" : ""}${(pm.gap_pts || 0).toFixed(1)} pts (${(pm.gap_pct || 0) >= 0 ? "+" : ""}${(pm.gap_pct || 0).toFixed(2)}%)</b>
             </div>
             <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Dealer Walls</small>
+              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Gamma strikes</small>
               <b style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">${pm.walls || "24,600 / 24,400"}</b>
             </div>
             <div class="pre-bell-item">
               <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Favored Opening Play</small>
-              <b style="font-size:0.92rem;color:var(--spark)">${pm.favored_play || "Dip Buying near VWAP"}</b>
+              <b style="font-size:0.92rem;color:var(--spark)">${pm.favored_play || "Map only"}</b>
             </div>
           </div>
           <div style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:8px 12px;border-radius:6px;border:1px solid var(--line);margin-top:8px">
-            ${pm.briefing || "Dealer gamma pinned within absorption walls; pre-bell order balance suggests firm dip-buying interest."}
+            ${pm.regime_briefing || pm.briefing || "Prior-session gamma strikes. The open is a print on the book, not a fade."}
           </div>
           ${shocksTableHtml}
         `;
@@ -4422,11 +4952,11 @@
               </div>
               <div class="pre-bell-item">
                 <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Next Session Key Levels</small>
-                <b style="font-size:0.88rem;color:var(--spark)">${post.next_key_levels || "Key Walls Pinned"}</b>
+                <b style="font-size:0.88rem;color:var(--spark)">${post.next_key_levels || "Gamma strikes unavailable"}</b>
               </div>
             </div>
             <div style="font-size:0.82rem;line-height:1.6;color:var(--ink);background:var(--surface-2);padding:10px 14px;border-radius:6px;border:1px solid var(--line)">
-              ${post.institutional_wrap || post.status_text || "Institutional positioning completed with strong accumulation above the session VWAP. Put writers retain control into next expiry."}
+              ${post.institutional_wrap || post.settle_note || post.status_text || "Session concluded. The official close is a settlement print."}
             </div>
           `;
         } else {
@@ -4582,16 +5112,31 @@
     }
   };
 
-  window.closePosition = async function (tradeId, currentPrem) {
-    if (!confirm(`Confirm closing paper trade ${tradeId.slice(-6)} at ₹${currentPrem}?`)) return;
+  window.beginClosePosition = function (tradeId, currentPrem) {
+    state.closingTradeId = tradeId;
+    const panel = document.getElementById("journal-close-panel");
+    if (panel) panel.style.display = "block";
+    const idEl = document.getElementById("journal-close-id");
+    if (idEl) idEl.textContent = tradeId.slice(-8);
+    const prem = document.getElementById("journal-close-prem");
+    if (prem) prem.value = currentPrem;
+  };
+
+  window.closePosition = async function (tradeId, currentPrem, reason) {
     try {
       await fetch("/api/journal/close-position", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trade_id: tradeId, exit_premium: currentPrem }),
+        body: JSON.stringify({
+          trade_id: tradeId,
+          exit_premium: currentPrem,
+          reason: reason || "MANUAL",
+        }),
       });
+      const panel = document.getElementById("journal-close-panel");
+      if (panel) panel.style.display = "none";
       playCautionChime();
-      showToast(`Position ${tradeId.slice(-6)} closed`, "🛑");
+      showToast(`Position ${tradeId.slice(-6)} closed`);
       loadJournal();
       loadScorecard();
     } catch (e) {
@@ -4692,6 +5237,9 @@
         state.symbol = (e.target.value || "NIFTY").toUpperCase();
         cockpitChartState.symbol = state.symbol;
         cockpitChartState.currentBar = null;
+        state.lastCockpitDash = null;
+        state.tapeLatch = null;
+        state.lastTapePaintSig = null;
 
         // Clear forming bar HUD immediately so previous index values don't linger
         const chlOhlc = document.getElementById("chl-ohlc");
@@ -4890,7 +5438,7 @@
           return;
         }
         const headline = document.querySelector("#commentary-stream-container div:first-child div:nth-child(2)");
-        const textToSpeak = headline ? headline.textContent : "Gamma squeeze alert at 24,500 Call Wall";
+        const textToSpeak = headline ? headline.textContent : "Call-gamma concentration at 24,500";
         const utterance = new SpeechSynthesisUtterance(textToSpeak);
         const speedSel = document.getElementById("voice-speed-select");
         if (speedSel) utterance.rate = parseFloat(speedSel.value);
@@ -5039,6 +5587,34 @@
       body: JSON.stringify({ symbol: state.symbol, window: state.window }),
     }).catch(() => {});
     initWebSocket();
+    const pollPinAlerts = async () => {
+      try {
+        const res = await fetch("/api/recommendations/alerts");
+        const data = await res.json();
+        const alerts = data.alerts || [];
+        if (!alerts.length) return;
+        alerts.forEach((a) => {
+          showToast(`${a.event_type}: ${a.message || a.rec_id}`);
+          if (state.soundEnabled) playCautionChime();
+        });
+        await fetch("/api/recommendations/alerts/ack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ event_ids: alerts.map((a) => a.event_id) }),
+        });
+      } catch (e) {}
+    };
+    pollPinAlerts();
+    setInterval(pollPinAlerts, 20000);
+    const closeBtn = document.getElementById("journal-close-confirm");
+    if (closeBtn) {
+      closeBtn.addEventListener("click", () => {
+        if (!state.closingTradeId) return;
+        const prem = parseFloat(document.getElementById("journal-close-prem").value);
+        const reason = document.getElementById("journal-close-reason").value;
+        window.closePosition(state.closingTradeId, prem, reason);
+      });
+    }
     const bellBtn = document.getElementById("alert-bell-toggle-btn");
     if (bellBtn) {
       if (state.alertBellEnabled) {
@@ -5056,6 +5632,12 @@
     renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
     refreshAll();
     setInterval(loadStatus, 5000);
+    setInterval(() => {
+      if (state.activeTab === "tab-cockpit") loadCockpit();
+    }, 20000);
+    setInterval(() => {
+      if (!isClientPreBellWindow()) syncCockpitPreBellCard(false);
+    }, 1000);
   }
 
   if (document.readyState === "loading") {

@@ -1,15 +1,9 @@
-"""Score the session log for the dealer-sign behavioural test.
+"""Score the session log. Historical pin check only.
 
-With log_session.py run twice a day (open + ~3PM), each date has two snapshots.
-We pair them and check whether the ~3PM price PINNED inside the OPEN's wall range.
-
-Dealer-sign logic: if our `long_call_short_put` sign is correct, POSITIVE-gamma
-(calm) days should pin and NEGATIVE days should not. If POSITIVE-labelled days
-routinely escape the range (and/or NEGATIVE days pin), the sign may be INVERTED.
+Production GEX is call magnitude minus put magnitude. This script does not
+choose a sign model and must not be used to set DEALER_SIGN_MODEL.
 
   python scripts/score_sessions.py
-
-Pure functions (pair_by_day / score / summarise) are unit-tested offline.
 """
 
 from __future__ import annotations
@@ -111,13 +105,13 @@ def verdict(s: dict) -> str:
         return (f"Not enough paired POSITIVE-gamma days yet ({s['pos_days']}; aim for ~5–10). "
                 "Keep logging.")
     if pr >= 0.6:
-        msg = f"POSITIVE-gamma days pinned {pr:.0%} of the time — CONSISTENT with the long_call_short_put sign."
+        msg = f"Call-heavy days pinned {pr:.0%} of the time. Historical pin rate only. Do not change the GEX convention from this."
         if s["neg_pin_rate"] is not None and s["neg_pin_rate"] < pr:
             msg += f" (Negative days pinned less: {s['neg_pin_rate']:.0%} — further support.)"
         return msg
     if pr < 0.4:
-        return (f"POSITIVE-gamma days pinned only {pr:.0%} — the sign may be INVERTED or the "
-                "signal weak. Investigate before trusting (try flipping DEALER_SIGN_MODEL).")
+        return (f"Call-heavy days pinned only {pr:.0%}. That is a weak historical pin rate, "
+                "not a reason to add a second GEX convention.")
     return f"Mixed: positive-gamma pin rate {pr:.0%}. Keep logging for a clearer read."
 
 

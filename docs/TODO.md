@@ -75,9 +75,8 @@ source of truth); `big_money_analysis.py --db`. Flow-IC run: INSUFFICIENT (2 pai
 **+ Dashboard day-readout + tick REPLAY (2026-07-24):** analyse-compute moved to `app/big_money_analysis.py`
 (`analyse` / `analyse_frame`, shared by the script). Tape card now shows a "Day so far" readout for the
 selected symbol (counts, day OI, build-up ₹ split, net conviction + positioning share, heaviest prices).
-Sidebar *🎬 Replay big-money* scrubs a captured day (day + IST clock) — re-derives events tick-by-tick from
-the raw archive up to the clock (`rederive_events(upto_epoch=…)`, `available_raw_days`) and renders the tape
-+ readout as of that moment. Live + replay renders verified. 262 green.
+Sidebar day readout is live only. The *🎬 Replay big-money* clock was removed on 24 Oct 2026.
+`scripts/rederive_events.py` remains a command-line detector check, not a screen.
 
 **Remaining:** enable BSE (SENSEX); calibrate floors on a full session; RUN the flow-IC once sessions
 accrue; burst-level directional tag (long vs short build-up, needs window Δprice); intraday (half→half)
@@ -131,7 +130,7 @@ Dhan WS ─► collector (always-on) ─► append-only event store (JSONL/day) 
    qualifying event to `data/journal/big_money/<SYMBOL>/<day>.jsonl` (gitignored) with the EXCHANGE tick
    timestamp (not receipt time; note latency), plus a small in-memory ring for freshness. `--dry-run` prints to
    console (the day-1 calibration run). Graceful on close/disconnect; logs packet-rate stats on exit.
-4. **`app/simple_dashboard.py` — the tape fragment (read-only)**. A "🐋 Big-money tape" card that tails the
+4. **Web cockpit tape card (read-only)**. A big-money tape that tails the
    event store (last N events), one timestamped row each: `HH:MM:SS · index · ▲buy/▼sell · N lots · ₹X.Xcr ·
    @price`, colour by side, newest on top. Filters row: index / min-notional / side. Auto-refresh like the
    other live panels. Purely a readout — **no verdict, no trade call** (decision-support; you confirm).
@@ -169,9 +168,8 @@ base 5-pt bin — this task corrects it to the true expiry-week boundary and the
 1. **Factor Study #29's helpers into `app/market_profile.py`** (reuse, single source):
    - `expiry_week_days(symbol, source, today) -> list[str]` — trading days from **the day after the prior
      expiry through `today`**, bounded to ≤9 calendar days of `today` (skip feature-cache gaps). Find the
-     prior expiry with `data.replay._expiry_cache(symbol)` (dte<0.6 set) and fall back to
-     `data.expiry.next_weekly_expiry` when the cache doesn't cover recent days — same dual path
-     `data.replay.is_expiry_day` already uses. Port `_week_days`/`WEEK_MAX_GAP=9` from
+     prior expiry with `data.session_flags` (the expiry-day set) and fall back to
+     `data.expiry.next_weekly_expiry` when the cache doesn't cover recent days. Port `_week_days`/`WEEK_MAX_GAP=9` from
      `scripts/analyze_weekly_profile_blast.py`.
    - `weekly_bin(arr, base_bp, n_target=45)` — port `_weekly_bin`: coarsen to ~week_range/45 (≈10 pt for
      NIFTY) so `_count_modes`/VA read at session grain, not the 100+-bin jitter of the 5-pt bin.
@@ -180,16 +178,15 @@ base 5-pt bin — this task corrects it to the true expiry-week boundary and the
    ≤ now** (point-in-time; today's series is already fetched as `ts` for `today_prof`, reuse it), concat, and
    `day_profile(pd.Series(arr), bin_pts=weekly_bin(arr, bp))`. Keep the graceful-None contract (short/empty
    week → `weekly=None`). Add the week's day-count to the return dict (e.g. `"week_days": n`).
-3. **Relabel the UI "5-day"→"week"** — the toggle text/help (`app/simple_dashboard.py` ~449-451: "📊 Weekly
-   value (expiry week)"), the candle legend "5-day (5D·)" (~723-725), and the label prefixes inside
-   `_range_candle` where the weekly VAH/POC/VAL are drawn dotted (grep "5D" in `_range_candle`, ~1200-1260).
-   Keep the dotted style so week ≠ prior-day (dashed) ≠ today (solid).
-4. **Docs:** `docs/simple-dashboard.md` §4.6 — one line that the composite is now the true expiry-week (Wed→Tue)
+3. **Relabel the web UI "5-day"→"week"** — the toggle text and the candle legend.
+   Keep the dotted style so week ≠ prior-day (dashed) ≠ today (solid). The Streamlit
+   simple dashboard that used to draw this was removed.
+4. **Docs:** one line that the composite is now the true expiry-week (Wed→Tue)
    value map, explicitly a **reference map, not a signal** (cite Study #29's n.s. combined result so nobody
    reads the overlay as a trigger).
 5. **Tests (`tests/test_market_profile.py` or a new `tests/test_expiry_week.py`):** `expiry_week_days` returns
    Wed→Tue for a known expiry and drops a >9-day cache gap; `weekly_bin` coarsens a wide-range week and floors
-   at `base_bp` for a narrow one; `overlay_profiles(weekly=True)` on a replay/stored day yields a `weekly` dict
+   at `base_bp` for a narrow one; `overlay_profiles(weekly=True)` on a stored session yields a `weekly` dict
    whose VAL≤POC≤VAH and `week_days≈5`, and `None` when there's <2 week-days.
 
 **Explicitly out of scope:** any spot-vs-weekly-value or pin↔weekly-POC **distance readout / chip / verdict
@@ -240,8 +237,9 @@ Effort: med–high. ⚠️ Direction is dead (research arc); the defensible vers
 (|vanna|→forward vol) into a decision. The dashboard currently stops at "SIDEWAYS/TRENDING".
 
 **Build:** a `_regime_posture_section` (dashboard) keyed to `intraday_vol_regime` tag + exp_rv:
-- **HIGH concentration (calm/pinning)** → mean-revert: fade extremes toward the magnet, sell
-  premium near the walls, tighter stops, size UP.
+- **HIGH concentration** → calmer forward vol in the sample. Do not fade to the
+  magnet because a label says positive gamma. Short strikes, if any, sit outside
+  the gamma concentrations. Defined risk. The user confirms.
 - **LOW concentration (trending/wild)** → respect the break: momentum/breakout, buy premium,
   stops BEYOND the walls, size DOWN.
 - **MID** → neutral / mixed, no vol-regime tilt.
@@ -453,7 +451,7 @@ for the footprint context.
 **nearest-expiry** OI-change + premium-change, both vs prev close (aligned expiry + window).
 Wired through `app/data_access.py` (enrich `oi_strikes`), `app/timeseries.py`
 (`STRIKE_FIELDS` + `build_strike_rows`, back-compat), `app/oi_footprint.py::top_builds`
-(passthrough `doi_near`/`dprem`), and `app/dashboard.py::_oi_footprint_section` (prefer the
+(passthrough `doi_near`/`dprem`), and the web footprint card (prefer the
 EXACT tag from a single snapshot, fall back to the intraday first→latest method for old
 CSVs; caption states which). Tests in `tests/test_oi_footprint.py` (fixture: CE 23550 →
 +221 / −76.25 → writing). The build-up tag is now exact for live snapshots, no ≥2-snapshot

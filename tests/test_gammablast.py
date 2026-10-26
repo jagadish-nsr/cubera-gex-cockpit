@@ -172,7 +172,8 @@ def test_evaluate_dashboard_gamma_blast_0dte_breakout():
     assert res["is_expiry"] is True
     assert res["in_blast_window"] is True
     assert res["state"] == "TRIGGERED"
-    assert "ACTIVE (CALL SQUEEZE)" in res["badge"]
+    assert res["badge"] == "GAMMA BLAST: ACTIVE"
+    assert "call-gamma strike" in res["description"]
     assert res["score"] >= 60
 
 

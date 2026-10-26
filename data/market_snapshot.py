@@ -204,7 +204,8 @@ def _bootstrap_from_disk(symbol: str) -> dict[str, Any] | None:
             rows, c_spot = parse_nse_option_chain(c)
             if rows:
                 snap = from_nse_results(rows, spot=c_spot, expiry_window="weekly", underlying=sym, dealer_sign_model="short_call_short_put")
-                lvls = compute_levels(snap)
+                import config as app_config
+                lvls = compute_levels(snap, contract_size=app_config.get_index(sym).lot_size)
                 spot = spot or float(lvls.spot)
                 cw = float(lvls.call_wall)
                 pw = float(lvls.put_wall)

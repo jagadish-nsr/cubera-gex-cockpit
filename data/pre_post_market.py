@@ -9,8 +9,8 @@ Implements:
 2. Post-Market Session Analysis (15:30–16:00 IST):
    - F&O Extended Session monitoring (15:30–15:40 IST)
    - Cash Closing Auction Session (CAS) 30-min VWAP settlement capture
-   - Dealer Pinning Efficiency Index against Call/Put Walls
-   - Settlement Divergence vs 15:30 continuous close
+   - Distance of the official settle to the nearer gamma strike. That distance is a location, not a hedge score.
+   - Settlement divergence versus the 15:30 continuous close
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ _PRE_MARKET_CACHE: dict[str, dict] = {}     # symbol -> pre-market state dict
 _POST_MARKET_CACHE: dict[str, dict] = {}    # symbol -> post-market state dict
 _CHIME_TRIGGERED_DAYS: set[tuple[str, str]] = set()  # (symbol, "YYYY-MM-DD")
 _CACHE_LOCK = threading.Lock()
+_PM_THREADS: dict[str, threading.Thread] = {}
 
 
 def _get_db_conn() -> sqlite3.Connection:
@@ -498,8 +499,8 @@ def get_pre_market_state(
                 "gap_pct": g_pct,
                 "gap_fill_status": g_fill,
                 "gap_regime": persisted.get("gap_regime") or "AUCTION_BALANCED",
-                "favored_play": persisted.get("favored_play") or "RANGE ACCUMULATION",
-                "regime_badge": persisted.get("regime_badge") or "⚖️ BALANCED AUCTION",
+                "favored_play": persisted.get("favored_play") or "MAP ONLY",
+                "regime_badge": persisted.get("regime_badge") or "⚖️ FLAT OPEN",
                 "regime_color": persisted.get("regime_color") or "var(--spark)",
                 "regime_briefing": persisted.get("regime_briefing") or "",
                 "discovered_at": persisted.get("discovered_at") or "09:08:15",
@@ -570,8 +571,8 @@ def get_pre_market_state(
         "gap_pct": 0.0,
         "gap_fill_status": "UNFILLED",
         "gap_regime": "AUCTION_BALANCED",
-        "favored_play": "RANGE ACCUMULATION",
-        "regime_badge": "⚖️ BALANCED AUCTION",
+        "favored_play": "MAP ONLY",
+        "regime_badge": "⚖️ AWAITING OPEN",
         "regime_color": "var(--spark)",
         "discovered_at": None,
         "status_text": (
@@ -582,18 +583,27 @@ def get_pre_market_state(
         "_polled_at": time.time(),
     }
 
-    # If before 09:07:30, pre-open equilibrium matching has not occurred yet
-    if phase_code == "PRE_MARKET_ENTRY":
-        state["status_text"] = f"Pre-Open Auction Collection (09:00–09:08) · FII: {fii_bias} ({fii_net_fut:+d} fut) · Matching at ~09:08:00"
+    # HTTP/WS readers never hit Dhan. A background poller (force_refresh=True) is the ingest.
+    if not force_refresh:
+        if phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY"):
+            try:
+                ensure_pre_market_poller(symbol)
+            except Exception:
+                pass
         with _CACHE_LOCK:
+            existing = _PRE_MARKET_CACHE.get(symbol.upper())
+            if existing and existing.get("date") == today_str:
+                existing["phase_code"] = phase_code
+                existing["phase_label"] = phase_label
+                existing["is_pre_market"] = phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")
+                return existing
             _PRE_MARKET_CACHE[symbol.upper()] = state
         return state
 
-    # Adaptive Poll (runs ONLY when phase is PRE_MARKET_DISCOVERY or REGULAR_SESSION or force_refresh)
-    if not force_refresh and phase_code not in ("PRE_MARKET_DISCOVERY", "REGULAR_SESSION"):
-        with _CACHE_LOCK:
-            _PRE_MARKET_CACHE[symbol.upper()] = state
-        return state
+    if phase_code == "PRE_MARKET_ENTRY":
+        state["status_text"] = (
+            f"Pre-Open Auction Collection (09:00–09:08) · FII: {fii_bias} ({fii_net_fut:+d} fut) · Matching at ~09:08:00"
+        )
 
     try:
         from data.dhan_live import fetch_index_ohlc
@@ -655,9 +665,95 @@ def get_pre_market_state(
     except Exception as e:
         log.debug(f"Pre-market poll failed for {symbol}: {e}")
 
+    if state.get("is_discovered"):
+        state = attach_pre_market_shocks(state)
     with _CACHE_LOCK:
         _PRE_MARKET_CACHE[symbol.upper()] = state
     return state
+
+
+def ensure_pre_market_poller(symbol: str = "NIFTY") -> None:
+    """One daemon per index: Dhan OHLC poll 08:50–09:20 IST. Never called on the HTTP path's clock."""
+    sym = symbol.upper().strip()
+    with _CACHE_LOCK:
+        t = _PM_THREADS.get(sym)
+        if t is not None and t.is_alive():
+            return
+        t = threading.Thread(target=_pre_market_loop, args=(sym,), daemon=True, name=f"pm-{sym}")
+        _PM_THREADS[sym] = t
+        t.start()
+
+
+def ensure_pre_market_pollers() -> None:
+    for s in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        ensure_pre_market_poller(s)
+
+
+def _pre_market_loop(symbol: str) -> None:
+    while True:
+        now = datetime.now(IST)
+        tmin = now.hour * 60 + now.minute
+        if now.weekday() >= 5 or tmin >= 9 * 60 + 22 or tmin < 8 * 60 + 50:
+            time.sleep(20.0)
+            continue
+        try:
+            get_pre_market_state(symbol, force_refresh=True, now=now)
+        except Exception as exc:
+            log.debug("pre-market poller %s: %s", symbol, exc)
+        time.sleep(3.0)
+
+
+def attach_pre_market_shocks(state: dict, contracts_df: Any = None, dte_days: float = 3.0, atm_iv: float = 0.14) -> dict:
+    """Black-76 ATM-band shocks onto a discovered pre-open state. No network."""
+    if not state or not state.get("is_discovered"):
+        return state
+    if state.get("projected_strikes"):
+        return state
+    disc = float(state.get("discovered_spot") or 0.0)
+    prev = float(state.get("prev_close") or 0.0)
+    if disc <= 0 or prev <= 0:
+        return state
+    if contracts_df is None:
+        contracts_df = _contracts_from_published(state.get("symbol") or "NIFTY")
+    try:
+        shocks = calculate_pre_market_option_shocks(
+            discovered_spot=disc,
+            prev_close=prev,
+            contracts_df=contracts_df,
+            symbol=str(state.get("symbol") or "NIFTY"),
+            dte_days=dte_days,
+            atm_iv=atm_iv,
+        )
+        state["atm_straddle_prev"] = shocks.get("atm_straddle_prev")
+        state["atm_straddle_projected"] = shocks.get("atm_straddle_projected")
+        state["straddle_shock_pct"] = shocks.get("straddle_shock_pct")
+        state["projected_strikes"] = shocks.get("projected_strikes") or []
+        save_option_shocks(str(state.get("symbol") or "NIFTY"), shocks, trade_date=state.get("date"))
+    except Exception as exc:
+        log.debug("pre-market shocks failed: %s", exc)
+    return state
+
+
+def _contracts_from_published(symbol: str):
+    try:
+        from app.live_fetcher import latest as chain_latest
+        pub = chain_latest(symbol, "current_week") or chain_latest(symbol)
+        dash = pub.get("data") if pub else None
+        if dash is not None:
+            return getattr(dash, "contracts", None)
+    except Exception:
+        pass
+    try:
+        import pickle
+        p = Path("data/journal") / f"latest_snap_{symbol.upper()}.pkl"
+        if p.exists():
+            with open(p, "rb") as f:
+                wrap = pickle.load(f)
+            dash = wrap.get("data") if isinstance(wrap, dict) else wrap
+            return getattr(dash, "contracts", None)
+    except Exception:
+        pass
+    return None
 
 
 def acknowledge_pre_market_chime(symbol: str = "NIFTY") -> None:
@@ -670,6 +766,61 @@ def acknowledge_pre_market_chime(symbol: str = "NIFTY") -> None:
             cached["should_play_chime"] = False
 
 
+def _book_label(net_gex: float) -> str:
+    """Call-heavy only when call-gamma magnitude exceeds put-gamma magnitude."""
+    if net_gex > 0:
+        return "call-heavy"
+    if net_gex < 0:
+        return "put-heavy"
+    return "book sign unavailable"
+
+
+def _book_sentence(net_gex: float) -> str:
+    if net_gex > 0:
+        return "Call gamma is larger than put gamma. "
+    if net_gex < 0:
+        return "Put gamma is larger than call gamma. "
+    return ""
+
+
+def settle_vs_gamma_strikes(
+    settle: float,
+    call_wall: float,
+    put_wall: float,
+    step: float,
+) -> dict:
+    """How close the official settle printed to the nearer gamma strike.
+
+    The stored column names stay pin_efficiency_pct and pin_target_wall so older
+    rows still load. The number is closeness, not a claim that a strike was defended.
+    """
+    candidates: list[tuple[float, str]] = []
+    if call_wall > 0:
+        candidates.append((abs(settle - call_wall), f"{call_wall:,.0f} call-gamma"))
+    if put_wall > 0:
+        candidates.append((abs(settle - put_wall), f"{put_wall:,.0f} put-gamma"))
+    if settle <= 0 or not candidates or step <= 0:
+        return {
+            "pin_efficiency_pct": None,
+            "pin_target_wall": "",
+            "settle_distance_pts": None,
+            "settle_note": "No gamma strike on the book for this close.",
+        }
+    dist = min(item[0] for item in candidates)
+    names = [name for gap, name in candidates if gap == dist]
+    name = " and ".join(names)
+    closeness = max(0.0, 100.0 - (dist / step) * 100.0)
+    return {
+        "pin_efficiency_pct": round(closeness, 1),
+        "pin_target_wall": name,
+        "settle_distance_pts": round(dist, 1),
+        "settle_note": (
+            f"Official settle is {dist:,.1f} pts from the {name} {'strikes' if len(names) > 1 else 'strike'}. "
+            "That distance is a location, not a pin."
+        ),
+    }
+
+
 def classify_opening_gap(
     gap_pts: float,
     gap_pct: float,
@@ -679,104 +830,110 @@ def classify_opening_gap(
     flip: float = 0.0,
     net_gex: float = 0.0,
 ) -> dict:
-    """Classify discovered opening gap relative to GEX boundaries and generate strategic briefing."""
-    is_pos_gamma = (flip > 0 and spot >= flip) or (net_gex > 0)
+    """Locate the opening print on the book.
 
-    # 1. Structural wall tests
+    The flip argument is a price. Spot above that price is a location.
+    Call-heavy is net_gex > 0 only. A strike is not a floor.
+    """
+    above_balance = flip > 0 and spot >= flip
+    book = _book_label(net_gex)
+    book_line = _book_sentence(net_gex)
+    flip_txt = f"₹{flip:,.0f}" if flip else "unavailable"
+
     if call_wall > 0 and spot >= call_wall - 15.0:
         if spot >= call_wall + 10.0:
             regime = "CALL_WALL_BREACH_SQUEEZE"
-            badge = "🚀 CALL WALL BREACH (SQUEEZE)"
+            badge = "🚀 OPEN ABOVE CALL-GAMMA STRIKE"
             color = "var(--go)"
             briefing = (
-                f"Indicative open at ₹{spot:,.0f} has breached above the Call Wall (₹{call_wall:,.0f}). "
-                f"Call writers face severe short gamma squeeze; expect explosive upside momentum if 09:15 opening print holds."
+                f"Indicative open at ₹{spot:,.0f} is above the call-gamma strike (₹{call_wall:,.0f}). "
+                f"That is a location on the book ({book}; balance {flip_txt}). It is not a dealer squeeze."
             )
-            favored_play = "GAMMA SQUEEZE BREAKOUT"
+            favored_play = "WATCH HOLD ABOVE CALL STRIKE"
         else:
             regime = "SHORT_GAMMA_WALL_TEST"
-            badge = "🚨 CALL WALL BREACH"
+            badge = "🚨 AT CALL-GAMMA STRIKE"
             color = "var(--warn)"
             briefing = (
-                f"Indicative open at ₹{spot:,.0f} directly challenges Call Wall (₹{call_wall:,.0f}). "
-                f"Dealers face short gamma acceleration — watch for explosive buy squeeze at 09:15 bell."
+                f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
+                f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
             )
-            favored_play = "MOMENTUM CALLS"
+            favored_play = "WATCH THE CALL STRIKE"
     elif put_wall > 0 and spot <= put_wall + 15.0:
         if spot <= put_wall - 10.0:
             regime = "PUT_WALL_BREAKDOWN_CASCADE"
-            badge = "🔴 PUT WALL BREAKDOWN"
+            badge = "🔴 OPEN BELOW PUT-GAMMA STRIKE"
             color = "var(--stop)"
             briefing = (
-                f"Indicative open at ₹{spot:,.0f} has cracked below Put Wall support (₹{put_wall:,.0f}). "
-                f"Dealers face unhedged short gamma acceleration; failure to reclaim triggers cascading liquidation."
+                f"Indicative open at ₹{spot:,.0f} is below the put-gamma strike (₹{put_wall:,.0f}). "
+                f"Book is {book} (balance {flip_txt}). It is not a cascade and not a floor that failed."
             )
-            favored_play = "NEGATIVE GAMMA CASCADE"
+            favored_play = "WATCH HOLD BELOW PUT STRIKE"
         else:
             regime = "PUT_WALL_BREAKDOWN_TEST"
-            badge = "⚠️ PUT WALL DEFENSE"
+            badge = "⚠️ AT PUT-GAMMA STRIKE"
             color = "var(--stop)"
             briefing = (
-                f"Indicative open at ₹{spot:,.0f} tests Put Wall support (₹{put_wall:,.0f}). "
-                f"Option writers must absorb sell volume; failure triggers long gamma liquidation."
+                f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
+                f"Book is {book} (balance {flip_txt}). A touch is not a defense."
             )
-            favored_play = "PUT EXHAUSTION / REVERSAL"
+            favored_play = "WATCH THE PUT STRIKE"
     elif gap_pct >= 0.40:
-        if is_pos_gamma and call_wall > 0 and spot < call_wall - 35.0:
+        if above_balance and call_wall > 0 and spot < call_wall - 35.0:
             regime = "GAP_UP_INTO_POS_GAMMA"
-            badge = "⚖️ GAP INTO POSITIVE GAMMA"
+            badge = "⚖️ GAP UP, ABOVE THE BALANCE"
             color = "var(--go)"
             briefing = (
-                f"Positive opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) opens within positive dealer gamma (Flip: ₹{flip:,.0f}). "
-                f"Dealer hedging dampens runaway momentum. Look for initial gap fade back toward Session VWAP before initiating longs."
+                f"Opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) with spot above the call−put balance ({flip_txt}). "
+                f"Book is {book}. {book_line}That is a location, not a gap fade."
             )
-            favored_play = "VWAP DIP BUY / GAP FADE"
+            favored_play = "MAP ONLY — NO FADE"
         else:
             regime = "GAP_UP_RUNAWAY"
-            badge = "🚀 GAP & GO (BULLISH)"
+            badge = "🚀 GAP UP"
             color = "var(--go)"
             briefing = (
-                f"Strong positive opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
-                f"Momentum favors upside continuation if 09:15 opening 3m range holds above ₹{spot - 20:,.0f}."
+                f"Opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
+                f"Book is {book} (balance {flip_txt}). The gap is a print, not a dealer chase."
             )
-            favored_play = "CE MOMENTUM"
+            favored_play = "WATCH THE GAP"
     elif gap_pct <= -0.40:
-        if is_pos_gamma and put_wall > 0 and spot > put_wall + 30.0:
+        if above_balance and put_wall > 0 and spot > put_wall + 30.0:
             regime = "GAP_DOWN_INTO_POS_GAMMA"
-            badge = "⚖️ GAP DOWN IN POSITIVE GAMMA"
+            badge = "⚖️ GAP DOWN, ABOVE THE BALANCE"
             color = "var(--warn)"
             briefing = (
-                f"Downward opening rotation of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) into positive dealer gamma buffer. "
-                f"Institutional put writing cushions downside; expect mean-reversion bounce toward Session VWAP."
+                f"Opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) with spot still above the call−put balance ({flip_txt}). "
+                f"Book is {book}. {book_line}A print above the balance is not a bounce."
             )
-            favored_play = "EXHAUSTION BOUNCE / PUT SPREAD"
+            favored_play = "MAP ONLY — NO BOUNCE"
         else:
             regime = "GAP_DOWN_TRAP"
-            badge = "🔴 GAP & GO (BEARISH)"
+            badge = "🔴 GAP DOWN"
             color = "var(--stop)"
             briefing = (
-                f"Significant downward gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
-                f"Bearish momentum dominant; watch for continuation puts or bounce failure at previous close."
+                f"Opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
+                f"Book is {book} (balance {flip_txt}). The gap is a print, not a cascade."
             )
-            favored_play = "PE MOMENTUM"
+            favored_play = "WATCH THE GAP"
     elif abs(gap_pct) <= 0.15:
         regime = "AUCTION_BALANCED"
-        badge = "⚖️ BALANCED AUCTION"
+        badge = "⚖️ FLAT OPEN"
         color = "var(--spark)"
         briefing = (
-            f"Flat/balanced open ({gap_pts:+.1f} pts / {gap_pct:+.2f}%). "
-            f"Expect initial two-sided mean-reversion around Session VWAP before directional trend develops."
+            f"Flat open ({gap_pts:+.1f} pts / {gap_pct:+.2f}%). "
+            f"Book is {book} (balance {flip_txt}). No book-balance trade."
         )
-        favored_play = "RANGE ACCUMULATION"
+        favored_play = "NO BOOK TRADE"
     else:
         regime = "MODERATE_DRIFT"
         badge = "📈 MODERATE GAP" if gap_pct > 0 else "📉 MODERATE GAP"
-        color = "var(--go)" if gap_pct > 0 else "var(--stop)"
+        color = "var(--ink)"
         briefing = (
-            f"Moderate opening rotation of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
-            f"Structure neutral to mildly {'bullish' if gap_pct > 0 else 'bearish'} entering 09:15."
+            f"Moderate opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%). "
+            f"Book is {book} (balance {flip_txt})."
         )
-        favored_play = "CE STRUCTURAL" if gap_pct > 0 else "PE STRUCTURAL"
+        favored_play = "MAP ONLY"
 
     return {
         "regime": regime,
@@ -968,13 +1125,48 @@ def calculate_pre_market_option_shocks(
     return res
 
 
+def _with_measured_settle(state: dict, symbol: str) -> dict:
+    """Replace the stamped 100% / Call Wall placeholder with the distance to a gamma strike."""
+    pct = state.get("pin_efficiency_pct")
+    wall = (state.get("pin_target_wall") or "").strip()
+    try:
+        pct_f = None if pct is None else float(pct)
+    except (TypeError, ValueError):
+        pct_f = None
+    levels = state.get("next_key_levels") or ""
+    stamped = pct_f == 100.0 and wall in ("", "Call Wall", "Put Wall")
+    abbreviated = " CW" in levels or " PW" in levels
+    if not stamped and not abbreviated:
+        return state
+    from data.market_snapshot import get_snapshot
+    snap = get_snapshot(symbol) or {}
+    call_wall = float(snap.get("call_wall") or 0.0)
+    put_wall = float(snap.get("put_wall") or 0.0)
+    if stamped:
+        near = settle_vs_gamma_strikes(
+            float(state.get("settlement_spot") or 0.0),
+            call_wall,
+            put_wall,
+            float(config.strike_step_for(symbol)),
+        )
+        state["pin_efficiency_pct"] = near["pin_efficiency_pct"]
+        state["pin_target_wall"] = near["pin_target_wall"]
+        state["settle_distance_pts"] = near["settle_distance_pts"]
+        state["settle_note"] = near["settle_note"]
+        if not state.get("institutional_wrap"):
+            state["institutional_wrap"] = near["settle_note"]
+    if call_wall > 0 and put_wall > 0 and (not levels or abbreviated):
+        state["next_key_levels"] = f"₹{call_wall:,.0f} call-gamma / ₹{put_wall:,.0f} put-gamma"
+    return state
+
+
 def get_post_market_state(
     symbol: str = "NIFTY",
     force_refresh: bool = False,
     now: datetime | None = None,
     session_date: str | None = None,
 ) -> dict:
-    """Retrieve post-closing settlement state, CAS 30-min VWAP reconciliation, and dealer pin efficiency."""
+    """Retrieve the official close, the cash-auction drift, and the distance to the nearer gamma strike."""
     now_ist = now or datetime.now(IST)
     today_str = now_ist.strftime("%Y-%m-%d")
     target_date = session_date or today_str
@@ -987,7 +1179,7 @@ def get_post_market_state(
             p_close = float(persisted.get("prev_close") or s_spot)
             net_pts = float(persisted.get("net_change_pts") or (round(s_spot - p_close, 1) if p_close > 0 else 0.0))
             net_pct = float(persisted.get("net_change_pct") or (round((net_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0))
-            return {
+            return _with_measured_settle({
                 "symbol": symbol.upper(),
                 "date": target_date,
                 "is_post_market": True,
@@ -995,8 +1187,9 @@ def get_post_market_state(
                 "settlement_spot": s_spot,
                 "last_continuous_spot": float(persisted.get("last_continuous_spot") or s_spot),
                 "settlement_divergence_pts": float(persisted.get("settlement_divergence_pts") or 0.0),
-                "pin_efficiency_pct": float(persisted.get("pin_efficiency_pct") or 100.0),
-                "pin_target_wall": persisted.get("pin_target_wall") or "Call Wall",
+                "pin_efficiency_pct": persisted.get("pin_efficiency_pct"),
+                "pin_target_wall": persisted.get("pin_target_wall") or "",
+                "settle_note": persisted.get("settle_note") or "",
                 "settled_at": persisted.get("settled_at") or "15:40:00",
                 "closing_cvd": float(persisted.get("closing_cvd") or 0.0),
                 "orderflow_bias": persisted.get("orderflow_bias") or "",
@@ -1010,7 +1203,7 @@ def get_post_market_state(
                 "net_change_pct": net_pct,
                 "next_key_levels": persisted.get("next_key_levels") or "",
                 "institutional_wrap": persisted.get("institutional_wrap") or "",
-            }
+            }, symbol)
 
     with _CACHE_LOCK:
         cached = _POST_MARKET_CACHE.get(symbol.upper())
@@ -1038,8 +1231,9 @@ def get_post_market_state(
             "settlement_spot": fallback_spot,
             "last_continuous_spot": fallback_spot,
             "settlement_divergence_pts": 0.0,
-            "pin_efficiency_pct": 100.0,
-            "pin_target_wall": "Call Wall",
+            "pin_efficiency_pct": None,
+            "pin_target_wall": "",
+            "settle_note": "Settlement prints after the close. No closeness is measured yet.",
             "settled_at": None,
             "status_text": "Active Trading Session · Settlement at 15:40 IST",
             "day_range": "",
@@ -1071,8 +1265,9 @@ def get_post_market_state(
                     "settlement_spot": p_settle,
                     "last_continuous_spot": float(persisted.get("last_continuous_spot") or p_settle),
                     "settlement_divergence_pts": float(persisted.get("settlement_divergence_pts") or 0.0),
-                    "pin_efficiency_pct": float(persisted.get("pin_efficiency_pct") or 100.0),
-                    "pin_target_wall": persisted.get("pin_target_wall") or "Call Wall",
+                    "pin_efficiency_pct": persisted.get("pin_efficiency_pct"),
+                    "pin_target_wall": persisted.get("pin_target_wall") or "",
+                    "settle_note": persisted.get("settle_note") or "",
                     "settled_at": persisted.get("settled_at") or "15:40:00",
                     "closing_cvd": float(persisted.get("closing_cvd") or 0.0),
                     "orderflow_bias": persisted.get("orderflow_bias") or "",
@@ -1083,6 +1278,7 @@ def get_post_market_state(
                     "next_key_levels": persisted.get("next_key_levels") or "",
                     "institutional_wrap": persisted.get("institutional_wrap") or "",
                 }
+                rehydrated = _with_measured_settle(rehydrated, symbol)
                 with _CACHE_LOCK:
                     _POST_MARKET_CACHE[symbol.upper()] = rehydrated
                 return rehydrated
@@ -1115,7 +1311,12 @@ def get_post_market_state(
     cw = float(snap.get("call_wall") or 0.0)
     pw = float(snap.get("put_wall") or 0.0)
     d_range = f"₹{hi:,.1f} / ₹{lo:,.1f}" if hi > 0 and lo > 0 else ""
-    key_lvls = f"₹{cw:,.0f} CW / ₹{pw:,.0f} PW" if cw > 0 and pw > 0 else ""
+    key_lvls = (
+        f"₹{cw:,.0f} call-gamma / ₹{pw:,.0f} put-gamma" if cw > 0 and pw > 0 else ""
+    )
+    near = settle_vs_gamma_strikes(
+        settle_px, cw, pw, float(config.strike_step_for(symbol)),
+    )
 
     state = {
         "symbol": symbol.upper(),
@@ -1125,8 +1326,11 @@ def get_post_market_state(
         "settlement_spot": settle_px,
         "last_continuous_spot": cont_px,
         "settlement_divergence_pts": round(settle_px - cont_px, 2),
-        "pin_efficiency_pct": 100.0,
-        "pin_target_wall": "Call Wall",
+        "pin_efficiency_pct": near["pin_efficiency_pct"],
+        "pin_target_wall": near["pin_target_wall"],
+        "settle_distance_pts": near["settle_distance_pts"],
+        "settle_note": near["settle_note"],
+        "institutional_wrap": near["settle_note"],
         "settled_at": "15:40:00",
         "status_text": "Session Concluded · Final Settlement Reconciled",
         "prev_close": prev_close_ref,
@@ -1214,310 +1418,4 @@ def is_recently_triggered(triggered_at_str: str, max_age_seconds: float = 600.0)
         return 0 <= diff_sec <= max_age_seconds
     except Exception:
         return False
-
-
-def render_pre_market_commentary_card(symbol: str, data: Any = None, session_date: str | None = None) -> None:
-    """Render Pre-Market Tactical Analysis card at top of Commentary tab."""
-    import streamlit as st
-    try:
-        now_ist = datetime.now(IST)
-        today_str = now_ist.strftime("%Y-%m-%d")
-        sym_u = symbol.upper()
-        target_date = session_date or today_str
-
-        persisted = get_persisted_auction_record(sym_u, target_date) or {}
-        if target_date == today_str:
-            pm = get_pre_market_state(sym_u, now=now_ist)
-        else:
-            pm = persisted
-
-        # GEX levels
-        cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0) or 0.0)
-        pw = float(getattr(getattr(data, "levels", None), "put_wall", 0.0) or 0.0)
-        flip = float(getattr(getattr(data, "levels", None), "flip", 0.0) or 0.0)
-        if cw == 0.0 or pw == 0.0:
-            from data.market_snapshot import get_snapshot
-            snap = get_snapshot(sym_u) or {}
-            cw = cw or float(snap.get("call_wall") or 0.0)
-            pw = pw or float(snap.get("put_wall") or 0.0)
-            flip = flip or float(snap.get("gamma_flip") or 0.0)
-
-        is_disc = bool(pm.get("is_discovered")) or bool(persisted.get("is_discovered"))
-        if is_disc:
-            disc_spot = float(pm.get("discovered_spot") or persisted.get("discovered_spot") or 0.0)
-            gap_pts = float(pm.get("gap_pts") if pm.get("gap_pts") is not None else (persisted.get("gap_pts") or 0.0))
-            gap_pct = float(pm.get("gap_pct") if pm.get("gap_pct") is not None else (persisted.get("gap_pct") or 0.0))
-            disc_time = pm.get("discovered_at") or persisted.get("discovered_at") or "09:08:15"
-            gap_fill_status = pm.get("gap_fill_status") or persisted.get("gap_fill_status") or "UNFILLED"
-
-            gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw, pw, flip)
-            badge_html = f'<span class="sentinel-chip" style="background:var(--surface-2);color:{gap_cls["color"]};border:1px solid {gap_cls["color"]};font-size:.74rem">{gap_cls["badge"]}</span>'
-
-            sign_str = "+" if gap_pts >= 0 else ""
-            if gap_fill_status == "FILLED":
-                fill_chip = '<span class="sentinel-chip" style="background:rgba(34,197,94,.12);color:var(--go);border:1px solid rgba(34,197,94,.3);font-size:.70rem">✅ GAP FILLED</span>'
-                fill_note = "Opening gap has been filled — mean-reversion cycle completed back to previous close."
-            else:
-                fill_chip = '<span class="sentinel-chip" style="background:rgba(245,158,11,.12);color:#f59e0b;border:1px solid rgba(245,158,11,.3);font-size:.70rem">⚡ GAP UNFILLED</span>'
-                fill_note = f"Opening gap holding {sign_str}{gap_pts:,.1f} pts — directional momentum dominant ({gap_cls['favored_play']})."
-
-            strikes_data = pm.get("projected_strikes") or persisted.get("projected_strikes") or []
-            straddle_shock_pct = pm.get("straddle_shock_pct") if pm.get("straddle_shock_pct") is not None else persisted.get("straddle_shock_pct")
-            atm_straddle_prev = pm.get("atm_straddle_prev") if pm.get("atm_straddle_prev") is not None else persisted.get("atm_straddle_prev")
-            atm_straddle_proj = pm.get("atm_straddle_projected") if pm.get("atm_straddle_projected") is not None else persisted.get("atm_straddle_projected")
-
-            if not strikes_data:
-                try:
-                    raw_dte = getattr(data, "dte_now", None) if data else None
-                    p_close = float(pm.get("prev_close") or persisted.get("prev_close") or (disc_spot - gap_pts))
-                    shocks = calculate_pre_market_option_shocks(
-                        discovered_spot=disc_spot,
-                        prev_close=p_close,
-                        contracts_df=getattr(data, "contracts", None),
-                        symbol=sym_u,
-                        dte_days=float(raw_dte if raw_dte is not None else 3.0),
-                        atm_iv=float(getattr(getattr(data, "levels", None), "atm_iv", None) or 0.14),
-                    )
-                    strikes_data = shocks.get("projected_strikes") or []
-                    straddle_shock_pct = shocks.get("straddle_shock_pct")
-                    atm_straddle_prev = shocks.get("atm_straddle_prev")
-                    atm_straddle_proj = shocks.get("atm_straddle_projected")
-                except Exception as ex:
-                    log.debug(f"Option shocks calculation error in commentary: {ex}")
-
-            straddle_chip_html = ""
-            if straddle_shock_pct is not None and atm_straddle_prev and atm_straddle_proj:
-                straddle_clr = "var(--go)" if straddle_shock_pct >= 0 else "var(--stop)"
-                exp_label = "Expansion" if straddle_shock_pct >= 0 else "Crush"
-                straddle_chip_html = (
-                    f'<span style="font-size:.70rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);padding:2px 8px;border-radius:4px;font-family:var(--mono)">'
-                    f'ATM Straddle: ₹{atm_straddle_prev:,.1f} → <b>₹{atm_straddle_proj:,.1f}</b> (<span style="color:{straddle_clr};font-weight:700">{straddle_shock_pct:+.1f}% {exp_label}</span>)'
-                    f'</span>'
-                )
-
-            shock_rows = []
-            if strikes_data:
-                atm_k = round(disc_spot / (50 if sym_u == "NIFTY" else 100)) * (50 if sym_u == "NIFTY" else 100)
-                stk_step = 50 if sym_u == "NIFTY" else 100
-                disp_strikes = [atm_k + i * stk_step for i in range(-2, 3)]
-                for sk in disp_strikes:
-                    c_inf = next((x for x in strikes_data if x["strike"] == sk and x["side"] == "CE"), None)
-                    p_inf = next((x for x in strikes_data if x["strike"] == sk and x["side"] == "PE"), None)
-                    if c_inf and p_inf:
-                        c_clr = "var(--go)" if c_inf["shock_pts"] >= 0 else "var(--stop)"
-                        p_clr = "var(--go)" if p_inf["shock_pts"] >= 0 else "var(--stop)"
-                        is_atm_r = (sk == atm_k)
-                        r_bg = "background:rgba(56,189,248,.07);" if is_atm_r else ""
-                        atm_tag = " <span style='font-size:.58rem;background:var(--spark);color:#000;padding:1px 3px;border-radius:3px;font-weight:800'>ATM</span>" if is_atm_r else ""
-                        shock_rows.append(
-                            f'<tr style="{r_bg}border-bottom:1px solid var(--line);text-align:center">'
-                            f'<td style="padding:3px 6px;color:var(--ink-mute);font-family:var(--mono)">₹{c_inf["prev_ltp"]:,.1f}</td>'
-                            f'<td style="padding:3px 6px;color:var(--go);font-weight:700;font-family:var(--mono)">₹{c_inf["projected_open_ltp"]:,.1f}</td>'
-                            f'<td style="padding:3px 6px;color:{c_clr};font-weight:700">{c_inf["shock_pct"]:+.0f}%</td>'
-                            f'<td style="padding:3px 6px;font-weight:800;color:var(--ink);font-family:var(--mono)">{sk:,.0f}{atm_tag}</td>'
-                            f'<td style="padding:3px 6px;color:var(--ink-mute);font-family:var(--mono)">₹{p_inf["prev_ltp"]:,.1f}</td>'
-                            f'<td style="padding:3px 6px;color:var(--stop);font-weight:700;font-family:var(--mono)">₹{p_inf["projected_open_ltp"]:,.1f}</td>'
-                            f'<td style="padding:3px 6px;color:{p_clr};font-weight:700">{p_inf["shock_pct"]:+.0f}%</td>'
-                            f'</tr>'
-                        )
-
-            date_tag = f" · {target_date}" if target_date != today_str else ""
-            st.markdown(
-                textwrap.dedent(f'''
-                <div class="ck pre-bell-card" style="margin-bottom:12px;border-left:4px solid {gap_cls['color']}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.1rem">🌅</span>
-                            <b style="font-size:.92rem;color:var(--ink)">Pre-Market Equilibrium & Tactical Baseline{date_tag}</b>
-                            <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">Discovered {disc_time} IST</span>
-                            <span style="font-size:.65rem;background:rgba(56,189,248,.12);color:var(--spark);padding:1px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.25)">💾 DB PERSISTED</span>
-                            <a href="/?view=pre_post_market_guide" target="_blank" style="font-size:.70rem;color:var(--spark);text-decoration:none;background:rgba(56,189,248,.08);padding:1px 6px;border-radius:4px;border:1px solid rgba(56,189,248,.25)">📖 Pre-Bell Guide ↗</a>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:6px">
-                            {fill_chip}
-                            {badge_html}
-                        </div>
-                    </div>
-                    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:10px">
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative Open</small>
-                            <b style="font-size:1.05rem;font-family:var(--mono)">₹{disc_spot:,.1f}</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
-                            <b style="font-size:1.05rem;font-family:var(--mono);color:{gap_cls['color']}">{sign_str}{gap_pts:,.1f} ({sign_str}{gap_pct:.2f}%)</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call / Put Wall</small>
-                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} / {pw:,.0f}</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Strategic Opening Play</small>
-                            <b style="font-size:.92rem;color:var(--spark)">{gap_cls['favored_play']}</b>
-                        </div>
-                    </div>
-                    <div style="font-size:.82rem;line-height:1.45;color:var(--ink);background:var(--surface);padding:9px 12px;border-radius:8px;border:1px solid var(--line);margin-bottom:8px">
-                        <b>Strategic Analysis:</b> {gap_cls['briefing']}
-                        <div style="margin-top:4px;font-size:.74rem;color:var(--ink-mute);font-style:italic">{fill_note}</div>
-                    </div>
-                </div>
-                ''').strip(),
-                unsafe_allow_html=True,
-            )
-
-            if shock_rows:
-                exp_title = "🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)"
-                if straddle_shock_pct is not None and atm_straddle_prev and atm_straddle_proj:
-                    exp_label = "Expansion" if straddle_shock_pct >= 0 else "Crush"
-                    exp_title += f" · ATM Straddle: ₹{atm_straddle_prev:,.1f} → ₹{atm_straddle_proj:,.1f} ({straddle_shock_pct:+.1f}% {exp_label})"
-                with st.expander(exp_title, expanded=False):
-                    st.markdown(
-                        textwrap.dedent(f'''
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:8px;border:1px solid var(--line)">
-                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                                <span style="font-size:.70rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Black-76 Analytical Forward Pricing Matrix</span>
-                                {straddle_chip_html}
-                            </div>
-                            <table style="width:100%;font-size:.72rem;border-collapse:collapse">
-                                <thead><tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:center">
-                                    <th style="padding:4px">CE Prev</th><th style="padding:4px">CE Proj</th><th style="padding:4px">CE Δ</th>
-                                    <th style="padding:4px">Strike</th>
-                                    <th style="padding:4px">PE Prev</th><th style="padding:4px">PE Proj</th><th style="padding:4px">PE Δ</th>
-                                </tr></thead>
-                                <tbody>{"".join(shock_rows)}</tbody>
-                            </table>
-                        </div>
-                        ''').strip(),
-                        unsafe_allow_html=True,
-                    )
-        else:
-            prev_cl = float(pm.get("prev_close") or (getattr(getattr(data, "levels", None), "prev_close", 0.0) if data else 0.0) or 0.0)
-            fii_b = pm.get("fii_bias") or "NEUTRAL"
-            fii_n = pm.get("fii_net_fut") or 0
-            prior_cvd = pm.get("prior_session_cvd") or 0.0
-            prior_of = pm.get("prior_session_orderflow") or "Neutral"
-            fii_color = "var(--go)" if fii_b == "BULLISH" else ("var(--stop)" if fii_b == "BEARISH" else "var(--spark)")
-            cvd_color = "var(--go)" if prior_cvd > 0 else ("var(--stop)" if prior_cvd < 0 else "var(--ink-mute)")
-            phase_desc = "Pre-Open Order Auction (09:00–09:08 IST)" if pm.get("phase_code") == "PRE_MARKET_ENTRY" else "Early Pre-Market Preparation (06:30–09:00 IST)"
-
-            st.markdown(
-                textwrap.dedent(f'''
-                <div class="ck pre-bell-card" style="border-left:4px solid var(--spark);margin-bottom:12px">
-                    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.1rem">🌅</span>
-                            <b style="font-size:.92rem;color:var(--ink)">Early Pre-Market Tactical Setup</b>
-                            <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">{phase_desc}</span>
-                        </div>
-                        <span class="sentinel-chip" style="background:var(--surface-2);color:var(--spark);border:1px solid var(--spark);font-size:.70rem">⏳ AWAITING 09:08 DISCOVERY</span>
-                    </div>
-                    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:8px">
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Previous Close</small>
-                            <b style="font-size:1.05rem;font-family:var(--mono)">₹{prev_cl:,.1f}</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Key GEX Walls</small>
-                            <b style="font-size:1.0rem;font-family:var(--mono)">{cw:,.0f} CW / {pw:,.0f} PW</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">FII Positioning</small>
-                            <b style="font-size:.95rem;color:{fii_color}">{fii_b} ({fii_n:+d} fut)</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Prior Session CVD</small>
-                            <b style="font-size:.95rem;color:{cvd_color};font-family:var(--mono)">{prior_cvd:+,.0f}</b>
-                        </div>
-                    </div>
-                    <div style="font-size:.80rem;line-height:1.45;color:var(--ink-mute);background:var(--surface);padding:8px 12px;border-radius:8px;border:1px solid var(--line)">
-                        <b>Morning Tactical Baseline:</b> Pre-open equilibrium auction runs from 09:00 to 09:08 IST on the NSE Cash matching engine.
-                        Equilibrium price discovery, GEX wall alignment, opening gap classification, and Black-76 option MTM shocks will stream here automatically upon 09:08 matching.
-                    </div>
-                </div>
-                ''').strip(),
-                unsafe_allow_html=True,
-            )
-    except Exception as e:
-        log.debug(f"Pre-market commentary card render error: {e}")
-
-
-def render_post_market_commentary_card(symbol: str, data: Any = None, session_date: str | None = None) -> None:
-    """Render Post-Market Settlement & Pinning Scorecard at bottom of Commentary tab."""
-    import streamlit as st
-    try:
-        now_ist = datetime.now(IST)
-        today_str = now_ist.strftime("%Y-%m-%d")
-        sym_u = symbol.upper()
-        target_date = session_date or today_str
-
-        persisted = get_persisted_auction_record(sym_u, target_date) or {}
-        post_st = get_post_market_state(sym_u, now=now_ist, session_date=target_date)
-
-        # GEX levels
-        cw = float(getattr(getattr(data, "levels", None), "call_wall", 0.0) or 0.0)
-        pw = float(getattr(getattr(data, "levels", None), "put_wall", 0.0) or 0.0)
-        if cw == 0.0 or pw == 0.0:
-            from data.market_snapshot import get_snapshot
-            snap = get_snapshot(sym_u) or {}
-            cw = cw or float(snap.get("call_wall") or 0.0)
-            pw = pw or float(snap.get("put_wall") or 0.0)
-
-        is_post_settled = bool(post_st.get("is_post_market")) if target_date == today_str else bool(post_st.get("post_market_settled") or persisted.get("post_market_settled") or persisted.get("settlement_spot"))
-        if is_post_settled:
-            settle_spot = float(post_st.get("settlement_spot") or persisted.get("settlement_spot") or 0.0)
-            cont_spot = float(post_st.get("last_continuous_spot") or persisted.get("last_continuous_spot") or settle_spot)
-            drift_pts = round(settle_spot - cont_spot, 1)
-            pin_wall = post_st.get("pin_target_wall") or persisted.get("pin_target_wall") or f"{cw:,.0f} CW"
-            pin_eff = float(post_st.get("pin_efficiency_pct") or persisted.get("pin_efficiency_pct") or 100.0)
-            cvd_val = float(post_st.get("closing_cvd") or persisted.get("closing_cvd") or 0.0)
-            of_bias = post_st.get("orderflow_bias") or persisted.get("orderflow_bias") or ("Institutional Net Buyers (+)" if cvd_val > 0 else "Institutional Net Sellers (-)")
-            cvd_color = "var(--go)" if cvd_val > 0 else "var(--stop)"
-
-            date_tag = f" · {target_date}" if target_date != today_str else ""
-            st.markdown(
-                textwrap.dedent(f'''
-                <div class="ck post-mkt-card" style="margin-top:14px;margin-bottom:12px">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                        <div style="display:flex;align-items:center;gap:8px">
-                            <span style="font-size:1.05rem">🏁</span>
-                            <b style="font-size:.92rem;color:#8b5cf6">Post-Market Settlement & Pinning Scorecard{date_tag}</b>
-                            <span style="font-size:.68rem;color:var(--ink-mute);font-family:var(--mono)">CAS 30-min VWAP Reconciled</span>
-                            <span style="font-size:.65rem;background:rgba(139,92,246,.12);color:#8b5cf6;padding:1px 6px;border-radius:4px;border:1px solid rgba(139,92,246,.25)">💾 DB PERSISTED</span>
-                        </div>
-                        <span class="sentinel-chip" style="background:var(--surface-2);color:#8b5cf6;border:1px solid #8b5cf6;font-size:.72rem">EOD SETTLED</span>
-                    </div>
-                    <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:8px">
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Final Settlement Close</small>
-                            <b style="font-size:1.05rem;font-family:var(--mono)">₹{settle_spot:,.1f}</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">CAS 30m VWAP Drift</small>
-                            <b style="font-size:1.05rem;font-family:var(--mono)">{drift_pts:+.1f} pts</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Nearest Wall Target</small>
-                            <b style="font-size:1.0rem;font-family:var(--mono)">{pin_wall}</b>
-                        </div>
-                        <div style="background:var(--surface);padding:8px 10px;border-radius:7px;border:1px solid var(--line)">
-                            <small style="font-size:.62rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Dealer Pinning Status</small>
-                            <b style="font-size:.92rem;color:var(--go)">Pin Defended ({pin_eff:.0f}%)</b>
-                        </div>
-                    </div>
-                    <div style="font-size:.78rem;background:var(--surface);padding:7px 12px;border-radius:6px;border:1px solid var(--line);display:flex;justify-content:space-between;align-items:center">
-                        <span style="color:var(--ink-mute)">Closing Institutional CVD:</span>
-                        <b style="color:{cvd_color};font-family:var(--mono)">{cvd_val:+,.0f} · {of_bias}</b>
-                    </div>
-                </div>
-                ''').strip(),
-                unsafe_allow_html=True,
-            )
-    except Exception as e:
-        log.debug(f"Post-market commentary card render error: {e}")
-
-
-def render_auction_commentary_card(symbol: str, data: Any = None) -> None:
-    """Backwards-compatible wrapper that renders both pre-market and post-market cards."""
-    render_pre_market_commentary_card(symbol, data)
-    render_post_market_commentary_card(symbol, data)
 

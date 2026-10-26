@@ -41,8 +41,10 @@ score    = 100·(0.5·ignition + 0.2·thrust + 0.3·path)
 Saturation scales (`_FULL_COVER=0.30`, `_FULL_THRUST=0.20`) were calibrated on the two
 NIFTY events above.
 
-## Replay / calibration (`scripts/analyze_blast.py`)
-Replays the score over every near-money crossing in the captured `oi_strikes` days and
+## Calibration script (`scripts/analyze_blast.py`)
+
+This script is research. It is not a screen in the cockpit, and it does not start a simulator.
+It walks the score over every near-money crossing in the captured `oi_strikes` days and
 compares it to the **realized** forward continuation (did spot hold past K over the next
 40 min?). Point-in-time: the score uses only OI/premium from the crossing forward; the
 move is measured after.

@@ -35,7 +35,7 @@ class FlipResult:
 def gamma_flip_profile(
     contracts: pd.DataFrame,
     spot: float,
-    contract_size: int = 100,
+    contract_size: int = 1,
     grid_range: float = 0.10,
     grid_step: float = 0.0025,
     dealer_sign_model: str = "short_call_short_put",
@@ -44,11 +44,12 @@ def gamma_flip_profile(
 
     iv = per-contract implied vol, T = years to expiry, r/q = parity-implied
     rate/div for that contract's expiry.
-    Defaults to Indian market mode: 'short_call_short_put'.
+    ``contract_size`` scales the profile and does not move a zero-crossing.
+    The only accepted sign model is ``short_call_short_put``.
     """
-    # Support long_call_short_put (US) and short_call_short_put (India)
-    if dealer_sign_model not in {"long_call_short_put", "short_call_short_put"}:
-        raise ValueError(f"Unsupported sign model {dealer_sign_model!r}")
+    from gex.core import _require_sign
+
+    _require_sign(dealer_sign_model)
     required = {"strike", "type", "oi", "iv", "T", "r", "q"}
     missing = required - set(contracts.columns)
     if missing:
@@ -73,11 +74,9 @@ def gamma_flip_profile(
     totals = np.empty(n_steps)
     for i, s_hyp in enumerate(grid):
         g = bs_gamma(s_hyp, K, T, iv, r, q)
-        # In both models, the zero-crossing (gamma flip) identifies the balance
-        # between call gamma and put gamma (|Call GEX| == |Put GEX|).
-        # In Indian market mode (short_call_short_put), where participants write both legs,
-        # this represents the Writer Imbalance Flip: above the flip, call writers face
-        # escalating gamma risk (upside squeeze); below, put writers face downside trapdoor risk.
+        # Both sign models share this zero-crossing: call-gamma magnitude equals
+        # put-gamma magnitude. It is the book-balance price. It does not say a
+        # dealer is long gamma above it, or that writers must squeeze through it.
         sign = np.where(df["type"].to_numpy() == "C", 1.0, -1.0)
         gex = sign * g * oi * weight * contract_size * s_hyp * s_hyp * 0.01
         totals[i] = gex.sum()

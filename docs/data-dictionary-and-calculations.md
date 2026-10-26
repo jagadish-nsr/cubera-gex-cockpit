@@ -30,7 +30,7 @@ The application maintains a persistent binary WebSocket connection streaming pac
 | :--- | :--- | :--- | :--- |
 | **`/marketfeed/quote`** | `POST` | `last_price`, `ohlc`, `volume`, `oi`, `prev_close`, `depth` | Static fallback quote and baseline spot calibration. |
 | **`/optionchain`** | `POST` | Array of strikes with `call_oi`, `put_oi`, `call_ltp`, `put_ltp`, `call_volume`, `put_volume`, `call_iv`, `put_iv` | Full option chain snapshot for GEX solver and profile generation. |
-| **`/charts/historical`** | `POST` | `start_time`, `open`, `high`, `low`, `close`, `volume` | Intraday (1-min) and daily historical candles for VWAP, ATR, and Sentinel orderflow replay. |
+| **`/charts/historical`** | `POST` | `start_time`, `open`, `high`, `low`, `close`, `volume` | Intraday (1-min) and daily historical candles for VWAP, ATR, and the sentinel tape. |
 | **Dhan Scrip Master Cache** | `GET` | `SEM_SMST_SECURITY_ID`, `SEM_INSTRUMENT_NAME`, `SEM_EXPIRY_DATE`, `SEM_STRIKE_PRICE`, `SEM_OPTION_TYPE` | Local CSV cache used for $O(1)$ resolution of exchange Security IDs. |
 
 ---
@@ -49,20 +49,16 @@ Where:
 - $\sigma$ = Implied Volatility (annualized), $T$ = Days to expiry $/ 365$.
 - $r$ = Risk-free rate (typically $6.5\%$ for Indian Sovereign yield).
 
-The monetary Gamma Exposure (in ₹ Crores per 1% spot move) for strike $k$:
-$$\text{GEX}_k = \Gamma_k \times S^2 \times \text{OI}_k \times \text{LotSize} \times 0.01 \times \text{DealerSign}$$
+The rupee gamma for a 1% move, with open interest in lots and `LotSize` the index lot:
+$$\text{magnitude}_k = \Gamma_k \times S^2 \times \text{OI}_k \times \text{LotSize} \times 0.01$$
 
-#### B. Dealer Sign Assumption (Indian Market Mode: `short_call_short_put`)
-- **Calls**: Retail/speculative traders buy calls; dealers are net **Short Calls** $\rightarrow \text{DealerSign} = -1$.
-- **Puts**: Option writers are institutional; retail hedges with puts $\rightarrow \text{DealerSign} = +1$.
+#### B. One convention: `short_call_short_put`
+Both stored legs are negative. The book balance is call magnitude minus put magnitude. Positive means the call book is larger. Negative means the put book is larger. There is no second sign. Who hedges is unmeasured, so the sign is not a pin or a chase.
 
 #### C. Structural Level Calculations
-- **Call Wall ($CW$)**: Strike with maximum Call Open Interest:
-  $$CW = \operatorname{argmax}_K (\text{Call OI}_K)$$
-- **Put Wall ($PW$)**: Strike with maximum Put Open Interest:
-  $$PW = \operatorname{argmax}_K (\text{Put OI}_K)$$
-- **Gamma Flip ($GF$)**: The price level where cumulative dealer gamma shifts from positive to negative:
-  $$GF = S^* \quad \text{such that} \quad \sum_K \text{GEX}_K(S^*) = 0$$
+- **Call-gamma strike**: largest call-gamma magnitude.
+- **Put-gamma strike**: largest put-gamma magnitude.
+- **Call−put balance**: the spot where call magnitude minus put magnitude crosses zero.
 - **Max Pain**: The strike at which option writers incur minimum total payout:
   $$\text{MaxPain} = \operatorname{argmin}_S \sum_K \left[\max(0, S - K) \cdot \text{CallOI}_K + \max(0, K - S) \cdot \text{PutOI}_K\right]$$
 

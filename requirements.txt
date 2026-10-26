@@ -2,8 +2,6 @@
 # Core calculation stack:
 #   numpy, scipy, pandas - arrays, interpolation, put-call parity, stats.
 #   requests    - NSE and Dhan API network calls.
-#   streamlit   - the local dashboard UI (v1a); pulls in altair for the chart.
-#   streamlit-autorefresh - non-blocking timer for the dashboard auto-refresh.
 #   pytest      - test runner for the hand-checkable fixtures.
 #   python-dotenv - load .env credentials (DATA_SOURCE, DHAN_* keys).
 #   pyarrow     - parquet I/O for the Dhan intraday store + feature caches.
@@ -12,11 +10,6 @@ numpy>=1.26
 scipy>=1.11
 pandas>=2.1
 requests>=2.31
-streamlit>=1.40,<1.59   # PIN the upper bound: run_simple.bat's `pip install` was silently upgrading
-                        # streamlit, and a backend/frontend version jump leaves the browser serving a
-                        # STALE cached bundle → white screen. Bump this deliberately + hard-refresh (Ctrl
-                        # +Shift+R) when you do. Known-good here: 1.58.0.
-streamlit-autorefresh>=1.0
 pytest>=8.0
 python-dotenv>=1.0
 pyarrow>=15.0

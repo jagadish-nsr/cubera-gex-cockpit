@@ -13,8 +13,9 @@ def _contract(strike, typ, oi, iv=0.20, T=0.05, r=0.0, q=0.0):
 
 
 def test_single_crossing_between_put_and_call_clusters():
-    # Put cluster below spot (short gamma -> negative), call cluster above spot
-    # (long gamma -> positive). Aggregate GEX must cross zero once near spot.
+    # Put cluster below spot, call cluster above. The profile is call magnitude
+    # minus put magnitude, so it is negative on the put wing and positive on the
+    # call wing, and crosses once near spot.
     df = pd.DataFrame([
         _contract(90, "P", 5000),
         _contract(110, "C", 5000),
@@ -31,7 +32,7 @@ def test_single_crossing_between_put_and_call_clusters():
 
 
 def test_no_crossing_is_flagged_not_fabricated():
-    # All calls -> dealer long gamma everywhere -> total GEX > 0 across the grid.
+    # Calls only -> call-minus-put stays positive across the grid. No fabricated flip.
     df = pd.DataFrame([
         _contract(95, "C", 3000),
         _contract(105, "C", 3000),

@@ -1,8 +1,8 @@
 # Phase B — Analysing the intraday time-series
 
-**Status:** Spec, not yet built. Runs on the Phase A captures
-(`data/journal/timeseries/YYYY-MM-DD.csv`). Read `CLAUDE.md` first — especially
-the dealer-sign landmine and "GEX is a probability map, not a predictor".
+**Status:** Historical spec. The sign comparison it describes is closed.
+Production is `short_call_short_put`. Do not use this file to choose a
+convention. The captures still live in `data/journal/timeseries/`.
 
 Phase A captures intraday GEX levels + OI/volume build-up + **India VIX** every
 ~15 min. Phase B turns that into two things:
@@ -64,9 +64,7 @@ Lag-1 (and lag-k) autocorrelation of 15-min returns, conditioned on regime. This
 maps **directly** onto the hedging mechanism and needs no "walls":
 - Amplifying (true NEGATIVE) → **positive** autocorrelation (momentum).
 - Stabilising (true POSITIVE) → **negative** autocorrelation (mean-reversion).
-- **Verdict:** if NEGATIVE-labelled periods show positive autocorrelation and
-  POSITIVE-labelled show negative → **sign CONFIRMED**. Systematically reversed →
-  **sign INVERTED** → set `config.DEALER_SIGN_MODEL` to the inverse and re-run.
+- **Record only.** POSITIVE and NEGATIVE in that old test were labels under a retired sign. Production does not switch `DEALER_SIGN_MODEL`. The engine rejects every value except `short_call_short_put`.
 
 ### C. Δmagnet → Δspot lead–lag  *(the "does the magnet predict trend" hypothesis)*
 Tests whether magnet *migration* leads price, **beyond** what price's own recent
@@ -130,10 +128,9 @@ amplifies it. So expect magnitude/persistence signal, not a direction forecast.
   dealer sign.
 - Unit-tested on synthetic series with a known answer.
 
-**When the sign verdict reads clearly:** update `config.DEALER_SIGN_MODEL` if
-needed, close the dealer-sign item in `VALIDATION.md`, and only *then* move from
-ILLUSTRATIVE suggestions toward validated ones (still human-confirmed, no
-auto-execution).
+The sign comparison this spec described is closed. Do not update
+`DEALER_SIGN_MODEL` from a later reading of this file. Suggestions stay
+human-confirmed. No auto-execution.
 
 ---
 

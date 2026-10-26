@@ -75,39 +75,41 @@ class SignalClassifierEngine:
         gex_alignment = "NEUTRAL"
 
         # -------------------------------------------------------------------
-        # 1. TRAPPED VOLUME & ABSORPTION (Institutional wall defense)
+        # 1. ABSORPTION — tape only. A gamma strike is a location, not a floor.
         # -------------------------------------------------------------------
-        # Trapped buyers / Ask absorption at resistance
-        if (rvol >= 1.4 and bar.delta_ratio > 0.18 and (close_pos <= 0.45 or upper_wick >= 0.40)) or (
-            rvol >= 1.3 and bar.delta_ratio > 0.15 and bar.depth_imbalance <= -0.20 and "NEAR_CALL_WALL" in tags
-        ):
+        if rvol >= 1.4 and bar.delta_ratio > 0.18 and (close_pos <= 0.45 or upper_wick >= 0.40):
             if "NEAR_CALL_WALL" in tags or "ABOVE_VWAP_2SIGMA" in tags or "AT_DAY_HIGH" in tags:
                 sig_type = "ABSORPTION_BEAR" if "NEAR_CALL_WALL" in tags else "TRAPPED_BUYERS_EXHAUSTION"
                 category = "BEARISH"
                 bias = "SHORT"
-                base_score = 70 if "NEAR_CALL_WALL" in tags else 65
+                base_score = 65
                 invalidation = bar.high + vol_buffer
-                wall_ref = f" at Call Wall ({context.call_wall:,.0f})" if "NEAR_CALL_WALL" in tags else ""
+                where = (
+                    f" at the call-gamma strike ({context.call_wall:,.0f})"
+                    if "NEAR_CALL_WALL" in tags else ""
+                )
                 insight = (
-                    f"Aggressive buyers trapped (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, depth imbalance {bar.depth_imbalance:+.2f}){wall_ref}. "
-                    f"Price rejected from highs."
+                    f"Aggressive buying was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
+                    f"depth imbalance {bar.depth_imbalance:+.2f}){where}. "
+                    "The wick is tape. The strike is not a ceiling."
                 )
                 gex_alignment = "CONFIRMED_AT_WALL" if "NEAR_CALL_WALL" in tags else "NEUTRAL"
 
-        # Trapped sellers / Bid absorption at support
-        elif (rvol >= 1.4 and bar.delta_ratio < -0.18 and (close_pos >= 0.55 or lower_wick >= 0.40)) or (
-            rvol >= 1.3 and bar.delta_ratio < -0.15 and bar.depth_imbalance >= 0.20 and "NEAR_PUT_WALL" in tags
-        ):
+        elif rvol >= 1.4 and bar.delta_ratio < -0.18 and (close_pos >= 0.55 or lower_wick >= 0.40):
             if "NEAR_PUT_WALL" in tags or "BELOW_VWAP_2SIGMA" in tags or "AT_DAY_LOW" in tags:
                 sig_type = "ABSORPTION_BULL" if "NEAR_PUT_WALL" in tags else "TRAPPED_SELLERS_ABSORPTION"
                 category = "BULLISH"
                 bias = "LONG"
-                base_score = 70 if "NEAR_PUT_WALL" in tags else 65
+                base_score = 65
                 invalidation = bar.low - vol_buffer
-                wall_ref = f" at Put Wall ({context.put_wall:,.0f})" if "NEAR_PUT_WALL" in tags else ""
+                where = (
+                    f" at the put-gamma strike ({context.put_wall:,.0f})"
+                    if "NEAR_PUT_WALL" in tags else ""
+                )
                 insight = (
-                    f"Aggressive sellers absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, depth imbalance {bar.depth_imbalance:+.2f}){wall_ref}. "
-                    f"Bids defended support."
+                    f"Aggressive selling was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
+                    f"depth imbalance {bar.depth_imbalance:+.2f}){where}. "
+                    "The wick is tape. The strike is not a floor."
                 )
                 gex_alignment = "CONFIRMED_AT_WALL" if "NEAR_PUT_WALL" in tags else "NEUTRAL"
 
@@ -150,14 +152,14 @@ class SignalClassifierEngine:
                 bias = "SHORT"
                 base_score = 64
                 invalidation = bar.high + vol_buffer
-                insight = f"Buying climax exhausted: {rvol:.1f}x extreme volume rejected at high with long upper tail."
+                insight = f"Buying climax: {rvol:.1f}x volume with a long upper tail. That is tape, not a ceiling."
             elif close_pos >= 0.65 and lower_wick >= 0.40:
                 sig_type = "EXHAUSTION_DOWN"
                 category = "BULLISH"
                 bias = "LONG"
                 base_score = 64
                 invalidation = bar.low - vol_buffer
-                insight = f"Selling climax exhausted: {rvol:.1f}x extreme volume rejected at low with long lower tail."
+                insight = f"Selling climax: {rvol:.1f}x volume with a long lower tail. That is tape, not a floor."
 
         # -------------------------------------------------------------------
         # 4. CVD DIVERGENCE
@@ -284,36 +286,22 @@ class SignalClassifierEngine:
         base_score = 65
 
         if delta_ratio >= 0.40:
-            if near_call_wall and depth_imb <= -0.15:
-                sig_type = "ABSORPTION_BEAR"
-                category = "BEARISH"
-                bias = "SHORT"
-                base_score = 75
-                invalidation = cur_px + min_buf
-                insight = f"⚡ Instant Wall Absorption: Massive aggressive buying into Call Wall ({context.call_wall:,.0f}) absorbed by passive limit asks."
-            else:
-                sig_type = "CONTINUATION_BULL"
-                category = "BULLISH"
-                bias = "LONG"
-                base_score = 68
-                invalidation = cur_px - min_buf
-                insight = f"⚡ Instant Volume Surge: Rapid buyer sweep (+{burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f})."
+            sig_type = "CONTINUATION_BULL"
+            category = "BULLISH"
+            bias = "LONG"
+            base_score = 68
+            invalidation = cur_px - min_buf
+            where = f" Print is at the call-gamma strike ({context.call_wall:,.0f}). That is a location, not a ceiling." if near_call_wall else ""
+            insight = f"⚡ Buyer sweep (+{burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}).{where}"
 
         elif delta_ratio <= -0.40:
-            if near_put_wall and depth_imb >= 0.15:
-                sig_type = "ABSORPTION_BULL"
-                category = "BULLISH"
-                bias = "LONG"
-                base_score = 75
-                invalidation = cur_px - min_buf
-                insight = f"⚡ Instant Wall Defense: Aggressive selling into Put Wall ({context.put_wall:,.0f}) absorbed by passive limit bids."
-            else:
-                sig_type = "CONTINUATION_BEAR"
-                category = "BEARISH"
-                bias = "SHORT"
-                base_score = 68
-                invalidation = cur_px + min_buf
-                insight = f"⚡ Instant Volume Surge: Rapid seller sweep ({burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f})."
+            sig_type = "CONTINUATION_BEAR"
+            category = "BEARISH"
+            bias = "SHORT"
+            base_score = 68
+            invalidation = cur_px + min_buf
+            where = f" Print is at the put-gamma strike ({context.put_wall:,.0f}). That is a location, not a floor." if near_put_wall else ""
+            insight = f"⚡ Seller sweep ({burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}).{where}"
 
         if not sig_type:
             return None

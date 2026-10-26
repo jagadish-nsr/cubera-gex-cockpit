@@ -1,32 +1,32 @@
 ---
 name: options-structures
-description: Map GEX regime to the right option structure and strike selection. Use when implementing the structures/ module or generating trade suggestions.
+description: Map the Nifty call−put book to an option structure and strike selection. Use when implementing the structures/ module or generating trade suggestions.
 ---
 
-# Regime -> structure mapping
+# Book balance → structure
 
-One-line principle: SELL premium in positive gamma, BUY premium in negative gamma. Walls pick the strikes, flip picks the side.
+The regime sign is call-gamma magnitude minus put-gamma magnitude. It does not
+say to sell premium or to buy premium.
 
-## Positive gamma -> sell premium, defined risk
-- Iron condor / credit spread. Short strikes AT the walls:
-  - short call spread at/above call wall
-  - short put spread at/below put wall
-- Iron fly / short straddle near magnet on expiry-pin days (respect no-hold-to-expiry).
-- Short strike goes ABOVE the wall, not AT the magnet (magnet gets tagged on noise).
-
-## Negative gamma (price holds below flip) -> buy premium
-- Debit spread / long option in the DIRECTION of the break.
-- REDUCE size: moves run 1.5-2x. Require a CONFIRMED hold below flip, not an intraday wick.
-- Never sell premium here (short gamma into amplification).
+- Call-heavy (POSITIVE): more call gamma than put gamma. Strikes come from the
+  call-gamma and put-gamma concentrations. Do not treat the zone above the flip
+  as a pin.
+- Put-heavy (NEGATIVE): more put gamma than call gamma. Do not treat that as a
+  1.5–2x trend by itself.
+- Conflict (aggregate book disagrees with the spot-versus-flip side): no new
+  risk. De-size.
+- Absolute GEX rank, when it is actually computed, is the volatility context.
+  Do not infer it from the sign.
 
 ## Hard constraints on every suggestion
-- Saxo: no hold-to-expiry. Set a forced exit-by date BEFORE expiry. Flag DTE.
-- Defined max-loss in $ shown before the suggestion surfaces.
-- Margin gate (<40% to add) checked first — veto if breached.
-- XSP execution: SPX-derived wall / 10 -> XSP strike. Round to listed XSP strikes; flag if nearest listed strike is >1pt off computed wall (thin-OI risk).
-- Macro/thesis conflict with regime -> DE-SIZE, do not blindly fade a thesis-aligned move.
+- No auto-execution. The user confirms.
+- Defined max loss in rupees, using the index lot, before the suggestion is shown.
+- Exit before expiry. State the exit date.
+- Short strike, if any, sits beyond the gamma concentration, not on the magnet.
+- A headline or macro that conflicts with the book → de-size.
+- Strike step is the index step (Nifty 50, Bank Nifty 100, Sensex 100). Round to
+  a listed strike.
 
-## Golden fixtures to satisfy (see BUILD_PLAN.md section 7)
-- Fixture A: positive gamma + bearish -> call credit spread short ABOVE call wall (NOT a long put).
-- Fixture B: negative gamma + break held below flip -> put debit spread, reduced size.
-- Fixture C: conflict/no-edge -> emit no add; surface de-size if naked position >40% margin.
+## What not to copy in
+Do not add an XSP or SPX execution split. Do not sell premium because the label
+says positive gamma.

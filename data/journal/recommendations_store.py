@@ -566,6 +566,42 @@ def record_event(
         return cur.lastrowid
 
 
+def resolve_live_option_ltp(
+    symbol: str,
+    strike: float,
+    side: str,
+    option_symbol: str,
+    options_ltp_map: dict[str, float] | None,
+) -> float | None:
+    """Premium used to close a recommendation. A missing quote stays missing.
+
+    Target and stop checks must not invent a premium from a 0.50 delta. Spot
+    invalidation is a separate check and does not use this value.
+    """
+    book = options_ltp_map or {}
+    for key in (option_symbol, f"{strike}_{side}"):
+        if not key:
+            continue
+        try:
+            px = float(book.get(key) or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px > 0:
+            return px
+    try:
+        from app.spot_ticker import get_option_ws_quote
+        quote = get_option_ws_quote(symbol, strike, side, max_age_s=120.0)
+    except Exception:
+        quote = None
+    if not quote:
+        return None
+    try:
+        px = float(quote.get("ltp") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return px if px > 0 else None
+
+
 def evaluate_recommendation_lifecycle(
     symbol: str,
     current_spot: float,
@@ -591,7 +627,6 @@ def evaluate_recommendation_lifecycle(
         rec_id = r["rec_id"]
         side = r["side"]
         strike = float(r["strike"])
-        init_spot = float(r["initial_spot"] or current_spot)
         init_ltp = float(r["initial_ltp"] or 0.0)
         t1 = float(r["target_1"] or 0.0)
         t2 = float(r["target_2"] or 0.0)
@@ -599,14 +634,10 @@ def evaluate_recommendation_lifecycle(
         inval = float(r["spot_invalidation"] or 0.0)
         is_bm = bool(r["is_bookmarked"])
 
-        # Look up LTP or estimate delta MTM
         opt_sym = r["option_symbol"] or ""
-        curr_ltp = options_ltp_map.get(opt_sym) or options_ltp_map.get(f"{strike}_{side}")
-        if curr_ltp is None or curr_ltp <= 0:
-            delta = 0.50 if side == "CE" else -0.50
-            spot_diff = current_spot - init_spot
-            est_ltp = max(0.05, init_ltp + (spot_diff * delta))
-            curr_ltp = est_ltp if init_ltp > 0 else 0.0
+        curr_ltp = resolve_live_option_ltp(
+            symbol, strike, side, opt_sym, options_ltp_map,
+        )
 
         event_type = None
         event_msg = ""
@@ -620,8 +651,8 @@ def evaluate_recommendation_lifecycle(
                 event_type = "INVALIDATED"
                 event_msg = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{inval:,.0f})"
 
-        # Check price targets and stop loss
-        if not event_type and curr_ltp > 0:
+        # Check price targets and stop loss only against a live premium.
+        if not event_type and curr_ltp is not None and curr_ltp > 0:
             pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
             if t2 > 0 and curr_ltp >= t2:
                 event_type = "TGT2_HIT"
@@ -634,14 +665,15 @@ def evaluate_recommendation_lifecycle(
                 event_msg = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({pnl_pct:+.0f}%)"
 
         if event_type:
-            pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
+            live_px = float(curr_ltp or init_ltp or 0.0)
+            pnl_pct = round(((live_px - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
             try:
                 record_event(
                     rec_id=rec_id,
                     symbol=symbol.upper(),
                     event_type=event_type,
                     spot_at_event=current_spot,
-                    ltp_at_event=curr_ltp,
+                    ltp_at_event=live_px,
                     pnl_pct=pnl_pct,
                     message=event_msg,
                     was_bookmarked=is_bm,
@@ -756,7 +788,7 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
     strategies = [
         ("MOMENTUM", "ATM Momentum Play (Δ ~0.50)"),
         ("STRUCTURE", "Institutional Structure Play (Δ ~0.40)"),
-        ("GAMMA SQUEEZE", "Gamma Squeeze / Breakdown Lotto (Δ ~0.28)"),
+        ("STRIKE BREAK", "Convex break at a gamma strike (Δ ~0.28)"),
         ("ICEBERG FADE", "OrderFlow Iceberg Absorption Fade (Δ ~0.50)"),
         ("VANNA-CHARM", "0DTE Vanna-Charm Compression (Δ ~0.20)"),
         ("VOL DISPERSION", "Vol Dispersion / Long Gamma Blast (Δ ~0.50)"),
@@ -793,59 +825,64 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
                     f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status = 'INVALIDATED'", b_params
                 ).fetchone()[0]
 
-                # If no recorded live trades yet, populate realistic empirical baseline metrics
-                if total == 0:
-                    baselines = {
-                        "MOMENTUM": (42, 31, 19, 6, 5, 2.8),
-                        "STRUCTURE": (35, 27, 18, 4, 4, 3.4),
-                        "GAMMA SQUEEZE": (18, 12, 10, 4, 2, 4.6),
-                        "ICEBERG FADE": (29, 22, 12, 4, 3, 2.5),
-                        "VANNA-CHARM": (24, 20, 9, 2, 2, 2.1),
-                        "VOL DISPERSION": (14, 9, 7, 3, 2, 4.8),
-                        "RATIO REVERSAL": (21, 17, 10, 2, 2, 3.2),
-                    }
-                    base_tot, base_t1, base_t2, base_sl, base_inv, base_rr = baselines.get(badge, (20, 14, 8, 3, 3, 2.5))
-                    t1_rate = round((base_t1 / base_tot) * 100, 1)
-                    t2_rate = round((base_t2 / base_tot) * 100, 1)
-                    sl_rate = round((base_sl / base_tot) * 100, 1)
-                    inv_rate = round((base_inv / base_tot) * 100, 1)
-                    avg_rr = f"1 : {base_rr:.1f}"
-                    results.append({
-                        "badge": badge,
-                        "name": name,
-                        "total": base_tot,
-                        "t1_hits": base_t1,
-                        "t1_rate": t1_rate,
-                        "t2_hits": base_t2,
-                        "t2_rate": t2_rate,
-                        "sl_hits": base_sl,
-                        "sl_rate": sl_rate,
-                        "invals": base_inv,
-                        "inv_rate": inv_rate,
-                        "avg_rr": avg_rr,
-                        "win_loss": round((base_t1) / max(1, base_sl + base_inv), 2),
-                    })
-                else:
-                    t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
-                    t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
-                    sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
-                    inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
-                    results.append({
-                        "badge": badge,
-                        "name": name,
-                        "total": total,
-                        "t1_hits": t1_hits,
-                        "t1_rate": t1_rate,
-                        "t2_hits": t2_hits,
-                        "t2_rate": t2_rate,
-                        "sl_hits": sl_hits,
-                        "sl_rate": sl_rate,
-                        "invals": invals,
-                        "inv_rate": inv_rate,
-                        "avg_rr": "1 : 2.8",
-                        "win_loss": round(t1_hits / max(1, sl_hits + invals), 2),
-                    })
+                t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
+                t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
+                sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
+                inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
+                avg_rr = None
+                if total > 0:
+                    # realized_rr is written on the ML row, not recommendation_records.
+                    if symbol and symbol.upper() != "ALL":
+                        rr_sql = (
+                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
+                            "WHERE symbol = ? AND strategy_name = ? AND realized_rr IS NOT NULL"
+                        )
+                        rr_params = (symbol.upper(), badge)
+                    else:
+                        rr_sql = (
+                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
+                            "WHERE strategy_name = ? AND realized_rr IS NOT NULL"
+                        )
+                        rr_params = (badge,)
+                    rr_row = conn.execute(rr_sql, rr_params).fetchone()
+                    if rr_row and rr_row[0] is not None:
+                        avg_rr = round(float(rr_row[0]), 2)
+                results.append({
+                    "badge": badge,
+                    "name": name,
+                    "total": total,
+                    "t1_hits": t1_hits,
+                    "t1_rate": t1_rate,
+                    "t2_hits": t2_hits,
+                    "t2_rate": t2_rate,
+                    "sl_hits": sl_hits,
+                    "sl_rate": sl_rate,
+                    "invals": invals,
+                    "inv_rate": inv_rate,
+                    "avg_rr": avg_rr,
+                    "win_loss": round(t1_hits / max(1, sl_hits + invals), 2) if total else 0.0,
+                })
     except Exception as e:
         log.warning(f"Error computing strategy effectiveness: {e}")
 
     return results
+
+
+def summarize_effectiveness(rows: list[dict] | None) -> dict:
+    """Roll strategy rows into one strip. Rates stay 0 when nothing has been tracked."""
+    items = list(rows or [])
+    total = sum(int(m.get("total") or 0) for m in items)
+    t1 = sum(int(m.get("t1_hits") or 0) for m in items)
+    sl = sum(int(m.get("sl_hits") or 0) for m in items)
+    inv = sum(int(m.get("invals") or 0) for m in items)
+    rr_vals = [float(m["avg_rr"]) for m in items if isinstance(m.get("avg_rr"), (int, float))]
+    avg_rr = round(sum(rr_vals) / len(rr_vals), 2) if rr_vals else None
+    return {
+        "total_tracked": total,
+        "target_hit_rate": round(t1 / total * 100.0, 1) if total else 0.0,
+        "stop_loss_rate": round(sl / total * 100.0, 1) if total else 0.0,
+        "spot_invalidation_rate": round(inv / total * 100.0, 1) if total else 0.0,
+        "avg_realized_rr": avg_rr,
+        "has_samples": total > 0,
+        "by_strategy": items,
+    }

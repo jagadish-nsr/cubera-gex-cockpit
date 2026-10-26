@@ -7,7 +7,6 @@ Implements Sentinel §6.2 Little-Endian Binary Packet Parser:
       * 4: Quote packet (LTP, LTQ, LTT, AvgPrice, Volume, Buy/Sell Qty, Day OHLC)
       * 5: Open Interest packet (OI)
   - Defensive parsing (bounds checking, struct unpacking)
-  - Mock Tick Stream generator for offline simulation, unit tests, and non-market hours
 """
 
 from __future__ import annotations

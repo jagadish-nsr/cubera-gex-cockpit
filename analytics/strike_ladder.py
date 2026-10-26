@@ -283,8 +283,8 @@ def compute_strike_ladder(
     """Compute the 11-strike (ATM ± 5) live repriced target & stop ladder."""
     sym = symbol.upper()
     idx_info = config.get_index(sym)
-    lot_size = int(idx_info.lot_size if idx_info else (65 if "NIFTY" in sym else 30))
-    step = float(getattr(idx_info, "strike_step", 100.0 if ("BANKNIFTY" in sym or "SENSEX" in sym) else 50.0))
+    lot_size = int(idx_info.lot_size)
+    step = float(idx_info.strike_step)
 
     safe_spot = max(float(spot or 0.0), 100.0)
     now_dt = to_ist()

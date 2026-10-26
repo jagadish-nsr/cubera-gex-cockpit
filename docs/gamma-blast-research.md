@@ -1,9 +1,11 @@
 # Gamma Blast — Research & Validation Notes
 
 Status: research + design record for the dashboard "Gamma-blast crossover watch"
-(`app/gammablast.py`, the panel in `app/dashboard.py`, and the 1-min capture in
+(`app/gammablast.py`, the blast card on the web cockpit, and the 1-min capture in
 `scripts/log_gamma_blast.py`). **Decision-support only — not financial advice, no
-auto-execution.** Read `CLAUDE.md` first, especially the dealer-sign landmine.
+auto-execution.** The production book is `short_call_short_put`. Both legs are stored
+negative. The balance is call-gamma magnitude minus put-gamma magnitude.
+Who hedges is unmeasured. Do not read POSITIVE as a pin or NEGATIVE as a chase.
 
 ---
 
@@ -73,28 +75,39 @@ signal**. The signal only exists on a **fixed** strike that spot then moves
 
 These two anchors are exactly the two meanings of "the maximum-gamma strike" —
 bare gamma vs OI-weighted gamma **exposure**. When spot crosses the magnet on
-expiry day, the crossover *and* the engine's pin-break coincide.
+expiry day, the premium crossover and the largest-gamma strike are the same place. That is a location, not a pin breaking.
 
 ---
 
-## 3. The mechanism, and how it maps to our engine
+## 3. What the engine actually marks
 
-A blast is the **negative-gamma** (dealer-short-gamma) expiry regime: when the
-hedging dealers are **short** gamma near the pin, a break of the strike forces
-them to hedge **with** the move (buy as it rises / sell as it falls) →
-**amplification**. When dealers are **long** gamma, the same concentration
-**pins** price (they fade the move) → low volatility. This is standard
-gamma-hedging feedback (see references in §7).
+A blast in this cockpit is a **price location on expiry day**: spot moving
+through a fixed strike while near-the-money gamma is large because time is
+short. Black-Scholes gamma of an at-the-money option rises as expiry
+approaches. That is option math. It does not say a dealer must buy the rally
+or sell the dip.
 
-Our engine already computes everything this needs:
+The production book stores both call and put gamma negative
+(`short_call_short_put`). Walls are the strikes with the largest call-gamma
+and put-gamma magnitudes. The regime total and the flip are **call magnitude
+minus put magnitude**:
 
-- **Gamma flip** (`gex/flip.py`) — the calm⇄wild boundary.
-- **Magnet** = peak `|net_gex|` strike (`gex/core.py`) — the pin.
-- **Per-strike `net_gex`** — gamma exposure by strike (the energy map).
-- **Regime** — POSITIVE (pin/fade) vs NEGATIVE (momentum/amplify).
+- **POSITIVE** means the call book is larger than the put book.
+- **NEGATIVE** means the put book is larger than the call book.
 
-So the crossover watch is **spot crossing the magnet/flip on expiry day** — a lens
-on what we already model, not a bolt-on.
+Those words are not a pin, a fade, or a momentum forecast. Absolute GEX is
+the volatility context that held in the research sample (higher concentration,
+calmer forward vol). The sign is not a direction call.
+
+The engine already computes the map this watch uses:
+
+- **Gamma flip** (`gex/flip.py`) — where call magnitude and put magnitude cross.
+- **Magnet** — the strike with the largest absolute gamma (`gex/core.py`).
+- **Per-strike gamma** — the concentration map.
+- **Regime** — call-heavy or put-heavy, as defined above.
+
+The crossover watch is spot crossing a frozen strike on expiry day. It is a
+parity detector sitting on that map.
 
 ### 3a. Tracking *change* in gamma at a strike
 
@@ -113,19 +126,21 @@ per strike so this is studyable offline.
 
 ---
 
-## 4. The landmine: blast vs pin depends on the (unvalidated) dealer sign
+## 4. One convention
 
-A high-gamma-exposure strike **either pins or blasts**, and which one depends
-entirely on the **dealer sign** — which is **UNVALIDATED for India** (see
-`CLAUDE.md` and the `--both-signs` analysis, which even leans *inverted*). The
-crossover *detection* is sign-free and safe to show; we must **not** assert
-"this will blast" vs "this will pin" from the regime yet.
+The comparison that tried a second sign (`long_call_short_put`, dealers long
+calls and short puts) is closed. Production rejects any sign other than
+`short_call_short_put`. Switching that old sign did not move the flip, the
+regime, or the walls. It only changed the magnet and the per-strike net sign.
 
-**The opportunity:** logging gamma concentration + `ΔOI` at strikes and then
-recording whether spot **pinned or blasted** there is simultaneously a
-**blast-finder** and the exact **pin-vs-blast evidence that validates the dealer
-sign**. They are the same experiment. The 1-min per-strike capture is the
-substrate.
+Who actually delta-hedges on NSE is unmeasured. Open interest is not
+buyer-versus-seller flow. A high-gamma strike is a concentration. It is not
+evidence that the strike will pin or blast.
+
+The crossover detector stays. It is put-call parity: call premium equals put
+premium when spot is at the frozen strike. Logging whether spot later sat
+there or left is a research record. It is not a reason to restore a second
+sign model or to tell a later edit to flip `DEALER_SIGN_MODEL`.
 
 ---
 
@@ -156,8 +171,7 @@ never the **direction**.
 - **No rigorous public backtest** with a win rate exists; the "2–3×" examples are
   hindsight-picked. Practitioner/quant writeups warn that after costs many
   high-win-rate expiry structures are **flat-to-negative EV**.
-- **Direction (blast vs pin) is unproven for India** — gated on the dealer-sign
-  landmine.
+- **A blast and a pin are not two signs of one hedge.** The crossover says spot is at the frozen strike. It does not say the strike will hold or run. Who hedges is unmeasured.
 
 **Bottom line:** a sound, sign-free *detector* worth having as a visual aid and
 as a data-collection harness — **not** a validated edge. The
@@ -378,21 +392,21 @@ Gamma-hedging → realised-volatility mechanism (academic / quant):
 - *Beta-Dependent Gamma Feedback and Endogenous Volatility Amplification* (arXiv
   2025): https://arxiv.org/html/2511.22766
 
-India microstructure (who is on each side — context for the dealer-sign landmine):
+India microstructure (who is on each side). The sign comparison is closed. Who hedges is unmeasured:
 
 - SEBI — *93% of individual traders incurred losses in equity F&O, FY22–24*
   (Sept 2024):
   https://www.sebi.gov.in/media-and-notifications/press-releases/sep-2024/updated-sebi-study-reveals-93-of-individual-traders-incurred-losses-in-equity-fando-between-fy22-and-fy24-aggregate-losses-exceed-1-8-lakh-crores-over-three-years_86906.html
 
-GEX background (US convention this engine was ported from):
+Background reading on a US GEX write-up. Not the production convention:
 
 - SpotGamma — *GEX (Gamma Exposure) Explained*:
   https://support.spotgamma.com/hc/en-us/articles/15214161607827-GEX-Gamma-Exposure-Explained-What-It-Is-and-How-SpotGamma-Uses-It
 
 > Caveat: the practitioner links describe the strategy as taught; they are **not**
-> independent validation. The academic links validate the *mechanism* (dealer
-> short gamma amplifies vol), **not** the specific entry rule or its sign for
-> Nifty. Treat §6 as the governing verdict.
+> independent validation. The academic links study a hedge-and-volatility
+> mechanism in other markets. They are not the production convention and they
+> do not set the Nifty sign. Treat §3 and §4 as the governing reading.
 
 ---
 

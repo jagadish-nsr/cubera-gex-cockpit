@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 
-def max_pain(contracts: pd.DataFrame, contract_size: int = 100) -> float:
+def max_pain(contracts: pd.DataFrame, contract_size: int = 1) -> float:
     """contracts columns required: strike, type ("C"/"P"), oi.
 
     Evaluated over the set of listed strikes (standard convention).

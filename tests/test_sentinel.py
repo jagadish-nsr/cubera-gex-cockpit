@@ -167,7 +167,10 @@ def test_classifier_absorption_bear_at_call_wall():
     assert sig is not None
     assert sig.type == "ABSORPTION_BEAR"
     assert sig.bias == "SHORT"
-    assert sig.score >= 70
+    assert sig.score >= 65
+    assert "not a ceiling" in sig.insight_text.lower()
+    assert "defended" not in sig.insight_text.lower()
+    assert "rejected" not in sig.insight_text.lower()
     assert sig.confidence == "HIGH"
     assert sig.gex_alignment == "CONFIRMED_AT_WALL"
     assert sig.invalidation_level > bar.high

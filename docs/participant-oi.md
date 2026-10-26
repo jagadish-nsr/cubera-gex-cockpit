@@ -2,9 +2,8 @@
 
 Built 2026-07-02. The DIRECT big-player positioning read: Client / DII / FII / Pro
 long-vs-short in index F&O, from NSE's clearing-corp EOD file. Unlike GEX (which infers
-positioning through the option chain and sits under the unvalidated dealer-gamma-sign
-landmine), this says *who is actually positioned* — so it's the cleanest clue to who
-writes index options, and it's **sign-free**. Decision-support only; the user confirms
+positioning through the option chain. Who hedges that chain is unmeasured.), this says *who is actually positioned* — so it's the cleanest clue to who
+writes index options. Decision-support only; the user confirms
 all decisions (see CLAUDE.md).
 
 ## Data source
@@ -27,7 +26,7 @@ https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_DDMMYYYY.csv
 | Logic + journal | `app/participant_oi.py` | flat market-wide journal `data/journal/participant_oi/YYYY-MM-DD.csv` (1 row/participant, gitignored) · `save/load/available/latest` · `derive_signals` · `capture_latest` (newest, walk-back) · `backfill(n_days)` · `participant_series` · `series_drift` |
 | Daily capture | `scripts/log_participant_oi.py` | `capture_latest`; `--backfill N` for history; exit-1 on miss (for the scheduler) |
 | Scheduler | `run_participant_oi.bat` + `setup_participant_oi_scheduler.ps1` | `GEX-ParticipantOI` weekday task ~20:00 IST (post-publication), wake-to-run + S4U — run the `.ps1` once as admin |
-| Dashboard | `app/dashboard.py::_participant_oi_section` + `_fii_drift_readout` | FII net-fut, option-writing, dealer-sign hint, multi-day FII drift |
+| Dashboard | web cockpit participant-OI card | FII net futures, option writing, multi-day FII drift |
 | IC research | `scripts/analyze_participant_ic.py` | FII futures → next-day Nifty return (point-in-time Spearman) |
 | Tests | `tests/test_participant_oi.py` | 13 hand-checks (parse/derive/journal/capture/backfill/series/drift) |
 
@@ -35,9 +34,8 @@ https://nsearchives.nseindia.com/content/nsccl/fao_participant_oi_DDMMYYYY.csv
 - `net_fut = fut_long − fut_short` — index-futures direction (net long = bullish, net
   short = bearish/hedged).
 - `net_opt_writing = (call_short+put_short) − (call_long+put_long)` — >0 = net WRITER.
-- **Dealer-sign hint** = dominant net option writer among Client/Pro/FII. If Client/Pro
-  dominate → supports the **inverted** dealer-sign lean (model B); if FII dominates →
-  closer to the US default (model A). A *hint*, not a resolution of the landmine.
+- **Writer hint** = which of Client, Pro, or FII is the largest net index-option
+  writer that day. It names the writer. It does not choose a GEX sign model.
 - Bull/bear from options (`_net_calls_puts`): net short puts = bullish (put writing);
   net short calls = bearish (call writing); long puts = bearish/hedge; long calls = bullish.
 
@@ -52,9 +50,8 @@ sense depends on the call-vs-put mix). Always discounts a futures-short that isn
 by directional options as a likely **cash hedge**.
 
 ## First empirical reads (2026-07-02, 8 days backfilled: 22–25 Jun, 29 Jun–2 Jul)
-- **Dealer-sign:** Client is the dominant index-option writer → **supports the inverted
-  sign (model B)** — first concrete corroboration of the `both-signs-dealer-sign-read`
-  lean. Still one-day, sign-free hint; landmine not resolved.
+- **Writer that day:** Client was the largest net index-option writer in that
+  sample. That names the writer. It does not choose a GEX sign.
 - **Directional (02-Jul):** FII bearish/hedged (net short futures −256,900, short calls,
   long puts) vs retail bullish (net long futures, heavy put-writing) — a mildly cautious
   configuration.
@@ -63,7 +60,7 @@ by directional options as a likely **cash hedge**.
   *shrinking*, so mixed underneath.
 - **IC (`analyze_participant_ic.py`, point-in-time):** FII net-fut LEVEL → next-day Nifty
   return **Spearman −0.90 (n=5)**; DRIFT → **−0.80 (n=4)**. Negative sign ⇒ FII futures
-  shorts look **contrarian** (fade), consistent with the hedge read. **Statistically
+  shorts printed with the opposite sign of the next Nifty return in that tiny sample. That is a research note. It is not a production fade. **Statistically
   meaningless** at this n (3/5 pairs span data gaps; close is a proxy); read sign/shape
   only. Re-run after ~20–30 banked days.
 

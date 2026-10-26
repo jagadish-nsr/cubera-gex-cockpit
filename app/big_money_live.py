@@ -1,6 +1,5 @@
-"""Big-money tape — the always-on background SERVICE ([W2]): a daemon thread that streams the Dhan
-feed, filters big prints/bursts, AND saves the raw tick stream. Auto-started from the dashboard via
-`streamlit.cache_resource` (one singleton across reruns/sessions).
+"""Big-money tape — a background thread that streams the Dhan feed, filters big
+prints and bursts, and saves the raw tick stream. One process-wide collector.
 
 Why save raw ticks: Dhan's HISTORICAL API bottoms out at 1-min candles (OHLC+vol+OI) with NO
 tick/bid-ask history (verified in docs/big-money-tape.md), so the live websocket is the ONLY way to

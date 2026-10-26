@@ -79,43 +79,6 @@ def test_buildup_quadrants():
     assert buildup(1, 0) is None                             # flat OI = churn
 
 
-def test_bm_quad_dot_colour():
-    """The burst-scatter dot colour maps ΔOI sign (via conviction) × price move to the four quadrants,
-    greying out churn and missing/flat inputs. Mirrors buildup()."""
-    from app.simple_dashboard import _bm_quad
-    assert _bm_quad(+0.5, +8) == ("long build-up", "var(--go)")    # OI building, price up
-    assert _bm_quad(+0.5, -8) == ("short build-up", "var(--stop)")  # OI building, price down (writing)
-    assert _bm_quad(-0.5, +8) == ("short covering", "var(--call)")  # OI falling, price up
-    assert _bm_quad(-0.5, -8) == ("long unwinding", "var(--warn)")  # OI falling, price down
-    assert _bm_quad(+0.05, +8) == (None, "var(--ink-mute)")         # |conv|<0.15 → churn (grey)
-    assert _bm_quad(+0.5, 0) == (None, "var(--ink-mute)")           # flat price → grey
-    assert _bm_quad(None, +8) == (None, "var(--ink-mute)")          # no conviction → grey
-    assert _bm_quad(+0.5, None) == (None, "var(--ink-mute)")        # no price move → grey
-
-
-def test_bm_extra_charts_render():
-    """The three descriptive tape charts render valid SVG from an analyse-shaped dict, flag the POC,
-    colour OI/CVD by direction, and no-op on empty input."""
-    from app.simple_dashboard import (_bm_value_profile_html, _bm_oi_trajectory_html, _bm_cvd_html)
-    a = {"symbol": "NIFTY", "vp_fut_ref": 23790.0,               # the profile's own contract ref px
-         "value_profile": [{"price": 23800.0, "buy": 24.0, "sell": 25.0, "mid": 29.0, "total": 78.0},
-                           {"price": 23750.0, "buy": 5.0, "sell": 2.0, "mid": 1.0, "total": 8.0}],
-         "time": [{"t": "09:15", "oi": 1.0e7, "net": +3.0, "px": 23770.0},
-                  {"t": "09:30", "oi": 1.2e7, "net": -1.0, "px": 23760.0},
-                  {"t": "09:45", "oi": 1.3e7, "net": +2.0, "px": 23790.0}]}
-    vp = _bm_value_profile_html(a)
-    assert "<svg" in vp and "POC" in vp and "23,800" in vp        # heaviest level flagged
-    assert "basis" not in vp                                      # no spot column without a spot
-    vps = _bm_value_profile_html(a, spot=23740.0)                # basis = vp_fut_ref 23790 − 23740 = +50
-    assert "basis +50" in vps and "23,750s" in vps               # POC spot-equiv 23800 − 50 = 23750
-    oi = _bm_oi_trajectory_html(a)
-    assert "<svg" in oi and "var(--go)" in oi and "+3.00M" in oi  # OI rose 10.0M→13.0M
-    cvd = _bm_cvd_html(a)
-    assert "<svg" in cvd and "+4.0cr (BUY)" in cvd                # net buy-initiated 3−1+2
-    for fn in (_bm_value_profile_html, _bm_oi_trajectory_html, _bm_cvd_html):
-        assert fn({}) == "" and fn(None) == ""                    # empty-input guard
-
-
 def test_conviction():
     from app.big_money import conviction
     assert conviction(500, 1000) == 0.5                      # half the volume was net new OI

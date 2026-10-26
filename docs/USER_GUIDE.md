@@ -15,7 +15,7 @@ Access any of the specialized technical guides directly in your browser or click
 
 2. **[🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)**
    - Operational field guide for the **High-Conviction Options Recommendations Engine (Score ≥ 75)**.
-   - Deep dive on all 7 institutional strategies: **MOMENTUM**, **STRUCTURE**, **GAMMA SQUEEZE**, **ICEBERG FADE**, **VANNA-CHARM**, **VOL DISPERSION**, and **RATIO REVERSAL**.
+   - Deep dive on all 7 institutional strategies: **MOMENTUM**, **STRUCTURE**, **STRIKE BREAK**, **ICEBERG FADE**, **VANNA-CHARM**, **VOL DISPERSION**, and **RATIO REVERSAL**.
    - Defined-risk vertical spread alternatives (Bull Call Spreads / Bear Put Spreads), ADX trend confluence, CVD divergence integration, lunch chop filter, and anti-flicker 180s dwell leasing.
 
 3. **[🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)**
@@ -51,7 +51,7 @@ Access any of the specialized technical guides directly in your browser or click
     - Daily institutional positioning tracking FII, Proprietary Desk, and Client positioning drift from NSE clearing-corp EOD files.
 
 11. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
-    - Theoretical mechanics of dealer positioning, gamma hedging, and Gamma Blast squeeze regimes in native Indian market mode (`short_call_short_put`).
+    - Book balance, expiry-day premium crossover, and the research record. Production uses one convention, `short_call_short_put`. Who hedges is unmeasured.
 
 ---
 
@@ -94,7 +94,7 @@ The Cockpit organizes quantitative index analytics into 11 tabbed workstations:
 
 ## 🧭 Market State Assessment: The Quick-Check Playbook & 10-Second Triage Routine
 
-To assess market state in the **Cubera GEX Cockpit**, traders cross-reference **dealer positioning (Gamma Exposure / GEX)** with **live execution microstructure (CVD / Orderflow Sentinel)**, **Target Engine confluence**, and **market breadth**.
+To assess market state in the **Cubera GEX Cockpit**, read the **call−put book (GEX)** next to **tape (CVD / Orderflow Sentinel)**, **Target Engine confluence**, and **market breadth**.
 
 To automate this workflow, the **🗺️ Cockpit** tab features a live **Flashing Marquee Alert Tape** backed by a **3.0-second louder brass bell chime 🔔** that continuously evaluates the tape and alerts you to regime shifts in real time.
 
@@ -133,70 +133,66 @@ Step 4: Check 🧭 Market Intelligence
 ### The 4 Core Operating Scenarios: Mechanism & 15-Second Checklists
 
 #### 1. How to Know When a Big Move is Coming (Volatility Expansion Imminent)
-- **Institutional Mechanism:** When aggregate dealer gamma is negative or spot crosses below the Gamma Flip, market makers become short gamma. To dynamically delta-hedge, dealers must **sell as price falls and buy as price rises**, amplifying volatility rather than damping it. On expiry days, near-the-money gamma compresses into explosive strikes.
-- **Key Institutional Rule:** If Spot breaks through the Gamma Flip, the market enters the **"trapdoor/accelerator"** zone. Volatility expands by **1.5× to 2.0× normal expectations**.
+- **Book reading:** Absolute GEX is the volatility context. A low reading, in the research sample, lined up with wider forward vol. Spot sitting on one side of the call−put balance is a location. It is not a short-gamma accelerator, and it is not a 1.5× to 2× forecast.
+- **What the labels mean:** POSITIVE means the call book is larger. NEGATIVE means the put book is larger. Neither word is a volatility forecast by itself.
 
 ##### ⚡ Quick 15-Second Checklist:
 | Tab | Component / Card | What to Look For |
 |---|---|---|
-| **🗺️ Cockpit** | **Regime Classification & Net GEX** | • Regime flips to **NEGATIVE / TRENDING (Volatile)**.<br>• Net GEX drops near zero or turns negative.<br>• Spot moves into the Negative Gamma Zone (**Spot < Gamma Flip**). |
-| **🗺️ Cockpit** | **⚡ Expiry Gamma Blast Model** | • Blast Score spikes **> 60 / 100** with status **BLAST IMMINENT / ACTIVE** (especially between 13:30–15:15 IST). |
-| **📡 Options Analytics** | **ATM IV & IV Rank** | • IV compression followed by sudden IV expansion on both wings.<br>• Term structure shifting out of calm contango. |
-| **⚡ Sentinel Tape** | **Block Sweeps & Delta Spikes** | • Sudden cluster of institutional block sweeps (> ₹20L) firing in rapid succession on the tape. |
+| **🗺️ Cockpit** | **Regime Classification & Net GEX** | • Regime reads **NEGATIVE** (put-heavy) or **POSITIVE** (call-heavy).<br>• Net GEX is the writer imbalance, call magnitude minus put magnitude.<br>• Spot relative to the flip is book balance, not a negative-gamma zone. |
+| **🗺️ Cockpit** | **Expiry gamma watch** | • A high blast score means spot is near a gamma strike late in the session. It is a location, not a squeeze. |
+| **📡 Options Analytics** | **ATM IV & IV Rank** | • IV compression followed by an IV rise on both wings is an implied-vol fact. It is not a dealer hedge. |
+| **⚡ Sentinel Tape** | **Block Sweeps & Delta Spikes** | • A cluster of large prints is tape. Confirm it yourself. |
 
-- **👉 Beginner Playbook:** Buy breakout momentum with defined stop-losses. **DO NOT** sell naked options (strangles/straddles) — risk of sudden wipeout is severe.
+- **👉 Beginner Playbook:** If you trade a break, use a defined-risk structure and a stop beyond the gamma strike. The user confirms. No naked short is staged by this app.
 
 ---
 
 #### 2. How to Know the Market is Trending (Bull or Bear Momentum)
-- **Institutional Mechanism:** A sustained trend requires institutional delta aggression (CVD divergence), broad sector confirmation, and options dealers continuously chasing hedge inventory without wall resistance pinning the spot.
-- **Key Institutional Rule:** A genuine trend requires **Index + CVD + Sector Breadth all pointing in the same direction**. If the index moves up but Breadth is mixed or CVD is flat, it is a **low-quality squeeze / bull trap**, not a trend.
+- **Book reading:** A trend on the tape is CVD, breadth, and price holding a side of VWAP. Gamma strikes do not pin that move, and they do not chase it.
+- **Rule of thumb:** Index, CVD, and sector breadth pointing the same way is a higher-quality tape read. Mixed breadth with a rising index is a weaker tape read.
 
 ##### ⚡ Quick 15-Second Checklist:
 | Tab | Component / Card | What to Look For |
 |---|---|---|
-| **⚡ Sentinel Tape** | **CVD Regime & Cumulative Net CVD** | • CVD Regime shows **BUYER_DOMINATED** (or **SELLER_DOMINATED**).<br>• CVD line climbs at a steep angle, making consecutive higher highs without flattening.<br>• Buyer Volume Ratio stays consistently **> 55%** (uptrend) or **< 45%** (downtrend). |
-| **⚡ Sentinel Tape** | **VWAP & EMA 9/21 Ribbon** | • Candlesticks riding above the EMA 9/21 Ribbon and holding outside the **VWAP +1σ envelope** without returning to session mean VWAP. |
-| **🎯 Target Engine** | **T2 Confluence Dial** | • Dial reads **CONFLUENCE BULLISH** (or **BEARISH**) with score **> 65 / 100** (High Conviction). |
-| **🧭 Market Intelligence** | **Sector Breadth & Net Contribution** | • Breadth is **> 8/11 Green** (or **> 8/11 Red**).<br>• Weighted Net Contribution aligns with the index (**> +0.30%** or **< -0.30%**).<br>• Rotation Regime reads **BROAD_EXPANSION** or **CYCLICAL_LEADERSHIP** (not BALANCED_CHOP). |
+| **⚡ Sentinel Tape** | **CVD Regime & Cumulative Net CVD** | • CVD Regime shows **BUYER_DOMINATED** or **SELLER_DOMINATED**.<br>• The CVD line keeps making highs or lows.<br>• Buyer volume ratio stays above 55% or below 45%. |
+| **⚡ Sentinel Tape** | **VWAP & EMA 9/21 Ribbon** | • Price holding outside the VWAP band is a tape location. |
+| **🎯 Target Engine** | **T2 Confluence Dial** | • Dial above 65 is the engine's own confluence score. It is decision support. |
+| **🧭 Market Intelligence** | **Sector Breadth & Net Contribution** | • Breadth above 8 of 11 in one colour, with net contribution in the same direction. |
 
-- **👉 Beginner Playbook:**  
-  - **Uptrend:** Buy call options or enter longs on minor dips to the EMA ribbon/VWAP. **DO NOT** try to short or pick tops.  
-  - **Downtrend:** Stick with put options or short trades on bounces to VWAP. **DO NOT** try to catch falling knives.
+- **👉 Beginner Playbook:** The user picks the option and the size. The cockpit does not send an order.
 
 ---
 
 #### 3. How to Know the Market is Going to be Sideways (Chop / Mean Reversion)
-- **Institutional Mechanism:** When dealers are in Positive Gamma and spot sits comfortably between the Call and Put Walls, dealers hedge counter-cyclically (buying dips, selling rips). This acts as shock absorbers, damping volatility and pinning price.
-- **Key Institutional Rule:** If you see **Positive Gamma + Put/Call Wall Sandwich + Balanced Sector Chop**, avoid breakout trades. The optimal strategy is **Range Fade / Mean Reversion** (selling edges, buying support, shorting resistance).
+- **Book reading:** High absolute GEX has meant calmer forward vol in the sample. The call-gamma and put-gamma strikes are concentrations. They are not a floor and a ceiling that a dealer book will defend.
+- **When spot sits between those strikes and breadth is balanced,** a breakout is the lower-probability read. Size down. The user confirms. Do not fade to the magnet because a label says positive gamma.
 
 ##### ⚡ Quick 15-Second Checklist:
 | Tab | Component / Card | What to Look For |
 |---|---|---|
-| **🗺️ Cockpit** | **Regime Classification & Net GEX** | • Regime reads **POSITIVE / RANGE-BOUND / BULL_TREND** (Mode: Positive Gamma Pin).<br>• High positive Net Dealer Gamma (+100k+ units).<br>• Spot is sandwiched between Put Wall (support) and Call Wall (resistance). |
-| **🗺️ Cockpit** | **Put Wall Role vs Flip** | • Put Wall is **ABOVE the Gamma Flip** $\rightarrow$ Classified as genuine **Support** (not a "speed bump"). |
-| **⚡ Sentinel Tape** | **CVD Line & VWAP** | • CVD oscillates around 0 with no clear directional slope.<br>• Price repeatedly snaps back to the purple Session VWAP line. |
-| **🧭 Market Intelligence** | **Sector Performance & Intel Verdict** | • Intel Verdict reads **⚖️ Balanced Sector Dispersion**.<br>• Rotation Regime reads **BALANCED_CHOP** (e.g., Banks green while IT/Energy red, canceling each other out). |
-| **📡 Options Analytics** | **Max Pain & Strike Buildup** | • Spot is gravitating tightly within **±30–50 points of Max Pain**.<br>• Heavy dual straddle/strangle writing on both CE and PE in the Buildup Matrix. |
+| **🗺️ Cockpit** | **Regime and net GEX** | • POSITIVE means call-heavy. NEGATIVE means put-heavy. Neither is a pin mode.<br>• Spot between the call-gamma and put-gamma strikes is a corridor on the map. |
+| **🗺️ Cockpit** | **Strike versus the flip** | • A gamma strike above or below the flip is still a concentration. It is not support. |
+| **⚡ Sentinel Tape** | **CVD Line & VWAP** | • CVD oscillating around zero and price returning to VWAP is a tape fact. |
+| **🧭 Market Intelligence** | **Sector Performance** | • Balanced breadth is a chop read on the tape, not a dealer pin. |
+| **📡 Options Analytics** | **Max pain** | • Max pain is the settlement strike that minimises writer payout. Distance to it is not a gravitation forecast. |
 
-- **👉 Beginner Playbook:** Buy low near support (Put Wall), sell high near resistance (Call Wall). **DO NOT** chase breakouts; they will likely fail.
+- **👉 Beginner Playbook:** Stops go beyond the gamma strikes, never at the magnet. The user confirms any structure. The app does not buy the put wall or sell the call wall for you.
 
 ---
 
 #### 4. How to Know the Market is About to Break Out or Break Down
-- **Institutional Mechanism:** Price tests a major institutional boundary (Call Wall / Put Wall / Prior Highs) accompanied by Delta Absorption or Exhaustion, shifting dealer inventory past their inflection point.
+- **Book reading:** Price at a call-gamma or put-gamma strike, with absorption or exhaustion on the tape, is a location. It is not dealer inventory past an inflection, and it is not a cascade.
 
 ##### ⚡ Quick 15-Second Checklist:
 | Tab | Component / Card | What to Look For |
 |---|---|---|
-| **🗺️ Cockpit** | **Gamma Price Ladder (Spot Centered)** | • **Breakout:** Spot approaches Call Wall; Call Gamma shrinks or shifts higher to next strikes (Short squeeze dynamic).<br>• **Breakdown:** Spot approaches Put Wall; if Put Wall is below Gamma Flip, it is flagged as **Speed Bump** (risk of sudden waterfall cascade). |
-| **⚡ Sentinel Tape** | **Absorption Status & OrderFlow Tape** | • Absorption Status KPI shows **ACTIVE_AT_PUT_WALL** or **ACTIVE_AT_CALL_WALL**.<br>• **Breakout:** Aggressive buyer market orders absorbing passive limit sellers at resistance.<br>• **Breakdown:** Passive bids getting swept with consecutive red delta bars. |
-| **📡 Options Analytics** | **Strike Buildup Matrix & Shift Events** | • Microstructure Shift Events log shows **Call Unwinding / Short Covering** (breakout fuel) or **Put Long Unwinding / Heavy Call Addition** (breakdown fuel).<br>• PCR shifts rapidly (**> 0.15 change within 15 mins**). |
-| **🎯 Target Engine** | **Spot Invalidation Anchors** | • Reference anchors indicate Spot breaching the Spot Inval level (`ladder-ce-inval` or `ladder-pe-inval`), activating Target 1 & Target 2 paths. |
+| **🗺️ Cockpit** | **Gamma ladder** | • Spot at the call-gamma or put-gamma strike. A shift of the strike is a new map. It is not a short squeeze or a waterfall. |
+| **⚡ Sentinel Tape** | **Absorption** | • Absorption at a gamma strike is tape. It is not a floor or a ceiling. |
+| **📡 Options Analytics** | **Buildup** | • A PCR change is put open interest over call open interest. It is not a direction. |
+| **🎯 Target Engine** | **Invalidation** | • A close through the invalidation level is the engine's own stop logic. The user confirms. |
 
-- **👉 Beginner Playbook:**  
-  - **Call Wall Breakout:** Wait for a 5-minute candle to close above the Call Wall, then enter for a short squeeze surge.  
-  - **Put Wall Breakdown:** If Put Wall is below the Gamma Flip, cut longs immediately; look for rapid downward cascade.
+- **👉 Beginner Playbook:** A close outside a gamma strike is a location. Size it yourself. The cockpit does not enter a squeeze or a cascade.
 
 ---
 
@@ -248,18 +244,14 @@ Trading and recommendation generation follow official Indian market session timi
 ## 🚀 Running the Terminal Locally
 
 ### Launch Commands & Default Ports:
-- **Unified Master Cockpit (Served at `http://localhost:8630`):**
-  - **macOS / Linux:** Run `./run_cockpit.sh` (or `python3 -m streamlit run app/cockpit.py --server.port 8630`)
-  - **Windows:** Double-click `run_cockpit.bat`
-- **Simple Dashboard (Served at `http://localhost:8610`):**
-  - **macOS / Linux:** Run `./run_simple.sh` or `./run_simple.command`
-  - **Windows:** Double-click `run_simple.bat`
+- **Web cockpit (production, `http://localhost:8640`):** `./run_prod.sh` or `python3 web_server.py --port 8640`
+- **Dev (`http://localhost:8650`):** `./run_dev.sh`
 
 ---
 
 ## 🛡️ Core Trading Philosophy
 
-- **Calm Regime (Spot > Gamma Flip & inside walls)**: *Be the Casino* — option writers dominate, volatility is suppressed, and mean-reversion toward equilibrium (VWAP) is favored.
-- **Wild Regime (Spot < Gamma Flip or breaching walls)**: *Be the Careful Trend Trader* — dealer gamma is negative, market makers hedge aggressively in the direction of the move, and explosive convex breakouts (Gamma Squeezes) occur.
+- **High absolute GEX, spot between the gamma strikes**: the research sample linked that concentration to calmer forward vol. That is context. It is not a casino fade to the magnet.
+- **Low absolute GEX, or spot outside the strikes**: the sample linked low concentration to wider forward vol. A close outside a strike is a location, not a gamma squeeze.
 
-*Note: All recommendations, levels, commentary bites, and order simulations are for decision-support and paper trading only. Not financial advice.*
+*Note: Levels, commentary, and paper structures are decision support. The user confirms. Not financial advice.*

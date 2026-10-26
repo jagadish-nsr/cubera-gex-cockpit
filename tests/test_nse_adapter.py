@@ -34,7 +34,7 @@ def test_mapping_and_types():
     rows, spot, *_ = _parity_consistent_nifty()
     snap = from_nse_results(
         rows, spot=spot, expiry_window="0dte_to_next_monthly",
-        dealer_sign_model="long_call_short_put", fetched_at=FETCHED, oi_timestamp=FETCHED,
+        dealer_sign_model="short_call_short_put", fetched_at=FETCHED, oi_timestamp=FETCHED,
     )
     snap.validate()
     assert snap.spot == spot
@@ -46,7 +46,7 @@ def test_end_to_end_levels():
     rows, spot, r, q = _parity_consistent_nifty()
     snap = from_nse_results(
         rows, spot=spot, expiry_window="0dte_to_next_monthly",
-        dealer_sign_model="long_call_short_put", fetched_at=FETCHED, oi_timestamp=FETCHED,
+        dealer_sign_model="short_call_short_put", fetched_at=FETCHED, oi_timestamp=FETCHED,
     )
     levels = compute_levels(snap, contract_size=75, oi_stale_hours=72.0)
     (fit,) = list(levels.parity_fits.values())

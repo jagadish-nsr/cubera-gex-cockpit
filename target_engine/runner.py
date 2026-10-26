@@ -59,13 +59,30 @@ def run_target_engine(
     expiry = str(dash.expiries[0]) if dash.expiries else "2026-10-15"
     contracts_df = dash.contracts if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) else None
 
-    # Step 1: Detect structural walls
+    # Step 1: Detect structural walls, then prepend cockpit GEX walls so
+    # bull/bear targets share the same call/put wall the rest of the app uses.
     call_walls, put_walls = detect_walls(
         contracts_df=contracts_df,
         spot=spot,
         strike_window=config.wall_strike_window,
         min_oi_share=config.wall_min_oi_share,
     )
+    lv = dash.levels if dash.levels else None
+    gex_call = float(getattr(lv, "call_wall", 0.0) or 0.0) if lv else 0.0
+    gex_put = float(getattr(lv, "put_wall", 0.0) or 0.0) if lv else 0.0
+
+    def _prepend_gex(existing, strike: float, side: str):
+        if strike <= 0:
+            return existing
+        if any(abs(w.strike - strike) < 1.0 for w in existing):
+            return existing
+        wall = OptionWall(
+            strike=strike, side=side, oi=0.0, oi_share=1.0, oi_change=0.0, strength=1.0,
+        )
+        return [wall] + list(existing)
+
+    call_walls = _prepend_gex(call_walls, gex_call, "CALL")
+    put_walls = _prepend_gex(put_walls, gex_put, "PUT")
 
     # Step 2: Feature Extraction
     fv = extract_features(
@@ -104,7 +121,8 @@ def run_target_engine(
     iv_forecasts: Dict[str, IVForecast] = {}
     for sc in ["bull", "base", "bear"]:
         target_obj = underlying_targets.get(sc)
-        spot_move = (target_obj.target - fut) / fut if target_obj else 0.0
+        denom = spot if spot > 0 else fut
+        spot_move = ((target_obj.target - spot) / denom) if target_obj and denom else 0.0
         iv_forecasts[sc] = forecast_iv(
             scenario=sc,
             horizon_minutes=horizon_minutes,

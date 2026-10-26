@@ -28,19 +28,3 @@ def test_missing_inputs_return_none():
     assert pin_regime(None, 24300.0) is None
     assert pin_regime(PROF, None) is None
     assert pin_regime({"poc": float("nan"), "vah": 1, "val": 0, "va_width": 1}, 0.5) is None
-
-
-def test_blast_context_line_renders_the_right_read():
-    """The one-line pin-regime context shown inside the gamma-blast verdict, driven off pin_regime."""
-    from types import SimpleNamespace as NS
-
-    from app.simple_dashboard import _pin_context_line
-    today = {"today": PROF}
-    pinned, unpinned = NS(max_pain=24310.0), NS(max_pain=24500.0)
-
-    assert "PINNED" in _pin_context_line(today, pinned)
-    assert "UN-PINNED" in _pin_context_line(today, unpinned)
-
-    # guardrails: no profile / no pin → nothing rendered
-    assert _pin_context_line({"today": None}, pinned) == ""
-    assert _pin_context_line(today, NS(max_pain=None)) == ""

@@ -123,7 +123,7 @@ def _print_table(levels, n_contracts: int, idx) -> None:
     print(f"    index          : {idx.symbol} ({idx.label})")
     print(f"    data source    : {L.source}")
     print(f"    lot size       : {idx.lot_size}  (VERIFY against exchange circular)")
-    print(f"    dealer sign    : {L.dealer_sign_model}  (Indian Market Mode)")
+    print(f"    dealer sign    : {L.dealer_sign_model}  (book balance: call gamma minus put gamma)")
     print(f"    expiry window  : {L.expiry_window}")
     print(f"    contracts used : {n_contracts}")
     print(f"    OI timestamp   : {L.oi_timestamp}  (stale={L.oi_stale})")
@@ -141,7 +141,7 @@ def _print_table(levels, n_contracts: int, idx) -> None:
         for f in L.flags:
             print(f"    ! {f}")
     print("=" * 66)
-    print("\n  ⚠️  Indian Market Mode Active (Negative Regime): Walls act as breakout triggers, not ceilings.")
+    print("\n  Book balance only. Walls are gamma concentration, not floors, ceilings, or breakout triggers.")
 
 
 def main():

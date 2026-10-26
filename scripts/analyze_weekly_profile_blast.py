@@ -165,7 +165,7 @@ def main() -> None:
     import pandas as pd
     from app.market_profile import BIN_PTS, tpo_histogram
     from data.dhan import available_intraday_days, load_intraday_day
-    from data.replay import _expiry_cache
+    from data.session_flags import _expiry_cache
 
     store = sys.argv[1] if len(sys.argv) > 1 else "NIFTY"
     bp = BIN_PTS.get(store, 5.0)

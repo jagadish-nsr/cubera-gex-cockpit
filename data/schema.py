@@ -26,13 +26,13 @@ CONTRACT_COLUMNS = ["expiry", "strike", "type", "oi", "iv", "gamma", "mid", "T"]
 
 @dataclass
 class OptionsSnapshot:
-    underlying: str               # e.g. "I:SPX"
+    underlying: str               # "NIFTY" | "BANKNIFTY" | "SENSEX"
     spot: float                   # underlying index level
     contracts: pd.DataFrame       # columns per CONTRACT_COLUMNS
     oi_timestamp: datetime        # when the OI was last updated (EOD-lagging)
     dealer_sign_model: str
     expiry_window: str
-    source: str                   # e.g. "polygon", "fixture"
+    source: str                   # e.g. "dhan", "nse", "fixture"
     fetched_at: datetime
 
     def validate(self) -> None:

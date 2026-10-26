@@ -19,8 +19,6 @@ from commentary.storage.db import (
     get_recent_commentary_entries,
     clear_commentary_cache,
 )
-from app.tab_commentary import _format_time_ist
-from app.cockpit import _to_ist
 
 
 def test_to_ist_conversions():
@@ -167,20 +165,4 @@ def test_storage_roundtrip_normalizes_to_ist(tmp_path, monkeypatch):
     # Check that ts stored/returned is ISO with +05:30
     assert "+05:30" in found["ts"]
     assert "09:26:04" in found["ts"]
-
-    # Verify _format_time_ist formats cleanly to IST
-    formatted = _format_time_ist(found["ts"])
-    assert "09:26:04 AM IST" in formatted
     comm_db.clear_commentary_cache()
-
-
-def test_app_cockpit_to_ist_helper():
-    utc_dt = dt.datetime(2026, 10, 13, 3, 56, 4, tzinfo=dt.timezone.utc)
-    res = _to_ist(utc_dt)
-    assert res.hour == 9
-    assert res.minute == 26
-
-    # Test string input
-    res_str = _to_ist("2026-10-13T03:56:04Z")
-    assert res_str.hour == 9
-    assert res_str.minute == 26

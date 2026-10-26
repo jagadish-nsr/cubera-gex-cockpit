@@ -1,7 +1,6 @@
 """Tests for Sentinel 1m to 5m candle aggregation and timeframe retrieval."""
 
 from datetime import datetime, timezone, timedelta
-import pytest
 from sentinel.models import Bar
 from sentinel.engine.aggregator import aggregate_1m_to_5m
 from sentinel.storage.db import (
@@ -84,52 +83,3 @@ def test_5m_retrieval_fallback_synthesis(tmp_path, monkeypatch):
     stored_3m = list_recent_bars("NIFTY-FUT", timeframe="3m")
     assert len(stored_3m) >= 3
     assert stored_3m[0].timeframe == "3m"
-
-
-def test_chart_customization_call():
-    """Verify that _render_sentinel_chart accepts all modular customization parameters without error."""
-    from app.cockpit import _render_sentinel_chart
-    from unittest.mock import patch
-
-    base_ts = datetime(2026, 10, 6, 9, 15, 0, tzinfo=timezone.utc)
-    bars = [_make_1m_bar("NIFTY-FUT", base_ts + timedelta(minutes=i), float(i)) for i in range(10)]
-
-    # Patch st.altair_chart so we can verify the compound chart is built
-    with patch("streamlit.altair_chart") as mock_alt:
-        # 1. Full OrderFlow (all on, with EMAs)
-        _render_sentinel_chart(
-            bars,
-            call_wall=24600.0,
-            put_wall=24400.0,
-            show_cvd=True,
-            show_delta=True,
-            show_vwap=True,
-            show_bands=True,
-            show_walls=True,
-            show_ema=True,
-            chart_style="Candlesticks",
-            main_height=340,
-        )
-        assert mock_alt.called
-        chart_obj = mock_alt.call_args[0][0]
-        assert chart_obj is not None
-
-        mock_alt.reset_mock()
-
-        # 2. Pure Price (minimalist, no subplots, Area style)
-        _render_sentinel_chart(
-            bars,
-            call_wall=24600.0,
-            put_wall=24400.0,
-            show_cvd=False,
-            show_delta=False,
-            show_vwap=False,
-            show_bands=False,
-            show_walls=True,
-            show_ema=False,
-            chart_style="Area / Line",
-            main_height=260,
-        )
-        assert mock_alt.called
-        chart_obj = mock_alt.call_args[0][0]
-        assert chart_obj is not None

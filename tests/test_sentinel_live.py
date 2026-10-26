@@ -51,6 +51,17 @@ class TestSentinelLive(unittest.TestCase):
         mock_fetch.return_value = mock_df
 
         mgr = LiveSentinelManager()
+
+        from sentinel.feed import live as live_mod
+
+        def _fetch_must_not_hold_feed_lock(*_a, **_k):
+            acquired = live_mod._LOCK.acquire(blocking=False)
+            if acquired:
+                live_mod._LOCK.release()
+            self.assertTrue(acquired, "broker fetch ran while the sentinel feed lock was held")
+            return mock_df
+
+        mock_fetch.side_effect = _fetch_must_not_hold_feed_lock
         ok = mgr.sync_live_session("TEST-FUT", "TEST", call_wall=22600.0, put_wall=22400.0, force=True)
         self.assertTrue(ok)
 
@@ -107,6 +118,33 @@ class TestSentinelLive(unittest.TestCase):
         bars = list_recent_bars("TEST-FUT", "1m", limit=5)
         self.assertEqual(len(bars), 1)
         self.assertEqual(bars[0].close, 22505.0)
+
+    def test_missing_aggregator_schedules_one_sync(self):
+        """A tick with no in-memory aggregator starts one session sync, not one per tick."""
+        mgr = LiveSentinelManager()
+        started = []
+
+        class _InlineThread:
+            def __init__(self, target=None, name=None, daemon=None):
+                self._target = target
+                started.append(name)
+
+            def start(self):
+                self._target()
+
+        calls = []
+
+        def _sync(instrument_id, symbol, **kwargs):
+            calls.append((instrument_id, symbol, kwargs))
+            return False
+
+        mgr.sync_live_session = _sync
+        pkt = {"ltp": 22505.0, "ltq": 65, "volume": 100, "ltt": int(datetime.now(timezone.utc).timestamp())}
+        with patch("sentinel.feed.live.threading.Thread", _InlineThread):
+            mgr.on_tick(pkt, "TEST")
+            mgr.on_tick(pkt, "TEST")
+        self.assertEqual(calls, [("TEST-FUT", "TEST", {})])
+        self.assertEqual(len(started), 1)
 
     def test_live_session_isolation_never_returns_yesterday_data(self):
         """Verify that during an active live market session, list_recent_bars strictly isolates to today."""

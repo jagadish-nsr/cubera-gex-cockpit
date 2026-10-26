@@ -48,13 +48,15 @@ class Levels:
 
 def compute_levels(
     snapshot: OptionsSnapshot,
-    contract_size: int = 100,
+    contract_size: int | None = None,
     grid_range: float = 0.10,
     grid_step: float = 0.0025,
     oi_stale_hours: float = 30.0,
     expiry_weighting: str = "equal",
     weight_halflife_days: float = 5.0,
 ) -> Levels:
+    if contract_size is None or int(contract_size) <= 0:
+        raise ValueError("contract_size is the index lot size. Pass Index.lot_size.")
     snapshot.validate()
     flags: list[str] = []
     spot = snapshot.spot

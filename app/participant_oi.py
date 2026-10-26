@@ -105,11 +105,9 @@ def derive_signals(parsed: dict) -> dict | None:
 
     Per participant: ``net_fut = fut_long - fut_short`` (index-future direction) and
     ``net_opt_writing = (call_short+put_short) - (call_long+put_long)`` (>0 = net
-    option WRITER). Plus a **dealer-sign hint**: which of Client/Pro/FII is the
-    dominant net option writer. India's landmine is that the US default (dealers =
-    net long calls / short puts) may be inverted; if Client/Pro dominate the writing,
-    that supports the inverted-sign lean B (see [[both-signs-dealer-sign-read]]). This
-    is a HINT, not a resolution — decision-support only.
+    option WRITER). The dominant writer is a positioning hint only. It does not
+    select a second GEX sign model. The engine's signed total stays call magnitude
+    minus put magnitude.
     """
     if not parsed:
         return None
@@ -131,12 +129,7 @@ def derive_signals(parsed: dict) -> dict | None:
     top_writer = max(writers, key=writers.get) if writers else None
     hint = None
     if top_writer:
-        if top_writer in ("Client", "Pro"):
-            hint = (f"{top_writer} is the dominant index-option writer — retail/prop "
-                    "writing supports the INVERTED dealer-sign lean (model B).")
-        else:  # FII
-            hint = ("FII is the dominant index-option writer — closer to the US "
-                    "dealer-as-writer default (model A); landmine still open.")
+        hint = f"{top_writer} is the dominant index-option writer."
     return {"per_participant": per, "top_option_writer": top_writer,
             "dealer_sign_hint": hint,
             "fii_net_fut": (per.get("FII") or {}).get("net_fut")}

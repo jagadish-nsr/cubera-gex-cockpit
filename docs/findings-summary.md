@@ -1,5 +1,12 @@
 # Findings summary — can options/futures OI predict Nifty? (research phase, closed)
 
+**Production status (2026-10-24).** The engine no longer has a second sign model.
+`gex/core.py` accepts only `short_call_short_put`: walls are gamma concentration,
+and the signed total is call magnitude minus put magnitude. The comparisons below
+to a long-call/short-put reading are the historical test. Do not copy that reading
+back into config or the playbook. Signed GEX was not a direction signal. Absolute
+GEX versus forward volatility was the result that held.
+
 A plain-English record of what we tested, how, and what we found. Companion to
 `docs/research-agenda.md` (the literature map + results log). Bottom line up front:
 
@@ -160,9 +167,9 @@ peak-turnover) as a *where-the-money-is-committing* read, explicitly not an S/R 
    *not* specific to any OI structure (a naive trailing mean beats the magnet).
 3. **Turnover = expected move size, not direction** — validated repeatedly; useful for sizing /
    long-gamma structures, never for picking direction.
-4. **Dealer-sign evidence leans to the inverted "model B"** — three independent nudges
-   (both-signs realized-vol, PCR cross-check, and the G−-calmest gamma→vol tercile). Still a
-   *lean*, not a verdict; `DEALER_SIGN_MODEL` stays on the US default.
+4. **The two-convention test is closed.** A weak lean in that sample is not a
+   production switch. `DEALER_SIGN_MODEL` stays `short_call_short_put`. Do not
+   restore a second model from this paragraph.
 5. **India microstructure is writer-dominated** — OTM-call OI building reads as *writing/
    resistance* (contrarian), not the US buyer-driven bullishness.
 6. **CALM-regime short strangle at the walls — the vol edge, made tradeable (2026-07-16).**

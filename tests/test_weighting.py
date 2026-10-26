@@ -39,10 +39,10 @@ def test_near_expiry_wall_outweighs_far():
         (110, "C", 0.02, 3500, 0.25),   # far : 0.02*3500*0.25 = 17.5
     ]
     df = pd.DataFrame(rows, columns=["strike", "type", "gamma", "oi", "weight"])
-    per = core.per_strike_gex(df, spot=100, contract_size=100, dealer_sign_model="long_call_short_put")
+    per = core.per_strike_gex(df, spot=100, contract_size=100)
     assert core.call_wall(per) == 105
 
     # Without weighting (equal), the far strike (110, higher raw) would win.
     df_equal = df.drop(columns=["weight"])
-    per_equal = core.per_strike_gex(df_equal, spot=100, contract_size=100, dealer_sign_model="long_call_short_put")
+    per_equal = core.per_strike_gex(df_equal, spot=100, contract_size=100)
     assert core.call_wall(per_equal) == 110

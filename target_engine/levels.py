@@ -81,8 +81,9 @@ def generate_underlying_targets(
     h_years = get_horizon_annual_duration(horizon_minutes, day_count=config.day_count)
     effective_iv = max(atm_iv, 0.05) if atm_iv > 0 else 0.15
 
-    # 1-SD horizon expected move
-    sigma_h = max(fut * effective_iv * math.sqrt(h_years), 15.0)
+    # Cash-spot 1-SD horizon move. Futures premium must not lift a bear target
+    # above cash spot (Nifty fut often trades rich vs cash).
+    sigma_h = max(spot * effective_iv * math.sqrt(h_years), 15.0)
 
     # Wall references
     nearest_call = call_walls[0].strike if call_walls else None
@@ -93,36 +94,39 @@ def generate_underlying_targets(
     bear_drift = 0.3 * sigma_h
 
     # -------------------------------------------------------------
-    # 1. BULL SCENARIO TARGET & STOP
+    # 1. BULL SCENARIO TARGET & STOP  (always above / below cash spot)
     # -------------------------------------------------------------
     bull_candidates: List[Tuple[float, str]] = []
     if nearest_call and nearest_call > spot:
         bull_candidates.append((nearest_call, f"Call Wall at {int(nearest_call)}"))
-    bull_candidates.append((fut + 0.6 * sigma_h, f"0.6-Sigma Move ({fut + 0.6 * sigma_h:.0f})"))
+    bull_candidates.append((spot + 0.6 * sigma_h, f"0.6-Sigma Move ({spot + 0.6 * sigma_h:.0f})"))
     if day_high and day_high > spot:
         bull_candidates.append((day_high, f"Day High ({int(day_high)})"))
     if max_pain and max_pain > spot and dte_days <= 1.0:
         bull_candidates.append((max_pain, f"Max Pain Pin ({int(max_pain)})"))
 
-    # Pick nearest credible target above spot, capped at fut + 2*sigma_h
     bull_target_val, bull_reason = min(bull_candidates, key=lambda c: c[0])
-    bull_target_val = min(bull_target_val, fut + 2.0 * sigma_h)
+    bull_target_val = min(bull_target_val, spot + 2.0 * sigma_h)
+    if bull_target_val <= spot:
+        bull_target_val = spot + 0.6 * sigma_h
+        bull_reason = f"0.6-Sigma Move ({bull_target_val:.0f})"
 
-    # Bull stop: below put wall or fut - 0.5*sigma_h
     if nearest_put and nearest_put < spot:
-        bull_stop_val = min(nearest_put - 10.0, fut - 0.4 * sigma_h)
+        bull_stop_val = min(nearest_put - 10.0, spot - 0.4 * sigma_h)
     else:
-        bull_stop_val = fut - 0.5 * sigma_h
-    bull_stop_val = max(bull_stop_val, fut - 1.5 * sigma_h)
+        bull_stop_val = spot - 0.5 * sigma_h
+    bull_stop_val = max(bull_stop_val, spot - 1.5 * sigma_h)
+    if bull_stop_val >= spot:
+        bull_stop_val = spot - 0.5 * sigma_h
 
     bull_target = UnderlyingTarget(
         scenario="bull",
         horizon_minutes=horizon_minutes,
         target=bull_target_val,
         stop=bull_stop_val,
-        p_touch_target=compute_touch_probability(bull_target_val - fut, sigma_h, bull_drift),
-        p_touch_stop=compute_touch_probability(fut - bull_stop_val, sigma_h, -0.2 * sigma_h),
-        p_close_beyond=compute_close_probability(bull_target_val - fut, sigma_h, bull_drift),
+        p_touch_target=compute_touch_probability(bull_target_val - spot, sigma_h, bull_drift),
+        p_touch_stop=compute_touch_probability(spot - bull_stop_val, sigma_h, -0.2 * sigma_h),
+        p_close_beyond=compute_close_probability(bull_target_val - spot, sigma_h, bull_drift),
         reason=bull_reason,
     )
 
@@ -132,54 +136,71 @@ def generate_underlying_targets(
     bear_candidates: List[Tuple[float, str]] = []
     if nearest_put and nearest_put < spot:
         bear_candidates.append((nearest_put, f"Put Wall at {int(nearest_put)}"))
-    bear_candidates.append((fut - 0.6 * sigma_h, f"0.6-Sigma Move ({fut - 0.6 * sigma_h:.0f})"))
+    bear_candidates.append((spot - 0.6 * sigma_h, f"0.6-Sigma Move ({spot - 0.6 * sigma_h:.0f})"))
     if day_low and day_low < spot:
         bear_candidates.append((day_low, f"Day Low ({int(day_low)})"))
     if max_pain and max_pain < spot and dte_days <= 1.0:
         bear_candidates.append((max_pain, f"Max Pain Pin ({int(max_pain)})"))
 
-    # Pick nearest credible target below spot, capped at fut - 2*sigma_h
     bear_target_val, bear_reason = max(bear_candidates, key=lambda c: c[0])
-    bear_target_val = max(bear_target_val, fut - 2.0 * sigma_h)
+    bear_target_val = max(bear_target_val, spot - 2.0 * sigma_h)
+    if bear_target_val >= spot:
+        bear_target_val = spot - 0.6 * sigma_h
+        bear_reason = f"0.6-Sigma Move ({bear_target_val:.0f})"
 
-    # Bear stop: above call wall or fut + 0.5*sigma_h
     if nearest_call and nearest_call > spot:
-        bear_stop_val = max(nearest_call + 10.0, fut + 0.4 * sigma_h)
+        bear_stop_val = max(nearest_call + 10.0, spot + 0.4 * sigma_h)
     else:
-        bear_stop_val = fut + 0.5 * sigma_h
-    bear_stop_val = min(bear_stop_val, fut + 1.5 * sigma_h)
+        bear_stop_val = spot + 0.5 * sigma_h
+    bear_stop_val = min(bear_stop_val, spot + 1.5 * sigma_h)
+    if bear_stop_val <= spot:
+        bear_stop_val = spot + 0.5 * sigma_h
 
     bear_target = UnderlyingTarget(
         scenario="bear",
         horizon_minutes=horizon_minutes,
         target=bear_target_val,
         stop=bear_stop_val,
-        p_touch_target=compute_touch_probability(fut - bear_target_val, sigma_h, bear_drift),
-        p_touch_stop=compute_touch_probability(bear_stop_val - fut, sigma_h, -0.2 * sigma_h),
-        p_close_beyond=compute_close_probability(fut - bear_target_val, sigma_h, bear_drift),
+        p_touch_target=compute_touch_probability(spot - bear_target_val, sigma_h, bear_drift),
+        p_touch_stop=compute_touch_probability(bear_stop_val - spot, sigma_h, -0.2 * sigma_h),
+        p_close_beyond=compute_close_probability(spot - bear_target_val, sigma_h, bear_drift),
         reason=bear_reason,
     )
 
     # -------------------------------------------------------------
     # 3. BASE (RANGE) SCENARIO TARGET & STOP
+    # Band stop is the nearer wall (corridor break), not a call-wall overshoot.
+    # p_close_beyond is P(stay in band) to match the cockpit label.
     # -------------------------------------------------------------
     if nearest_call and nearest_put and nearest_call > nearest_put:
         base_target_val = 0.5 * (nearest_call + nearest_put)
-        base_reason = f"Midpoint of {int(nearest_put)} Put & {int(nearest_call)} Call Walls"
-        base_stop_val = nearest_call + 0.3 * sigma_h
+        dist_put = abs(spot - nearest_put)
+        dist_call = abs(nearest_call - spot)
+        if dist_put <= dist_call:
+            base_stop_val = nearest_put
+            base_reason = f"Mid {int(nearest_put)}/{int(nearest_call)}; band stop put wall {int(nearest_put)}"
+        else:
+            base_stop_val = nearest_call
+            base_reason = f"Mid {int(nearest_put)}/{int(nearest_call)}; band stop call wall {int(nearest_call)}"
+        p_stay = float(np.clip(
+            1.0 - compute_close_probability(min(dist_put, dist_call), sigma_h, 0.0),
+            0.05,
+            0.95,
+        ))
     else:
-        base_target_val = fut
-        base_reason = "Current Forward Equilibrium"
-        base_stop_val = fut + 0.8 * sigma_h
+        base_target_val = spot
+        base_reason = "Spot equilibrium (no wall corridor)"
+        base_stop_val = spot + 0.8 * sigma_h
+        p_stay = 0.45
 
     base_target = UnderlyingTarget(
         scenario="base",
         horizon_minutes=horizon_minutes,
         target=base_target_val,
         stop=base_stop_val,
-        p_touch_target=compute_touch_probability(abs(base_target_val - fut), sigma_h, 0.0),
-        p_touch_stop=compute_touch_probability(abs(base_stop_val - fut), sigma_h, 0.0),
-        p_close_beyond=0.45,
+        p_touch_target=compute_touch_probability(abs(base_target_val - spot), sigma_h, 0.0),
+        p_touch_stop=compute_touch_probability(abs(base_stop_val - spot), sigma_h, 0.0),
+        p_close_beyond=p_stay,
         reason=base_reason,
     )
 

@@ -1,6 +1,6 @@
 # 🎙️ Session Commentary & Suggestion Bites — Comprehensive Guide & Field Manual
 
-> **Module:** Session Commentary Engine (Tab 10 · `commentary/` & `app/tab_commentary.py`)  
+> **Module:** Session Commentary Engine (`commentary/` and the web cockpit)  
 > **Market Microstructure:** Native Indian Market Mode (`short_call_short_put` / Delta-Hedging & Strike Defense)  
 > **Applicable Indices:** NIFTY 50, BANK NIFTY, SENSEX  
 > **Storage & Engine:** SQLite WAL Mode (`data/commentary.db`) · Deterministic Template Narrator · Fact Verifier  
@@ -83,8 +83,8 @@ The commentary pipeline evaluates market telemetry across six dedicated detector
   - Computes opening volatility shock against pre-market expectations.
 
 ### 2.2 GEX & OI Wall Sentinel (`detectors/walls.py`)
-- **Wall Defense / Absorption:** Spot approaches within $0.25 \times \text{step}$ of Call Wall ($CW$) or Put Wall ($PW$) and volume delta stalls or reverses. Emits institutional wall defense alert.
-- **Wall Breakout / Squeeze:** Spot closes beyond Call Wall with high positive CVD ($>80\text{th}$ percentile) or below Put Wall with aggressive selling. Emits Gamma Squeeze or Trapdoor alert.
+- **Near a gamma strike:** spot within a quarter of a strike step of the call-gamma or put-gamma strike, with volume delta stalling. That is tape at a concentration. It is not a wall being defended.
+- **Through a gamma strike:** a close beyond the call-gamma strike with heavy buying, or beyond the put-gamma strike with heavy selling. The bite is a location. It is not a squeeze and not a trapdoor.
 - **Strike Migration:** Open interest shifts from one strike to another (e.g. Call Wall rolling up from 22,600 to 22,700), signaling institutional capitulation or target expansion.
 - **Cooldown & Hysteresis:** Wall events enforce a 15-minute cooldown to prevent repetitive logging during prolonged tests.
 
@@ -204,9 +204,9 @@ Commentary data is stored in [`data/commentary.db`](file:///Users/jagadish/MyPro
 
 ---
 
-## 6. UI Ergonomics in the Cockpit (Tab 10)
+## 6. UI on the web cockpit
 
-The **Session Commentary Tab** (`app/tab_commentary.py`) provides an institutional newsroom interface:
+The **session commentary** on the web cockpit is the newsroom view of `commentary/`:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -215,25 +215,24 @@ The **Session Commentary Tab** (`app/tab_commentary.py`) provides an institution
 │ Filters: [ALL] [🎯 Trade Tracking] [🛡️ Wall Events] [⚡ OrderFlow] [📰 Macro/News]   │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                        │
-│ 🕒 14:15 IST · EXPIRY PINNING WINDOW                                                   │
-│ 📌 Call Writers Defend 22,700 Strike Under Heavy Passive Inflow                         │
+│ 14:15 IST · EXPIRY WINDOW                                                              │
+│ Call open interest rose at 22,700                                                  │
 │ ────────────────────────────────────────────────────────────────────────────────────── │
-│ Spot tested the 22,700 Call Wall at 14:12 IST (+45 pts session gain). OrderFlow delta  │
-│ revealed sharp seller absorption with CVD plateauing at +14,200 contracts. Option OI   │
-│ data confirms 22,700 CE writing increased by 18.4 Lakh shares, reinforcing resistance. │
+│ Spot tested 22,700. That strike is the call-gamma concentration. Order-flow delta     │
+│ showed selling into the print. Call open interest at 22,700 rose. That is a map.     │
+│ It is not a wall being defended, and it is not a scalp back to max pain.             │
 │                                                                                        │
-│ ⚡ ACT-IF BITE: Mean-Reversion Scalp toward Max Pain (22,650)                           │
-│ Condition : Spot fails to breach 22,710 on 3-minute close                              │
-│ Play      : Bear Put Debit Spread (22700 PE / 22600 PE)                                │
-│ Target    : 22,650   |   Invalidation : 22,725 (Above wall defense high)               │
+│ Bite: spot at 22,700 is a location. Max pain at 22,650 is the settlement strike. │
+│ Condition : a 3-minute close back through 22,710                                         │
+│ Example   : a defined-risk put spread. The user confirms. No order is sent.              │
+│ Invalidation sits beyond the gamma strike, never at the magnet.                          │
 │                                                                                        │
-│ 🏷️ Tags: [Call Wall Defense] [CVD Absorption] [Max Pain Pin]                          │
+│ 🏷️ Tags: [Call-gamma strike] [CVD absorption] [Max pain distance]                     │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key UI Features:
-1. **Isolated Streaming Fragment (`@st.fragment`)**:
-   Tab 10 refreshes its narrative feed independently every 3 seconds without re-rendering the outer application or disrupting chart views.
+1. **Web commentary stream:** the narrative feed updates from the server without a full page reload.
 2. **Category Filter Chips**:
    Toggle views instantly between `ALL`, `🎯 Trade Tracking`, `🛡️ Wall Events`, `⚡ OrderFlow`, and `📰 Macro/News`.
 3. **Pinned Recommendation Indicators**:

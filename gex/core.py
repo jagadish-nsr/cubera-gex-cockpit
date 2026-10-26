@@ -1,21 +1,36 @@
-"""Per-strike GEX, walls, magnet, and regime (SpotGamma convention).
+"""Per-strike GEX for Nifty book balance.
 
-Pure functions over a contracts DataFrame with columns:
-    strike (float), type ("C"/"P"), gamma (per-share BS gamma), oi (open interest)
+One convention, ``short_call_short_put``. Both legs are stored negative
+(gamma sitting in the written book). The signed total used for regime is
+call magnitude minus put magnitude, the same zero-crossing as ``gex.flip``.
 
-Dollar GEX per strike:
-    call_gex[k] = +gamma * OI * contract_size * spot^2 * 0.01   (dealers long call gamma)
-    put_gex[k]  = -gamma * OI * contract_size * spot^2 * 0.01   (dealers short put gamma)
-    net_gex[k]  = call_gex[k] + put_gex[k]
+    magnitude  = gamma * OI * lot_size * spot^2 * 0.01
+    call_gex   = -magnitude
+    put_gex    = -magnitude
+    imbalance  = call_magnitude - put_magnitude
 
-The spot^2 * 0.01 term scales to dollar dealer hedging per 1% move.
+``spot^2 * 0.01`` is the rupee hedge for a 1% move when OI is in lots and
+``lot_size`` is the NSE multiplier. It is not a dollar SPX print.
+
+POSITIVE means the call book is larger. NEGATIVE means the put book is larger.
+Neither word means a dealer will pin or chase the tape.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-_SUPPORTED_SIGN_MODELS = {"long_call_short_put", "short_call_short_put"}
+SIGN_MODEL = "short_call_short_put"
+
+
+def _require_sign(dealer_sign_model: str) -> None:
+    """Fail loud on any second convention. This tree does not switch models."""
+    if dealer_sign_model != SIGN_MODEL:
+        raise ValueError(
+            f"GEX convention is {SIGN_MODEL!r} only "
+            "(call-gamma magnitude minus put-gamma magnitude). "
+            f"Got {dealer_sign_model!r}."
+        )
 
 
 def _scale(spot: float, contract_size: int) -> float:
@@ -25,21 +40,15 @@ def _scale(spot: float, contract_size: int) -> float:
 def per_strike_gex(
     contracts: pd.DataFrame,
     spot: float,
-    contract_size: int = 100,
-    dealer_sign_model: str = "short_call_short_put",
+    contract_size: int,
+    dealer_sign_model: str = SIGN_MODEL,
 ) -> pd.DataFrame:
-    """Aggregate contract-level rows into per-strike call/put/net GEX.
+    """Aggregate contract rows into per-strike call/put/net GEX.
 
-    Returns a DataFrame: strike, call_gex, put_gex, net_gex (one row per strike,
-    sorted by strike). Fails loud on an unknown sign model rather than silently
-    applying the wrong gamma sign (CLAUDE.md #5/#6).
-    Defaults to Indian market mode: 'short_call_short_put'.
+    ``contract_size`` is the index lot. Returns strike, call_gex, put_gex,
+    net_gex, one row per strike. Both legs are negative.
     """
-    if dealer_sign_model not in _SUPPORTED_SIGN_MODELS:
-        raise ValueError(
-            f"Unknown DEALER_SIGN_MODEL {dealer_sign_model!r}; "
-            f"supported: {sorted(_SUPPORTED_SIGN_MODELS)}"
-        )
+    _require_sign(dealer_sign_model)
 
     required = {"strike", "type", "gamma", "oi"}
     missing = required - set(contracts.columns)
@@ -63,25 +72,20 @@ def per_strike_gex(
         call_gex=("_call", "sum"),
         put_gex=("_put", "sum"),
     )
-    # dealers/writers SHORT put gamma -> negate
+    grouped["call_gex"] = -grouped["call_gex"]
     grouped["put_gex"] = -grouped["put_gex"]
-
-    # For Indian markets where dealers/writers are also short calls
-    if dealer_sign_model == "short_call_short_put":
-        grouped["call_gex"] = -grouped["call_gex"]
-
     grouped["net_gex"] = grouped["call_gex"] + grouped["put_gex"]
     return grouped.sort_values("strike").reset_index(drop=True)
 
 
 def call_wall(per_strike: pd.DataFrame) -> float:
-    """Strike with the largest call GEX magnitude (call writer resistance wall)."""
+    """Strike with the largest call-gamma magnitude."""
     idx = per_strike["call_gex"].abs().idxmax()
     return float(per_strike.loc[idx, "strike"])
 
 
 def put_wall(per_strike: pd.DataFrame) -> float:
-    """Strike with the largest absolute put GEX (put writer support wall)."""
+    """Strike with the largest put-gamma magnitude."""
     idx = per_strike["put_gex"].abs().idxmax()
     return float(per_strike.loc[idx, "strike"])
 
@@ -98,29 +102,23 @@ def total_net_gex(per_strike: pd.DataFrame) -> float:
 
 def writer_imbalance_net(
     per_strike: pd.DataFrame,
-    dealer_sign_model: str = "short_call_short_put",
+    dealer_sign_model: str = SIGN_MODEL,
 ) -> float:
-    """Call-minus-put GEX — the same sign convention as ``gex.flip``.
+    """Call magnitude minus put magnitude. Agrees with the flip zero-crossing.
 
-    Under ``short_call_short_put`` both legs are stored negative (writer gamma),
-    so ``sum(net_gex)`` is always ≤ 0 and cannot classify regime. Recover
-    ``call_mag - put_mag`` so the total can actually change sign and agrees
-    with the gamma-flip zero-crossing.
+    The stored ``net_gex`` sum is always ≤ 0 because both legs are negative.
+    Do not classify regime from that sum.
     """
-    if dealer_sign_model == "short_call_short_put":
-        return float((-per_strike["call_gex"] + per_strike["put_gex"]).sum())
-    return float(per_strike["net_gex"].sum())
+    _require_sign(dealer_sign_model)
+    return float((-per_strike["call_gex"] + per_strike["put_gex"]).sum())
 
 
 def regime(
     per_strike: pd.DataFrame,
     dealer_sign_model: str | None = None,
 ) -> str:
-    """POSITIVE (pin/fade) vs NEGATIVE (momentum/amplify) vs FLAT (exactly 0)."""
-    if dealer_sign_model is None:
-        total = total_net_gex(per_strike)
-    else:
-        total = writer_imbalance_net(per_strike, dealer_sign_model)
+    """CALL-HEAVY (POSITIVE) vs PUT-HEAVY (NEGATIVE) vs FLAT (exactly 0)."""
+    total = writer_imbalance_net(per_strike, dealer_sign_model or SIGN_MODEL)
     if total > 0:
         return "POSITIVE"
     if total < 0:

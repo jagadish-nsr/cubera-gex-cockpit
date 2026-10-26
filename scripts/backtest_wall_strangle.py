@@ -1,6 +1,6 @@
 """Backtest the dashboard's calm-regime play: SHORT STRANGLE at the walls, stop on a wall breach.
 
-The "sell premium near the walls" suggestion (app/simple_dashboard _play_card) as a testable rule:
+The "sell premium near the walls" suggestion as a testable rule:
 at 09:20 IST, in the CALM (high-|GEX| / pinning) regime, SELL the call at the call-wall and the put
 at the put-wall (nearest listed strikes). STOP if spot breaches either wall intraday (the short leg
 goes ITM); else exit at the close. The edge, if any, is the VOL/short-premium premium in calm — NOT

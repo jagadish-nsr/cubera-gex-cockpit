@@ -1,22 +1,15 @@
 """NSE/BSE expiry calendar + window filtering.
 
-Replaces the US "third Friday" logic with Indian exchange rules.
+User-confirmed 2026-10-24:
 
-NSE (Nifty, Bank Nifty):
-  - Weekly expiry: TUESDAY (weekday=1) — per SEBI's exchange-day split.
-  - Monthly expiry: last TUESDAY of the month.
-  ⚠️ VERIFY LIVE: SEBI/NSE may revise the rule again. Confirmed from a live NSE
-  endpoint capture: option-chain-v3 served expiry=30-Jun-2026, which is a Tuesday.
+  NIFTY      every Tuesday. Monthly is the last Tuesday of the month.
+  BANKNIFTY  last Tuesday of the month only. No weeklies.
+  SENSEX     every Thursday. Monthly is the last Thursday of the month.
 
-BSE (Sensex):
-  - Weekly expiry: THURSDAY (weekday=3) — BSE SENSEX weekly options.
-  - Monthly expiry: last THURSDAY of the month.
-  ⚠️ VERIFY LIVE with BSE circulars.
-
-Holiday adjustment: when the natural expiry falls on an exchange holiday, the
-exchange moves expiry to the PRECEDING trading day. This module now resolves that
-using the live NSE F&O holiday calendar (data/holidays.py). The calendar is fetched
-once per day and cached locally, so no network hit on most reruns.
+If that date is an exchange holiday, expiry is the previous trading day
+(data/holidays.py). It is not left on the holiday and it is not rolled forward.
+Bank Nifty reaches the monthly date because Index.has_weekly is False, so the
+weekly window collapses to next_monthly_expiry.
 """
 
 from __future__ import annotations
@@ -149,9 +142,8 @@ def describe_window(window: str, ref: date, exchange: str = "NSE",
 
 def filter_expiry_window(contracts, window: str, ref: date,
                          has_weekly: bool = True, exchange: str = "NSE"):
-    """Return only contracts whose expiry falls inside the named window or matches the selected expiry.
+    """Return contracts whose expiry falls inside the named window.
 
-    Mirrors the SPX adapter's interface so the rest of the engine is unchanged.
     `contracts` is a DataFrame with an 'expiry' (datetime.date) column.
 
     ``has_weekly=False`` (e.g. Bank Nifty, monthly-only since Nov-2024): the

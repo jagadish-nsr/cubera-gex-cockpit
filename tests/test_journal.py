@@ -10,7 +10,6 @@ import json
 import sqlite3
 import tempfile
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -292,18 +291,6 @@ def test_empty_scorecard():
     assert sc["total_trades"] == 0
     assert sc["win_rate"] == 0.0
     assert sc["equity_curve"] == []
-
-
-def test_cockpit_load_data_integration():
-    """Verify that app.cockpit._load_data loads demo data without signature errors."""
-    from app.cockpit import _load_data
-    # Offline test using load_dashboard demo mode logic
-    with mock.patch("app.cockpit.load_dashboard") as mock_ld:
-        mock_ld.return_value = "mock_data"
-        data, err = _load_data("NIFTY", "0dte_to_next_monthly")
-        assert err is None
-        assert data == "mock_data"
-        mock_ld.assert_called_once_with(symbol="NIFTY", window="0dte_to_next_monthly")
 
 
 def test_open_trade_exit_by_and_custom_costs():

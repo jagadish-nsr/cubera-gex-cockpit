@@ -1,40 +1,46 @@
 ---
 name: gex-math
-description: Compute gamma exposure (GEX), walls, gamma flip, and max pain from an options chain. Use whenever implementing or modifying GEX calculations.
+description: Compute gamma exposure (GEX), walls, gamma flip, and max pain from an NSE index option chain. Use whenever implementing or modifying GEX calculations.
 ---
 
-# GEX math
+# GEX math (Nifty book balance)
 
-## Per-strike dollar GEX (SpotGamma convention)
-- call_gex[k] = gamma[k] * OI[k] * 100 * spot^2 * 0.01
-- put_gex[k]  = -1 * gamma[k] * OI[k] * 100 * spot^2 * 0.01
-- net_gex[k]  = call_gex[k] + put_gex[k]
-- total_net_gex = sum over chosen strikes & expiries
+One convention: `short_call_short_put`. There is no second sign model.
 
-Contract size = 100 (SPX). The spot^2 * 0.01 term scales to $ hedging per 1% move.
+## Per-strike rupee GEX
+- magnitude[k] = gamma[k] * OI_lots[k] * lot_size * spot^2 * 0.01
+- call_gex[k] = -magnitude on calls
+- put_gex[k] = -magnitude on puts
+- stored net_gex[k] = call_gex + put_gex (always ≤ 0; do not classify from this sum)
+- book balance = call magnitude − put magnitude
+
+`lot_size` is `Index.lot_size` from `config.INDICES`: Nifty 65 (every Tuesday), Bank Nifty 30 (last Tuesday of the month), Sensex 20 (every Thursday). A holiday moves that expiry to the previous trading day. OI must already be in lots.
+`spot^2 * 0.01` is the rupee hedge for a 1% move. Do not use 100 as the multiplier.
 
 ## Derived levels
-- Call wall  = strike with max positive call GEX (resistance).
-- Put wall   = strike with max absolute put GEX (support if above flip; speed bump if below).
-- Peak GEX / magnet = strike with max absolute net GEX.
-- Max pain   = strike minimising total ITM payout to holders at expiry (separate calc over OI).
+- Call wall = strike with the largest call-gamma magnitude.
+- Put wall = strike with the largest put-gamma magnitude.
+- Magnet = strike with the largest absolute stored net GEX (combined gamma).
+- Max pain = strike minimising total ITM payout to holders at expiry. The lot
+  scales the rupee total and does not move the strike.
 
-## Gamma flip (zero-gamma) — NOT a static strike
-Build a profile, do not read a single number:
-1. Recompute every option's BS gamma across a range of hypothetical spots (e.g. spot * [0.90 .. 1.10] in fine steps).
-2. Sum total GEX at each hypothetical spot.
-3. The flip = price where the summed-GEX curve crosses zero.
-If the curve never crosses zero in range, FLAG it — do not return a fabricated level.
+## Gamma flip
+Not a static strike. Recompute BS gamma on a spot grid (spot * [0.90 .. 1.10]).
+Sum call magnitude minus put magnitude at each hypothetical spot. The flip is
+where that curve crosses zero. No crossing in range → flag it. Do not invent a level.
+
+The flip is the price where the two books balance. It is not a long-gamma pin.
 
 ## Regime
-- total_net_gex > 0 -> POSITIVE: dealers counter-trend, pin/fade, suppressed vol.
-- total_net_gex < 0 -> NEGATIVE: dealers pro-cyclical, momentum, ~1.5-2x expected move.
-- Always judge wall strength RELATIVE to the flip.
+- book balance > 0 → POSITIVE, call-heavy book.
+- book balance < 0 → NEGATIVE, put-heavy book.
+- Do not map that sign to "fade" or "momentum".
+- Calm versus wild is absolute GEX rank, a separate number.
 
 ## Non-negotiables
-- DEALER_SIGN_MODEL (default: long call gamma / short put gamma) is an explicit param, logged on every output.
-- Expiry window is an explicit param (0DTE / weekly / monthly / all) — it materially changes results.
-- Every output carries the OI timestamp. OI is end-of-day lagging; never imply it's live intraday.
-- Use vectorised BS gamma (numpy/scipy). Recompute gamma for the flip profile — do not reuse the vendor's static gamma.
-- MUST have a hand-checkable unit test: compute walls on ~5 strikes verifiable with a calculator.
-- Validate computed walls against a live third-party read (FlashAlpha free tier / InsiderFinance) within tolerance; document any divergence and its cause (usually expiry window).
+- Reject any sign model other than `short_call_short_put`.
+- Expiry window is an explicit param (weekly / monthly / all). It changes the levels.
+- Every output carries the OI timestamp. OI lags. Do not present it as live flow.
+- Recompute gamma for the flip profile. Do not reuse a vendor gamma across hypothetical spots.
+- Hand-checkable unit test on about 5 strikes (`tests/test_fixture_gex.py`).
+- Walls are concentration. They are not floors, ceilings, or breakout triggers.

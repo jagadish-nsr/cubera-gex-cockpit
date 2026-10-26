@@ -58,7 +58,7 @@ def test_feature_extraction_normalization(mock_chain):
         val = fv.features[key]
         assert -1.0 <= val <= 1.0, f"Feature {key} out of bounds: {val}"
 
-    # F1 call wall prox must be <= 0 (resistance is bearish)
-    assert fv.features["F1_call_wall_prox"] <= 0.0
-    # F2 put wall prox must be >= 0 (support is bullish)
-    assert fv.features["F2_put_wall_prox"] >= 0.0
+    # Concentration is not a direction, and max pain is not a pull.
+    assert fv.features["F1_call_wall_prox"] == 0.0
+    assert fv.features["F2_put_wall_prox"] == 0.0
+    assert fv.features["F15_max_pain_pull"] == 0.0

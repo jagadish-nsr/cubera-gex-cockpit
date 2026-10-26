@@ -280,6 +280,33 @@ DTE_CHARM_MAX = 1.5              # ≤ this DTE the gauge uses |charm| (sharper 
                                  # above it uses |vanna|. Validated cross-book (Study #8/T1b).
 
 
+def structure_vol_regime(data) -> str:
+    """Absolute-GEX bucket for a structure suggestion: calm, wild, or mid.
+
+    High concentration has meant calmer forward vol; low concentration, wider swings.
+    The call−put sign is not an input. A missing gauge stays 'mid', which means wait.
+    Sensex borrows Nifty's gauge when the bundle carries a proxy.
+    """
+    if data is None:
+        return "mid"
+    try:
+        proxy = getattr(data, "proxy_symbol", None)
+        proxy_vanna = getattr(data, "proxy_vanna", None)
+        if proxy and proxy_vanna is not None:
+            vr = intraday_vol_regime(proxy, proxy_vanna, metric="vanna")
+        else:
+            vr = regime_now(
+                getattr(data, "symbol", None),
+                getattr(data, "vanna_now", None),
+                getattr(data, "charm_now", None),
+                getattr(data, "dte_now", None),
+            )
+    except Exception:  # noqa: BLE001 - no gauge means wait, not a guessed structure
+        return "mid"
+    tag = vr.get("tag") if isinstance(vr, dict) else None
+    return tag if tag in ("calm", "wild", "mid") else "mid"
+
+
 def regime_now(store: str, vanna_now: float | None, charm_now: float | None,
                dte_now: float | None, horizon_min: int = REGIME_HORIZON_MIN) -> dict | None:
     """The live gauge entry point: DTE-switch between |charm| (≤1.5 DTE, sharper near expiry) and
@@ -310,11 +337,11 @@ def intraday_vol_regime(store: str, value_now: float | None,
     srt, q1, q2, lo_rv, mid_rv, hi_rv, n = stats
     pct = 100.0 * float(np.searchsorted(srt, value_now, side="right")) / len(srt)
     if value_now >= q2:
-        tag, read, exp_rv = "calm", "HIGH dealer-gamma concentration → SIDEWAYS / mean-reverting", hi_rv
+        tag, read, exp_rv = "calm", "High absolute concentration. The sample linked that bucket to calmer forward vol. Not a fade.", hi_rv
     elif value_now <= q1:
-        tag, read, exp_rv = "wild", "LOW dealer-gamma concentration → TRENDING / wider swings", lo_rv
+        tag, read, exp_rv = "wild", "Low absolute concentration. The sample linked that bucket to wider forward vol. Not a chase.", lo_rv
     else:
-        tag, read, exp_rv = "mid", "MID dealer-gamma concentration → neutral / mixed", mid_rv
+        tag, read, exp_rv = "mid", "Middle absolute concentration. De-size. The call−put label is not a trade.", mid_rv
     return {"tag": tag, "read": read, "exp_rv": exp_rv, "lo_rv": lo_rv, "mid_rv": mid_rv,
             "hi_rv": hi_rv, "pct": pct, "n": n, "absgex": float(value_now),
             "horizon_min": horizon_min, "metric": metric}

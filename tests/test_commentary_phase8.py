@@ -68,8 +68,3 @@ def test_pinned_commentary_cache():
     cache = get_pinned_commentary_cache()
     assert "REC-TEST-999" in cache
     assert cache["REC-TEST-999"] == "Target 1 approached (+42 pts)"
-
-
-def test_tab_commentary_import():
-    from app.tab_commentary import render_commentary_tab
-    assert callable(render_commentary_tab)

@@ -1,4 +1,4 @@
-"""Dashboard data pipeline — NO streamlit import, so it is unit-testable offline.
+"""Dashboard data pipeline. No UI framework import, so it is unit-testable offline.
 
 load_dashboard() runs the full chain: pull (NSE or demo) -> snapshot -> filter
 window -> compute_levels -> regime view, and returns a small bundle the UI renders.
@@ -31,6 +31,21 @@ import threading
 
 _EXECUTOR: _cf.ThreadPoolExecutor | None = None
 _EXECUTOR_LOCK = threading.Lock()
+
+
+def _wait_worker(fut, timeout: float, label: str):
+    """Wait for a pool task. A still-running request does not pin this caller.
+
+    ``Future.cancel`` does not stop a thread already inside ``requests``.
+    The HTTP client timeout is what releases the worker. This bound only
+    stops the fetcher from waiting behind it. A missing chain is a failure.
+    A missing news or sector strip stays empty.
+    """
+    try:
+        return fut.result(timeout=timeout)
+    except _cf.TimeoutError:
+        log.warning("%s still running after %.0fs; this fetch will not wait", label, timeout)
+        return None
 
 
 def _get_executor() -> _cf.ThreadPoolExecutor:
@@ -153,12 +168,10 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
         else:
             note = "No Dhan token — using NSE. Paste a token to enable the Dhan feed."
 
-    if idx.symbol == "SENSEX":
-        from data.demo import build_demo_payload
-        payload = build_demo_payload(symbol="SENSEX")
-        source = "demo-fallback (no Dhan token)"
-        note = "No Dhan token present — showing synthetic SENSEX demo data. Paste a Dhan access token to enable live BSE feed."
-        return payload, source, None, note
+    if idx.symbol == "SENSEX" and pref != "nse":
+        raise RuntimeError(
+            "No live SENSEX chain. This process does not substitute a synthetic book."
+        )
 
 
     payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
@@ -286,12 +299,15 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 from data.nse import fetch_india_vix as _nvx
                 _fx["vix"] = _ex.submit(_nvx)
 
-            payload, source, day_ohlc, source_note = _fx["chain"].result()
+            chain = _wait_worker(_fx["chain"], 35.0, f"{idx.symbol} chain")
+            if chain is None:
+                raise TimeoutError(f"{idx.symbol} chain was not ready within 35s")
+            payload, source, day_ohlc, source_note = chain
             rows, spot = parse_nse_option_chain(payload)
-            news = _fx["news"].result()
-            sectors = _fx["sectors"].result()
-            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
-            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
+            news = _wait_worker(_fx["news"], 12.0, f"{idx.symbol} news")
+            sectors = _wait_worker(_fx["sectors"], 12.0, f"{idx.symbol} sectors")
+            proxy_vanna = _wait_worker(_fx["proxy"], 12.0, f"{idx.symbol} proxy vanna") if "proxy" in _fx else None
+            _nse_vix = _wait_worker(_fx["vix"], 12.0, f"{idx.symbol} vix") if "vix" in _fx else None
             india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
 
             # Record round-trip time in adaptive poller
@@ -343,9 +359,6 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 except Exception:
                     pass
 
-            if idx.symbol == "SENSEX":
-                log.warning("Falling back to synthetic demo bundle for SENSEX: %s", exc)
-                return load_dashboard(window=window, use_demo=True, symbol=idx.symbol, sign_model=sign_model)
             raise
 
 

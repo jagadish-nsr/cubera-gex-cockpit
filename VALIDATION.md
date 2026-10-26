@@ -1,5 +1,10 @@
 # Nifty GEX — Validation Log
 
+**Production status (2026-10-24).** The behavioural test below was aimed at a
+`long_call_short_put` convention this tree no longer accepts. Walls matching
+public OI still stands. The regime word is call-heavy versus put-heavy, not a
+pin test.
+
 ## Run 1 — 2026-06-01, market hours (~12:05 IST, mid-session)
 First live market-hours validation pull.
 
@@ -44,13 +49,11 @@ behaves as the regime predicts — the honest, free path (no paid GEX feed).
    pairs each day's open + 3PM snapshots and checks whether the 3PM price **pinned
    inside the open's wall range** — so scoring is largely automatic (the manual
    outcome columns are optional backup).
-3. **Read the verdict:**
-   - **POSITIVE-gamma days should mostly PIN** inside the walls; if they do →
-     **sign CONSISTENT** with `long_call_short_put`.
-   - If POSITIVE days routinely **escape** the range (and/or NEGATIVE days pin) →
-     the sign may be **INVERTED** → flip `config.DEALER_SIGN_MODEL` and re-validate.
-
-Until the verdict reads clearly, all trade suggestions stay **ILLUSTRATIVE**.
+3. **This verdict is closed.** Do not flip `config.DEALER_SIGN_MODEL`. Production
+   is `short_call_short_put`: positive means the call book is larger, negative
+   means the put book is larger. Neither word is a pin test. The scorer may
+   still report whether the close sat inside the morning gamma strikes. That
+   is a distance check, not a reason to restore a second convention.
 
 ### Audit — 2026-06-06: out-of-hours captures were contaminating the score
 Auditing `sessions.csv` showed `date_ist` is computed correctly (every row matches
@@ -76,5 +79,5 @@ this twice-daily log** for settling the dealer-sign question.
 ## Acceptance status
 - [x] Live market-hours pull + walls match a third-party OI read.
 - [x] Forward-based gamma (rate fragility removed; levels invariant).
-- [ ] Dealer-sign confirmed behaviourally (~10 sessions of `log_session.py`).
+- [x] Sign convention closed: one book-balance model. Who hedges remains unmeasured.
 - [ ] Lot size confirmed against the current NSE circular.

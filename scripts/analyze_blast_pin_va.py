@@ -86,7 +86,7 @@ def main() -> None:
     import pandas as pd
     from app.market_profile import BIN_PTS, tpo_histogram
     from data.dhan import load_intraday_day
-    from data.replay import _label_frame
+    from data.session_flags import _label_frame
 
     store = sys.argv[1] if len(sys.argv) > 1 else "NIFTY"
     bp = BIN_PTS.get(store, 5.0)

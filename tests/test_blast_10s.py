@@ -7,7 +7,17 @@ the classification the whole feature depends on.
 """
 
 from app.gammablast import detect_crossovers, detect_crossovers_spot
-from app.simple_dashboard import _secs
+
+
+def _secs(t):
+    """'HH:MM' or 'HH:MM:SS' -> seconds since midnight."""
+    try:
+        parts = [int(x) for x in str(t).split(":")]
+    except (ValueError, AttributeError):
+        return None
+    while len(parts) < 3:
+        parts.append(0)
+    return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
 
 def _spot(path):

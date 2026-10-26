@@ -54,11 +54,10 @@ def test_derive_signals_and_dealer_hint():
     assert per["Client"]["net_opt_writing"] == (2028147 + 2586510) - (2163161 + 1888743)
     # Client writing = 562,753; FII writing = 1,000,000; Pro = 450,000 -> FII dominates.
     assert sig["top_option_writer"] == "FII"
-    assert "model A" in sig["dealer_sign_hint"]
+    assert sig["dealer_sign_hint"] == "FII is the dominant index-option writer."
 
 
-def test_dealer_hint_flips_to_inverted_when_client_dominates():
-    # Client writes the most -> inverted-sign lean (model B).
+def test_dealer_hint_names_the_largest_writer_when_client_dominates():
     rows = "\n".join([
         "title",
         _HEADER,
@@ -68,7 +67,7 @@ def test_dealer_hint_flips_to_inverted_when_client_dominates():
     ])
     sig = poi.derive_signals(parse_participant_oi(rows))
     assert sig["top_option_writer"] == "Client"
-    assert "model B" in sig["dealer_sign_hint"]
+    assert sig["dealer_sign_hint"] == "Client is the dominant index-option writer."
 
 
 def test_journal_roundtrip_and_idempotent(tmp_path, monkeypatch):

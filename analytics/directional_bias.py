@@ -1,20 +1,12 @@
-"""analytics/directional_bias.py — IOAS v3.0 §3.1 Directional Bias Score.
+"""analytics/directional_bias.py — book-balance bias score.
 
-Aggregates 8 normalised sub-signals into a score from -10.0 (Extreme Bearish)
-to +10.0 (Extreme Bullish).
+Eight rows are always returned and the weights still sum to 10.0 so the
+table stays complete. Only skew (s3) and India VIX (s8) move the number.
 
-    Bias = Σ w_i × s_i   where Σ|w_i| = 10.0
-
-Sub-signal | Weight | Source
------------+--------+-------
-s1  PCR Level              1.5   oi_volume (pcr_oi)
-s2  PCR Trend (15m)        1.0   oi_volume history (passed in)
-s3  ATM IV Skew            1.5   iv_skew module
-s4  Wall Alignment         1.5   levels.call_wall / put_wall / spot
-s5  Max Pain Gravitation   1.0   levels.max_pain / spot (bps)
-s6  OI Velocity Bias       1.5   oi_volume call_doi / put_doi
-s7  Strike Buildup Dom.    1.0   oi_strikes (call_doi / put_doi per strike)
-s8  IV Rank / Regime       1.0   india_vix / atm_iv
+PCR, the gamma-strike midpoint, max pain, and open-interest changes are
+shown as facts. They do not add a bullish or bearish point. A gamma strike
+is a concentration. Max pain is a settlement strike. Open interest is not
+buyer-versus-seller flow.
 
 Separation guarantee: no network, no Streamlit imports.
 All inputs are plain Python objects / dicts.
@@ -64,31 +56,24 @@ class BiasResult:
 # ---------------------------------------------------------------------------
 
 def _s1_pcr_level(pcr: Optional[float]) -> tuple[float, str, str]:
-    """PCR Level: >1.25 bullish, <0.85 bearish."""
+    """PCR is an open-interest mix. It does not move the score."""
     if pcr is None or pcr != pcr:
-        return 0.0, "PCR Level — no data", ""
+        return 0.0, "PCR — no data", ""
     if pcr > 1.25:
-        return 1.0, f"PCR {pcr:.2f} (put-heavy → bullish)", f"PCR={pcr:.2f} >1.25"
-    if pcr < 0.85:
-        return -1.0, f"PCR {pcr:.2f} (call-heavy → bearish)", f"PCR={pcr:.2f} <0.85"
-    # Linear interpolation in neutral band
-    mid = (pcr - 0.85) / (1.25 - 0.85)  # 0…1 across neutral band
-    val = (mid - 0.5) * 2.0              # -1…+1 linearly
-    return round(val, 3), f"PCR {pcr:.2f} (neutral)", f"PCR={pcr:.2f}"
+        mix = "put-heavy"
+    elif pcr < 0.85:
+        mix = "call-heavy"
+    else:
+        mix = "mixed"
+    return 0.0, f"PCR {pcr:.2f} is {mix} open interest. Not a direction.", f"PCR={pcr:.2f}"
 
 
 def _s2_pcr_trend(pcr_now: Optional[float], pcr_15m_ago: Optional[float]) -> tuple[float, str, str]:
-    """PCR Trend over 15m: Δ>+0.05 bullish, Δ<-0.05 bearish."""
+    """A PCR change is a fact. It does not move the score."""
     if pcr_now is None or pcr_15m_ago is None:
-        return 0.0, "PCR Trend — no history", ""
+        return 0.0, "PCR trend — no history", ""
     delta = pcr_now - pcr_15m_ago
-    detail = f"ΔPCR={delta:+.3f}"
-    if delta > 0.05:
-        return 1.0, f"PCR rising +{delta:.3f} (bullish)", detail
-    if delta < -0.05:
-        return -1.0, f"PCR falling {delta:+.3f} (bearish)", detail
-    val = delta / 0.05  # -1…+1 within neutral band
-    return round(max(-1.0, min(1.0, val)), 3), f"PCR trend flat ({delta:+.3f})", detail
+    return 0.0, f"PCR moved {delta:+.3f} over 15 minutes. Not a direction.", f"ΔPCR={delta:+.3f}"
 
 
 def _s3_iv_skew(skew_25d: Optional[float]) -> tuple[float, str, str]:
@@ -108,102 +93,90 @@ def _s3_iv_skew(skew_25d: Optional[float]) -> tuple[float, str, str]:
 
 
 def _s4_wall_align(spot: float, call_wall: Optional[float], put_wall: Optional[float]) -> tuple[float, str, str]:
-    """Wall Alignment: spot > midpoint(call_wall, put_wall) → bullish."""
+    """Where spot sits between the gamma strikes. Location only. Score stays 0."""
     if not call_wall or not put_wall:
-        return 0.0, "Wall Alignment — walls not available", ""
+        return 0.0, "Gamma strikes — not available", ""
     mid = (call_wall + put_wall) / 2.0
-    band = (call_wall - put_wall) * 0.10  # 10% of range = neutral zone
-    detail = f"Spot={spot:,.0f} mid={mid:,.0f} CW={call_wall:,.0f} PW={put_wall:,.0f}"
-    if spot > mid + band:
-        return 1.0, "Spot above wall midpoint (bullish bias)", detail
-    if spot < mid - band:
-        return -1.0, "Spot below wall midpoint (bearish bias)", detail
-    val = (spot - mid) / max(band, 1.0)
-    return round(max(-1.0, min(1.0, val)), 3), "Spot near wall midpoint (neutral)", detail
+    detail = f"Spot={spot:,.0f} mid={mid:,.0f} call-gamma={call_wall:,.0f} put-gamma={put_wall:,.0f}"
+    if spot > mid:
+        place = "above"
+    elif spot < mid:
+        place = "below"
+    else:
+        place = "at"
+    return 0.0, f"Spot is {place} the midpoint of the gamma strikes. Location only.", detail
 
 
 def _s5_maxpain_grav(spot: float, max_pain: Optional[float], band_bps: float = 50.0) -> tuple[float, str, str]:
-    """Max Pain Gravitation: Spot < MaxPain − band_bps → bullish (upward pull).
-    band_bps is normalised basis-points (50 bps default).
-    For Nifty@24500: 50bps ≈ 122pts. For Sensex@80000: 50bps ≈ 400pts."""
+    """Distance to the max-pain settlement strike. Not a pull. Score stays 0."""
+    del band_bps
     if not max_pain or not spot:
-        return 0.0, "Max Pain — not available", ""
-    dist_bps = (max_pain - spot) / spot * 10_000  # basis points
-    detail = f"MaxPain={max_pain:,.0f} dist={dist_bps:+.1f}bps"
-    if dist_bps > band_bps:
-        return 1.0, f"Spot below max pain by {dist_bps:.0f}bps (upward pull)", detail
-    if dist_bps < -band_bps:
-        return -1.0, f"Spot above max pain by {abs(dist_bps):.0f}bps (downward pull)", detail
-    val = dist_bps / band_bps
-    return round(max(-1.0, min(1.0, val)), 3), f"Spot near max pain ({dist_bps:+.0f}bps)", detail
+        return 0.0, "Max pain — not available", ""
+    dist = max_pain - spot
+    detail = f"MaxPain={max_pain:,.0f} dist={dist:+.1f}pts"
+    return 0.0, f"Max pain is {abs(dist):,.0f} pts from spot. A settlement strike, not a pull.", detail
 
 
 def _s6_oi_velocity(call_doi: Optional[float], put_doi: Optional[float]) -> tuple[float, str, str]:
-    """OI Velocity Bias: Put OI adding faster than Call OI → bullish."""
+    """Open-interest change. Not buyer-versus-seller flow. Score stays 0."""
+    if call_doi is None and put_doi is None:
+        return 0.0, "Open interest change — no data", ""
     cd = call_doi or 0.0
     pd = put_doi or 0.0
-    total = abs(cd) + abs(pd)
-    if total < 1:
-        return 0.0, "OI Velocity — insufficient data", ""
-    ratio = pd / total  # 0…1; 0.5 = balanced, >0.5 = more put OI building
+    if abs(cd) + abs(pd) < 1:
+        return 0.0, "Open interest change — insufficient data", ""
     detail = f"ΔCOI={cd:+,.0f} ΔPOI={pd:+,.0f}"
-    if ratio > 0.6:
-        return 1.0, f"Put OI velocity dominant ({ratio:.0%} of flow → bullish)", detail
-    if ratio < 0.4:
-        return -1.0, f"Call OI velocity dominant ({1-ratio:.0%} of flow → bearish)", detail
-    val = (ratio - 0.5) * 2.0  # -1…+1
-    return round(max(-1.0, min(1.0, val)), 3), f"OI velocity balanced ({ratio:.0%} put)", detail
+    return (
+        0.0,
+        f"Put open interest changed {pd:+,.0f}; call open interest changed {cd:+,.0f}. Not a direction.",
+        detail,
+    )
 
 
 def _s7_buildup_dom(oi_strikes: Optional[list[dict]]) -> tuple[float, str, str]:
-    """Strike Buildup Dominance: count of Long Buildup strikes > Short Buildup → bullish."""
+    """Which strikes added open interest. Not a direction. Score stays 0."""
     if not oi_strikes:
-        return 0.0, "Strike Buildup — no per-strike data", ""
-    long_b = short_b = 0
+        return 0.0, "Strike buildup — no per-strike data", ""
+    put_side = call_side = 0
     for s in oi_strikes:
         cd = s.get("call_doi") or 0.0
         pd = s.get("put_doi") or 0.0
-        if pd > 0 and cd <= 0:    # Put OI building, call unwinding → bullish (protective puts)
-            long_b += 1
-        elif cd > 0 and pd <= 0:  # Call OI building, put unwinding → bearish (call resistance)
-            short_b += 1
-    total = long_b + short_b
-    if total == 0:
-        return 0.0, "Strike Buildup — no directional dominance", f"long={long_b} short={short_b}"
-    detail = f"Long-buildup={long_b} Short-buildup={short_b}"
-    ratio = (long_b - short_b) / total
-    if ratio > 0.25:
-        return 1.0, f"Long buildup dominant ({long_b} vs {short_b} strikes → bullish)", detail
-    if ratio < -0.25:
-        return -1.0, f"Short buildup dominant ({short_b} vs {long_b} strikes → bearish)", detail
-    return round(ratio * 4.0, 3), f"Balanced buildup ({long_b} long / {short_b} short)", detail
+        if pd > 0 and cd <= 0:
+            put_side += 1
+        elif cd > 0 and pd <= 0:
+            call_side += 1
+    detail = f"put-side={put_side} call-side={call_side}"
+    return (
+        0.0,
+        f"Put-side buildup on {put_side} strikes, call-side on {call_side}. Not a direction.",
+        detail,
+    )
 
 
 def _s8_iv_rank(india_vix: Optional[dict], near_atm_iv: Optional[float]) -> tuple[float, str, str]:
     """IV Rank / Regime: IV Rank <30 with upward drift → bullish, >70 with downside → bearish.
     Uses India VIX as proxy for IV rank."""
     vix_val = None
+    source = "India VIX"
     if india_vix and isinstance(india_vix, dict):
         vix_val = india_vix.get("last")
     elif isinstance(india_vix, (int, float)):
         vix_val = float(india_vix)
     if vix_val is None and near_atm_iv is not None:
-        vix_val = near_atm_iv * 100  # convert decimal to percentage
+        vix_val = near_atm_iv * 100  # decimal IV, shown as a percent
+        source = "ATM IV"
 
     if vix_val is None:
-        return 0.0, "IV Rank — no VIX data", ""
+        return 0.0, "IV rank — no VIX or ATM IV", ""
 
-    detail = f"India VIX={vix_val:.1f}"
-    # India VIX typical range: 10–30
-    # Low VIX (<12): IV rank low → market calm → bullish lean
-    # High VIX (>20): IV rank high → fear → bearish lean
+    detail = f"{source}={vix_val:.1f}"
+    # India VIX typical range: 10–30. The same bands apply to ATM IV in percent.
     if vix_val < 12.0:
-        return 1.0, f"VIX {vix_val:.1f} (low — calm regime, bullish lean)", detail
+        return 1.0, f"{source} {vix_val:.1f} (low, calm)", detail
     if vix_val > 22.0:
-        return -1.0, f"VIX {vix_val:.1f} (high — fear regime, bearish lean)", detail
-    # Linear interpolation
-    val = -(vix_val - 17.0) / 5.0   # VIX=12 → +1, VIX=22 → -1, VIX=17 → 0
-    return round(max(-1.0, min(1.0, val)), 3), f"VIX {vix_val:.1f} (mid-range, neutral)", detail
+        return -1.0, f"{source} {vix_val:.1f} (high, stressed)", detail
+    val = -(vix_val - 17.0) / 5.0   # 12 → +1, 22 → -1, 17 → 0
+    return round(max(-1.0, min(1.0, val)), 3), f"{source} {vix_val:.1f} (mid-range, neutral)", detail
 
 
 # ---------------------------------------------------------------------------
