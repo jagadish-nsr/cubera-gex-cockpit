@@ -1945,6 +1945,7 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
    ========================================================================= */
 .alert-tape-marquee-container {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
   background: var(--surface-1);
@@ -1953,7 +1954,7 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   padding: 8px 14px;
   margin-bottom: 14px;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
   transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
@@ -2063,43 +2064,29 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   white-space: nowrap;
 }
 
-/* Center Marquee Viewport with Soft Gradient Edge Fade */
+/* Static tape: the full message wraps in place, with no horizontal scroll. */
 .alert-marquee-viewport {
-  flex: 1;
-  overflow: hidden;
-  white-space: nowrap;
+  flex: 1 1 28rem;
+  min-width: min(100%, 16rem);
+  overflow: visible;
   position: relative;
   display: flex;
   align-items: center;
-  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
-  -webkit-mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
-}
-
-@keyframes alert-marquee-scroll {
-  0% { transform: translateX(0%); }
-  100% { transform: translateX(-50%); }
 }
 
 .alert-marquee-track {
-  display: inline-flex;
-  align-items: center;
-  white-space: nowrap;
-  will-change: transform;
-  animation: alert-marquee-scroll 26s linear infinite;
+  display: block;
+  width: 100%;
+  white-space: normal;
   cursor: default;
 }
 
-.alert-marquee-viewport:hover .alert-marquee-track {
-  animation-play-state: paused;
-}
-
 .alert-marquee-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 20px;
+  display: block;
   font-size: 0.82rem;
+  line-height: 1.45;
   color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 .marquee-headline {
@@ -2108,6 +2095,9 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 }
 
 .marquee-action-tag {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: middle;
   background: rgba(255, 255, 255, 0.08);
   padding: 2px 8px;
   border-radius: 4px;
@@ -2117,6 +2107,9 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 }
 
 .marquee-telemetry {
+  display: inline-block;
+  margin-left: 6px;
+  vertical-align: middle;
   font-family: var(--mono);
   font-size: 0.72rem;
   color: var(--ink-faint);
@@ -2124,13 +2117,6 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   padding: 2px 6px;
   border-radius: 3px;
   border: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.marquee-separator {
-  color: var(--tape-accent, var(--spark));
-  font-size: 0.7rem;
-  opacity: 0.6;
-  padding: 0 10px;
 }
 
 /* Fixed Right Anchor (Controls) */

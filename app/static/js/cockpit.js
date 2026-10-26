@@ -2200,7 +2200,7 @@
           <span class="marquee-telemetry">[${alert.diagnostics}]</span>
         </span>
       `;
-      track.innerHTML = `${itemHtml}<span class="marquee-separator">✦✦✦</span>${itemHtml}`;
+      track.innerHTML = itemHtml;
     } else if (track) {
       track.querySelectorAll(".marquee-telemetry").forEach((el) => {
         el.textContent = `[${alert.diagnostics}]`;
