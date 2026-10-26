@@ -566,6 +566,42 @@ def record_event(
         return cur.lastrowid
 
 
+def resolve_live_option_ltp(
+    symbol: str,
+    strike: float,
+    side: str,
+    option_symbol: str,
+    options_ltp_map: dict[str, float] | None,
+) -> float | None:
+    """Premium used to close a recommendation. A missing quote stays missing.
+
+    Target and stop checks must not invent a premium from a 0.50 delta. Spot
+    invalidation is a separate check and does not use this value.
+    """
+    book = options_ltp_map or {}
+    for key in (option_symbol, f"{strike}_{side}"):
+        if not key:
+            continue
+        try:
+            px = float(book.get(key) or 0.0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px > 0:
+            return px
+    try:
+        from app.spot_ticker import get_option_ws_quote
+        quote = get_option_ws_quote(symbol, strike, side, max_age_s=120.0)
+    except Exception:
+        quote = None
+    if not quote:
+        return None
+    try:
+        px = float(quote.get("ltp") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    return px if px > 0 else None
+
+
 def evaluate_recommendation_lifecycle(
     symbol: str,
     current_spot: float,
@@ -591,7 +627,6 @@ def evaluate_recommendation_lifecycle(
         rec_id = r["rec_id"]
         side = r["side"]
         strike = float(r["strike"])
-        init_spot = float(r["initial_spot"] or current_spot)
         init_ltp = float(r["initial_ltp"] or 0.0)
         t1 = float(r["target_1"] or 0.0)
         t2 = float(r["target_2"] or 0.0)
@@ -599,14 +634,10 @@ def evaluate_recommendation_lifecycle(
         inval = float(r["spot_invalidation"] or 0.0)
         is_bm = bool(r["is_bookmarked"])
 
-        # Look up LTP or estimate delta MTM
         opt_sym = r["option_symbol"] or ""
-        curr_ltp = options_ltp_map.get(opt_sym) or options_ltp_map.get(f"{strike}_{side}")
-        if curr_ltp is None or curr_ltp <= 0:
-            delta = 0.50 if side == "CE" else -0.50
-            spot_diff = current_spot - init_spot
-            est_ltp = max(0.05, init_ltp + (spot_diff * delta))
-            curr_ltp = est_ltp if init_ltp > 0 else 0.0
+        curr_ltp = resolve_live_option_ltp(
+            symbol, strike, side, opt_sym, options_ltp_map,
+        )
 
         event_type = None
         event_msg = ""
@@ -620,8 +651,8 @@ def evaluate_recommendation_lifecycle(
                 event_type = "INVALIDATED"
                 event_msg = f"🛑 Spot Invalidation Breached at ₹{current_spot:,.1f} (Inval level: ₹{inval:,.0f})"
 
-        # Check price targets and stop loss
-        if not event_type and curr_ltp > 0:
+        # Check price targets and stop loss only against a live premium.
+        if not event_type and curr_ltp is not None and curr_ltp > 0:
             pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
             if t2 > 0 and curr_ltp >= t2:
                 event_type = "TGT2_HIT"
@@ -634,14 +665,15 @@ def evaluate_recommendation_lifecycle(
                 event_msg = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({pnl_pct:+.0f}%)"
 
         if event_type:
-            pnl_pct = round(((curr_ltp - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
+            live_px = float(curr_ltp or init_ltp or 0.0)
+            pnl_pct = round(((live_px - init_ltp) / init_ltp) * 100.0, 1) if init_ltp > 0 else 0.0
             try:
                 record_event(
                     rec_id=rec_id,
                     symbol=symbol.upper(),
                     event_type=event_type,
                     spot_at_event=current_spot,
-                    ltp_at_event=curr_ltp,
+                    ltp_at_event=live_px,
                     pnl_pct=pnl_pct,
                     message=event_msg,
                     was_bookmarked=is_bm,
@@ -799,11 +831,20 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
                 inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
                 avg_rr = None
                 if total > 0:
-                    rr_where = f"{badge_where} AND realized_rr IS NOT NULL"
-                    rr_row = conn.execute(
-                        f"SELECT AVG(realized_rr) FROM recommendation_records {rr_where}",
-                        b_params,
-                    ).fetchone()
+                    # realized_rr is written on the ML row, not recommendation_records.
+                    if symbol and symbol.upper() != "ALL":
+                        rr_sql = (
+                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
+                            "WHERE symbol = ? AND strategy_name = ? AND realized_rr IS NOT NULL"
+                        )
+                        rr_params = (symbol.upper(), badge)
+                    else:
+                        rr_sql = (
+                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
+                            "WHERE strategy_name = ? AND realized_rr IS NOT NULL"
+                        )
+                        rr_params = (badge,)
+                    rr_row = conn.execute(rr_sql, rr_params).fetchone()
                     if rr_row and rr_row[0] is not None:
                         avg_rr = round(float(rr_row[0]), 2)
                 results.append({

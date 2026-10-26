@@ -175,6 +175,9 @@ ws_manager = ConnectionManager()
 @app.on_event("startup")
 async def _start_ingest_lanes():
     """One chain ingest per index + spot WS. HTTP/WS handlers only read the stores."""
+    if os.environ.get("COCKPIT_WATCHDOG") == "1":
+        from app.event_loop_watchdog import start as start_watchdog
+        start_watchdog(asyncio.get_running_loop())
     try:
         from app.spot_ticker import warmup_all
         warmup_all()
@@ -421,6 +424,7 @@ _WS_HEARTBEAT_S = 1.0
 _REC_BATCH: Dict[tuple, Any] = {}
 _REC_LOCK = __import__("threading").Lock()
 _REC_THREAD = None
+_COMMENTARY_LOCK = __import__("threading").Lock()
 
 
 def _latest_rec_batch(symbol: str, window: str):
@@ -429,51 +433,75 @@ def _latest_rec_batch(symbol: str, window: str):
         return _REC_BATCH.get(key)
 
 
+def _iter_cached_ideas(batch) -> list:
+    ideas = []
+    for attr in (
+        "ce_recommendations",
+        "pe_recommendations",
+        "higher_ce_recommendations",
+        "higher_pe_recommendations",
+        "lower_ce_recommendations",
+        "lower_pe_recommendations",
+        "bookmarked_recommendations",
+    ):
+        ideas.extend(list(getattr(batch, attr, None) or []))
+    return ideas
+
+
 def _rec_publisher_loop() -> None:
-    """Ingest-once: generate trade ideas off the HTTP/WS event loop."""
+    """Generate ideas, reprice them, and close the book off the event loop.
+
+    Generation stays on a 20s cadence. Premium refresh is once a second so the
+    telemetry tick can read a finished quote instead of running Black-Scholes.
+    """
+    last_gen = 0.0
+    last_life = 0.0
     while True:
         try:
-            if config.is_market_open():
-                from app.live_fetcher import latest as chain_latest
-                win = _ACTIVE_STATE.get("window") or "current_week"
-                for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
-                    dash = (chain_latest(sym, win) or {}).get("data")
-                    if dash is None or getattr(dash, "levels", None) is None:
-                        continue
+            if not config.is_market_open():
+                time.sleep(30.0)
+                continue
+            from app.live_fetcher import latest as chain_latest
+            from app.spot_ticker import latest_quote
+            win = _ACTIVE_STATE.get("window") or "current_week"
+            now = time.time()
+            do_gen = (now - last_gen) >= 20.0
+            ran_life = False
+            for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                dash = (chain_latest(sym, win) or {}).get("data")
+                quote = latest_quote(sym) or {}
+                spot = float(quote.get("spot") or 0.0)
+                levels = getattr(dash, "levels", None) if dash is not None else None
+                if spot <= 0 and levels is not None:
+                    spot = float(getattr(levels, "spot", 0.0) or 0.0)
+                if do_gen and levels is not None:
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
                     with _REC_LOCK:
                         _REC_BATCH[(sym, win)] = batch
-                time.sleep(20.0)
-            else:
-                time.sleep(30.0)
+                if spot > 0 and _latest_rec_batch(sym, win) is not None:
+                    _refresh_cached_rec_quotes(sym, spot)
+                if spot > 0 and (now - last_life) >= 5.0:
+                    _run_recommendation_lifecycle(sym, spot)
+                    ran_life = True
+            if do_gen:
+                last_gen = now
+            if ran_life:
+                last_life = now
+            time.sleep(1.0)
         except Exception as exc:
             log.warning("rec publisher: %s", exc)
             time.sleep(10.0)
 
 
-def _live_rec_quotes(sym: str, spot: float) -> list:
-    """Overlay WS option LTP onto cached recs and emit compact quotes for the telemetry tick."""
-    win = _ACTIVE_STATE.get("window") or "current_week"
-    batch = _latest_rec_batch(sym, win)
+def _refresh_cached_rec_quotes(sym: str, spot: float) -> None:
+    """Reprice the cached batch. Runs on the publisher thread, not the event loop."""
+    batch = _latest_rec_batch(sym, _ACTIVE_STATE.get("window") or "current_week")
     if batch is None:
-        return []
+        return
     now = time.time()
-    with _REC_LOCK:
-        ideas = []
-        for attr in (
-            "ce_recommendations",
-            "pe_recommendations",
-            "higher_ce_recommendations",
-            "higher_pe_recommendations",
-            "lower_ce_recommendations",
-            "lower_pe_recommendations",
-            "bookmarked_recommendations",
-        ):
-            ideas.extend(list(getattr(batch, attr, None) or []))
-    out = []
     seen = set()
-    for idea in ideas:
+    for idea in _iter_cached_ideas(batch):
         rid = getattr(idea, "rec_id", "") or ""
         if not rid or rid in seen:
             continue
@@ -486,6 +514,47 @@ def _live_rec_quotes(sym: str, spot: float) -> list:
                 idea._mtm_reprice_at = now
         except Exception:
             continue
+
+
+def _run_recommendation_lifecycle(sym: str, spot: float) -> None:
+    """Close today's ACTIVE rows from spot and a real option premium."""
+    batch = _latest_rec_batch(sym, _ACTIVE_STATE.get("window") or "current_week")
+    ltp_map: dict[str, float] = {}
+    if batch is not None:
+        for idea in _iter_cached_ideas(batch):
+            if not getattr(idea, "is_ws_live", False):
+                continue
+            try:
+                ltp = float(getattr(idea, "current_ltp", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if ltp <= 0:
+                continue
+            opt = str(getattr(idea, "option_symbol", "") or "")
+            if opt:
+                ltp_map[opt] = ltp
+            ltp_map[f"{float(idea.strike)}_{idea.side}"] = ltp
+    try:
+        evaluate_recommendation_lifecycle(sym, float(spot), ltp_map)
+    except Exception as exc:
+        log.warning("recommendation lifecycle %s: %s", sym, exc)
+
+
+def _live_rec_quotes(sym: str, spot: float) -> list:
+    """Read precomputed option quotes. The tick loop does not reprice."""
+    del spot  # refresh happens on the publisher thread; the tick only reads
+    win = _ACTIVE_STATE.get("window") or "current_week"
+    batch = _latest_rec_batch(sym, win)
+    if batch is None:
+        return []
+    ideas = _iter_cached_ideas(batch)
+    out = []
+    seen = set()
+    for idea in ideas:
+        rid = getattr(idea, "rec_id", "") or ""
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
         out.append({
             "rec_id": rid,
             "ltp": round(float(idea.current_ltp or 0.0), 1),
@@ -501,6 +570,30 @@ def _live_rec_quotes(sym: str, spot: float) -> list:
             "risk_reward_ratio": str(getattr(idea, "risk_reward_ratio", "") or ""),
         })
     return out
+
+
+def _kick_commentary_eval(sym: str, dash) -> None:
+    """One commentary pass at a time. A poll that arrives mid-eval is skipped."""
+    import threading
+    if not _COMMENTARY_LOCK.acquire(blocking=False):
+        return
+
+    def _run() -> None:
+        try:
+            from commentary.engine import get_session_commentary_engine
+            engine = get_session_commentary_engine(sym)
+            engine.evaluate_live(sym, dash)
+        except Exception as exc:
+            log.debug("Commentary evaluate_live error: %s", exc)
+        finally:
+            _COMMENTARY_LOCK.release()
+
+    worker = threading.Thread(target=_run, name="commentary-eval", daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        _COMMENTARY_LOCK.release()
+        raise
 
 
 def _ensure_rec_publisher() -> None:
@@ -1581,20 +1674,8 @@ async def get_cockpit_data(
         )
     spot = _extract_active_spot(dash, sym)
 
-    # ── Session Commentary: evaluate live ticks on every cockpit poll ──────
-    # evaluate_live() runs in a background thread so it never blocks the API
-    # response. This replaces the old Streamlit tab_commentary.py trigger.
     if config.is_market_open():
-        import threading as _threading
-        def _run_commentary_eval(_sym=sym, _dash=dash):
-            try:
-                from commentary.engine import get_session_commentary_engine
-                engine = get_session_commentary_engine(_sym)
-                engine.evaluate_live(_sym, _dash)
-            except Exception as _exc:
-                log.debug("Commentary evaluate_live error: %s", _exc)
-        _threading.Thread(target=_run_commentary_eval, daemon=True).start()
-    # ── end commentary hook ────────────────────────────────────────────────
+        _kick_commentary_eval(sym, dash)
 
     # 8 KPI cards (including Max Pain and IOAS Directional Bias)
     flip_val = _extract_active_gamma_flip(dash, sym)
@@ -2782,11 +2863,17 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
     if action == "sync_live":
         try:
             from sentinel.feed.live import sync_live_sentinel_if_needed
-            synced = sync_live_sentinel_if_needed(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+            synced = await asyncio.to_thread(
+                sync_live_sentinel_if_needed, inst_id,
+                symbol=sym, call_wall=cw, put_wall=pw, force=True,
+            )
             if synced:
                 return {"status": "ok", "message": f"Synced live broker feed for {sym}"}
             from sentinel.feed.history import ensure_sentinel_session_data
-            ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+            ok = await asyncio.to_thread(
+                ensure_sentinel_session_data, inst_id,
+                symbol=sym, call_wall=cw, put_wall=pw, force=True,
+            )
             msg = f"Loaded EOD snapshot for {sym} (live feed unavailable)" if ok else f"No live or EOD data available for {sym}"
             return {"status": "ok" if ok else "offline", "message": msg}
         except Exception as exc:
@@ -2795,7 +2882,10 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
 
     try:
         from sentinel.feed.history import ensure_sentinel_session_data
-        ok = ensure_sentinel_session_data(inst_id, symbol=sym, call_wall=cw, put_wall=pw, force=True)
+        ok = await asyncio.to_thread(
+            ensure_sentinel_session_data, inst_id,
+            symbol=sym, call_wall=cw, put_wall=pw, force=True,
+        )
         msg = f"Loaded verified EOD snapshot for {sym}" if ok else f"No EOD snapshot available for {sym}"
         return {"status": "ok" if ok else "offline", "message": msg}
     except Exception as exc:
@@ -4788,6 +4878,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
     log.info("WebSocket client connected to /ws/telemetry (symbol: %s)", client_sym)
     
     active_sym_box = [client_sym]
+    sym_changed_event = asyncio.Event()
 
     async def listen_for_client_messages():
         try:
@@ -4799,6 +4890,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                         new_sym = data.get("symbol")
                         if new_sym and new_sym.upper() in ("NIFTY", "BANKNIFTY", "SENSEX"):
                             active_sym_box[0] = new_sym.upper()
+                            sym_changed_event.set()
                             log.info("WebSocket client subscription switched to %s", active_sym_box[0])
                 except Exception:
                     pass
@@ -4809,10 +4901,16 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
 
     try:
         last_sig = None
+        last_sym = None
         last_send = 0.0
         latest_bar_dict = None
         while True:
             sym = active_sym_box[0]
+            if sym != last_sym:
+                last_sig = None
+                last_sym = sym
+                last_send = 0.0
+
             win = _ACTIVE_STATE["window"]
             is_live = config.is_market_open()
 
@@ -4823,12 +4921,15 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
             dash = pub.get("data")
             lv = getattr(dash, "levels", None) if dash is not None else None
 
+            from data.market_snapshot import get_snapshot
+            snap = get_snapshot(sym) if lv is None else None
+
             if quote and quote.get("spot"):
                 spot = float(quote["spot"])
                 fut = float(quote.get("fut_px") or spot)
                 real_vix = {
                     "last": float(quote["vix"]) if quote.get("vix") is not None else float(
-                        (getattr(dash, "india_vix", None) or {}).get("last") or 14.04
+                        (getattr(dash, "india_vix", None) or {}).get("last") or (snap.get("vix") if snap else 14.04)
                     ),
                     "change": 0.0,
                     "pct_change": float(quote["vix_chg"]) if quote.get("vix_chg") is not None else 0.0,
@@ -4837,13 +4938,21 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                 spot = float(lv.spot or 0.0)
                 fut = float(getattr(lv, "future_price", None) or spot)
                 real_vix = getattr(dash, "india_vix", None) or {"last": 14.04, "change": 0.0, "pct_change": 0.0}
+            elif snap and snap.get("spot"):
+                spot = float(snap["spot"])
+                fut = float(snap.get("spot") or spot)
+                real_vix = {
+                    "last": float(snap.get("vix") or 14.04),
+                    "change": 0.0,
+                    "pct_change": 0.0,
+                }
             else:
                 await asyncio.sleep(0.25)
                 continue
 
-            cw = float(getattr(lv, "call_wall", 0) or 0) if lv is not None else 0.0
-            pw = float(getattr(lv, "put_wall", 0) or 0) if lv is not None else 0.0
-            flip = float(_extract_active_gamma_flip(dash, sym) or 0.0) if dash is not None else 0.0
+            cw = float(getattr(lv, "call_wall", 0) or 0) if lv is not None else (float(snap.get("call_wall") or 0.0) if snap else 0.0)
+            pw = float(getattr(lv, "put_wall", 0) or 0) if lv is not None else (float(snap.get("put_wall") or 0.0) if snap else 0.0)
+            flip = float(_extract_active_gamma_flip(dash, sym) or 0.0) if dash is not None else (float(snap.get("gamma_flip") or 0.0) if snap else 0.0)
 
             now_t = time.time()
 
@@ -4896,7 +5005,11 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "feed_mode": "OFFLINE_AUTOSWITCH",
                 }
                 await websocket.send_json(status_payload)
-                await asyncio.sleep(15.0)
+                try:
+                    await asyncio.wait_for(sym_changed_event.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    pass
+                sym_changed_event.clear()
     except (WebSocketDisconnect, asyncio.TimeoutError):
         pass
     except Exception as exc:
@@ -5289,6 +5402,11 @@ def main():
     parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
     parser.add_argument("--dev", action="store_true", help="Explicitly run in development mode")
     args = parser.parse_args()
+
+    # Production only. A stalled event loop cannot accept connections, and
+    # SIGTERM does not land while the main thread is blocked in a lock.
+    if args.port == 8640 and not args.dev and not args.reload:
+        os.environ["COCKPIT_WATCHDOG"] = "1"
 
     is_dev = args.dev or args.reload or (args.port != 8640)
     if is_dev:

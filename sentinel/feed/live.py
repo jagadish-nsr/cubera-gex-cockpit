@@ -44,6 +44,7 @@ class LiveSentinelManager:
         self._classifiers: dict[str, SignalClassifierEngine] = {}
         self._contexts: dict[str, MarketContext] = {}
         self._last_synced_time: dict[str, float] = {}
+        self._sync_requested_at: dict[str, float] = {}
         self._prev_cum_vol: dict[str, int] = {}
         self._last_tick_time: dict[str, float] = {}
 
@@ -80,7 +81,6 @@ class LiveSentinelManager:
         and runs the SignalClassifierEngine to generate real signals.
         """
         now_epoch = time.time()
-        last_sync = self._last_synced_time.get(instrument_id, 0.0)
 
         # Determine target trading date (today if active market day after 09:00, or latest completed trading session)
         now_ist = datetime.now(IST)
@@ -98,29 +98,36 @@ class LiveSentinelManager:
         existing_sample = list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False)
         needs_day_rollover = bool(existing_sample and existing_sample[-1].start_ts.strftime("%Y-%m-%d") != target_date_str)
 
-        # Throttle sync calls to once every 60 seconds unless forced or on day rollover
-        if not force and not needs_day_rollover and existing_sample and (now_epoch - last_sync) < 60.0:
+        # Claim the slot, then release the lock before the broker call.
+        # The event loop also waits on this lock, and Lock is not re-entrant.
+        with _LOCK:
+            last_sync = self._last_synced_time.get(instrument_id, 0.0)
+            if not force and not needs_day_rollover and existing_sample and (now_epoch - last_sync) < 60.0:
+                return False
+            self._last_synced_time[instrument_id] = now_epoch
+
+        try:
+            from data.dhan import fetch_futures_intraday, nearest_futures
+
+            futs = nearest_futures(symbol)
+            if not futs:
+                log.warning("No futures resolved for %s", symbol)
+                return False
+
+            front_fut = futs[0]
+            sec_id = front_fut["security_id"]
+            seg = "BSE_FNO" if symbol == "SENSEX" else "NSE_FNO"
+
+            df = fetch_futures_intraday(sec_id, target_date_str, target_date_str, interval="1", segment=seg)
+            if df is None or df.empty:
+                log.info("No intraday bars returned for %s (date %s)", instrument_id, target_date_str)
+                return False
+        except Exception as exc:
+            log.error("Failed to fetch live session bars for %s: %s", instrument_id, exc, exc_info=True)
             return False
 
         with _LOCK:
-            self._last_synced_time[instrument_id] = now_epoch
             try:
-                from data.dhan import fetch_futures_intraday, nearest_futures
-
-                futs = nearest_futures(symbol)
-                if not futs:
-                    log.warning("No futures resolved for %s", symbol)
-                    return False
-
-                front_fut = futs[0]
-                sec_id = front_fut["security_id"]
-                seg = "BSE_FNO" if symbol == "SENSEX" else "NSE_FNO"
-
-                df = fetch_futures_intraday(sec_id, target_date_str, target_date_str, interval="1", segment=seg)
-                if df is None or df.empty:
-                    log.info("No intraday bars returned for %s (date %s)", instrument_id, target_date_str)
-                    return False
-
                 # Purge stale/demo bars only after verifying genuine Dhan data arrived
                 clear_sentinel_data(instrument_id)
 
@@ -256,7 +263,7 @@ class LiveSentinelManager:
                 )
                 try:
                     from sentinel.storage.db import record_daily_closing_cvd
-                    record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=today_str)
+                    record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=target_date_str)
                 except Exception:
                     pass
                 return True
@@ -274,7 +281,9 @@ class LiveSentinelManager:
         instrument_id = f"{symbol}-FUT"
         agg = self._aggregators.get(instrument_id)
         if agg is None:
-            # Not initialized yet, trigger background sync
+            # A restart drops the in-memory aggregator while today's bars remain
+            # in sqlite. Ticks must start one session sync, off this thread.
+            self._schedule_session_sync(instrument_id, symbol)
             return
 
         now_ist = datetime.now(IST)
@@ -315,6 +324,7 @@ class LiveSentinelManager:
 
             if completed_bar is not None:
                 save_bar(completed_bar)
+                bar_sig = None
 
                 # Update context
                 ctx = self._contexts.get(instrument_id)
@@ -325,11 +335,21 @@ class LiveSentinelManager:
                         sig = classifier.evaluate_bar(completed_bar, ctx)
                         if sig:
                             save_signal(sig)
+                            bar_sig = sig
+
+                try:
+                    from replay.sentinel_journal import append_finalized
+                    append_finalized(symbol, completed_bar, bar_sig)
+                except Exception as err:
+                    log.debug("Sentinel day file was not appended for %s: %s", symbol, err)
 
                 # Update outcomes of recent signals with subsequent bars
                 try:
                     recent_sigs = list_recent_signals(instrument_id, limit=30)
-                    bars_eval = list_recent_bars(instrument_id, timeframe="1m", limit=120, session_only=True)
+                    bars_eval = list_recent_bars(
+                        instrument_id, timeframe="1m", limit=120,
+                        session_only=True, _auto_populate=False,
+                    )
                     cw = ctx.call_wall if ctx else 0.0
                     pw = ctx.put_wall if ctx else 0.0
                     for s in recent_sigs:
@@ -341,7 +361,9 @@ class LiveSentinelManager:
                     log.debug("Failed evaluating live tick outcomes for %s: %s", instrument_id, err)
 
                 # Aggregate into higher timeframes on interval boundaries
-                bars_1m = list_recent_bars(instrument_id, timeframe="1m", limit=30)
+                bars_1m = list_recent_bars(
+                    instrument_id, timeframe="1m", limit=30, _auto_populate=False,
+                )
                 for tf in (3, 5, 15):
                     agg_list = aggregate_bars(bars_1m, target_minutes=tf)
                     if agg_list:
@@ -352,6 +374,31 @@ class LiveSentinelManager:
                     record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=tick_dt.strftime("%Y-%m-%d"))
                 except Exception:
                     pass
+
+    def _schedule_session_sync(self, instrument_id: str, symbol: str) -> None:
+        """Start one intraday sync when the live aggregator is missing.
+
+        The caller is the futures tick thread. The broker fetch stays on its
+        own thread, and a second tick inside 60s does not start another one.
+        """
+        now = time.time()
+        with _LOCK:
+            if self._aggregators.get(instrument_id) is not None:
+                return
+            last = self._sync_requested_at.get(instrument_id, 0.0)
+            if (now - last) < 60.0:
+                return
+            self._sync_requested_at[instrument_id] = now
+
+        def _run() -> None:
+            try:
+                self.sync_live_session(instrument_id, symbol)
+            except Exception:
+                log.exception("Background sentinel sync failed for %s", instrument_id)
+
+        threading.Thread(
+            target=_run, name=f"sentinel-sync-{symbol}", daemon=True,
+        ).start()
 
 
 # Global singleton manager

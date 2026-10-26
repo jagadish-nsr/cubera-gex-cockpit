@@ -33,6 +33,21 @@ _EXECUTOR: _cf.ThreadPoolExecutor | None = None
 _EXECUTOR_LOCK = threading.Lock()
 
 
+def _wait_worker(fut, timeout: float, label: str):
+    """Wait for a pool task. A still-running request does not pin this caller.
+
+    ``Future.cancel`` does not stop a thread already inside ``requests``.
+    The HTTP client timeout is what releases the worker. This bound only
+    stops the fetcher from waiting behind it. A missing chain is a failure.
+    A missing news or sector strip stays empty.
+    """
+    try:
+        return fut.result(timeout=timeout)
+    except _cf.TimeoutError:
+        log.warning("%s still running after %.0fs; this fetch will not wait", label, timeout)
+        return None
+
+
 def _get_executor() -> _cf.ThreadPoolExecutor:
     global _EXECUTOR
     with _EXECUTOR_LOCK:
@@ -284,12 +299,15 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 from data.nse import fetch_india_vix as _nvx
                 _fx["vix"] = _ex.submit(_nvx)
 
-            payload, source, day_ohlc, source_note = _fx["chain"].result()
+            chain = _wait_worker(_fx["chain"], 35.0, f"{idx.symbol} chain")
+            if chain is None:
+                raise TimeoutError(f"{idx.symbol} chain was not ready within 35s")
+            payload, source, day_ohlc, source_note = chain
             rows, spot = parse_nse_option_chain(payload)
-            news = _fx["news"].result()
-            sectors = _fx["sectors"].result()
-            proxy_vanna = _fx["proxy"].result() if "proxy" in _fx else None
-            _nse_vix = _fx["vix"].result() if "vix" in _fx else None
+            news = _wait_worker(_fx["news"], 12.0, f"{idx.symbol} news")
+            sectors = _wait_worker(_fx["sectors"], 12.0, f"{idx.symbol} sectors")
+            proxy_vanna = _wait_worker(_fx["proxy"], 12.0, f"{idx.symbol} proxy vanna") if "proxy" in _fx else None
+            _nse_vix = _wait_worker(_fx["vix"], 12.0, f"{idx.symbol} vix") if "vix" in _fx else None
             india_vix = (day_ohlc or {}).pop("vix", None) or _nse_vix
 
             # Record round-trip time in adaptive poller

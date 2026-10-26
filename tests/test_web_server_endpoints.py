@@ -460,6 +460,90 @@ def test_effectiveness_empty_sample_has_no_stand_in_rates(monkeypatch):
     assert summary["avg_realized_rr"] is None
 
 
+def test_effectiveness_reads_realized_rr_from_ml_features(monkeypatch):
+    """AVG(realized_rr) is on ml_features_dataset. recommendation_records has no such column."""
+    from data.journal import recommendations_store as store
+
+    seen = []
+
+    class _Cur:
+        def __init__(self, sql):
+            self.sql = sql
+
+        def fetchone(self):
+            if "AVG" in self.sql:
+                return (1.5,)
+            return (2,)
+
+    class _Conn:
+        def execute(self, sql, params=()):
+            seen.append((sql, params))
+            return _Cur(sql)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(store, "ensure_schema", lambda: None)
+    monkeypatch.setattr(store, "_get_read_conn", lambda: _Conn())
+    rows = store.get_strategy_effectiveness_metrics("NIFTY")
+    avg_sql = [sql for sql, _params in seen if "AVG" in sql]
+    assert avg_sql
+    assert all("ml_features_dataset" in sql for sql in avg_sql)
+    assert all("recommendation_records" not in sql for sql in avg_sql)
+    assert rows[0]["avg_rr"] == 1.5
+
+
+def test_commentary_eval_does_not_stack_threads(monkeypatch):
+    import web_server
+
+    started = []
+
+    class _Hold:
+        def __init__(self, target=None, name=None, daemon=None):
+            started.append(name)
+            self._target = target
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(web_server, "_COMMENTARY_LOCK", __import__("threading").Lock())
+    import threading as _threading
+    monkeypatch.setattr(_threading, "Thread", _Hold)
+
+    web_server._kick_commentary_eval("NIFTY", object())
+    web_server._kick_commentary_eval("NIFTY", object())
+    assert started == ["commentary-eval"]
+    web_server._COMMENTARY_LOCK.release()
+
+
+def test_worker_wait_returns_when_the_pool_task_overruns():
+    import concurrent.futures
+    from app.data_access import _wait_worker
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = pool.submit(lambda: __import__("time").sleep(2))
+        assert _wait_worker(fut, 0.05, "slow chain") is None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def test_missing_option_premium_is_not_invented(monkeypatch):
+    from data.journal.recommendations_store import resolve_live_option_ltp
+
+    monkeypatch.setattr(
+        "app.spot_ticker.get_option_ws_quote",
+        lambda *a, **k: None,
+    )
+    assert resolve_live_option_ltp("NIFTY", 24500.0, "CE", "NIFTY 24500 CE", {}) is None
+    assert resolve_live_option_ltp(
+        "NIFTY", 24500.0, "CE", "NIFTY 24500 CE", {"NIFTY 24500 CE": 120.5},
+    ) == 120.5
+
+
 def test_paper_structure_refuses_when_a_leg_has_no_last_price(monkeypatch):
     """Missing chain last prices stay unbooked. Premium is not invented from width."""
 
