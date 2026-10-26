@@ -2006,10 +2006,9 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   align-items: center;
   gap: 10px;
   flex-shrink: 0;
+  order: 1;
   z-index: 2;
   background: var(--surface-1);
-  padding-right: 10px;
-  border-right: 1px solid var(--line);
 }
 
 /* Animated pulsating live dot */
@@ -2064,14 +2063,19 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   white-space: nowrap;
 }
 
-/* Static tape: the full message wraps in place, with no horizontal scroll. */
+/* Message sits on its own rows under the time, label, and bell controls. */
 .alert-marquee-viewport {
-  flex: 1 1 28rem;
-  min-width: min(100%, 16rem);
+  order: 3;
+  flex: 1 0 100%;
+  width: 100%;
+  min-width: 100%;
+  box-sizing: border-box;
   overflow: visible;
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
 }
 
 .alert-marquee-track {
@@ -2086,7 +2090,7 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   font-size: 0.82rem;
   line-height: 1.45;
   color: var(--ink);
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 
 .marquee-headline {
@@ -2135,10 +2139,10 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  order: 2;
+  margin-left: auto;
   z-index: 2;
   background: var(--surface-1);
-  padding-left: 10px;
-  border-left: 1px solid var(--line);
 }
 
 .tape-ctrl-btn {
