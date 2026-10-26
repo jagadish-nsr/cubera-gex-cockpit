@@ -99,6 +99,63 @@ def test_fresh_sentinel_overlays_geometry():
     assert "STRONG DOWNTREND" not in alert["headline"]
 
 
+def test_morning_briefing_names_prior_session_book():
+    alert = evaluate_market_alert(
+        {
+            "spot": 22600,
+            "strike_step": 50,
+            "session_phase": "PRE_MARKET_SETUP",
+            "is_morning_briefing": True,
+            "is_market_open": False,
+            "market_state": "CLOSED",
+            "is_pre_bell_ephemeral": False,
+            "snapshot_as_of": "15:35:00 IST",
+            "kpis": {
+                "call_wall": {"val": 22800},
+                "put_wall": {"val": 22400},
+                "gamma_flip": {"val": 22550},
+                "regime": {"val": "NEGATIVE"},
+            },
+            "pre_market": {
+                "status_text": "Previous NSE close ₹22,600 sits 50 pts above the flip ₹22,550.",
+                "oi_as_of": "2026-10-12T15:35:00+05:30",
+                "fii_bias": "NEUTRAL",
+                "prior_session_cvd": 12,
+                "is_discovered": False,
+                "discovered_spot": None,
+            },
+        }
+    )
+    assert alert["scenario"] == "MORNING_BRIEFING"
+    assert "22,600" in alert["body"]
+    assert "2026-10-12T15:35:00+05:30" in alert["diagnostics"]
+    assert alert["scenario"] != "PRE_OPEN_SETUP"
+
+
+def test_pre_open_auction_copy_unchanged_at_0900():
+    base = {
+        "spot": 22450,
+        "strike_step": 50,
+        "session_phase": "PRE_MARKET_ENTRY",
+        "is_morning_briefing": False,
+        "is_pre_bell_ephemeral": True,
+        "is_market_open": True,
+        "kpis": {
+            "call_wall": {"val": 22700},
+            "put_wall": {"val": 22300},
+            "gamma_flip": {"val": 22400},
+            "regime": {"val": "POSITIVE"},
+        },
+        "gamma_blast": {"score": 10},
+        "pre_market": {"is_discovered": False},
+        "orderflow_alerts": [{"type": "CONTINUATION_BEAR", "score": 90, "status": "NEW", "ts": 1e18}],
+    }
+    pre = evaluate_market_alert(base)
+    assert pre["scenario"] == "PRE_OPEN_SETUP"
+    assert "Cash auction is running" in pre["body"]
+    assert "09:08" in pre["body"]
+
+
 def test_pre_open_and_closed_short_circuit():
     base = {
         "spot": 22450,

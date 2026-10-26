@@ -18,12 +18,13 @@ The Indian financial markets operate under distinct microstructure regimes acros
 ├───────────────┬─────────────────────────┬──────────────────────┬───────────────────────────────────────┤
 │ Time (IST)    │ Session Phase           │ Streaming Mode       │ Core Microstructure Mechanics         │
 ├───────────────┼─────────────────────────┼──────────────────────┼───────────────────────────────────────┤
+│ 06:30 – 09:00 │ PRE_MARKET_SETUP        │ 🛑 Offline Snapshot  │ Prior-session book on disk. No Dhan poll. │
 │ 09:00 – 09:07 │ PRE_MARKET_ENTRY        │ Static Standby       │ Order accumulation; no matching       │
 │ 09:07:30–09:15│ PRE_MARKET_DISCOVERY    │ Adaptive Discovery   │ Equilibrium price discovery & Pre-Bell│
 │ 09:15 – 15:30 │ REGULAR_SESSION         │ 🟢 WebSocket Live    │ Continuous trading & intraday signals │
 │ 15:30 – 15:40 │ CAS_AND_FNO_EXTENDED    │ 🟢 WebSocket Live    │ 30m VWAP cash auction & F&O final run │
 │ 15:40 – 16:00 │ POST_MARKET_SETTLEMENT  │ 🛑 Offline Snapshot  │ Settlement versus the continuous close │
-│ 16:00 – 09:00 │ OFF_HOURS               │ 🛑 Offline Snapshot  │ Overnight off-hours & holiday standby │
+│ 16:00 – 06:30 │ OFF_HOURS               │ 🛑 Offline Snapshot  │ Overnight off-hours & holiday standby │
 └───────────────┴─────────────────────────┴──────────────────────┴───────────────────────────────────────┘
 ```
 
@@ -38,7 +39,7 @@ The Indian financial markets operate under distinct microstructure regimes acros
 
 ### 1.1 The Master Morning Pre-Bell Architecture (06:30 – 09:15 IST)
 
-The pre-market window is not merely a waiting period; it is the single most asymmetric information window of the trading day. The Cockpit orchestrates automated ingestion across three distinct morning phases:
+The pre-market window is not merely a waiting period; it is the single most asymmetric information window of the trading day. From 06:30 the cockpit reads the book already on disk. It does not poll a quote.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -46,9 +47,9 @@ The pre-market window is not merely a waiting period; it is the single most asym
 ├───────────────────┬─────────────────────────┬────────────────────────────────────────────────────┤
 │ Time Window (IST) │ Phase Name              │ Data Engine & Microstructure Mechanics             │
 ├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
-│ 06:30 – 09:00:00  │ PRE_MARKET_SETUP        │ Ingests overnight GEX walls, FII derivatives       │
-│                   │                         │ positioning, and prior session cumulative volume   │
-│                   │                         │ delta (CVD). Prepares baseline bias.               │
+│ 06:30 – 09:00:00  │ PRE_MARKET_SETUP        │ Local prior-session snapshot only. Walls, flip,    │
+│                   │                         │ OI timestamp, FII derivatives, and prior-session   │
+│                   │                         │ CVD already on disk. No Dhan quote and no chain.   │
 ├───────────────────┼─────────────────────────┼────────────────────────────────────────────────────┤
 │ 09:00 – 09:07:59  │ PRE_MARKET_ENTRY        │ NSE Cash Equity call auction order accumulation.    │
 │                   │                         │ Orders entered/cancelled; zero execution.          │

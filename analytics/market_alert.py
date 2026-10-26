@@ -216,6 +216,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         snap_note = f" · GEX snapshot {snap_as_of}"
 
     is_pre_bell = bool(dash.get("is_pre_bell_ephemeral"))
+    is_morning = (
+        str(dash.get("session_phase") or "") == "PRE_MARKET_SETUP"
+        or bool(dash.get("is_morning_briefing"))
+    )
     is_closed = dash.get("is_market_open") is False or str(dash.get("market_state") or "") == "CLOSED"
     geo = classify_zone(spot, cw, pw, step)
     zone = geo["zone"]
@@ -233,6 +237,29 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         }
         out.update(kwargs)
         return out
+
+    if is_morning:
+        pm = dash.get("pre_market") or {}
+        oi = str(pm.get("oi_as_of") or snap_as_of or "unavailable")
+        fii = pm.get("fii_bias") or "—"
+        cvd_raw = pm.get("prior_session_cvd")
+        try:
+            cvd_txt = f"{float(cvd_raw):+,.0f}" if cvd_raw is not None and cvd_raw != "" else "—"
+        except (TypeError, ValueError):
+            cvd_txt = "—"
+        body = str(pm.get("status_text") or "").strip() or (
+            f"Previous NSE close versus call wall {_inr(cw)}, put wall {_inr(pw)}, flip {_inr(flip)}. "
+            "This is the last published book."
+        )
+        return pack(
+            scenario="MORNING_BRIEFING",
+            badge="🌅 PRIOR-SESSION BOOK",
+            theme="alert-tape-spark",
+            headline="MORNING BRIEFING — PRIOR-SESSION BOOK",
+            body=body,
+            action="Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
+            diagnostics=f"OI as of {oi} · FII {fii} · prior CVD {cvd_txt} · CW {_inr(cw)} · PW {_inr(pw)} · flip {_inr(flip)}",
+        )
 
     if is_pre_bell:
         discovered = bool((dash.get("pre_market") or {}).get("is_discovered"))

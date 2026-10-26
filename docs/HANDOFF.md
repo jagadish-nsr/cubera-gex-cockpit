@@ -35,11 +35,12 @@ The page is **http://localhost:8640**. Close the terminal, or press Ctrl-C, to s
 
 Windows equivalent:
 
+```cmd
+run_prod.bat
 ```
-python web_server.py --port 8640
-```
+(or `python web_server.py --port 8640`)
 
-On macOS use `python3` if `python` is not found. Dev (separate port, separate data) is `./run_dev.sh` at **http://localhost:8650**.
+On macOS use `python3` if `python` is not found. Dev (separate port 8650, separate data) is `./run_dev.sh` (or `run_dev.bat` on Windows) at **http://localhost:8650**.
 
 ---
 

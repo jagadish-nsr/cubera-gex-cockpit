@@ -365,16 +365,89 @@ def get_persisted_auction_record(symbol: str, trade_date: str | None = None) -> 
         return None
 
 
+_PM_POLL_START_MIN = 8 * 60 + 50
+_PM_POLL_END_MIN = 9 * 60 + 22
+_MORNING_BRIEFING_MIN = 6 * 60 + 30
+
+
+def pre_market_poller_asleep(now: datetime | None = None) -> bool:
+    """True outside 08:50–09:22 IST on a weekday. The morning briefing does not wake this poller."""
+    now_ist = now or datetime.now(IST)
+    if now_ist.weekday() >= 5:
+        return True
+    t_min = now_ist.hour * 60 + now_ist.minute
+    return t_min < _PM_POLL_START_MIN or t_min >= _PM_POLL_END_MIN
+
+
+def prior_close_book_line(
+    prev_close: float,
+    call_wall: float = 0.0,
+    put_wall: float = 0.0,
+    flip: float = 0.0,
+) -> str:
+    """Where the previous NSE close sits on the frozen book. A location, not a forecast."""
+    if prev_close <= 0:
+        return "Previous NSE close is unavailable on the snapshot."
+    parts = [f"Previous NSE close ₹{prev_close:,.0f}"]
+    if flip > 0:
+        side = "above" if prev_close >= flip else "below"
+        parts.append(f"sits {abs(prev_close - flip):,.0f} pts {side} the flip ₹{flip:,.0f}")
+    if call_wall > 0:
+        parts.append(f"{prev_close - call_wall:+,.0f} pts versus the call-gamma strike ₹{call_wall:,.0f}")
+    if put_wall > 0:
+        parts.append(f"{prev_close - put_wall:+,.0f} pts versus the put-gamma strike ₹{put_wall:,.0f}")
+    if len(parts) == 1:
+        return parts[0] + "."
+    return parts[0] + " " + ", ".join(parts[1:]) + "."
+
+
+def stamp_morning_briefing(state: dict) -> dict:
+    """Prior-session book line. Does not set a discovered open and does not call Dhan."""
+    if not state:
+        return state
+    prev = float(state.get("prev_close") or 0.0)
+    cw = float(state.get("call_wall") or 0.0)
+    pw = float(state.get("put_wall") or 0.0)
+    flip = float(state.get("gamma_flip") or 0.0)
+    line = prior_close_book_line(prev, cw, pw, flip)
+    fii_bias = state.get("fii_bias") or "NEUTRAL"
+    try:
+        fii_net = int(state.get("fii_net_fut") or 0)
+    except (TypeError, ValueError):
+        fii_net = 0
+    try:
+        cvd = float(state.get("prior_session_cvd") or 0.0)
+    except (TypeError, ValueError):
+        cvd = 0.0
+    of_bias = state.get("prior_session_orderflow") or "Neutral"
+    oi = str(state.get("oi_as_of") or "").strip()
+    oi_bit = f" OI as of {oi}." if oi else " OI timestamp is missing on the snapshot."
+    text = (
+        f"{line} FII {fii_bias} ({fii_net:+d} fut). "
+        f"Prior-session CVD {cvd:+,.0f} ({of_bias})."
+        f"{oi_bit}"
+    )
+    state["is_morning_briefing"] = True
+    state["is_discovered"] = False
+    state["discovered_spot"] = None
+    state["status_text"] = text
+    state["regime_briefing"] = text
+    state["regime_badge"] = "PRIOR-SESSION BOOK"
+    state["favored_play"] = "MAP ONLY"
+    return state
+
+
 def get_current_session_phase(now: datetime | None = None) -> tuple[str, str, int]:
     """Return (phase_code, phase_label, minutes_until_next) for current IST time.
 
     Phase codes:
+    - 'PRE_MARKET_SETUP' (06:30 - 09:00) local prior-session book, no broker poll
     - 'PRE_MARKET_ENTRY' (09:00 - 09:07:30)
     - 'PRE_MARKET_DISCOVERY' (09:07:30 - 09:15:00)
     - 'REGULAR_SESSION' (09:15:00 - 15:30:00)
     - 'CAS_AND_FNO_EXTENDED' (15:30:00 - 15:40:00)
     - 'POST_MARKET_SETTLEMENT' (15:40:00 - 16:00:00)
-    - 'OFF_HOURS' (16:00:00 - 09:00:00 or weekends/holidays)
+    - 'OFF_HOURS' (before 06:30, after 16:00, or weekends/holidays)
     """
     try:
         from data.holidays import is_trading_day
@@ -400,9 +473,12 @@ def get_current_session_phase(now: datetime | None = None) -> tuple[str, str, in
     t_min = now_ist.hour * 60 + now_ist.minute
     t_sec = now_ist.second
 
-    if t_min < 9 * 60:
+    if t_min < _MORNING_BRIEFING_MIN:
+        mins_left = _MORNING_BRIEFING_MIN - t_min
+        return ("OFF_HOURS", "Morning briefing at 06:30", mins_left)
+    elif t_min < 9 * 60:
         mins_left = 9 * 60 - t_min
-        return ("OFF_HOURS", "Pre-Market Opens 09:00", mins_left)
+        return ("PRE_MARKET_SETUP", "Prior-session book (06:30–09:00)", mins_left)
     elif t_min < 9 * 60 + 7 or (t_min == 9 * 60 + 7 and t_sec < 30):
         # 09:00:00 to 09:07:29
         return ("PRE_MARKET_ENTRY", "Pre-Open Order Collection (09:00–09:08)", 9 * 60 + 8 - t_min)
@@ -457,9 +533,12 @@ def get_pre_market_state(
                     except Exception:
                         pass
                 return cached
-            # If discovery in progress but checked less than 2.8s ago, return cached
+            # If discovery in progress but checked less than 2.8s ago, return cached.
+            # A morning-briefing stub must not outlive 09:00, when the cash auction starts.
             if (time.time() - cached.get("_polled_at", 0)) < 2.8:
-                return cached
+                phase_now, _, _ = get_current_session_phase(now_ist)
+                if not (cached.get("is_morning_briefing") and phase_now != "PRE_MARKET_SETUP"):
+                    return cached
 
     # Check persistent DB if not in memory
     if not force_refresh:
@@ -547,7 +626,12 @@ def get_pre_market_state(
         if hist:
             prior_rec = hist[-2] if len(hist) >= 2 and hist[-1].get("trade_date") == today_str else hist[-1]
             prior_cvd = float(prior_rec.get("closing_cvd", 0.0))
-            prior_of_bias = "Bullish Accumulation (+)" if prior_cvd > 0 else "Bearish Distribution (-)"
+            if prior_cvd > 0:
+                prior_of_bias = "Bullish Accumulation (+)"
+            elif prior_cvd < 0:
+                prior_of_bias = "Bearish Distribution (-)"
+            else:
+                prior_of_bias = "Neutral"
     except Exception:
         pass
 
@@ -575,6 +659,8 @@ def get_pre_market_state(
         "regime_badge": "⚖️ AWAITING OPEN",
         "regime_color": "var(--spark)",
         "discovered_at": None,
+        "oi_as_of": str(snap.get("as_of") or ""),
+        "is_morning_briefing": phase_code == "PRE_MARKET_SETUP",
         "status_text": (
             f"Pre-Market Setup · FII: {fii_bias} ({fii_net_fut:+d} fut) · Walls: {cw_val:,.0f} / {pw_val:,.0f}"
             if cw_val > 0 and pw_val > 0
@@ -582,8 +668,16 @@ def get_pre_market_state(
         ),
         "_polled_at": time.time(),
     }
+    if phase_code == "PRE_MARKET_SETUP":
+        stamp_morning_briefing(state)
 
     # HTTP/WS readers never hit Dhan. A background poller (force_refresh=True) is the ingest.
+    # PRE_MARKET_SETUP is local snapshot only, even if a caller asks for a refresh.
+    if phase_code == "PRE_MARKET_SETUP":
+        with _CACHE_LOCK:
+            _PRE_MARKET_CACHE[symbol.upper()] = state
+        return state
+
     if not force_refresh:
         if phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY"):
             try:
@@ -692,8 +786,7 @@ def ensure_pre_market_pollers() -> None:
 def _pre_market_loop(symbol: str) -> None:
     while True:
         now = datetime.now(IST)
-        tmin = now.hour * 60 + now.minute
-        if now.weekday() >= 5 or tmin >= 9 * 60 + 22 or tmin < 8 * 60 + 50:
+        if pre_market_poller_asleep(now):
             time.sleep(20.0)
             continue
         try:

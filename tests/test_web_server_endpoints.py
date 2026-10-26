@@ -103,6 +103,8 @@ def test_get_status_schema_and_ist_clock():
     assert "spot" in data
     assert "is_market_open" in data
     assert "session_phase" in data
+    assert "is_morning_briefing" in data
+    assert "pre_market" in data
 
 
 def test_get_indices():
@@ -196,6 +198,8 @@ def test_fmt_snapshot_as_of_includes_date_when_not_today():
 
 def test_pre_bell_flag_window():
     ist = timezone(timedelta(hours=5, minutes=30))
+    assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 7, 0, tzinfo=ist), "PRE_MARKET_SETUP", {})
+    assert _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 0, tzinfo=ist), "PRE_MARKET_ENTRY", {})
     assert _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 3, tzinfo=ist), "PRE_MARKET_ENTRY", {})
     assert _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 20, tzinfo=ist), "REGULAR_SESSION", {})
     assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 23, tzinfo=ist), "REGULAR_SESSION", {})
