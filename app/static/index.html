@@ -518,75 +518,6 @@
             <div id="crossover-watch-body" style="font-size:0.8rem;color:var(--ink-mute)">Waiting for paired premiums.</div>
           </div>
 
-          <!-- TradingView Chart Card for Selected Index (1m, 5min, 15m Timeframes) -->
-          <div class="repricer-card" style="padding:16px;margin-top:16px" id="cockpit-tv-card">
-            <div class="tv-toolbar-wrap">
-              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                <h3 id="cockpit-chart-title" style="font-size:1.02rem;font-weight:800;margin:0;display:flex;align-items:center;gap:6px">
-                  <span>📈</span>
-                  <span id="cockpit-chart-symbol-badge" style="color:var(--spark)">NIFTY</span>
-                  <span>TradingView Chart</span>
-                </h3>
-                <span id="cockpit-chart-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 8px;border-radius:4px;font-weight:700;font-size:0.70rem;font-family:var(--mono)">5m · LIVE</span>
-              </div>
-
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <!-- Timeframe Selector (1m, 5min, 15m) -->
-                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 4px;border-radius:6px;border:1px solid var(--line);align-items:center">
-                  <span style="font-size:0.68rem;color:var(--ink-mute);font-weight:700;padding:0 4px">TF:</span>
-                  <button class="btn btn-secondary" id="btn-cockpit-tf-1m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('1m')">1m</button>
-                  <button class="btn btn-primary" id="btn-cockpit-tf-5m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('5m')">5min</button>
-                  <button class="btn btn-secondary" id="btn-cockpit-tf-15m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('15m')">15m</button>
-                </div>
-
-                <!-- Index Mode Indicator (Index Only GEX Canvas) -->
-                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 8px;border-radius:6px;border:1px solid var(--line);align-items:center">
-                  <span style="font-size:0.68rem;color:var(--spark);font-weight:750" id="cockpit-chart-engine-badge">⚡ GEX Canvas (Index Tape)</span>
-                </div>
-
-                <!-- Height Presets, Fullscreen & Popout -->
-                <div style="display:flex;gap:4px">
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 7px;font-weight:700;color:var(--spark);border-color:rgba(56,189,248,0.3)" title="Reset and fit chart to recent candles" onclick="window.resetCockpitChartFit()">🎯 Fit</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(440)">440px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(580)">580px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(740)">740px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" title="Toggle Fullscreen" onclick="window.toggleCockpitChartFullscreen()">⛶ Fullscreen</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750" onclick="window.openCockpitPopoutChart()">⤢ Popout</button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Real-Time Crosshair Hover HUD (for GEX Canvas mode) -->
-            <div id="cockpit-hover-legend" style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
-              <span style="font-weight:750;color:var(--spark)" id="chl-sym">NIFTY</span>
-              <span style="color:var(--ink-mute)" id="chl-time">--:-- IST</span>
-              <span id="chl-ohlc" style="color:var(--ink)">O: -- H: -- L: -- C: --</span>
-              <span style="color:#c084fc" id="chl-vwap">VWAP: --</span>
-              <span style="color:#facc15" id="chl-ema">EMA 9/21: --</span>
-              <span id="chl-delta" style="color:var(--go)">Δ: --</span>
-            </div>
-
-            <!-- Chart Mounting Viewport -->
-            <div id="cockpit-chart-viewport" style="height:520px;position:relative;background:var(--surface-2);border-radius:6px;overflow:hidden;border:1px solid var(--line)">
-              <!-- TV Lightweight Chart Container -->
-              <div id="cockpit-gex-canvas-container" style="width:100%;height:100%;position:relative;display:block"></div>
-            </div>
-
-            <!-- 2D Vertical Drag Handle -->
-            <div class="chart-resize-handle" id="cockpit-chart-drag" title="Drag vertically to resize chart height"></div>
-
-            <!-- Chart Legend Strip -->
-            <div id="cockpit-chart-legend-strip" style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
-              <span id="legend-sym-tag" style="color:var(--spark);font-weight:700">INDEX: NIFTY 50</span>
-              <span id="legend-tf-tag">Timeframe: 5m</span>
-              <span style="color:#ef4444">🟥 <b>Call gamma (<span id="cockpit-legend-cw-val">--</span>)</b></span>
-              <span style="color:#22c55e">🟩 <b>Put gamma (<span id="cockpit-legend-pw-val">--</span>)</b></span>
-              <span style="color:#eab308">🟨 <b>Call−put balance (<span id="cockpit-legend-flip-val">--</span>)</b></span>
-              <span style="color:#c084fc">🟣 <b>VWAP Session Mean</b></span>
-              <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
-            </div>
-          </div>
-
           <!-- Gamma Price Ladder -->
           <div class="ladder-card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
@@ -703,6 +634,76 @@
               <!-- Dynamically populated or institutional empty state banner -->
             </div>
           </div>
+
+          <!-- TradingView Chart Card for Selected Index (1m, 5min, 15m Timeframes) -->
+          <div class="repricer-card" style="padding:16px;margin-top:16px" id="cockpit-tv-card">
+            <div class="tv-toolbar-wrap">
+              <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <h3 id="cockpit-chart-title" style="font-size:1.02rem;font-weight:800;margin:0;display:flex;align-items:center;gap:6px">
+                  <span>📈</span>
+                  <span id="cockpit-chart-symbol-badge" style="color:var(--spark)">NIFTY</span>
+                  <span>TradingView Chart</span>
+                </h3>
+                <span id="cockpit-chart-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 8px;border-radius:4px;font-weight:700;font-size:0.70rem;font-family:var(--mono)">5m · LIVE</span>
+              </div>
+
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <!-- Timeframe Selector (1m, 5min, 15m) -->
+                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 4px;border-radius:6px;border:1px solid var(--line);align-items:center">
+                  <span style="font-size:0.68rem;color:var(--ink-mute);font-weight:700;padding:0 4px">TF:</span>
+                  <button class="btn btn-secondary" id="btn-cockpit-tf-1m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('1m')">1m</button>
+                  <button class="btn btn-primary" id="btn-cockpit-tf-5m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('5m')">5min</button>
+                  <button class="btn btn-secondary" id="btn-cockpit-tf-15m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('15m')">15m</button>
+                </div>
+
+                <!-- Index Mode Indicator (Index Only GEX Canvas) -->
+                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 8px;border-radius:6px;border:1px solid var(--line);align-items:center">
+                  <span style="font-size:0.68rem;color:var(--spark);font-weight:750" id="cockpit-chart-engine-badge">⚡ GEX Canvas (Index Tape)</span>
+                </div>
+
+                <!-- Height Presets, Fullscreen & Popout -->
+                <div style="display:flex;gap:4px">
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 7px;font-weight:700;color:var(--spark);border-color:rgba(56,189,248,0.3)" title="Reset and fit chart to recent candles" onclick="window.resetCockpitChartFit()">🎯 Fit</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(440)">440px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(580)">580px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(740)">740px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" title="Toggle Fullscreen" onclick="window.toggleCockpitChartFullscreen()">⛶ Fullscreen</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750" onclick="window.openCockpitPopoutChart()">⤢ Popout</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Real-Time Crosshair Hover HUD (for GEX Canvas mode) -->
+            <div id="cockpit-hover-legend" style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+              <span style="font-weight:750;color:var(--spark)" id="chl-sym">NIFTY</span>
+              <span style="color:var(--ink-mute)" id="chl-time">--:-- IST</span>
+              <span id="chl-ohlc" style="color:var(--ink)">O: -- H: -- L: -- C: --</span>
+              <span style="color:#c084fc" id="chl-vwap">VWAP: --</span>
+              <span style="color:#facc15" id="chl-ema">EMA 9/21: --</span>
+              <span id="chl-delta" style="color:var(--go)">Δ: --</span>
+            </div>
+
+            <!-- Chart Mounting Viewport -->
+            <div id="cockpit-chart-viewport" style="height:520px;position:relative;background:var(--surface-2);border-radius:6px;overflow:hidden;border:1px solid var(--line)">
+              <!-- TV Lightweight Chart Container -->
+              <div id="cockpit-gex-canvas-container" style="width:100%;height:100%;position:relative;display:block"></div>
+            </div>
+
+            <!-- 2D Vertical Drag Handle -->
+            <div class="chart-resize-handle" id="cockpit-chart-drag" title="Drag vertically to resize chart height"></div>
+
+            <!-- Chart Legend Strip -->
+            <div id="cockpit-chart-legend-strip" style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
+              <span id="legend-sym-tag" style="color:var(--spark);font-weight:700">INDEX: NIFTY 50</span>
+              <span id="legend-tf-tag">Timeframe: 5m</span>
+              <span style="color:#ef4444">🟥 <b>Call gamma (<span id="cockpit-legend-cw-val">--</span>)</b></span>
+              <span style="color:#22c55e">🟩 <b>Put gamma (<span id="cockpit-legend-pw-val">--</span>)</b></span>
+              <span style="color:#eab308">🟨 <b>Call−put balance (<span id="cockpit-legend-flip-val">--</span>)</b></span>
+              <span style="color:#c084fc">🟣 <b>VWAP Session Mean</b></span>
+              <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
+            </div>
+          </div>
+
         </div>
 
         <!-- Tab 2: 🎯 Target Engine -->
