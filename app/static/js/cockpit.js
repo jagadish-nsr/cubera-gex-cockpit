@@ -1010,13 +1010,19 @@
         if (playEl) playEl.textContent = discovered ? (pm.favored_play || "—") : "Setup only · no open yet";
         const badgeEl = document.getElementById("pm-regime-badge");
         if (badgeEl) {
-          badgeEl.textContent = discovered ? (pm.regime_badge || "PRE-MARKET DISCOVERY") : "PRE-OPEN SETUP";
+          badgeEl.textContent = discovered
+            ? (pm.regime_badge || "PRE-MARKET DISCOVERY")
+            : (pm.is_morning_briefing ? (pm.regime_badge || "PRIOR-SESSION BOOK") : "PRE-OPEN SETUP");
           if (pm.regime_color) badgeEl.style.color = pm.regime_color;
         }
         const briefingEl = document.getElementById("pm-briefing-text");
         if (briefingEl) briefingEl.textContent = pm.regime_briefing || pm.briefing || pm.status_text || "Prior-session gamma strikes. Equilibrium prints around 09:08 IST.";
         const atEl = document.getElementById("pm-discovered-at");
-        if (atEl) atEl.textContent = discovered && pm.discovered_at ? `${pm.discovered_at} IST Discovery` : "09:08 IST Discovery";
+        if (atEl) {
+          if (discovered && pm.discovered_at) atEl.textContent = `${pm.discovered_at} IST Discovery`;
+          else if (pm.is_morning_briefing) atEl.textContent = pm.oi_as_of ? `OI ${pm.oi_as_of}` : "OI time unavailable";
+          else atEl.textContent = "09:08 IST Discovery";
+        }
 
         // Straddle badge
         const straddleEl = document.getElementById("pm-straddle-badge");
@@ -1963,6 +1969,7 @@
 
     const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
     const isPreBell = Boolean(dash.is_pre_bell_ephemeral);
+    const isMorning = dash.session_phase === "PRE_MARKET_SETUP" || Boolean(dash.is_morning_briefing);
     const clockMatch = String(dash.as_of_time || "").match(/^(\d{2}:\d{2}:\d{2})/);
     const timeStr = clockMatch
       ? `${clockMatch[1]} IST`
@@ -1984,6 +1991,24 @@
       signal_type: (sig && sig.type) || "",
       signal_score: sig ? Number(sig.score || 0) : 0,
     }, fields);
+
+    if (isMorning) {
+      const pm = dash.pre_market || {};
+      const oi = String(pm.oi_as_of || snapAsOf || "unavailable");
+      const fii = pm.fii_bias || "—";
+      const cvdNum = Number(pm.prior_session_cvd);
+      const cvdTxt = Number.isFinite(cvdNum) ? (cvdNum >= 0 ? "+" : "") + cvdNum.toFixed(0) : "—";
+      const brief = String(pm.status_text || "").trim();
+      return pack({
+        scenario: "MORNING_BRIEFING",
+        badge: "🌅 PRIOR-SESSION BOOK",
+        theme: "alert-tape-spark",
+        headline: "MORNING BRIEFING — PRIOR-SESSION BOOK",
+        body: brief || `Previous NSE close versus call wall ${tapeInr(cw)}, put wall ${tapeInr(pw)}, flip ${tapeInr(flip)}. This is the last published book.`,
+        action: "Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
+        diagnostics: `OI as of ${oi} · FII ${fii} · prior CVD ${cvdTxt} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)} · flip ${tapeInr(flip)}`,
+      });
+    }
 
     if (isPreBell) {
       const discovered = Boolean(dash.pre_market && dash.pre_market.is_discovered);
@@ -4883,23 +4908,33 @@
           `;
         }
 
+        const morning = Boolean(pm.is_morning_briefing) && !pm.is_discovered;
+        const openLabel = morning ? "Previous NSE close" : "Discovered Open";
+        const openPx = morning ? Number(pm.prev_close || 0) : Number(pm.discovered_spot || state.spot || 0);
+        const openTxt = openPx > 0 ? `₹${openPx.toLocaleString("en-IN", { minimumFractionDigits: 1 })}` : "—";
+        const gapTxt = morning
+          ? "No auction print yet"
+          : `${(pm.gap_pts || 0) >= 0 ? "+" : ""}${Number(pm.gap_pts || 0).toFixed(1)} pts (${(pm.gap_pct || 0) >= 0 ? "+" : ""}${Number(pm.gap_pct || 0).toFixed(2)}%)`;
+        const gapClr = morning ? "var(--ink-mute)" : ((pm.gap_pts || 0) >= 0 ? "var(--go)" : "var(--stop)");
+        const stamp = morning ? (pm.oi_as_of ? `OI ${pm.oi_as_of}` : "OI time unavailable") : "09:07:30 IST Discovery";
+        const cardTitle = morning ? "Morning briefing · prior-session book" : "Pre-Bell Tactical Baseline &amp; Opening Discovery";
         pmCard.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
             <div style="display:flex;align-items:center;gap:8px">
               <span style="font-size:1.15rem">🌅</span>
-              <b style="font-size:0.95rem;color:var(--warn)">Pre-Bell Tactical Baseline &amp; Opening Discovery</b>
-              <span style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:07:30 IST Discovery</span>
+              <b style="font-size:0.95rem;color:var(--warn)">${cardTitle}</b>
+              <span style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">${stamp}</span>
             </div>
             <span class="badge-active" style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">${pm.regime_badge || "PRE-BELL BASELINE"}</span>
           </div>
           <div class="pre-bell-grid">
             <div class="pre-bell-item">
-              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Discovered Open</small>
-              <b style="font-size:1.05rem;font-family:var(--mono);color:var(--ink)">₹${(pm.discovered_spot || state.spot).toLocaleString("en-IN", { minimumFractionDigits: 1 })}</b>
+              <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">${openLabel}</small>
+              <b style="font-size:1.05rem;font-family:var(--mono);color:var(--ink)">${openTxt}</b>
             </div>
             <div class="pre-bell-item">
               <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
-              <b style="font-size:1.05rem;font-family:var(--mono);color:${(pm.gap_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(pm.gap_pts || 0) >= 0 ? "+" : ""}${(pm.gap_pts || 0).toFixed(1)} pts (${(pm.gap_pct || 0) >= 0 ? "+" : ""}${(pm.gap_pct || 0).toFixed(2)}%)</b>
+              <b style="font-size:1.05rem;font-family:var(--mono);color:${gapClr}">${gapTxt}</b>
             </div>
             <div class="pre-bell-item">
               <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Gamma strikes</small>

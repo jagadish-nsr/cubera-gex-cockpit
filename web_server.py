@@ -1398,12 +1398,18 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
             phase_badge = "MARKET CLOSED"
             phase_title = "Market Closed (Holiday)"
             exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
-    elif t_min < 9 * 60:
-        phase_badge = "PRE-MARKET PREP (Opens 09:00)"
-        phase_title = "Pre-Market Preparation"
+    elif t_min < 6 * 60 + 30:
+        phase_badge = "OVERNIGHT (Briefing 06:30)"
+        phase_title = "Overnight"
         secs_to_pre = max(0, int((pre_dt - now_ist).total_seconds()))
         h_pre, m_pre = secs_to_pre // 3600, (secs_to_pre % 3600) // 60
-        exec_phase_countdown = f"Pre-Open in {h_pre}h {m_pre}m · Bell at 09:15 IST"
+        exec_phase_countdown = f"Morning briefing at 06:30 · Pre-open in {h_pre}h {m_pre}m"
+    elif t_min < 9 * 60:
+        phase_badge = "MORNING BRIEFING (06:30–09:00)"
+        phase_title = "Prior-session book"
+        secs_to_pre = max(0, int((pre_dt - now_ist).total_seconds()))
+        h_pre, m_pre = secs_to_pre // 3600, (secs_to_pre % 3600) // 60
+        exec_phase_countdown = f"Cash pre-open in {h_pre}h {m_pre}m · Book is the previous session"
     elif t_min < 9 * 60 + 8:
         phase_badge = "PRE-OPEN ORDER ENTRY (09:00–09:08)"
         phase_title = "Pre-Open Auction"
@@ -1550,12 +1556,20 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     h_name = sched.get("holiday_name")
 
     is_live = config.is_market_open()
+    is_morning_briefing = sess_phase == "PRE_MARKET_SETUP"
     feed_mode = "LIVE_WEBSOCKET" if is_live else "OFFLINE_AUTOSWITCH"
-    session_title = "Ingestion: WebSocket Stream" if is_live else "Ingestion: Offline Snapshot"
-    feed_badge = "🟢 WebSocket Live" if is_live else "🛑 Offline Snapshot"
-    feed_source = "0ms Direct Memory" if is_live else "Session Snapshot"
-    pollers_status = "Active (1s Push)" if is_live else "Paused"
-    feed_subtext = "Live direct exchange tick stream" if is_live else "Tick stream paused · Broker pollers idle"
+    if is_morning_briefing:
+        session_title = "Morning briefing · prior-session book"
+        feed_badge = "🌅 Prior-session book"
+        feed_source = "Session Snapshot"
+        pollers_status = "Idle until 08:50"
+        feed_subtext = "Walls, flip, and OI time are the previous session. Dhan stays idle until 08:50."
+    else:
+        session_title = "Ingestion: WebSocket Stream" if is_live else "Ingestion: Offline Snapshot"
+        feed_badge = "🟢 WebSocket Live" if is_live else "🛑 Offline Snapshot"
+        feed_source = "0ms Direct Memory" if is_live else "Session Snapshot"
+        pollers_status = "Active (1s Push)" if is_live else "Paused"
+        feed_subtext = "Live direct exchange tick stream" if is_live else "Tick stream paused · Broker pollers idle"
     pm_st = get_pre_market_state(sym)
     is_pre_bell_ephemeral = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_st)
 
@@ -1594,6 +1608,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         "session_schedule": sched,
         "next_phase_countdown": sched["exec_phase_countdown"],
         "is_market_open": is_live,
+        "is_morning_briefing": is_morning_briefing,
         "feed_mode": feed_mode,
         "feed_title": session_title,
         "feed_badge": feed_badge,
@@ -1972,6 +1987,14 @@ async def get_cockpit_data(
     if lv_pm is not None:
         pm_state["call_wall"] = float(getattr(lv_pm, "call_wall", 0) or 0)
         pm_state["put_wall"] = float(getattr(lv_pm, "put_wall", 0) or 0)
+        flip_lv = float(getattr(lv_pm, "flip", 0) or 0)
+        if flip_lv > 0:
+            pm_state["gamma_flip"] = flip_lv
+    if pm_state.get("is_morning_briefing") and not pm_state.get("is_discovered"):
+        from data.pre_post_market import stamp_morning_briefing
+        if not pm_state.get("oi_as_of"):
+            pm_state["oi_as_of"] = _fmt_snapshot_as_of(getattr(dash, "fetched_at", None), _get_ist_now())
+        stamp_morning_briefing(pm_state)
     pm_state = attach_pre_market_shocks(
         pm_state,
         contracts_df=getattr(dash, "contracts", None),
@@ -2020,6 +2043,7 @@ async def get_cockpit_data(
     except Exception:
         sess_phase = "CLOSED"
     is_pre_bell = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_state)
+    is_morning_briefing = sess_phase == "PRE_MARKET_SETUP"
     snapshot_as_of = _fmt_snapshot_as_of(getattr(dash, "fetched_at", None), now_ist)
     fetched_at = getattr(dash, "fetched_at", None)
     stale_s = 0.0
@@ -2032,7 +2056,10 @@ async def get_cockpit_data(
 
     sched = compute_session_schedule_info(now_ist)
     regime_val = kpis.get("regime", {}).get("val", "Normal")
-    if is_pre_bell:
+    if is_morning_briefing:
+        oi_stamp = pm_state.get("oi_as_of") or snapshot_as_of or "OI time unavailable"
+        exec_status_text = f"Morning briefing · prior-session book · {oi_stamp}"
+    elif is_pre_bell:
         exec_status_text = f"Pre-open · prior-session GEX · Spot ₹{spot:,.1f}"
     elif not is_open:
         exec_status_text = f"Snapshot Locked at ₹{spot:,.1f} · {regime_val} Mode"
@@ -2070,6 +2097,7 @@ async def get_cockpit_data(
             "sentiment": sentiment,
         },
         "is_market_open": is_open,
+        "is_morning_briefing": is_morning_briefing,
         "is_pre_bell_ephemeral": is_pre_bell,
         "market_state": "OPEN" if is_open else "CLOSED",
         "as_of_time": now_ist.strftime("%H:%M:%S IST"),
@@ -3814,6 +3842,10 @@ async def get_session_commentary(symbol: Optional[str] = None):
     pm_state["call_wall"] = cw
     pm_state["put_wall"] = pw
     pm_state["walls"] = f"{cw:,.0f} / {pw:,.0f}"
+    if pm_state.get("is_morning_briefing") and not pm_state.get("is_discovered"):
+        pm_state["gamma_flip"] = flip
+        from data.pre_post_market import stamp_morning_briefing
+        stamp_morning_briefing(pm_state)
     pm_state["favored_play"] = pm_state.get("favored_play") or "MAP ONLY"
     pm_state["regime_badge"] = pm_state.get("regime_badge") or ("📈 MODERATE GAP" if gap_pts != 0 else "⚖️ FLAT OPEN")
     if not pm_state.get("briefing") and pm_state.get("regime_briefing"):

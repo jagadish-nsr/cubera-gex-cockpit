@@ -14,6 +14,7 @@ from data.pre_post_market import (
     estimate_pre_bell_option_ltps,
     get_current_session_phase,
     get_persisted_auction_record,
+    pre_market_poller_asleep,
     get_post_market_state,
     get_pre_market_state,
     init_pre_post_db,
@@ -30,10 +31,29 @@ class TestPrePostMarket(unittest.TestCase):
         # Pick a Tuesday (e.g. 2026-10-13)
         dt_base = datetime(2026, 10, 13, 0, 0, 0, tzinfo=IST)
 
-        # 08:30 IST -> OFF_HOURS
-        p_code, _, mins_left = get_current_session_phase(dt_base.replace(hour=8, minute=30))
+        # 06:29 IST -> OFF_HOURS, one minute until the morning briefing
+        p_code, _, mins_left = get_current_session_phase(dt_base.replace(hour=6, minute=29))
         self.assertEqual(p_code, "OFF_HOURS")
+        self.assertEqual(mins_left, 1)
+
+        # 06:30 IST -> PRE_MARKET_SETUP
+        p_code, _, mins_left = get_current_session_phase(dt_base.replace(hour=6, minute=30))
+        self.assertEqual(p_code, "PRE_MARKET_SETUP")
+        self.assertEqual(mins_left, 150)
+
+        # 08:30 IST -> PRE_MARKET_SETUP, thirty minutes until the cash auction
+        p_code, _, mins_left = get_current_session_phase(dt_base.replace(hour=8, minute=30))
+        self.assertEqual(p_code, "PRE_MARKET_SETUP")
         self.assertEqual(mins_left, 30)
+
+        # Holiday (Dussehra 2026-10-20) stays closed through the briefing window
+        dt_holiday = datetime(2026, 10, 20, 7, 0, 0, tzinfo=IST)
+        p_code, _, _ = get_current_session_phase(dt_holiday)
+        self.assertEqual(p_code, "OFF_HOURS")
+
+        # 09:00:00 IST -> PRE_MARKET_ENTRY (auction copy, not the morning briefing)
+        p_code, _, _ = get_current_session_phase(dt_base.replace(hour=9, minute=0))
+        self.assertEqual(p_code, "PRE_MARKET_ENTRY")
 
         # 09:05:00 IST -> PRE_MARKET_ENTRY
         p_code, _, _ = get_current_session_phase(dt_base.replace(hour=9, minute=5))
@@ -67,6 +87,44 @@ class TestPrePostMarket(unittest.TestCase):
         dt_sun = datetime(2026, 10, 11, 10, 0, 0, tzinfo=IST)
         p_code, _, _ = get_current_session_phase(dt_sun)
         self.assertEqual(p_code, "OFF_HOURS")
+
+    def test_poller_asleep_before_0850(self):
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 6, 30, tzinfo=IST)))
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 8, 49, tzinfo=IST)))
+        self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 8, 50, tzinfo=IST)))
+        self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 8, tzinfo=IST)))
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 22, tzinfo=IST)))
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 11, 9, 0, tzinfo=IST)))
+
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_morning_setup_reads_snapshot_not_dhan(self, mock_snap, mock_fetch):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 22600.0,
+            "prev_close": 22600.0,
+            "call_wall": 22800.0,
+            "put_wall": 22400.0,
+            "gamma_flip": 22550.0,
+            "net_gex": -1.0,
+            "as_of": "2026-10-12T15:35:00+05:30",
+        }
+        dt = datetime(2026, 10, 13, 7, 0, tzinfo=IST)
+        state = get_pre_market_state("NIFTY", force_refresh=True, now=dt)
+        mock_fetch.assert_not_called()
+        self.assertEqual(state["phase_code"], "PRE_MARKET_SETUP")
+        self.assertFalse(state["is_discovered"])
+        self.assertFalse(state.get("discovered_spot"))
+        self.assertEqual(state["call_wall"], 22800.0)
+        self.assertEqual(state["put_wall"], 22400.0)
+        self.assertEqual(state["gamma_flip"], 22550.0)
+        self.assertEqual(state["oi_as_of"], "2026-10-12T15:35:00+05:30")
+        self.assertIn("Previous NSE close", state["status_text"])
+        self.assertIn("call-gamma", state["status_text"])
+        self.assertIn("put-gamma", state["status_text"])
+        self.assertIn("flip", state["status_text"])
+        self.assertIn("OI as of 2026-10-12T15:35:00+05:30", state["status_text"])
 
     @patch("data.dhan_live.fetch_index_ohlc")
     def test_pre_market_discovery_and_chime(self, mock_fetch):
