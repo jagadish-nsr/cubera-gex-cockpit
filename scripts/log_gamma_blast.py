@@ -34,8 +34,13 @@ _WIN_START_IST = (13, 0)     # gamma-blast window 13:00-15:30 IST (afternoon)
 _WIN_END_IST = (15, 30)
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _ist_now() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    """Aware IST. A UTC clock shifted by 5:30 still carries a UTC tzinfo, and
+    any later ``astimezone(IST)`` adds the offset a second time."""
+    return datetime.now(_IST)
 
 
 def _in_window(ist: datetime) -> bool:

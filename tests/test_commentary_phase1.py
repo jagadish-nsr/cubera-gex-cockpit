@@ -115,6 +115,50 @@ def test_opening_gap_detector():
     assert fill_events[0].type == "GAP_FILLED"
 
 
+def _gap_view(spot, prior, candle_open, em=100.0):
+    t0 = datetime(2026, 10, 27, 9, 15, tzinfo=IST)
+    candles = []
+    if candle_open is not None:
+        candles = [{"open": candle_open, "high": candle_open, "low": candle_open, "close": candle_open}]
+    return PointInTimeView(
+        as_of=t0,
+        symbol="NIFTY",
+        spot=spot,
+        prior_close=prior,
+        atm_iv=0.14,
+        expected_move_1d=em,
+        call_wall=spot + 100,
+        put_wall=spot - 100,
+        gamma_flip=spot,
+        max_pain=spot,
+        net_gex_sign=-1,
+        candles_1m=candles,
+    )
+
+
+def test_opening_gap_rejects_demo_book_against_a_foreign_candle():
+    """27 Oct stored headline: spot 24,500, prior 24,500, candle open 22,500.1, gap −1,999.9."""
+    detector = OpeningGapDetector()
+    events = detector.detect(_gap_view(24500.0, 24500.0, 22500.1), StoryState(phase="opening_15m"))
+    assert events == []
+
+
+def test_opening_gap_rejects_prior_close_from_another_book():
+    """Spot is the live index and the prior close is still the 24,500 placeholder."""
+    detector = OpeningGapDetector()
+    events = detector.detect(_gap_view(22700.0, 24500.0, 22700.0), StoryState(phase="opening_15m"))
+    assert events == []
+
+
+def test_opening_gap_keeps_a_real_session_gap():
+    detector = OpeningGapDetector()
+    events = detector.detect(_gap_view(22524.4, 22600.0, 22524.4, em=80.0), StoryState(phase="opening_15m"))
+    assert len(events) == 1
+    assert events[0].type == "GAP_DOWN"
+    assert events[0].facts["prior_close"] == 22600.0
+    assert abs(events[0].facts["gap_pts"] - (22524.4 - 22600.0)) < 0.2
+
+
 def test_walls_and_gex_detector():
     t0 = datetime(2026, 10, 13, 9, 30, tzinfo=IST)
     state = StoryState(phase="morning")

@@ -2,16 +2,47 @@
 blast write. These are the guards that decide when the 15-min time-series task
 switches to the 1-min gamma-blast capture (no separate scheduled task)."""
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import config
 import scripts.log_timeseries as lt
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _ist(h, m):
     # _in_blast_window reads .hour/.minute/.weekday() directly (already IST-local,
     # as produced by _ist_now); 2026-06-30 is a Tuesday.
     return datetime(2026, 6, 30, h, m)
+
+
+def test_in_session_ten_am_ist_is_open():
+    """10:00 IST is inside the cash session.
+
+    The old helper returned 10:00 with a UTC tzinfo. is_market_open then
+    added another 5:30 and read 15:30, which is the cash close, so the
+    15-minute journal skipped every fire from 10:00 onward.
+    """
+    ten_am = datetime(2026, 10, 27, 10, 0, tzinfo=_IST)
+    assert lt._in_session(ten_am) is True
+    labeled_utc = datetime(2026, 10, 27, 10, 0, tzinfo=timezone.utc)
+    assert config.is_market_open(labeled_utc, include_fno_extended=False) is False
+
+
+def test_ist_now_carries_ist_not_utc(monkeypatch):
+    fixed_utc = datetime(2026, 10, 27, 4, 30, tzinfo=timezone.utc)  # 10:00 IST
+
+    class _Clock:
+        @staticmethod
+        def now(tz=None):
+            return fixed_utc if tz is None else fixed_utc.astimezone(tz)
+
+    monkeypatch.setattr(lt, "datetime", _Clock)
+    got = lt._ist_now()
+    assert got.utcoffset() == timedelta(hours=5, minutes=30)
+    assert got.hour == 10
+    assert lt._in_session(got) is True
 
 
 def test_in_blast_window_bounds():

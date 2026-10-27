@@ -82,12 +82,20 @@ def test_generate_recommendations_basic():
 
 
 def test_generate_recommendations_failsoft_empty_data():
+    """A missing chain must not be filled with the old 23,000 Nifty placeholder."""
     batch = generate_trade_recommendations(None, min_score=0)
     assert batch.symbol == "NIFTY"
-    assert len(batch.all_ce_candidates) == 7
-    assert len(batch.all_pe_candidates) == 7
-    for t in batch.all_ce_candidates:
-        assert t.current_ltp > 0.0
+    assert batch.spot == 0.0
+    assert batch.all_ce_candidates == []
+    assert batch.all_pe_candidates == []
+
+
+def test_generate_recommendations_rejects_demo_book():
+    data = MockDashboardData(spot=24500.0)
+    data.source = "DEMO-SYNTHETIC"
+    batch = generate_trade_recommendations(data, min_score=0)
+    assert batch.spot == 0.0
+    assert batch.all_recommendations == []
 
 
 def test_generate_recommendations_bias_influence():

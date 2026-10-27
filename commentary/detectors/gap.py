@@ -10,6 +10,16 @@ from commentary.config_loader import get_detector_config
 from commentary.detectors.base import BaseDetector
 from commentary.models import Event, PointInTimeView, StoryState
 
+# A futures bar can sit a few tenths of a percent off cash. The 27 Oct book
+# compared a 24,500 demo spot with a ~22,500 candle (about 8%) and the old
+# 15% cross-instrument check let that through.
+_MAX_OPEN_VS_SPOT = 0.015
+
+# A prior close this far from the live spot is not this index's previous
+# session. The stored false gaps were 7.3% and 8.2%. A normal cash gap is
+# inside this band; the 15% circuit check below is the hard backstop.
+_MAX_PRIOR_VS_SPOT = 0.06
+
 
 class OpeningGapDetector(BaseDetector):
     """Detects opening gap size, sigma magnitude, and relation to major GEX walls."""
@@ -27,20 +37,28 @@ class OpeningGapDetector(BaseDetector):
     def detect(self, pit_view: PointInTimeView, state: StoryState) -> list[Event]:
         events: list[Event] = []
 
-        if pit_view.prior_close <= 0:
+        if pit_view.prior_close <= 0 or pit_view.spot <= 0:
             return events
 
-        # Extract opening price from candles if available, else current spot
+        # The reference has to be this index's previous close. A 24,500
+        # placeholder against a ~22,700 book is not an opening gap.
+        if abs(pit_view.prior_close - pit_view.spot) / pit_view.spot > _MAX_PRIOR_VS_SPOT:
+            return events
+
+        # Extract opening price from candles if available, else current spot.
+        # The candle is usable only when it is the same instrument as spot.
         candles = pit_view.candles_1m
+        open_p = pit_view.spot
         if candles:
             cand_open = float(candles[0].get("open", pit_view.spot))
-            # Guard against cross-instrument candle contamination (e.g. NIFTY candle in SENSEX view)
-            if abs(cand_open - pit_view.prior_close) / pit_view.prior_close > 0.15:
-                open_p = pit_view.spot
-            else:
+            same_instrument = (
+                pit_view.spot > 0
+                and abs(cand_open - pit_view.spot) / pit_view.spot <= _MAX_OPEN_VS_SPOT
+            )
+            # Also reject a candle that is a different index from the prior close.
+            same_as_prior = abs(cand_open - pit_view.prior_close) / pit_view.prior_close <= 0.15
+            if same_instrument and same_as_prior:
                 open_p = cand_open
-        else:
-            open_p = pit_view.spot
 
         if not self._initial_gap_fired:
             gap_pts = open_p - pit_view.prior_close
