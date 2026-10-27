@@ -37,6 +37,37 @@ from commentary.storage.db import save_commentary_entry, get_recent_commentary_e
 logger = logging.getLogger(__name__)
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 
+# Same band as OpeningGapDetector: a prior close further than this from the
+# live spot is a different book (the 24,500 demo close against a 22,700 index).
+_MAX_PRIOR_VS_SPOT = 0.06
+
+
+def _verified_prior_close(data: Any, levels: Any, spot: float) -> float:
+    """Previous session close, or 0 when the reference is missing or foreign.
+
+    Copying the live spot into the close is what turned a placeholder book
+    into an 8% gap-down headline. The day OHLC close is preferred. A levels
+    field is accepted only when it sits on this index.
+    """
+    raw = 0.0
+    day = getattr(data, "day_ohlc", None)
+    if isinstance(day, dict) and day.get("prev_close"):
+        try:
+            raw = float(day["prev_close"])
+        except (TypeError, ValueError):
+            raw = 0.0
+    if raw <= 0:
+        level_prev = getattr(levels, "prev_close", None)
+        try:
+            raw = float(level_prev) if level_prev else 0.0
+        except (TypeError, ValueError):
+            raw = 0.0
+    if raw <= 0 or spot <= 0:
+        return 0.0
+    if abs(raw - spot) / spot > _MAX_PRIOR_VS_SPOT:
+        return 0.0
+    return raw
+
 
 class SessionCommentaryEngine:
     """Live commentary coordinator that evaluates market ticks, detects events, and streams entries."""
@@ -82,10 +113,16 @@ class SessionCommentaryEngine:
         data_ts = getattr(data, "fetched_at", None) or getattr(data.levels, "as_of", None)
         now_ist = to_ist(data_ts) if data_ts is not None else dt.datetime.now(IST)
 
-        # 1. Extract true market levels
+        source = str(getattr(data, "source", "") or "")
+        if source.upper().startswith("DEMO"):
+            return []
+
+        # 1. Extract true market levels. A missing spot is not a placeholder index.
         levels = data.levels
-        spot = float(getattr(levels, "spot", None) or 22600.0)
-        prev_close = float(getattr(levels, "prev_close", None) or spot)
+        spot = float(getattr(levels, "spot", None) or 0.0)
+        if spot <= 0:
+            return []
+        prev_close = _verified_prior_close(data, levels, spot)
         atm_iv = float(getattr(levels, "atm_iv", None) or 0.14)
         call_wall = float(getattr(levels, "call_wall", None) or (spot + 100))
         put_wall = float(getattr(levels, "put_wall", None) or (spot - 100))

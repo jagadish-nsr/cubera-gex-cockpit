@@ -229,6 +229,41 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
         return None
 
 
+def _bundle_from_journal_pickle(raw, reason: str):
+    """Last persisted book, or None when the file is empty, synthetic, or not a book.
+
+    ``live_fetcher`` writes ``{"data": bundle, "fetched_at": ...}``. An older
+    file stored the bundle itself. Setting ``is_degraded`` on the wrapper dict
+    raises, and that exception used to discard the only copy left after a
+    35s chain timeout.
+    """
+    bundle = raw
+    fetched = None
+    if isinstance(raw, dict) and "data" in raw:
+        bundle = raw.get("data")
+        fetched = raw.get("fetched_at")
+    if bundle is None or not hasattr(bundle, "levels"):
+        return None
+    src = str(getattr(bundle, "source", "") or "").lower()
+    if any(k in src for k in ("demo", "synthetic", "mock", "test")):
+        return None
+    spot = getattr(getattr(bundle, "levels", None), "spot", None)
+    try:
+        spot_f = float(spot) if spot is not None else 0.0
+    except (TypeError, ValueError):
+        spot_f = 0.0
+    if spot_f <= 0:
+        return None
+    bundle.is_degraded = True
+    bundle.degraded_reason = reason
+    if isinstance(fetched, datetime):
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds()
+        bundle.staleness_seconds = max(0.0, age)
+    return apply_derivative_freeze(bundle, force_freeze=True)
+
+
 def _prefer_dhan(live_source) -> bool:
     """True when the live feed will be Dhan (token present + not forced to NSE) — in which case
     India VIX rides the bundled index-OHLC quote and no separate NSE VIX call is needed."""
@@ -357,20 +392,30 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 deg_data.circuit_state = cb.state.value
                 return apply_derivative_freeze(deg_data, force_freeze=True)
 
-            # Check on-disk cache for symbol
+            # In-memory LKGS is empty (cold process, or no good pull yet).
+            # The journal pickle is the same last book, written by the fetcher.
             from pathlib import Path
             import pickle
             disk_snap = Path(f"data/journal/latest_snap_{idx.symbol}.pkl")
             if disk_snap.exists():
                 try:
                     with open(disk_snap, "rb") as f:
-                        cached_bundle = pickle.load(f)
-                    if cached_bundle is not None:
-                        cached_bundle.is_degraded = True
-                        cached_bundle.degraded_reason = f"Live feed error: {exc}. Loaded cached disk snapshot."
-                        return cached_bundle
+                        cached = pickle.load(f)
+                    restored = _bundle_from_journal_pickle(
+                        cached,
+                        f"Live feed error: {exc}. Loaded the last journal snapshot.",
+                    )
+                    if restored is not None:
+                        restored.circuit_state = cb.state.value
+                        log.warning(
+                            "%s chain missed; serving the last journal snapshot",
+                            idx.symbol,
+                        )
+                        return restored
                 except Exception:
-                    pass
+                    log.warning(
+                        "%s journal snapshot could not be read", idx.symbol, exc_info=True,
+                    )
 
             raise
 

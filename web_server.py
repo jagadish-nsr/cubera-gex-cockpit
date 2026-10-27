@@ -509,8 +509,10 @@ def _rec_publisher_loop() -> None:
                 if do_gen and levels is not None:
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
-                    with _REC_LOCK:
-                        _REC_BATCH[(sym, win)] = batch
+                    # An empty batch (spot 0) must not replace a cached live book.
+                    if float(getattr(batch, "spot", 0.0) or 0.0) > 0:
+                        with _REC_LOCK:
+                            _REC_BATCH[(sym, win)] = batch
                 if spot > 0 and _latest_rec_batch(sym, win) is not None:
                     _refresh_cached_rec_quotes(sym, spot)
                 if spot > 0 and (now - last_life) >= 5.0:
@@ -790,8 +792,8 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
 
     Live hours: background ``live_fetcher`` is the only chain ingest. This function
     reads its in-memory store, then LKGS. It does not unpickle here: unpickling holds
-    the GIL and stalls the tick loop. If both miss, the demo fixture is returned so
-    this request does not call Dhan.
+    the GIL and stalls the tick loop. If both miss, it returns None. The synthetic
+    demo book (Nifty 24,500) is not a live chain and must not feed commentary or ideas.
     Spot/futures ticks overlay from ``spot_ticker`` (separate WS ingest).
 
     Off-market: pickle → LKGS → SQLite KPI overlay → demo. Zero broker calls.
@@ -828,11 +830,8 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
                 dash = _overlay_sqlite_kpis(dash, sym)
             dash = _overlay_live_spot(_refresh_book_view(dash), sym)
             return dash
-        try:
-            dash = load_dashboard(symbol=sym, window=win, use_demo=True)
-        except Exception:
-            dash = None
-        return _refresh_book_view(dash)
+        log.warning("%s live book unavailable (no published chain, no last-good snapshot)", sym)
+        return None
 
     from data.market_snapshot import resolve_offmarket_snapshot
     off_snap = resolve_offmarket_snapshot(sym)
@@ -1257,12 +1256,7 @@ def _extract_active_spot(dash: Any, sym: str = "NIFTY") -> float:
                 return med
         except Exception:
             pass
-    s_upper = (sym or "").upper()
-    if "BANK" in s_upper:
-        return 51500.0
-    if "SENSEX" in s_upper:
-        return 80000.0
-    return 24500.0
+    return 0.0
 
 
 def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
@@ -2490,8 +2484,14 @@ async def reprice_target_engine(payload: dict = Body(...)):
     dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     idx = config.get_index(sym)
     lot_sz = idx.lot_size
-    base_fut = float(getattr(dash.levels, "future_price", None) or dash.levels.spot or 24500.0)
-    spot = float(dash.levels.spot or base_fut)
+    base_fut = float(getattr(dash.levels, "future_price", None) or 0.0)
+    spot = float(getattr(dash.levels, "spot", None) or 0.0)
+    if spot <= 0 and base_fut <= 0:
+        raise HTTPException(status_code=503, detail="No live spot for this book")
+    if spot <= 0:
+        spot = base_fut
+    if base_fut <= 0:
+        base_fut = spot
     
     active_exps = get_sidebar_active_expiries(
         symbol=sym,
@@ -2881,7 +2881,7 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     """Sentinel Tape Tab: Microstructure KPIs, Candlestick + CVD 60 FPS Canvas, 10-Day Closing Suite, Live Block Tape."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     dash = await _aload_active_dashboard(sym, "weekly")
-    spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
     tf = timeframe or "1m"
 
     inst_id = f"{sym}-FUT"
@@ -3131,10 +3131,12 @@ async def get_signal_efficiency(
 
     if eff_report and eff_report.total_signals > 0:
         dash = await _aload_active_dashboard(sym, "weekly")
-        spot = float(getattr(getattr(dash, "levels", None), "spot", 24500.0) or 24500.0)
+        spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
         atm_iv = _extract_active_atm_iv(dash)
-        dte = float(getattr(dash, "dte_now", 3.0) or 3.0)
+        dte = float(getattr(dash, "dte_now", 3.0) or 3.0) if dash is not None else 3.0
         try:
+            if spot <= 0:
+                raise ValueError("no live spot")
             calib = calculate_model_calibration_and_expectancy(eff_report, spot=spot, atm_iv=atm_iv, dte_days=dte)
         except Exception:
             calib = {
@@ -3142,7 +3144,7 @@ async def get_signal_efficiency(
                 "theoretical_p_touch": 65.0,
                 "calibration_alpha": round(eff_report.overall_hit_rate - 65.0, 1),
                 "atm_strike": int(round(spot / 50) * 50),
-                "atm_call_entry": 124.5,
+                "atm_call_entry": 0.0,
                 "by_type_calibration": [],
                 "by_alignment_calibration": [],
                 "options_expectancy_curve": {},
@@ -3257,7 +3259,7 @@ async def get_market_intel(symbol: Optional[str] = None):
             ref_px = float(dash.day_ohlc.get("prev_close") or dash.day_ohlc.get("open") or 0.0)
         if (not ref_px or ref_px <= 0) and dash and hasattr(dash, "levels") and dash.levels:
             ref_px = float(getattr(dash.levels, "prev_close", 0.0) or getattr(dash.levels, "day_open", 0.0) or 0.0)
-        if ref_px and ref_px > 0:
+        if spot > 0 and ref_px and ref_px > 0:
             spot_chg = round(((spot - ref_px) / ref_px) * 100.0, 2)
 
         intel = compute_market_intelligence(sec_snap, news_snap, spot_chg_pct=spot_chg)

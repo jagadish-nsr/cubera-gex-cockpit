@@ -2778,6 +2778,21 @@ def _evaluate_pe_strategies(
     return pe_recs
 
 
+def _empty_recommendation_batch(symbol: str, reason: str) -> RecommendationBatch:
+    """No ideas. Used when the chain spot is missing or the book is the demo fixture."""
+    return RecommendationBatch(
+        symbol=symbol,
+        spot=0.0,
+        session_vwap=0.0,
+        call_wall=0.0,
+        put_wall=0.0,
+        gamma_flip=0.0,
+        directional_bias_score=0.0,
+        bias_regime="UNAVAILABLE",
+        executive_summary=reason,
+    )
+
+
 def generate_trade_recommendations(
     data: Any,
     bias_result: Any | None = None,
@@ -2817,12 +2832,21 @@ def generate_trade_recommendations(
     idx = config.get_index(symbol)
     step = int(getattr(idx, "strike_step", 50 if symbol == "NIFTY" else 100))
 
-    # 1. Resolve core levels
+    # 1. Resolve core levels. A missing chain is not a 23,000 Nifty, a 55,000
+    # Bank Nifty, or a 74,000 Sensex, and the synthetic demo book is not a live read.
     levels = getattr(data, "levels", None) if data else None
     raw_spot = getattr(levels, "spot", None) if levels else None
-    chain_spot = float(raw_spot) if raw_spot is not None else 0.0
-    default_spot = 74000.0 if symbol == "SENSEX" else (55000.0 if symbol == "BANKNIFTY" else 23000.0)
-    spot = spot_override or (chain_spot if chain_spot > 0 else default_spot)
+    try:
+        chain_spot = float(raw_spot) if raw_spot is not None else 0.0
+    except (TypeError, ValueError):
+        chain_spot = 0.0
+    source = str(getattr(data, "source", "") or "")
+    if source.upper().startswith("DEMO") or (not spot_override and chain_spot <= 0.0):
+        return _empty_recommendation_batch(
+            symbol,
+            "No live chain spot. Ideas are not built on a placeholder index.",
+        )
+    spot = float(spot_override) if spot_override and float(spot_override) > 0 else chain_spot
     if chain_spot <= 0.0:
         chain_spot = spot
     raw_cw = getattr(levels, "call_wall", None) if levels else None

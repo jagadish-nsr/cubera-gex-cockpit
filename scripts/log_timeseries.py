@@ -42,8 +42,17 @@ _BLAST_START_IST = (13, 0)    # gamma-blast window 13:00-15:30 IST (expiry days)
 _BLAST_END_IST = (15, 30)
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
 def _ist_now() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    """Aware IST.
+
+    Adding 5:30 to ``datetime.now(timezone.utc)`` leaves the tzinfo as UTC.
+    ``config.is_market_open`` then converts that value to IST again, so a
+    real 10:00 IST is tested as 15:30 and the cash session is skipped.
+    """
+    return datetime.now(_IST)
 
 
 def _mins(hm: tuple[int, int]) -> int:

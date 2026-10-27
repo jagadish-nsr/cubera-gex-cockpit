@@ -148,15 +148,15 @@ def test_live_hours_reads_published_store_without_dhan():
 
 
 def test_live_hours_cold_start_skips_pickle_and_does_not_call_dhan():
-    """A live cold start must not unpickle (that holds the GIL and stalls ticks)
-    and must not pull Dhan on the request. The miss falls through to the demo fixture."""
+    """A live cold start must not unpickle (that holds the GIL and stalls ticks),
+    must not pull Dhan on the request, and must not serve the 24,500 demo book."""
     from web_server import _load_active_dashboard, _DASH_MEM_CACHE
     from unittest.mock import MagicMock
 
     _DASH_MEM_CACHE.clear()
     pickled = MagicMock(name="pickle")
     fixture = MagicMock(name="demo")
-    fixture.levels.spot = 22600.0
+    fixture.levels.spot = 24500.0
 
     with patch("config.is_market_open", return_value=True):
         with patch("web_server.load_dashboard", return_value=fixture) as mock_load:
@@ -167,29 +167,24 @@ def test_live_hours_cold_start_skips_pickle_and_does_not_call_dhan():
                             with patch("web_server._overlay_live_spot", side_effect=lambda d, s: d):
                                 with patch("web_server._refresh_book_view", side_effect=lambda d: d):
                                     dash = _load_active_dashboard("NIFTY", "current_week")
-    assert dash is fixture
+    assert dash is None
     mock_unpickle.assert_not_called()
-    mock_load.assert_called_once()
-    _, kwargs = mock_load.call_args
-    assert kwargs.get("use_demo") is True
+    mock_load.assert_not_called()
 
 
-def test_live_hours_demo_fallback_never_sets_use_demo_false():
+def test_live_hours_does_not_load_the_demo_book():
     from web_server import _load_active_dashboard, _DASH_MEM_CACHE
-    from unittest.mock import MagicMock
 
     _DASH_MEM_CACHE.clear()
-    fake = MagicMock()
     with patch("config.is_market_open", return_value=True):
-        with patch("web_server.load_dashboard", return_value=fake) as mock_load:
+        with patch("web_server.load_dashboard") as mock_load:
             with patch("web_server._ensure_chain_ingest"):
                 with patch("app.live_fetcher.latest", return_value=None):
                     with patch("web_server._from_lkgs", return_value=None):
                         with patch("web_server._unpickle_latest_snap", return_value=None):
-                            _load_active_dashboard("NIFTY", "current_week")
-    assert mock_load.called
-    _, kwargs = mock_load.call_args
-    assert kwargs.get("use_demo") is True
+                            dash = _load_active_dashboard("NIFTY", "current_week")
+    assert dash is None
+    mock_load.assert_not_called()
 
 
 def test_market_snapshot_rejects_corrupted_walls():
