@@ -1124,20 +1124,41 @@ def _is_recently_triggered(triggered_at_val: Any, max_age_seconds: float = 600.0
         return False
 
 
+def _positive_pcr(value: Any) -> float | None:
+    """A PCR is put open interest over call open interest. Zero and NaN are missing."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number <= 0:
+        return None
+    return number
+
+
+def _level_pcr(dash: Any, name: str) -> float | None:
+    levels = getattr(dash, "levels", None) if dash else None
+    if levels is None:
+        return None
+    return _positive_pcr(getattr(levels, name, None))
+
+
 def _extract_active_pcr(dash: Any) -> float:
-    """Extract authentic Put-Call Ratio (OI) from dashboard data."""
+    """Put open interest over call open interest for every strike in the selected window.
+
+    The 21-strike band stays on the caption. It is not the headline.
+    """
     if not dash:
         return 1.0
-    near = getattr(dash.levels, "pcr_near", None) if hasattr(dash, "levels") and dash.levels else None
-    if near is not None and float(near) > 0:
-        return float(near)
-    lvl_pcr = getattr(dash.levels, "pcr_oi", None) or getattr(dash.levels, "pcr", None) if hasattr(dash, "levels") and dash.levels else None
-    if lvl_pcr is not None and float(lvl_pcr) > 0:
-        return float(lvl_pcr)
+    full = _level_pcr(dash, "pcr_oi") or _level_pcr(dash, "pcr")
+    if full is not None:
+        return full
+    near = _level_pcr(dash, "pcr_near")
+    if near is not None:
+        return near
     raw = getattr(dash, "raw_agg", None) or getattr(dash, "oi_volume", None) or {}
-    pcr = raw.get("pcr_oi") or raw.get("pcr")
-    if pcr is not None and float(pcr) > 0:
-        return float(pcr)
+    pcr = _positive_pcr(raw.get("pcr_oi")) or _positive_pcr(raw.get("pcr"))
+    if pcr is not None:
+        return pcr
     if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) and not dash.contracts.empty:
         try:
             df = dash.contracts
@@ -1148,6 +1169,39 @@ def _extract_active_pcr(dash: Any) -> float:
         except Exception:
             pass
     return 1.0
+
+
+def _single_expiry_window(window: str) -> bool:
+    if window in {"current_week", "next_week"}:
+        return True
+    try:
+        datetime.strptime(window[:10], "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def _pcr_caption(dash: Any) -> str:
+    """Second line under the PCR figure. The figure itself is the full selected book."""
+    full = _level_pcr(dash, "pcr_oi")
+    near = _level_pcr(dash, "pcr_near")
+    if near is not None and (full is None or abs(near - full) > 0.02):
+        return f"21 strikes around spot {near:.2f}"
+    window = ""
+    levels = getattr(dash, "levels", None) if dash else None
+    if levels is not None:
+        window = str(getattr(levels, "expiry_window", "") or "")
+    if _single_expiry_window(window) or not window:
+        return "All strikes in this expiry"
+    return "All strikes in the selected window"
+
+
+def _pcr_mix_label(pcr: float) -> str:
+    if pcr > 1.25:
+        return "Put-heavy open interest"
+    if pcr < 0.85:
+        return "Call-heavy open interest"
+    return "Mixed open interest"
 
 
 def _extract_active_atm_iv(dash: Any) -> float:
@@ -1854,12 +1908,7 @@ async def get_cockpit_data(
     else:
         put_sub = "Put-gamma concentration · at or above balance"
 
-    pcr_full = getattr(dash.levels, "pcr_oi", None) if dash.levels else None
-    pcr_near = getattr(dash.levels, "pcr_near", None) if dash.levels else None
-    if pcr_near and pcr_full and abs(float(pcr_near) - float(pcr_full)) > 0.02:
-        pcr_sub = f"ATM band · Full chain {float(pcr_full):.2f}"
-    else:
-        pcr_sub = "Put-Call Open Interest Ratio (ATM band)"
+    pcr_sub = _pcr_caption(dash)
 
     kpis = {
         "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": call_sub},
@@ -3411,12 +3460,10 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
     # Dynamic IOAS Directional Bias
     bias_res = _compute_active_directional_bias(dash, sym)
 
-    if pcr > 1.25:
-        pcr_sub = "Put-heavy open interest"
-    elif pcr < 0.85:
-        pcr_sub = "Call-heavy open interest"
-    else:
-        pcr_sub = "Mixed open interest"
+    pcr_sub = _pcr_mix_label(pcr)
+    band = _pcr_caption(dash)
+    if band.startswith("21 strikes"):
+        pcr_sub = f"{pcr_sub} · {band}"
 
     kpis = {
         "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "ATM implied vol"},
