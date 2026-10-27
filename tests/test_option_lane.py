@@ -43,8 +43,10 @@ def test_only_the_watched_contracts_are_requested(monkeypatch):
         "57349": {"oi": 13575380, "last_price": 45.65, "last_trade_time": "20/07/2026 15:29:59"}})
     q = dl.fetch_option_quotes("NIFTY", [24200])
     assert sent["body"] == {"NSE_FNO": [57348, 57349]}      # 2 contracts, not a chain
-    assert q[24200.0] == {"call_oi": 7129460.0, "call_ltp": 104.2,
-                          "put_oi": 13575380.0, "put_ltp": 45.65}
+    # Dhan quote OI is shares. The helper divides by the index lot so the
+    # ladder matches the chain (7,129,460 / 65 = 109,684 lots).
+    assert q[24200.0] == {"call_oi": 7129460.0 / 65, "call_ltp": 104.2,
+                          "put_oi": 13575380.0 / 65, "put_ltp": 45.65}
     assert q["as_of"] == "2026-07-20 15:29:59"
     assert q["expiry"] == "2026-07-21"
 
@@ -56,7 +58,7 @@ def test_multiple_strikes_ride_one_call(monkeypatch):
         "57350": {"oi": 3, "last_price": 3.0}, "57351": {"oi": 4, "last_price": 4.0}})
     q = dl.fetch_option_quotes("NIFTY", [24200, 24250])
     assert sent["body"] == {"NSE_FNO": [57348, 57349, 57350, 57351]}   # ONE request
-    assert q[24250.0]["call_oi"] == 3.0 and q[24250.0]["put_ltp"] == 4.0
+    assert q[24250.0]["call_oi"] == 3.0 / 65 and q[24250.0]["put_ltp"] == 4.0
 
 
 def test_unknown_strike_is_skipped_not_guessed(monkeypatch):
