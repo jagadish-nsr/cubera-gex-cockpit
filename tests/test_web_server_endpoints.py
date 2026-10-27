@@ -204,6 +204,32 @@ def test_pre_bell_flag_window():
     assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 16, 30, tzinfo=ist), "OFF_HOURS", {})
 
 
+def test_pcr_headline_is_the_full_expiry_and_the_band_is_the_caption():
+    from web_server import _extract_active_pcr, _pcr_caption, _pcr_mix_label
+
+    class Levels:
+        pcr_oi = 1.13
+        pcr_near = 0.96
+        expiry_window = "current_week"
+
+    class Dash:
+        levels = Levels()
+
+    assert _extract_active_pcr(Dash()) == 1.13
+    assert _pcr_caption(Dash()) == "21 strikes around spot 0.96"
+    assert _pcr_mix_label(1.13) == "Mixed open interest"
+
+    class Wide:
+        pcr_oi = 1.13
+        pcr_near = 1.13
+        expiry_window = "all"
+
+    class WideDash:
+        levels = Wide()
+
+    assert _pcr_caption(WideDash()) == "All strikes in the selected window"
+
+
 def test_standing_oi_centre_matches_the_hand_check():
     from web_server import _standing_oi
 
