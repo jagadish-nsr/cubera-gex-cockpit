@@ -5507,23 +5507,62 @@
       decayMins.addEventListener("input", updateRepricer);
     }
 
-    // Force Re-sync Snapshot — wakes the background chain ingest; does not block on Dhan.
+    async function waitForDhanSync() {
+      const deadline = Date.now() + 180000;
+      let last = {};
+      while (Date.now() < deadline) {
+        const res = await fetch("/api/ops/sync-status");
+        last = await res.json();
+        if (!last.running) return last;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      return Object.assign({}, last, { last_error: last.last_error || "Sync is still running" });
+    }
+
+    function finishDhanSync(done) {
+      refreshAll();
+      if (state.activeTab !== "tab-cockpit") loadCockpit();
+      if (done && done.last_error) {
+        showToast(done.last_error, "⚠");
+        return;
+      }
+      const stamp = done && done.refreshed_at_display;
+      showToast(stamp ? `Data refreshed ${stamp}` : "Dhan sync finished", "✓");
+    }
+
+    async function runDhanSync() {
+      const res = await fetch("/api/ops/resync-snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: state.symbol, window: state.window }),
+      });
+      const started = await res.json();
+      if (started.status === "skipped") {
+        showToast(started.reason === "no_token" ? "No valid Dhan token" : "Sync skipped", "⚠");
+        return;
+      }
+      const done = await waitForDhanSync();
+      finishDhanSync(done);
+    }
+
+    // Manual Dhan sync. The server pulls the chain, then the app recomputes the book.
     const btnSync = document.getElementById("btn-force-refresh");
     if (btnSync) {
       btnSync.addEventListener("click", async () => {
-        showToast("Synchronizing live market snapshot...");
+        if (btnSync.disabled) return;
+        btnSync.disabled = true;
+        showToast("Syncing from Dhan…");
         try {
-          await fetch("/api/ops/resync-snapshot", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ symbol: state.symbol, window: state.window }),
-          });
-        } catch (e) {}
-        refreshAll();
+          await runDhanSync();
+        } catch (e) {
+          showToast("Dhan sync failed", "⚠");
+        } finally {
+          btnSync.disabled = false;
+        }
       });
     }
 
-    // Save Dhan Token
+    // Save Dhan Token. A new token starts the same sync.
     const btnSaveToken = document.getElementById("btn-save-token");
     if (btnSaveToken) {
       btnSaveToken.addEventListener("click", async () => {
@@ -5533,6 +5572,8 @@
           alert("Please enter a valid Dhan Access Token");
           return;
         }
+        if (btnSaveToken.disabled) return;
+        btnSaveToken.disabled = true;
         try {
           const res = await fetch("/api/save-dhan-token", {
             method: "POST",
@@ -5540,11 +5581,22 @@
             body: JSON.stringify({ token: tok }),
           });
           const data = await res.json();
+          if (!res.ok) {
+            alert(data.detail || "Failed to save token");
+            return;
+          }
           showToast(data.message, "💾");
           if (tokenInput) tokenInput.value = "";
-          loadStatus();
+          const sync = data.sync || {};
+          if (sync.status === "started" || sync.status === "already_running") {
+            finishDhanSync(await waitForDhanSync());
+          } else {
+            loadStatus();
+          }
         } catch (e) {
           alert("Failed to save token");
+        } finally {
+          btnSaveToken.disabled = false;
         }
       });
     }

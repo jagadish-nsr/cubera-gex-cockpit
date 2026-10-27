@@ -192,6 +192,12 @@ async def _start_ingest_lanes():
         _ensure_rec_publisher()
     except Exception as exc:
         log.warning("rec publisher start failed: %s", exc)
+    try:
+        from app.dhan_sync import on_published, start_scheduler
+        on_published(_drop_dash_cache)
+        start_scheduler()
+    except Exception as exc:
+        log.warning("dhan sync scheduler failed: %s", exc)
     if not config.is_market_open():
         return
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
@@ -441,6 +447,8 @@ def _drop_dash_cache(symbol: str) -> None:
     sym = (symbol or "").upper()
     for key in [k for k in _DASH_MEM_CACHE if isinstance(k, tuple) and k and k[0] == sym]:
         _DASH_MEM_CACHE.pop(key, None)
+
+
 _CHAIN_INTERVAL_S = 30
 _CHAIN_LEAD_S = 10.0
 _WS_LIVE_SLEEP_S = 0.12
@@ -1692,6 +1700,9 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     if not is_live:
         refreshed_src = getattr(offmarket_book, "fetched_at", None) or getattr(dash, "fetched_at", None) or db_snap.get("as_of")
         data_refreshed_at = _fmt_snapshot_as_of(refreshed_src)
+        if not feed_subtext.startswith("Newest snapshot"):
+            from app.dhan_sync import offmarket_refresh_line
+            feed_subtext = offmarket_refresh_line(data_refreshed_at, morning=is_morning_briefing)
     real_ohlc = _status_day_ohlc(dash, q, db_snap, spot, is_live)
     vix_from_dash = getattr(dash, "india_vix", None) if dash is not None else None
     real_vix = {
@@ -1785,7 +1796,15 @@ async def save_dhan_token(payload: dict = Body(...)):
         write_token(tok)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"status": "saved", "message": "Dhan token written to data/.dhan_token successfully"}
+    from app.dhan_sync import request_sync
+    sync = request_sync("token", window=_ACTIVE_STATE.get("window") or "current_week")
+    if sync.get("status") == "started":
+        message = "Dhan token saved. Syncing the book from Dhan."
+    elif sync.get("status") == "already_running":
+        message = "Dhan token saved. A sync is already running."
+    else:
+        message = "Dhan token saved."
+    return {"status": "saved", "message": message, "sync": sync}
 
 
 @app.get("/api/cockpit-data")
@@ -3825,16 +3844,25 @@ async def clear_cache():
     return {"status": "ok", "message": "LKGS memory cache cleared successfully"}
 
 
+@app.get("/api/ops/sync-status")
+async def sync_status():
+    """Progress of the manual, 06:30, or token-save Dhan sync. No secrets."""
+    from app.dhan_sync import status
+    return status()
+
+
 @app.post("/api/ops/resync-snapshot")
 async def resync_snapshot(payload: Optional[dict] = Body(default=None)):
-    """Non-blocking request for an off-grid chain pull. HTTP never waits on Dhan."""
+    """Pull every index from Dhan, then the app recomputes the book.
+
+    HTTP returns as soon as the job is queued. While the session is open the
+    live chain loop does the pull. Off-market, the sync worker calls
+    ``load_dashboard`` itself. The client polls ``/api/ops/sync-status``.
+    """
     body = payload or {}
-    sym = (body.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
     win = body.get("window") or _ACTIVE_STATE["window"]
-    from app.live_fetcher import force
-    _ensure_chain_ingest(sym, win)
-    force(sym, window=win)
-    return {"status": "ok", "message": f"Background chain pull requested for {sym} ({win})"}
+    from app.dhan_sync import request_sync
+    return request_sync("manual", window=win)
 
 
 @app.post("/api/commentary/log-market-alert")

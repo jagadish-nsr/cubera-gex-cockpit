@@ -67,6 +67,33 @@ def force(symbol: str, window: str | None = None) -> None:
         _event(k).set()
 
 
+def publish_snapshot(symbol: str, window: str | None, data):
+    """Store a computed dashboard and write the off-market pickle.
+
+    Returns the snapshot's fetched time (UTC). Refuses a synthetic book.
+    An explicit off-market Dhan sync uses this so the UI reads that book.
+    """
+    if data is None:
+        raise ValueError("no dashboard")
+    src = str(getattr(data, "source", "") or "").lower()
+    if any(k in src for k in ("demo", "synthetic", "mock", "test")):
+        raise ValueError("refusing to publish a synthetic book")
+    fetched = getattr(data, "fetched_at", None) or datetime.now(timezone.utc)
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    sym = (symbol or "").upper().strip()
+    store_key = _key(sym, window)
+    _STORE[store_key] = {
+        "data": data,
+        "as_of": fetched.astimezone(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None),
+        "fetched": fetched,
+        "err": None,
+        "window": window,
+    }
+    _persist_pickle(sym, window, data)
+    return fetched
+
+
 def _persist_pickle(symbol: str, window: str | None, data) -> None:
     """Atomic EOD/live snapshot so off-market FastAPI can read without Dhan."""
     if data is None:
@@ -102,6 +129,8 @@ def _loop(store_key) -> None:
         )
         window = cfg.get("window")
         import config
+        # This loop stays idle off-market. Dhan is called only by the explicit
+        # sync: manual, 06:30 IST, or a new session token.
         if not config.is_market_open() and not use_demo:
             time.sleep(30.0)
             continue

@@ -21,6 +21,7 @@ data/journal/options_eod/
 data/journal/participant_oi/
 data/journal/holidays/
 data/journal/*.pkl
+data/journal/dhan_sync_state.json
 data/journal/.*
 data/sentinel.db*
 

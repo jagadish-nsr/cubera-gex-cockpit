@@ -211,6 +211,24 @@ def _bg_save_snapshot(symbol: str, q: dict) -> None:
         pass
 
 
+def note_synced_book(symbol: str, ohlc: dict | None) -> None:
+    """Replace the stored quote with a book just computed from a Dhan sync.
+
+    A live WebSocket print is left in place. Off-market, the REST poller
+    would otherwise keep an older quote on top of the new chain.
+    """
+    sym = (symbol or "").upper().strip()
+    if not sym or not ohlc or not ohlc.get("ltp"):
+        return
+    if _ws_is_live_for(sym):
+        return
+    rec = _STORE.setdefault(sym, {"ohlc": None, "fut": None, "quote": None, "at": 0, "ws_at": None, "err": None})
+    rec["ohlc"] = dict(ohlc)
+    rec["quote"] = _compile_quote(sym, rec["ohlc"], rec.get("fut"))
+    rec["at"] = time.time()
+    rec["err"] = None
+
+
 def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None) -> None:
     """Called by ``app.ws_spot_feed`` on every decoded WebSocket tick.  Never blocks.
 

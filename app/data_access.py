@@ -135,7 +135,8 @@ def _live_greeks(contracts, spot: float, lot: float) -> dict:
         return out
 
 
-def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = None):
+def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = None,
+                      force_live: bool = False):
     """Pull the LIVE chain as an NSE-shaped payload, honouring the Dhan-primary / NSE-backup
     policy (config.LIVE_SOURCE). Returns (payload, source, day_ohlc, note). Dhan failures (expired
     24h token, un-subscribed Data API, network, or a shape mismatch that makes the adapter raise)
@@ -149,19 +150,25 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
         if has_token:
             try:
                 from data import dhan_live
-                payload = dhan_live.fetch_chain(idx.symbol, max_expiries=max_expiries)     # throttled, ≥3s/expiry
+                payload = dhan_live.fetch_chain(
+                    idx.symbol, max_expiries=max_expiries, force_live=force_live,
+                )
                 # Prefer the in-memory WS store (already updated sub-second by ws_spot_feed) to
                 # avoid a redundant /marketfeed/quote REST call on every chain refresh (~450ms + quota).
                 # Fall back to the REST endpoint only when the WS store is empty or stale.
+                # An explicit off-hours sync always asks Dhan. The disk quote cache is not that pull.
                 try:
-                    from app.spot_ticker import _STORE as _spot_store, STALE_AFTER_S as _stale
-                    import time as _t
-                    _rec = _spot_store.get(idx.symbol)
-                    _ws_ohlc = _rec.get("ohlc") if _rec else None
-                    _ws_age = _t.time() - _rec.get("at", 0) if _rec else 9999
-                    ohlc = _ws_ohlc if (_ws_ohlc and _ws_age < _stale) else dhan_live.fetch_index_ohlc(idx.symbol)
+                    if force_live:
+                        ohlc = dhan_live.fetch_index_ohlc(idx.symbol, skip_cache=True)
+                    else:
+                        from app.spot_ticker import _STORE as _spot_store, STALE_AFTER_S as _stale
+                        import time as _t
+                        _rec = _spot_store.get(idx.symbol)
+                        _ws_ohlc = _rec.get("ohlc") if _rec else None
+                        _ws_age = _t.time() - _rec.get("at", 0) if _rec else 9999
+                        ohlc = _ws_ohlc if (_ws_ohlc and _ws_age < _stale) else dhan_live.fetch_index_ohlc(idx.symbol)
                 except Exception:  # noqa: BLE001
-                    ohlc = dhan_live.fetch_index_ohlc(idx.symbol)
+                    ohlc = dhan_live.fetch_index_ohlc(idx.symbol, skip_cache=force_live)
                 return payload, "dhan", ohlc, None
             except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
                 note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
@@ -183,13 +190,13 @@ _PROXY_VANNA_CACHE: dict = {}  # (symbol, sign_model) -> (ts, vanna)
 
 
 def _proxy_vanna(proxy_symbol: str, live_source: str | None,
-                 sign_model: str | None = None) -> float | None:
+                 sign_model: str | None = None, force_live: bool = False) -> float | None:
     """Live dealer-|vanna| of a correlated proxy index (e.g. NIFTY for SENSEX), for a BORROWED
     regime read. One nearest-expiry chain (Dhan if a token is present, else NSE), snapshot ->
     _live_greeks. Cached for 60 seconds to eliminate redundant cross-symbol rate-limit queuing."""
     now_t = time.time()
     ckey = (proxy_symbol, sign_model)
-    if ckey in _PROXY_VANNA_CACHE:
+    if not force_live and ckey in _PROXY_VANNA_CACHE:
         ts, val = _PROXY_VANNA_CACHE[ckey]
         if now_t - ts < 60.0:
             return val
@@ -205,7 +212,7 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
         # to avoid starving the primary index's 3.1s rate gate
         if pref == "dhan" and has_token:
             from data import dhan_live
-            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1)
+            payload = dhan_live.fetch_chain(pidx.symbol, max_expiries=1, force_live=force_live)
         else:
             from data.nse import fetch_chain as nse_fetch
             payload = nse_fetch(pidx.symbol, has_weekly=pidx.has_weekly)
@@ -235,7 +242,7 @@ def _prefer_dhan(live_source) -> bool:
 
 def load_dashboard(window: str | None = None, use_demo: bool = False,
                    symbol: str | None = None, live_source: str | None = None,
-                   sign_model: str | None = None) -> DashboardData:
+                   sign_model: str | None = None, force_live: bool = False) -> DashboardData:
     """Load a full DashboardData bundle."""
     window = window or config.EXPIRY_WINDOW_DEFAULT
     idx = config.get_index(symbol)             # resolves symbol -> lot size, weekly, band
@@ -289,12 +296,18 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 (2 if window in ("next_week", "weekly", "monthly") else None)
             )
             _fx = {
-                "chain": _ex.submit(_fetch_live_chain, idx, live_source, max_expiries=max_exps),
+                "chain": _ex.submit(
+                    _fetch_live_chain, idx, live_source,
+                    max_expiries=max_exps, force_live=force_live,
+                ),
                 "news": _ex.submit(fetch_news),
                 "sectors": _ex.submit(fetch_sector_snap, prefer_dhan=_dhan),
             }
             if idx.regime_proxy:
-                _fx["proxy"] = _ex.submit(_proxy_vanna, idx.regime_proxy, live_source, _resolved_sign_model)
+                _fx["proxy"] = _ex.submit(
+                    _proxy_vanna, idx.regime_proxy, live_source,
+                    _resolved_sign_model, force_live,
+                )
             if not _dhan:
                 from data.nse import fetch_india_vix as _nvx
                 _fx["vix"] = _ex.submit(_nvx)
