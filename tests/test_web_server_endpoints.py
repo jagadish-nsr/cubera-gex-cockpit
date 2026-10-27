@@ -990,8 +990,8 @@ def test_dark_light_theme_mode_toggle():
     status, headers, content = asyncio.run(asgi_request("GET", "/"))
     assert status == 200
     html = content.decode("utf-8")
-    assert 'id="btn-theme-toggle"' in html, "Header theme toggle button missing"
     assert 'id="btn-sidebar-theme-toggle"' in html, "Sidebar theme toggle button missing"
+    assert 'id="btn-theme-toggle"' not in html, "Header theme toggle should live in the sidebar"
     assert "cubera_theme" in html, "Early theme initializer missing in <head>"
     assert 'data-theme' in html, "data-theme attribute logic missing"
 
