@@ -724,7 +724,7 @@
         }
         if (sessionPhaseBadge) {
           const badgeText = (data.session_schedule && data.session_schedule.phase_badge) || data.session_label || "MARKET CLOSED";
-          sessionPhaseBadge.textContent = badgeText.toUpperCase();
+          sessionPhaseBadge.textContent = withMeridianIst(badgeText.toUpperCase());
           sessionPhaseBadge.className = "badge-active";
           sessionPhaseBadge.style.background = "rgba(239,68,68,0.15)";
           sessionPhaseBadge.style.color = "#f87171";
@@ -784,7 +784,7 @@
           feedBadge.style.borderColor = "";
         }
         if (sessionPhaseBadge && data.session_label) {
-          sessionPhaseBadge.textContent = data.session_label.toUpperCase();
+          sessionPhaseBadge.textContent = withMeridianIst(data.session_label.toUpperCase());
           sessionPhaseBadge.style.background = "";
           sessionPhaseBadge.style.color = "";
           sessionPhaseBadge.style.border = "";
@@ -841,7 +841,10 @@
     }
     if (subId && node.sub) {
       const subEl = document.getElementById(subId);
-      if (subEl) subEl.textContent = node.sub;
+      if (subEl) {
+        subEl.textContent = node.sub;
+        subEl.title = node.sub;
+      }
     }
   }
 
@@ -1000,13 +1003,17 @@
         }
         if (gfSubEl && data.kpis.gamma_flip.sub) {
           gfSubEl.textContent = data.kpis.gamma_flip.sub;
+          gfSubEl.title = data.kpis.gamma_flip.sub;
         }
       }
 
       const mpEl = document.getElementById("kpi-max-pain");
       const mpSubEl = document.getElementById("kpi-max-pain-sub");
       if (mpEl && data.kpis.max_pain) mpEl.textContent = `₹${data.kpis.max_pain.val.toLocaleString("en-IN")}`;
-      if (mpSubEl && data.kpis.max_pain) mpSubEl.textContent = data.kpis.max_pain.sub;
+      if (mpSubEl && data.kpis.max_pain) {
+        mpSubEl.textContent = data.kpis.max_pain.sub;
+        mpSubEl.title = data.kpis.max_pain.sub;
+      }
 
       const dbEl = document.getElementById("kpi-directional-bias");
       const dbModeEl = document.getElementById("kpi-directional-bias-mode");
@@ -1015,34 +1022,48 @@
         const rawScore = parseFloat(data.kpis.directional_bias.raw !== undefined ? data.kpis.directional_bias.raw : data.kpis.directional_bias.val);
         dbEl.style.color = rawScore > 0.8 ? "var(--go)" : (rawScore < -0.8 ? "var(--stop)" : "var(--spark)");
       }
-      if (dbModeEl && data.kpis.directional_bias) dbModeEl.textContent = data.kpis.directional_bias.sub;
+      if (dbModeEl && data.kpis.directional_bias) {
+        dbModeEl.textContent = data.kpis.directional_bias.sub;
+        dbModeEl.title = data.kpis.directional_bias.sub;
+      }
 
       if (data.kpis.regime) {
         document.getElementById("kpi-regime").textContent = data.kpis.regime.val;
-        document.getElementById("kpi-regime-mode").textContent = data.kpis.regime.sub;
+        const regimeMode = document.getElementById("kpi-regime-mode");
+        regimeMode.textContent = data.kpis.regime.sub;
+        regimeMode.title = data.kpis.regime.sub;
       }
       if (data.kpis.net_gex) {
         document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
         const netSub = document.getElementById("kpi-net-gex-sub");
-        if (netSub && data.kpis.net_gex.sub) netSub.textContent = data.kpis.net_gex.sub;
+        if (netSub && data.kpis.net_gex.sub) {
+          netSub.textContent = data.kpis.net_gex.sub;
+          netSub.title = data.kpis.net_gex.sub;
+        }
       }
       if (data.kpis.pcr_oi) {
         document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
         const pcrSub = document.getElementById("kpi-pcr-sub");
-        if (pcrSub && data.kpis.pcr_oi.sub) pcrSub.textContent = data.kpis.pcr_oi.sub;
+        if (pcrSub && data.kpis.pcr_oi.sub) {
+          pcrSub.textContent = data.kpis.pcr_oi.sub;
+          pcrSub.title = data.kpis.pcr_oi.sub;
+        }
       }
       renderBookStructure(data.structures);
 
       const execStatusEl = document.getElementById("cockpit-exec-status");
+      let fullExecStatus = "";
       if (execStatusEl) {
         if (data.exec_session_status) {
-          execStatusEl.textContent = data.exec_session_status;
+          fullExecStatus = data.exec_session_status;
         } else if (!state.isMarketOpen) {
           const reg = data.kpis && data.kpis.regime ? data.kpis.regime.val : "Normal";
-          execStatusEl.textContent = `Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")} · ${reg} Mode`;
+          fullExecStatus = `Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")} · ${reg} Mode`;
         } else {
-          execStatusEl.textContent = `${data.kpis.regime.val} Mode · Spot ₹${data.spot.toLocaleString("en-IN")}`;
+          fullExecStatus = `${data.kpis.regime.val} Mode · Spot ₹${data.spot.toLocaleString("en-IN")}`;
         }
+        execStatusEl.textContent = conciseExecStatus(fullExecStatus);
+        execStatusEl.title = fullExecStatus;
         execStatusEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
       }
 
@@ -1051,22 +1072,32 @@
         const bEl = document.getElementById("cockpit-breadth-val");
         if (bEl) {
           bEl.textContent = `${mb.advances} Adv / ${mb.declines} Dec (${mb.ratio}x)`;
+          bEl.title = bEl.textContent;
           bEl.style.color = mb.ratio >= 1.0 ? "var(--go)" : "var(--stop)";
         }
       }
 
       const cdEl = document.getElementById("cockpit-phase-countdown");
+      let fullCountdown = "";
       if (cdEl) {
         if (data.next_phase_countdown) {
-          cdEl.textContent = data.next_phase_countdown;
+          fullCountdown = data.next_phase_countdown;
         } else if (data.session_schedule && data.session_schedule.exec_phase_countdown) {
-          cdEl.textContent = data.session_schedule.exec_phase_countdown;
+          fullCountdown = data.session_schedule.exec_phase_countdown;
         } else if (!state.isMarketOpen) {
-          cdEl.textContent = getClientReopenCountdown();
+          fullCountdown = getClientReopenCountdown();
         } else {
-          cdEl.textContent = "Live Regular Session (to 15:30 IST)";
+          fullCountdown = "Live Regular Session (to 15:30 IST)";
         }
+        cdEl.textContent = concisePhaseCountdown(fullCountdown);
+        cdEl.title = fullCountdown;
         cdEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
+      }
+      const sessionCard = document.getElementById("header-session-card");
+      if (sessionCard) {
+        const phaseEl = document.getElementById("session-phase-badge");
+        const phaseLabel = phaseEl ? phaseEl.textContent : "";
+        sessionCard.title = [phaseLabel, fullExecStatus, fullCountdown].filter(Boolean).join("\n");
       }
 
       // Pre-Market Discovery Summary & 5-Strike Opening Shocks
@@ -1234,7 +1265,10 @@
       const gbCard = document.getElementById("gamma-blast-card");
 
       if (gbBadge) gbBadge.textContent = data.gamma_blast.badge;
-      if (gbDesc) gbDesc.textContent = data.gamma_blast.description;
+      if (gbDesc) {
+        gbDesc.textContent = data.gamma_blast.description;
+        gbDesc.title = data.gamma_blast.description || "";
+      }
       if (gbScore) gbScore.textContent = `${data.gamma_blast.score} / 100`;
 
       const scoreVal = Number(data.gamma_blast.score || 0);
@@ -5743,6 +5777,49 @@
   function refreshAll() {
     loadStatus();
     refreshActiveTab();
+  }
+
+  function clock12(hour, minute, second) {
+    const h = Number(hour);
+    const mer = h >= 12 ? "PM" : "AM";
+    let h12 = h % 12;
+    if (h12 === 0) h12 = 12;
+    return String(h12).padStart(2, "0") + ":" + minute + (second ? ":" + second : "") + " " + mer;
+  }
+
+  function withMeridianIst(text) {
+    return String(text || "").replace(
+      /(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})(?!\s*(?:AM|PM))(?:\s*IST)?|(?<![\d:])(\d{1,2}):(\d{2})(?::(\d{2}))?(?!\s*(?:AM|PM))(?:\s*IST)?\b/g,
+      function (_, h1, m1, h2, m2, h, m, s) {
+        if (h1 !== undefined) {
+          const left = clock12(h1, m1);
+          const right = clock12(h2, m2);
+          const same = left.slice(-2) === right.slice(-2);
+          if (same) return left.replace(/ (AM|PM)$/, "") + "–" + right + " IST";
+          return left + "–" + right + " IST";
+        }
+        return clock12(h, m, s) + " IST";
+      }
+    );
+  }
+
+  function conciseExecStatus(text) {
+    const shortened = String(text || "")
+      .replace(/^Snapshot Locked at\s+/i, "Locked ")
+      .replace(/\s+Mode\b/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    return withMeridianIst(shortened);
+  }
+
+  function concisePhaseCountdown(text) {
+    const shortened = String(text || "")
+      .replace(/\bTomorrow \(([^)]+)\)/g, "$1")
+      .replace(/\bToday \(([^)]+)\)/g, "Today")
+      .replace(/^Live Regular Session \(to\s+([^)]+)\)/i, "to $1")
+      .replace(/\s+/g, " ")
+      .trim();
+    return withMeridianIst(shortened);
   }
 
   function getClientReopenCountdown() {

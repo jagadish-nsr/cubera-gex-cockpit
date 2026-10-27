@@ -487,7 +487,75 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  gap: 16px;
+  margin-bottom: 8px;
+  flex-wrap: nowrap;
+}
+
+.header-title-block {
+  min-width: 180px;
+  flex: 1 1 auto;
+}
+
+.header-title-block h1 > span:last-child,
+.header-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-session-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex: 0 1 auto;
+  width: max-content;
+  max-width: min(40rem, 62%);
+  min-width: 0;
+  margin-left: auto;
+  padding: 4px 10px 5px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.header-session-card #session-phase-badge {
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
+  white-space: normal;
+  text-align: right;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.header-session-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 2px 6px;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.25;
+  color: var(--ink-mute);
+}
+
+.header-session-line #cockpit-exec-status,
+.header-session-line #cockpit-phase-countdown {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.header-session-sep {
+  flex-shrink: 0;
+  color: var(--ink-faint);
 }
 
 .header-title-block h1 {
@@ -673,39 +741,45 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Executive Status Strip */
+/* Executive Status Strip — one line, wraps when the window is narrow */
 .exec-strip {
-  display: grid;
-  grid-template-columns: 2fr 1fr 1fr;
-  gap: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 18px;
   background: var(--surface-1);
   border: 1px solid var(--line);
-  border-radius: var(--r);
-  padding: 14px 18px;
-  margin-bottom: 20px;
+  border-radius: 8px;
+  padding: 4px 10px;
+  margin-bottom: 8px;
 }
 
 .exec-item {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
 .exec-label {
-  font-size: 0.7rem;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--ink-faint);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .exec-val {
-  font-size: 1.05rem;
-  font-weight: 800;
+  font-size: 13px;
+  font-weight: 750;
   font-family: var(--mono);
+  line-height: 1.25;
 }
 
-/* 8-Card Quantitative KPI Strip */
+/* KPI cards. Other tabs keep this grid; the cockpit overrides it below. */
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -766,6 +840,234 @@ body {
 .kpi-card span {
   font-size: 0.72rem;
   color: var(--ink-faint);
+}
+
+/* Cockpit KPI cards: five equal columns, two rows, text centered. */
+#tab-cockpit .kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+#tab-cockpit .kpi-card {
+  border-radius: 8px;
+  padding: 3px 6px 4px;
+  min-width: 0;
+  text-align: center;
+}
+
+#tab-cockpit .kpi-card:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+#tab-cockpit .kpi-card::before {
+  height: 2px;
+}
+
+#tab-cockpit .kpi-card small {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  margin-bottom: 0;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+#tab-cockpit .kpi-card b {
+  font-size: 15px;
+  font-weight: 750;
+  margin-bottom: 0;
+  line-height: 1.15;
+  overflow-wrap: break-word;
+  text-align: center;
+}
+
+#tab-cockpit .kpi-card span {
+  font-size: 11px;
+  line-height: 1.2;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+
+/* Expiry gamma blast sits on its own row under the KPI grid. */
+#tab-cockpit .gamma-blast-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 4px 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--go);
+  border-radius: 8px;
+  min-width: 0;
+}
+
+#tab-cockpit .gamma-blast-row small {
+  flex: 0 0 auto;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  white-space: nowrap;
+}
+
+#tab-cockpit .gamma-blast-score {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 15px;
+  font-weight: 800;
+  font-family: var(--mono);
+  color: var(--ink);
+  line-height: 1.1;
+}
+
+#tab-cockpit .gamma-blast-badge {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.15;
+  color: var(--go);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-cockpit .gamma-blast-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--ink-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Market alert tape and the orderflow sentinel tape share one row under the KPIs. */
+#tab-cockpit .cockpit-tape-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  align-items: stretch;
+  margin-bottom: 8px;
+}
+
+#tab-cockpit .cockpit-tape-row > .alert-tape-marquee-container {
+  margin-bottom: 0;
+  padding: 6px 10px;
+  min-width: 0;
+  height: 100%;
+}
+
+#tab-cockpit .alert-tape-anchor-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+#tab-cockpit .alert-tape-timestamp {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+#tab-cockpit .alert-tape-badge {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tab-cockpit .cockpit-orderflow-tape {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#tab-cockpit .cockpit-orderflow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+#tab-cockpit #cockpit-orderflow-alerts-container {
+  flex: 0 0 auto;
+  height: 224px;
+  max-height: 224px;
+  min-height: 0;
+  gap: 4px;
+  padding-right: 2px;
+  overflow-y: auto;
+}
+
+#tab-cockpit #cockpit-orderflow-alerts-container .signal-card {
+  padding: 4px 6px;
+  gap: 2px;
+  border-radius: 6px;
+}
+
+@media (max-width: 860px) {
+  .header-top-row {
+    flex-wrap: wrap;
+  }
+  .header-session-card {
+    max-width: 100%;
+    align-items: flex-start;
+  }
+  .header-session-line {
+    justify-content: flex-start;
+  }
+  #tab-cockpit .cockpit-tape-row {
+    grid-template-columns: 1fr;
+  }
+  #tab-cockpit .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Side-by-side cockpit panels. They stack when the row is narrower than two cards. */
+.cockpit-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: stretch;
+}
+
+#tab-cockpit .cockpit-split > .ladder-card,
+#tab-cockpit .cockpit-split > .repricer-card {
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+#tab-cockpit .ladder-card,
+#tab-cockpit .repricer-card {
+  padding: 10px 12px;
+  margin-bottom: 8px;
 }
 
 /* Gamma Price Ladder */
