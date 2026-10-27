@@ -7,6 +7,7 @@ only — not a trend trigger.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
@@ -28,6 +29,26 @@ def _f(val: Any, default: float = 0.0) -> float:
 
 def _inr(val: float) -> str:
     return f"₹{float(val):,.0f}"
+
+
+def _hms(text: str) -> str:
+    match = re.search(r"(\d{2}:\d{2}:\d{2})", text or "")
+    return match.group(1) if match else ""
+
+
+def _display_clock(raw: str, now_ts: float) -> str:
+    """A tape clock with its date. A bare HH:MM:SS takes the date of now_ts."""
+    text = str(raw or "").strip()
+    dated = re.fullmatch(r"(\d{2}-\d{2}-\d{4})\s+(\d{2}:\d{2}:\d{2})(?:\s+IST)?", text)
+    if dated:
+        return f"{dated.group(1)} {dated.group(2)} IST"
+    bare = re.fullmatch(r"(\d{2}:\d{2}:\d{2})(?:\s+IST)?", text)
+    if bare:
+        day = datetime.fromtimestamp(now_ts, tz=IST).strftime("%d-%m-%Y")
+        return f"{day} {bare.group(1)} IST"
+    if not text:
+        return datetime.fromtimestamp(now_ts, tz=IST).strftime("%d-%m-%Y %H:%M:%S IST")
+    return text if text.endswith("IST") else f"{text} IST"
 
 
 def classify_zone(
@@ -206,13 +227,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     breadth = dash.get("market_breadth") or {}
     now_ts = float(now_ts if now_ts is not None else datetime.now(tz=IST).timestamp())
 
-    clock_match = str(dash.get("as_of_time") or "")
-    time_str = clock_match if "IST" in clock_match else (clock_match + " IST" if clock_match else "")
-    if not time_str:
-        time_str = datetime.fromtimestamp(now_ts, tz=IST).strftime("%H:%M:%S IST")
+    time_str = _display_clock(str(dash.get("as_of_time") or ""), now_ts)
     snap_as_of = str(dash.get("snapshot_as_of") or "").strip()
     snap_note = ""
-    if snap_as_of and not snap_as_of.startswith(time_str[:8]):
+    if snap_as_of and _hms(snap_as_of) != _hms(time_str):
         snap_note = f" · GEX snapshot {snap_as_of}"
 
     is_pre_bell = bool(dash.get("is_pre_bell_ephemeral"))
@@ -240,7 +258,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
 
     if is_morning:
         pm = dash.get("pre_market") or {}
-        oi = str(pm.get("oi_as_of") or snap_as_of or "unavailable")
+        from data.market_snapshot import format_ist_stamp
+        oi_raw = str(pm.get("oi_as_of_display") or pm.get("oi_as_of") or snap_as_of or "")
+        oi = format_ist_stamp(oi_raw) or oi_raw or "unavailable"
+        stale_book = bool(pm.get("snapshot_stale"))
         fii = pm.get("fii_bias") or "—"
         cvd_raw = pm.get("prior_session_cvd")
         try:
@@ -256,7 +277,11 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             badge="🌅 PRIOR-SESSION BOOK",
             theme="alert-tape-spark",
             headline="MORNING BRIEFING — PRIOR-SESSION BOOK",
-            meaning="Yesterday's walls and flip, before the cash open.",
+            meaning=(
+                "The saved book is not the last session. The close is withheld."
+                if stale_book
+                else "Yesterday's walls and flip, before the cash open."
+            ),
             body=body,
             action="Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
             diagnostics=f"OI as of {oi} · FII {fii} · prior CVD {cvd_txt} · CW {_inr(cw)} · PW {_inr(pw)} · flip {_inr(flip)}",

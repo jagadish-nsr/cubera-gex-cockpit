@@ -384,11 +384,13 @@ def prior_close_book_line(
     call_wall: float = 0.0,
     put_wall: float = 0.0,
     flip: float = 0.0,
+    session_label: str = "",
 ) -> str:
-    """Where the previous NSE close sits on the frozen book. A location, not a forecast."""
+    """Where that session's close sits on the frozen book. A location, not a forecast."""
     if prev_close <= 0:
         return "Previous NSE close is unavailable on the snapshot."
-    parts = [f"Previous NSE close ₹{prev_close:,.0f}"]
+    label = f"{session_label} close" if session_label else "Previous NSE close"
+    parts = [f"{label} ₹{prev_close:,.0f}"]
     if flip > 0:
         side = "above" if prev_close >= flip else "below"
         parts.append(f"sits {abs(prev_close - flip):,.0f} pts {side} the flip ₹{flip:,.0f}")
@@ -409,7 +411,20 @@ def stamp_morning_briefing(state: dict) -> dict:
     cw = float(state.get("call_wall") or 0.0)
     pw = float(state.get("put_wall") or 0.0)
     flip = float(state.get("gamma_flip") or 0.0)
-    line = prior_close_book_line(prev, cw, pw, flip)
+    if state.get("snapshot_stale"):
+        expected = state.get("expected_session_label") or "last session"
+        stamp = str(state.get("oi_as_of_display") or "").strip()
+        if stamp:
+            line = f"Snapshot {stamp} is not the {expected} close. The close is not shown."
+        else:
+            line = f"The snapshot has no timestamp, so it is not shown as the {expected} close."
+        oi_bit = ""
+    else:
+        line = prior_close_book_line(
+            prev, cw, pw, flip, session_label=str(state.get("snapshot_session_label") or ""),
+        )
+        oi = str(state.get("oi_as_of_display") or "").strip()
+        oi_bit = f" OI as of {oi}." if oi else " OI timestamp is missing on the snapshot."
     fii_bias = state.get("fii_bias") or "NEUTRAL"
     try:
         fii_net = int(state.get("fii_net_fut") or 0)
@@ -420,8 +435,6 @@ def stamp_morning_briefing(state: dict) -> dict:
     except (TypeError, ValueError):
         cvd = 0.0
     of_bias = state.get("prior_session_orderflow") or "Neutral"
-    oi = str(state.get("oi_as_of") or "").strip()
-    oi_bit = f" OI as of {oi}." if oi else " OI timestamp is missing on the snapshot."
     text = (
         f"{line} FII {fii_bias} ({fii_net:+d} fut). "
         f"Prior-session CVD {cvd:+,.0f} ({of_bias})."
@@ -596,11 +609,28 @@ def get_pre_market_state(
 
     phase_code, phase_label, _ = get_current_session_phase(now_ist)
 
-    # Load authentic session snapshot
-    from data.market_snapshot import get_snapshot
-    snap = get_snapshot(symbol) or {}
-    fallback_spot = float(snap.get("spot") or snap.get("prev_close") or 0.0)
-    prev_close_val = float(snap.get("prev_close") or fallback_spot)
+    # The morning book is the last completed session, not whichever row is local.
+    if phase_code == "PRE_MARKET_SETUP":
+        from data.market_snapshot import offmarket_book_clock, resolve_offmarket_snapshot
+        snap = resolve_offmarket_snapshot(symbol, now_ist) or {}
+        clock = offmarket_book_clock(snap, now_ist)
+    else:
+        from data.market_snapshot import get_snapshot
+        snap = get_snapshot(symbol) or {}
+        clock = None
+    session_spot = float(snap.get("spot") or 0.0)
+    reference_close = float(snap.get("prev_close") or 0.0)
+    fallback_spot = session_spot or reference_close
+    # The snapshot spot is the last price of the session that published the book.
+    # prev_close on that row is the close before that session (Friday on a Monday book).
+    # Quote it only when as_of is that last session.
+    book_ok = bool(clock and clock["matches_last_session"] and session_spot > 0)
+    if phase_code == "PRE_MARKET_SETUP":
+        prev_close_val = session_spot if book_ok else 0.0
+    else:
+        prev_close_val = reference_close or session_spot
+    session_day = clock["snapshot_session"] if clock else None
+    expected_day = clock["expected_session"] if clock else None
     cw_val = float(snap.get("call_wall") or 0.0)
     pw_val = float(snap.get("put_wall") or 0.0)
     flip_val = float(snap.get("gamma_flip") or 0.0)
@@ -660,6 +690,14 @@ def get_pre_market_state(
         "regime_color": "var(--spark)",
         "discovered_at": None,
         "oi_as_of": str(snap.get("as_of") or ""),
+        "oi_as_of_display": (clock or {}).get("stamp") or "",
+        "snapshot_session": session_day.isoformat() if session_day else "",
+        "snapshot_session_label": session_day.strftime("%d-%m-%Y") if session_day else "",
+        "expected_session": expected_day.isoformat() if expected_day else "",
+        "expected_session_label": expected_day.strftime("%d-%m-%Y") if expected_day else "",
+        "snapshot_stale": bool(phase_code == "PRE_MARKET_SETUP" and not book_ok),
+        "prior_reference_close": reference_close,
+        "session_close": session_spot if book_ok else 0.0,
         "is_morning_briefing": phase_code == "PRE_MARKET_SETUP",
         "status_text": (
             f"Pre-Market Setup · FII: {fii_bias} ({fii_net_fut:+d} fut) · Walls: {cw_val:,.0f} / {pw_val:,.0f}"
@@ -1231,8 +1269,21 @@ def _with_measured_settle(state: dict, symbol: str) -> dict:
     abbreviated = " CW" in levels or " PW" in levels
     if not stamped and not abbreviated:
         return state
-    from data.market_snapshot import get_snapshot
+    from data.market_snapshot import format_ist_stamp, get_snapshot, snapshot_session_date
     snap = get_snapshot(symbol) or {}
+    book_day = snapshot_session_date(snap)
+    settle_day = None
+    try:
+        settle_day = datetime.strptime(str(state.get("date") or ""), "%Y-%m-%d").date()
+    except ValueError:
+        settle_day = None
+    if book_day != settle_day:
+        stamp = format_ist_stamp(snap.get("as_of")) or "has no timestamp"
+        label = settle_day.strftime("%d-%m-%Y") if settle_day else "that session"
+        state["settle_note"] = (
+            f"Snapshot {stamp} is not the {label} book. Distance to the gamma strikes is not shown."
+        )
+        return state
     call_wall = float(snap.get("call_wall") or 0.0)
     put_wall = float(snap.get("put_wall") or 0.0)
     if stamped:
@@ -1303,10 +1354,16 @@ def get_post_market_state(
         if cached and cached.get("date") == today_str and not force_refresh:
             return cached
 
-    from data.market_snapshot import get_snapshot
+    from data.market_snapshot import (
+        format_ist_stamp,
+        get_snapshot,
+        last_completed_session_date,
+        snapshot_session_date,
+    )
     snap = get_snapshot(symbol) or {}
     snap_spot = float(snap.get("spot") or 0.0)
     snap_prev_close = float(snap.get("prev_close") or 0.0)
+    book_day = snapshot_session_date(snap)
     fallback_spot = snap_spot if snap_spot > 0 else snap_prev_close
 
     # In continuous or pre-market hours on trading days, post-market is not yet reached
@@ -1343,10 +1400,14 @@ def get_post_market_state(
         p_settle = float(persisted.get("settlement_spot") or 0.0)
         p_prev = float(persisted.get("prev_close") or 0.0)
         # Avoid stale clone where settlement was erroneously set to prev_close when authentic spot is different
-        is_stale_clone = (snap_spot > 0 and p_prev > 0 and abs(p_settle - p_prev) < 0.01 and abs(snap_spot - p_prev) > 0.05)
+        same_book = book_day is not None and book_day.isoformat() == today_str
+        is_stale_clone = (
+            same_book and snap_spot > 0 and p_prev > 0
+            and abs(p_settle - p_prev) < 0.01 and abs(snap_spot - p_prev) > 0.05
+        )
         if not is_stale_clone:
-                snap_hi = float(snap.get("high") or 0.0)
-                snap_lo = float(snap.get("low") or 0.0)
+                snap_hi = float(snap.get("high") or 0.0) if same_book else 0.0
+                snap_lo = float(snap.get("low") or 0.0) if same_book else 0.0
                 calc_range = f"₹{snap_hi:,.1f} / ₹{snap_lo:,.1f}" if snap_hi > 0 and snap_lo > 0 else ""
                 calc_net_pts = round(p_settle - p_prev, 1) if p_prev > 0 else 0.0
                 calc_net_pct = round((calc_net_pts / p_prev) * 100.0, 2) if p_prev > 0 else 0.0
@@ -1378,31 +1439,42 @@ def get_post_market_state(
 
     settle_px = snap_spot if snap_spot > 0 else fallback_spot
     cont_px = settle_px
+    live_print = False
 
     if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and is_trading_day_today:
         try:
             from data.dhan_live import fetch_index_ohlc
             ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
             if ohlc:
-                ltp = float(ohlc.get("ltp") or ohlc.get("close") or settle_px)
+                ltp = float(ohlc.get("ltp") or ohlc.get("close") or 0.0)
                 if ltp > 0:
+                    live_print = True
                     settle_px = round(ltp, 2)
                     cont_px = round(ltp, 2)
         except Exception as e:
             log.debug(f"Post-market poll failed: {e}")
 
+    # The morning cache stores the session last in prev_close. That is the
+    # close being described at 06:30, not the reference for this session's
+    # net change. Use the auction record, then prev_close on a row whose
+    # as_of is this session.
+    settle_day = last_completed_session_date(now_ist)
+    book_matches = book_day is not None and book_day == settle_day
     persisted_rec = get_persisted_auction_record(symbol.upper(), today_str) or {}
     prev_close_ref = float(persisted_rec.get("prev_close") or 0.0)
-    if prev_close_ref <= 0:
-        pm_cached = _PRE_MARKET_CACHE.get(symbol.upper()) or {}
-        prev_close_ref = float(pm_cached.get("prev_close") or 0.0) or snap_prev_close or settle_px
+    if prev_close_ref <= 0 and book_matches:
+        prev_close_ref = snap_prev_close
+    if not book_matches and not live_print:
+        settle_px = 0.0
+        cont_px = 0.0
+        prev_close_ref = 0.0
 
-    net_pts = round(settle_px - prev_close_ref, 1) if prev_close_ref > 0 else 0.0
-    net_pct = round((net_pts / prev_close_ref) * 100.0, 2) if prev_close_ref > 0 else 0.0
-    hi = float(snap.get("high") or 0.0)
-    lo = float(snap.get("low") or 0.0)
-    cw = float(snap.get("call_wall") or 0.0)
-    pw = float(snap.get("put_wall") or 0.0)
+    net_pts = round(settle_px - prev_close_ref, 1) if prev_close_ref > 0 and settle_px > 0 else 0.0
+    net_pct = round((net_pts / prev_close_ref) * 100.0, 2) if prev_close_ref > 0 and settle_px > 0 else 0.0
+    hi = float(snap.get("high") or 0.0) if book_matches else 0.0
+    lo = float(snap.get("low") or 0.0) if book_matches else 0.0
+    cw = float(snap.get("call_wall") or 0.0) if book_matches else 0.0
+    pw = float(snap.get("put_wall") or 0.0) if book_matches else 0.0
     d_range = f"₹{hi:,.1f} / ₹{lo:,.1f}" if hi > 0 and lo > 0 else ""
     key_lvls = (
         f"₹{cw:,.0f} call-gamma / ₹{pw:,.0f} put-gamma" if cw > 0 and pw > 0 else ""
@@ -1415,7 +1487,7 @@ def get_post_market_state(
         "symbol": symbol.upper(),
         "date": today_str,
         "is_post_market": True,
-        "post_market_settled": True,
+        "post_market_settled": bool(settle_px > 0),
         "settlement_spot": settle_px,
         "last_continuous_spot": cont_px,
         "settlement_divergence_pts": round(settle_px - cont_px, 2),
@@ -1425,7 +1497,14 @@ def get_post_market_state(
         "settle_note": near["settle_note"],
         "institutional_wrap": near["settle_note"],
         "settled_at": "15:40:00",
-        "status_text": "Session Concluded · Final Settlement Reconciled",
+        "status_text": (
+            "Session Concluded · Final Settlement Reconciled"
+            if book_matches or settle_px > 0
+            else (
+                f"Snapshot {format_ist_stamp(snap.get('as_of')) or 'has no timestamp'} "
+                f"is not the {settle_day.strftime('%d-%m-%Y')} session. Net change is not shown."
+            )
+        ),
         "prev_close": prev_close_ref,
         "day_range": d_range,
         "net_change_pts": net_pts,

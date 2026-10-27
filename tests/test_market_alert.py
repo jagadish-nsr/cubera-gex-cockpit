@@ -132,7 +132,7 @@ def test_morning_briefing_names_prior_session_book():
     assert alert["scenario"] == "MORNING_BRIEFING"
     assert alert["meaning"] == "Yesterday's walls and flip, before the cash open."
     assert "22,600" in alert["body"]
-    assert "2026-10-12T15:35:00+05:30" in alert["diagnostics"]
+    assert "12-10-2026 15:35:00 IST" in alert["diagnostics"]
     assert alert["scenario"] != "PRE_OPEN_SETUP"
 
 
