@@ -15,9 +15,16 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.admin.clock import IST, as_ist
-
 log = logging.getLogger("cubera.dhan_sync")
+
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def as_ist(now: datetime) -> datetime:
+    """Naive clocks are IST. Aware clocks are converted to IST."""
+    if now.tzinfo is None:
+        return now.replace(tzinfo=IST)
+    return now.astimezone(IST)
 
 SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
 MORNING_SYNC = (6, 30)

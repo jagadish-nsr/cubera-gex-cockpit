@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.admin.clock import IST
 from app.dhan_sync import (
+    IST,
     offmarket_refresh_line,
     read_schedule_date,
     request_sync,
