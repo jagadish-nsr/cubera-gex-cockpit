@@ -11,7 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path("data/journal/market_snapshot.db")
 _LOCK = threading.Lock()
+_IST = timezone(timedelta(hours=5, minutes=30))
+_CASH_CLOSE_MINUTES = 15 * 60 + 30
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -84,6 +86,16 @@ def save_snapshot(
         min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
         new_spot = float(spot) if spot is not None and spot > min_valid else ex.get("spot")
         new_pc = float(prev_close) if prev_close is not None and prev_close > min_valid else ex.get("prev_close")
+        # A closing print sometimes copies the settle into prev_close. Keep the
+        # previous close already stored when the new value is just the new spot.
+        if (
+            ex.get("prev_close")
+            and new_pc is not None
+            and new_spot is not None
+            and abs(float(new_pc) - float(new_spot)) < 0.05
+            and abs(float(ex["prev_close"]) - float(new_spot)) >= 1.0
+        ):
+            new_pc = ex["prev_close"]
         new_open = float(open_px) if open_px is not None and open_px > min_valid else ex.get("open")
         new_high = float(high) if high is not None and high > min_valid else ex.get("high")
         new_low = float(low) if low is not None and low > min_valid else ex.get("low")
@@ -157,6 +169,221 @@ def get_snapshot(symbol: str) -> dict[str, Any] | None:
         )
         return bootstrapped
     return None
+
+
+def as_of_datetime(value) -> datetime | None:
+    """Parse a snapshot timestamp and return it in IST.
+
+    Naive strings are read as IST. Aware strings are converted to IST.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    dt = None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(text[:19], fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_IST)
+    return dt.astimezone(_IST)
+
+
+def last_completed_session_date(now: datetime | None = None) -> date:
+    """The session whose close is the off-market spot.
+
+    At or after 15:30 IST on a trading day, that session is today. Before
+    the cash close, and on weekends and holidays, it is the previous
+    trading day.
+    """
+    from data.holidays import is_trading_day
+
+    if now is None:
+        now = datetime.now(_IST)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=_IST)
+    else:
+        now = now.astimezone(_IST)
+    minutes = now.hour * 60 + now.minute
+    if is_trading_day(now.date()) and minutes >= _CASH_CLOSE_MINUTES:
+        return now.date()
+    day = now.date() - timedelta(days=1)
+    while not is_trading_day(day):
+        day -= timedelta(days=1)
+    return day
+
+
+def snapshot_session_date(row: dict | None) -> date | None:
+    dt = as_of_datetime((row or {}).get("as_of") if row else None)
+    return dt.date() if dt else None
+
+
+def format_ist_stamp(value) -> str:
+    """DD-MM-YYYY HH:MM:SS IST. Empty when the value does not parse.
+
+    Naive strings are IST, the same rule as ``as_of_datetime``.
+    """
+    dt = as_of_datetime(value)
+    if dt is None:
+        return ""
+    return dt.strftime("%d-%m-%Y %H:%M:%S IST")
+
+
+def session_date_label(value) -> str:
+    """YYYY-MM-DD or a date → DD-MM-YYYY. Empty when it does not parse."""
+    if isinstance(value, datetime):
+        return value.astimezone(_IST).strftime("%d-%m-%Y") if value.tzinfo else value.strftime("%d-%m-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%m-%Y")
+    text = str(value or "").strip()[:10]
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").strftime("%d-%m-%Y")
+    except ValueError:
+        return ""
+
+
+def offmarket_book_clock(row: dict | None, now: datetime | None = None) -> dict:
+    """Whether this row is the last completed session, and the IST stamp.
+
+    A close may be quoted only when ``matches_last_session`` is true.
+    A missing timestamp, a ``stale_session`` flag, or a different session
+    date withholds the number.
+    """
+    expected = last_completed_session_date(now)
+    session = snapshot_session_date(row)
+    stamp = format_ist_stamp((row or {}).get("as_of") if row else None)
+    flagged = bool((row or {}).get("stale_session"))
+    matches = bool(stamp) and session == expected and not flagged
+    return {
+        "expected_session": expected,
+        "snapshot_session": session,
+        "stamp": stamp,
+        "matches_last_session": matches,
+    }
+
+
+def snapshot_is_older_than(row: dict | None, moment: datetime | None) -> bool:
+    """True when the snapshot timestamp is strictly before ``moment``."""
+    snap_dt = as_of_datetime((row or {}).get("as_of") if row else None)
+    if snap_dt is None or moment is None:
+        return False
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=_IST)
+    return snap_dt < moment.astimezone(_IST)
+
+
+def candidate_journals() -> list[Path]:
+    """This checkout's journal, then a sibling dev or prod checkout.
+
+    Promote does not copy the snapshot database. The session can land in
+    the other tree. Off-market reads look there before serving an older
+    local row as the close.
+    """
+    local = (Path("data") / "journal").resolve()
+    found = [local]
+    apps = local.parent.parent.parent
+    for name in ("cubera-gex-cockpit", "cubera-gex-cockpit-prod"):
+        journal = (apps / name / "data" / "journal").resolve()
+        if journal != local and journal.is_dir() and journal not in found:
+            found.append(journal)
+    return found
+
+
+def _read_snapshot_row(db_path: Path, symbol: str) -> dict | None:
+    if not db_path.is_file():
+        return None
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM session_snapshots WHERE symbol = ?",
+            (symbol.upper(),),
+        ).fetchone()
+    except sqlite3.Error as exc:
+        log.warning("Could not read snapshot %s from %s: %s", symbol, db_path, exc)
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None or not row["spot"]:
+        return None
+    out = dict(row)
+    out["journal"] = str(db_path.parent)
+    return out
+
+
+def resolve_offmarket_snapshot(symbol: str, now: datetime | None = None) -> dict | None:
+    """Return the snapshot for the last completed session.
+
+    The local row wins when it belongs to that session. During the live
+    session (no ``now`` override) the local row always wins. When the
+    market is closed and the local row is from an earlier session, the
+    newer row in a sibling checkout is used. If every row is older than
+    the last session, the newest row is returned with ``stale_session``
+    set so the cockpit can say it is not that close.
+    """
+    local_db = Path(DB_PATH)
+    local = _read_snapshot_row(local_db, symbol)
+    if local is None:
+        local = get_snapshot(symbol)
+        if local is not None:
+            local = dict(local)
+            local.setdefault("journal", str(local_db.parent))
+
+    if now is None:
+        import config
+        if config.is_market_open():
+            return local
+
+    session = last_completed_session_date(now)
+    if local and snapshot_session_date(local) == session:
+        local = dict(local)
+        local["stale_session"] = False
+        local["expected_session"] = session.isoformat()
+        return local
+
+    best = dict(local) if local else None
+    best_dt = as_of_datetime((best or {}).get("as_of"))
+    local_journal = (
+        Path(best["journal"]).resolve()
+        if best and best.get("journal")
+        else local_db.parent.resolve()
+    )
+    for journal in candidate_journals():
+        if journal.resolve() == local_journal:
+            continue
+        row = _read_snapshot_row(journal / "market_snapshot.db", symbol)
+        row_dt = as_of_datetime((row or {}).get("as_of"))
+        if row and row_dt and (best_dt is None or row_dt > best_dt):
+            best = row
+            best_dt = row_dt
+    if best is None:
+        return None
+    best = dict(best)
+    best["expected_session"] = session.isoformat()
+    best["stale_session"] = snapshot_session_date(best) != session
+    if best.get("journal") and Path(best["journal"]).resolve() != local_journal:
+        best["adopted_from"] = "sibling"
+        log.warning(
+            "%s local snapshot is before session %s; using %s (%s)",
+            symbol.upper(), session, best.get("journal"), best.get("as_of"),
+        )
+    elif best.get("stale_session"):
+        log.warning(
+            "%s snapshot %s is before the last session %s",
+            symbol.upper(), best.get("as_of"), session,
+        )
+    return best
 
 
 def _bootstrap_from_disk(symbol: str) -> dict[str, Any] | None:

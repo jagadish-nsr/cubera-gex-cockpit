@@ -97,7 +97,7 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 11, 9, 0, tzinfo=IST)))
 
     @patch("data.dhan_live.fetch_index_ohlc")
-    @patch("data.market_snapshot.get_snapshot")
+    @patch("data.market_snapshot.resolve_offmarket_snapshot")
     def test_morning_setup_reads_snapshot_not_dhan(self, mock_snap, mock_fetch):
         from data import pre_post_market as ppm
         ppm._PRE_MARKET_CACHE.clear()
@@ -120,11 +120,151 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertEqual(state["put_wall"], 22400.0)
         self.assertEqual(state["gamma_flip"], 22550.0)
         self.assertEqual(state["oi_as_of"], "2026-10-12T15:35:00+05:30")
-        self.assertIn("Previous NSE close", state["status_text"])
+        self.assertEqual(state["oi_as_of_display"], "12-10-2026 15:35:00 IST")
+        self.assertFalse(state["snapshot_stale"])
+        self.assertIn("12-10-2026 close", state["status_text"])
         self.assertIn("call-gamma", state["status_text"])
         self.assertIn("put-gamma", state["status_text"])
         self.assertIn("flip", state["status_text"])
-        self.assertIn("OI as of 2026-10-12T15:35:00+05:30", state["status_text"])
+        self.assertIn("OI as of 12-10-2026 15:35:00 IST", state["status_text"])
+
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.resolve_offmarket_snapshot")
+    def test_morning_close_is_the_session_last_not_the_prior_reference(self, mock_snap, mock_fetch):
+        """26 Oct book: spot 22753.2 is that close. prev_close 22600 is 23 Oct."""
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 22753.2,
+            "prev_close": 22600.0,
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "gamma_flip": 22750.551157338163,
+            "as_of": "2026-10-26T10:10:20.010027+00:00",
+        }
+        dt = datetime(2026, 10, 27, 6, 39, tzinfo=IST)
+        state = get_pre_market_state("NIFTY", force_refresh=True, now=dt)
+        mock_fetch.assert_not_called()
+        self.assertEqual(state["prev_close"], 22753.2)
+        self.assertEqual(state["oi_as_of_display"], "26-10-2026 15:40:20 IST")
+        self.assertIn("26-10-2026 close ₹22,753", state["status_text"])
+        self.assertNotIn("22,600", state["status_text"])
+        # 22753.2 − 22750.551 = 2.65 → 3 pts above. 22753.2 − 23000 = −246.8 → −247.
+        # 22753.2 − 22700 = 53.2 → +53.
+        self.assertIn("3 pts above the flip ₹22,751", state["status_text"])
+        self.assertIn("-247 pts versus the call-gamma strike ₹23,000", state["status_text"])
+        self.assertIn("+53 pts versus the put-gamma strike ₹22,700", state["status_text"])
+
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.resolve_offmarket_snapshot")
+    def test_morning_withholds_a_close_from_another_session(self, mock_snap, mock_fetch):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 22600.0,
+            "prev_close": 22500.0,
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "gamma_flip": 22750.0,
+            "as_of": "2026-10-21T10:27:04+05:30",
+        }
+        dt = datetime(2026, 10, 27, 6, 39, tzinfo=IST)
+        state = get_pre_market_state("NIFTY", force_refresh=True, now=dt)
+        mock_fetch.assert_not_called()
+        self.assertTrue(state["snapshot_stale"])
+        self.assertEqual(state["prev_close"], 0.0)
+        self.assertIn("21-10-2026 10:27:04 IST", state["status_text"])
+        self.assertIn("26-10-2026 close", state["status_text"])
+        self.assertIn("not shown", state["status_text"])
+        self.assertNotIn("22,600", state["status_text"])
+
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.resolve_offmarket_snapshot")
+    def test_morning_withholds_a_close_when_the_timestamp_is_missing(self, mock_snap, mock_fetch):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 22753.2,
+            "prev_close": 22600.0,
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "as_of": "",
+        }
+        dt = datetime(2026, 10, 27, 6, 39, tzinfo=IST)
+        state = get_pre_market_state("NIFTY", force_refresh=True, now=dt)
+        mock_fetch.assert_not_called()
+        self.assertTrue(state["snapshot_stale"])
+        self.assertEqual(state["prev_close"], 0.0)
+        self.assertIn("no timestamp", state["status_text"])
+        self.assertNotIn("22,753", state["status_text"])
+
+    @patch("sentinel.storage.db.record_daily_closing_cvd", side_effect=RuntimeError("skip"))
+    @patch("data.pre_post_market.save_post_market_state")
+    @patch("data.dhan_live.fetch_index_ohlc", return_value=None)
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.market_snapshot.get_snapshot")
+    def test_post_market_net_change_uses_the_same_session_reference(self, mock_snap, _persist, _fetch, _save, _cvd):
+        """Morning cache prev_close is the session last. Net change uses the row's prior reference."""
+        from data import pre_post_market as ppm
+        ppm._POST_MARKET_CACHE.clear()
+        ppm._PRE_MARKET_CACHE["NIFTY"] = {"date": "2026-10-26", "prev_close": 22753.2}
+        mock_snap.return_value = {
+            "spot": 22753.2,
+            "prev_close": 22600.0,
+            "high": 22753.2,
+            "low": 22387.3,
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "as_of": "2026-10-26T15:40:00+05:30",
+        }
+        state = get_post_market_state("NIFTY", force_refresh=True, now=datetime(2026, 10, 26, 15, 45, tzinfo=IST))
+        self.assertEqual(state["prev_close"], 22600.0)
+        self.assertEqual(state["net_change_pts"], 153.2)
+        self.assertIn("Session Concluded", state["status_text"])
+
+    @patch("sentinel.storage.db.record_daily_closing_cvd", side_effect=RuntimeError("skip"))
+    @patch("data.pre_post_market.save_post_market_state")
+    @patch("data.dhan_live.fetch_index_ohlc", return_value=None)
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.market_snapshot.get_snapshot")
+    def test_post_market_refuses_a_different_session_book(self, mock_snap, _persist, _fetch, _save, _cvd):
+        from data import pre_post_market as ppm
+        ppm._POST_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 22600.0,
+            "prev_close": 22500.0,
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "as_of": "2026-10-23T15:40:00+05:30",
+        }
+        state = get_post_market_state("NIFTY", force_refresh=True, now=datetime(2026, 10, 26, 15, 45, tzinfo=IST))
+        self.assertEqual(state["settlement_spot"], 0.0)
+        self.assertEqual(state["net_change_pts"], 0.0)
+        self.assertFalse(state["post_market_settled"])
+        self.assertIn("23-10-2026", state["status_text"])
+        self.assertIn("26-10-2026", state["status_text"])
+        self.assertIn("not shown", state["status_text"])
+        _save.assert_not_called()
+
+    def test_measured_settle_ignores_another_sessions_walls(self):
+        from data.pre_post_market import _with_measured_settle
+        with patch("data.market_snapshot.get_snapshot", return_value={
+            "call_wall": 23000.0,
+            "put_wall": 22700.0,
+            "as_of": "2026-10-21T15:40:00+05:30",
+        }):
+            state = _with_measured_settle({
+                "date": "2026-10-26",
+                "pin_efficiency_pct": 100.0,
+                "pin_target_wall": "Call Wall",
+                "settlement_spot": 22753.2,
+                "next_key_levels": "",
+                "settle_note": "placeholder",
+            }, "NIFTY")
+        self.assertIn("21-10-2026", state["settle_note"])
+        self.assertIn("26-10-2026", state["settle_note"])
+        self.assertNotIn("23,000", state["settle_note"])
+        self.assertEqual(state["pin_target_wall"], "Call Wall")
 
     @patch("data.dhan_live.fetch_index_ohlc")
     def test_pre_market_discovery_and_chime(self, mock_fetch):

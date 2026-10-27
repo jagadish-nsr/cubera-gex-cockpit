@@ -89,7 +89,6 @@ def test_get_root_cockpit_html():
     assert 'id="tab-ops"' in html
     assert 'id="tab-commentary"' in html
 
-
 def test_get_status_schema_and_ist_clock():
     """Verify GET /api/status returns valid state and clean IST clock."""
     status, headers, content = asyncio.run(asgi_request("GET", "/api/status?symbol=NIFTY&window=current_week"))
@@ -97,9 +96,8 @@ def test_get_status_schema_and_ist_clock():
     data = json.loads(content)
     assert data["symbol"] == "NIFTY"
     assert "ist_time" in data
-    # Enforce standard "%H:%M:%S IST" time format
-    assert data["ist_time"].endswith(" IST")
-    assert len(data["ist_time"].split()[0].split(":")) == 3
+    assert re.match(r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} IST$", data["ist_time"])
+    assert not data["ist_time"].endswith(" IST IST")
     assert "spot" in data
     assert "is_market_open" in data
     assert "session_phase" in data
@@ -179,21 +177,20 @@ def test_get_cockpit_data_levels_and_tape():
         assert data["standing_oi"]["call_centre"] > 0
         assert any(r["is_put_oi"] for r in data["ladder"])
         assert any(r["is_call_oi"] for r in data["ladder"])
-    assert re.match(r"^\d{2}:\d{2}:\d{2} IST$", data["as_of_time"] or "")
+    assert re.match(r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} IST$", data["as_of_time"] or "")
     assert "snapshot_as_of" in data
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
-    tape_hms = datetime.strptime(data["as_of_time"].replace(" IST", ""), "%H:%M:%S").time()
-    tape_dt = datetime.combine(now_ist.date(), tape_hms, tzinfo=now_ist.tzinfo)
+    tape_dt = datetime.strptime(data["as_of_time"], "%d-%m-%Y %H:%M:%S IST").replace(tzinfo=now_ist.tzinfo)
     assert abs((now_ist - tape_dt).total_seconds()) < 30, data["as_of_time"]
 
 
-def test_fmt_snapshot_as_of_includes_date_when_not_today():
-    """Oct 2 21:15 UTC is 03-Oct 02:45 IST — must not be painted as today's tape clock."""
+def test_fmt_snapshot_as_of_always_includes_the_date():
+    """Oct 2 21:15 UTC is 03-10-2026 02:45 IST. A same-day print keeps its date too."""
     fetched = datetime(2026, 10, 2, 21, 15, 2, tzinfo=timezone.utc)
     now = datetime(2026, 10, 23, 9, 3, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
-    assert _fmt_snapshot_as_of(fetched, now) == "03-Oct 02:45:02 IST"
+    assert _fmt_snapshot_as_of(fetched, now) == "03-10-2026 02:45:02 IST"
     same_day = datetime(2026, 10, 23, 3, 45, 2, tzinfo=timezone.utc)
-    assert _fmt_snapshot_as_of(same_day, now) == "09:15:02 IST"
+    assert _fmt_snapshot_as_of(same_day, now) == "23-10-2026 09:15:02 IST"
 
 
 def test_pre_bell_flag_window():
@@ -652,16 +649,14 @@ class TestSingleTimezoneAuthority:
         assert readable_str == "15:30:00"
 
     def test_api_status_ist_clock_format(self):
-        """Verify GET /api/status ist_time strictly matches 'HH:MM:SS IST' with no double-IST or ISO tokens."""
+        """Verify GET /api/status ist_time is DD-MM-YYYY HH:MM:SS IST, with no double-IST or offset."""
         status, _, content = asyncio.run(asgi_request("GET", "/api/status?symbol=NIFTY"))
         assert status == 200
         data = json.loads(content)
         ist_time = data.get("ist_time", "")
-        # Strict pattern: two digits : two digits : two digits space IST
-        assert re.match(r"^\d{2}:\d{2}:\d{2} IST$", ist_time), f"Invalid clock format: {ist_time}"
+        assert re.match(r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} IST$", ist_time), f"Invalid clock format: {ist_time}"
         assert not ist_time.endswith(" IST IST")
-        assert "-" not in ist_time  # Ensure no date component like YYYY-MM-DD
-        assert "+" not in ist_time  # Ensure no raw +05:30 offset component
+        assert "+" not in ist_time
 
     def test_sentinel_signals_and_tape_ist_timestamps(self):
         """Verify Sentinel signals, block tape, and candlestick bars conform to IST formatting."""
@@ -680,7 +675,7 @@ class TestSingleTimezoneAuthority:
         tape = data.get("block_tape", [])
         for t in tape[:5]:
             t_str = t.get("time", "")
-            assert re.match(r"^\d{2}:\d{2}:\d{2}$", t_str), f"Invalid tape time: {t_str}"
+            assert re.match(r"^\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2} IST$", t_str), f"Invalid tape time: {t_str}"
 
         # Check candlestick bars: all bars must fall within Indian market hours (09:15 - 15:30)
         bars = data.get("bars", [])

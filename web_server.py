@@ -192,6 +192,12 @@ async def _start_ingest_lanes():
         _ensure_rec_publisher()
     except Exception as exc:
         log.warning("rec publisher start failed: %s", exc)
+    try:
+        from app.dhan_sync import on_published, start_scheduler
+        on_published(_drop_dash_cache)
+        start_scheduler()
+    except Exception as exc:
+        log.warning("dhan sync scheduler failed: %s", exc)
     if not config.is_market_open():
         return
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
@@ -208,13 +214,33 @@ def _get_ist_now() -> datetime:
     return datetime.now(IST)
 
 
+def _fmt_ist_clock(moment: datetime | None = None) -> str:
+    """A valid IST moment as DD-MM-YYYY HH:MM:SS IST."""
+    moment = moment or _get_ist_now()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=IST)
+    else:
+        moment = moment.astimezone(IST)
+    return moment.strftime("%d-%m-%Y %H:%M:%S IST")
+
+
+def _fmt_bar_stamp(ts) -> str:
+    """A bar clock that already parses. Aware values convert to IST; naive values are IST."""
+    if not hasattr(ts, "strftime"):
+        return ""
+    if getattr(ts, "tzinfo", None) is not None:
+        ts = ts.astimezone(IST)
+    return ts.strftime("%d-%m-%Y %H:%M:%S IST")
+
+
 def _fmt_snapshot_as_of(fetched_at, now_ist: datetime | None = None) -> str:
-    """IST stamp of a GEX/chain snapshot. Includes the calendar date when it is not today.
+    """IST stamp of a GEX/chain snapshot, always with the calendar date.
 
     Naive datetimes are treated as UTC (load_dashboard writes timezone.utc). That is
     what produced a false '02:45:02 IST' tape clock from 2026-10-02 21:15 UTC.
+    A same-day clock with no date is how a prior print looks current.
     """
-    now_ist = now_ist or _get_ist_now()
+    del now_ist
     if not fetched_at:
         return ""
     dt = fetched_at
@@ -223,13 +249,10 @@ def _fmt_snapshot_as_of(fetched_at, now_ist: datetime | None = None) -> str:
         try:
             dt = datetime.fromisoformat(raw)
         except ValueError:
-            return str(fetched_at)
+            return ""
     if getattr(dt, "tzinfo", None) is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    ist_dt = dt.astimezone(IST)
-    if ist_dt.date() != now_ist.date():
-        return ist_dt.strftime("%d-%b %H:%M:%S IST")
-    return ist_dt.strftime("%H:%M:%S IST")
+    return dt.astimezone(IST).strftime("%d-%m-%Y %H:%M:%S IST")
 
 
 def _is_pre_bell_ephemeral(
@@ -417,6 +440,15 @@ def _resolve_expiry_scope(symbol: str, window: str):
 
 
 _DASH_MEM_CACHE: Dict[tuple, tuple] = {}
+
+
+def _drop_dash_cache(symbol: str) -> None:
+    """Drop off-market dashboard copies so the next read uses the synced book."""
+    sym = (symbol or "").upper()
+    for key in [k for k in _DASH_MEM_CACHE if isinstance(k, tuple) and k and k[0] == sym]:
+        _DASH_MEM_CACHE.pop(key, None)
+
+
 _CHAIN_INTERVAL_S = 30
 _CHAIN_LEAD_S = 10.0
 _WS_LIVE_SLEEP_S = 0.12
@@ -613,9 +645,10 @@ def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
     ensure(symbol, False, None, _CHAIN_INTERVAL_S, _CHAIN_LEAD_S, window=window)
 
 
-def _unpickle_latest_snap(sym: str):
+def _unpickle_latest_snap(sym: str, journal: Path | None = None):
     import pickle
-    snap_path = ROOT_DIR / "data" / "journal" / f"latest_snap_{sym}.pkl"
+    base = journal if journal is not None else (ROOT_DIR / "data" / "journal")
+    snap_path = base / f"latest_snap_{sym}.pkl"
     if not snap_path.exists():
         return None
     try:
@@ -639,13 +672,47 @@ def _from_lkgs(sym: str, reason: str):
         return None
 
 
+def _note_stale_session(dash, db_snap: dict) -> None:
+    """Say so when the book on screen is not the last completed session."""
+    if not db_snap.get("stale_session"):
+        return
+    expected = db_snap.get("expected_session")
+    fetched = getattr(dash, "fetched_at", None)
+    if expected and fetched is not None and hasattr(fetched, "astimezone"):
+        from data.market_snapshot import _IST
+        if fetched.astimezone(_IST).date().isoformat() == expected:
+            return
+    from data.market_snapshot import format_ist_stamp, session_date_label
+    stamp = format_ist_stamp(db_snap.get("as_of")) or "has no timestamp"
+    dash.source_note = (
+        f"Snapshot {stamp} is before the last session "
+        f"{session_date_label(expected) or expected}. This is not that close."
+    )
+
+
 def _overlay_sqlite_kpis(dash, sym: str):
     if dash is None:
         return dash
     try:
-        from data.market_snapshot import get_snapshot
-        db_snap = get_snapshot(sym)
+        import config
+        from data.market_snapshot import (
+            get_snapshot,
+            resolve_offmarket_snapshot,
+            snapshot_is_older_than,
+        )
+        if config.is_market_open():
+            db_snap = get_snapshot(sym)
+        else:
+            db_snap = resolve_offmarket_snapshot(sym)
         if not db_snap or not db_snap.get("spot"):
+            return dash
+        dash.snapshot_as_of = db_snap.get("as_of")
+        if snapshot_is_older_than(db_snap, getattr(dash, "fetched_at", None)):
+            log.warning(
+                "%s snapshot %s is older than the loaded book (%s); keeping the book",
+                sym, db_snap.get("as_of"), getattr(dash, "fetched_at", None),
+            )
+            _note_stale_session(dash, db_snap)
             return dash
         if getattr(dash, "levels", None):
             min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
@@ -663,6 +730,7 @@ def _overlay_sqlite_kpis(dash, sym: str):
             if isinstance(dash.india_vix, dict):
                 dash.india_vix = dict(dash.india_vix)
                 dash.india_vix["last"] = float(db_snap["vix"])
+        _note_stale_session(dash, db_snap)
     except Exception as e:
         log.debug("Snapshot reconciliation note: %s", e)
     return dash
@@ -734,7 +802,13 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     is_open = config.is_market_open()
 
     if not is_open and ckey in _DASH_MEM_CACHE:
-        return _overlay_live_spot(_refresh_book_view(_DASH_MEM_CACHE[ckey][1]), sym)
+        from data.market_snapshot import resolve_offmarket_snapshot
+        snap = resolve_offmarket_snapshot(sym)
+        cached = _DASH_MEM_CACHE[ckey][1]
+        snap_asof = (snap or {}).get("as_of")
+        cached_asof = getattr(cached, "snapshot_as_of", None)
+        if (snap_asof and cached_asof == snap_asof) or (snap is None and cached_asof is None):
+            return _overlay_live_spot(_refresh_book_view(cached), sym)
 
     dash = None
     from_live_store = False
@@ -760,7 +834,14 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
             dash = None
         return _refresh_book_view(dash)
 
-    dash = _unpickle_latest_snap(sym)
+    from data.market_snapshot import resolve_offmarket_snapshot
+    off_snap = resolve_offmarket_snapshot(sym)
+    journal = None
+    if off_snap and off_snap.get("adopted_from") == "sibling" and off_snap.get("journal"):
+        journal = Path(off_snap["journal"])
+    dash = _unpickle_latest_snap(sym, journal)
+    if dash is None and journal is not None:
+        dash = _unpickle_latest_snap(sym)
     if dash is None:
         dash = _from_lkgs(sym, "Off-Market Session Snapshot")
     if dash is None:
@@ -1268,7 +1349,7 @@ def _location_alerts(dash, spot: float, parity_report) -> list[dict]:
     alerts: list[dict] = []
     levels = getattr(dash, "levels", None)
     prev = float(getattr(levels, "prev_close", 0) or 0) if levels else 0.0
-    now = _get_ist_now().strftime("%H:%M IST")
+    now = _fmt_ist_clock()
     if levels and prev > 0:
         for name, wall in (
             ("call-gamma", float(getattr(levels, "call_wall", 0) or 0)),
@@ -1535,7 +1616,27 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     spot = float(q.get("spot") or (getattr(lv, "spot", 0) if lv is not None else 0) or 0)
     fut = float(q.get("fut_px") or (getattr(lv, "future_price", 0) if lv is not None else 0) or spot)
-    if spot <= 0:
+    offmarket_book = None
+    if not config.is_market_open():
+        # A quote hydrated from an old snapshot must not hide a newer book.
+        book = await _aload_active_dashboard(sym, win)
+        offmarket_book = book
+        book_lv = getattr(book, "levels", None) if book is not None else None
+        book_spot = float(getattr(book_lv, "spot", 0) or 0) if book_lv is not None else 0.0
+        from data.market_snapshot import snapshot_is_older_than
+        quote_older = snapshot_is_older_than(
+            {"as_of": q.get("as_of")}, getattr(book, "fetched_at", None)
+        )
+        if (
+            book_spot > 0
+            and getattr(book, "source", "") != "DEMO-SYNTHETIC"
+            and (spot <= 0 or quote_older)
+        ):
+            dash = book
+            lv = book_lv
+            spot = book_spot
+            fut = float(getattr(book_lv, "future_price", None) or spot)
+    elif spot <= 0:
         dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
         spot = float(dash.levels.spot or 0.0)
         fut = float(getattr(dash.levels, "future_price", None) or spot)
@@ -1576,8 +1677,32 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     from data.dhan import token_status
     dhan_st = token_status()
 
-    from data.market_snapshot import get_snapshot
-    db_snap = get_snapshot(sym) or {}
+    from data.market_snapshot import get_snapshot, resolve_offmarket_snapshot
+    db_snap = (resolve_offmarket_snapshot(sym) if not is_live else get_snapshot(sym)) or {}
+    if not is_live and db_snap.get("stale_session"):
+        book_day = None
+        fetched = getattr(dash, "fetched_at", None)
+        if fetched is not None and hasattr(fetched, "astimezone"):
+            from data.market_snapshot import _IST
+            book_day = fetched.astimezone(_IST).date().isoformat()
+        if book_day != db_snap.get("expected_session"):
+            feed_badge = "🛑 Stale snapshot"
+            feed_source = "Old session snapshot"
+            from data.market_snapshot import format_ist_stamp, session_date_label
+            stamp = format_ist_stamp(db_snap.get("as_of")) or "has no timestamp"
+            expected = session_date_label(db_snap.get("expected_session")) or db_snap.get("expected_session")
+            feed_subtext = (
+                f"Newest snapshot is {stamp}. "
+                f"Last session is {expected}. "
+                "This is not that close."
+            )
+    data_refreshed_at = ""
+    if not is_live:
+        refreshed_src = getattr(offmarket_book, "fetched_at", None) or getattr(dash, "fetched_at", None) or db_snap.get("as_of")
+        data_refreshed_at = _fmt_snapshot_as_of(refreshed_src)
+        if not feed_subtext.startswith("Newest snapshot"):
+            from app.dhan_sync import offmarket_refresh_line
+            feed_subtext = offmarket_refresh_line(data_refreshed_at, morning=is_morning_briefing)
     real_ohlc = _status_day_ohlc(dash, q, db_snap, spot, is_live)
     vix_from_dash = getattr(dash, "india_vix", None) if dash is not None else None
     real_vix = {
@@ -1615,6 +1740,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         "feed_source": feed_source,
         "pollers_status": pollers_status,
         "feed_subtext": feed_subtext,
+        "data_refreshed_at": data_refreshed_at,
         "expiry_target": exp.strftime("%d-%b-%Y"),
         "dte": dte,
         "dte_badge": dte_badge,
@@ -1626,7 +1752,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
             "hours_left": dhan_st.get("hours_left", 0.0),
             "source": dhan_st.get("source", "none"),
         },
-        "ist_time": _get_ist_now().strftime("%H:%M:%S IST"),
+        "ist_time": _fmt_ist_clock(),
     }
 
 
@@ -1665,10 +1791,20 @@ async def save_dhan_token(payload: dict = Body(...)):
     tok = payload.get("token", "").strip()
     if not tok:
         raise HTTPException(status_code=400, detail="Token cannot be empty")
-    token_file = ROOT_DIR / "data" / ".dhan_token"
-    token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(tok, encoding="utf-8")
-    return {"status": "saved", "message": "Dhan token written to data/.dhan_token successfully"}
+    from data.dhan import write_token
+    try:
+        write_token(tok)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from app.dhan_sync import request_sync
+    sync = request_sync("token", window=_ACTIVE_STATE.get("window") or "current_week")
+    if sync.get("status") == "started":
+        message = "Dhan token saved. Syncing the book from Dhan."
+    elif sync.get("status") == "already_running":
+        message = "Dhan token saved. A sync is already running."
+    else:
+        message = "Dhan token saved."
+    return {"status": "saved", "message": message, "sync": sync}
 
 
 @app.get("/api/cockpit-data")
@@ -1992,8 +2128,12 @@ async def get_cockpit_data(
             pm_state["gamma_flip"] = flip_lv
     if pm_state.get("is_morning_briefing") and not pm_state.get("is_discovered"):
         from data.pre_post_market import stamp_morning_briefing
-        if not pm_state.get("oi_as_of"):
-            pm_state["oi_as_of"] = _fmt_snapshot_as_of(getattr(dash, "fetched_at", None), _get_ist_now())
+        if not pm_state.get("snapshot_stale") and not pm_state.get("oi_as_of_display"):
+            shown = _fmt_snapshot_as_of(getattr(dash, "fetched_at", None), _get_ist_now())
+            if shown:
+                pm_state["oi_as_of_display"] = shown
+                if not pm_state.get("oi_as_of"):
+                    pm_state["oi_as_of"] = shown
         stamp_morning_briefing(pm_state)
     pm_state = attach_pre_market_shocks(
         pm_state,
@@ -2021,7 +2161,7 @@ async def get_cockpit_data(
             "insight_text": s.insight_text,
             "actionable_play": getattr(s, "actionable_play", "") or "",
             "gex_alignment": getattr(s, "gex_alignment", "") or "",
-            "time": s.bar_start_ts.strftime("%H:%M:%S") if hasattr(s.bar_start_ts, "strftime") else str(s.bar_start_ts),
+            "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
             "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
         }
         for s in sigs
@@ -2057,7 +2197,7 @@ async def get_cockpit_data(
     sched = compute_session_schedule_info(now_ist)
     regime_val = kpis.get("regime", {}).get("val", "Normal")
     if is_morning_briefing:
-        oi_stamp = pm_state.get("oi_as_of") or snapshot_as_of or "OI time unavailable"
+        oi_stamp = pm_state.get("oi_as_of_display") or snapshot_as_of or "OI time unavailable"
         exec_status_text = f"Morning briefing · prior-session book · {oi_stamp}"
     elif is_pre_bell:
         exec_status_text = f"Pre-open · prior-session GEX · Spot ₹{spot:,.1f}"
@@ -2100,7 +2240,7 @@ async def get_cockpit_data(
         "is_morning_briefing": is_morning_briefing,
         "is_pre_bell_ephemeral": is_pre_bell,
         "market_state": "OPEN" if is_open else "CLOSED",
-        "as_of_time": now_ist.strftime("%H:%M:%S IST"),
+        "as_of_time": _fmt_ist_clock(now_ist),
         "snapshot_as_of": snapshot_as_of,
         "snapshot_stale_seconds": round(stale_s, 1),
         "is_degraded": is_degraded,
@@ -2775,7 +2915,7 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
             "event_id": getattr(s, "event_id", ""),
             "invalidation_level": s.invalidation_level,
             "insight_text": s.insight_text,
-            "time": s.bar_start_ts.strftime("%d-%b %H:%M:%S IST") if hasattr(s.bar_start_ts, "strftime") else str(s.bar_start_ts),
+            "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
         }
         for s in sigs
     ]
@@ -2799,7 +2939,7 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     tape = []
     high_vol_bars = sorted([b for b in raw_bars if (getattr(b, "volume_units", 0) or 0) > 0], key=lambda x: getattr(x, "volume_units", 0), reverse=True)[:6]
     for b in high_vol_bars:
-        t_str = b.start_ts.strftime("%H:%M:%S") if hasattr(b.start_ts, "strftime") else "15:25:00"
+        t_str = _fmt_bar_stamp(b.start_ts) or "15:25:00"
         vol = int(getattr(b, "volume_units", 1000))
         delta = float(getattr(b, "delta", 0.0))
         side = "CE" if delta >= 0 else "PE"
@@ -3704,16 +3844,25 @@ async def clear_cache():
     return {"status": "ok", "message": "LKGS memory cache cleared successfully"}
 
 
+@app.get("/api/ops/sync-status")
+async def sync_status():
+    """Progress of the manual, 06:30, or token-save Dhan sync. No secrets."""
+    from app.dhan_sync import status
+    return status()
+
+
 @app.post("/api/ops/resync-snapshot")
 async def resync_snapshot(payload: Optional[dict] = Body(default=None)):
-    """Non-blocking request for an off-grid chain pull. HTTP never waits on Dhan."""
+    """Pull every index from Dhan, then the app recomputes the book.
+
+    HTTP returns as soon as the job is queued. While the session is open the
+    live chain loop does the pull. Off-market, the sync worker calls
+    ``load_dashboard`` itself. The client polls ``/api/ops/sync-status``.
+    """
     body = payload or {}
-    sym = (body.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
     win = body.get("window") or _ACTIVE_STATE["window"]
-    from app.live_fetcher import force
-    _ensure_chain_ingest(sym, win)
-    force(sym, window=win)
-    return {"status": "ok", "message": f"Background chain pull requested for {sym} ({win})"}
+    from app.dhan_sync import request_sync
+    return request_sync("manual", window=win)
 
 
 @app.post("/api/commentary/log-market-alert")
@@ -3747,7 +3896,7 @@ async def log_market_alert(payload: dict = Body(...)):
 
     try:
         save_commentary_entry(entry, symbol=sym)
-        return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": now_ist.strftime("%H:%M:%S IST")}
+        return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": _fmt_ist_clock(now_ist)}
     except Exception as e:
         log.warning("Error saving commentary market alert: %s", e)
         return {"status": "error", "message": str(e)}
@@ -3909,7 +4058,9 @@ async def get_session_commentary(symbol: Optional[str] = None):
             ts_val = e.get("ts", "")
             try:
                 dt_obj = datetime.fromisoformat(ts_val)
-                time_str = dt_obj.strftime("%d %b · %H:%M IST")
+                if getattr(dt_obj, "tzinfo", None) is not None:
+                    dt_obj = dt_obj.astimezone(IST)
+                time_str = dt_obj.strftime("%d-%m-%Y %H:%M:%S IST")
             except Exception:
                 time_str = str(ts_val)[:16]
 
@@ -5001,7 +5152,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                 tick_payload = {
                     "type": "TICK",
                     "timestamp": now_t,
-                    "ist_time": _get_ist_now().strftime("%H:%M:%S IST"),
+                    "ist_time": _fmt_ist_clock(),
                     "symbol": sym,
                     "spot": spot,
                     "future_price": fut,
@@ -5024,7 +5175,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                 status_payload = {
                     "type": "STATUS",
                     "timestamp": time.time(),
-                    "ist_time": _get_ist_now().strftime("%H:%M:%S IST"),
+                    "ist_time": _fmt_ist_clock(),
                     "symbol": sym,
                     "spot": spot,
                     "future_price": fut,
@@ -5435,6 +5586,8 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Explicitly run in development mode")
     args = parser.parse_args()
 
+    os.environ["COCKPIT_PORT"] = str(args.port)
+    os.environ.setdefault("COCKPIT_ENV", "prod" if args.port == 8640 else "dev")
     # Production only. A stalled event loop cannot accept connections, and
     # SIGTERM does not land while the main thread is blocked in a lock.
     if args.port == 8640 and not args.dev and not args.reload:

@@ -136,13 +136,17 @@ def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
     return requests.post(f"{DHAN_BASE}{path}", json=body, headers=_headers(), timeout=timeout)
 
 
-def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20) -> list[str]:
-    """Upcoming expiries (YYYY-MM-DD, ascending) for the index, or [] on any soft failure."""
+def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20, force_live: bool = False) -> list[str]:
+    """Upcoming expiries (YYYY-MM-DD, ascending) for the index, or [] on any soft failure.
+
+    Off-market, a file already on disk is returned and Dhan is not called.
+    ``force_live`` is the explicit sync (manual, 06:30 IST, or a new session token).
+    """
     import config
     import json
     from pathlib import Path
     cache_exps = Path(f"data/.cache/last_exps_{symbol.upper()}.json")
-    if not config.is_market_open() and cache_exps.exists():
+    if not force_live and not config.is_market_open() and cache_exps.exists():
         try:
             with open(cache_exps, "r") as f:
                 cached = json.load(f)
@@ -519,7 +523,8 @@ def _to_nse_rows(dhan_json: dict, expiry_iso: str, lot_size: int = 1) -> tuple[l
 
 
 def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
-                max_expiries: int | None = None, timeout: int = 30, hi: bool = False) -> dict:
+                max_expiries: int | None = None, timeout: int = 30, hi: bool = False,
+                force_live: bool = False) -> dict:
     """LIVE Dhan pull assembled into ONE NSE-shaped ``{records:{data, underlyingValue}}`` payload
     (drop-in for ``data.nse.fetch_chain``). Fetches each in-window expiry's chain (throttled to
     the 1-req/3s limit) and merges the rows. Bounds the expiry set to the next monthly by default
@@ -529,12 +534,17 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
     the shared rate gate ahead of the window fetcher's back-to-back expiry calls, which would
     otherwise starve a 10s beat to ~20s.
 
-    RAISES on no usable data so ``data_access`` falls back to NSE."""
+    RAISES on no usable data so ``data_access`` falls back to NSE.
+
+    Off-market, a chain file already on disk is returned and Dhan is not called.
+    ``force_live`` skips that file. Only the explicit sync sets it: the sidebar
+    button, the 06:30 IST run, and saving a new session token.
+    """
     import config
     import json
     from pathlib import Path
     cache_file = Path(f"data/.cache/last_chain_{symbol.upper()}.json")
-    if not config.is_market_open() and cache_file.exists():
+    if not force_live and not config.is_market_open() and cache_file.exists():
         try:
             with open(cache_file, "r") as f:
                 cached = json.load(f)
@@ -544,7 +554,7 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
             pass
 
     seg, scrip = _seg_scrip(symbol)
-    exps = expiries or _window_expiries(symbol, max_expiries)
+    exps = expiries or _window_expiries(symbol, max_expiries, force_live=force_live)
     if not exps:
         raise RuntimeError("Dhan returned no expiries (token/entitlement?) — falling back")
 
@@ -576,12 +586,12 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
     return res
 
 
-def _window_expiries(symbol: str, max_expiries: int | None) -> list[str]:
+def _window_expiries(symbol: str, max_expiries: int | None, force_live: bool = False) -> list[str]:
     """Near-dated Dhan expiries to fetch. Bounded by a DAY horizon (calendar-agnostic — works for
     NSE-Tuesday, BankNifty-monthly AND BSE-Thursday SENSEX alike) and capped in count, since the
     exp-weighting means far expiries barely move the levels and each call costs ≥3s."""
     from datetime import date, timedelta
-    exps = fetch_expiry_list(symbol)
+    exps = fetch_expiry_list(symbol, force_live=force_live)
     if not exps:
         return []
     horizon = (date.today() + timedelta(days=_HORIZON_DAYS)).isoformat()

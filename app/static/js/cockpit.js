@@ -28,11 +28,68 @@
     pendingAlertBellTime: 0,
     spot: 24500.0,
     ws: null,
+    replayMode: false,
+    replayAsOf: null,
+    replayLoadedMinute: "",
     sentinelChart: null,
     candlestickSeries: null,
     cvdSeries: null,
     speechSynth: window.speechSynthesis || null,
   };
+
+  function pad2(n) {
+    return String(n).padStart(2, "0");
+  }
+
+  function istChartStamp(ts) {
+    if (typeof ts !== "number" || !Number.isFinite(ts)) return "";
+    const d = new Date(ts * 1000);
+    return `${pad2(d.getUTCDate())}-${pad2(d.getUTCMonth() + 1)}-${d.getUTCFullYear()} ${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())} IST`;
+  }
+
+  function formatValidStamp(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    if (/^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}/.test(s)) {
+      return /\bIST\b/i.test(s) ? s : `${s} IST`;
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const parts = s.split("-");
+      return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+    if (s.includes("T") || /[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) {
+      const parsed = Date.parse(s);
+      if (!Number.isNaN(parsed)) {
+        const bits = new Intl.DateTimeFormat("en-GB", {
+          timeZone: "Asia/Kolkata",
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).formatToParts(new Date(parsed));
+        const get = (type) => (bits.find((p) => p.type === type) || {}).value || "";
+        if (get("year")) {
+          return `${get("day")}-${get("month")}-${get("year")} ${get("hour")}:${get("minute")}:${get("second")} IST`;
+        }
+      }
+    }
+    return s;
+  }
+
+  function datedClock(raw, isoDate) {
+    const shown = formatValidStamp(raw);
+    if (/^\d{2}-\d{2}-\d{4}\b/.test(shown)) return shown;
+    const hm = String(raw || "").trim().match(/^(\d{2}:\d{2}(?::\d{2})?)(?:\s*IST)?$/i);
+    if (hm && /^\d{4}-\d{2}-\d{2}$/.test(String(isoDate || ""))) {
+      const parts = String(isoDate).split("-");
+      const hms = hm[1].length === 5 ? `${hm[1]}:00` : hm[1];
+      return `${parts[2]}-${parts[1]}-${parts[0]} ${hms} IST`;
+    }
+    return shown;
+  }
 
   // -------------------------------------------------------------------------
   // Web Audio Synthesizer & Auto-Unlock on First User Interaction
@@ -359,6 +416,15 @@
         try {
           const tick = JSON.parse(event.data);
           paintWallKpisFromTick(tick);
+          if (tick.feed_mode === "REPLAY") {
+            state.replayMode = true;
+            if (Number.isFinite(Number(tick.timestamp))) state.replayAsOf = Number(tick.timestamp);
+            const minute = String((tick.replay && tick.replay.hhmm) || "").slice(0, 5);
+            if (minute && minute !== state.replayLoadedMinute && !(tick.replay && tick.replay.repeat)) {
+              state.replayLoadedMinute = minute;
+              loadCockpit();
+            }
+          }
           if (tick.type === "TICK" && tick.is_market_open) {
             handleLiveTick(tick);
           } else if (tick.type === "STATUS") {
@@ -532,7 +598,10 @@
       const tfBadge = document.getElementById("cockpit-chart-badge");
       if (tfBadge) {
         const tfLabel = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
-        tfBadge.innerHTML = `${tfLabel} · <span style="color:var(--go);font-weight:800">🟢 DHAN TICK ₹${px.toFixed(1)}</span>`;
+        const replay = tick.feed_mode === "REPLAY";
+        tfBadge.innerHTML = replay
+          ? `${tfLabel} · <span style="color:#e0a100;font-weight:800">REPLAY ₹${px.toFixed(1)}</span>`
+          : `${tfLabel} · <span style="color:var(--go);font-weight:800">🟢 DHAN TICK ₹${px.toFixed(1)}</span>`;
       }
     }
 
@@ -677,6 +746,33 @@
         }
         if (sessionSubstateDisplay) {
           sessionSubstateDisplay.textContent = data.feed_subtext || "Tick stream paused · Broker pollers idle";
+        }
+      } else if (data.replay) {
+        if (quoteBoxLabel) quoteBoxLabel.textContent = "Stored session";
+        if (quoteStatusDot) quoteStatusDot.className = "live-dot";
+        if (feedBadge) {
+          feedBadge.textContent = "REPLAY";
+          feedBadge.style.color = "#e0a100";
+          feedBadge.style.background = "rgba(224,161,0,0.12)";
+          feedBadge.style.borderColor = "";
+        }
+        if (sessionPhaseBadge) {
+          sessionPhaseBadge.textContent = "REPLAY";
+        }
+        if (feedBanner) {
+          feedBanner.className = "feed-mode-banner live";
+        }
+        if (feedStatusBadge) {
+          feedStatusBadge.textContent = data.feed_badge || "REPLAY";
+          feedStatusBadge.style.color = "#e0a100";
+          feedStatusBadge.style.background = "rgba(224,161,0,0.12)";
+        }
+        if (sessionTitleDisplay) {
+          sessionTitleDisplay.textContent = data.feed_title || "Stored session";
+          sessionTitleDisplay.style.color = "#e0a100";
+        }
+        if (sessionSubstateDisplay) {
+          sessionSubstateDisplay.textContent = data.feed_subtext || "This is not the live book.";
         }
       } else {
         if (quoteBoxLabel) quoteBoxLabel.textContent = "Spot Live Quote";
@@ -1019,8 +1115,11 @@
         if (briefingEl) briefingEl.textContent = pm.regime_briefing || pm.briefing || pm.status_text || "Prior-session gamma strikes. Equilibrium prints around 09:08 IST.";
         const atEl = document.getElementById("pm-discovered-at");
         if (atEl) {
-          if (discovered && pm.discovered_at) atEl.textContent = `${pm.discovered_at} IST Discovery`;
-          else if (pm.is_morning_briefing) atEl.textContent = pm.oi_as_of ? `OI ${pm.oi_as_of}` : "OI time unavailable";
+          if (discovered && pm.discovered_at) atEl.textContent = `${datedClock(pm.discovered_at, pm.date)} Discovery`;
+          else if (pm.is_morning_briefing) {
+            const oiShown = pm.oi_as_of_display || formatValidStamp(pm.oi_as_of);
+            atEl.textContent = oiShown ? `OI ${oiShown}` : "OI time unavailable";
+          }
           else atEl.textContent = "09:08 IST Discovery";
         }
 
@@ -1164,14 +1263,15 @@
       if (magnetBody) {
         const path = data.magnet_path || [];
         magnetBody.textContent = path.length
-          ? path.map((row) => `${row.date}  ₹${Number(row.magnet).toLocaleString("en-IN")}`).join("   ·   ")
+          ? path.map((row) => `${formatValidStamp(row.date) || row.date}  ₹${Number(row.magnet).toLocaleString("en-IN")}`).join("   ·   ")
           : "No captured sessions.";
       }
       const futState = document.getElementById("futures-state");
       if (futState) {
         const fut = data.futures_state;
+        const futAsOf = fut && fut.as_of ? formatValidStamp(fut.as_of) : "";
         futState.textContent = fut
-          ? `${fut.state}${fut.as_of ? ` · ${fut.as_of}` : ""}`
+          ? `${fut.state}${futAsOf ? ` · ${futAsOf}` : ""}`
           : "No futures open-interest change on this read.";
       }
 
@@ -1401,7 +1501,7 @@
 
     const isClosed = state.is_market_open === false || state.market_state === "CLOSED";
     const tfBadge = document.getElementById("cockpit-chart-badge");
-    if (tfBadge) {
+    if (tfBadge && !state.replayMode) {
       const tfName = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
       tfBadge.textContent = isClosed ? `${tfName} · EOD (CLOSED)` : `${tfName} · LIVE`;
       tfBadge.style.color = isClosed ? "var(--ink-mute)" : "var(--go)";
@@ -1528,13 +1628,7 @@
             rightOffset: 6,
           },
           localization: {
-            timeFormatter: (ts) => {
-              if (typeof ts === "number") {
-                const d = new Date(ts * 1000);
-                return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} IST`;
-              }
-              return String(ts);
-            },
+            timeFormatter: (ts) => istChartStamp(ts) || String(ts),
           },
         });
 
@@ -1630,8 +1724,7 @@
           if (chlTime && param.time) {
             const ts = typeof param.time === "number" ? param.time : param.time.timestamp;
             if (ts) {
-              const dt = new Date(ts * 1000);
-              chlTime.textContent = `${String(dt.getUTCHours()).padStart(2, "0")}:${String(dt.getUTCMinutes()).padStart(2, "0")} IST`;
+              chlTime.textContent = istChartStamp(ts);
             }
           }
           if (chlOhlc && c) {
@@ -1965,17 +2058,25 @@
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
     const ratio = Number(breadth.ratio || 1.0);
-    const nowTs = Date.now() / 1000;
+    const nowTs = state.replayMode && Number.isFinite(state.replayAsOf) ? state.replayAsOf : Date.now() / 1000;
 
     const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
     const isPreBell = Boolean(dash.is_pre_bell_ephemeral);
     const isMorning = dash.session_phase === "PRE_MARKET_SETUP" || Boolean(dash.is_morning_briefing);
-    const clockMatch = String(dash.as_of_time || "").match(/^(\d{2}:\d{2}:\d{2})/);
-    const timeStr = clockMatch
-      ? `${clockMatch[1]} IST`
-      : new Date().toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" }) + " IST";
+    const rawClock = String(dash.as_of_time || "").trim();
+    const todayIso = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+    const timeStr = /^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}/.test(rawClock)
+      ? (/\bIST\b/i.test(rawClock) ? rawClock : `${rawClock} IST`)
+      : datedClock(
+          rawClock || new Date().toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" }),
+          todayIso,
+        );
+    const hmsOf = (text) => {
+      const match = String(text || "").match(/(\d{2}:\d{2}:\d{2})/);
+      return match ? match[1] : "";
+    };
     const snapAsOf = String(dash.snapshot_as_of || "").trim();
-    const snapNote = snapAsOf && !snapAsOf.startsWith(timeStr.slice(0, 8))
+    const snapNote = snapAsOf && hmsOf(snapAsOf) !== hmsOf(timeStr)
       ? ` · GEX snapshot ${snapAsOf}`
       : "";
     const geo = classifyTapeZone(spot, cw, pw, step);
@@ -1994,7 +2095,8 @@
 
     if (isMorning) {
       const pm = dash.pre_market || {};
-      const oi = String(pm.oi_as_of || snapAsOf || "unavailable");
+      const oi = String(pm.oi_as_of_display || formatValidStamp(pm.oi_as_of) || snapAsOf || "unavailable");
+      const staleBook = Boolean(pm.snapshot_stale);
       const fii = pm.fii_bias || "—";
       const cvdNum = Number(pm.prior_session_cvd);
       const cvdTxt = Number.isFinite(cvdNum) ? (cvdNum >= 0 ? "+" : "") + cvdNum.toFixed(0) : "—";
@@ -2004,7 +2106,9 @@
         badge: "🌅 PRIOR-SESSION BOOK",
         theme: "alert-tape-spark",
         headline: "MORNING BRIEFING — PRIOR-SESSION BOOK",
-        meaning: "Yesterday's walls and flip, before the cash open.",
+        meaning: staleBook
+          ? "The saved book is not the last session. The close is withheld."
+          : "Yesterday's walls and flip, before the cash open.",
         body: brief || `Previous NSE close versus call wall ${tapeInr(cw)}, put wall ${tapeInr(pw)}, flip ${tapeInr(flip)}. This is the last published book.`,
         action: "Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
         diagnostics: `OI as of ${oi} · FII ${fii} · prior CVD ${cvdTxt} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)} · flip ${tapeInr(flip)}`,
@@ -3283,13 +3387,7 @@
               rightOffset: 6,
             },
             localization: {
-              timeFormatter: (ts) => {
-                if (typeof ts === "number") {
-                  const d = new Date(ts * 1000);
-                  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} IST`;
-                }
-                return String(ts);
-              },
+              timeFormatter: (ts) => istChartStamp(ts) || String(ts),
             },
           });
 
@@ -3395,8 +3493,7 @@
             if (shlTime && param.time) {
               const ts = typeof param.time === "number" ? param.time : param.time.timestamp;
               if (ts) {
-                const dt = new Date(ts * 1000);
-                shlTime.textContent = `${String(dt.getUTCHours()).padStart(2, "0")}:${String(dt.getUTCMinutes()).padStart(2, "0")} IST`;
+                shlTime.textContent = istChartStamp(ts);
               }
             }
             if (shlOhlc && c) {
@@ -4441,7 +4538,7 @@
       const srcEl = document.getElementById("sector-source-label");
       if (srcEl && data.sector_source) srcEl.textContent = `Source: ${data.sector_source}`;
       const wtEl = document.getElementById("sector-weights-label");
-      if (wtEl && data.weights_as_of) wtEl.textContent = `Weights as of: ${data.weights_as_of}`;
+      if (wtEl && data.weights_as_of) wtEl.textContent = `Weights as of: ${formatValidStamp(data.weights_as_of)}`;
 
       // News Stream Headlines & Categories
       state.intelHeadlines = data.news_headlines || [];
@@ -4923,14 +5020,19 @@
         }
 
         const morning = Boolean(pm.is_morning_briefing) && !pm.is_discovered;
-        const openLabel = morning ? "Previous NSE close" : "Discovered Open";
+        const openLabel = morning
+          ? (pm.snapshot_stale ? "Close withheld" : (pm.snapshot_session_label ? `${pm.snapshot_session_label} close` : "Previous NSE close"))
+          : "Discovered Open";
         const openPx = morning ? Number(pm.prev_close || 0) : Number(pm.discovered_spot || state.spot || 0);
         const openTxt = openPx > 0 ? `₹${openPx.toLocaleString("en-IN", { minimumFractionDigits: 1 })}` : "—";
         const gapTxt = morning
           ? "No auction print yet"
           : `${(pm.gap_pts || 0) >= 0 ? "+" : ""}${Number(pm.gap_pts || 0).toFixed(1)} pts (${(pm.gap_pct || 0) >= 0 ? "+" : ""}${Number(pm.gap_pct || 0).toFixed(2)}%)`;
         const gapClr = morning ? "var(--ink-mute)" : ((pm.gap_pts || 0) >= 0 ? "var(--go)" : "var(--stop)");
-        const stamp = morning ? (pm.oi_as_of ? `OI ${pm.oi_as_of}` : "OI time unavailable") : "09:07:30 IST Discovery";
+        const oiShown = pm.oi_as_of_display || formatValidStamp(pm.oi_as_of);
+        const stamp = morning
+          ? (oiShown ? `OI ${oiShown}` : "OI time unavailable")
+          : `${datedClock(pm.discovered_at || "09:07:30", pm.date)} Discovery`;
         const cardTitle = morning ? "Morning briefing · prior-session book" : "Pre-Bell Tactical Baseline &amp; Opening Discovery";
         pmCard.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -5272,6 +5374,8 @@
         "ops": "tab-ops",
         "session-commentary": "tab-commentary",
         "commentary": "tab-commentary",
+        "admin": "tab-admin",
+        "admin-data": "tab-admin",
       };
       const initialTab = tabMap[hash] || (document.getElementById(`tab-${hash}`) ? `tab-${hash}` : null);
       if (initialTab) {
@@ -5403,23 +5507,62 @@
       decayMins.addEventListener("input", updateRepricer);
     }
 
-    // Force Re-sync Snapshot — wakes the background chain ingest; does not block on Dhan.
+    async function waitForDhanSync() {
+      const deadline = Date.now() + 180000;
+      let last = {};
+      while (Date.now() < deadline) {
+        const res = await fetch("/api/ops/sync-status");
+        last = await res.json();
+        if (!last.running) return last;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      return Object.assign({}, last, { last_error: last.last_error || "Sync is still running" });
+    }
+
+    function finishDhanSync(done) {
+      refreshAll();
+      if (state.activeTab !== "tab-cockpit") loadCockpit();
+      if (done && done.last_error) {
+        showToast(done.last_error, "⚠");
+        return;
+      }
+      const stamp = done && done.refreshed_at_display;
+      showToast(stamp ? `Data refreshed ${stamp}` : "Dhan sync finished", "✓");
+    }
+
+    async function runDhanSync() {
+      const res = await fetch("/api/ops/resync-snapshot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: state.symbol, window: state.window }),
+      });
+      const started = await res.json();
+      if (started.status === "skipped") {
+        showToast(started.reason === "no_token" ? "No valid Dhan token" : "Sync skipped", "⚠");
+        return;
+      }
+      const done = await waitForDhanSync();
+      finishDhanSync(done);
+    }
+
+    // Manual Dhan sync. The server pulls the chain, then the app recomputes the book.
     const btnSync = document.getElementById("btn-force-refresh");
     if (btnSync) {
       btnSync.addEventListener("click", async () => {
-        showToast("Synchronizing live market snapshot...");
+        if (btnSync.disabled) return;
+        btnSync.disabled = true;
+        showToast("Syncing from Dhan…");
         try {
-          await fetch("/api/ops/resync-snapshot", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ symbol: state.symbol, window: state.window }),
-          });
-        } catch (e) {}
-        refreshAll();
+          await runDhanSync();
+        } catch (e) {
+          showToast("Dhan sync failed", "⚠");
+        } finally {
+          btnSync.disabled = false;
+        }
       });
     }
 
-    // Save Dhan Token
+    // Save Dhan Token. A new token starts the same sync.
     const btnSaveToken = document.getElementById("btn-save-token");
     if (btnSaveToken) {
       btnSaveToken.addEventListener("click", async () => {
@@ -5429,6 +5572,8 @@
           alert("Please enter a valid Dhan Access Token");
           return;
         }
+        if (btnSaveToken.disabled) return;
+        btnSaveToken.disabled = true;
         try {
           const res = await fetch("/api/save-dhan-token", {
             method: "POST",
@@ -5436,11 +5581,22 @@
             body: JSON.stringify({ token: tok }),
           });
           const data = await res.json();
+          if (!res.ok) {
+            alert(data.detail || "Failed to save token");
+            return;
+          }
           showToast(data.message, "💾");
           if (tokenInput) tokenInput.value = "";
-          loadStatus();
+          const sync = data.sync || {};
+          if (sync.status === "started" || sync.status === "already_running") {
+            finishDhanSync(await waitForDhanSync());
+          } else {
+            loadStatus();
+          }
         } catch (e) {
           alert("Failed to save token");
+        } finally {
+          btnSaveToken.disabled = false;
         }
       });
     }
@@ -5578,6 +5734,9 @@
       case "tab-commentary":
         loadCommentary();
         break;
+      case "tab-admin":
+        if (window.loadAdmin) window.loadAdmin();
+        break;
     }
   }
 
@@ -5676,6 +5835,11 @@
     }
     // Apply initialized theme state
     applyTheme(state.theme, false);
+
+    if (window.refreshAdminChrome) {
+      window.refreshAdminChrome();
+      setInterval(window.refreshAdminChrome, 30000);
+    }
 
     // Mount Cockpit TradingView chart immediately
     renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
