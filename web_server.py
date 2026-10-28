@@ -189,8 +189,20 @@ def _run_lane(name: str, fn) -> None:
     try:
         fn()
     except Exception as exc:
-        log.warning("%s failed: %s", name, exc)
-        event("lane.failed", level="WARNING", ok=False, workflow=name, error=str(exc), message=name)
+        # The health daemon is the only lane whose failure means alerts never fire.
+        critical = name == "admin.monitor"
+        if critical:
+            log.error("%s failed: %s", name, exc)
+        else:
+            log.warning("%s failed: %s", name, exc)
+        event(
+            "lane.failed",
+            level="ERROR" if critical else "WARNING",
+            ok=False,
+            workflow=name,
+            error=str(exc),
+            message=name,
+        )
         return
     event("lane.started", workflow=name, message=name)
 

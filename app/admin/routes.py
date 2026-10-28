@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from typing import Optional
+from pydantic import BaseModel, Field
 
 from app.admin import db
 from app.admin.audit_engine import audit_range
@@ -17,6 +18,11 @@ from app.admin.task_runner import AdminRequestError, cancel, handle, task_view
 from app.obs.metrics import snapshot as http_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+class AlertAck(BaseModel):
+    alert_id: str = Field(min_length=1)
+    action: Literal["read", "dismiss"]
 
 
 def data_root() -> Path:
@@ -119,12 +125,8 @@ def register_admin_routes(app: FastAPI) -> None:
         return {"badge_count": db.badge_count(), "alerts": rows}
 
     @app.post("/api/admin/alerts/ack")
-    def admin_ack(payload: dict):
-        alert_id = (payload or {}).get("alert_id")
-        action = (payload or {}).get("action")
-        if not alert_id or action not in ("read", "dismiss"):
-            raise HTTPException(status_code=400, detail="alert_id and action read|dismiss are required")
-        found = db.ack_alert(str(alert_id), action, now_ist().isoformat(timespec="seconds"))
+    def admin_ack(payload: AlertAck):
+        found = db.ack_alert(payload.alert_id, payload.action, now_ist().isoformat(timespec="seconds"))
         if not found:
             raise HTTPException(status_code=404, detail="unknown alert")
         return {"status": "ok", "badge_count": db.badge_count()}

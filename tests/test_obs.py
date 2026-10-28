@@ -211,6 +211,9 @@ def test_fast_http_200_is_a_counter_and_a_500_is_an_event():
     assert db.list_ops_events(event="http.error") == []
     assert metrics.snapshot()["by_class"]["2xx"] == 1
 
+    observe_request("GET", "/static/js/admin.js", 200, 1.0, "asset")
+    assert metrics.snapshot()["count"] == 1
+
     observe_request("GET", "/api/cockpit-data", 200, 12.0, "poll")
     assert db.list_ops_events() == []
     assert metrics.snapshot()["count"] == 2

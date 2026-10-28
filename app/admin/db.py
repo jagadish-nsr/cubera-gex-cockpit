@@ -16,6 +16,35 @@ ROOT = Path(__file__).resolve().parents[2]
 _lock = threading.Lock()
 _db_path: Path | None = None
 _ready = False
+_conn: sqlite3.Connection | None = None
+
+
+class _CachedConnection:
+    """One ledger connection for this process. ``close`` ends the transaction and keeps the handle."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def close(self) -> None:
+        try:
+            self._conn.rollback()
+        except sqlite3.Error:
+            _drop_cached_connection()
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+def _drop_cached_connection() -> None:
+    global _conn
+    conn = _conn
+    _conn = None
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS admin_alerts (
@@ -82,6 +111,7 @@ def set_db_path(path: Path | None) -> None:
     """Point the ledger at ``path``. ``None`` restores the repo default."""
     global _db_path, _ready
     with _lock:
+        _drop_cached_connection()
         _db_path = path
         _ready = False
 
@@ -97,19 +127,27 @@ def db_path() -> Path:
     return ROOT / "data" / "journal" / "admin_ops.db"
 
 
-def _connect() -> sqlite3.Connection:
-    global _ready
+def _connect() -> _CachedConnection:
+    """Return this process's ledger connection. Callers already hold ``_lock``.
+
+    Other processes share the file through WAL. SQLite has no connection pool
+    across processes, so each process keeps one handle and reuses it.
+    """
+    global _conn, _ready
+    if _conn is not None:
+        return _CachedConnection(_conn)
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), check_same_thread=False, timeout=5)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA journal_mode = WAL").fetchone()
     conn.execute("PRAGMA synchronous = NORMAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     if not _ready:
         conn.executescript(_SCHEMA)
         _ready = True
-    return conn
+    _conn = conn
+    return _CachedConnection(conn)
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict | None:
@@ -309,11 +347,22 @@ def get_task(task_id: str) -> dict | None:
 
 
 def running_tasks() -> list[dict]:
+    return _tasks_in_status("RUNNING")
+
+
+def active_tasks() -> list[dict]:
+    """RUNNING and QUEUED rows. A QUEUED row has been claimed and must not be spawned again."""
+    return _tasks_in_status("RUNNING", "QUEUED")
+
+
+def _tasks_in_status(*statuses: str) -> list[dict]:
+    marks = ", ".join("?" for _ in statuses)
     with _lock:
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM admin_tasks WHERE status = 'RUNNING'"
+                f"SELECT * FROM admin_tasks WHERE status IN ({marks})",
+                statuses,
             ).fetchall()
             return [_row_dict(r) for r in rows]
         finally:
@@ -517,7 +566,7 @@ def list_ops_status(*, process: str | None = None, name: str | None = None) -> l
 
 
 def mark_orphaned_running(now_iso: str) -> int:
-    """Any RUNNING row left from a previous process becomes INTERRUPTED."""
+    """A RUNNING or QUEUED row left from a previous process becomes INTERRUPTED."""
     with _lock:
         conn = _connect()
         try:
@@ -525,7 +574,7 @@ def mark_orphaned_running(now_iso: str) -> int:
                 """
                 UPDATE admin_tasks
                    SET status = 'INTERRUPTED', ended_at = ?
-                 WHERE status = 'RUNNING'
+                 WHERE status IN ('RUNNING', 'QUEUED')
                 """,
                 (now_iso,),
             )

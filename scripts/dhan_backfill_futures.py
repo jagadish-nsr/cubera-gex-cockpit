@@ -15,6 +15,7 @@ Needs the Dhan token (env DHAN_ACCESS_TOKEN or data/.dhan_token). Journal is git
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,7 +41,11 @@ def main() -> None:
         symbols = [args[0].upper()]
     elif len(args) == 3:
         symbols = [args[0].upper()]
-        start, end = args[1], args[2]
+        try:
+            start = date.fromisoformat(args[1]).isoformat()
+            end = date.fromisoformat(args[2]).isoformat()
+        except ValueError:
+            raise SystemExit("START and END must be YYYY-MM-DD") from None
     else:
         raise SystemExit(
             "usage: python scripts/dhan_backfill_futures.py [SYMBOL [START END]]"

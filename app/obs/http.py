@@ -11,11 +11,15 @@ from app.obs.metrics import note
 _SLOW_MS = 1000.0
 
 
+def _static(path: str) -> bool:
+    return path.startswith("/static/") or path == "/favicon.ico"
+
+
 def observe_request(method: str, path: str, status: int, duration_ms: float, trace_id: str) -> None:
     """Count every non-static call. Journal only failures and calls over 1 second."""
-    note(status, duration_ms)
-    if path.startswith("/static/") or path == "/favicon.ico":
+    if _static(path):
         return
+    note(status, duration_ms)
     common = {
         "method": method,
         "route": path,
@@ -38,7 +42,7 @@ def install(app) -> None:
     @app.middleware("http")
     async def _obs_http(request, call_next):
         path = request.url.path
-        if path.startswith("/static/") or path == "/favicon.ico":
+        if _static(path):
             return await call_next(request)
         trace = new_trace_id()
         started = time.perf_counter()
