@@ -51,10 +51,6 @@
       const res = await fetch("/api/admin/status");
       if (!res.ok) return;
       const data = await res.json();
-      const badge = document.getElementById("admin-env-badge");
-      if (badge) badge.textContent = String(data.environment || "env").toUpperCase() + " :" + data.port;
-      const bell = document.getElementById("admin-alert-bell");
-      if (bell) bell.textContent = "Alerts (" + (data.active_alerts_count || 0) + ")";
       paintStatus(data);
       loadOps();
     } catch (err) {
@@ -382,12 +378,6 @@
   }
 
   function bind() {
-    const bell = document.getElementById("admin-alert-bell");
-    if (bell) {
-      bell.addEventListener("click", function () {
-        if (window.switchTab) window.switchTab("tab-admin");
-      });
-    }
     const inspect = document.getElementById("admin-inspect");
     if (inspect) inspect.addEventListener("click", inspectAudit);
     const planOpt = document.getElementById("admin-plan-options");
