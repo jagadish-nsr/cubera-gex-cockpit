@@ -1,4 +1,4 @@
-"""Geometry-first marquee tape: walls, Sentinel overlay, no sector-trend trigger."""
+"""Geometry-first alert tape: walls, Sentinel overlay, no sector-trend trigger."""
 
 from datetime import datetime, timezone, timedelta
 
@@ -55,10 +55,13 @@ def test_heavy_sector_red_does_not_print_downtrend_when_below_magnet():
         now_ts=now,
     )
     assert alert["scenario"] == "BELOW_SUPPORT"
-    assert alert["meaning"] == "Spot is through the only gamma cluster. It is not a pin."
+    assert "Stay out of a call" in alert["outcome"]
+    assert "72" in alert["outcome"]
     assert "DOWNTREND" not in alert["badge"]
-    assert "institutional selling" not in alert["body"].lower()
-    assert "prior close" in alert["diagnostics"]
+    assert "institutional selling" not in alert["drivers"].lower()
+    assert "1 up and 13 down" in alert["drivers"]
+    assert "Call-heavy: calls hold more gamma." in alert["drivers"]
+    assert "Put-heavy" not in alert["drivers"]
 
 
 def test_fresh_sentinel_overlays_geometry():
@@ -95,11 +98,13 @@ def test_fresh_sentinel_overlays_geometry():
     )
     assert alert["scenario"] == "TAPE_CONTINUATION_BEAR"
     assert alert["zone"] == "PINNED"
-    assert alert["headline"].startswith("CONTINUATION BEAR")
-    assert alert["meaning"] == "Spot is inside the corridor. The corridor is a map, not a fade."
-    assert "Seller sweep" in alert["body"]
-    assert "22,520" in alert["action"]
+    assert "CONTINUATION BEAR" in alert["badge"]
+    assert alert["headline"] == "Price is between the walls"
+    assert "Seller sweep" in alert["drivers"]
+    assert "22,520" in alert["risk"]
+    assert "gets back through" in alert["risk"]
     assert "STRONG DOWNTREND" not in alert["headline"]
+    assert "Call-heavy: calls hold more gamma." in alert["drivers"]
 
 
 def test_morning_briefing_names_prior_session_book():
@@ -130,9 +135,10 @@ def test_morning_briefing_names_prior_session_book():
         }
     )
     assert alert["scenario"] == "MORNING_BRIEFING"
-    assert alert["meaning"] == "Yesterday's walls and flip, before the cash open."
-    assert "22,600" in alert["body"]
-    assert "12-10-2026 15:35:00 IST" in alert["diagnostics"]
+    assert "yesterday's book" in alert["outcome"].lower()
+    assert "22,600" in alert["drivers"]
+    assert "12-10-2026 15:35:00 IST" in alert["drivers"]
+    assert "Put-heavy: puts hold more gamma." in alert["drivers"]
     assert alert["scenario"] != "PRE_OPEN_SETUP"
 
 
@@ -156,8 +162,8 @@ def test_pre_open_auction_copy_unchanged_at_0900():
     }
     pre = evaluate_market_alert(base)
     assert pre["scenario"] == "PRE_OPEN_SETUP"
-    assert "Cash auction is running" in pre["body"]
-    assert "09:08" in pre["body"]
+    assert "09:15" in pre["outcome"]
+    assert "09:08" in pre["drivers"]
 
 
 def test_pre_open_and_closed_short_circuit():
@@ -177,7 +183,8 @@ def test_pre_open_and_closed_short_circuit():
     assert pre["scenario"] == "PRE_OPEN_SETUP"
     closed = evaluate_market_alert({**base, "is_market_open": False, "market_state": "CLOSED"})
     assert closed["scenario"] == "MARKET_CLOSED"
-    assert closed["meaning"] == "Last published book. Nothing here is a live hedge."
+    assert "15:30" in closed["outcome"]
+    assert "last snapshot" in closed["outcome"].lower()
 
 
 def test_expiry_blast_is_overlay_not_flip_accelerator():
@@ -201,7 +208,9 @@ def test_expiry_blast_is_overlay_not_flip_accelerator():
         now_ts=now,
     )
     assert alert["zone"] == "PINNED"
-    assert "0DTE BLAST" in alert["badge"]
-    assert "parity crossover" in alert["body"]
+    assert "EXPIRY BLAST" in alert["badge"]
+    assert "parity watch" in alert["drivers"]
+    assert "Put-heavy: puts hold more gamma." in alert["drivers"]
+    assert "Call-heavy" not in alert["drivers"]
     assert "BIG MOVE COMING" not in alert["badge"]
     assert "short-gamma hedging" not in alert["body"]

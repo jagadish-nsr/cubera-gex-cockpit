@@ -1,8 +1,9 @@
-"""Marquee tape: geometry-first session read + optional Sentinel overlay.
+"""Alert tape: geometry-first session read + optional Sentinel overlay.
 
 Walls are OI/gamma concentration under an unvalidated India dealer-sign model.
 This module never claims a proven dealer hedge book. Sector breadth is diagnostics
-only — not a trend trigger.
+only — not a trend trigger. Each state is one plain sentence, the levels, and
+one next step.
 """
 
 from __future__ import annotations
@@ -195,12 +196,26 @@ def pick_fresh_signal(
     return best
 
 
-def _breadth_diag(breadth: dict | None) -> str:
+def _book_line(regime: str) -> str:
+    word = str(regime or "").upper()
+    if word == "POSITIVE":
+        return "Call-heavy: calls hold more gamma."
+    if word == "NEGATIVE":
+        return "Put-heavy: puts hold more gamma."
+    return ""
+
+
+def _breadth_sentence(breadth: dict | None) -> str:
     b = breadth or {}
     adv = int(b.get("advances") or 0)
     dec = int(b.get("declines") or 0)
-    ratio = _f(b.get("ratio"), 1.0)
-    return f"sectors {adv}/{dec} vs prior close (context, not flow) · ratio {ratio:.2f}x"
+    if adv == 0 and dec == 0:
+        return ""
+    return f"Breadth is {adv} up and {dec} down."
+
+
+def _say(*parts: str) -> str:
+    return " ".join(p.strip() for p in parts if p and str(p).strip())
 
 
 def _signal_label(sig: dict) -> str:
@@ -209,7 +224,7 @@ def _signal_label(sig: dict) -> str:
 
 
 def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | None:
-    """Compose one marquee scenario from cockpit payload fields."""
+    """Compose one alert-tape message from cockpit payload fields."""
     if not dash:
         return None
     kpis = dash.get("kpis") or {}
@@ -229,10 +244,6 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
 
     time_str = _display_clock(str(dash.get("as_of_time") or ""), now_ts)
     snap_as_of = str(dash.get("snapshot_as_of") or "").strip()
-    snap_note = ""
-    if snap_as_of and _hms(snap_as_of) != _hms(time_str):
-        snap_note = f" · GEX snapshot {snap_as_of}"
-
     is_pre_bell = bool(dash.get("is_pre_bell_ephemeral"))
     is_morning = (
         str(dash.get("session_phase") or "") == "PRE_MARKET_SETUP"
@@ -241,9 +252,23 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     is_closed = dash.get("is_market_open") is False or str(dash.get("market_state") or "") == "CLOSED"
     geo = classify_zone(spot, cw, pw, step)
     zone = geo["zone"]
-    bdiag = _breadth_diag(breadth)
     near_flip = flip > 0 and abs(spot - flip) <= step
     sig = None if (is_pre_bell or is_closed) else pick_fresh_signal(dash.get("orderflow_alerts"), now_ts)
+    book = _book_line(regime)
+    breadth_line = _breadth_sentence(breadth)
+    if flip > 0 and near_flip:
+        flip_line = f"The flip is {_inr(flip)}, one strike from price."
+    elif flip > 0:
+        flip_line = f"The flip is {_inr(flip)}."
+    else:
+        flip_line = ""
+    snap_clause = ""
+    if snap_as_of and _hms(snap_as_of) != _hms(time_str):
+        snap_clause = f"The gamma snapshot is from {snap_as_of}."
+    sit = (
+        "The index can still rise, fall, or simply sit. "
+        "Sitting is the quiet loss, because the premium ticks away while you wait."
+    )
 
     def pack(**kwargs) -> dict:
         out = {
@@ -255,6 +280,21 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         }
         out.update(kwargs)
         return out
+
+    def _voice(scenario, badge, theme, headline, outcome, drivers, risk):
+        return pack(
+            scenario=scenario,
+            badge=badge,
+            theme=theme,
+            headline=headline,
+            meaning="",
+            outcome=outcome,
+            drivers=drivers,
+            risk=risk,
+            body=outcome,
+            action=risk,
+            diagnostics=drivers,
+        )
 
     if is_morning:
         pm = dash.get("pre_market") or {}
@@ -268,182 +308,245 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             cvd_txt = f"{float(cvd_raw):+,.0f}" if cvd_raw is not None and cvd_raw != "" else "—"
         except (TypeError, ValueError):
             cvd_txt = "—"
-        body = str(pm.get("status_text") or "").strip() or (
-            f"Previous NSE close versus call wall {_inr(cw)}, put wall {_inr(pw)}, flip {_inr(flip)}. "
-            "This is the last published book."
+        brief = str(pm.get("status_text") or "").strip() or (
+            f"The last close stands against call wall {_inr(cw)}, put wall {_inr(pw)}, and flip {_inr(flip)}."
         )
-        return pack(
-            scenario="MORNING_BRIEFING",
-            badge="🌅 PRIOR-SESSION BOOK",
-            theme="alert-tape-spark",
-            headline="MORNING BRIEFING — PRIOR-SESSION BOOK",
-            meaning=(
-                "The saved book is not the last session. The close is withheld."
-                if stale_book
-                else "Yesterday's walls and flip, before the cash open."
-            ),
-            body=body,
-            action="Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
-            diagnostics=f"OI as of {oi} · FII {fii} · prior CVD {cvd_txt} · CW {_inr(cw)} · PW {_inr(pw)} · flip {_inr(flip)}",
+        extras = [f"Open interest is as of {oi}."]
+        if fii and fii != "—":
+            extras.append(f"FII bias is {fii}.")
+        if cvd_txt != "—":
+            extras.append(f"Yesterday's futures delta was {cvd_txt}.")
+        if stale_book:
+            outcome = (
+                "Do not buy a call or a put off this snapshot. The saved book is not yesterday's close, "
+                "so the close number is withheld. Premium paid on a withheld close is a guess."
+            )
+        else:
+            outcome = (
+                "Do not buy a call or a put yet. This is yesterday's book, and options do not open until 09:15. "
+                "You would be paying premium on a map that can change at the bell."
+            )
+        return _voice(
+            "MORNING_BRIEFING",
+            "🌅 YESTERDAY'S BOOK",
+            "alert-tape-spark",
+            "Before the open",
+            outcome,
+            _say(brief, f"Call wall {_inr(cw)}. Put wall {_inr(pw)}.", flip_line, book, *extras),
+            "Cash auction starts at 09:00 and the opening price prints near 09:08. "
+            "Wait for that print before you treat a gap as real. A gap can reverse, "
+            "and the option still needs a move large enough to cover what you paid.",
         )
 
     if is_pre_bell:
         discovered = bool((dash.get("pre_market") or {}).get("is_discovered"))
-        return pack(
-            scenario="PRE_OPEN_SETUP",
-            badge="🔔 PRE-OPEN DISCOVERED" if discovered else "🔔 PRE-OPEN SETUP",
-            theme="alert-tape-warn",
-            headline="PRE-OPEN — PRIOR-SESSION STRUCTURE",
-            meaning="Auction is still on yesterday's walls until 09:15.",
-            body=(
-                f"Cash auction is running (09:00–09:15). Call wall {_inr(cw)} / put wall {_inr(pw)} / "
-                f"flip {_inr(flip)} are last published GEX concentration, not live hedging. "
-                "are last published gamma concentration. Equilibrium prints ~09:08."
+        return _voice(
+            "PRE_OPEN_SETUP",
+            "🔔 OPENING PRICE IN" if discovered else "🔔 PRE-OPEN",
+            "alert-tape-warn",
+            "Pre-open auction",
+            "Stay out of a call and stay out of a put until 09:15. The auction is still running on yesterday's walls, "
+            "and a fill now is premium paid on a map the open can rewrite.",
+            _say(
+                f"The auction runs from 09:00 to 09:15. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
+                flip_line,
+                f"The opening price prints near 09:08. Price on the screen is {_inr(spot)}.",
+                book,
+                snap_clause,
             ),
-            action=(
-                "Map the 09:08 print vs walls. Do not chase until regular session 09:15."
-                if discovered
-                else "Hold the prior-session map. Wait for 09:08 equilibrium before treating any gap as real."
-            ),
-            diagnostics=f"Spot: {_inr(spot)} · CW: {_inr(cw)} · PW: {_inr(pw)}{snap_note}",
+            "Compare the 09:08 price with these walls, and still wait for options to open at 09:15."
+            if discovered
+            else "Wait for the 09:08 print before you treat a gap as real. The option you buy still needs a move large enough to cover the premium.",
         )
 
     if is_closed:
-        return pack(
-            scenario="MARKET_CLOSED",
-            badge="🌙 SESSION CLOSED",
-            theme="alert-tape-spark",
-            headline="SESSION CLOSED — EOD SETTLEMENT FROZEN",
-            meaning="Last published book. Nothing here is a live hedge.",
-            body=(
-                "Market session concluded at 15:30 IST. Walls and gamma profiles are frozen at the last "
-                "published snapshot. The book is frozen. Nothing is being hedged live."
+        return _voice(
+            "MARKET_CLOSED",
+            "🌙 SESSION CLOSED",
+            "alert-tape-spark",
+            "Session closed",
+            "Do not buy a new option off this screen. Cash closed at 15:30, and this is the last snapshot. "
+            "A long option held overnight can gap against you while the premium keeps decaying.",
+            _say(
+                f"Price is {_inr(spot)}. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
+                flip_line,
+                book,
+                snap_clause,
             ),
-            action=f"Review EOD buildup and walls (CW: {_inr(cw)}, PW: {_inr(pw)}). Prepare the next-session plan.",
-            diagnostics=f"Spot: {_inr(spot)} · CW: {_inr(cw)} · PW: {_inr(pw)}{snap_note}",
+            "Use these strikes to plan the next session. A new buy waits for the next open.",
         )
 
+    pts = f"{geo['through_pts']:.0f}"
+    magnet = _inr(geo.get("magnet") or cw or pw)
     zone_copy = {
         "BELOW_MAGNET": {
             "scenario": "BELOW_SUPPORT",
-            "badge": "📉 BELOW GEX MAGNET",
+            "badge": "📉 BELOW THE CLUSTER",
             "theme": "alert-tape-stop",
-            "headline": "BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE",
-            "meaning": "Spot is through the only gamma cluster. It is not a pin.",
-            "body": (
-                f"Spot is {geo['through_pts']:.0f} pts through the single gamma cluster at {_inr(geo.get('magnet') or pw)}. "
-                "This is concentration, not a floor."
+            "headline": "Price is under the only big gamma strike",
+            "outcome": (
+                f"Stay out of a call. The only big gamma strike is up at {magnet}, {pts} points above price. "
+                "A call needs the index to climb back there, and this print does not give you that climb. "
+                "If the fall continues, the call can end up worth nothing."
             ),
-            "action": "Do not treat the cluster as a pin. Wait for a reclaim or a fresh Sentinel absorption print.",
+            "drivers": _say(
+                "Calls and puts are piled on that one strike.",
+                book, flip_line, breadth_line, sit,
+            ),
+            "risk": (
+                f"If you already hold a call, exit the idea while price stays below {magnet}. "
+                "Wait until price is back above that strike before you pay for a rise."
+            ),
         },
         "ABOVE_MAGNET": {
             "scenario": "ABOVE_RESISTANCE",
-            "badge": "🔥 ABOVE GEX MAGNET",
+            "badge": "🔥 ABOVE THE CLUSTER",
             "theme": "alert-tape-spark",
-            "headline": "ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE",
-            "meaning": "Spot is through the only gamma cluster. It is not a squeeze.",
-            "body": (
-                f"Spot is {geo['through_pts']:.0f} pts through the single gamma cluster at {_inr(geo.get('magnet') or cw)}. "
-                "A break of the cluster is a location, not a squeeze."
+            "headline": "Price is over the only big gamma strike",
+            "outcome": (
+                f"Stay out of a put that needs price to fall back to {magnet}. "
+                f"Price is {pts} points above that only big gamma strike. "
+                "A put bought here still needs a fall large enough to cover the premium."
             ),
-            "action": "Do not treat the cluster as intact. Wait until spot is back inside one strike step.",
+            "drivers": _say("Calls and puts share that one strike.", book, flip_line, breadth_line, sit),
+            "risk": (
+                f"A call bought above {magnet} still needs a further rise to pay for itself. "
+                "Treat the strike as back in play only when price is within one strike of it again."
+            ),
         },
         "TEST_MAGNET": {
             "scenario": "TEST_MAGNET",
-            "badge": "⚖️ AT GEX MAGNET",
+            "badge": "⚖️ ONE STRIKE",
             "theme": "alert-tape-warn",
-            "headline": "AT GEX MAGNET — NO WALL CORRIDOR",
-            "meaning": "Call and put concentration share one strike. There is no corridor.",
-            "body": (
-                f"Call and put concentration sit on the same strike {_inr(geo.get('magnet') or cw)}. "
-                "There is no corridor between two strikes."
+            "headline": "Call and put gamma share one strike",
+            "outcome": (
+                f"Stay out of a call and stay out of a put. Call gamma and put gamma sit on one strike, {magnet}, "
+                "so there is no range to trade. While you wait for the strikes to split, the premium ticks away."
             ),
-            "action": "Stand aside on fade templates until the call and put strikes split. Use Sentinel for tape.",
+            "drivers": _say(book, flip_line, breadth_line, sit),
+            "risk": "Wait until the call strike and the put strike separate. Until then you are paying to wait.",
         },
         "BELOW_PUT_WALL": {
             "scenario": "BELOW_SUPPORT",
-            "badge": "📉 PUT WALL BREACHED",
+            "badge": "📉 UNDER PUT WALL",
             "theme": "alert-tape-stop",
-            "headline": "BELOW PUT-WALL CONCENTRATION",
-            "meaning": "The put-gamma strike is already behind price.",
-            "body": (
-                f"Spot is {geo['through_pts']:.0f} pts through the put-gamma strike {_inr(pw)}. "
-                "The strike is already behind price. It is not a floor."
+            "headline": "Put wall is behind price",
+            "outcome": (
+                f"Do not buy a call as a dip. The put wall at {_inr(pw)} is already {pts} points above price, "
+                "so it is not holding the market up. If the fall continues, the call premium can go to zero."
             ),
-            "action": "Do not buy dips as if the strike is holding. Look for a reclaim or a confirmed absorption print.",
+            "drivers": _say(f"The call wall is {_inr(cw)}.", flip_line, book, breadth_line, sit),
+            "risk": (
+                f"A call you already hold is on the wrong side of {_inr(pw)}. "
+                "A new put is late: the break you would be buying has already happened, and you still pay full premium."
+            ),
         },
         "ABOVE_CALL_WALL": {
             "scenario": "ABOVE_RESISTANCE",
-            "badge": "🔥 CALL WALL BREACHED",
+            "badge": "🔥 OVER CALL WALL",
             "theme": "alert-tape-spark",
-            "headline": "ABOVE CALL-WALL CONCENTRATION",
-            "meaning": "The call-gamma strike is already behind price.",
-            "body": (
-                f"Spot is {geo['through_pts']:.0f} pts through the call-gamma strike {_inr(cw)}. "
-                "The strike is already behind price. It is not trapped-seller proof."
+            "headline": "Call wall is behind price",
+            "outcome": (
+                f"Do not buy a put expecting price to fall back to {_inr(cw)}. "
+                f"Price is {pts} points above that call wall, so the strike is already behind you."
             ),
-            "action": "Do not treat the strike as intact. Wait for a close back inside the cluster or Sentinel exhaustion.",
+            "drivers": _say(f"The put wall is {_inr(pw)}.", flip_line, book, breadth_line),
+            "risk": (
+                f"A put here needs a fall back through {_inr(cw)}, or the premium decays while you wait. "
+                "A call bought after the break still needs a further rise big enough to pay for that premium."
+            ),
         },
         "TEST_PUT": {
             "scenario": "TEST_PUT",
-            "badge": "🚨 PUT WALL TEST",
+            "badge": "🚨 TESTING PUT WALL",
             "theme": "alert-tape-stop",
-            "headline": "TESTING PUT-WALL CONCENTRATION",
-            "meaning": "Within one strike step of the put wall. A touch is not a floor.",
-            "body": (
-                f"Spot is within one strike step of the put-gamma strike {_inr(pw)}. "
-                "Watch absorption versus a sweep. A touch is not a floor."
+            "headline": "Price is at the put wall",
+            "outcome": (
+                f"Stay out of a call. Price has reached the put wall at {_inr(pw)}. "
+                "You pay the premium up front for a rise, and reaching that strike does not give you the rise. "
+                "If the fall continues, the call can end up worth nothing."
             ),
-            "action": "Do not fade the strike. Cut the idea if price prints through by more than one step.",
+            "drivers": _say(
+                f"Price is within one strike of {_inr(pw)}. The call wall is {_inr(cw)}.",
+                flip_line, book, breadth_line, sit,
+            ),
+            "risk": (
+                f"If you already hold a call, exit it when price goes more than one strike below {_inr(pw)}. "
+                "Buying a put only because price reached the strike still needs the index to fall far enough to cover what you paid."
+            ),
         },
         "TEST_CALL": {
             "scenario": "TEST_CALL",
-            "badge": "🔥 CALL WALL TEST",
+            "badge": "🔥 TESTING CALL WALL",
             "theme": "alert-tape-spark",
-            "headline": "TESTING CALL-WALL CONCENTRATION",
-            "meaning": "Within one strike step of the call wall. A touch is not a squeeze.",
-            "body": (
-                f"Spot is within one strike step of the call-gamma strike {_inr(cw)}. "
-                "Watch absorption versus continuation. A touch is not a squeeze."
+            "headline": "Price is at the call wall",
+            "outcome": (
+                f"Stay out of a call for now. Price has reached the call wall at {_inr(cw)}. "
+                "You would be paying for a further rise, and reaching the strike does not give you that rise. "
+                "If price turns down, the premium is the loss."
             ),
-            "action": "Do not assume a squeeze on a touch. Need a 5-min hold through the strike plus tape confirmation.",
+            "drivers": _say(
+                f"Price is within one strike of {_inr(cw)}. The put wall is {_inr(pw)}.",
+                flip_line, book, breadth_line,
+            ),
+            "risk": (
+                f"A call only stays in play after price holds above {_inr(cw)} for 5 minutes and the orderflow tape agrees. "
+                "If it fails there, exit. A put bought into that high still needs the index to fall back through the strike "
+                "far enough to cover what you paid."
+            ),
         },
         "PINNED": {
             "scenario": "SIDEWAYS_CHOP",
-            "badge": "⚖️ RANGE BETWEEN WALLS",
+            "badge": "⚖️ BETWEEN WALLS",
             "theme": "alert-tape-warn",
-            "headline": "BETWEEN WALL CONCENTRATIONS",
-            "meaning": "Spot is inside the corridor. The corridor is a map, not a fade.",
-            "body": (
-                f"Spot is inside the corridor {_inr(pw)}–{_inr(cw)}. "
-                "The corridor is a map. It is not a reason to fade either strike."
+            "headline": "Price is between the walls",
+            "outcome": (
+                f"Do not buy a call near {_inr(cw)} or a put near {_inr(pw)} just because price is in the middle. "
+                "While it stays between the walls, the premium you paid ticks away."
             ),
-            "action": "Do not fade the edges because price is between the strikes. Use Sentinel tape for direction.",
+            "drivers": _say(
+                f"Price sits between the put wall at {_inr(pw)} and the call wall at {_inr(cw)}.",
+                flip_line, book, breadth_line, sit,
+            ),
+            "risk": (
+                f"A call needs price to clear {_inr(cw)}. A put needs price to clear {_inr(pw)}. "
+                "Until one of those happens, you are paying to wait."
+            ),
         },
         "UNSITUATED": {
             "scenario": "UNSITUATED",
-            "badge": "⚖️ STRUCTURE UNCLEAR",
+            "badge": "⚖️ WALLS UNCLEAR",
             "theme": "alert-tape-warn",
-            "headline": "WALL GEOMETRY UNCLEAR",
-            "meaning": "The strikes do not form a clean corridor around spot.",
-            "body": "Call/put concentrations do not form a clean corridor around spot. No pin or breach claim.",
-            "action": "Stand aside on wall templates. Use Sentinel tape and wait for structure.",
+            "headline": "No clean range around price",
+            "outcome": (
+                "Stay out of a call and stay out of a put that depend on a wall. "
+                "The call strike and the put strike do not form a range around price, "
+                "so there is no level here that pays for the premium."
+            ),
+            "drivers": _say(
+                f"Price is {_inr(spot)}. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
+                flip_line, book, breadth_line,
+            ),
+            "risk": (
+                "Wait until the strikes line up. Until then the orderflow tape is the only read, "
+                "and a premium paid on an unclear map can go to zero while you wait."
+            ),
         },
         "UNKNOWN": {
             "scenario": "UNSITUATED",
-            "badge": "⚖️ NO SPOT",
+            "badge": "⚖️ NO PRICE",
             "theme": "alert-tape-warn",
-            "headline": "NO LIVE SPOT",
-            "meaning": "The tape cannot place price against the walls.",
-            "body": "Tape cannot locate price vs walls.",
-            "action": "Wait for a live quote.",
+            "headline": "Waiting for a live quote",
+            "outcome": "Wait for a live price. There is nothing to buy until the tape can place the index against the walls.",
+            "drivers": "The walls may be on the screen, but price is missing.",
+            "risk": "A premium paid without a live price is a guess.",
         },
     }
     base = dict(zone_copy.get(zone) or zone_copy["UNSITUATED"])
 
     if sig:
-        insight = str(sig.get("insight_text") or _signal_label(sig))
-        play = str(sig.get("actionable_play") or "").strip()
+        insight = str(sig.get("insight_text") or _signal_label(sig)).strip().rstrip(".")
+        play = str(sig.get("actionable_play") or "").strip().rstrip(".")
         inval = _f(sig.get("invalidation_level"))
         cat = str(sig.get("category") or "").upper()
         theme = base["theme"]
@@ -453,44 +556,37 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             theme = "alert-tape-stop"
         elif cat == "CAUTION":
             theme = "alert-tape-warn"
-        action = play or base["action"]
-        if inval > 0 and "invalidat" not in action.lower():
-            action = f"{action} Invalidation {_inr(inval)}."
+        drivers = base["drivers"]
+        if insight:
+            drivers = f"The orderflow tape just printed: {insight}. {drivers}"
+        risk = base["risk"]
+        if inval > 0:
+            risk = f"That tape idea is finished if price gets back through {_inr(inval)}. {risk}"
+        if play and play.lower() not in risk.lower():
+            risk = f"{risk} {play}."
         base.update(
             scenario="TAPE_" + str(sig.get("type") or "SIGNAL"),
             badge=f"📡 {_signal_label(sig)} · {base['badge'].split(' ', 1)[-1]}",
             theme=theme,
-            headline=f"{_signal_label(sig)} · {base['headline']}",
-            body=f"{insight} Geometry: {base['body']}",
-            action=action,
+            drivers=drivers,
+            risk=risk,
         )
 
     if is_expiry_blast:
-        base["badge"] = f"⚡ 0DTE BLAST {blast_score} · " + str(base.get("badge") or "")
-        base["body"] = (
-            f"Expiry gamma-blast score {blast_score}/100 (parity crossover watch, not dealer sign). "
-            + base["body"]
+        base["badge"] = f"⚡ EXPIRY BLAST {blast_score} · " + str(base.get("badge") or "")
+        base["drivers"] = (
+            f"It is expiry day, and the blast score is {blast_score} out of 100. "
+            "That is a parity watch: it checks whether call and put prices still line up. "
+            "It does not pay for a call or a put. "
+            + base["drivers"]
         )
 
-    flip_bit = f" · Flip {_inr(flip)}" if flip > 0 else ""
-    if near_flip:
-        flip_bit += " · within 1 step of flip (writer-imbalance map, unvalidated)"
-    blast_bit = f" · Blast {blast_score}/100"
-    if blast.get("is_expiry"):
-        blast_bit += " 0DTE"
-    sig_bit = ""
-    if sig:
-        sig_bit = f" · {_signal_label(sig)} {int(sig.get('score') or 0)}/{max(1, int(sig.get('_age_s') or 0)):.0f}s"
-
-    return pack(
-        scenario=base["scenario"],
-        badge=base["badge"],
-        theme=base["theme"],
-        headline=base["headline"],
-        meaning=base.get("meaning") or "",
-        body=base["body"],
-        action=base["action"],
-        diagnostics=(
-            f"Spot {_inr(spot)} · CW {_inr(cw)} · PW {_inr(pw)}{flip_bit}{blast_bit}{sig_bit} · {bdiag} · {regime}"
-        ),
+    return _voice(
+        base["scenario"],
+        base["badge"],
+        base["theme"],
+        base["headline"],
+        base["outcome"],
+        base["drivers"],
+        base["risk"],
     )

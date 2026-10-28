@@ -6,7 +6,7 @@
   <title>Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
   <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.18">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.20">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function() {
@@ -464,21 +464,19 @@
           </div>
 
           <div class="cockpit-tape-row">
-            <div id="cockpit-alert-tape" class="alert-tape-marquee-container alert-tape-warn">
+            <div id="cockpit-alert-tape" class="alert-tape alert-tape-warn">
               <div class="alert-tape-anchor-left">
                 <span class="alert-live-pulse-dot"></span>
                 <span id="alert-tape-timestamp" class="alert-tape-timestamp">--:--:-- IST</span>
-                <span id="alert-tape-badge" class="alert-tape-badge">INITIALIZING STATE</span>
+                <span id="alert-tape-badge" class="alert-tape-badge">STARTING</span>
               </div>
-              <div class="alert-marquee-viewport">
-                <div id="alert-marquee-track" class="alert-marquee-track">
-                  <span class="alert-marquee-item">
-                    <span class="marquee-headline">EVALUATING MARKET REGIME</span>
-                    <span class="marquee-meaning">Waiting for the first book.</span>
-                    Reading the call−put book, orderflow, and breadth...
-                    <span class="marquee-action-tag">👉 ACTION: Monitoring opening flow</span>
-                    <span class="marquee-telemetry">[Calibrating LKGS Snapshot]</span>
-                  </span>
+              <div class="alert-tape-message">
+                <div id="alert-tape-track" class="alert-tape-track">
+                  <div class="alert-tape-line">
+                    <p class="tape-odr-line"><span class="tape-odr-label">Outcome</span> Waiting for a live price. There is nothing to buy yet.</p>
+                    <p class="tape-odr-line"><span class="tape-odr-label">Drivers</span> The walls and the orderflow tape are still loading.</p>
+                    <p class="tape-odr-line"><span class="tape-odr-label">Risk</span> A premium paid before a live price is a guess.</p>
+                  </div>
                 </div>
               </div>
               <div class="alert-tape-anchor-right">
@@ -2121,6 +2119,6 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
-  <script src="/static/js/cockpit.js?v=6.36"></script>
+  <script src="/static/js/cockpit.js?v=6.38"></script>
 </body>
 </html>
