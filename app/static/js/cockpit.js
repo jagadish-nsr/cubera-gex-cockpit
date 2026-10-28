@@ -1472,7 +1472,7 @@
         }
       }
 
-      // Update Flashing Sideways Marquee Alert Tape
+      // Update the alert tape message
       updateMarketAlertTape(data);
     } catch (e) {
       console.error("Error loading cockpit:", e);
@@ -1985,7 +1985,7 @@
   }
 
   // -------------------------------------------------------------------------
-  // Institutional Market Alert State Evaluator & Marquee Tape Renderer
+  // Alert tape: one plain sentence, the levels, and one next step.
   // -------------------------------------------------------------------------
   const TAPE_HOLD_MS = 75000;
   const TAPE_SIGNAL_MIN_SCORE = 70;
@@ -2091,7 +2091,6 @@
     const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
-    const ratio = Number(breadth.ratio || 1.0);
     const nowTs = state.replayMode && Number.isFinite(state.replayAsOf) ? state.replayAsOf : Date.now() / 1000;
 
     const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
@@ -2117,8 +2116,6 @@
     const zone = geo.zone;
     const nearFlip = flip > 0 && Math.abs(spot - flip) <= step;
     const sig = (isPreBell || isClosed) ? null : pickFreshTapeSignal(dash.orderflow_alerts, nowTs);
-    const bdiag = `sectors ${adv}/${dec} vs prior close (context, not flow) · ratio ${ratio.toFixed(2)}x`;
-
     const pack = (fields) => Object.assign({
       timestamp: timeStr,
       zone,
@@ -2127,6 +2124,36 @@
       signal_score: sig ? Number(sig.score || 0) : 0,
     }, fields);
 
+    const bookLine = regime === "POSITIVE"
+      ? "Call-heavy: calls hold more gamma."
+      : regime === "NEGATIVE"
+        ? "Put-heavy: puts hold more gamma."
+        : "";
+    const breadthLine = (adv || dec) ? `Breadth is ${adv} up and ${dec} down.` : "";
+    const flipLine = !(flip > 0)
+      ? ""
+      : nearFlip
+        ? `The flip is ${tapeInr(flip)}, one strike from price.`
+        : `The flip is ${tapeInr(flip)}.`;
+    const snapClause = snapAsOf && hmsOf(snapAsOf) !== hmsOf(timeStr)
+      ? `The gamma snapshot is from ${snapAsOf}.`
+      : "";
+    const sit = "The index can still rise, fall, or simply sit. Sitting is the quiet loss, because the premium ticks away while you wait.";
+    const say = (...parts) => parts.map((p) => String(p || "").trim()).filter(Boolean).join(" ");
+    const voice = (scenario, badge, theme, headline, outcome, drivers, risk) => pack({
+      scenario,
+      badge,
+      theme,
+      headline,
+      meaning: "",
+      outcome,
+      drivers,
+      risk,
+      body: outcome,
+      action: risk,
+      diagnostics: drivers,
+    });
+
     if (isMorning) {
       const pm = dash.pre_market || {};
       const oi = String(pm.oi_as_of_display || formatValidStamp(pm.oi_as_of) || snapAsOf || "unavailable");
@@ -2134,178 +2161,181 @@
       const fii = pm.fii_bias || "—";
       const cvdNum = Number(pm.prior_session_cvd);
       const cvdTxt = Number.isFinite(cvdNum) ? (cvdNum >= 0 ? "+" : "") + cvdNum.toFixed(0) : "—";
-      const brief = String(pm.status_text || "").trim();
-      return pack({
-        scenario: "MORNING_BRIEFING",
-        badge: "🌅 PRIOR-SESSION BOOK",
-        theme: "alert-tape-spark",
-        headline: "MORNING BRIEFING — PRIOR-SESSION BOOK",
-        meaning: staleBook
-          ? "The saved book is not the last session. The close is withheld."
-          : "Yesterday's walls and flip, before the cash open.",
-        body: brief || `Previous NSE close versus call wall ${tapeInr(cw)}, put wall ${tapeInr(pw)}, flip ${tapeInr(flip)}. This is the last published book.`,
-        action: "Cash pre-open is 09:00. Equilibrium prints ~09:08. F&O opens 09:15.",
-        diagnostics: `OI as of ${oi} · FII ${fii} · prior CVD ${cvdTxt} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)} · flip ${tapeInr(flip)}`,
-      });
+      const brief = String(pm.status_text || "").trim()
+        || `The last close stands against call wall ${tapeInr(cw)}, put wall ${tapeInr(pw)}, and flip ${tapeInr(flip)}.`;
+      const extras = [`Open interest is as of ${oi}.`];
+      if (fii && fii !== "—") extras.push(`FII bias is ${fii}.`);
+      if (cvdTxt !== "—") extras.push(`Yesterday's futures delta was ${cvdTxt}.`);
+      const outcome = staleBook
+        ? "Do not buy a call or a put off this snapshot. The saved book is not yesterday's close, so the close number is withheld. Premium paid on a withheld close is a guess."
+        : "Do not buy a call or a put yet. This is yesterday's book, and options do not open until 09:15. You would be paying premium on a map that can change at the bell.";
+      return voice(
+        "MORNING_BRIEFING",
+        "🌅 YESTERDAY'S BOOK",
+        "alert-tape-spark",
+        "Before the open",
+        outcome,
+        say(brief, `Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, extras.join(" ")),
+        "Cash auction starts at 09:00 and the opening price prints near 09:08. Wait for that print before you treat a gap as real. A gap can reverse, and the option still needs a move large enough to cover what you paid.",
+      );
     }
 
     if (isPreBell) {
       const discovered = Boolean(dash.pre_market && dash.pre_market.is_discovered);
-      return pack({
-        scenario: "PRE_OPEN_SETUP",
-        badge: discovered ? "🔔 PRE-OPEN DISCOVERED" : "🔔 PRE-OPEN SETUP",
-        theme: "alert-tape-warn",
-        headline: "PRE-OPEN — PRIOR-SESSION STRUCTURE",
-        meaning: "Auction is still on yesterday's walls until 09:15.",
-        body: `Cash auction is running (09:00–09:15). Call wall ${tapeInr(cw)} / put wall ${tapeInr(pw)} / flip ${tapeInr(flip)} are last published gamma concentration. Equilibrium prints ~09:08.`,
-        action: discovered
-          ? "Map the 09:08 print vs walls. Do not chase until regular session 09:15."
-          : "Hold the prior-session map. Wait for 09:08 equilibrium before treating any gap as real.",
-        diagnostics: `Spot: ${tapeInr(spot)} · CW: ${tapeInr(cw)} · PW: ${tapeInr(pw)}${snapNote}`,
-      });
+      return voice(
+        "PRE_OPEN_SETUP",
+        discovered ? "🔔 OPENING PRICE IN" : "🔔 PRE-OPEN",
+        "alert-tape-warn",
+        "Pre-open auction",
+        "Stay out of a call and stay out of a put until 09:15. The auction is still running on yesterday's walls, and a fill now is premium paid on a map the open can rewrite.",
+        say(
+          `The auction runs from 09:00 to 09:15. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`,
+          flipLine,
+          `The opening price prints near 09:08. Price on the screen is ${tapeInr(spot)}.`,
+          bookLine,
+          snapClause,
+        ),
+        discovered
+          ? "Compare the 09:08 price with these walls, and still wait for options to open at 09:15."
+          : "Wait for the 09:08 print before you treat a gap as real. The option you buy still needs a move large enough to cover the premium.",
+      );
     }
 
     if (isClosed) {
-      return pack({
-        scenario: "MARKET_CLOSED",
-        badge: "🌙 SESSION CLOSED",
-        theme: "alert-tape-spark",
-        headline: "SESSION CLOSED — EOD SETTLEMENT FROZEN",
-        meaning: "Last published book. Nothing here is a live hedge.",
-        body: "Market session concluded at 15:30 IST. Walls and gamma profiles are frozen at the last published snapshot. The book is frozen. Nothing is being hedged live.",
-        action: `Review EOD buildup and walls (CW: ${tapeInr(cw)}, PW: ${tapeInr(pw)}). Prepare the next-session plan.`,
-        diagnostics: `Spot: ${tapeInr(spot)} · CW: ${tapeInr(cw)} · PW: ${tapeInr(pw)}${snapNote}`,
-      });
+      return voice(
+        "MARKET_CLOSED",
+        "🌙 SESSION CLOSED",
+        "alert-tape-spark",
+        "Session closed",
+        "Do not buy a new option off this screen. Cash closed at 15:30, and this is the last snapshot. A long option held overnight can gap against you while the premium keeps decaying.",
+        say(`Price is ${tapeInr(spot)}. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, snapClause),
+        "Use these strikes to plan the next session. A new buy waits for the next open.",
+      );
     }
 
+    const pts = String(Math.round(geo.through_pts || 0));
+    const magnet = tapeInr(geo.magnet || cw || pw);
     const zoneCopy = {
       BELOW_MAGNET: {
         scenario: "BELOW_SUPPORT",
-        badge: "📉 BELOW GEX MAGNET",
+        badge: "📉 BELOW THE CLUSTER",
         theme: "alert-tape-stop",
-        headline: "BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE",
-        meaning: "Spot is through the only gamma cluster. It is not a pin.",
-        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || pw)}. This is concentration, not a floor.`,
-        action: "Do not treat the cluster as a pin. Wait for a reclaim or a fresh Sentinel absorption print.",
+        headline: "Price is under the only big gamma strike",
+        outcome: `Stay out of a call. The only big gamma strike is up at ${magnet}, ${pts} points above price. A call needs the index to climb back there, and this print does not give you that climb. If the fall continues, the call can end up worth nothing.`,
+        drivers: say("Calls and puts are piled on that one strike.", bookLine, flipLine, breadthLine, sit),
+        risk: `If you already hold a call, exit the idea while price stays below ${magnet}. Wait until price is back above that strike before you pay for a rise.`,
       },
       ABOVE_MAGNET: {
         scenario: "ABOVE_RESISTANCE",
-        badge: "🔥 ABOVE GEX MAGNET",
+        badge: "🔥 ABOVE THE CLUSTER",
         theme: "alert-tape-spark",
-        headline: "ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE",
-        meaning: "Spot is through the only gamma cluster. It is not a squeeze.",
-        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the single gamma cluster at ${tapeInr(geo.magnet || cw)}. A break of the cluster is a location, not a squeeze.`,
-        action: "Do not treat the cluster as intact. Wait until spot is back inside one strike step.",
+        headline: "Price is over the only big gamma strike",
+        outcome: `Stay out of a put that needs price to fall back to ${magnet}. Price is ${pts} points above that only big gamma strike. A put bought here still needs a fall large enough to cover the premium.`,
+        drivers: say("Calls and puts share that one strike.", bookLine, flipLine, breadthLine, sit),
+        risk: `A call bought above ${magnet} still needs a further rise to pay for itself. Treat the strike as back in play only when price is within one strike of it again.`,
       },
       TEST_MAGNET: {
         scenario: "TEST_MAGNET",
-        badge: "⚖️ AT GEX MAGNET",
+        badge: "⚖️ ONE STRIKE",
         theme: "alert-tape-warn",
-        headline: "AT GEX MAGNET — NO WALL CORRIDOR",
-        meaning: "Call and put concentration share one strike. There is no corridor.",
-        body: `Call and put concentration sit on the same strike ${tapeInr(geo.magnet || cw)}. There is no corridor between two strikes.`,
-        action: "Stand aside on fade templates until the call and put strikes split. Use Sentinel for tape.",
+        headline: "Call and put gamma share one strike",
+        outcome: `Stay out of a call and stay out of a put. Call gamma and put gamma sit on one strike, ${magnet}, so there is no range to trade. While you wait for the strikes to split, the premium ticks away.`,
+        drivers: say(bookLine, flipLine, breadthLine, sit),
+        risk: "Wait until the call strike and the put strike separate. Until then you are paying to wait.",
       },
       BELOW_PUT_WALL: {
         scenario: "BELOW_SUPPORT",
-        badge: "📉 PUT WALL BREACHED",
+        badge: "📉 UNDER PUT WALL",
         theme: "alert-tape-stop",
-        headline: "BELOW PUT-WALL CONCENTRATION",
-        meaning: "The put-gamma strike is already behind price.",
-        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the put-gamma strike ${tapeInr(pw)}. The strike is already behind price. It is not a floor.`,
-        action: "Do not buy dips as if the strike is holding. Look for a reclaim or a confirmed absorption print.",
+        headline: "Put wall is behind price",
+        outcome: `Do not buy a call as a dip. The put wall at ${tapeInr(pw)} is already ${pts} points above price, so it is not holding the market up. If the fall continues, the call premium can go to zero.`,
+        drivers: say(`The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
+        risk: `A call you already hold is on the wrong side of ${tapeInr(pw)}. A new put is late: the break you would be buying has already happened, and you still pay full premium.`,
       },
       ABOVE_CALL_WALL: {
         scenario: "ABOVE_RESISTANCE",
-        badge: "🔥 CALL WALL BREACHED",
+        badge: "🔥 OVER CALL WALL",
         theme: "alert-tape-spark",
-        headline: "ABOVE CALL-WALL CONCENTRATION",
-        meaning: "The call-gamma strike is already behind price.",
-        body: `Spot is ${Math.round(geo.through_pts || 0)} pts through the call-gamma strike ${tapeInr(cw)}. The strike is already behind price. It is not trapped-seller proof.`,
-        action: "Do not treat the strike as intact. Wait for a close back inside the cluster or Sentinel exhaustion.",
+        headline: "Call wall is behind price",
+        outcome: `Do not buy a put expecting price to fall back to ${tapeInr(cw)}. Price is ${pts} points above that call wall, so the strike is already behind you.`,
+        drivers: say(`The put wall is ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
+        risk: `A put here needs a fall back through ${tapeInr(cw)}, or the premium decays while you wait. A call bought after the break still needs a further rise big enough to pay for that premium.`,
       },
       TEST_PUT: {
         scenario: "TEST_PUT",
-        badge: "🚨 PUT WALL TEST",
+        badge: "🚨 TESTING PUT WALL",
         theme: "alert-tape-stop",
-        headline: "TESTING PUT-WALL CONCENTRATION",
-        meaning: "Within one strike step of the put wall. A touch is not a floor.",
-        body: `Spot is within one strike step of the put-gamma strike ${tapeInr(pw)}. Watch absorption versus a sweep. A touch is not a floor.`,
-        action: "Do not fade the strike. Cut the idea if price prints through by more than one step.",
+        headline: "Price is at the put wall",
+        outcome: `Stay out of a call. Price has reached the put wall at ${tapeInr(pw)}. You pay the premium up front for a rise, and reaching that strike does not give you the rise. If the fall continues, the call can end up worth nothing.`,
+        drivers: say(`Price is within one strike of ${tapeInr(pw)}. The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
+        risk: `If you already hold a call, exit it when price goes more than one strike below ${tapeInr(pw)}. Buying a put only because price reached the strike still needs the index to fall far enough to cover what you paid.`,
       },
       TEST_CALL: {
         scenario: "TEST_CALL",
-        badge: "🔥 CALL WALL TEST",
+        badge: "🔥 TESTING CALL WALL",
         theme: "alert-tape-spark",
-        headline: "TESTING CALL-WALL CONCENTRATION",
-        meaning: "Within one strike step of the call wall. A touch is not a squeeze.",
-        body: `Spot is within one strike step of the call-gamma strike ${tapeInr(cw)}. Watch absorption versus continuation. A touch is not a squeeze.`,
-        action: "Do not assume a squeeze on a touch. Need a 5-min hold through the strike plus tape confirmation.",
+        headline: "Price is at the call wall",
+        outcome: `Stay out of a call for now. Price has reached the call wall at ${tapeInr(cw)}. You would be paying for a further rise, and reaching the strike does not give you that rise. If price turns down, the premium is the loss.`,
+        drivers: say(`Price is within one strike of ${tapeInr(cw)}. The put wall is ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
+        risk: `A call only stays in play after price holds above ${tapeInr(cw)} for 5 minutes and the orderflow tape agrees. If it fails there, exit. A put bought into that high still needs the index to fall back through the strike far enough to cover what you paid.`,
       },
       PINNED: {
         scenario: "SIDEWAYS_CHOP",
-        badge: "⚖️ RANGE BETWEEN WALLS",
+        badge: "⚖️ BETWEEN WALLS",
         theme: "alert-tape-warn",
-        headline: "BETWEEN WALL CONCENTRATIONS",
-        meaning: "Spot is inside the corridor. The corridor is a map, not a fade.",
-        body: `Spot is inside the corridor ${tapeInr(pw)}–${tapeInr(cw)}. The corridor is a map. It is not a reason to fade either strike.`,
-        action: "Do not fade the edges because price is between the strikes. Use Sentinel tape for direction.",
+        headline: "Price is between the walls",
+        outcome: `Do not buy a call near ${tapeInr(cw)} or a put near ${tapeInr(pw)} just because price is in the middle. While it stays between the walls, the premium you paid ticks away.`,
+        drivers: say(`Price sits between the put wall at ${tapeInr(pw)} and the call wall at ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
+        risk: `A call needs price to clear ${tapeInr(cw)}. A put needs price to clear ${tapeInr(pw)}. Until one of those happens, you are paying to wait.`,
       },
       UNSITUATED: {
         scenario: "UNSITUATED",
-        badge: "⚖️ STRUCTURE UNCLEAR",
+        badge: "⚖️ WALLS UNCLEAR",
         theme: "alert-tape-warn",
-        headline: "WALL GEOMETRY UNCLEAR",
-        meaning: "The strikes do not form a clean corridor around spot.",
-        body: "Call/put concentrations do not form a clean corridor around spot. No pin or breach claim.",
-        action: "Stand aside on wall templates. Use Sentinel tape and wait for structure.",
+        headline: "No clean range around price",
+        outcome: "Stay out of a call and stay out of a put that depend on a wall. The call strike and the put strike do not form a range around price, so there is no level here that pays for the premium.",
+        drivers: say(`Price is ${tapeInr(spot)}. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
+        risk: "Wait until the strikes line up. Until then the orderflow tape is the only read, and a premium paid on an unclear map can go to zero while you wait.",
       },
     };
     const base = Object.assign({}, zoneCopy[zone] || zoneCopy.UNSITUATED);
 
     if (sig) {
-      const insight = String(sig.insight_text || String(sig.type || "SIGNAL").replace(/_/g, " "));
-      let action = String(sig.actionable_play || "").trim() || base.action;
+      const insight = String(sig.insight_text || String(sig.type || "SIGNAL").replace(/_/g, " ")).replace(/\.+$/, "").trim();
+      const play = String(sig.actionable_play || "").trim().replace(/\.+$/, "");
       const inval = Number(sig.invalidation_level || 0);
-      if (inval > 0 && action.toLowerCase().indexOf("invalidat") < 0) {
-        action = `${action} Invalidation ${tapeInr(inval)}.`;
-      }
       const cat = String(sig.category || "").toUpperCase();
       let theme = base.theme;
       if (cat === "BULLISH") theme = "alert-tape-go";
       else if (cat === "BEARISH") theme = "alert-tape-stop";
       else if (cat === "CAUTION") theme = "alert-tape-warn";
       const sigName = String(sig.type || "SIGNAL").replace(/_/g, " ");
+      let drivers = base.drivers;
+      if (insight) drivers = `The orderflow tape just printed: ${insight}. ${drivers}`;
+      let risk = base.risk;
+      if (inval > 0) risk = `That tape idea is finished if price gets back through ${tapeInr(inval)}. ${risk}`;
+      if (play && risk.toLowerCase().indexOf(play.toLowerCase()) < 0) risk = `${risk} ${play}.`;
       base.scenario = "TAPE_" + String(sig.type || "SIGNAL");
       base.badge = `📡 ${sigName} · ${base.badge.split(" ").slice(1).join(" ")}`;
       base.theme = theme;
-      base.headline = `${sigName} · ${base.headline}`;
-      base.body = `${insight} Geometry: ${base.body}`;
-      base.action = action;
+      base.drivers = drivers;
+      base.risk = risk;
     }
 
     if (isExpiryBlast) {
-      base.badge = `⚡ 0DTE BLAST ${blastScore} · ${base.badge}`;
-      base.body = `Expiry gamma-blast score ${blastScore}/100 (parity crossover watch, not dealer sign). ${base.body}`;
+      base.badge = `⚡ EXPIRY BLAST ${blastScore} · ${base.badge}`;
+      base.drivers = `It is expiry day, and the blast score is ${blastScore} out of 100. That is a parity watch: it checks whether call and put prices still line up. It does not pay for a call or a put. ${base.drivers}`;
     }
 
-    let flipBit = flip > 0 ? ` · Flip ${tapeInr(flip)}` : "";
-    if (nearFlip) flipBit += " · within 1 step of flip (writer-imbalance map, unvalidated)";
-    let blastBit = ` · Blast ${blastScore}/100`;
-    if (blast.is_expiry) blastBit += " 0DTE";
-    let sigBit = "";
-    if (sig) sigBit = ` · ${String(sig.type).replace(/_/g, " ")} ${Number(sig.score || 0)}/${Math.max(1, Math.round(sig._age_s || 0))}s`;
-
-    return pack({
-      scenario: base.scenario,
-      badge: base.badge,
-      theme: base.theme,
-      headline: base.headline,
-      meaning: base.meaning || "",
-      body: base.body,
-      action: base.action,
-      diagnostics: `Spot ${tapeInr(spot)} · CW ${tapeInr(cw)} · PW ${tapeInr(pw)}${flipBit}${blastBit}${sigBit} · ${bdiag} · ${regime}`,
-    });
+    return voice(
+      base.scenario,
+      base.badge,
+      base.theme,
+      base.headline,
+      base.outcome,
+      base.drivers,
+      base.risk,
+    );
   }
 
   function updateMarketAlertTape(dash) {
@@ -2334,29 +2364,30 @@
       alert,
     };
 
-    container.className = `alert-tape-marquee-container ${alert.theme}`;
+    container.className = `alert-tape ${alert.theme}`;
     const tsEl = document.getElementById("alert-tape-timestamp");
     if (tsEl) tsEl.textContent = alert.timestamp;
     const badgeEl = document.getElementById("alert-tape-badge");
     if (badgeEl) badgeEl.textContent = alert.badge;
 
-    const track = document.getElementById("alert-marquee-track");
-    const paintSig = `${alert.scenario}|${alert.theme}|${alert.headline}|${alert.meaning}|${alert.body}|${alert.action}`;
+    const track = document.getElementById("alert-tape-track");
+    const paintSig = `${alert.scenario}|${alert.theme}|${alert.outcome}|${alert.drivers}|${alert.risk}`;
     if (track && state.lastTapePaintSig !== paintSig) {
       state.lastTapePaintSig = paintSig;
-      const meaningHtml = alert.meaning ? `<span class="marquee-meaning">${alert.meaning}</span>` : "";
-      const itemHtml = `
-        <span class="alert-marquee-item">
-          <span class="marquee-headline">${alert.headline}</span>${meaningHtml} ${alert.body}
-          <span class="marquee-action-tag">👉 ACTION: ${alert.action}</span>
-          <span class="marquee-telemetry">[${alert.diagnostics}]</span>
-        </span>
+      const tapeEsc = (value) => String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      const line = (label, text) => (
+        `<p class="tape-odr-line"><span class="tape-odr-label">${label}</span> ${tapeEsc(text)}</p>`
+      );
+      track.innerHTML = `
+        <div class="alert-tape-line">
+          ${line("Outcome", alert.outcome || alert.body)}
+          ${line("Drivers", alert.drivers || alert.diagnostics)}
+          ${line("Risk", alert.risk || alert.action)}
+        </div>
       `;
-      track.innerHTML = itemHtml;
-    } else if (track) {
-      track.querySelectorAll(".marquee-telemetry").forEach((el) => {
-        el.textContent = `[${alert.diagnostics}]`;
-      });
     }
 
     // Symbol-isolated state transition detection & 3.0s Louder Brass Bell Alert
@@ -2388,10 +2419,13 @@
             symbol: sym,
             scenario: alert.scenario,
             badge: alert.badge,
-            headline: alert.headline,
-            body: alert.body,
-            action_advice: alert.action,
-            diagnostics: alert.diagnostics,
+            headline: alert.badge,
+            outcome: alert.outcome,
+            drivers: alert.drivers,
+            risk: alert.risk,
+            body: alert.outcome,
+            action_advice: alert.risk,
+            diagnostics: alert.drivers,
           }),
         }).catch((err) => console.warn("Failed to log alert to commentary:", err));
       }

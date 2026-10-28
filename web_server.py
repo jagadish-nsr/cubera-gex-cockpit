@@ -3920,27 +3920,32 @@ async def log_market_alert(payload: dict = Body(...)):
     sym = (payload.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
     scenario = payload.get("scenario", "ALERT")
     badge = payload.get("badge", "MARKET ALERT")
-    headline = payload.get("headline", "Market State Shift")
-    body = payload.get("body", "")
-    action_advice = payload.get("action_advice", "")
-    diagnostics = payload.get("diagnostics", "")
+    outcome = str(payload.get("outcome") or payload.get("body") or "").strip()
+    drivers = str(payload.get("drivers") or payload.get("diagnostics") or "").strip()
+    risk = str(payload.get("risk") or payload.get("action_advice") or "").strip()
     now_ist = _get_ist_now()
 
     from commentary.models import CommentaryEntry, to_ist
     from commentary.storage.db import save_commentary_entry
 
     entry_id = f"alert-{sym.lower()}-{int(now_ist.timestamp())}"
-    full_body = f"{body}\n\n👉 BEGINNER ACTION: {action_advice}\n\n🔬 DIAGNOSTICS: {diagnostics}\n(Tactical TTL: 30 minutes from {now_ist.strftime('%H:%M:%S IST')})"
+    full_body = "\n\n".join(
+        part for part in (
+            f"Outcome: {outcome}" if outcome else "",
+            f"Drivers: {drivers}" if drivers else "",
+            f"Risk: {risk}" if risk else "",
+        ) if part
+    )
 
     entry = CommentaryEntry(
         id=entry_id,
         ts=now_ist,
         phase="MARKET_ALERT",
         event_ids=[f"evt-{int(now_ist.timestamp())}"],
-        headline=f"{badge} — {headline}",
+        headline=str(badge),
         body=full_body,
         tags=["MARKET_STATE_ALERT", scenario],
-        facts={"scenario": scenario, "badge": badge, "ttl_minutes": 30, "diagnostics": diagnostics},
+        facts={"scenario": scenario, "badge": badge, "ttl_minutes": 30, "diagnostics": drivers},
     )
 
     try:
