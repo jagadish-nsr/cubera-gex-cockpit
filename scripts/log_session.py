@@ -34,6 +34,8 @@ FIELDS = [
 
 
 def main(ignore_session: bool = False):
+    from app.obs import boot, shutdown
+    boot("log_session")
     fa = datetime.now(timezone.utc)
     ist = fa + timedelta(hours=5, minutes=30)
 
@@ -53,6 +55,7 @@ def main(ignore_session: bool = False):
             pass
         print(f"{ist:%Y-%m-%d %H:%M IST}  outside NSE session - skipped "
               "(use --ignore-session to force).")
+        shutdown(ok=True, message="outside session")
         return
 
     rows, spot = parse_nse_option_chain(fetch_chain(config.UNDERLYING))
@@ -99,6 +102,17 @@ def main(ignore_session: bool = False):
     print(f"{ist:%Y-%m-%d %H:%M IST}  spot {lv.spot:,.2f}  {lv.regime} / {v.mode_label}")
     print(f"  range {lv.put_wall:,.0f}-{lv.call_wall:,.0f} | flip {flip_txt} | magnet {lv.magnet:,.0f}")
     print("At the CLOSE, fill: eod_spot, stayed_in_range (Y/N), broke_flip (Y/N), trended (Y/N), notes.")
+    shutdown(
+        ok=True,
+        message="logged",
+        symbol="NIFTY",
+        contract_size=config.CONTRACT_SIZE,
+        dealer_sign_model=lv.dealer_sign_model,
+        spot=lv.spot,
+        call_wall=lv.call_wall,
+        put_wall=lv.put_wall,
+        flip=lv.flip,
+    )
 
 
 if __name__ == "__main__":

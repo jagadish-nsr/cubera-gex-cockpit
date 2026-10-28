@@ -12,10 +12,12 @@ cwd = os.getcwd()
 if cwd not in sys.path:
     sys.path.insert(0, cwd)
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+from app.obs import boot, event
+
 log = logging.getLogger("participant_daemon")
 
 def run_daemon():
+    boot("participant_daemon", loop=True)
     log.info("Starting Participant OI Daemon...")
     
     while True:
@@ -33,10 +35,19 @@ def run_daemon():
                     result = capture_latest(today_ist=today_ist, max_back=1)
                     if result:
                         log.info("Daemon: participant OI captured for %s", result[0])
+                        event("participant_oi.captured", workflow="participant_oi", day=result[0])
                     else:
                         log.debug("Daemon: participant OI not yet available for %s", today_ist)
+                        event("participant_oi.waiting", workflow="participant_oi", day=today_ist)
         except Exception as _poi_err:
             log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
+            event(
+                "participant_oi.failed",
+                level="WARNING",
+                ok=False,
+                workflow="participant_oi",
+                error=str(_poi_err),
+            )
             
         # Check every 5 minutes
         time.sleep(300)

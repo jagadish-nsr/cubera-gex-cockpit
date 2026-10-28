@@ -22,8 +22,8 @@ if cwd not in sys.path:
 
 import config
 from app.data_access import load_dashboard
+from app.obs import book_fields, boot, event
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("gex_daemon")
 
 # Poll interval in seconds between fetches of the same index.
@@ -38,6 +38,7 @@ def _snap_path(symbol: str) -> str:
 
 
 def run_daemon(ignore_session: bool = False):
+    boot("gex_daemon", loop=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     log.info("Starting GEX Daemon (adapter: %s)...", config.DATA_SOURCE)
 
@@ -54,6 +55,7 @@ def run_daemon(ignore_session: bool = False):
                 now_epoch = time.time()
                 if now_epoch - last_off_market_log >= 300.0:
                     log.info("Market closed (FnO hours: 09:15-15:40 IST / weekends / holidays). Option chain polling paused.")
+                    event("gex_daemon.paused", workflow="gex_daemon", message="market closed")
                     last_off_market_log = now_epoch
 
                 # ── EOD Participant OI auto-fetch (after 16:30 IST) ────────────────
@@ -67,10 +69,13 @@ def run_daemon(ignore_session: bool = False):
                             result = capture_latest(today_ist=today_ist, max_back=1)
                             if result:
                                 log.info("Daemon: participant OI captured for %s", result[0])
+                                event("participant_oi.captured", workflow="participant_oi", day=result[0])
                             else:
                                 log.debug("Daemon: participant OI not yet available for %s", today_ist)
+                                event("participant_oi.waiting", workflow="participant_oi", day=today_ist)
                 except Exception as _poi_err:
                     log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
+                    event("participant_oi.failed", level="WARNING", ok=False, workflow="participant_oi", error=str(_poi_err))
 
                 time.sleep(60)
                 continue
@@ -96,6 +101,15 @@ def run_daemon(ignore_session: bool = False):
                     )
                 except Exception as e:
                     log.warning("Daemon: failed to fetch %s: %s", symbol, e)
+                    event(
+                        "gex_daemon.failed",
+                        level="WARNING",
+                        ok=False,
+                        workflow=f"gex_daemon.{symbol}",
+                        symbol=symbol,
+                        duration_ms=round((time.time() - t0) * 1000.0, 1),
+                        error=str(e),
+                    )
                     failed_count += 1
                     continue  # skip this index for this round; try the next one
 
@@ -117,6 +131,15 @@ def run_daemon(ignore_session: bool = False):
 
                 elapsed = time.time() - t0
                 log.info("Fetched & saved %s (%s) in %.2fs", symbol, window, elapsed)
+                fields = book_fields(dashboard_data)
+                fields["symbol"] = symbol
+                event(
+                    "gex_daemon.fetched",
+                    workflow=f"gex_daemon.{symbol}",
+                    duration_ms=round(elapsed * 1000.0, 1),
+                    window=window,
+                    **fields,
+                )
 
                 # Pace between indices to avoid hammering the API
                 sleep_time = max(0.1, POLL_INTERVAL_SEC - elapsed)
@@ -125,6 +148,7 @@ def run_daemon(ignore_session: bool = False):
             # If every index failed this round (e.g. transient API error), back off
             if failed_count == len(indices):
                 log.warning("All indices failed this round — backing off 10s")
+                event("gex_daemon.backoff", level="WARNING", ok=False, workflow="gex_daemon", message="all indices failed")
                 time.sleep(10)
 
             # ── EOD Participant OI auto-fetch (after 16:30 IST) ────────────────
@@ -142,13 +166,17 @@ def run_daemon(ignore_session: bool = False):
                         result = capture_latest(today_ist=today_ist, max_back=1)
                         if result:
                             log.info("Daemon: participant OI captured for %s", result[0])
+                            event("participant_oi.captured", workflow="participant_oi", day=result[0])
                         else:
                             log.debug("Daemon: participant OI not yet available for %s", today_ist)
+                            event("participant_oi.waiting", workflow="participant_oi", day=today_ist)
             except Exception as _poi_err:
                 log.debug("Daemon: participant OI auto-fetch skipped: %s", _poi_err)
+                event("participant_oi.failed", level="WARNING", ok=False, workflow="participant_oi", error=str(_poi_err))
 
         except Exception as e:
             log.error("Daemon loop error: %s", e)
+            event("gex_daemon.failed", level="ERROR", ok=False, workflow="gex_daemon", error=str(e))
             time.sleep(5)
 
 

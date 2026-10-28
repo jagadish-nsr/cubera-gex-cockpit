@@ -14,11 +14,13 @@ process-global store. Successful pulls are also written to
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import pickle
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+
+from app.obs import bind, book_fields, event, new_trace_id
 
 DEFAULT_INTERVAL_S = 60
 DEFAULT_LEAD_S = 15.0
@@ -88,7 +90,8 @@ def publish_snapshot(symbol: str, window: str | None, data):
     """Store a computed dashboard and write the off-market pickle.
 
     Returns the snapshot's fetched time (UTC). Refuses a synthetic book.
-    An explicit off-market Dhan sync uses this so the UI reads that book.
+    The live loop is still the only caller during an open session; an explicit
+    off-market Dhan sync uses this so the UI reads that book.
     """
     if data is None:
         raise ValueError("no dashboard")
@@ -134,8 +137,15 @@ def _persist_pickle(symbol: str, window: str | None, data) -> None:
         with open(tmp_path, "wb") as f:
             pickle.dump(payload, f)
         os.replace(tmp_path, snap_path)
-    except Exception:
-        pass
+    except Exception as exc:
+        event(
+            "chain.persist_failed",
+            level="WARNING",
+            ok=False,
+            workflow=f"chain.{symbol}",
+            symbol=symbol,
+            error=str(exc),
+        )
 
 
 def _loop(store_key) -> None:
@@ -170,35 +180,68 @@ def _loop(store_key) -> None:
             if ev.wait(wait):
                 stamp = time.time()
         ev.clear()
-        try:
-            data = load_dashboard(
-                window=window,
-                use_demo=use_demo,
-                symbol=symbol,
-                live_source=cfg.get("live_source"),
-                sign_model=cfg.get("sign_model"),
-            )
-            if not use_demo and config.placeholder_disagrees_with_quote(
-                symbol, _chain_spot(data), _live_quote_spot(symbol),
-            ):
-                held = _STORE.get(store_key) or {}
-                if config.chain_spot_is_placeholder(symbol, _chain_spot(held.get("data"))):
-                    _STORE.pop(store_key, None)
-                served = stamp
-                continue
-            as_of = datetime.fromtimestamp(stamp, tz=timezone.utc) + timedelta(hours=5, minutes=30)
-            _STORE[store_key] = {
-                "data": data,
-                "as_of": as_of.replace(tzinfo=None),
-                "fetched": datetime.now(timezone.utc),
-                "err": None,
-                "window": window,
-            }
-            _persist_pickle(symbol, window, data)
-        except Exception as e:  # noqa: BLE001 - keep the loop alive
-            prev = dict(_STORE.get(store_key) or {})
-            prev["err"] = str(e)
-            _STORE[store_key] = prev
+        started = time.perf_counter()
+        trace = new_trace_id()
+        with bind(trace_id=trace, symbol=symbol):
+            try:
+                data = load_dashboard(
+                    window=window,
+                    use_demo=use_demo,
+                    symbol=symbol,
+                    live_source=cfg.get("live_source"),
+                    sign_model=cfg.get("sign_model"),
+                )
+                if not use_demo and config.placeholder_disagrees_with_quote(
+                    symbol, _chain_spot(data), _live_quote_spot(symbol),
+                ):
+                    held = _STORE.get(store_key) or {}
+                    if config.chain_spot_is_placeholder(symbol, _chain_spot(held.get("data"))):
+                        _STORE.pop(store_key, None)
+                    event(
+                        "chain.refused",
+                        level="WARNING",
+                        ok=False,
+                        workflow=f"chain.{symbol}",
+                        symbol=symbol,
+                        window=window,
+                        duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+                        chain_spot=_chain_spot(data),
+                        reason="placeholder chain disagrees with the live quote",
+                    )
+                    served = stamp
+                    continue
+                as_of = datetime.fromtimestamp(stamp, tz=timezone.utc) + timedelta(hours=5, minutes=30)
+                _STORE[store_key] = {
+                    "data": data,
+                    "as_of": as_of.replace(tzinfo=None),
+                    "fetched": datetime.now(timezone.utc),
+                    "err": None,
+                    "window": window,
+                }
+                _persist_pickle(symbol, window, data)
+                fields = book_fields(data)
+                fields["symbol"] = fields.get("symbol") or symbol
+                event(
+                    "chain.published",
+                    workflow=f"chain.{symbol}",
+                    duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+                    window=window,
+                    **fields,
+                )
+            except Exception as e:  # noqa: BLE001 - keep the loop alive
+                prev = dict(_STORE.get(store_key) or {})
+                prev["err"] = str(e)
+                _STORE[store_key] = prev
+                event(
+                    "chain.failed",
+                    level="WARNING",
+                    ok=False,
+                    workflow=f"chain.{symbol}",
+                    symbol=symbol,
+                    window=window,
+                    duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+                    error=str(e),
+                )
         served = stamp
 
 

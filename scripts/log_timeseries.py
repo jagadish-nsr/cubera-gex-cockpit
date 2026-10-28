@@ -168,11 +168,37 @@ def _run_blast_window(symbol: str | None) -> None:
         try:
             msg, data = capture_once(min_gap=4.0, symbol=symbol)
             _print(msg)
+            _note_capture(msg, data)
             if not _is_expiry_day(data):
                 _print("nearest expiry rolled — bundled capture stopped")
                 return
         except Exception as e:  # noqa: BLE001 - one bad pull must not stop the window
             _print(f"{ist:%H:%M} IST  blast capture FAILED (kept looping): {e}")
+            _note_capture("", error=e)
+
+
+def _note_capture(msg, data=None, error=None) -> None:
+    from app.obs import book_fields, event
+    if error is not None:
+        event(
+            "timeseries.failed",
+            level="WARNING",
+            ok=False,
+            workflow="timeseries",
+            symbol=getattr(data, "symbol", None) if data is not None else None,
+            error=str(error),
+        )
+        return
+    fields = book_fields(data) if data is not None else {}
+    skipped = "skipped" in (msg or "")
+    event(
+        "timeseries.skipped" if skipped else "timeseries.appended",
+        workflow="timeseries",
+        message=(msg or "")[:400],
+        **fields,
+    )
+    if msg and "[blast" in msg:
+        event("timeseries.blast", workflow="timeseries.blast", **fields)
 
 
 def _print(s: str) -> None:
@@ -195,17 +221,23 @@ def main() -> None:
     ap.add_argument("--ignore-session", action="store_true",
                     help="capture even outside NSE hours (testing)")
     args = ap.parse_args()
+    from app.obs import boot, shutdown
+    boot("log_timeseries", loop=True)
 
     if args.once:
         ist = _ist_now()
         if not args.ignore_session and not _in_session(ist):
             _print(f"{ist:%Y-%m-%d %H:%M} IST  outside NSE session - skipped")
+            shutdown(ok=True, message="outside session")
             return                                  # clean exit: weekend / off-window fire
         try:
             msg, data = capture_once(min_gap=args.min_gap, symbol=args.symbol)
             _print(msg)
+            _note_capture(msg, data)
         except Exception as e:  # noqa: BLE001 - surface and exit non-zero for schedulers
             _print(f"capture FAILED: {e}")
+            _note_capture("", error=e)
+            shutdown(ok=False, error=str(e))
             sys.exit(1)
         # Bundled gamma-blast: on an expiry day inside the blast window, this SAME
         # --once fire stays resident at 1-min cadence until 15:30 IST (no separate
@@ -231,16 +263,19 @@ def main() -> None:
                 try:
                     msg, data = capture_once(min_gap=gap, symbol=args.symbol)
                     _print(msg)
+                    _note_capture(msg, data)
                     # Tighten to 1-min cadence in the blast window on expiry days.
                     if _is_expiry_day(data) and _in_blast_window(ist):
                         interval = 60.0
                 except Exception as e:  # noqa: BLE001 - one bad pull must not stop the day
                     _print(f"{ist:%H:%M} IST  capture FAILED (kept looping): {e}")
+                    _note_capture("", error=e)
             else:
                 _print(f"{ist:%Y-%m-%d %H:%M} IST  outside NSE session - idle")
             _time.sleep(interval)
     except KeyboardInterrupt:
         _print("stopped.")
+        shutdown(ok=True, message="stopped")
 
 
 if __name__ == "__main__":

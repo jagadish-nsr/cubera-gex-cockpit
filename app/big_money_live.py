@@ -111,10 +111,21 @@ class Collector:
                                   for c in contracts.values()}
         return BigMoneyDetector(contracts, print_floor=self.print_floor, burst_floor=self.burst_floor)
 
+    def _feed(self, name: str, **fields) -> None:
+        try:
+            from app.obs import event
+            event(name, workflow="big_money", **fields)
+        except Exception:
+            return
+
     def run(self) -> None:
         import websocket
         from app.big_money_db import upsert_futures_state
         self.status.running = True
+        ever_up = False
+        linked = False
+        fail_note = 0.0
+        count_at = time.monotonic() + 60.0
         contracts = resolve_futures(self.symbols)
         while not contracts and not self._stop.is_set():    # transient network / scrip-master fail → retry,
             self.status.error = "no futures resolved (scrip master unreachable?) — retrying in 30s"
@@ -147,18 +158,30 @@ class Collector:
             except RuntimeError as e:                       # missing token/clientId — wait, don't spin
                 self.status.error = str(e)
                 self.status.connected = False
+                if time.monotonic() - fail_note > 60:
+                    self._feed("big_money.disconnected", level="WARNING", ok=False, error=type(e).__name__)
+                    fail_note = time.monotonic()
                 self._stop.wait(30)
                 continue
             except Exception as e:                          # noqa: BLE001 - handshake/network → retry
                 self.status.error = f"connect: {type(e).__name__}"
                 self.status.connected = False
+                if time.monotonic() - fail_note > 60:
+                    self._feed("big_money.disconnected", level="WARNING", ok=False, error=type(e).__name__)
+                    fail_note = time.monotonic()
                 self._stop.wait(5)
                 continue
             self.status.connected = True
             self.status.error = None
+            self._feed("big_money.reconnected" if ever_up else "big_money.connected")
+            ever_up = True
+            linked = True
             ws.settimeout(2.0)
             try:
                 while not self._stop.is_set():
+                    if time.monotonic() >= count_at:
+                        count_at = time.monotonic() + 60.0
+                        self._feed("big_money.count", ticks=self.status.n_raw, prints=self.status.n_events)
                     if not config.is_market_open():
                         self.status.connected = False
                         self.status.error = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
@@ -219,7 +242,11 @@ class Collector:
                     ws.close()
                 except Exception:  # noqa: BLE001
                     pass
+                if linked:
+                    self._feed("big_money.disconnected", level="WARNING", ok=False, error=self.status.error or "socket closed")
+                    linked = False
                 self.status.connected = False
+        self._feed("big_money.stopped", ticks=self.status.n_raw, prints=self.status.n_events)
         self.status.running = False
 
 

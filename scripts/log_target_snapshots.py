@@ -26,9 +26,9 @@ sys.path.insert(0, str(ROOT))
 
 import config
 from app.data_access import load_dashboard
+from app.obs import book_fields, event
 from target_engine.time_utils import calculate_fractional_t, to_ist
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("target_engine.logger")
 
 DB_PATH = ROOT / "data" / "journal" / "target_engine.db"
@@ -97,10 +97,12 @@ def record_snapshot(symbol: str = "NIFTY") -> bool:
         dash = load_dashboard(window="0dte_to_next_monthly", symbol=symbol, live_source="dhan")
     except Exception as exc:
         log.error(f"Failed to fetch market data: {exc}")
+        event("target_snapshot.failed", level="ERROR", ok=False, workflow="target_snapshot", symbol=symbol, error=str(exc))
         return False
 
     if dash is None or dash.levels is None:
         log.warning(f"No valid levels returned for {symbol}")
+        event("target_snapshot.failed", level="WARNING", ok=False, workflow="target_snapshot", symbol=symbol, error="no levels")
         return False
 
     spot = float(dash.levels.spot or 0.0)
@@ -158,9 +160,14 @@ def record_snapshot(symbol: str = "NIFTY") -> bool:
                     """, rows)
 
         log.info(f"Captured snapshot #{snap_id} for {symbol}: spot={spot:.1f}, ATM IV={atm_iv:.2%}, PCR={pcr:.2f}")
+        fields = book_fields(dash)
+        fields["symbol"] = symbol
+        fields["snapshot_id"] = snap_id
+        event("target_snapshot.stored", workflow="target_snapshot", **fields)
         return True
     except Exception as exc:
         log.error(f"Error persisting snapshot to SQLite: {exc}")
+        event("target_snapshot.failed", level="ERROR", ok=False, workflow="target_snapshot", symbol=symbol, error=str(exc))
         return False
     finally:
         conn.close()
@@ -173,6 +180,8 @@ def main():
     parser.add_argument("--loop", type=int, default=60, help="Loop interval in seconds (default: 60)")
     parser.add_argument("--ignore-session", action="store_true", help="Capture even outside market hours")
     args = parser.parse_args()
+    from app.obs import boot
+    boot("log_target_snapshots", loop=not args.once)
 
     log.info(f"Starting Target Engine logger for {args.symbol} (interval: {args.loop}s)...")
 

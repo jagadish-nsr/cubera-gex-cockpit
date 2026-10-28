@@ -31,6 +31,8 @@ def _print(s: str) -> None:
 
 
 def main() -> None:
+    from app.obs import boot, shutdown
+    boot("log_participant_oi")
     ap = argparse.ArgumentParser(description="Capture NSE participant-wise OI (EOD).")
     ap.add_argument("--backfill", type=int, metavar="N", default=0,
                     help="fetch every available file over the last N calendar days "
@@ -42,14 +44,17 @@ def main() -> None:
         if not got:
             _print(f"backfill: nothing new in the last {args.backfill} days "
                     "(already cached, or none reachable).")
+            shutdown(ok=True, message="nothing new")
             return
         _print(f"backfill: captured {len(got)} day(s): {', '.join(got)}")
+        shutdown(ok=True, message="backfill", days=len(got))
         return
 
     got = capture_latest()
     if not got:
         _print("participant OI capture FAILED — no file reachable (bot-block, not "
                "published yet, or run from a non-Indian connection).")
+        shutdown(ok=False, message="no file reachable")
         sys.exit(1)
     date_ist, parsed = got
     sig = derive_signals(parsed) or {}
@@ -59,6 +64,7 @@ def main() -> None:
            f"FII net fut {fii_txt}  top option writer {sig.get('top_option_writer') or '—'}")
     if sig.get("dealer_sign_hint"):
         _print(f"  dealer-sign hint: {sig['dealer_sign_hint']}")
+    shutdown(ok=True, message="captured", day=date_ist, participants=len(parsed))
 
 
 if __name__ == "__main__":

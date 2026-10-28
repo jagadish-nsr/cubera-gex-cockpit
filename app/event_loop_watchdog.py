@@ -34,6 +34,17 @@ def stalled(now: float, beat: float, armed_at: float, stall_s: float) -> bool:
 
 def _default_restart() -> None:
     try:
+        from app.obs import event
+        event(
+            "watchdog.restart",
+            level="ERROR",
+            ok=False,
+            workflow="watchdog",
+            message="event loop stalled; restarting process",
+        )
+    except Exception:
+        pass
+    try:
         os.write(2, b"event loop stalled; restarting process\n")
     except Exception:
         pass

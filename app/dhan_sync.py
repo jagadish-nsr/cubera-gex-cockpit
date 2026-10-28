@@ -308,6 +308,19 @@ def _worker(*, trigger, symbols, window, loader, publisher, quote_fn, market_ope
             _status["refreshed_at"] = newest.astimezone(timezone.utc).isoformat()
             _status["refreshed_at_display"] = _stamp(newest)
     log.info("dhan sync finished trigger=%s errors=%s", trigger, error_text)
+    from app.obs import event
+    event(
+        "dhan_sync.finished",
+        workflow="dhan_sync",
+        ok=not errors,
+        level="INFO" if not errors else "WARNING",
+        error=error_text,
+        trigger=trigger,
+        symbols={
+            sym: {"ok": bool(row.get("ok")), "error": row.get("error")}
+            for sym, row in results.items()
+        },
+    )
 
 
 def _sync_open(symbols, window, started, poll_s) -> tuple[dict, datetime | None]:

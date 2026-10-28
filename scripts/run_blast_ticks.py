@@ -83,6 +83,8 @@ def main() -> None:
     ap.add_argument("--any-day", action="store_true", help="skip the expiry-day gate (for smoke tests)")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = until 15:30)")
     args = ap.parse_args()
+    from app.obs import boot, shutdown
+    boot("blast_ticks", loop=True)
 
     global _LOGF
     if args.market_hours:
@@ -94,11 +96,15 @@ def main() -> None:
     hh, mm = (int(x) for x in args.freeze.split(":"))
     now = datetime.now(IST)
     if now.weekday() >= 5:
-        _print("Weekend — no session. Nothing to capture."); return
+        _print("Weekend — no session. Nothing to capture.")
+        shutdown(ok=True, message="weekend")
+        return
     try:
         from data.holidays import is_holiday
         if is_holiday(now.date()):
-            _print("Holiday — exchange closed. Nothing to capture."); return
+            _print("Holiday — exchange closed. Nothing to capture.")
+            shutdown(ok=True, message="holiday")
+            return
     except Exception:
         pass
     freeze_dt = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
@@ -106,7 +112,9 @@ def main() -> None:
 
     if args.market_hours:
         if time.time() >= close_dt.timestamp():
-            _print("Past 15:30 IST — session over. Nothing to capture."); return
+            _print("Past 15:30 IST — session over. Nothing to capture.")
+            shutdown(ok=True, message="session over")
+            return
         wait = freeze_dt.timestamp() - time.time()
         if wait > 0:
             _print(f"Waiting {wait/60:.0f} min for the {args.freeze} freeze (now {now:%H:%M} IST) …")
@@ -134,7 +142,9 @@ def main() -> None:
                f"exp {bset['expiry']} (spot {sp:.1f})")
 
     if not collectors:
-        _print("Nothing to capture (no expiry symbol / no spot / no pair)."); return
+        _print("Nothing to capture (no expiry symbol / no spot / no pair).")
+        shutdown(ok=False, message="nothing to capture")
+        return
 
     last_beat = 0.0
     try:
@@ -152,6 +162,7 @@ def main() -> None:
         for _, c in collectors:
             c.stop()
         time.sleep(1.5)
+        shutdown(ok=True, message="stopped")
     for sym, c in collectors:
         _print(f"  done — {sym}: {c.status.n_ticks} ticks "
                f"(CE {c.status.per_side.get('CE', 0)} / PE {c.status.per_side.get('PE', 0)})"

@@ -33,6 +33,8 @@ def _print(s: str) -> None:
 
 
 def main() -> None:
+    from app.obs import boot, shutdown
+    boot("log_futures_buildup")
     ap = argparse.ArgumentParser(description="Capture NIFTY index-futures OI build-up (EOD).")
     ap.add_argument("--symbol", default="NIFTY", help="index symbol (default NIFTY)")
     ap.add_argument("--backfill", type=int, metavar="N", default=0,
@@ -45,14 +47,17 @@ def main() -> None:
         if not got:
             _print(f"backfill: nothing new in the last {args.backfill} days "
                     "(already cached, or none reachable).")
+            shutdown(ok=True, message="nothing new", symbol=args.symbol)
             return
         _print(f"backfill {args.symbol}: captured {len(got)} day(s): {', '.join(got)}")
+        shutdown(ok=True, message="backfill", symbol=args.symbol, days=len(got))
         return
 
     got = capture_latest(symbol=args.symbol)
     if not got:
         _print(f"{args.symbol} futures capture FAILED — no bhavcopy reachable (not "
                "published yet, bot-block, or run from a non-Indian connection).")
+        shutdown(ok=False, message="no bhavcopy reachable", symbol=args.symbol)
         sys.exit(1)
     date_ist, rec = got
     agg = classify_futures_buildup(rec.get("dprice"), rec.get("agg_doi"))
@@ -63,6 +68,7 @@ def main() -> None:
            f"-> {agg or '—'} ({buildup_bias(agg) or '—'})")
     if near != agg:
         _print(f"  near-month reads '{near}' (rollover skew — trust the aggregate).")
+    shutdown(ok=True, message="captured", symbol=args.symbol, day=date_ist)
 
 
 if __name__ == "__main__":

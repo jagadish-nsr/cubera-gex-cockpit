@@ -85,6 +85,8 @@ def main() -> None:
     ap.add_argument("--log", action="store_true",
                     help="also append output to data/journal/big_money_logs/ (auto-on for --market-hours)")
     args = ap.parse_args()
+    from app.obs import boot, shutdown
+    boot("big_money", loop=True)
 
     global _LOGF
     if args.log or args.market_hours:
@@ -100,11 +102,15 @@ def main() -> None:
     if args.market_hours:
         win = _market_window()
         if win is None:
-            _print("Weekend — market closed. Nothing to collect."); return
+            _print("Weekend — market closed. Nothing to collect.")
+            shutdown(ok=True, message="weekend")
+            return
         open_e, stop_at = win
         now = time.time()
         if now >= stop_at:
-            _print("Past 15:30 IST — market closed for today. Nothing to collect."); return
+            _print("Past 15:30 IST — market closed for today. Nothing to collect.")
+            shutdown(ok=True, message="session over")
+            return
         if now < open_e:
             wait = open_e - now
             _print(f"Waiting {wait/60:.0f} min for 09:15 IST open "
@@ -134,6 +140,7 @@ def main() -> None:
     finally:
         col.stop()
         time.sleep(1.5)                               # let the final raw flush land
+        shutdown(ok=True, message="stopped", ticks=col.status.n_raw, prints=col.status.n_events)
     s = col.status
     _print(f"\n  done — {s.n_raw:,} raw ticks, {s.n_events} big-money events. ticks {s.per_symbol}"
            f"{'  · last error: ' + s.error if s.error else ''}"
