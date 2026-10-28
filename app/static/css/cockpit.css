@@ -2621,4 +2621,55 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   letter-spacing: 0.02em;
 }
 
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.admin-log {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  white-space: pre-wrap;
+}
+
+.admin-alert-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-repair {
+  color: var(--ink-mute);
+  font-size: 0.72rem;
+}
+
+.admin-state-complete { color: var(--go); }
+.admin-state-partial,
+.admin-state-pending,
+.admin-state-in_progress { color: var(--warn); }
+.admin-state-missing,
+.admin-state-unfillable { color: var(--stop); }
+.admin-state-holiday,
+.admin-state-weekend,
+.admin-state-special_session { color: var(--ink-mute); }
+
+
 

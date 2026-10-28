@@ -88,6 +88,7 @@ def test_get_root_cockpit_html():
     assert 'id="tab-scorecard"' in html
     assert 'id="tab-ops"' in html
     assert 'id="tab-commentary"' in html
+    assert 'id="tab-admin"' in html
 
 def test_get_status_schema_and_ist_clock():
     """Verify GET /api/status returns valid state and clean IST clock."""

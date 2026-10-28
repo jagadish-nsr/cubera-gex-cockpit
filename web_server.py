@@ -172,9 +172,20 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
+from app.admin.routes import register_admin_routes
+register_admin_routes(app)
+
+
 @app.on_event("startup")
 async def _start_ingest_lanes():
     """One chain ingest per index + spot WS. HTTP/WS handlers only read the stores."""
+    try:
+        from app.admin.health_daemon import start_background
+        from app.admin.task_runner import mark_orphaned_tasks
+        mark_orphaned_tasks()
+        start_background()
+    except Exception as exc:
+        log.warning("admin monitor start failed: %s", exc)
     if os.environ.get("COCKPIT_WATCHDOG") == "1":
         from app.event_loop_watchdog import start as start_watchdog
         start_watchdog(asyncio.get_running_loop())

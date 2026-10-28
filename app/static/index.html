@@ -200,6 +200,8 @@
             </div>
           </div>
           <div class="header-session-card" id="header-session-card" title="Session status, next phase, and market status">
+            <span id="admin-env-badge" class="badge-active" title="This process">ENV</span>
+            <button type="button" id="admin-alert-bell" class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px">Alerts (0)</button>
             <span id="session-phase-badge" class="badge-active">MARKET STATUS</span>
             <span class="header-session-line">
               <span id="cockpit-exec-status">Loading session…</span>
@@ -335,6 +337,14 @@
               <path d="M4 8L9.5 4.5L15.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
             <span>Scorecard</span>
+          </button>
+
+          <button class="tab-btn" id="tab-btn-admin" data-tab="tab-admin" onclick="window.switchTab('tab-admin')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
+              <path d="M7 8H13M7 12H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            <span>Admin &amp; Data</span>
           </button>
         </nav>
       </header>
@@ -2111,6 +2121,106 @@
             <!-- Dynamically populated post-market wrap -->
           </div>
         </div>
+
+        <div id="tab-admin" class="tab-pane">
+          <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
+            <div class="kpi-card">
+              <small>Dhan token</small>
+              <b id="admin-kpi-token">—</b>
+              <span id="admin-kpi-token-src">source</span>
+            </div>
+            <div class="kpi-card">
+              <small>Spot feed age</small>
+              <b id="admin-kpi-feed">—</b>
+              <span>Seconds since the last tick</span>
+            </div>
+            <div class="kpi-card">
+              <small>Sentinel WAL</small>
+              <b id="admin-kpi-wal">—</b>
+              <span>data/sentinel.db-wal</span>
+            </div>
+            <div class="kpi-card warn">
+              <small>Session gaps</small>
+              <b id="admin-kpi-gaps">—</b>
+              <span>Previous closed session</span>
+            </div>
+            <div class="kpi-card">
+              <small>Open alerts</small>
+              <b id="admin-kpi-alerts">Alerts 0</b>
+              <span>Unresolved and not dismissed</span>
+            </div>
+          </div>
+
+          <div id="admin-alert-list" class="ladder-card" style="margin:14px 0"></div>
+
+          <div class="ladder-card" style="margin-bottom:14px">
+            <h3 style="margin:0 0 10px">Date-range audit</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-bottom:10px">
+              <label>From <input type="date" id="admin-start" class="form-control"></label>
+              <label>To <input type="date" id="admin-end" class="form-control"></label>
+              <label>Index
+                <select id="admin-symbol" class="form-control">
+                  <option>NIFTY</option>
+                  <option>BANKNIFTY</option>
+                  <option>SENSEX</option>
+                </select>
+              </label>
+              <button type="button" id="admin-inspect" class="btn btn-primary">Inspect</button>
+            </div>
+            <p id="admin-calendar-note" style="margin:0 0 8px;color:var(--ink-mute)"></p>
+            <div style="overflow-x:auto">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Kind</th>
+                    <th>Futures</th>
+                    <th>Options</th>
+                    <th>Sentinel</th>
+                    <th>Bhavcopy</th>
+                    <th>Participant</th>
+                    <th>Repair</th>
+                  </tr>
+                </thead>
+                <tbody id="admin-audit-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="ladder-card">
+            <h3 style="margin:0 0 8px">Repair</h3>
+            <p id="admin-repair-note" style="margin:0 0 8px;color:var(--ink-mute)">Plan first. Confirm starts one allowlisted backfill. A day already on disk is not rewritten for options. Futures will not rewrite today's file while the session is open.</p>
+            <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+              <input type="checkbox" id="admin-live-confirm">
+              Also write today's options files while the session is open
+            </label>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+              <button type="button" id="admin-plan-options" class="btn btn-secondary">Plan options backfill</button>
+              <button type="button" id="admin-run-options" class="btn btn-primary">Confirm options backfill</button>
+              <button type="button" id="admin-plan-futures" class="btn btn-secondary">Plan futures backfill</button>
+              <button type="button" id="admin-run-futures" class="btn btn-primary">Confirm futures backfill</button>
+              <button type="button" id="admin-cancel-task" class="btn btn-secondary">Cancel running task</button>
+            </div>
+            <p id="admin-task-meta" style="margin:0 0 6px"></p>
+            <pre id="admin-task-log" class="admin-log"></pre>
+          </div>
+
+          <div class="ladder-card" style="margin-top:14px">
+            <h3 style="margin:0 0 8px">Processes</h3>
+            <p id="admin-ops-http" style="margin:0 0 8px;color:var(--ink-mute)">HTTP —</p>
+            <table class="admin-table">
+              <thead><tr><th>Process</th><th>PID</th><th>Last beat</th><th>Last error</th></tr></thead>
+              <tbody id="admin-ops-processes"></tbody>
+            </table>
+            <h3 style="margin:14px 0 8px">Workflows</h3>
+            <table class="admin-table">
+              <thead><tr><th>Name</th><th>Process</th><th>Last ok</th><th>Last error</th><th>Ok</th><th>Errors</th><th>ms</th></tr></thead>
+              <tbody id="admin-ops-workflows"></tbody>
+            </table>
+            <h3 style="margin:14px 0 8px">Events</h3>
+            <pre id="admin-ops-events" class="admin-log">No workflow events yet.</pre>
+          </div>
+        </div>
       </section>
     </main>
   </div>
@@ -2119,6 +2229,7 @@
   <div id="toast-container"></div>
 
   <!-- Client Application Script -->
+  <script src="/static/js/admin.js?v=4"></script>
   <script src="/static/js/cockpit.js?v=6.38"></script>
 </body>
 </html>
