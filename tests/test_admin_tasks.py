@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+import threading
 from datetime import date, datetime
 from pathlib import Path
 
@@ -165,6 +167,52 @@ def test_second_task_for_the_same_output_is_rejected():
     assert spawned == []
 
 
+def test_queued_task_blocks_a_second_spawn():
+    db.insert_task({
+        "task_id": "task_queued",
+        "task_type": "backfill_options",
+        "argv_json": "[]",
+        "status": "QUEUED",
+        "params_json": json.dumps({
+            "symbol": "NIFTY", "start_date": "2026-10-21", "end_date": "2026-10-21", "store": "NIFTY",
+        }),
+        "started_at": "2026-10-24T20:00:00+05:30",
+        "log_path": "unused",
+    })
+    spawned = []
+    with pytest.raises(AdminRequestError) as exc:
+        handle(
+            _opts("2026-10-21", confirm=True),
+            now=datetime(2026, 10, 24, 20, 0, tzinfo=IST),
+            spawn_fn=lambda *args: spawned.append(args),
+        )
+    assert exc.value.status_code == 409
+    assert spawned == []
+
+
+def test_overlapping_confirms_spawn_once():
+    started = []
+    errors = []
+
+    def run():
+        try:
+            handle(
+                _opts("2026-10-21", confirm=True),
+                now=datetime(2026, 10, 24, 20, 0, tzinfo=IST),
+                spawn_fn=lambda *args: started.append(args),
+            )
+        except AdminRequestError as exc:
+            errors.append(exc.status_code)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(started) == 1
+    assert errors == [409]
+
+
 def test_startup_marks_a_running_task_interrupted():
     db.insert_task({
         "task_id": "task_orphan",
@@ -175,8 +223,41 @@ def test_startup_marks_a_running_task_interrupted():
         "started_at": "2026-10-24T20:00:00+05:30",
         "log_path": "unused",
     })
-    assert mark_orphaned_tasks(datetime(2026, 10, 24, 21, 0, tzinfo=IST)) == 1
+    db.insert_task({
+        "task_id": "task_queued",
+        "task_type": "backfill_futures",
+        "argv_json": "[]",
+        "status": "QUEUED",
+        "params_json": "{}",
+        "started_at": "2026-10-24T20:00:00+05:30",
+        "log_path": "unused",
+    })
+    assert mark_orphaned_tasks(datetime(2026, 10, 24, 21, 0, tzinfo=IST)) == 2
     assert db.get_task("task_orphan")["status"] == "INTERRUPTED"
+    assert db.get_task("task_queued")["status"] == "INTERRUPTED"
+
+
+def test_ledger_reuses_one_connection(monkeypatch):
+    opened = []
+    real = sqlite3.connect
+
+    def wrapped(*args, **kwargs):
+        opened.append(args[0] if args else kwargs.get("database"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("app.admin.db.sqlite3.connect", wrapped)
+    row = {
+        "ts": "2026-10-24T20:00:00+05:30",
+        "process": "test",
+        "event": "ping",
+        "level": "INFO",
+        "message": "ping",
+        "fields_json": "{}",
+    }
+    db.insert_ops_event(row)
+    db.insert_ops_event(row)
+    assert len(opened) == 1
+    assert len(db.list_ops_events(limit=10)) == 2
 
 
 def test_cancel_terminates_only_that_child():

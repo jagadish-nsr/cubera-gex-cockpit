@@ -25,6 +25,7 @@ RAW_DIR = ROOT / "data" / "journal" / "blast_ticks"          # gitignored (under
 IST = timezone(timedelta(hours=5, minutes=30))
 _IST_OFFSET_S = int(timedelta(hours=5, minutes=30).total_seconds())
 _FLUSH_ROWS, _FLUSH_SECS = 200, 5.0
+_FAIL_THROTTLE_S = 60.0      # one disconnect event per minute while the socket stays down
 _COLS = ["epoch", "time_ist", "symbol", "side", "strike", "role", "expiry", "code",
          "ltp", "ltq", "atp", "volume", "oi", "bid", "ask"]
 
@@ -219,13 +220,13 @@ class BlastTickCollector:
                 ws = connect(self.contracts, tiers=(SUB_FULL,))
             except RuntimeError as e:                        # missing token/clientId
                 self.status.error = str(e); self.status.connected = False
-                if time.monotonic() - fail_note > 60:
+                if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
                 self._stop.wait(30); continue
             except Exception as e:                           # noqa: BLE001 - handshake/network → retry
                 self.status.error = f"connect: {type(e).__name__}"; self.status.connected = False
-                if time.monotonic() - fail_note > 60:
+                if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
                 self._stop.wait(5); continue

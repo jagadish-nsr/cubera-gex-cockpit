@@ -27,6 +27,7 @@ DEFAULT_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
 _RAW_COLS = ["epoch", "time_ist", "symbol", "roll", "expiry", "code", "ltp", "ltq", "atp", "volume",
              "oi", "bid", "ask", "tot_buy_qty", "tot_sell_qty"]
 _STATE_EVERY_S = 15.0        # throttle futures_state (OI/price) upserts per contract
+_FAIL_THROTTLE_S = 60.0      # one disconnect event per minute while the socket stays down
 _FLUSH_ROWS = 400            # flush the raw buffer past this many rows …
 _FLUSH_SECS = 15.0           # … or this many seconds, whichever first
 
@@ -158,7 +159,7 @@ class Collector:
             except RuntimeError as e:                       # missing token/clientId — wait, don't spin
                 self.status.error = str(e)
                 self.status.connected = False
-                if time.monotonic() - fail_note > 60:
+                if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("big_money.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
                 self._stop.wait(30)
@@ -166,7 +167,7 @@ class Collector:
             except Exception as e:                          # noqa: BLE001 - handshake/network → retry
                 self.status.error = f"connect: {type(e).__name__}"
                 self.status.connected = False
-                if time.monotonic() - fail_note > 60:
+                if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("big_money.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
                 self._stop.wait(5)
