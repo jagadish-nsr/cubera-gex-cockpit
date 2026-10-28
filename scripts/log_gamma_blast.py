@@ -75,6 +75,19 @@ def capture_once(force: bool = False, symbol: str | None = None) -> str:
             f"magnet {data.levels.magnet:,.0f}  {len(rows)} strikes -> {path.name}")
 
 
+def _note(msg: str | None = None, error=None) -> None:
+    from app.obs import event
+    if error is not None:
+        event("gamma_blast.failed", level="WARNING", ok=False, workflow="gamma_blast", error=str(error))
+        return
+    text = msg or ""
+    event(
+        "gamma_blast.skipped" if "skipped" in text else "gamma_blast.appended",
+        workflow="gamma_blast",
+        message=text[:400],
+    )
+
+
 def _print(s: str) -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -92,17 +105,25 @@ def main() -> None:
     ap.add_argument("--force", action="store_true",
                     help="ignore the expiry-day / window gate (testing)")
     args = ap.parse_args()
+    from app.obs import boot, shutdown
+    boot("log_gamma_blast", loop=True)
 
     if args.once:
         ist = _ist_now()
         if not args.force and not _in_window(ist):
             _print(f"{ist:%Y-%m-%d %H:%M} IST  outside 13:00-15:30 window - skipped")
+            shutdown(ok=True, message="outside window")
             return
         try:
-            _print(capture_once(force=args.force, symbol=args.symbol))
+            msg = capture_once(force=args.force, symbol=args.symbol)
+            _print(msg)
+            _note(msg)
         except Exception as e:  # noqa: BLE001 - surface + non-zero for schedulers
             _print(f"capture FAILED: {e}")
+            _note(error=e)
+            shutdown(ok=False, error=str(e))
             sys.exit(1)
+        shutdown(ok=True, message="captured")
         return
 
     interval = max(args.loop, 0.25) * 60.0
@@ -113,14 +134,18 @@ def main() -> None:
             ist = _ist_now()
             if args.force or _in_window(ist):
                 try:
-                    _print(capture_once(force=args.force, symbol=args.symbol))
+                    msg = capture_once(force=args.force, symbol=args.symbol)
+                    _print(msg)
+                    _note(msg)
                 except Exception as e:  # noqa: BLE001 - one bad pull must not stop the run
                     _print(f"{ist:%H:%M} IST  capture FAILED (kept looping): {e}")
+                    _note(error=e)
             else:
                 _print(f"{ist:%Y-%m-%d %H:%M} IST  outside window - idle")
             _time.sleep(interval)
     except KeyboardInterrupt:
         _print("stopped.")
+        shutdown(ok=True, message="stopped")
 
 
 if __name__ == "__main__":

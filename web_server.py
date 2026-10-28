@@ -111,8 +111,9 @@ from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_ex
 from analytics.iv_skew import skew_25delta
 from analytics.directional_bias import compute_directional_bias, BiasResult
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+from app.obs import configure, event, gauge, install
+
+configure("web")
 log = logging.getLogger("cubera.web_server")
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -141,6 +142,9 @@ async def add_no_cache_headers(request, call_next):
         response.headers["Expires"] = "0"
     return response
 
+
+install(app)
+
 # Active session settings (defaults)
 _ACTIVE_STATE = {
     "symbol": "NIFTY",
@@ -157,10 +161,15 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        self._note_clients()
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+        self._note_clients()
+
+    def _note_clients(self) -> None:
+        gauge("ws.clients", detail={"clients": len(self.active_connections)})
 
     async def broadcast(self, message: dict):
         for connection in list(self.active_connections):
@@ -172,39 +181,60 @@ class ConnectionManager:
 ws_manager = ConnectionManager()
 
 
+from app.admin.routes import register_admin_routes
+register_admin_routes(app)
+
+
+def _run_lane(name: str, fn) -> None:
+    try:
+        fn()
+    except Exception as exc:
+        log.warning("%s failed: %s", name, exc)
+        event("lane.failed", level="WARNING", ok=False, workflow=name, error=str(exc), message=name)
+        return
+    event("lane.started", workflow=name, message=name)
+
+
 @app.on_event("startup")
 async def _start_ingest_lanes():
     """One chain ingest per index + spot WS. HTTP/WS handlers only read the stores."""
+    from app.obs import start_heartbeat
+    start_heartbeat()
+    event("process.started", workflow="process", message="web")
     if os.environ.get("COCKPIT_WATCHDOG") == "1":
         from app.event_loop_watchdog import start as start_watchdog
-        start_watchdog(asyncio.get_running_loop())
-    try:
+        loop = asyncio.get_running_loop()
+        _run_lane("watchdog", lambda: start_watchdog(loop))
+
+    def _admin():
+        from app.admin.health_daemon import start_background
+        from app.admin.task_runner import mark_orphaned_tasks
+        mark_orphaned_tasks()
+        start_background()
+
+    def _spot():
         from app.spot_ticker import warmup_all
         warmup_all()
-    except Exception as exc:
-        log.warning("spot ticker warmup failed: %s", exc)
-    try:
+
+    def _premarket():
         from data.pre_post_market import ensure_pre_market_pollers
         ensure_pre_market_pollers()
-    except Exception as exc:
-        log.warning("pre-market poller start failed: %s", exc)
-    try:
-        _ensure_rec_publisher()
-    except Exception as exc:
-        log.warning("rec publisher start failed: %s", exc)
-    try:
+
+    def _dhan():
         from app.dhan_sync import on_published, start_scheduler
         on_published(_drop_dash_cache)
         start_scheduler()
-    except Exception as exc:
-        log.warning("dhan sync scheduler failed: %s", exc)
+
+    _run_lane("admin.monitor", _admin)
+    _run_lane("spot.warmup", _spot)
+    _run_lane("premarket", _premarket)
+    _run_lane("dhan.sync", _dhan)
+    _run_lane("rec.publisher", _ensure_rec_publisher)
     if not config.is_market_open():
         return
+    window = _ACTIVE_STATE.get("window") or "current_week"
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
-        try:
-            _ensure_chain_ingest(sym, _ACTIVE_STATE.get("window") or "current_week")
-        except Exception as exc:
-            log.warning("chain ingest start failed for %s: %s", sym, exc)
+        _run_lane(f"chain.{sym}", lambda sym=sym: _ensure_chain_ingest(sym, window))
 
 
 # --------------------------------------------------------------------------
@@ -511,22 +541,38 @@ def _rec_publisher_loop() -> None:
                     with _REC_LOCK:
                         _REC_BATCH.pop((sym, win), None)
                     if do_gen:
-                        log.warning(
-                            "rec withheld for %s: placeholder chain %.1f vs quote %.1f",
-                            sym, chain_spot, quote_spot,
+                        event(
+                            "rec.withheld",
+                            workflow="rec.generate",
+                            symbol=sym,
+                            chain_spot=chain_spot,
+                            quote_spot=quote_spot,
+                            reason="placeholder chain",
                         )
                 elif do_gen and levels is not None:
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
-                    # An empty batch (spot 0) must not replace a cached live book.
                     if float(getattr(batch, "spot", 0.0) or 0.0) > 0:
                         with _REC_LOCK:
                             _REC_BATCH[(sym, win)] = batch
+                    event(
+                        "rec.generated",
+                        workflow="rec.generate",
+                        symbol=sym,
+                        count=len(_iter_cached_ideas(batch)),
+                    )
                 if spot > 0 and _latest_rec_batch(sym, win) is not None:
                     _refresh_cached_rec_quotes(sym, spot)
                 if spot > 0 and (now - last_life) >= 5.0:
                     _run_recommendation_lifecycle(sym, spot)
                     ran_life = True
+                    held = _latest_rec_batch(sym, win)
+                    event(
+                        "rec.lifecycle",
+                        workflow="rec.lifecycle",
+                        symbol=sym,
+                        count=len(_iter_cached_ideas(held)) if held is not None else 0,
+                    )
             if do_gen:
                 last_gen = now
             if ran_life:
@@ -626,8 +672,16 @@ def _kick_commentary_eval(sym: str, dash) -> None:
             from commentary.engine import get_session_commentary_engine
             engine = get_session_commentary_engine(sym)
             engine.evaluate_live(sym, dash)
+            event("commentary.evaluated", workflow="commentary", symbol=sym)
         except Exception as exc:
-            log.debug("Commentary evaluate_live error: %s", exc)
+            event(
+                "commentary.failed",
+                level="WARNING",
+                ok=False,
+                workflow="commentary",
+                symbol=sym,
+                error=str(exc),
+            )
         finally:
             _COMMENTARY_LOCK.release()
 
@@ -722,6 +776,15 @@ def _overlay_sqlite_kpis(dash, sym: str):
             log.warning(
                 "%s snapshot %s is older than the loaded book (%s); keeping the book",
                 sym, db_snap.get("as_of"), getattr(dash, "fetched_at", None),
+            )
+            event(
+                "book.stale",
+                level="WARNING",
+                ok=False,
+                workflow=f"book.{sym}",
+                symbol=sym,
+                snapshot_as_of=str(db_snap.get("as_of")),
+                book_fetched=str(getattr(dash, "fetched_at", None)),
             )
             _note_stale_session(dash, db_snap)
             return dash

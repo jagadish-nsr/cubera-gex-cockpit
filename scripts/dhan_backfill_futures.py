@@ -5,8 +5,9 @@ Unlike the options backfill, Dhan only serves the last 90 days of intraday AND o
 inherently shallow (~one contract's life). We grab everything available for the current
 near-month, one parquet per trading day under data/journal/dhan_futures/<SYMBOL>/.
 
-  python scripts/dhan_backfill_futures.py                 # NIFTY + BANKNIFTY, last 90d
-  python scripts/dhan_backfill_futures.py NIFTY           # one symbol
+  python scripts/dhan_backfill_futures.py                         # NIFTY + BANKNIFTY, last 90d
+  python scripts/dhan_backfill_futures.py NIFTY                   # one symbol
+  python scripts/dhan_backfill_futures.py NIFTY 2026-10-21 2026-10-23
 
 Needs the Dhan token (env DHAN_ACCESS_TOKEN or data/.dhan_token). Journal is gitignored.
 """
@@ -31,11 +32,23 @@ def _print(s: str = "") -> None:
 
 
 def main() -> None:
-    symbols = [sys.argv[1]] if len(sys.argv) > 1 else ["NIFTY", "BANKNIFTY"]
+    args = sys.argv[1:]
+    start = end = None
+    if not args:
+        symbols = ["NIFTY", "BANKNIFTY"]
+    elif len(args) == 1:
+        symbols = [args[0].upper()]
+    elif len(args) == 3:
+        symbols = [args[0].upper()]
+        start, end = args[1], args[2]
+    else:
+        raise SystemExit(
+            "usage: python scripts/dhan_backfill_futures.py [SYMBOL [START END]]"
+        )
     _print("Dhan intraday FUTURES backfill (near-month, 1-min, ≤90 days)\n")
     for sym in symbols:
-        _print(f"{sym}:")
-        backfill_futures_intraday(sym, log=_print)
+        _print(f"{sym}:" + (f"  {start} .. {end}" if start else ""))
+        backfill_futures_intraday(sym, start=start, end=end, log=_print)
         _print("")
     _print("✅ done")
 

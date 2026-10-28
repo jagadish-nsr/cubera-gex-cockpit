@@ -184,11 +184,23 @@ class BlastTickCollector:
         self._buf.clear()
         self._last_flush = time.time()
 
+    def _feed(self, name: str, **fields) -> None:
+        try:
+            from app.obs import event
+            event(name, workflow="blast_ticks", symbol=self.status.symbol, **fields)
+        except Exception:
+            return
+
     def run(self) -> None:
         import websocket
         self.status.running = True
+        ever_up = False
+        linked = False
+        fail_note = 0.0
+        count_at = time.monotonic() + 60.0
         if not self.contracts:
             self.status.error = "no blast pair to subscribe"
+            self._feed("blast_ticks.stopped", ok=False, error=self.status.error)
             self.status.running = False
             return
         if self.own_archive:                                 # claim single-writer ownership of the archive
@@ -199,6 +211,7 @@ class BlastTickCollector:
             else:                                            # another writer owns today's archive → no-op
                 self.status.read_only = True
                 self.status.error = "archive owned by another writer (scheduled driver?) — not capturing"
+                self._feed("blast_ticks.stopped", ok=False, error=self.status.error)
                 self.status.running = False
                 return
         while not self._stop.is_set():
@@ -206,15 +219,27 @@ class BlastTickCollector:
                 ws = connect(self.contracts, tiers=(SUB_FULL,))
             except RuntimeError as e:                        # missing token/clientId
                 self.status.error = str(e); self.status.connected = False
+                if time.monotonic() - fail_note > 60:
+                    self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
+                    fail_note = time.monotonic()
                 self._stop.wait(30); continue
             except Exception as e:                           # noqa: BLE001 - handshake/network → retry
                 self.status.error = f"connect: {type(e).__name__}"; self.status.connected = False
+                if time.monotonic() - fail_note > 60:
+                    self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
+                    fail_note = time.monotonic()
                 self._stop.wait(5); continue
             self.status.connected = True
             self.status.error = None
+            self._feed("blast_ticks.reconnected" if ever_up else "blast_ticks.connected")
+            ever_up = True
+            linked = True
             ws.settimeout(2.0)
             try:
                 while not self._stop.is_set():
+                    if time.monotonic() >= count_at:
+                        count_at = time.monotonic() + 60.0
+                        self._feed("blast_ticks.count", ticks=self.status.n_ticks)
                     try:
                         opcode, frame = ws.recv_data()
                     except websocket.WebSocketTimeoutException:
@@ -244,6 +269,9 @@ class BlastTickCollector:
                 except Exception:  # noqa: BLE001
                     pass
                 self._flush(force=True)
+                if linked:
+                    self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=self.status.error or "socket closed")
+                    linked = False
             self.status.connected = False
         self._flush(force=True)
         if self._lock_key:                                   # release our write-lock so tomorrow can claim
@@ -253,6 +281,7 @@ class BlastTickCollector:
             except OSError:
                 pass
             self._lock_key = None
+        self._feed("blast_ticks.stopped", ticks=self.status.n_ticks)
         self.status.running = False
 
 
