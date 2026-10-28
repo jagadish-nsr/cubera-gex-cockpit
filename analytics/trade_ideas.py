@@ -2793,6 +2793,43 @@ def _empty_recommendation_batch(symbol: str, reason: str) -> RecommendationBatch
     )
 
 
+def _best_tactical(candidates: Sequence[Any], floor: int = 65) -> Any | None:
+    """Highest live read at or above the tactical floor. Invalidated ideas stay off the card."""
+    alive = [
+        t for t in candidates
+        if getattr(t, "latch_state", "") != "INVALIDATED" and int(getattr(t, "quality_score", 0) or 0) >= floor
+    ]
+    if not alive:
+        return None
+    return max(alive, key=lambda t: (int(t.quality_score), float(getattr(t, "net_ev_pts", 0) or 0)))
+
+
+def apply_tactical_watch(
+    qualified_ce: list,
+    qualified_pe: list,
+    all_ce: Sequence[Any],
+    all_pe: Sequence[Any],
+    min_score: int,
+) -> tuple[list, list, bool, bool]:
+    """When nothing clears 75, keep the best read at or above 65 on the card.
+
+    A side that already cleared the high-conviction line is left as it is.
+    The 75 line stays the high-conviction bar. This only fills an empty card.
+    """
+    if min_score not in (75, 85) or qualified_ce or qualified_pe:
+        return qualified_ce, qualified_pe, False, False
+    best_ce = _best_tactical(all_ce)
+    best_pe = _best_tactical(all_pe)
+    ce_watch = best_ce is not None
+    pe_watch = best_pe is not None
+    return (
+        [best_ce] if ce_watch else qualified_ce,
+        [best_pe] if pe_watch else qualified_pe,
+        ce_watch,
+        pe_watch,
+    )
+
+
 def generate_trade_recommendations(
     data: Any,
     bias_result: Any | None = None,
@@ -3338,6 +3375,9 @@ def generate_trade_recommendations(
     # Filter out invalidated setups from active display
     qualified_ce = [t for t in qualified_ce if t.latch_state != "INVALIDATED"]
     qualified_pe = [t for t in qualified_pe if t.latch_state != "INVALIDATED"]
+    qualified_ce, qualified_pe, ce_watch, pe_watch = apply_tactical_watch(
+        qualified_ce, qualified_pe, all_ce_candidates, all_pe_candidates, min_score,
+    )
 
     # Collect bookmarked recommendations
     bookmarked = [t for t in all_ce_candidates + all_pe_candidates if t.is_bookmarked]
@@ -3359,7 +3399,23 @@ def generate_trade_recommendations(
         regime_notes.append("Lunch-hour low RVOL window")
     reg_suffix = f" [{' · '.join(regime_notes)}]" if regime_notes else ""
 
-    if qualified_ce and not qualified_pe:
+    if ce_watch or pe_watch:
+        ce_txt = str(qualified_ce[0].quality_score) if qualified_ce else "none at 65"
+        pe_txt = str(qualified_pe[0].quality_score) if qualified_pe else "none at 65"
+        if qualified_ce and qualified_pe:
+            top_side = "BOTH"
+        elif qualified_ce:
+            top_side = "CE"
+        elif qualified_pe:
+            top_side = "PE"
+        else:
+            top_side = "NEUTRAL"
+        exec_summary = (
+            f"Best live read is under the 75 high-conviction line (call {ce_txt}, put {pe_txt}). "
+            f"The card shows that read. High conviction still starts at 75. "
+            f"Directional bias ({bias_score:+.1f}).{reg_suffix}"
+        )
+    elif qualified_ce and not qualified_pe:
         top_side = "CE"
         mode_txt = "Secondary fallback mode" if ce_fallback else "High-conviction (Score > 85)"
         exec_summary = (

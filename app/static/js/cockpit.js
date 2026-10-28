@@ -2011,6 +2011,9 @@
     }
     if (pw > 0 && spot <= pw - step) return { zone: "BELOW_PUT_WALL", through_pts: pw - spot, step };
     if (cw > 0 && spot >= cw + step) return { zone: "ABOVE_CALL_WALL", through_pts: spot - cw, step };
+    if (cw > pw && pw > 0 && (cw - pw) <= 2 * step && spot > pw && spot < cw) {
+      return { zone: "PINNED", through_pts: 0, step };
+    }
     if (pw > 0 && Math.abs(spot - pw) <= step) return { zone: "TEST_PUT", through_pts: Math.abs(spot - pw), step };
     if (cw > 0 && Math.abs(spot - cw) <= step) return { zone: "TEST_CALL", through_pts: Math.abs(spot - cw), step };
     if (pw > 0 && cw > pw && pw < spot && spot < cw) return { zone: "PINNED", through_pts: 0, step };
@@ -2266,7 +2269,7 @@
         badge: "🚨 TESTING PUT WALL",
         theme: "alert-tape-stop",
         headline: "Price is at the put wall",
-        outcome: `Stay out of a call. Price has reached the put wall at ${tapeInr(pw)}. You pay the premium up front for a rise, and reaching that strike does not give you the rise. If the fall continues, the call can end up worth nothing.`,
+        outcome: `Price is at the put wall at ${tapeInr(pw)}. A put bought here still needs a further fall to cover the premium. A call you already hold is on the side being tested, and a further fall can take that premium to zero.`,
         drivers: say(`Price is within one strike of ${tapeInr(pw)}. The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
         risk: `If you already hold a call, exit it when price goes more than one strike below ${tapeInr(pw)}. Buying a put only because price reached the strike still needs the index to fall far enough to cover what you paid.`,
       },

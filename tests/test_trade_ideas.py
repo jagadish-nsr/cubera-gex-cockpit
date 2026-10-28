@@ -1,7 +1,13 @@
 """tests/test_trade_ideas.py — Tests for Top 3 CE/PE Options Recommendation Engine."""
 
 import pytest
-from analytics.trade_ideas import generate_trade_recommendations, TradeIdea, RecommendationBatch
+import config
+from analytics.trade_ideas import (
+    apply_tactical_watch,
+    generate_trade_recommendations,
+    TradeIdea,
+    RecommendationBatch,
+)
 from gex.levels import Levels
 import pandas as pd
 
@@ -1013,5 +1019,35 @@ def test_pre_market_regime_confluence_scoring():
         pre_market_regime="GAP_UP_INTO_POS_GAMMA",
     )
     assert score_rev_same == score_rev_base
+
+
+class _Read:
+    def __init__(self, score, latch="QUALIFIED", ev=0.0):
+        self.quality_score = score
+        self.latch_state = latch
+        self.net_ev_pts = ev
+
+
+def test_empty_high_conviction_card_keeps_the_best_tactical_read():
+    ce = [_Read(60), _Read(68, ev=1.0), _Read(72, latch="INVALIDATED")]
+    pe = [_Read(66), _Read(70, ev=2.0)]
+    shown_ce, shown_pe, ce_watch, pe_watch = apply_tactical_watch([], [], ce, pe, 75)
+    assert ce_watch and pe_watch
+    assert shown_ce[0].quality_score == 68
+    assert shown_pe[0].quality_score == 70
+    # A side that already cleared 75 is left alone. The other side stays empty.
+    kept_ce, kept_pe, w_ce, w_pe = apply_tactical_watch([_Read(90)], [], ce, pe, 75)
+    assert kept_ce[0].quality_score == 90
+    assert kept_pe == []
+    assert not w_ce and not w_pe
+
+
+def test_placeholder_chain_is_withheld_unless_the_quote_confirms_it():
+    assert config.withhold_placeholder_ideas("NIFTY", 24500, 22678)
+    assert config.withhold_placeholder_ideas("NIFTY", 24500, 0)
+    assert not config.withhold_placeholder_ideas("NIFTY", 24500, 24510)
+    assert not config.withhold_placeholder_ideas("NIFTY", 22650, 22678)
+    assert config.placeholder_disagrees_with_quote("BANKNIFTY", 54000, 58000)
+    assert not config.chain_spot_is_placeholder("SENSEX", 73606)
 
 
