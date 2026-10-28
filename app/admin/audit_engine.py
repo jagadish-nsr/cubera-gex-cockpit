@@ -94,11 +94,14 @@ def _expected_minutes(day: date, now: datetime) -> tuple[list[str], bool]:
     open_session = day == now.date() and is_trading_day(day) and (
         time(9, 15) <= now.time().replace(tzinfo=None) < time(15, 30)
     )
+    if day > now.date():
+        return [], False
     if not open_session:
         if day == now.date() and is_trading_day(day) and now.time().replace(tzinfo=None) < time(9, 15):
             return [], True
         return list(_GRID), False
     closed = now.hour * 60 + now.minute - 1
+    # At 09:15 the previous minute is 09:14, before the open, so nothing is due yet.
     if closed < 9 * 60 + 15:
         return [], True
     last = min(closed, 15 * 60 + 29)
@@ -510,6 +513,14 @@ def audit_range(root: Path, symbol: str, start_date: str, end_date: str,
                 summary["holidays"] += 1
             row.update(base)
             row["is_trading_day"] = False
+            days.append(row)
+            day += timedelta(days=1)
+            continue
+
+        if day > now.date():
+            row = _blank("PENDING")
+            row["session_kind"] = "PENDING"
+            row.update(base)
             days.append(row)
             day += timedelta(days=1)
             continue

@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from app.admin.clock import now_ist
+from app.admin.clock import IST
 from app.obs.context import current
 from app.obs.redact import redact_mapping, redact_text
 
@@ -58,9 +59,13 @@ class _RedactFilter(logging.Filter):
         return True
 
 
+def _record_ist(record: logging.LogRecord) -> datetime:
+    return datetime.fromtimestamp(record.created, tz=IST)
+
+
 class _IstFormatter(logging.Formatter):
     def formatTime(self, record, datefmt=None):
-        return now_ist().strftime("%Y-%m-%d %H:%M:%S")
+        return _record_ist(record).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class _JsonFormatter(logging.Formatter):
@@ -70,7 +75,7 @@ class _JsonFormatter(logging.Formatter):
             obs = {}
         ctx = current()
         payload = {
-            "ts": now_ist().isoformat(timespec="milliseconds"),
+            "ts": _record_ist(record).isoformat(timespec="milliseconds"),
             "level": record.levelname,
             "process": _process,
             "logger": record.name,

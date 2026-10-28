@@ -15,6 +15,7 @@ from app.admin.clock import IST
 from app.admin.task_runner import (
     AdminRequestError,
     _procs,
+    _reap,
     cancel,
     handle,
     mark_orphaned_tasks,
@@ -204,6 +205,43 @@ def test_cancel_terminates_only_that_child():
     cancel("task_live", now=datetime(2026, 10, 24, 21, 0, tzinfo=IST))
     assert proc.terminated is True
     assert db.get_task("task_live")["status"] == "INTERRUPTED"
+
+
+def test_interrupted_reap_drops_the_process():
+    db.insert_task({
+        "task_id": "task_live",
+        "task_type": "backfill_options",
+        "argv_json": "[]",
+        "status": "INTERRUPTED",
+        "params_json": "{}",
+        "started_at": "2026-10-24T20:00:00+05:30",
+        "log_path": "unused",
+    })
+
+    class _Handle:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class _Proc:
+        def wait(self):
+            return -15
+
+    handle = _Handle()
+    _procs["task_live"] = _Proc()
+    _reap("task_live", _procs["task_live"], handle, Path("unused"))
+    assert "task_live" not in _procs
+    assert handle.closed is True
+    assert db.get_task("task_live")["exit_code"] == -15
+
+
+def test_options_confirm_rejects_a_future_date():
+    now = datetime(2026, 10, 24, 20, 0, tzinfo=IST)
+    with pytest.raises(AdminRequestError, match="future") as exc:
+        handle(_opts("2026-10-30", confirm=True), now=now, spawn_fn=lambda *a: None)
+    assert exc.value.status_code == 400
 
 
 def test_admin_package_does_not_call_the_cleanse_script():

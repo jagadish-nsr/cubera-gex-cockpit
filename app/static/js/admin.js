@@ -324,6 +324,8 @@
     showLog(data.task_id + "  " + data.status, (data.log_tail || []).join("\n"));
     if (data.status === "QUEUED" || data.status === "RUNNING") {
       pollTimer = setTimeout(pollTask, 1000);
+    } else {
+      activeTask = null;
     }
   }
 

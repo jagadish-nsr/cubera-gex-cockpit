@@ -202,6 +202,17 @@ def test_options_minute_missing_one_pair_is_partial(tmp_path):
     assert "does not rewrite" in options["block_reason"]
 
 
+def test_a_future_trading_day_is_pending(tmp_path):
+    report = audit_range(tmp_path, "NIFTY", "2026-10-23", "2026-10-23", now=_at("2026-10-22", 20, 0))
+    row = _day(report, "2026-10-23")
+    assert row["session_kind"] == "PENDING"
+    assert row["futures_status"] == "PENDING"
+    assert row["options_matrix_status"] == "PENDING"
+    assert row["repair_available"] is False
+    assert report["summary"]["missing_days"] == 0
+    assert report["summary"]["trading_days"] == 0
+
+
 def test_banknifty_does_not_read_the_nifty_store(tmp_path):
     day = "2026-10-22"
     _write_futures(tmp_path, "NIFTY", day, session_grid())

@@ -1,14 +1,16 @@
 """Deduplicated token, feed, WAL, gap, and stale-process alerts.
 
 The loop reads ``token_status()`` and ``app.ws_spot_feed.get_status()``. It does
-not open a second WebSocket, and it does not checkpoint or vacuum. Gap checks
-call the read-only audit once per closed session.
+not open a second WebSocket, and it does not checkpoint or vacuum. A closed
+session with a gap is rechecked until the journals are complete. A clean
+session is not scanned again until the process restarts.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -27,17 +29,20 @@ PROCESS_SILENCE = timedelta(minutes=3)
 EVENT_KEEP = timedelta(days=7)
 _gap_checked: set[str] = set()
 _gap_count = 0
+_gap_lock = threading.Lock()
 _task: asyncio.Task | None = None
 
 
 def gap_count() -> int:
-    return _gap_count
+    with _gap_lock:
+        return _gap_count
 
 
 def reset_gap_cache() -> None:
     global _gap_count
-    _gap_checked.clear()
-    _gap_count = 0
+    with _gap_lock:
+        _gap_checked.clear()
+        _gap_count = 0
 
 
 def _iso(now: datetime) -> str:
@@ -118,7 +123,7 @@ def _token_alert(status: dict, stamp: str) -> None:
 
 def _feed_alert(status: dict, now: datetime, stamp: str) -> None:
     session_date = now.date().isoformat()
-    silence_fp = f"FEED|silence|{session_date}"
+    silence_fp = "FEED|silence"
     age = status.get("last_tick_age_s")
     started = bool(status.get("ws_connected")) or age is not None
     if is_regular_session(now) and started and age is not None and age > 30:
@@ -134,6 +139,10 @@ def _feed_alert(status: dict, now: datetime, stamp: str) -> None:
         )
     else:
         db.resolve_alert(silence_fp, stamp)
+        for row in db.list_alerts():
+            old = str(row.get("fingerprint") or "")
+            if old.startswith("FEED|silence|"):
+                db.resolve_alert(old, stamp)
 
     idle_fp = "FEED|not-started"
     if not status.get("ws_connected") and age is None:
@@ -179,25 +188,34 @@ def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
     if prev is None:
         return
     key = prev.isoformat()
-    if key in _gap_checked:
-        return
-    _gap_checked.add(key)
+    with _gap_lock:
+        if key in _gap_checked:
+            return
     gaps = []
     for symbol in ("NIFTY", "BANKNIFTY", "SENSEX"):
         try:
             report = audit_range(root, symbol, key, key, now=now)
         except Exception:
             log.exception("gap audit failed for %s %s", symbol, key)
-            continue
+            return
         day = report["days"][0]
         for label, status in (
             ("futures", day["futures_status"]),
             ("options", day["options_matrix_status"]),
             ("sentinel", day["sentinel_status"]),
         ):
+            # Sensex futures are not in the Dhan near-month backfill. A missing
+            # file is the steady state, not a session gap.
+            if symbol == "SENSEX" and label == "futures":
+                continue
             if status in ("PARTIAL", "MISSING"):
                 gaps.append(f"{symbol} {label} {status}")
-    _gap_count = len(gaps)
+    with _gap_lock:
+        if key in _gap_checked:
+            return
+        _gap_count = len(gaps)
+        if not gaps:
+            _gap_checked.add(key)
     fp = f"GAP|{key}"
     if gaps:
         db.upsert_alert(
@@ -210,8 +228,8 @@ def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
             session_date=key,
             now_iso=stamp,
         )
-    else:
-        db.resolve_alert(fp, stamp)
+        return
+    db.resolve_alert(fp, stamp)
 
 
 def _parse_beat(value: str | None) -> datetime | None:

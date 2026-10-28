@@ -39,6 +39,7 @@ PAGE_DAYS = 42
 
 _procs: dict[str, subprocess.Popen] = {}
 _proc_lock = threading.Lock()
+_claim_lock = threading.Lock()
 
 
 class AdminRequestError(Exception):
@@ -117,6 +118,8 @@ def _validate(body: dict, now: datetime) -> tuple[str, str, date, date]:
     end = _parse_day(body.get("end_date"))
     _span_ok(start, end)
     today = as_ist(now).date()
+    if end > today:
+        raise AdminRequestError("end_date cannot be in the future")
     if task_type == "backfill_futures":
         floor = today - timedelta(days=FUT_LOOKBACK_DAYS)
         if start < floor or end > today:
@@ -176,7 +179,7 @@ def _ranges_overlap(a_start: str, a_end: str, b_start: str, b_end: str) -> bool:
 
 
 def _lock_conflict(task_type: str, symbol: str, start: date, end: date) -> dict | None:
-    for row in db.running_tasks():
+    for row in db.active_tasks():
         if row["task_type"] != task_type:
             continue
         try:
@@ -195,6 +198,41 @@ def _task_id(now: datetime) -> str:
     return f"task_{stamp}_{uuid.uuid4().hex[:4]}"
 
 
+def _reap(task_id: str, proc, handle, log_path: Path) -> None:
+    """Wait for ``proc``, then drop it. An interrupted task must not stay in ``_procs``."""
+    code = None
+    try:
+        code = proc.wait()
+    finally:
+        try:
+            handle.close()
+        finally:
+            with _proc_lock:
+                _procs.pop(task_id, None)
+    if code is None:
+        return
+    current = db.get_task(task_id)
+    if current and current["status"] == "INTERRUPTED":
+        db.update_task(task_id, exit_code=code, tail_snippet=_tail_text(log_path))
+        _task_event("admin.task.finished", ok=False, task_id=task_id, exit_code=code, message="interrupted")
+        return
+    status = "COMPLETED" if code == 0 else "FAILED"
+    db.update_task(
+        task_id,
+        status=status,
+        ended_at=as_ist(now_ist()).isoformat(timespec="seconds"),
+        exit_code=code,
+        tail_snippet=_tail_text(log_path),
+    )
+    _task_event(
+        "admin.task.finished",
+        ok=code == 0,
+        task_id=task_id,
+        exit_code=code,
+        level="INFO" if code == 0 else "ERROR",
+    )
+
+
 def spawn(argv: list[str], log_path: Path, task_id: str) -> subprocess.Popen:
     """Start ``argv`` with stdout appended to ``log_path``. Tests replace this."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,34 +246,12 @@ def spawn(argv: list[str], log_path: Path, task_id: str) -> subprocess.Popen:
     with _proc_lock:
         _procs[task_id] = proc
 
-    def _wait() -> None:
-        code = proc.wait()
-        handle.close()
-        current = db.get_task(task_id)
-        if current and current["status"] == "INTERRUPTED":
-            db.update_task(task_id, exit_code=code)
-            _task_event("admin.task.finished", ok=False, task_id=task_id, exit_code=code, message="interrupted")
-            return
-        status = "COMPLETED" if code == 0 else "FAILED"
-        tail = _tail_text(log_path)
-        db.update_task(
-            task_id,
-            status=status,
-            ended_at=as_ist(now_ist()).isoformat(timespec="seconds"),
-            exit_code=code,
-            tail_snippet=tail,
-        )
-        _task_event(
-            "admin.task.finished",
-            ok=code == 0,
-            task_id=task_id,
-            exit_code=code,
-            level="INFO" if code == 0 else "ERROR",
-        )
-        with _proc_lock:
-            _procs.pop(task_id, None)
-
-    threading.Thread(target=_wait, name=f"admin-task-{task_id}", daemon=True).start()
+    threading.Thread(
+        target=_reap,
+        args=(task_id, proc, handle, log_path),
+        name=f"admin-task-{task_id}",
+        daemon=True,
+    ).start()
     return proc
 
 
@@ -266,12 +282,6 @@ def handle(body: dict, now: datetime | None = None, spawn_fn=None) -> dict:
         return plan
     if task_type == "backfill_options" and plan["days_to_fetch"] == 0:
         raise AdminRequestError("options backfill does not rewrite a day already on disk")
-    conflict = _lock_conflict(task_type, symbol, start, end)
-    if conflict is not None:
-        raise AdminRequestError(
-            f"{task_type} is already running for {symbol} ({conflict['task_id']})",
-            status_code=409,
-        )
     task_id = _task_id(now)
     log_path = ROOT / "logs" / "admin_tasks" / f"{task_id}.log"
     params = {
@@ -280,15 +290,24 @@ def handle(body: dict, now: datetime | None = None, spawn_fn=None) -> dict:
         "end_date": end.isoformat(),
         "store": symbol,
     }
-    db.insert_task({
-        "task_id": task_id,
-        "task_type": task_type,
-        "argv_json": json.dumps(argv),
-        "status": "QUEUED",
-        "params_json": json.dumps(params),
-        "started_at": now.isoformat(timespec="seconds"),
-        "log_path": str(log_path),
-    })
+    # Claim the row before spawn. Two confirms otherwise both see no RUNNING
+    # row and start two subprocesses.
+    with _claim_lock:
+        conflict = _lock_conflict(task_type, symbol, start, end)
+        if conflict is not None:
+            raise AdminRequestError(
+                f"{task_type} is already running for {symbol} ({conflict['task_id']})",
+                status_code=409,
+            )
+        db.insert_task({
+            "task_id": task_id,
+            "task_type": task_type,
+            "argv_json": json.dumps(argv),
+            "status": "RUNNING",
+            "params_json": json.dumps(params),
+            "started_at": now.isoformat(timespec="seconds"),
+            "log_path": str(log_path),
+        })
     try:
         (spawn_fn or spawn)(argv, log_path, task_id)
     except Exception as exc:
@@ -296,7 +315,6 @@ def handle(body: dict, now: datetime | None = None, spawn_fn=None) -> dict:
                        tail_snippet=str(exc)[:2048])
         _task_event("admin.task.finished", ok=False, task_id=task_id, task_type=task_type, symbol=symbol, error=str(exc))
         raise AdminRequestError(f"failed to start task: {exc}") from exc
-    db.update_task(task_id, status="RUNNING")
     _task_event("admin.task.started", task_id=task_id, task_type=task_type, symbol=symbol)
     return {"status": "ok", "task_id": task_id, "message": "Task queued in background"}
 

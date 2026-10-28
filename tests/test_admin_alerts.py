@@ -106,7 +106,7 @@ def test_feed_silence_alerts_during_the_session_and_clears(tmp_path):
         include_gaps=False,
     )
     rows = db.list_alerts()
-    assert any(row["fingerprint"] == "FEED|silence|2026-10-23" and row["severity"] == "CRITICAL" for row in rows)
+    assert any(row["fingerprint"] == "FEED|silence" and row["session_date"] == "2026-10-23" and row["severity"] == "CRITICAL" for row in rows)
     evaluate_alerts(
         root=tmp_path,
         now=now,
@@ -115,3 +115,38 @@ def test_feed_silence_alerts_during_the_session_and_clears(tmp_path):
         include_gaps=False,
     )
     assert not any(row["fingerprint"].startswith("FEED|silence") for row in db.list_alerts())
+
+
+def test_gap_alert_skips_sensex_futures_and_clears_when_the_hole_is_filled(tmp_path, monkeypatch):
+    from app.admin import health_daemon
+
+    state = {"nifty": "MISSING"}
+
+    def fake_audit(root, symbol, start, end, now=None):
+        futures = "MISSING" if symbol == "SENSEX" else ("COMPLETE" if symbol == "BANKNIFTY" else state["nifty"])
+        return {"days": [{
+            "futures_status": futures,
+            "options_matrix_status": "COMPLETE",
+            "sentinel_status": "COMPLETE",
+        }]}
+
+    monkeypatch.setattr(health_daemon, "audit_range", fake_audit)
+    now = datetime(2026, 10, 23, 16, 0, tzinfo=IST)
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+    )
+    gap = next(row for row in db.list_alerts() if row["fingerprint"] == "GAP|2026-10-23")
+    assert "SENSEX futures" not in gap["description"]
+    assert "NIFTY futures MISSING" in gap["description"]
+
+    state["nifty"] = "COMPLETE"
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+    )
+    assert not any(row["fingerprint"].startswith("GAP|") for row in db.list_alerts())
