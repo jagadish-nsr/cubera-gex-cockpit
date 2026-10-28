@@ -324,7 +324,6 @@ class LiveSentinelManager:
 
             if completed_bar is not None:
                 save_bar(completed_bar)
-                bar_sig = None
 
                 # Update context
                 ctx = self._contexts.get(instrument_id)
@@ -335,13 +334,6 @@ class LiveSentinelManager:
                         sig = classifier.evaluate_bar(completed_bar, ctx)
                         if sig:
                             save_signal(sig)
-                            bar_sig = sig
-
-                try:
-                    from replay.sentinel_journal import append_finalized
-                    append_finalized(symbol, completed_bar, bar_sig)
-                except Exception as err:
-                    log.debug("Sentinel day file was not appended for %s: %s", symbol, err)
 
                 # Update outcomes of recent signals with subsequent bars
                 try:

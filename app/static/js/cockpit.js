@@ -29,9 +29,6 @@
     pendingAlertBellTime: 0,
     spot: 24500.0,
     ws: null,
-    replayMode: false,
-    replayAsOf: null,
-    replayLoadedMinute: "",
     sentinelChart: null,
     candlestickSeries: null,
     cvdSeries: null,
@@ -417,15 +414,6 @@
         try {
           const tick = JSON.parse(event.data);
           paintWallKpisFromTick(tick);
-          if (tick.feed_mode === "REPLAY") {
-            state.replayMode = true;
-            if (Number.isFinite(Number(tick.timestamp))) state.replayAsOf = Number(tick.timestamp);
-            const minute = String((tick.replay && tick.replay.hhmm) || "").slice(0, 5);
-            if (minute && minute !== state.replayLoadedMinute && !(tick.replay && tick.replay.repeat)) {
-              state.replayLoadedMinute = minute;
-              loadCockpit();
-            }
-          }
           if (tick.type === "TICK" && tick.is_market_open) {
             handleLiveTick(tick);
           } else if (tick.type === "STATUS") {
@@ -599,10 +587,7 @@
       const tfBadge = document.getElementById("cockpit-chart-badge");
       if (tfBadge) {
         const tfLabel = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
-        const replay = tick.feed_mode === "REPLAY";
-        tfBadge.innerHTML = replay
-          ? `${tfLabel} · <span style="color:#e0a100;font-weight:800">REPLAY ₹${px.toFixed(1)}</span>`
-          : `${tfLabel} · <span style="color:var(--go);font-weight:800">🟢 DHAN TICK ₹${px.toFixed(1)}</span>`;
+        tfBadge.innerHTML = `${tfLabel} · <span style="color:var(--go);font-weight:800">🟢 DHAN TICK ₹${px.toFixed(1)}</span>`;
       }
     }
 
@@ -747,33 +732,6 @@
         }
         if (sessionSubstateDisplay) {
           sessionSubstateDisplay.textContent = data.feed_subtext || "Tick stream paused · Broker pollers idle";
-        }
-      } else if (data.replay) {
-        if (quoteBoxLabel) quoteBoxLabel.textContent = "Stored session";
-        if (quoteStatusDot) quoteStatusDot.className = "live-dot";
-        if (feedBadge) {
-          feedBadge.textContent = "REPLAY";
-          feedBadge.style.color = "#e0a100";
-          feedBadge.style.background = "rgba(224,161,0,0.12)";
-          feedBadge.style.borderColor = "";
-        }
-        if (sessionPhaseBadge) {
-          sessionPhaseBadge.textContent = "REPLAY";
-        }
-        if (feedBanner) {
-          feedBanner.className = "feed-mode-banner live";
-        }
-        if (feedStatusBadge) {
-          feedStatusBadge.textContent = data.feed_badge || "REPLAY";
-          feedStatusBadge.style.color = "#e0a100";
-          feedStatusBadge.style.background = "rgba(224,161,0,0.12)";
-        }
-        if (sessionTitleDisplay) {
-          sessionTitleDisplay.textContent = data.feed_title || "Stored session";
-          sessionTitleDisplay.style.color = "#e0a100";
-        }
-        if (sessionSubstateDisplay) {
-          sessionSubstateDisplay.textContent = data.feed_subtext || "This is not the live book.";
         }
       } else {
         if (quoteBoxLabel) quoteBoxLabel.textContent = "Spot Live Quote";
@@ -1506,7 +1464,7 @@
 
     const isClosed = state.is_market_open === false || state.market_state === "CLOSED";
     const tfBadge = document.getElementById("cockpit-chart-badge");
-    if (tfBadge && !state.replayMode) {
+    if (tfBadge) {
       const tfName = cockpitChartState.timeframe === "5m" ? "5min" : cockpitChartState.timeframe;
       tfBadge.textContent = isClosed ? `${tfName} · EOD (CLOSED)` : `${tfName} · LIVE`;
       tfBadge.style.color = isClosed ? "var(--ink-mute)" : "var(--go)";
@@ -2065,7 +2023,7 @@
     const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
-    const nowTs = state.replayMode && Number.isFinite(state.replayAsOf) ? state.replayAsOf : Date.now() / 1000;
+    const nowTs = Date.now() / 1000;
 
     const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
     const isPreBell = Boolean(dash.is_pre_bell_ephemeral);
