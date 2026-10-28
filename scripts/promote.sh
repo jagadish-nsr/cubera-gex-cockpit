@@ -178,21 +178,33 @@ fi
 
 # Reload production server on port 8640
 echo "  • Gracefully reloading Production Server on port ${PROD_PORT}..."
-OLD_PID=$(lsof -ti :${PROD_PORT} || echo "")
+OLD_PID=$(lsof -nP -iTCP:${PROD_PORT} -sTCP:LISTEN -t || true)
 if [[ -n "${OLD_PID}" ]]; then
     echo "    Found running prod server (PID: ${OLD_PID}). Terminating cleanly..."
     kill -15 ${OLD_PID} || true
     sleep 2
 fi
 
-# Launch prod server in background
-echo "    Starting production server v${NEW_TAG}..."
-cd "${PROD_DIR}"
-nohup python3 web_server.py --port ${PROD_PORT} > "${PROD_DIR}/logs/prod.log" 2>&1 &
-NEW_PID=$!
+# A new session so this process outlives the promotion shell.
+echo "    Starting production server ${NEW_TAG}..."
+NEW_PID=$(PROD_DIR="${PROD_DIR}" PROD_PORT="${PROD_PORT}" python3 - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+prod = Path(os.environ["PROD_DIR"])
+log = open(prod / "logs" / "prod.log", "a")
+proc = subprocess.Popen(
+    ["python3", "web_server.py", "--port", os.environ["PROD_PORT"]],
+    cwd=prod,
+    stdout=log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+print(proc.pid)
+PY
+)
 echo "${NEW_PID}" > "${PROD_DIR}/logs/prod_server.pid"
 echo "    Production server started (PID: ${NEW_PID})."
-cd "${DEV_DIR}"
 echo ""
 
 # ------------------------------------------------------------------------------

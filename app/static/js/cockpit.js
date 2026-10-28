@@ -21,6 +21,7 @@
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
     lastCockpitDash: null,
+    headerExecRich: false,
     tapeLatch: null,
     lastTapePaintSig: null,
     audioCtx: null,
@@ -808,6 +809,14 @@
         }
       }
 
+      // The session line is in the header on every tab. Do not wait for the book paint.
+      const spotNum = Number(data.spot);
+      const spotTxt = Number.isFinite(spotNum) && spotNum > 0 ? `₹${spotNum.toLocaleString("en-IN")}` : "";
+      const statusExec = !data.is_market_open
+        ? (spotTxt ? `Snapshot Locked at ${spotTxt}` : "")
+        : (spotTxt ? `Spot ${spotTxt}` : "");
+      paintHeaderSession(statusExec, headerCountdown(data), false, Boolean(data.is_market_open));
+
       // Ephemeral Pre-Bell briefing: 08:45–09:22 IST, client clock is the hard stop
       syncCockpitPreBellCard(data.is_pre_bell_ephemeral);
       if (data.is_pre_bell_ephemeral && isClientPreBellWindow()) {
@@ -979,6 +988,7 @@
 
       if (!data.kpis) return;
       state.lastCockpitDash = data;
+      paintHeaderSession(headerExecFromBook(data), headerCountdown(data), true, marketOpenFrom(data));
       if (state.spot > 0) data.spot = state.spot;
       const valueLine = document.getElementById("value-area-line");
       if (valueLine) valueLine.textContent = (data.value_area && data.value_area.text) || "No prior value area.";
@@ -1051,22 +1061,6 @@
       }
       renderBookStructure(data.structures);
 
-      const execStatusEl = document.getElementById("cockpit-exec-status");
-      let fullExecStatus = "";
-      if (execStatusEl) {
-        if (data.exec_session_status) {
-          fullExecStatus = data.exec_session_status;
-        } else if (!state.isMarketOpen) {
-          const reg = data.kpis && data.kpis.regime ? data.kpis.regime.val : "Normal";
-          fullExecStatus = `Snapshot Locked at ₹${data.spot.toLocaleString("en-IN")} · ${reg} Mode`;
-        } else {
-          fullExecStatus = `${data.kpis.regime.val} Mode · Spot ₹${data.spot.toLocaleString("en-IN")}`;
-        }
-        execStatusEl.textContent = conciseExecStatus(fullExecStatus);
-        execStatusEl.title = fullExecStatus;
-        execStatusEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
-      }
-
       if (data.market_breadth) {
         const mb = data.market_breadth;
         const bEl = document.getElementById("cockpit-breadth-val");
@@ -1075,29 +1069,6 @@
           bEl.title = bEl.textContent;
           bEl.style.color = mb.ratio >= 1.0 ? "var(--go)" : "var(--stop)";
         }
-      }
-
-      const cdEl = document.getElementById("cockpit-phase-countdown");
-      let fullCountdown = "";
-      if (cdEl) {
-        if (data.next_phase_countdown) {
-          fullCountdown = data.next_phase_countdown;
-        } else if (data.session_schedule && data.session_schedule.exec_phase_countdown) {
-          fullCountdown = data.session_schedule.exec_phase_countdown;
-        } else if (!state.isMarketOpen) {
-          fullCountdown = getClientReopenCountdown();
-        } else {
-          fullCountdown = "Live Regular Session (to 15:30 IST)";
-        }
-        cdEl.textContent = concisePhaseCountdown(fullCountdown);
-        cdEl.title = fullCountdown;
-        cdEl.style.color = state.isMarketOpen ? "var(--go)" : "var(--ink-mute)";
-      }
-      const sessionCard = document.getElementById("header-session-card");
-      if (sessionCard) {
-        const phaseEl = document.getElementById("session-phase-badge");
-        const phaseLabel = phaseEl ? phaseEl.textContent : "";
-        sessionCard.title = [phaseLabel, fullExecStatus, fullCountdown].filter(Boolean).join("\n");
       }
 
       // Pre-Market Discovery Summary & 5-Strike Opening Shocks
@@ -5462,6 +5433,7 @@
         cockpitChartState.symbol = state.symbol;
         cockpitChartState.currentBar = null;
         state.lastCockpitDash = null;
+        state.headerExecRich = false;
         state.tapeLatch = null;
         state.lastTapePaintSig = null;
 
@@ -5838,6 +5810,53 @@
         return clock12(h, m, s) + " IST";
       }
     );
+  }
+
+  function marketOpenFrom(data) {
+    if (data && typeof data.is_market_open === "boolean") return data.is_market_open;
+    return Boolean(state.isMarketOpen);
+  }
+
+  function headerCountdown(data) {
+    if (data && data.next_phase_countdown) return data.next_phase_countdown;
+    if (data && data.session_schedule && data.session_schedule.exec_phase_countdown) {
+      return data.session_schedule.exec_phase_countdown;
+    }
+    if (!marketOpenFrom(data)) return getClientReopenCountdown();
+    return "Live Regular Session (to 15:30 IST)";
+  }
+
+  function headerExecFromBook(data) {
+    if (data.exec_session_status) return data.exec_session_status;
+    const spotNum = Number(data.spot);
+    const spotTxt = Number.isFinite(spotNum) && spotNum > 0 ? `₹${spotNum.toLocaleString("en-IN")}` : "";
+    const reg = data.kpis && data.kpis.regime && data.kpis.regime.val ? data.kpis.regime.val : "";
+    if (!marketOpenFrom(data)) {
+      return [`Snapshot Locked at ${spotTxt}`.replace(/\s+$/, ""), reg ? `${reg} Mode` : ""].filter(Boolean).join(" · ");
+    }
+    return [reg ? `${reg} Mode` : "", spotTxt ? `Spot ${spotTxt}` : ""].filter(Boolean).join(" · ");
+  }
+
+  function paintHeaderSession(execText, countdownText, rich, marketOpen) {
+    const execStatusEl = document.getElementById("cockpit-exec-status");
+    const cdEl = document.getElementById("cockpit-phase-countdown");
+    if (execStatusEl && execText && (rich || !state.headerExecRich)) {
+      execStatusEl.textContent = conciseExecStatus(execText);
+      execStatusEl.title = execText;
+      execStatusEl.style.color = marketOpen ? "var(--go)" : "var(--ink-mute)";
+      if (rich) state.headerExecRich = true;
+    }
+    if (cdEl && countdownText) {
+      cdEl.textContent = concisePhaseCountdown(countdownText);
+      cdEl.title = countdownText;
+      cdEl.style.color = marketOpen ? "var(--go)" : "var(--ink-mute)";
+    }
+    const sessionCard = document.getElementById("header-session-card");
+    if (sessionCard) {
+      const phaseEl = document.getElementById("session-phase-badge");
+      const phaseLabel = phaseEl ? phaseEl.textContent : "";
+      sessionCard.title = [phaseLabel, execStatusEl && execStatusEl.title, cdEl && cdEl.title].filter(Boolean).join("\n");
+    }
   }
 
   function conciseExecStatus(text) {
