@@ -502,11 +502,20 @@ def _rec_publisher_loop() -> None:
             for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
                 dash = (chain_latest(sym, win) or {}).get("data")
                 quote = latest_quote(sym) or {}
-                spot = float(quote.get("spot") or 0.0)
+                quote_spot = float(quote.get("spot") or 0.0)
                 levels = getattr(dash, "levels", None) if dash is not None else None
-                if spot <= 0 and levels is not None:
-                    spot = float(getattr(levels, "spot", 0.0) or 0.0)
-                if do_gen and levels is not None:
+                chain_spot = float(getattr(levels, "spot", 0.0) or 0.0) if levels is not None else 0.0
+                spot = quote_spot if quote_spot > 0 else chain_spot
+                withhold = levels is not None and config.withhold_placeholder_ideas(sym, chain_spot, quote_spot)
+                if withhold:
+                    with _REC_LOCK:
+                        _REC_BATCH.pop((sym, win), None)
+                    if do_gen:
+                        log.warning(
+                            "rec withheld for %s: placeholder chain %.1f vs quote %.1f",
+                            sym, chain_spot, quote_spot,
+                        )
+                elif do_gen and levels is not None:
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
                     # An empty batch (spot 0) must not replace a cached live book.
@@ -954,7 +963,7 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
         is_active = True
 
     inval_breached = not is_active
-    st_code = "INVALIDATED" if inval_breached else ("ACTIVE" if idea.quality_score >= 75 else "DEGRADED")
+    st_code = "INVALIDATED" if inval_breached else ("ACTIVE" if idea.quality_score >= 65 else "DEGRADED")
 
     bm = is_bookmarked(idea.rec_id)
 
@@ -1070,13 +1079,13 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
 
 def _serialize_cluster(cluster: StrikeCluster, spot: float, capital: float, risk: float, lot_size: int) -> dict:
     serialized_ideas = [_serialize_trade_idea(i, spot, capital, risk, lot_size) for i in cluster.ideas]
-    active_ideas = [i for i in serialized_ideas if not i["inval_breached"] and i["quality_score"] >= 75]
+    active_ideas = [i for i in serialized_ideas if not i["inval_breached"] and i["quality_score"] >= 65]
 
     dissolved_reasons = []
     for i in serialized_ideas:
         if i["inval_breached"]:
             dissolved_reasons.append(f"<b>{i['play_badge']}</b> spot invalidation breached (₹{i['spot_invalidation']:,.0f})")
-        elif i["quality_score"] < 75:
+        elif i["quality_score"] < 65:
             dissolved_reasons.append(f"<b>{i['play_badge']}</b> conviction faded ({i['quality_score']}/100)")
 
     if len(active_ideas) > 1:

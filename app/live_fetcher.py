@@ -67,6 +67,23 @@ def force(symbol: str, window: str | None = None) -> None:
         _event(k).set()
 
 
+def _live_quote_spot(symbol: str) -> float:
+    """Latest index print, or 0 when the ticker has nothing fresh."""
+    try:
+        from app.spot_ticker import latest_quote
+        quote = latest_quote(symbol) or {}
+        return float(quote.get("spot") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def _chain_spot(data) -> float:
+    try:
+        return float(getattr(getattr(data, "levels", None), "spot", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def publish_snapshot(symbol: str, window: str | None, data):
     """Store a computed dashboard and write the off-market pickle.
 
@@ -78,6 +95,9 @@ def publish_snapshot(symbol: str, window: str | None, data):
     src = str(getattr(data, "source", "") or "").lower()
     if any(k in src for k in ("demo", "synthetic", "mock", "test")):
         raise ValueError("refusing to publish a synthetic book")
+    import config
+    if config.placeholder_disagrees_with_quote(symbol, _chain_spot(data), _live_quote_spot(symbol)):
+        raise ValueError("refusing a placeholder chain that disagrees with the live quote")
     fetched = getattr(data, "fetched_at", None) or datetime.now(timezone.utc)
     if fetched.tzinfo is None:
         fetched = fetched.replace(tzinfo=timezone.utc)
@@ -158,6 +178,14 @@ def _loop(store_key) -> None:
                 live_source=cfg.get("live_source"),
                 sign_model=cfg.get("sign_model"),
             )
+            if not use_demo and config.placeholder_disagrees_with_quote(
+                symbol, _chain_spot(data), _live_quote_spot(symbol),
+            ):
+                held = _STORE.get(store_key) or {}
+                if config.chain_spot_is_placeholder(symbol, _chain_spot(held.get("data"))):
+                    _STORE.pop(store_key, None)
+                served = stamp
+                continue
             as_of = datetime.fromtimestamp(stamp, tz=timezone.utc) + timedelta(hours=5, minutes=30)
             _STORE[store_key] = {
                 "data": data,

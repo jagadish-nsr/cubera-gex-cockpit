@@ -20,6 +20,41 @@ def test_classify_pinned_only_inside_distinct_corridor():
     assert classify_zone(22800, 22700, 22300, 50)["zone"] == "ABOVE_CALL_WALL"
 
 
+def test_two_strike_corridor_stays_between_the_walls():
+    # 28 Oct noon: call 22,700, put 22,600, Nifty step 50. The midpoint and a
+    # one-point wiggle are between the walls. A wider corridor still tests the near wall.
+    assert classify_zone(22650, 22700, 22600, 50)["zone"] == "PINNED"
+    assert classify_zone(22649, 22700, 22600, 50)["zone"] == "PINNED"
+    assert classify_zone(22651, 22700, 22600, 50)["zone"] == "PINNED"
+    assert classify_zone(22600, 22700, 22600, 50)["zone"] == "TEST_PUT"
+    assert classify_zone(22700, 22700, 22600, 50)["zone"] == "TEST_CALL"
+    assert classify_zone(22549, 22700, 22600, 50)["zone"] == "BELOW_PUT_WALL"
+    assert classify_zone(22620, 23000, 22600, 50)["zone"] == "TEST_PUT"
+
+
+def test_put_wall_outcome_names_the_put():
+    alert = evaluate_market_alert(
+        {
+            "spot": 22600,
+            "strike_step": 50,
+            "is_market_open": True,
+            "market_state": "OPEN",
+            "is_pre_bell_ephemeral": False,
+            "as_of_time": "12:30:00 IST",
+            "kpis": {
+                "call_wall": {"val": 23000},
+                "put_wall": {"val": 22600},
+                "gamma_flip": {"val": 22550},
+                "regime": {"val": "POSITIVE"},
+            },
+            "orderflow_alerts": [],
+        }
+    )
+    assert alert["zone"] == "TEST_PUT"
+    assert alert["outcome"].startswith("Price is at the put wall")
+    assert "Stay out of a call" not in alert["outcome"]
+
+
 def test_pick_fresh_signal_ignores_stale_and_failed():
     now = datetime(2026, 10, 23, 12, 39, tzinfo=IST).timestamp()
     alerts = [

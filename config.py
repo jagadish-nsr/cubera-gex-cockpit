@@ -85,6 +85,57 @@ def fallback_spot_for(symbol: str | None) -> float:
     return {"NIFTY": 24500.0, "BANKNIFTY": 54000.0, "SENSEX": 73000.0}[index_key(symbol)]
 
 
+def chain_spot_is_placeholder(symbol: str | None, chain_spot: float) -> bool:
+    """True when the chain spot is the display placeholder for this index."""
+    try:
+        spot = float(chain_spot)
+    except (TypeError, ValueError):
+        return False
+    if spot <= 0:
+        return False
+    return abs(spot - fallback_spot_for(symbol)) < 1.0
+
+
+def placeholder_disagrees_with_quote(
+    symbol: str | None,
+    chain_spot: float,
+    quote_spot: float,
+    band: float = 0.06,
+) -> bool:
+    """True when a placeholder chain and a live quote are not the same index.
+
+    The 6% band is the same one used to reject a foreign prior close. A missing
+    quote does not count as disagreement: there is nothing to compare.
+    """
+    if not chain_spot_is_placeholder(symbol, chain_spot):
+        return False
+    try:
+        quote = float(quote_spot)
+        chain = float(chain_spot)
+    except (TypeError, ValueError):
+        return False
+    if quote <= 0 or chain <= 0:
+        return False
+    return abs(quote - chain) / chain > band
+
+
+def withhold_placeholder_ideas(
+    symbol: str | None,
+    chain_spot: float,
+    quote_spot: float,
+) -> bool:
+    """A placeholder chain is an idea book only when the live quote confirms it."""
+    if not chain_spot_is_placeholder(symbol, chain_spot):
+        return False
+    try:
+        quote = float(quote_spot or 0)
+    except (TypeError, ValueError):
+        quote = 0.0
+    if quote <= 0:
+        return True
+    return placeholder_disagrees_with_quote(symbol, chain_spot, quote)
+
+
 def get_index(symbol: str | None) -> Index:
     """Resolve a symbol to its Index (None -> the default). Fails loud on an
     unknown symbol rather than silently trading the wrong contract."""

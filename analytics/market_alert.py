@@ -108,6 +108,15 @@ def classify_zone(
             "through_pts": spot - cw,
             "step": step,
         }
+    # Two listed strikes leave no interior that is clear of both walls.
+    # A one-point wiggle around the midpoint would otherwise flip the headline.
+    if cw > pw > 0 and (cw - pw) <= (2 * step) and pw < spot < cw:
+        return {
+            "zone": "PINNED",
+            "label": "Between wall concentrations",
+            "through_pts": 0.0,
+            "step": step,
+        }
     if pw > 0 and abs(spot - pw) <= step:
         return {
             "zone": "TEST_PUT",
@@ -462,9 +471,9 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "theme": "alert-tape-stop",
             "headline": "Price is at the put wall",
             "outcome": (
-                f"Stay out of a call. Price has reached the put wall at {_inr(pw)}. "
-                "You pay the premium up front for a rise, and reaching that strike does not give you the rise. "
-                "If the fall continues, the call can end up worth nothing."
+                f"Price is at the put wall at {_inr(pw)}. "
+                "A put bought here still needs a further fall to cover the premium. "
+                "A call you already hold is on the side being tested, and a further fall can take that premium to zero."
             ),
             "drivers": _say(
                 f"Price is within one strike of {_inr(pw)}. The call wall is {_inr(cw)}.",
