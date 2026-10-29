@@ -2544,6 +2544,24 @@ async def get_cockpit_data(
         payload["participant_holdings"] = {"date": None, "rows": []}
         payload["value_area"] = {"text": "No prior value area.", "inside": None}
     try:
+        from app.session_reads import build_session_reads
+        reads = build_session_reads(sym)
+        payload["positioning_flow"] = reads["positioning_flow"]
+        payload["choppiness"] = reads["choppiness"]
+    except Exception as exc:
+        log.debug("session reads: %s", exc)
+        payload["positioning_flow"] = {
+            "alert": False,
+            "headline": "Positioning unavailable.",
+            "overnight_line": "The participant file or the futures journal could not be read.",
+            "live_line": "",
+        }
+        payload["choppiness"] = {
+            "state": "not_ready",
+            "headline": "Not ready",
+            "line": "The one-minute bars could not be read.",
+        }
+    try:
         payload["market_alert"] = evaluate_market_alert(payload)
     except Exception as exc:
         log.debug("market_alert compose: %s", exc)

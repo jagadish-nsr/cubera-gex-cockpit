@@ -79,6 +79,8 @@ def test_get_root_cockpit_html():
     html = content.decode("utf-8")
     assert "Cubera GEX Trading Cockpit" in html
     assert 'id="tab-cockpit"' in html
+    assert 'id="positioning-headline"' in html
+    assert 'id="chop-headline"' in html
     assert 'id="tab-target-engine"' in html
     assert 'id="tab-recommendations"' in html
     assert 'id="tab-sentinel"' in html

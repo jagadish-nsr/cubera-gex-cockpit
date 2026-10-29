@@ -898,6 +898,49 @@ body {
 }
 
 /* Expiry gamma blast sits on its own row under the KPI grid. */
+#tab-cockpit .session-reads {
+  margin-bottom: 8px;
+}
+
+#tab-cockpit .session-read {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+#tab-cockpit .session-read small {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+#tab-cockpit .session-read b {
+  display: block;
+  margin: 2px 0 4px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+#tab-cockpit .session-read p {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+
+#tab-cockpit .session-read p:last-child {
+  margin-bottom: 0;
+}
+
+#tab-cockpit .session-read.alert-on {
+  border-left: 3px solid var(--spark);
+}
+
 #tab-cockpit .gamma-blast-row {
   display: flex;
   align-items: baseline;

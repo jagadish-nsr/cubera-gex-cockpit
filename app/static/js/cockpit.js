@@ -962,6 +962,26 @@
     }
   };
 
+  function paintSessionReads(data) {
+    const flow = data.positioning_flow || {};
+    const chop = data.choppiness || {};
+    const card = document.getElementById("card-positioning");
+    const headline = document.getElementById("positioning-headline");
+    const overnight = document.getElementById("positioning-overnight");
+    const live = document.getElementById("positioning-live");
+    const chopHead = document.getElementById("chop-headline");
+    const chopLine = document.getElementById("chop-line");
+    if (headline) headline.textContent = flow.headline || "—";
+    if (overnight) overnight.textContent = flow.overnight_line || "";
+    if (live) live.textContent = flow.live_line || "";
+    if (card) card.classList.toggle("alert-on", Boolean(flow.alert));
+    if (chopHead) {
+      const value = chop.chop == null ? "" : ` ${Number(chop.chop).toFixed(1)}`;
+      chopHead.textContent = `${chop.headline || "—"}${value}`;
+    }
+    if (chopLine) chopLine.textContent = chop.line || "";
+  }
+
   function paintParticipantHoldings(book) {
     const body = document.getElementById("participant-body");
     const dateEl = document.getElementById("participant-date");
@@ -996,6 +1016,7 @@
       const valueLine = document.getElementById("value-area-line");
       if (valueLine) valueLine.textContent = (data.value_area && data.value_area.text) || "No prior value area.";
       paintParticipantHoldings(data.participant_holdings);
+      paintSessionReads(data);
       syncCockpitPreBellCard(data.is_pre_bell_ephemeral);
       paintStrikeKpi("kpi-call-wall", data.kpis.call_wall, "kpi-call-wall-sub");
       paintStrikeKpi("kpi-put-wall", data.kpis.put_wall, "kpi-put-wall-sub");
