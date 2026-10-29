@@ -1959,6 +1959,86 @@ async def save_dhan_token(payload: dict = Body(...)):
     return {"status": "saved", "message": message, "sync": sync}
 
 
+def _card_float(value, default: float = 0.0) -> float:
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def resolve_pinned_card_fields(record: dict, active_idea, ws_ltp: float | None = None) -> dict:
+    """Premium for a pinned cockpit card.
+
+    A websocket tick or a chain price on the live idea is the LTP. Anything else
+    is the stored entry, marked estimated. The latch must not replace that entry.
+    """
+    entry = _card_float(record.get("initial_ltp")) or _card_float(record.get("entry_ltp"))
+    idea_ltp = _card_float(getattr(active_idea, "current_ltp", 0.0)) if active_idea is not None else 0.0
+    source = str(getattr(active_idea, "quote_source", "") or "") if active_idea is not None else ""
+    ws = _card_float(ws_ltp)
+    ws_live = bool(active_idea is not None and getattr(active_idea, "is_ws_live", False) and idea_ltp > 0)
+
+    if ws > 0:
+        current, estimated, origin = ws, False, "ws"
+    elif ws_live or (source == "ws" and idea_ltp > 0):
+        current, estimated, origin = idea_ltp, False, "ws"
+    elif source == "chain" and idea_ltp > 0:
+        current, estimated, origin = idea_ltp, False, "chain"
+    elif source not in ("entry", "estimated") and active_idea is not None and idea_ltp > 0:
+        current, estimated, origin = idea_ltp, False, "chain"
+    else:
+        current, estimated, origin = entry, True, "entry"
+
+    def _idea_or_record(attr: str, *record_keys: str) -> float:
+        if not estimated and active_idea is not None:
+            live = _card_float(getattr(active_idea, attr, 0.0))
+            if live > 0:
+                return live
+        for key in record_keys:
+            stored = _card_float(record.get(key))
+            if stored > 0:
+                return stored
+        return 0.0
+
+    score = None
+    if active_idea is not None and getattr(active_idea, "quality_score", None) is not None:
+        try:
+            score = int(active_idea.quality_score)
+        except (TypeError, ValueError):
+            score = None
+    if score is None:
+        for key in ("current_score", "initial_score", "quality_score"):
+            raw = record.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                score = int(raw)
+                break
+            except (TypeError, ValueError):
+                continue
+    if score is None:
+        score = 0
+
+    return {
+        "entry_ltp": entry,
+        "current_ltp": current,
+        "ltp_estimated": estimated,
+        "quote_source": origin,
+        "quality_score": score,
+        "target_1": _idea_or_record("target_1", "target_1"),
+        "target_2": _idea_or_record("target_2", "target_2"),
+        "stop_loss": _idea_or_record("stop_loss", "stop_loss"),
+        "spot_invalidation": _card_float(record.get("spot_invalidation")) or _idea_or_record("spot_invalidation", "spot_invalidation"),
+        "spot_invalidation_text": (
+            record.get("spot_invalidation_text")
+            or (getattr(active_idea, "spot_invalidation_text", "") if active_idea is not None else "")
+            or ""
+        ),
+    }
+
+
 @app.get("/api/cockpit-data")
 @app.get("/api/market/dashboard")
 async def get_cockpit_data(
@@ -2242,66 +2322,33 @@ async def get_cockpit_data(
     for r in pinned_records:
         rid = r.get("rec_id")
         active_idea = batch_ideas_by_id.get(rid)
-
-        entry_ltp = float(
-            (getattr(active_idea, "initial_ltp", 0.0) if active_idea else 0.0)
-            or r.get("initial_ltp")
-            or r.get("entry_ltp")
-            or 0.0
-        )
-
-        curr_ltp = 0.0
-        if active_idea and getattr(active_idea, "current_ltp", 0.0) > 0:
-            curr_ltp = float(active_idea.current_ltp)
-        elif r.get("current_ltp") and float(r["current_ltp"]) > 0:
-            curr_ltp = float(r["current_ltp"])
-        else:
-            try:
-                from app.spot_ticker import get_option_ws_quote
-                ws_q = get_option_ws_quote(sym, float(r.get("strike", 0)), r.get("side", "CE"), max_age_s=120.0)
-                if ws_q and float(ws_q.get("ltp") or 0.0) > 0:
-                    curr_ltp = float(ws_q["ltp"])
-            except Exception:
-                pass
-
-        if curr_ltp <= 0.0:
-            initial_spot = float((getattr(active_idea, "initial_spot", 0.0) if active_idea else 0.0) or r.get("initial_spot") or spot)
-            if spot > 0 and initial_spot > 0 and entry_ltp > 0:
-                spot_diff = spot - initial_spot
-                if str(r.get("side", "CE")).upper() == "PE":
-                    spot_diff = -spot_diff
-                curr_ltp = max(0.5, round(entry_ltp + (spot_diff * 0.50), 1))
-            else:
-                curr_ltp = max(0.5, entry_ltp) if entry_ltp > 0 else 1.0
-
-        score = int(
-            (active_idea.quality_score if active_idea else None)
-            or r.get("current_score")
-            or r.get("initial_score")
-            or r.get("quality_score")
-            or 70
-        )
-        target_1 = float((active_idea.target_1 if active_idea else None) or r.get("target_1") or 0.0)
-        target_2 = float((active_idea.target_2 if active_idea else None) or r.get("target_2") or 0.0)
-        stop_loss = float((active_idea.stop_loss if active_idea else None) or r.get("stop_loss") or 0.0)
-        spot_inval = float((active_idea.spot_invalidation if active_idea else None) or r.get("spot_invalidation") or 0.0)
-        spot_inval_text = (active_idea.spot_invalidation_text if active_idea else None) or r.get("spot_invalidation_text") or ""
+        ws_ltp = 0.0
+        try:
+            from app.spot_ticker import get_option_ws_quote
+            ws_q = get_option_ws_quote(sym, float(r.get("strike", 0) or 0.0), r.get("side", "CE"), max_age_s=120.0)
+            if ws_q:
+                ws_ltp = float(ws_q.get("ltp") or 0.0)
+        except Exception:
+            ws_ltp = 0.0
+        priced = resolve_pinned_card_fields(r, active_idea, ws_ltp)
 
         cockpit_cards.append({
             "rec_id": rid,
             "symbol": r.get("symbol", sym),
             "side": r.get("side", "CE"),
-            "strike": float(r.get("strike", 0)),
-            "option_symbol": r.get("option_symbol") or f"{sym} {int(r.get('strike', 0))} {r.get('side', 'CE')}",
+            "strike": float(r.get("strike", 0) or 0.0),
+            "option_symbol": r.get("option_symbol") or f"{sym} {int(float(r.get('strike', 0) or 0))} {r.get('side', 'CE')}",
             "play_badge": r.get("play_badge", "STRATEGY"),
-            "quality_score": score,
-            "entry_ltp": entry_ltp,
-            "current_ltp": curr_ltp,
-            "target_1": target_1,
-            "target_2": target_2,
-            "stop_loss": stop_loss,
-            "spot_invalidation": spot_inval,
-            "spot_invalidation_text": spot_inval_text,
+            "quality_score": priced["quality_score"],
+            "entry_ltp": priced["entry_ltp"],
+            "current_ltp": priced["current_ltp"],
+            "ltp_estimated": priced["ltp_estimated"],
+            "quote_source": priced["quote_source"],
+            "target_1": priced["target_1"],
+            "target_2": priced["target_2"],
+            "stop_loss": priced["stop_loss"],
+            "spot_invalidation": priced["spot_invalidation"],
+            "spot_invalidation_text": priced["spot_invalidation_text"],
             "is_pinned": True,
             "is_fresh": False,
             "triggered_at": r.get("triggered_at", ""),

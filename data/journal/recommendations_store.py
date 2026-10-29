@@ -200,7 +200,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
     with _WRITE_LOCK, _get_write_conn() as conn:
         existing = conn.execute(
-            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp FROM recommendation_records WHERE rec_id = ?",
+            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp, conviction_tier FROM recommendation_records WHERE rec_id = ?",
             (rec_id,)
         ).fetchone()
 
@@ -232,6 +232,12 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             init_score = idea_dict.get("quality_score", 0)
             init_spot = float(idea_dict.get("initial_spot", idea_dict.get("current_spot", 0)))
             init_ltp = float(idea_dict.get("initial_ltp", idea_dict.get("current_ltp", 0)))
+
+        # A pin keeps the grade it was bookmarked with. A later score fade must not rewrite it.
+        if existing is not None and int(is_bm or 0) and existing["conviction_tier"]:
+            tier = existing["conviction_tier"]
+        else:
+            tier = idea_dict.get("conviction_tier") or "HIGH"
 
         conn.execute("""
             INSERT INTO recommendation_records (
@@ -277,7 +283,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             init_ltp,
             int(init_score),
             int(idea_dict.get("quality_score", 0)),
-            idea_dict.get("conviction_tier", "HIGH"),
+            tier,
             float(idea_dict["target_1"]),
             float(idea_dict.get("target_1_spot", 0)),
             float(idea_dict["target_2"]),
@@ -359,6 +365,14 @@ def is_bookmarked(rec_id: str) -> bool:
     _prime_cache()
     with _BOOKMARK_CACHE_LOCK:
         return rec_id in _BOOKMARK_CACHE
+
+
+def get_bookmarked_record(rec_id: str) -> dict | None:
+    """The cached pin row, including the tier and trigger stored at bookmark time."""
+    _prime_cache()
+    with _BOOKMARK_CACHE_LOCK:
+        row = _BOOKMARK_CACHE.get(rec_id)
+        return dict(row) if row else None
 
 
 def list_bookmarked_records(symbol: str | None = None) -> list[dict]:
