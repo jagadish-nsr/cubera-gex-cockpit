@@ -162,12 +162,9 @@ def _s8_iv_rank(india_vix: Optional[dict], near_atm_iv: Optional[float]) -> tupl
         vix_val = india_vix.get("last")
     elif isinstance(india_vix, (int, float)):
         vix_val = float(india_vix)
-    if vix_val is None and near_atm_iv is not None:
-        vix_val = near_atm_iv * 100  # decimal IV, shown as a percent
-        source = "ATM IV"
-
+    del near_atm_iv
     if vix_val is None:
-        return 0.0, "IV rank — no VIX or ATM IV", ""
+        return 0.0, "India VIX unavailable", ""
 
     detail = f"{source}={vix_val:.1f}"
     # India VIX typical range: 10–30. The same bands apply to ATM IV in percent.
@@ -232,13 +229,23 @@ def compute_directional_bias(
     return BiasResult(score=score, regime=regime, signals=signals, headline=headline)
 
 
+# Skew (weight 1.5) and India VIX (weight 1.0) are the only live contributors.
+# These bands are the old 70% / 40% / 15% shares of that ±2.5 ceiling.
+BIAS_CEILING = 2.5
+BIAS_EXTREME = 1.75
+BIAS_STRONG = 1.0
+BIAS_MILD = 0.4
+BIAS_QUIET = 0.6
+BIAS_RATIO_LO = 0.25
+
+
 def _regime_label(score: float) -> str:
-    if score >= 7.0:   return "Extreme Bullish 🚀"
-    if score >= 4.0:   return "Bullish 📈"
-    if score >= 1.5:   return "Mild Bullish"
-    if score <= -7.0:  return "Extreme Bearish 💥"
-    if score <= -4.0:  return "Bearish 📉"
-    if score <= -1.5:  return "Mild Bearish"
+    if score >= BIAS_EXTREME:   return "Extreme Bullish 🚀"
+    if score >= BIAS_STRONG:    return "Bullish 📈"
+    if score >= BIAS_MILD:      return "Mild Bullish"
+    if score <= -BIAS_EXTREME:  return "Extreme Bearish 💥"
+    if score <= -BIAS_STRONG:   return "Bearish 📉"
+    if score <= -BIAS_MILD:     return "Mild Bearish"
     return "Neutral ⏳"
 
 

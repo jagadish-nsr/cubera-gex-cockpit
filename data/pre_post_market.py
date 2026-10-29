@@ -648,11 +648,11 @@ def get_pre_market_state(
         pass
 
     # Extract prior session closing CVD
-    prior_cvd = 0.0
-    prior_of_bias = "Neutral"
+    prior_cvd = None
+    prior_of_bias = "No recorded session tape"
     try:
-        from sentinel.storage.db import list_daily_cvd
-        hist = list_daily_cvd(f"{symbol.upper()}-FUT", limit=2)
+        from sentinel.storage.db import ensure_historical_daily_cvd
+        hist = ensure_historical_daily_cvd(f"{symbol.upper()}-FUT", symbol=symbol, days=2)
         if hist:
             prior_rec = hist[-2] if len(hist) >= 2 and hist[-1].get("trade_date") == today_str else hist[-1]
             prior_cvd = float(prior_rec.get("closing_cvd", 0.0))
@@ -834,9 +834,19 @@ def _pre_market_loop(symbol: str) -> None:
         time.sleep(3.0)
 
 
-def attach_pre_market_shocks(state: dict, contracts_df: Any = None, dte_days: float = 3.0, atm_iv: float = 0.14) -> dict:
-    """Black-76 ATM-band shocks onto a discovered pre-open state. No network."""
+def attach_pre_market_shocks(state: dict, contracts_df: Any = None, dte_days: float | None = None, atm_iv: float | None = None) -> dict:
+    """Black-76 ATM-band shocks onto a discovered pre-open state. No network.
+
+    Missing IV or DTE leaves the state unchanged. A 3-day or 14% stand-in is not a shock.
+    """
     if not state or not state.get("is_discovered"):
+        return state
+    if dte_days is None or atm_iv is None:
+        return state
+    try:
+        if float(atm_iv) <= 0 or float(dte_days) < 0:
+            return state
+    except (TypeError, ValueError):
         return state
     if state.get("projected_strikes"):
         return state
@@ -1125,8 +1135,8 @@ def calculate_pre_market_option_shocks(
     prev_close: float,
     contracts_df: Any = None,
     symbol: str = "NIFTY",
-    dte_days: float = 3.0,
-    atm_iv: float = 0.14,
+    dte_days: float | None = None,
+    atm_iv: float | None = None,
 ) -> dict:
     """Calculate institutional pre-market option repricing and straddle shocks using Black-76.
 
@@ -1135,6 +1145,26 @@ def calculate_pre_market_option_shocks(
     """
     from target_engine.pricer import reprice, greeks
     from target_engine.iv_forecast import forecast_iv
+
+    if dte_days is None or atm_iv is None:
+        return {
+            "atm_strike": None,
+            "atm_straddle_prev": None,
+            "atm_straddle_projected": None,
+            "straddle_shock_pct": None,
+            "projected_strikes": [],
+        }
+    try:
+        if float(atm_iv) <= 0 or float(dte_days) < 0:
+            raise ValueError("missing iv or dte")
+    except (TypeError, ValueError):
+        return {
+            "atm_strike": None,
+            "atm_straddle_prev": None,
+            "atm_straddle_projected": None,
+            "straddle_shock_pct": None,
+            "projected_strikes": [],
+        }
 
     sym_u = symbol.upper()
     step = 50 if sym_u == "NIFTY" else (100 if sym_u in ("BANKNIFTY", "SENSEX") else 50)

@@ -13,12 +13,15 @@ process-global store. Successful pulls are also written to
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 import pickle
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger(__name__)
 
 from app.obs import bind, book_fields, event, new_trace_id
 
@@ -148,9 +151,43 @@ def _persist_pickle(symbol: str, window: str | None, data) -> None:
         )
 
 
+def _persist_session_close(symbol: str, data) -> None:
+    """Write the last published chain once, when the session closes."""
+    lv = getattr(data, "levels", None)
+    if lv is None:
+        return
+    src = str(getattr(data, "source", "") or "")
+    if any(k in src.lower() for k in ("demo", "synthetic", "mock")):
+        return
+    try:
+        from data.market_snapshot import save_snapshot
+        vix = None
+        raw = getattr(data, "india_vix", None)
+        if isinstance(raw, dict) and raw.get("last") is not None:
+            vix = float(raw["last"])
+        fetched = getattr(data, "fetched_at", None)
+        as_of = fetched.isoformat() if hasattr(fetched, "isoformat") else None
+        save_snapshot(
+            symbol,
+            spot=getattr(lv, "spot", None),
+            call_wall=getattr(lv, "call_wall", None),
+            put_wall=getattr(lv, "put_wall", None),
+            gamma_flip=getattr(lv, "flip", None),
+            max_pain=getattr(lv, "max_pain", None),
+            net_gex=getattr(lv, "total_net_gex", None),
+            pcr=getattr(lv, "pcr_oi", None),
+            vix=vix,
+            as_of=as_of,
+            source="session-close",
+        )
+    except Exception as exc:
+        log.warning("session-close snapshot failed for %s: %s", symbol, exc)
+
+
 def _loop(store_key) -> None:
     from app.data_access import load_dashboard
     served = -1.0
+    close_saved = False
     while True:
         cfg = _CFG.get(store_key) or {}
         use_demo = bool(cfg.get("use_demo"))
@@ -162,8 +199,15 @@ def _loop(store_key) -> None:
         # This loop stays idle off-market. Dhan is called only by the explicit
         # sync: manual, 06:30 IST, or a new session token.
         if not config.is_market_open() and not use_demo:
+            if not close_saved:
+                pub = _STORE.get(store_key) or {}
+                data = pub.get("data")
+                if data is not None:
+                    _persist_session_close(symbol, data)
+                close_saved = True
             time.sleep(30.0)
             continue
+        close_saved = False
 
         interval = max(30, int(cfg.get("interval", DEFAULT_INTERVAL_S)))
         lead = float(cfg.get("lead", DEFAULT_LEAD_S))

@@ -100,7 +100,7 @@
       }
     }
     if (state.audioCtx && state.audioCtx.state === "suspended") {
-      state.audioCtx.resume().catch(() => {});
+      state.audioCtx.resume().catch(() => { });
     }
     return state.audioCtx;
   }
@@ -115,7 +115,7 @@
           state.pendingAlertBell = false;
           playTraderBellRing();
         }
-      }).catch(() => {});
+      }).catch(() => { });
 
       if (ctx.state === "running") {
         audioUnlockEvents.forEach((evt) => {
@@ -143,7 +143,7 @@
       gain.connect(audioCtx.destination);
       osc.start();
       osc.stop(audioCtx.currentTime + duration);
-    } catch (e) {}
+    } catch (e) { }
   }
 
   function playSuccessChime() {
@@ -163,7 +163,7 @@
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        ctx.resume().catch(() => {});
+        ctx.resume().catch(() => { });
       }
 
       const now = ctx.currentTime;
@@ -242,7 +242,7 @@
     state.theme = nextTheme;
     try {
       localStorage.setItem("cubera_theme", nextTheme);
-    } catch (e) {}
+    } catch (e) { }
 
     document.documentElement.setAttribute("data-theme", nextTheme);
     if (document.body) {
@@ -296,19 +296,19 @@
     if (cockpitGexChart) {
       try {
         cockpitGexChart.applyOptions(chartLayoutOptions);
-      } catch (e) {}
+      } catch (e) { }
     }
     if (state.sentinelChart) {
       try {
         state.sentinelChart.applyOptions(chartLayoutOptions);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     // If TradingView widget is rendered, re-render it with matching theme
     if (cockpitChartState && cockpitChartState.engine === "tradingview") {
       try {
         renderTradingViewWidget(cockpitChartState.symbol, cockpitChartState.timeframe);
-      } catch (e) {}
+      } catch (e) { }
     }
 
     if (showNotification) {
@@ -370,7 +370,7 @@
           el.style.color = "var(--ink-mute)";
         }
       });
-    } catch (e) {}
+    } catch (e) { }
   }
 
   setInterval(updateRecCounters, 1000);
@@ -388,7 +388,7 @@
         state.ws.onclose = null;
         state.ws.onerror = null;
         state.ws.close();
-      } catch (e) {}
+      } catch (e) { }
       state.ws = null;
     }
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -402,7 +402,7 @@
         console.log(`WebSocket connected to /ws/telemetry for ${state.symbol}`);
         try {
           state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
-        } catch (e) {}
+        } catch (e) { }
         const badge = document.getElementById("quote-source-badge");
         if (badge) {
           badge.textContent = "⚡ WS 0ms";
@@ -423,7 +423,7 @@
               clockEl.textContent = `${cleanTime} IST`;
             }
           }
-        } catch (err) {}
+        } catch (err) { }
       };
 
       state.ws.onclose = () => {
@@ -455,17 +455,27 @@
     state.spot = tick.spot;
     const spotEl = document.getElementById("spot-price-display");
     if (spotEl) {
-      spotEl.textContent = `₹${tick.spot.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+      spotEl.textContent = tick.spot == null
+        ? "—"
+        : `₹${Number(tick.spot).toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
     }
     const futEl = document.getElementById("futures-price-display");
     if (futEl) {
-      futEl.textContent = `₹${tick.future_price.toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+      futEl.textContent = tick.future_price == null
+        ? "—"
+        : `₹${Number(tick.future_price).toLocaleString("en-IN", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
     }
     const basisEl = document.getElementById("basis-display");
     if (basisEl) {
-      const sign = tick.basis >= 0 ? "+" : "";
-      basisEl.textContent = `${sign}${tick.basis.toFixed(1)} pts`;
-      basisEl.style.color = tick.basis >= 0 ? "var(--go)" : "var(--stop)";
+      const basis = Number(tick.basis);
+      if (tick.basis == null || !Number.isFinite(basis)) {
+        basisEl.textContent = "—";
+        basisEl.style.color = "var(--ink-mute)";
+      } else {
+        const sign = basis >= 0 ? "+" : "";
+        basisEl.textContent = `${sign}${basis.toFixed(1)} pts`;
+        basisEl.style.color = basis >= 0 ? "var(--go)" : "var(--stop)";
+      }
     }
     const clockEl = document.getElementById("header-clock");
     if (clockEl && tick.ist_time) {
@@ -475,9 +485,12 @@
     if (tick.india_vix && tick.india_vix.last != null) {
       const vixEl = document.getElementById("vix-display");
       if (vixEl) {
-        const vixPct = Number(tick.india_vix.pct_change);
-        const vixPctTxt = Number.isFinite(vixPct) ? vixPct.toFixed(2) : "0.00";
-        vixEl.textContent = `${Number(tick.india_vix.last).toFixed(2)} (${vixPct > 0 ? "+" : ""}${vixPctTxt}%)`;
+        const vixLast = Number(tick.india_vix.last).toFixed(2);
+        const rawPct = tick.india_vix.pct_change;
+        const vixPct = rawPct == null ? null : Number(rawPct);
+        vixEl.textContent = vixPct == null || !Number.isFinite(vixPct)
+          ? vixLast
+          : `${vixLast} (${vixPct > 0 ? "+" : ""}${vixPct.toFixed(2)}%)`;
       }
     }
 
@@ -570,12 +583,12 @@
       }
       try {
         cockpitCandleSeries.update(cockpitChartState.currentBar);
-      } catch (err) {}
+      } catch (err) { }
 
       if (cockpitVwapSeries && tick.latest_bar && tick.latest_bar.vwap > 0) {
         try {
           cockpitVwapSeries.update({ time: barTime, value: tick.latest_bar.vwap });
-        } catch (err) {}
+        } catch (err) { }
       }
 
       // Live HUD Badges Update
@@ -616,7 +629,7 @@
       }
       try {
         state.candlestickSeries.update(sentinelState.currentBar);
-      } catch (err) {}
+      } catch (err) { }
 
       const shlOhlc = document.getElementById("shl-ohlc");
       if (shlOhlc && sentinelState.currentBar) {
@@ -660,14 +673,36 @@
       const data = await res.json();
       // Discard stale in-flight response if user has switched index
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) {
+        requestedSym !== (state.symbol || "").toUpperCase()) {
         return;
       }
       const wsLive = state.ws && state.ws.readyState === 1 && data.is_market_open;
       if (!wsLive) {
         state.spot = data.spot;
-        document.getElementById("spot-price-display").textContent = `₹${data.spot.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
-        document.getElementById("futures-price-display").textContent = `₹${data.future_price.toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+        const spotEl = document.getElementById("spot-price-display");
+        if (spotEl) {
+          spotEl.textContent = data.spot
+            ? `₹${Number(data.spot).toLocaleString("en-IN", { minimumFractionDigits: 1 })}`
+            : "—";
+        }
+        const futEl = document.getElementById("futures-price-display");
+        if (futEl) {
+          futEl.textContent = data.future_price == null
+            ? "—"
+            : `₹${Number(data.future_price).toLocaleString("en-IN", { minimumFractionDigits: 1 })}`;
+        }
+        const basisEl = document.getElementById("basis-display");
+        if (basisEl) {
+          const basis = Number(data.basis);
+          if (data.basis == null || !Number.isFinite(basis)) {
+            basisEl.textContent = "—";
+            basisEl.style.color = "var(--ink-mute)";
+          } else {
+            const sign = basis >= 0 ? "+" : "";
+            basisEl.textContent = `${sign}${basis.toFixed(1)} pts`;
+            basisEl.style.color = basis >= 0 ? "var(--go)" : "var(--stop)";
+          }
+        }
       }
       document.getElementById("header-index-label").textContent = data.label;
       if (document.getElementById("header-clock") && data.ist_time) {
@@ -682,10 +717,20 @@
       if (ohlc) {
         document.getElementById("day-hl-display").textContent = `${ohlc.high.toLocaleString("en-IN")} / ${ohlc.low.toLocaleString("en-IN")}`;
       }
-      if (data.india_vix && !wsLive) {
-        const vixPct = Number(data.india_vix.pct_change);
-        const vixPctTxt = Number.isFinite(vixPct) ? vixPct.toFixed(2) : "0.00";
-        document.getElementById("vix-display").textContent = `${Number(data.india_vix.last).toFixed(2)} (${vixPct > 0 ? "+" : ""}${vixPctTxt}%)`;
+      if (!wsLive) {
+        const vixEl = document.getElementById("vix-display");
+        if (vixEl) {
+          if (data.india_vix && data.india_vix.last != null && Number.isFinite(Number(data.india_vix.last))) {
+            const vixLast = Number(data.india_vix.last).toFixed(2);
+            const rawPct = data.india_vix.pct_change;
+            const vixPct = rawPct == null ? null : Number(rawPct);
+            vixEl.textContent = vixPct == null || !Number.isFinite(vixPct)
+              ? vixLast
+              : `${vixLast} (${vixPct > 0 ? "+" : ""}${vixPct.toFixed(2)}%)`;
+          } else {
+            vixEl.textContent = "—";
+          }
+        }
       }
 
       // Market Hours & Feed Mode Handling
@@ -940,7 +985,7 @@
       }
       // Discard stale in-flight response if index switched
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) {
+        requestedSym !== (state.symbol || "").toUpperCase()) {
         return;
       }
 
@@ -977,7 +1022,10 @@
 
       const mpEl = document.getElementById("kpi-max-pain");
       const mpSubEl = document.getElementById("kpi-max-pain-sub");
-      if (mpEl && data.kpis.max_pain) mpEl.textContent = `₹${data.kpis.max_pain.val.toLocaleString("en-IN")}`;
+      if (mpEl && data.kpis.max_pain) {
+        const mp = data.kpis.max_pain.val;
+        mpEl.textContent = mp == null ? "—" : `₹${Number(mp).toLocaleString("en-IN")}`;
+      }
       if (mpSubEl && data.kpis.max_pain) {
         mpSubEl.textContent = data.kpis.max_pain.sub;
         mpSubEl.title = data.kpis.max_pain.sub;
@@ -988,7 +1036,7 @@
       if (dbEl && data.kpis.directional_bias) {
         dbEl.textContent = data.kpis.directional_bias.val;
         const rawScore = parseFloat(data.kpis.directional_bias.raw !== undefined ? data.kpis.directional_bias.raw : data.kpis.directional_bias.val);
-        dbEl.style.color = rawScore > 0.8 ? "var(--go)" : (rawScore < -0.8 ? "var(--stop)" : "var(--spark)");
+        dbEl.style.color = rawScore >= 0.4 ? "var(--go)" : (rawScore <= -0.4 ? "var(--stop)" : "var(--spark)");
       }
       if (dbModeEl && data.kpis.directional_bias) {
         dbModeEl.textContent = data.kpis.directional_bias.sub;
@@ -1010,7 +1058,7 @@
         }
       }
       if (data.kpis.pcr_oi) {
-        document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val;
+        document.getElementById("kpi-pcr").textContent = data.kpis.pcr_oi.val == null ? "—" : data.kpis.pcr_oi.val;
         const pcrSub = document.getElementById("kpi-pcr-sub");
         if (pcrSub && data.kpis.pcr_oi.sub) {
           pcrSub.textContent = data.kpis.pcr_oi.sub;
@@ -1023,9 +1071,16 @@
         const mb = data.market_breadth;
         const bEl = document.getElementById("cockpit-breadth-val");
         if (bEl) {
-          bEl.textContent = `${mb.advances} Adv / ${mb.declines} Dec (${mb.ratio}x)`;
-          bEl.title = bEl.textContent;
-          bEl.style.color = mb.ratio >= 1.0 ? "var(--go)" : "var(--stop)";
+          if (mb.advances == null || mb.declines == null) {
+            bEl.textContent = "—";
+            bEl.title = "Sector breadth unavailable";
+            bEl.style.color = "var(--ink-mute)";
+          } else {
+            const ratioTxt = mb.ratio == null ? "—" : `${mb.ratio}x`;
+            bEl.textContent = `${mb.advances} Adv / ${mb.declines} Dec (${ratioTxt})`;
+            bEl.title = bEl.textContent;
+            bEl.style.color = mb.ratio == null ? "var(--ink-mute)" : (mb.ratio >= 1.0 ? "var(--go)" : "var(--stop)");
+          }
         }
       }
 
@@ -1201,7 +1256,7 @@
             });
           }
         }
-      } catch (e) {}
+      } catch (e) { }
 
       // Gamma blast card
       const gbBadge = document.getElementById("gamma-blast-badge");
@@ -1214,9 +1269,14 @@
         gbDesc.textContent = data.gamma_blast.description;
         gbDesc.title = data.gamma_blast.description || "";
       }
-      if (gbScore) gbScore.textContent = `${data.gamma_blast.score} / 100`;
+      if (gbScore) {
+        const rawScore = data.gamma_blast && data.gamma_blast.score;
+        gbScore.textContent = rawScore == null ? "—" : `${rawScore} / 100`;
+      }
 
-      const scoreVal = Number(data.gamma_blast.score || 0);
+      const scoreVal = data.gamma_blast && data.gamma_blast.score == null
+        ? null
+        : Number(data.gamma_blast.score);
       let themeColor = "var(--go)";
       if (scoreVal >= 60 || (data.gamma_blast && data.gamma_blast.state === "TRIGGERED")) {
         themeColor = "var(--stop)";
@@ -1232,10 +1292,10 @@
         const anchors = (data.crossover_watch && data.crossover_watch.anchors) || [];
         crossBody.innerHTML = anchors.length
           ? anchors.map((a) => {
-              const strike = a.strike == null ? "—" : `₹${Number(a.strike).toLocaleString("en-IN")}`;
-              const prem = (a.call == null || a.put == null) ? "" : ` · call ${a.call} / put ${a.put}`;
-              return `<div style="margin-bottom:6px"><b>${a.name} ${strike}</b>${prem}<div style="color:var(--ink-mute)">${a.location}</div></div>`;
-            }).join("")
+            const strike = a.strike == null ? "—" : `₹${Number(a.strike).toLocaleString("en-IN")}`;
+            const prem = (a.call == null || a.put == null) ? "" : ` · call ${a.call} / put ${a.put}`;
+            return `<div style="margin-bottom:6px"><b>${a.name} ${strike}</b>${prem}<div style="color:var(--ink-mute)">${a.location}</div></div>`;
+          }).join("")
           : "No paired premiums on this read.";
       }
       const magnetBody = document.getElementById("magnet-path-body");
@@ -1367,15 +1427,11 @@
               ? '<span style="background:rgba(255,160,0,0.18);color:#ffa000;border:1px solid #ffa000;font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">⚡ NEW (&lt; 10m)</span>'
               : '<span style="background:rgba(0,180,216,0.18);color:var(--spark);border:1px solid var(--spark);font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">📌 PINNED</span>';
 
-            const ltpNum = Number(c.current_ltp);
-            const ltp = Number.isFinite(ltpNum) ? ltpNum.toFixed(1) : "0.0";
-            const estimated = c.ltp_estimated === true;
+            const ltp = Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0).toFixed(1);
             const t1 = Number(c.target_1 || 0).toFixed(1);
             const sl = Number(c.stop_loss || 0).toFixed(1);
-            const scoreRaw = c.quality_score ?? c.current_score ?? c.initial_score;
-            const score = scoreRaw === undefined || scoreRaw === null || scoreRaw === "" ? "—" : scoreRaw;
+            const score = c.quality_score || c.current_score || c.initial_score || 85;
             const invalNum = Number(c.spot_invalidation || 0);
-            const execPx = Number.isFinite(ltpNum) ? ltpNum : 0;
 
             return `
               <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px">
@@ -1387,18 +1443,17 @@
                   <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
                 </div>
                 <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
-                  <span>${estimated ? "Entry" : "LTP"}: <b id="cockpit-rec-ltp-${c.rec_id}" style="color:var(--ink)">₹${ltp}</b>${estimated ? ' <span style="letter-spacing:0.03em">est.</span>' : ""}</span>
+                  <span>LTP: <b id="cockpit-rec-ltp-${c.rec_id}" style="color:var(--ink)">₹${ltp}</b></span>
                   <span>T1: <b id="cockpit-rec-t1-${c.rec_id}" style="color:var(--go)">₹${t1}</b></span>
                   <span>SL: <b id="cockpit-rec-sl-${c.rec_id}" style="color:var(--stop)">₹${sl}</b></span>
                   ${invalNum > 0 ? `<span>Inval: <b id="cockpit-rec-inval-${c.rec_id}" style="color:var(--stop)">₹${invalNum.toFixed(0)}</b></span>` : ""}
                 </div>
                 <div style="display:flex;justify-content:flex-end;gap:6px">
-                  ${
-                    c.is_pinned
-                      ? `<button class="btn btn-secondary" onclick="window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
-                      : `<button class="btn btn-secondary" onclick="window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`
-                  }
-                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${execPx}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
+                  ${c.is_pinned
+                ? `<button class="btn btn-secondary" onclick="window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
+                : `<button class="btn btn-secondary" onclick="window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`
+              }
+                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0)}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
                 </div>
               </div>
             `;
@@ -1573,165 +1628,165 @@
     const targetSym = (symbol || cockpitChartState.symbol || state.symbol || "NIFTY").toUpperCase();
 
     if (!cockpitGexChart) {
-        mount.innerHTML = "";
-        const isCanvasLight = state.theme === "light";
-        cockpitGexChart = window.LightweightCharts.createChart(mount, {
-          width: mount.clientWidth || 850,
-          height: cockpitChartState.height,
-          layout: {
-            background: { color: isCanvasLight ? "#ffffff" : "#0c1424" },
-            textColor: isCanvasLight ? "#334155" : "#94a3b8"
-          },
-          grid: {
-            vertLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" },
-            horzLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }
-          },
-          crosshair: { mode: window.LightweightCharts.CrosshairMode.Normal },
-          rightPriceScale: {
-            borderColor: isCanvasLight ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)",
-            autoScale: true,
-            scaleMargins: { top: 0.08, bottom: 0.25 },
-          },
-          handleScale: {
-            axisPressedMouseMove: { time: true, price: true },
-            axisDoubleClickReset: { time: true, price: true },
-            mouseWheel: true,
-            pinch: true,
-          },
-          handleScroll: {
-            mouseWheel: false, // Directly zoom candles with mouse wheel without needing Ctrl
-            pressedMouseMove: true,
-            horzTouchDrag: true,
-            vertTouchDrag: true,
-          },
-          timeScale: {
-            timeVisible: true,
-            secondsVisible: false,
-            borderColor: "rgba(51, 65, 85, 0.45)",
-            barSpacing: 12,
-            minBarSpacing: 3,
-            rightOffset: 6,
-          },
-          localization: {
-            timeFormatter: (ts) => istChartStamp(ts) || String(ts),
-          },
-        });
+      mount.innerHTML = "";
+      const isCanvasLight = state.theme === "light";
+      cockpitGexChart = window.LightweightCharts.createChart(mount, {
+        width: mount.clientWidth || 850,
+        height: cockpitChartState.height,
+        layout: {
+          background: { color: isCanvasLight ? "#ffffff" : "#0c1424" },
+          textColor: isCanvasLight ? "#334155" : "#94a3b8"
+        },
+        grid: {
+          vertLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" },
+          horzLines: { color: isCanvasLight ? "rgba(15,23,42,0.06)" : "rgba(56,189,248,0.06)" }
+        },
+        crosshair: { mode: window.LightweightCharts.CrosshairMode.Normal },
+        rightPriceScale: {
+          borderColor: isCanvasLight ? "rgba(203, 213, 225, 0.8)" : "rgba(51, 65, 85, 0.45)",
+          autoScale: true,
+          scaleMargins: { top: 0.08, bottom: 0.25 },
+        },
+        handleScale: {
+          axisPressedMouseMove: { time: true, price: true },
+          axisDoubleClickReset: { time: true, price: true },
+          mouseWheel: true,
+          pinch: true,
+        },
+        handleScroll: {
+          mouseWheel: false, // Directly zoom candles with mouse wheel without needing Ctrl
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: true,
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: false,
+          borderColor: "rgba(51, 65, 85, 0.45)",
+          barSpacing: 12,
+          minBarSpacing: 3,
+          rightOffset: 6,
+        },
+        localization: {
+          timeFormatter: (ts) => istChartStamp(ts) || String(ts),
+        },
+      });
 
-        cockpitCandleSeries = cockpitGexChart.addCandlestickSeries({
-          upColor: "#10b981",
-          downColor: "#ef4444",
-          borderVisible: true,
-          borderUpColor: "#10b981",
-          borderDownColor: "#ef4444",
-          wickUpColor: "#10b981",
-          wickDownColor: "#ef4444",
-          title: "Price",
-          autoscaleInfoProvider: (original) => {
-            const res = original();
-            if (res !== null && res.priceRange) {
-              let min = res.priceRange.minValue;
-              let max = res.priceRange.maxValue;
-              const range = Math.max(max - min, 20);
-              const cw = cockpitChartState.cw || 0;
-              const pw = cockpitChartState.pw || 0;
-              // Expand to include Call Wall / Put Wall if reasonably close, without crushing candle bodies
-              if (cw > 0 && cw >= min && cw <= max + range * 0.8) {
-                max = Math.max(max, cw + 10);
-              }
-              if (pw > 0 && pw <= max && pw >= min - range * 0.8) {
-                min = Math.min(min, pw - 10);
-              }
-              return {
-                priceRange: { minValue: min, maxValue: max },
-                margins: res.margins,
-              };
+      cockpitCandleSeries = cockpitGexChart.addCandlestickSeries({
+        upColor: "#10b981",
+        downColor: "#ef4444",
+        borderVisible: true,
+        borderUpColor: "#10b981",
+        borderDownColor: "#ef4444",
+        wickUpColor: "#10b981",
+        wickDownColor: "#ef4444",
+        title: "Price",
+        autoscaleInfoProvider: (original) => {
+          const res = original();
+          if (res !== null && res.priceRange) {
+            let min = res.priceRange.minValue;
+            let max = res.priceRange.maxValue;
+            const range = Math.max(max - min, 20);
+            const cw = cockpitChartState.cw || 0;
+            const pw = cockpitChartState.pw || 0;
+            // Expand to include Call Wall / Put Wall if reasonably close, without crushing candle bodies
+            if (cw > 0 && cw >= min && cw <= max + range * 0.8) {
+              max = Math.max(max, cw + 10);
             }
-            return res;
-          },
-        });
-
-        cockpitVwapSeries = cockpitGexChart.addLineSeries({
-          color: "#c084fc",
-          lineWidth: 1.5,
-          title: "VWAP",
-        });
-
-        cockpitUp1Series = cockpitGexChart.addLineSeries({
-          color: "rgba(192, 132, 252, 0.45)",
-          lineWidth: 1,
-          lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
-          title: "+1σ",
-        });
-
-        cockpitDn1Series = cockpitGexChart.addLineSeries({
-          color: "rgba(192, 132, 252, 0.45)",
-          lineWidth: 1,
-          lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
-          title: "-1σ",
-        });
-
-        cockpitEma9Series = cockpitGexChart.addLineSeries({
-          color: "#facc15",
-          lineWidth: 2,
-          title: "EMA 9",
-        });
-
-        cockpitEma21Series = cockpitGexChart.addLineSeries({
-          color: "#38bdf8",
-          lineWidth: 2,
-          title: "EMA 21",
-        });
-
-        cockpitDeltaSeries = cockpitGexChart.addHistogramSeries({
-          priceFormat: { type: "volume" },
-          priceScaleId: "cockpit_delta_scale",
-          title: "Δ Vol",
-        });
-        cockpitGexChart.priceScale("cockpit_delta_scale").applyOptions({
-          scaleMargins: { top: 0.82, bottom: 0 },
-        });
-
-        // Crosshair move HUD
-        cockpitGexChart.subscribeCrosshairMove((param) => {
-          if (!param || !param.time || !param.seriesData) return;
-          const c = param.seriesData.get(cockpitCandleSeries);
-          const v = param.seriesData.get(cockpitVwapSeries);
-          const d = param.seriesData.get(cockpitDeltaSeries);
-          const e9 = param.seriesData.get(cockpitEma9Series);
-          const e21 = param.seriesData.get(cockpitEma21Series);
-
-          const chlTime = document.getElementById("chl-time");
-          const chlOhlc = document.getElementById("chl-ohlc");
-          const chlVwap = document.getElementById("chl-vwap");
-          const chlEma = document.getElementById("chl-ema");
-          const chlDelta = document.getElementById("chl-delta");
-
-          if (chlTime && param.time) {
-            const ts = typeof param.time === "number" ? param.time : param.time.timestamp;
-            if (ts) {
-              chlTime.textContent = istChartStamp(ts);
+            if (pw > 0 && pw <= max && pw >= min - range * 0.8) {
+              min = Math.min(min, pw - 10);
             }
+            return {
+              priceRange: { minValue: min, maxValue: max },
+              margins: res.margins,
+            };
           }
-          if (chlOhlc && c) {
-            chlOhlc.textContent = `O: ₹${c.open.toFixed(1)} H: ₹${c.high.toFixed(1)} L: ₹${c.low.toFixed(1)} C: ₹${c.close.toFixed(1)}`;
-          }
-          if (chlVwap && v) {
-            chlVwap.textContent = `VWAP: ₹${v.value.toFixed(1)}`;
-          }
-          if (chlEma && e9 && e21) {
-            chlEma.textContent = `EMA 9/21: ₹${e9.value.toFixed(1)} / ₹${e21.value.toFixed(1)}`;
-          }
-          if (chlDelta && d) {
-            chlDelta.textContent = `Δ: ${(d.value || 0).toLocaleString("en-IN")}`;
-          }
-        });
+          return res;
+        },
+      });
 
-        window.addEventListener("resize", () => {
-          if (cockpitGexChart && mount) {
-            cockpitGexChart.applyOptions({ width: mount.clientWidth });
+      cockpitVwapSeries = cockpitGexChart.addLineSeries({
+        color: "#c084fc",
+        lineWidth: 1.5,
+        title: "VWAP",
+      });
+
+      cockpitUp1Series = cockpitGexChart.addLineSeries({
+        color: "rgba(192, 132, 252, 0.45)",
+        lineWidth: 1,
+        lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
+        title: "+1σ",
+      });
+
+      cockpitDn1Series = cockpitGexChart.addLineSeries({
+        color: "rgba(192, 132, 252, 0.45)",
+        lineWidth: 1,
+        lineStyle: window.LightweightCharts.LineStyle ? window.LightweightCharts.LineStyle.Dashed : 2,
+        title: "-1σ",
+      });
+
+      cockpitEma9Series = cockpitGexChart.addLineSeries({
+        color: "#facc15",
+        lineWidth: 2,
+        title: "EMA 9",
+      });
+
+      cockpitEma21Series = cockpitGexChart.addLineSeries({
+        color: "#38bdf8",
+        lineWidth: 2,
+        title: "EMA 21",
+      });
+
+      cockpitDeltaSeries = cockpitGexChart.addHistogramSeries({
+        priceFormat: { type: "volume" },
+        priceScaleId: "cockpit_delta_scale",
+        title: "Δ Vol",
+      });
+      cockpitGexChart.priceScale("cockpit_delta_scale").applyOptions({
+        scaleMargins: { top: 0.82, bottom: 0 },
+      });
+
+      // Crosshair move HUD
+      cockpitGexChart.subscribeCrosshairMove((param) => {
+        if (!param || !param.time || !param.seriesData) return;
+        const c = param.seriesData.get(cockpitCandleSeries);
+        const v = param.seriesData.get(cockpitVwapSeries);
+        const d = param.seriesData.get(cockpitDeltaSeries);
+        const e9 = param.seriesData.get(cockpitEma9Series);
+        const e21 = param.seriesData.get(cockpitEma21Series);
+
+        const chlTime = document.getElementById("chl-time");
+        const chlOhlc = document.getElementById("chl-ohlc");
+        const chlVwap = document.getElementById("chl-vwap");
+        const chlEma = document.getElementById("chl-ema");
+        const chlDelta = document.getElementById("chl-delta");
+
+        if (chlTime && param.time) {
+          const ts = typeof param.time === "number" ? param.time : param.time.timestamp;
+          if (ts) {
+            chlTime.textContent = istChartStamp(ts);
           }
-        });
-      }
+        }
+        if (chlOhlc && c) {
+          chlOhlc.textContent = `O: ₹${c.open.toFixed(1)} H: ₹${c.high.toFixed(1)} L: ₹${c.low.toFixed(1)} C: ₹${c.close.toFixed(1)}`;
+        }
+        if (chlVwap && v) {
+          chlVwap.textContent = `VWAP: ₹${v.value.toFixed(1)}`;
+        }
+        if (chlEma && e9 && e21) {
+          chlEma.textContent = `EMA 9/21: ₹${e9.value.toFixed(1)} / ₹${e21.value.toFixed(1)}`;
+        }
+        if (chlDelta && d) {
+          chlDelta.textContent = `Δ: ${(d.value || 0).toLocaleString("en-IN")}`;
+        }
+      });
+
+      window.addEventListener("resize", () => {
+        if (cockpitGexChart && mount) {
+          cockpitGexChart.applyOptions({ width: mount.clientWidth });
+        }
+      });
+    }
 
     try {
       const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(targetSym)}&timeframe=${encodeURIComponent(tf)}`);
@@ -1887,7 +1942,7 @@
     const card = document.getElementById("cockpit-tv-card");
     if (!card) return;
     if (!document.fullscreenElement) {
-      card.requestFullscreen().catch(() => {});
+      card.requestFullscreen().catch(() => { });
     } else {
       if (document.exitFullscreen) document.exitFullscreen();
     }
@@ -2055,9 +2110,9 @@
     const timeStr = /^\d{2}-\d{2}-\d{4}\s+\d{2}:\d{2}/.test(rawClock)
       ? (/\bIST\b/i.test(rawClock) ? rawClock : `${rawClock} IST`)
       : datedClock(
-          rawClock || new Date().toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" }),
-          todayIso,
-        );
+        rawClock || new Date().toLocaleTimeString("en-GB", { hour12: false, timeZone: "Asia/Kolkata" }),
+        todayIso,
+      );
     const hmsOf = (text) => {
       const match = String(text || "").match(/(\d{2}:\d{2}:\d{2})/);
       return match ? match[1] : "";
@@ -2430,7 +2485,7 @@
       const res = await fetch(`/api/target-engine?symbol=${requestedSym}&window=${state.window}&horizon=${horizon}&mode=${mode}`);
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       const dialVerdict = document.getElementById("dial-verdict");
       if (dialVerdict) {
@@ -3213,10 +3268,10 @@
       const extraTagsHtml = (stCode === "ACTIVE" || stCode === "LATCHED")
         ? `<span style="font-size:0.68rem;background:rgba(34,197,94,.15);color:var(--go);padding:2px 7px;border-radius:4px;border:1px solid rgba(34,197,94,.3);font-weight:750">🔒 LATCHED</span>`
         : (stCode === "TARGET_HIT")
-        ? `<span style="font-size:0.68rem;background:rgba(34,197,94,.15);color:var(--go);padding:2px 7px;border-radius:4px;border:1px solid rgba(34,197,94,.3);font-weight:750">🎯 TARGET HIT</span>`
-        : (stCode === "INVALIDATED")
-        ? `<span style="font-size:0.68rem;background:rgba(239,68,68,.15);color:var(--stop);padding:2px 7px;border-radius:4px;border:1px solid rgba(239,68,68,.3);font-weight:750">🛑 INVALIDATED</span>`
-        : "";
+          ? `<span style="font-size:0.68rem;background:rgba(34,197,94,.15);color:var(--go);padding:2px 7px;border-radius:4px;border:1px solid rgba(34,197,94,.3);font-weight:750">🎯 TARGET HIT</span>`
+          : (stCode === "INVALIDATED")
+            ? `<span style="font-size:0.68rem;background:rgba(239,68,68,.15);color:var(--stop);padding:2px 7px;border-radius:4px;border:1px solid rgba(239,68,68,.3);font-weight:750">🛑 INVALIDATED</span>`
+            : "";
 
       card.innerHTML = `
         ${confHeaderHtml}
@@ -3339,45 +3394,64 @@
   async function loadSentinelTape() {
     try {
       const res = await fetch(`/api/sentinel-tape?symbol=${state.symbol}&timeframe=${sentinelState.timeframe}`);
+      if (!res.ok) return;
       const data = await res.json();
       state.sentinelData = data;
+      const show = (v) => (v == null || v === "" ? "—" : v);
 
-      document.getElementById("sentinel-kpi-regime").textContent = data.kpis.cvd_regime;
-      document.getElementById("sentinel-kpi-net-cvd").textContent = data.kpis.net_cvd;
-      document.getElementById("sentinel-kpi-buyer-ratio").textContent = data.kpis.buyer_ratio;
-      document.getElementById("sentinel-kpi-blocks").textContent = `${data.kpis.institutional_blocks} Blocks`;
-      document.getElementById("sentinel-kpi-absorption").textContent = data.kpis.absorption_status;
+      document.getElementById("sentinel-kpi-regime").textContent = show(data.kpis.cvd_regime);
+      document.getElementById("sentinel-kpi-net-cvd").textContent = show(data.kpis.net_cvd);
+      document.getElementById("sentinel-kpi-buyer-ratio").textContent = show(data.kpis.buyer_ratio);
+      document.getElementById("sentinel-kpi-blocks").textContent = data.kpis.institutional_blocks == null
+        ? "—"
+        : `${data.kpis.institutional_blocks} bars`;
+      document.getElementById("sentinel-kpi-absorption").textContent = show(data.kpis.absorption_status);
+      const deltaNote = document.getElementById("sentinel-kpi-delta-note");
+      if (deltaNote && data.kpis.delta_note) deltaNote.textContent = data.kpis.delta_note;
 
       // 4 Quick Summary KPIs & Regimes
       if (data.summary_kpis) {
         const sk = data.summary_kpis;
-        const netClr = sk.total_net_cvd >= 0 ? "var(--go)" : "var(--stop)";
+        const hasBook = sk.total_net_cvd != null && Number.isFinite(Number(sk.total_net_cvd));
+        const netClr = !hasBook ? "var(--ink-mute)" : (sk.total_net_cvd >= 0 ? "var(--go)" : "var(--stop)");
         const regBadge = document.getElementById("sentinel-10d-regime-badge");
         if (regBadge) {
-          regBadge.textContent = sk.total_net_cvd >= 0 ? "🟢 INSTITUTIONAL ACCUMULATION" : "🔴 INSTITUTIONAL DISTRIBUTION";
+          regBadge.textContent = !hasBook
+            ? "No recorded sessions"
+            : (sk.total_net_cvd >= 0 ? "🟢 INSTITUTIONAL ACCUMULATION" : "🔴 INSTITUTIONAL DISTRIBUTION");
           regBadge.style.color = netClr;
-          regBadge.style.background = sk.total_net_cvd >= 0 ? "var(--go-bg)" : "var(--stop-bg)";
+          regBadge.style.background = !hasBook ? "transparent" : (sk.total_net_cvd >= 0 ? "var(--go-bg)" : "var(--stop-bg)");
         }
         const netBadge = document.getElementById("sentinel-10d-net-badge");
         if (netBadge) {
-          netBadge.textContent = `${sk.total_net_cvd >= 0 ? "+" : ""}${sk.total_net_cvd.toLocaleString("en-IN")}`;
+          netBadge.textContent = !hasBook
+            ? "—"
+            : `${sk.total_net_cvd >= 0 ? "+" : ""}${sk.total_net_cvd.toLocaleString("en-IN")}`;
           netBadge.style.color = netClr;
         }
         const bRatio = document.getElementById("sentinel-10d-buyer-ratio");
-        if (bRatio) bRatio.textContent = `${sk.buy_pct}%`;
+        if (bRatio) bRatio.textContent = sk.buy_pct == null ? "—" : `${sk.buy_pct}%`;
 
-        document.getElementById("kpi-10d-net-cvd").textContent = `${sk.total_net_cvd >= 0 ? "+" : ""}${sk.total_net_cvd.toLocaleString("en-IN")}`;
+        const dayCount = data.daily_suite ? data.daily_suite.length : 0;
+        document.getElementById("kpi-10d-net-cvd").textContent = !hasBook
+          ? "—"
+          : `${sk.total_net_cvd >= 0 ? "+" : ""}${sk.total_net_cvd.toLocaleString("en-IN")}`;
         document.getElementById("kpi-10d-net-cvd").style.color = netClr;
-        document.getElementById("kpi-10d-avg-cvd").textContent = `Avg Daily: ${sk.total_net_cvd >= 0 ? "+" : ""}${Math.round(sk.total_net_cvd / (data.daily_suite ? data.daily_suite.length : 10)).toLocaleString("en-IN")}`;
+        document.getElementById("kpi-10d-avg-cvd").textContent = (!hasBook || !dayCount)
+          ? "Avg Daily: —"
+          : `Avg Daily: ${sk.total_net_cvd >= 0 ? "+" : ""}${Math.round(sk.total_net_cvd / dayCount).toLocaleString("en-IN")}`;
 
-        document.getElementById("kpi-10d-buy-vol").textContent = `${sk.tot_buy_vol.toLocaleString("en-IN")}`;
-        document.getElementById("kpi-10d-buy-pct").textContent = `${sk.buy_pct}% of session volume`;
+        document.getElementById("kpi-10d-buy-vol").textContent = sk.tot_buy_vol == null ? "—" : `${sk.tot_buy_vol.toLocaleString("en-IN")}`;
+        document.getElementById("kpi-10d-buy-pct").textContent = sk.buy_pct == null ? "—" : `${sk.buy_pct}% of recorded volume`;
 
-        document.getElementById("kpi-10d-sell-vol").textContent = `${sk.tot_sell_vol.toLocaleString("en-IN")}`;
-        document.getElementById("kpi-10d-sell-pct").textContent = `${(100 - sk.buy_pct).toFixed(1)}% of session volume`;
+        document.getElementById("kpi-10d-sell-vol").textContent = sk.tot_sell_vol == null ? "—" : `${sk.tot_sell_vol.toLocaleString("en-IN")}`;
+        document.getElementById("kpi-10d-sell-pct").textContent = sk.buy_pct == null ? "—" : `${(100 - sk.buy_pct).toFixed(1)}% of recorded volume`;
 
-        document.getElementById("kpi-10d-peaks").textContent = `${sk.peak_buy_day} vs ${sk.peak_sell_day}`;
-        document.getElementById("kpi-10d-top-buy").textContent = `Top Buy: ${sk.peak_buy_vol.toLocaleString("en-IN")}`;
+        document.getElementById("kpi-10d-peaks").textContent = (!sk.peak_buy_day && !sk.peak_sell_day)
+          ? "—"
+          : `${sk.peak_buy_day || "—"} vs ${sk.peak_sell_day || "—"}`;
+        const topBuy = document.getElementById("kpi-10d-top-buy");
+        if (topBuy) topBuy.textContent = sk.peak_buy_vol == null ? "Top Buy: —" : `Top Buy: ${sk.peak_buy_vol.toLocaleString("en-IN")}`;
       }
 
       // Mount or update TradingView Lightweight Chart
@@ -3623,15 +3697,15 @@
 
         // 5. Call Wall & Put Wall Price Lines
         if (state.callWallLine) {
-          try { state.candlestickSeries.removePriceLine(state.callWallLine); } catch (e) {}
+          try { state.candlestickSeries.removePriceLine(state.callWallLine); } catch (e) { }
           state.callWallLine = null;
         }
         if (state.putWallLine) {
-          try { state.candlestickSeries.removePriceLine(state.putWallLine); } catch (e) {}
+          try { state.candlestickSeries.removePriceLine(state.putWallLine); } catch (e) { }
           state.putWallLine = null;
         }
         if (state.gammaFlipLine) {
-          try { state.candlestickSeries.removePriceLine(state.gammaFlipLine); } catch (e) {}
+          try { state.candlestickSeries.removePriceLine(state.gammaFlipLine); } catch (e) { }
           state.gammaFlipLine = null;
         }
 
@@ -3688,7 +3762,7 @@
             }
           });
           markers.sort((a, b) => a.time - b.time);
-          try { state.candlestickSeries.setMarkers(markers); } catch (e) {}
+          try { state.candlestickSeries.setMarkers(markers); } catch (e) { }
         }
 
         // Apply active profile visibility
@@ -3724,7 +3798,7 @@
             <td style="color:var(--go);font-family:var(--mono)">${d.buyer_vol.toLocaleString("en-IN")}</td>
             <td style="color:var(--stop);font-family:var(--mono)">${d.seller_vol.toLocaleString("en-IN")}</td>
             <td style="color:${d.closing_cvd >= 0 ? "var(--go)" : "var(--stop)"};font-weight:750;font-family:var(--mono)">${d.closing_cvd >= 0 ? "+" : ""}${d.closing_cvd.toLocaleString("en-IN")}</td>
-            <td style="color:${d.delta_pct >= 0 ? "var(--go)" : "var(--stop)"};font-weight:750;font-family:var(--mono)">${d.delta_pct >= 0 ? "+" : ""}${d.delta_pct}%</td>
+            <td style="color:${d.delta_pct == null ? "var(--ink-mute)" : (d.delta_pct >= 0 ? "var(--go)" : "var(--stop)")};font-weight:750;font-family:var(--mono)">${d.delta_pct == null ? "—" : `${d.delta_pct >= 0 ? "+" : ""}${d.delta_pct}%`}</td>
           `;
           cvdBody.appendChild(tr);
         });
@@ -3740,12 +3814,14 @@
         tapeBody.innerHTML = "";
         data.block_tape.forEach((b) => {
           const tr = document.createElement("tr");
+          const delta = Number(b.delta);
+          const deltaTxt = Number.isFinite(delta) ? `${delta >= 0 ? "+" : ""}${delta.toLocaleString("en-IN")}` : "—";
           tr.innerHTML = `
-            <td>${b.time}</td>
-            <td style="color:${b.side === "CE" ? "var(--go)" : "var(--stop)"}"><b>${b.strike} ${b.side}</b></td>
-            <td>${b.qty}</td>
-            <td style="font-weight:750">₹${b.premium_lakhs}L</td>
-            <td><span style="font-size:0.65rem;background:var(--surface-3);padding:1px 5px;border-radius:3px">${b.badge}</span></td>
+            <td>${b.time || "—"}</td>
+            <td style="font-family:var(--mono)">${b.price == null ? "—" : Number(b.price).toLocaleString("en-IN")}</td>
+            <td>${b.volume == null ? "—" : Number(b.volume).toLocaleString("en-IN")}</td>
+            <td style="font-weight:750;color:${!Number.isFinite(delta) ? "var(--ink-mute)" : (delta >= 0 ? "var(--go)" : "var(--stop)")}">${deltaTxt}</td>
+            <td><span style="font-size:0.65rem;background:var(--surface-3);padding:1px 5px;border-radius:3px">${b.tag || "—"}</span></td>
           `;
           tapeBody.appendChild(tr);
         });
@@ -4269,7 +4345,7 @@
       const res = await fetch(`/api/signal-efficiency?symbol=${requestedSym}&period_type=${effState.period}&scope=${effState.scope}`);
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Top 5-KPI Strip
       const kTotal = document.getElementById("eff-kpi-total");
@@ -4367,16 +4443,17 @@
       // Subtab 4: Model Calibration & Options Expectancy
       if (data.calibration) {
         const cal = data.calibration;
+        const numOrDash = (v, fmt) => (v == null || !Number.isFinite(Number(v)) ? "—" : fmt(Number(v)));
         const cEmp = document.getElementById("calib-kpi-empirical");
-        if (cEmp) cEmp.textContent = `${cal.empirical_hit_rate.toFixed(1)}%`;
+        if (cEmp) cEmp.textContent = numOrDash(cal.empirical_hit_rate, (n) => `${n.toFixed(1)}%`);
         const cTheo = document.getElementById("calib-kpi-theo");
-        if (cTheo) cTheo.textContent = `${cal.theoretical_p_touch.toFixed(1)}%`;
+        if (cTheo) cTheo.textContent = numOrDash(cal.theoretical_p_touch, (n) => `${n.toFixed(1)}%`);
         const cAlpha = document.getElementById("calib-kpi-alpha");
-        if (cAlpha) cAlpha.textContent = `${cal.calibration_alpha >= 0 ? "+" : ""}${cal.calibration_alpha.toFixed(1)}%`;
+        if (cAlpha) cAlpha.textContent = numOrDash(cal.calibration_alpha, (n) => `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`);
         const cAtm = document.getElementById("calib-kpi-atm");
-        if (cAtm) cAtm.textContent = `${cal.atm_strike.toLocaleString("en-IN")} CE`;
+        if (cAtm) cAtm.textContent = numOrDash(cal.atm_strike, (n) => `${n.toLocaleString("en-IN")} CE`);
         const cEntry = document.getElementById("calib-kpi-entry");
-        if (cEntry) cEntry.textContent = `₹${cal.atm_call_entry.toFixed(1)} Entry`;
+        if (cEntry) cEntry.textContent = numOrDash(cal.atm_call_entry, (n) => `₹${n.toFixed(1)} Entry`);
 
         const calTypeBody = document.getElementById("calib-by-type-body");
         if (calTypeBody && cal.by_type_calibration) {
@@ -4416,7 +4493,7 @@
   }
 
   // Market Intelligence Filter
-  window.filterMarketNews = function(cat) {
+  window.filterMarketNews = function (cat) {
     state.selectedNewsCat = cat || 'ALL';
     const pills = document.querySelectorAll('#news-category-pills .news-cat-pill');
     pills.forEach(p => {
@@ -4450,7 +4527,7 @@
       const freshBadge = h.is_fresh ? '<span style="color:var(--spark);font-weight:700;margin-left:5px">⚡ Fresh</span>' : '';
       const impactBadge = (h.impact && h.impact > 0) ? `<span style="background:var(--surface-3);color:var(--ink-2);padding:1px 6px;border-radius:3px;font-size:0.66rem;font-weight:700">Impact ${h.impact}</span>` : '';
       const pubTime = h.pub_time_ist ? `${h.pub_time_ist} (${h.age_min || 0}m ago)` : '';
-      
+
       return `
         <div class="news-card">
           <div class="news-meta">
@@ -4476,7 +4553,7 @@
       const res = await fetch(`/api/market-intel?symbol=${requestedSym}`);
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Macro Verdict & Narrative
       const verdictEl = document.getElementById("intel-verdict");
@@ -4541,7 +4618,7 @@
         if (data.actionable_points.length === 0) {
           takeawaysContainer.innerHTML = '<div style="font-size:0.80rem;color:var(--ink-mute)">• Neutral session dynamics; standard mean-reversion trading rules apply.</div>';
         } else {
-          takeawaysContainer.innerHTML = data.actionable_points.map(pt => 
+          takeawaysContainer.innerHTML = data.actionable_points.map(pt =>
             `<div style="font-size:0.80rem;color:var(--ink-2);line-height:1.5">• ${pt}</div>`
           ).join('');
         }
@@ -4565,9 +4642,9 @@
           }
 
           const wtStr = (s.weight !== null && s.weight !== undefined) ? `~${Math.round(s.weight)}%` : "";
-          const pxStr = s.last ? `₹${s.last.toLocaleString('en-IN', {maximumFractionDigits:1})}` : "";
-          const barHtml = isPos 
-            ? `<div class="sector-bar-fill pos" style="width:${barPct.toFixed(1)}%"></div>` 
+          const pxStr = s.last ? `₹${s.last.toLocaleString('en-IN', { maximumFractionDigits: 1 })}` : "";
+          const barHtml = isPos
+            ? `<div class="sector-bar-fill pos" style="width:${barPct.toFixed(1)}%"></div>`
             : `<div class="sector-bar-fill neg" style="width:${barPct.toFixed(1)}%"></div>`;
 
           return `
@@ -4588,7 +4665,7 @@
           const bPct = b.pct;
           const bStr = (bPct !== null && bPct !== undefined) ? ((bPct >= 0 ? "+" : "") + bPct.toFixed(2) + "%") : "—";
           const bColor = (bPct > 0) ? "var(--go)" : ((bPct < 0) ? "var(--stop)" : "var(--ink-mute)");
-          const bPx = b.last ? `₹${b.last.toLocaleString('en-IN', {maximumFractionDigits:1})}` : "";
+          const bPx = b.last ? `₹${b.last.toLocaleString('en-IN', { maximumFractionDigits: 1 })}` : "";
 
           return `
             <div class="sector-row" style="background:var(--ground)">
@@ -4627,21 +4704,22 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/options-analytics?symbol=${requestedSym}&window=${state.window}`);
+      if (!res.ok) return;
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       // Top 6-Card KPI Strip
       if (data.kpis) {
         if (data.kpis.atm_iv) {
           const el = document.getElementById("noa-kpi-iv");
-          if (el) el.textContent = data.kpis.atm_iv.val;
+          if (el) el.textContent = data.kpis.atm_iv.val == null ? "—" : data.kpis.atm_iv.val;
           const sub = document.getElementById("noa-kpi-skew");
           if (sub) sub.textContent = data.kpis.atm_iv.sub;
         }
         if (data.kpis.pcr) {
           const el = document.getElementById("noa-kpi-pcr");
-          if (el) el.textContent = data.kpis.pcr.val;
+          if (el) el.textContent = data.kpis.pcr.val == null ? "—" : data.kpis.pcr.val;
           const sub = document.getElementById("noa-kpi-pcr-regime");
           if (sub) {
             sub.textContent = data.kpis.pcr.sub;
@@ -4650,13 +4728,13 @@
         }
         if (data.kpis.max_pain) {
           const el = document.getElementById("noa-kpi-mp");
-          if (el) el.textContent = data.kpis.max_pain.val;
+          if (el) el.textContent = data.kpis.max_pain.val == null ? "—" : data.kpis.max_pain.val;
           const sub = document.getElementById("noa-kpi-pin");
           if (sub) sub.textContent = data.kpis.max_pain.sub;
         }
         if (data.kpis.iv_rank) {
           const el = document.getElementById("noa-kpi-ivr");
-          if (el) el.textContent = data.kpis.iv_rank.val;
+          if (el) el.textContent = data.kpis.iv_rank.val == null ? "—" : data.kpis.iv_rank.val;
           const sub = document.getElementById("noa-kpi-ivr-sub");
           if (sub && data.kpis.iv_rank.sub) sub.textContent = data.kpis.iv_rank.sub;
         }
@@ -4678,9 +4756,10 @@
       }
 
       if (data.expected_move) {
-        document.getElementById("exp-move-low").textContent = `Lower 1σ: ₹${data.expected_move.low.toLocaleString("en-IN")}`;
-        document.getElementById("exp-move-center").textContent = `Spot: ₹${data.spot.toLocaleString("en-IN")}`;
-        document.getElementById("exp-move-high").textContent = `Upper 1σ: ₹${data.expected_move.high.toLocaleString("en-IN")}`;
+        const em = data.expected_move;
+        document.getElementById("exp-move-low").textContent = em.low == null ? "Lower 1σ: —" : `Lower 1σ: ₹${em.low.toLocaleString("en-IN")}`;
+        document.getElementById("exp-move-center").textContent = data.spot ? `Spot: ₹${Number(data.spot).toLocaleString("en-IN")}` : "Spot: —";
+        document.getElementById("exp-move-high").textContent = em.high == null ? "Upper 1σ: —" : `Upper 1σ: ₹${em.high.toLocaleString("en-IN")}`;
         const straddleEl = document.getElementById("exp-move-straddle");
         if (straddleEl) {
           const src = data.expected_move.straddle_source === "mid" ? " (mid)" : "";
@@ -4907,7 +4986,7 @@
       const res = await fetch(`/api/scorecard?symbol=${requestedSym}`);
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
 
       document.getElementById("scorecard-kpi-pnl").textContent = data.kpis.realized_pnl;
       document.getElementById("scorecard-kpi-trades").textContent = `${data.kpis.total_trades} Trades`;
@@ -5029,7 +5108,7 @@
       const res = await fetch(`/api/session-commentary?symbol=${requestedSym}`);
       const data = await res.json();
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
-          requestedSym !== (state.symbol || "").toUpperCase()) return;
+        requestedSym !== (state.symbol || "").toUpperCase()) return;
       state.commentaryData = data;
 
       const titleEl = document.getElementById("commentary-phase-title");
@@ -5472,7 +5551,7 @@
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
           try {
             state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
-          } catch (err) {}
+          } catch (err) { }
         }
         if (typeof renderCockpitChart === "function") {
           renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
@@ -5995,7 +6074,7 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: state.symbol, window: state.window }),
-    }).catch(() => {});
+    }).catch(() => { });
     initWebSocket();
     const pollPinAlerts = async () => {
       try {
@@ -6012,7 +6091,7 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ event_ids: alerts.map((a) => a.event_id) }),
         });
-      } catch (e) {}
+      } catch (e) { }
     };
     pollPinAlerts();
     setInterval(pollPinAlerts, 20000);

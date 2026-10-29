@@ -111,7 +111,7 @@ from sentinel.storage.db import (
 from sentinel.feed.demo import seed_sentinel_demo_if_needed
 from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_expiries, is_expiry_crossed
 from analytics.iv_skew import skew_25delta
-from analytics.directional_bias import compute_directional_bias, BiasResult
+from analytics.directional_bias import BIAS_MILD, compute_directional_bias, BiasResult
 
 from app.obs import configure, event, gauge, install
 
@@ -820,22 +820,9 @@ def _overlay_sqlite_kpis(dash, sym: str):
             )
             _note_stale_session(dash, db_snap)
             return dash
-        if getattr(dash, "levels", None):
-            min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
-            if float(db_snap["spot"]) > min_valid:
-                dash.levels.spot = float(db_snap["spot"])
-            if db_snap.get("call_wall") and float(db_snap["call_wall"]) > min_valid:
-                dash.levels.call_wall = float(db_snap["call_wall"])
-            if db_snap.get("put_wall") and float(db_snap["put_wall"]) > min_valid:
-                dash.levels.put_wall = float(db_snap["put_wall"])
-            if db_snap.get("gamma_flip") and float(db_snap["gamma_flip"]) > min_valid:
-                dash.levels.gamma_flip = float(db_snap["gamma_flip"])
-            if db_snap.get("max_pain") and float(db_snap["max_pain"]) > min_valid:
-                dash.levels.max_pain = float(db_snap["max_pain"])
-        if db_snap.get("vix") and getattr(dash, "india_vix", None) is not None:
-            if isinstance(dash.india_vix, dict):
-                dash.india_vix = dict(dash.india_vix)
-                dash.india_vix["last"] = float(db_snap["vix"])
+        # A quote row and a chain are different books. Copying the newer
+        # quote onto the chain's walls, or a leftover flip onto levels.flip,
+        # is how the close stops being one snapshot. The book stays the chain.
         _note_stale_session(dash, db_snap)
     except Exception as e:
         log.debug("Snapshot reconciliation note: %s", e)
@@ -900,7 +887,7 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     demo book (Nifty 24,500) is not a live chain and must not feed commentary or ideas.
     Spot/futures ticks overlay from ``spot_ticker`` (separate WS ingest).
 
-    Off-market: pickle → LKGS → SQLite KPI overlay → demo. Zero broker calls.
+    Off-market: pickle, then the last-good chain. No demo book and no quote overlay.
     """
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper().strip()
     win = window or _ACTIVE_STATE["window"]
@@ -914,7 +901,7 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
         snap_asof = (snap or {}).get("as_of")
         cached_asof = getattr(cached, "snapshot_as_of", None)
         if (snap_asof and cached_asof == snap_asof) or (snap is None and cached_asof is None):
-            return _overlay_live_spot(_refresh_book_view(cached), sym)
+            return _refresh_book_view(cached)
 
     dash = None
     from_live_store = False
@@ -948,12 +935,10 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
     if dash is None:
         dash = _from_lkgs(sym, "Off-Market Session Snapshot")
     if dash is None:
-        try:
-            dash = load_dashboard(symbol=sym, window=win, use_demo=True)
-        except Exception as e:
-            log.warning("Could not load offline fallback dashboard for %s: %s", sym, e)
+        log.warning("%s off-market book unavailable (no pickle, no last-good snapshot)", sym)
+        return None
     dash = _overlay_sqlite_kpis(dash, sym)
-    dash = _overlay_live_spot(_refresh_book_view(dash), sym)
+    dash = _refresh_book_view(dash)
     _DASH_MEM_CACHE[ckey] = (time.time(), dash)
     return dash
 
@@ -961,8 +946,8 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
 async def _aload_active_dashboard(
     symbol: str, window: Optional[str] = None, timeout: float = 25.0
 ) -> Optional[DashboardData]:
-    """Async wrapper. Live hours read the published store or LKGS, else the demo
-    fixture. Off-market reads pickle, LKGS, or the demo fixture. No broker I/O."""
+    """Async wrapper. Live hours read the published store or LKGS. Off-market
+    reads the pickle or the last-good chain. No broker I/O and no demo book."""
     try:
         return _load_active_dashboard(symbol, window)
     except Exception as exc:
@@ -978,35 +963,21 @@ def _dash_or_503(dash: Optional[DashboardData], symbol: str) -> DashboardData:
 
 
 def _extract_active_gamma_flip(dash, sym: str) -> Optional[float]:
-    """Safely extract the zero-crossing Gamma Flip level with authentic persistent fallback chain.
-
-    Priority:
-    1. dash.levels.gamma_flip (authenticated snapshot / runtime level)
-    2. dash.levels.flip (numerical zero-crossing from sticky-strike solver if present)
-    3. SQLite market_snapshot database table (persisted EOD/intraday flip)
-    4. dash.raw_agg.get('gamma_flip')
-    """
+    """The chain's zero-crossing. No quote-row stand-in and no second flip field."""
+    del sym
     lv = getattr(dash, "levels", None)
-    if lv:
-        f = getattr(lv, "gamma_flip", None)
-        if f is not None and float(f) > 0:
-            return float(f)
-        f = getattr(lv, "flip", None)
-        if f is not None and float(f) > 0:
-            return float(f)
+    if lv is None:
+        return None
+    raw = getattr(lv, "flip", None)
+    if raw is None:
+        return None
     try:
-        from data.market_snapshot import get_snapshot
-        snap = get_snapshot(sym)
-        if snap and snap.get("gamma_flip"):
-            f = float(snap["gamma_flip"])
-            if f > 0:
-                return f
-    except Exception:
-        pass
-    raw = getattr(dash, "raw_agg", {}) or {}
-    if raw.get("gamma_flip") and float(raw["gamma_flip"]) > 0:
-        return float(raw["gamma_flip"])
-    return None
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if val != val or val <= 0:
+        return None
+    return val
 
 
 def _cluster_ideas_by_strike(ideas: List[TradeIdea]) -> List[StrikeCluster]:
@@ -1245,13 +1216,14 @@ def _level_pcr(dash: Any, name: str) -> float | None:
     return _positive_pcr(getattr(levels, name, None))
 
 
-def _extract_active_pcr(dash: Any) -> float:
+def _extract_active_pcr(dash: Any) -> float | None:
     """Put open interest over call open interest for every strike in the selected window.
 
     The 21-strike band stays on the caption. It is not the headline.
+    A missing book is missing. It is not a PCR of 1.00.
     """
     if not dash:
-        return 1.0
+        return None
     full = _level_pcr(dash, "pcr_oi") or _level_pcr(dash, "pcr")
     if full is not None:
         return full
@@ -1271,7 +1243,7 @@ def _extract_active_pcr(dash: Any) -> float:
                 return round(p_oi / c_oi, 4)
         except Exception:
             pass
-    return 1.0
+    return None
 
 
 def _single_expiry_window(window: str) -> bool:
@@ -1299,7 +1271,9 @@ def _pcr_caption(dash: Any) -> str:
     return "All strikes in the selected window"
 
 
-def _pcr_mix_label(pcr: float) -> str:
+def _pcr_mix_label(pcr: float | None) -> str:
+    if pcr is None:
+        return "Open interest unavailable"
     if pcr > 1.25:
         return "Put-heavy open interest"
     if pcr < 0.85:
@@ -1307,10 +1281,10 @@ def _pcr_mix_label(pcr: float) -> str:
     return "Mixed open interest"
 
 
-def _extract_active_atm_iv(dash: Any) -> float:
-    """Extract authentic At-The-Money Implied Volatility (decimal, e.g. 0.129 for 12.9%)."""
+def _extract_active_atm_iv(dash: Any) -> float | None:
+    """At-the-money implied vol as a decimal. India VIX is not a substitute."""
     if not dash:
-        return 0.14
+        return None
     lvl_iv = getattr(dash.levels, "atm_iv", None) if hasattr(dash, "levels") and dash.levels else None
     if lvl_iv is not None and float(lvl_iv) > 0.01:
         return float(lvl_iv)
@@ -1333,14 +1307,7 @@ def _extract_active_atm_iv(dash: Any) -> float:
                         return round(v, 4)
         except Exception:
             pass
-    if hasattr(dash, "india_vix") and dash.india_vix and "last" in dash.india_vix:
-        try:
-            vix = float(dash.india_vix["last"] or 0)
-            if vix > 1.0:
-                return round(vix / 100.0, 4)
-        except Exception:
-            pass
-    return 0.14
+    return None
 
 
 def _extract_active_spot(dash: Any, sym: str = "NIFTY") -> float:
@@ -1363,8 +1330,8 @@ def _extract_active_spot(dash: Any, sym: str = "NIFTY") -> float:
     return 0.0
 
 
-def _extract_active_dte(dash: Any, default_days: float = 3.0) -> float:
-    """Extract authentic Days To Expiry (DTE) from active contracts or expiries."""
+def _extract_active_dte(dash: Any, default_days: float | None = None) -> float | None:
+    """Days to expiry from the book. Unknown stays unknown."""
     if not dash:
         return default_days
     d_val = getattr(dash, "dte_now", None)
@@ -1404,13 +1371,24 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
     spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     cw = float(dash.levels.call_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     pw = float(dash.levels.put_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
-    mp = float(getattr(dash.levels, "max_pain", 0.0) or spot) if dash and hasattr(dash, "levels") and dash.levels else spot
+    mp_raw = getattr(dash.levels, "max_pain", None) if dash and hasattr(dash, "levels") and dash.levels else None
+    try:
+        mp = float(mp_raw) if mp_raw is not None and float(mp_raw) > 0 else None
+    except (TypeError, ValueError):
+        mp = None
     pcr = _extract_active_pcr(dash)
     call_doi = getattr(dash, "call_doi", None) or (getattr(dash.levels, "call_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
     put_doi = getattr(dash, "put_doi", None) or (getattr(dash.levels, "put_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
     oi_strikes = getattr(dash, "oi_strikes", None)
     india_vix = getattr(dash, "india_vix", None)
     atm_iv = _extract_active_atm_iv(dash)
+    skew = None
+    contracts = getattr(dash, "contracts", None) if dash is not None else None
+    if contracts is not None and spot > 0:
+        try:
+            skew = skew_25delta(contracts, spot).get("skew_25d")
+        except Exception:
+            skew = None
     try:
         return compute_directional_bias(
             spot=spot,
@@ -1423,6 +1401,7 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
             oi_strikes=oi_strikes,
             india_vix=india_vix,
             near_atm_iv=atm_iv,
+            skew_25d=skew,
         )
     except Exception as ex:
         log.warning("Directional bias calculation fallback for %s: %s", sym, ex)
@@ -1766,34 +1745,37 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     dash = pub.get("data")
     lv = getattr(dash, "levels", None) if dash is not None else None
 
-    spot = float(q.get("spot") or (getattr(lv, "spot", 0) if lv is not None else 0) or 0)
-    fut = float(q.get("fut_px") or (getattr(lv, "future_price", 0) if lv is not None else 0) or spot)
+    def _px(val) -> float | None:
+        try:
+            n = float(val)
+        except (TypeError, ValueError):
+            return None
+        if n != n or n <= 0:
+            return None
+        return n
+
+    spot = _px(q.get("spot")) or _px(getattr(lv, "spot", None) if lv is not None else None) or 0.0
+    fut = _px(q.get("fut_px")) or _px(getattr(lv, "future_price", None) if lv is not None else None)
     offmarket_book = None
     if not config.is_market_open():
-        # A quote hydrated from an old snapshot must not hide a newer book.
+        # The close is the chain. A later quote must not move the header spot off that book.
         book = await _aload_active_dashboard(sym, win)
         offmarket_book = book
         book_lv = getattr(book, "levels", None) if book is not None else None
         book_spot = float(getattr(book_lv, "spot", 0) or 0) if book_lv is not None else 0.0
-        from data.market_snapshot import snapshot_is_older_than
-        quote_older = snapshot_is_older_than(
-            {"as_of": q.get("as_of")}, getattr(book, "fetched_at", None)
-        )
-        if (
-            book_spot > 0
-            and getattr(book, "source", "") != "DEMO-SYNTHETIC"
-            and (spot <= 0 or quote_older)
-        ):
+        if book_spot > 0 and getattr(book, "source", "") != "DEMO-SYNTHETIC":
             dash = book
             lv = book_lv
             spot = book_spot
-            fut = float(getattr(book_lv, "future_price", None) or spot)
+            book_fut = _px(getattr(book_lv, "future_price", None))
+            if book_fut is not None:
+                fut = book_fut
     elif spot <= 0:
         dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
         spot = float(dash.levels.spot or 0.0)
-        fut = float(getattr(dash.levels, "future_price", None) or spot)
+        fut = _px(getattr(dash.levels, "future_price", None))
         lv = dash.levels
-    basis = fut - spot
+    basis = (fut - spot) if (fut is not None and spot > 0) else None
 
     today_ist = _get_ist_now().date()
     exp, dte, dte_badge, mode_desc = _resolve_expiry_scope(sym, win)
@@ -1857,15 +1839,35 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
             feed_subtext = offmarket_refresh_line(data_refreshed_at, morning=is_morning_briefing)
     real_ohlc = _status_day_ohlc(dash, q, db_snap, spot, is_live)
     vix_from_dash = getattr(dash, "india_vix", None) if dash is not None else None
+    vix_last = None
+    vix_candidates = [
+        q.get("vix"),
+        (vix_from_dash or {}).get("last") if isinstance(vix_from_dash, dict) else None,
+        db_snap.get("vix"),
+    ]
+    if not is_live:
+        vix_candidates = [
+            (vix_from_dash or {}).get("last") if isinstance(vix_from_dash, dict) else None,
+            db_snap.get("vix"),
+            q.get("vix"),
+        ]
+    for candidate in vix_candidates:
+        try:
+            n = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if n == n and n > 0:
+            vix_last = n
+            break
+    vix_chg = q.get("vix_chg")
+    try:
+        vix_pct = float(vix_chg) if vix_chg is not None else None
+    except (TypeError, ValueError):
+        vix_pct = None
     real_vix = {
-        "last": float(
-            q["vix"] if q.get("vix") is not None
-            else ((vix_from_dash or {}).get("last") if isinstance(vix_from_dash, dict) else None)
-            or db_snap.get("vix")
-            or 14.04
-        ),
-        "change": 0.0,
-        "pct_change": float(q["vix_chg"] if q.get("vix_chg") is not None else 0.0),
+        "last": vix_last,
+        "change": None,
+        "pct_change": vix_pct,
     }
 
     sched = compute_session_schedule_info(now_ist)
@@ -2064,11 +2066,15 @@ async def get_cockpit_data(
     flip_val = _extract_active_gamma_flip(dash, sym)
     net_gex_val = float(getattr(dash.levels, "total_net_gex", 0.0) or 0.0)
     pcr_val = _extract_active_pcr(dash)
-    mp_val = float(getattr(dash.levels, "max_pain", 0.0) or spot)
+    mp_raw = getattr(dash.levels, "max_pain", None)
+    try:
+        mp_val = float(mp_raw) if mp_raw is not None and float(mp_raw) > 0 else None
+    except (TypeError, ValueError):
+        mp_val = None
     magnet_val = float(getattr(dash.levels, "magnet", 0.0) or 0.0)
 
     bias_res = _compute_active_directional_bias(dash, sym)
-    bias_color = "var(--go)" if bias_res.score > 0.8 else ("var(--stop)" if bias_res.score < -0.8 else "var(--spark)")
+    bias_color = "var(--go)" if bias_res.score >= BIAS_MILD else ("var(--stop)" if bias_res.score <= -BIAS_MILD else "var(--spark)")
 
     if flip_val:
         dist_flip = flip_val - spot
@@ -2091,8 +2097,15 @@ async def get_cockpit_data(
     kpis = {
         "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": call_sub},
         "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": put_sub},
-        "gamma_flip": {"val": flip_val if flip_val else 0.0, "sub": flip_sub, "raw": flip_val},
-        "max_pain": {"val": float(mp_val), "sub": f"{abs(spot - mp_val):,.0f} pts from spot · settlement strike"},
+        "gamma_flip": {"val": flip_val, "sub": flip_sub, "raw": flip_val},
+        "max_pain": {
+            "val": mp_val,
+            "sub": (
+                "Settlement strike unavailable"
+                if mp_val is None
+                else f"{abs(spot - mp_val):,.0f} pts from spot · settlement strike"
+            ),
+        },
         "directional_bias": {
             "val": f"{bias_res.score:+.2f}",
             "sub": bias_res.regime,
@@ -2101,7 +2114,7 @@ async def get_cockpit_data(
         },
         "regime": {"val": str(dash.view.regime or "NEUTRAL").upper(), "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}"},
         "net_gex": {"val": _fmt_gex(net_gex_val), "sub": "Writer imbalance (call−put GEX)"},
-        "pcr_oi": {"val": f"{pcr_val:.2f}", "sub": pcr_sub},
+        "pcr_oi": {"val": None if pcr_val is None else f"{pcr_val:.2f}", "sub": pcr_sub},
     }
 
     # Gamma Price Ladder: ATM band plus key GEX levels so walls/max-pain are never off-chart.
@@ -2278,7 +2291,7 @@ async def get_cockpit_data(
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: INACTIVE",
             "description": "No gamma-blast trigger. Concentration is a map, not a pin.",
-            "score": 24,
+            "score": None,
             "is_expiry": False,
             "in_blast_window": False,
             "primary_strike": None,
@@ -2388,7 +2401,7 @@ async def get_cockpit_data(
     pm_state = attach_pre_market_shocks(
         pm_state,
         contracts_df=getattr(dash, "contracts", None),
-        dte_days=_extract_active_dte(dash, default_days=3.0),
+        dte_days=_extract_active_dte(dash),
         atm_iv=_extract_active_atm_iv(dash),
     )
     if not pm_state.get("regime_briefing"):
@@ -2436,13 +2449,17 @@ async def get_cockpit_data(
 
     from data.sectors import fetch_sector_snap
     sec_snap = fetch_sector_snap()
-    adv = 0
-    dec = 0
-    if sec_snap and isinstance(sec_snap, dict) and "rows" in sec_snap:
-        adv = sum(1 for r in sec_snap["rows"] if (r.get("pct") or 0) > 0)
-        dec = sum(1 for r in sec_snap["rows"] if (r.get("pct") or 0) < 0)
-    ratio = round(adv / max(1, dec), 2) if (adv > 0 or dec > 0) else 1.0
-    sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
+    rows = sec_snap.get("rows") if isinstance(sec_snap, dict) else None
+    adv = dec = ratio = sentiment = None
+    if rows:
+        adv = sum(1 for r in rows if (r.get("pct") or 0) > 0)
+        dec = sum(1 for r in rows if (r.get("pct") or 0) < 0)
+        if dec > 0:
+            ratio = round(adv / dec, 2)
+            sentiment = "BULLISH" if ratio >= 1.2 else ("BEARISH" if ratio <= 0.8 else "NEUTRAL")
+        elif adv == 0:
+            ratio = None
+            sentiment = "NEUTRAL"
 
     now_ist = _get_ist_now()
     try:
@@ -2738,7 +2755,7 @@ async def reprice_target_engine(payload: dict = Body(...)):
     T_now = calculate_fractional_t(now_dt, sel_expiry)
     _, T_horizon = calculate_horizon_t(now_dt, tgt_mins, sel_expiry)
 
-    # Resolve strike IV & live LTP from contracts_df
+    # Strike IV from the listed contract. The book ATM IV is only a start.
     strike_iv = _extract_active_atm_iv(dash)
     market_ltp = None
     contracts_df = getattr(dash, "contracts", None)
@@ -2762,6 +2779,13 @@ async def reprice_target_engine(payload: dict = Body(...)):
             raw_iv = crow.get("iv")
             if raw_iv is not None and float(raw_iv) > 0:
                 strike_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
+
+    if strike_iv is None or strike_iv <= 0:
+        return {
+            "error": "implied_vol_unavailable",
+            "contract": f"{sym} {sel_expiry} {int(sel_strike)} {sel_type}",
+            "message": "This strike has no implied vol, so the repricer has nothing to price.",
+        }
 
     p_theo_curr = price(base_fut, sel_strike, T_now, strike_iv, 0.065, sel_type)
     cur_greeks = greeks(base_fut, sel_strike, T_now, strike_iv, 0.065, sel_type)
@@ -3132,13 +3156,18 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
 
     # 10-Day Historical Closing CVD & Volume Breakdown
     daily_recs = ensure_historical_daily_cvd(inst_id, symbol=sym, days=10)
-    total_net_cvd = sum(r["closing_cvd"] for r in daily_recs) if daily_recs else 0.0
-    tot_buy_vol = sum(r["buy_volume"] for r in daily_recs) if daily_recs else 0
-    tot_sell_vol = sum(r["sell_volume"] for r in daily_recs) if daily_recs else 0
-    all_vol = tot_buy_vol + tot_sell_vol
-    buy_pct = (tot_buy_vol / all_vol * 100.0) if all_vol > 0 else 50.0
-    peak_buy = max(daily_recs, key=lambda x: x["buy_volume"]) if daily_recs else {"trade_date": "", "buy_volume": 0}
-    peak_sell = max(daily_recs, key=lambda x: x["sell_volume"]) if daily_recs else {"trade_date": "", "sell_volume": 0}
+    if daily_recs:
+        total_net_cvd = sum(r["closing_cvd"] for r in daily_recs)
+        tot_buy_vol = sum(r["buy_volume"] for r in daily_recs)
+        tot_sell_vol = sum(r["sell_volume"] for r in daily_recs)
+        all_vol = tot_buy_vol + tot_sell_vol
+        buy_pct = (tot_buy_vol / all_vol * 100.0) if all_vol > 0 else None
+        peak_buy = max(daily_recs, key=lambda x: x["buy_volume"])
+        peak_sell = max(daily_recs, key=lambda x: x["sell_volume"])
+    else:
+        total_net_cvd = tot_buy_vol = tot_sell_vol = buy_pct = None
+        peak_buy = {"trade_date": "", "buy_volume": None}
+        peak_sell = {"trade_date": "", "sell_volume": None}
 
     daily_suite_items = []
     for r in daily_recs:
@@ -3148,7 +3177,7 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
             d_label = str(r["trade_date"])
         b_vol = r["buy_volume"]
         s_vol = r["sell_volume"]
-        t_vol = r["total_volume"] or (b_vol + s_vol)
+        t_vol = r["total_volume"] if r["total_volume"] else (b_vol + s_vol)
         cvd = r["closing_cvd"]
         daily_suite_items.append({
             "trade_date": r["trade_date"],
@@ -3157,29 +3186,40 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
             "buyer_vol": b_vol,
             "seller_vol": s_vol,
             "total_vol": t_vol,
-            "closing_price": r.get("closing_price", spot),
-            "delta_pct": round(((b_vol - s_vol) / max(1, t_vol)) * 100.0, 1),
+            "closing_price": r.get("closing_price"),
+            "delta_pct": round(((b_vol - s_vol) / t_vol) * 100.0, 1) if t_vol else None,
             "color": "var(--go)" if cvd >= 0 else "var(--stop)",
         })
 
     # Genuine Candlestick + CVD chart data formatted in exact IST
+    def _band(val):
+        try:
+            n = float(val)
+        except (TypeError, ValueError):
+            return None
+        if n != n or n <= 0:
+            return None
+        return round(n, 1)
+
     bars = []
     for b in raw_bars:
-        ts = _to_ist_chart_timestamp(getattr(b, "start_ts", None))
+        if getattr(b, "start_ts", None) is None:
+            continue
+        ts = _to_ist_chart_timestamp(b.start_ts)
         bars.append({
             "time": ts,
             "open": round(float(b.open), 1),
             "high": round(float(b.high), 1),
             "low": round(float(b.low), 1),
             "close": round(float(b.close), 1),
-            "volume": int(getattr(b, "volume", 0) or 0),
+            "volume": int(getattr(b, "volume_units", 0) or 0),
             "delta": round(float(getattr(b, "delta", 0.0) or 0.0), 1),
             "cvd": round(float(getattr(b, "cvd", 0.0) or 0.0), 0),
-            "vwap": round(float(getattr(b, "vwap", b.close) or b.close), 1),
-            "up1": round(float(getattr(b, "up1", b.close + 15) or (b.close + 15)), 1),
-            "dn1": round(float(getattr(b, "dn1", b.close - 15) or (b.close - 15)), 1),
-            "up2": round(float(getattr(b, "up2", b.close + 30) or (b.close + 30)), 1),
-            "dn2": round(float(getattr(b, "dn2", b.close - 30) or (b.close - 30)), 1),
+            "vwap": _band(getattr(b, "vwap", None)),
+            "up1": _band(getattr(b, "vwap_sigma_1", None)),
+            "dn1": _band(getattr(b, "vwap_lower_1", None)),
+            "up2": _band(getattr(b, "vwap_sigma_2", None)),
+            "dn2": _band(getattr(b, "vwap_lower_2", None)),
         })
 
     # Calculate EMA 9 and 21 series
@@ -3242,52 +3282,89 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
 
     # Authentic Block Tape derived from session volume and delta spikes
     tape = []
-    high_vol_bars = sorted([b for b in raw_bars if (getattr(b, "volume_units", 0) or 0) > 0], key=lambda x: getattr(x, "volume_units", 0), reverse=True)[:6]
+    high_vol_bars = sorted(
+        [b for b in raw_bars if int(getattr(b, "volume_units", 0) or 0) > 0],
+        key=lambda x: int(getattr(x, "volume_units", 0) or 0),
+        reverse=True,
+    )[:6]
     for b in high_vol_bars:
-        t_str = _fmt_bar_stamp(b.start_ts) or "15:25:00"
-        vol = int(getattr(b, "volume_units", 1000))
-        delta = float(getattr(b, "delta", 0.0))
-        side = "CE" if delta >= 0 else "PE"
-        aggressor = "BUYER" if delta >= 0 else "SELLER"
-        badge = "SWEEP" if abs(delta) > 5000 else ("BLOCK" if vol > 8000 else "ACCUM")
-        prem = round((vol * float(b.close) * 0.005) / 100000, 1)
+        vol = int(getattr(b, "volume_units", 0) or 0)
+        delta = float(getattr(b, "delta", 0.0) or 0.0)
         tape.append({
-            "time": t_str,
-            "strike": int(round(float(b.close) / 50) * 50),
-            "side": side,
-            "qty": vol,
-            "ltp": round(float(b.close), 1),
-            "premium_lakhs": prem,
-            "aggressor": aggressor,
-            "badge": badge,
+            "time": _fmt_bar_stamp(b.start_ts),
+            "price": round(float(b.close), 1),
+            "volume": vol,
+            "delta": round(delta, 1),
+            "tag": "HIGH VOLUME",
         })
 
-    latest_bar = bars[-1] if bars else None
-    latest_sig = sigs[0] if sigs else None
-    rvol_val = getattr(latest_sig, "rvol_tod", 1.0) if latest_sig else 1.0
-    delta_val = latest_bar["delta"] if latest_bar else 0.0
+    session_bars = [b for b in raw_bars if int(getattr(b, "volume_units", 0) or 0) > 0]
+    session_net = session_ratio = None
+    session_regime = None
+    if session_bars:
+        session_net = float(session_bars[-1].cvd or 0.0)
+        buy_est = sum(float(getattr(b, "buy_vol_est", 0.0) or 0.0) for b in session_bars)
+        sell_est = sum(float(getattr(b, "sell_vol_est", 0.0) or 0.0) for b in session_bars)
+        if buy_est <= 0 and sell_est <= 0:
+            for b in session_bars:
+                vol = float(getattr(b, "volume_units", 0) or 0)
+                delta = float(getattr(b, "delta", 0.0) or 0.0)
+                buy_est += (vol + delta) / 2.0
+                sell_est += (vol - delta) / 2.0
+        if buy_est + sell_est > 0:
+            session_ratio = buy_est / (buy_est + sell_est) * 100.0
+        if session_net > 0:
+            session_regime = "BUYER_DOMINATED"
+        elif session_net < 0:
+            session_regime = "SELLER_DOMINATED"
+        else:
+            session_regime = "BALANCED"
 
-    if rvol_val >= 2.0:
+    latest_sig = sigs[0] if sigs else None
+    rvol_val = getattr(latest_sig, "rvol_tod", None) if latest_sig else None
+    delta_val = float(session_bars[-1].delta or 0.0) if session_bars else None
+    fresh_absorption = None
+    if session_bars and sigs:
+        last_ts = session_bars[-1].start_ts
+        for s in sigs:
+            if getattr(s, "type", "") not in ("ABSORPTION_BULL", "ABSORPTION_BEAR"):
+                continue
+            try:
+                age = abs((last_ts - s.bar_start_ts).total_seconds())
+            except Exception:
+                continue
+            if age <= 15 * 60:
+                fresh_absorption = s.type
+                break
+
+    if fresh_absorption:
+        regime_label = fresh_absorption
+        regime_color = "var(--go)" if fresh_absorption.endswith("BULL") else "var(--stop)"
+    elif rvol_val is not None and rvol_val >= 2.0:
         regime_label = "VOLUME CLIMAX"
         regime_color = "var(--warn)"
-    elif abs(delta_val) > 5000:
+    elif delta_val is not None and abs(delta_val) > 5000:
         regime_label = "HEAVY AGGRESSION"
         regime_color = "var(--go)" if delta_val > 0 else "var(--stop)"
-    else:
+    elif session_bars:
         regime_label = "BALANCED AUCTION"
         regime_color = "var(--spark)"
+    else:
+        regime_label = None
+        regime_color = "var(--ink-mute)"
 
     return {
         "symbol": sym,
         "timeframe": tf,
         "call_wall": float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0),
         "put_wall": float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0),
-        "gamma_flip": float(_extract_active_gamma_flip(dash, sym) or 0.0),
+        "gamma_flip": _extract_active_gamma_flip(dash, sym),
         "kpis": {
-            "cvd_regime": "BUYER_DOMINATED" if total_net_cvd >= 0 else "SELLER_DOMINATED",
-            "net_cvd": f"{total_net_cvd:+,.0f}",
-            "buyer_ratio": f"{buy_pct:.1f}%",
-            "institutional_blocks": len(tape),
+            "cvd_regime": session_regime,
+            "net_cvd": None if session_net is None else f"{session_net:+,.0f}",
+            "buyer_ratio": None if session_ratio is None else f"{session_ratio:.1f}%",
+            "delta_note": "Tick-rule estimate" if session_bars else None,
+            "institutional_blocks": len(tape) if tape else None,
             "absorption_status": regime_label,
             "regime_color": regime_color,
         },
@@ -3295,10 +3372,10 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
             "total_net_cvd": total_net_cvd,
             "tot_buy_vol": tot_buy_vol,
             "tot_sell_vol": tot_sell_vol,
-            "buy_pct": round(buy_pct, 1),
-            "peak_buy_day": peak_buy.get("trade_date", "")[-5:],
+            "buy_pct": None if buy_pct is None else round(buy_pct, 1),
+            "peak_buy_day": (peak_buy.get("trade_date") or "")[-5:],
             "peak_buy_vol": peak_buy.get("buy_volume", 0),
-            "peak_sell_day": peak_sell.get("trade_date", "")[-5:],
+            "peak_sell_day": (peak_sell.get("trade_date") or "")[-5:],
             "peak_sell_vol": peak_sell.get("sell_volume", 0),
         },
         "bars": bars,
@@ -3398,18 +3475,22 @@ async def get_signal_efficiency(
         dash = await _aload_active_dashboard(sym, "weekly")
         spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
         atm_iv = _extract_active_atm_iv(dash)
-        dte = float(getattr(dash, "dte_now", 3.0) or 3.0) if dash is not None else 3.0
+        dte_raw = getattr(dash, "dte_now", None) if dash is not None else None
         try:
-            if spot <= 0:
-                raise ValueError("no live spot")
+            dte = float(dte_raw) if dte_raw is not None else _extract_active_dte(dash)
+        except (TypeError, ValueError):
+            dte = None
+        try:
+            if spot <= 0 or atm_iv is None or dte is None:
+                raise ValueError("missing spot, ATM IV, or DTE")
             calib = calculate_model_calibration_and_expectancy(eff_report, spot=spot, atm_iv=atm_iv, dte_days=dte)
         except Exception:
             calib = {
                 "empirical_hit_rate": eff_report.overall_hit_rate,
-                "theoretical_p_touch": 65.0,
-                "calibration_alpha": round(eff_report.overall_hit_rate - 65.0, 1),
-                "atm_strike": int(round(spot / 50) * 50),
-                "atm_call_entry": 0.0,
+                "theoretical_p_touch": None,
+                "calibration_alpha": None,
+                "atm_strike": None,
+                "atm_call_entry": None,
                 "by_type_calibration": [],
                 "by_alignment_calibration": [],
                 "options_expectancy_curve": {},
@@ -3493,10 +3574,10 @@ async def get_signal_efficiency(
             "expectancy_curve": [],
             "calibration": {
                 "empirical_hit_rate": 0.0,
-                "theoretical_p_touch": 0.0,
-                "calibration_alpha": 0.0,
-                "atm_strike": int(round(spot / 50) * 50) if 'spot' in locals() else 0,
-                "atm_call_entry": 0.0,
+                "theoretical_p_touch": None,
+                "calibration_alpha": None,
+                "atm_strike": None,
+                "atm_call_entry": None,
                 "by_type_calibration": [],
                 "by_alignment_calibration": [],
             },
@@ -3654,10 +3735,13 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
 
     # Expected move calculation
     atm_iv = _extract_active_atm_iv(dash)
-    dte = _extract_active_dte(dash, default_days=3.0)
-    exp_move = spot * atm_iv * (dte / 365.0) ** 0.5
-    exp_high = spot + exp_move
-    exp_low = spot - exp_move
+    dte = _extract_active_dte(dash)
+    if atm_iv is None or dte is None or spot <= 0:
+        exp_move = exp_high = exp_low = None
+    else:
+        exp_move = spot * atm_iv * (dte / 365.0) ** 0.5
+        exp_high = spot + exp_move
+        exp_low = spot - exp_move
 
     # Authentic Strike Buildup Matrix derived from snapshot oi_strikes
     from analytics.buildup import build_strike_matrix
@@ -3704,25 +3788,28 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
             pass
 
     if not term_structure:
-        term_structure = [
-            {"expiry": f"{e.strftime('%d-%b') if hasattr(e, 'strftime') else str(e)}", "iv": round(atm_iv * 100.0, 1)}
-            for e in (dash.expiries or [])
-        ]
-    if not term_structure:
-        term_structure = [{"expiry": "Active Expiry", "iv": round(atm_iv * 100.0, 1)}]
+        term_structure = []
 
     # Options Analytics 6 Top KPI Cards
     pcr = _extract_active_pcr(dash)
-    max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else spot
+    mp_raw = getattr(dash.levels, "max_pain", None) if dash.levels else None
+    try:
+        max_pain = float(mp_raw) if mp_raw is not None and float(mp_raw) > 0 else None
+    except (TypeError, ValueError):
+        max_pain = None
     vix = None
     if isinstance(getattr(dash, "india_vix", None), dict) and dash.india_vix.get("last") is not None:
         vix = float(dash.india_vix["last"])
 
-    # ATM IV mapped onto a 10–25% band (NOT a 30-day historical rank).
-    iv_rank = round(min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0)), 0)
-    iv_rank_sub = "Elevated vs 10–25% band" if iv_rank >= 65 else ("Low vs 10–25% band" if iv_rank <= 30 else "Inside 10–25% band")
+    # ATM IV mapped onto a 10–25% band. This is not a 52-week rank.
+    if atm_iv is None:
+        iv_rank = None
+        iv_rank_sub = "ATM IV unavailable"
+    else:
+        iv_rank = round(min(100.0, max(0.0, (atm_iv * 100.0 - 10.0) / (25.0 - 10.0) * 100.0)), 0)
+        iv_rank_sub = "Elevated vs 10–25% band" if iv_rank >= 65 else ("Low vs 10–25% band" if iv_rank <= 30 else "Inside 10–25% band")
 
-    mp_dist = abs(spot - max_pain) if (max_pain and spot) else 0.0
+    mp_dist = abs(spot - max_pain) if (max_pain and spot) else None
 
     # Dynamic IOAS Directional Bias
     bias_res = _compute_active_directional_bias(dash, sym)
@@ -3733,10 +3820,13 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         pcr_sub = f"{pcr_sub} · {band}"
 
     kpis = {
-        "atm_iv": {"val": f"{atm_iv * 100:.1f}%", "sub": "ATM implied vol"},
-        "pcr": {"val": f"{pcr:.2f}", "sub": pcr_sub},
-        "max_pain": {"val": f"₹{max_pain:,.0f}", "sub": f"{mp_dist:,.0f} pts from spot · settlement strike"},
-        "iv_rank": {"val": f"{iv_rank:.0f}%", "sub": iv_rank_sub},
+        "atm_iv": {"val": None if atm_iv is None else f"{atm_iv * 100:.1f}%", "sub": "ATM implied vol"},
+        "pcr": {"val": None if pcr is None else f"{pcr:.2f}", "sub": pcr_sub},
+        "max_pain": {
+            "val": None if max_pain is None else f"₹{max_pain:,.0f}",
+            "sub": "Settlement strike unavailable" if mp_dist is None else f"{mp_dist:,.0f} pts from spot · settlement strike",
+        },
+        "iv_rank": {"val": None if iv_rank is None else f"{iv_rank:.0f}%", "sub": iv_rank_sub},
         "india_vix": {"val": "—" if vix is None else f"{vix:.2f}", "sub": "India VIX"},
         "bias_gauge": {"val": f"{bias_res.score:+.2f}", "sub": bias_res.regime},
     }
@@ -3808,13 +3898,13 @@ async def get_options_analytics(symbol: Optional[str] = None, window: Optional[s
         "kpis": kpis,
         "bias_rows": bias_rows,
         "expected_move": {
-            "move_pts": round(exp_move, 1),
-            "high": round(exp_high, 1),
-            "low": round(exp_low, 1),
+            "move_pts": None if exp_move is None else round(exp_move, 1),
+            "high": None if exp_high is None else round(exp_high, 1),
+            "low": None if exp_low is None else round(exp_low, 1),
             "straddle": straddle,
             "straddle_source": straddle_source,
-            "upper_barrier": round(dash.levels.call_wall or exp_high, 1),
-            "lower_barrier": round(dash.levels.put_wall or exp_low, 1),
+            "upper_barrier": round(float(dash.levels.call_wall), 1) if getattr(dash.levels, "call_wall", None) else None,
+            "lower_barrier": round(float(dash.levels.put_wall), 1) if getattr(dash.levels, "put_wall", None) else None,
         },
         "skew_summary": {
             "skew_25d": skew_pct,
@@ -4274,42 +4364,53 @@ async def get_session_commentary(symbol: Optional[str] = None):
     d_levels = getattr(dash, "levels", None) if dash is not None else None
     disc_spot = float(pm_state.get("discovered_spot") or _extract_active_spot(dash, sym))
     gap_pts = float(pm_state.get("gap_pts") or 0.0)
-    cw = float(getattr(d_levels, "call_wall", disc_spot * 1.01) or disc_spot * 1.01)
-    pw = float(getattr(d_levels, "put_wall", disc_spot * 0.99) or disc_spot * 0.99)
-    flip = float(_extract_active_gamma_flip(dash, sym) or disc_spot)
-
+    cw = getattr(d_levels, "call_wall", None) if d_levels is not None else None
+    pw = getattr(d_levels, "put_wall", None) if d_levels is not None else None
     try:
-        if pm_state.get("is_discovered") and disc_spot > 0:
+        cw = float(cw) if cw is not None and float(cw) > 0 else None
+        pw = float(pw) if pw is not None and float(pw) > 0 else None
+    except (TypeError, ValueError):
+        cw = pw = None
+    flip = _extract_active_gamma_flip(dash, sym)
+
+    empty_shocks = {
+        "atm_strike": None,
+        "atm_straddle_prev": None,
+        "atm_straddle_projected": None,
+        "straddle_shock_pct": None,
+        "projected_strikes": [],
+    }
+    try:
+        prev_raw = pm_state.get("prev_close")
+        atm_iv_pm = _extract_active_atm_iv(dash)
+        dte_pm = _extract_active_dte(dash)
+        if (
+            pm_state.get("is_discovered")
+            and disc_spot > 0
+            and prev_raw
+            and atm_iv_pm
+            and dte_pm is not None
+        ):
             shocks = calculate_pre_market_option_shocks(
                 discovered_spot=disc_spot,
-                prev_close=float(pm_state.get("prev_close") or (disc_spot - gap_pts)),
+                prev_close=float(prev_raw),
                 contracts_df=getattr(dash, "contracts", None),
                 symbol=sym,
-                dte_days=_extract_active_dte(dash, default_days=3.0),
-                atm_iv=_extract_active_atm_iv(dash),
+                dte_days=dte_pm,
+                atm_iv=atm_iv_pm,
             )
         else:
-            shocks = {
-                "atm_strike": round(disc_spot / 50) * 50,
-                "atm_straddle_prev": None,
-                "atm_straddle_projected": None,
-                "straddle_shock_pct": None,
-                "projected_strikes": [],
-            }
+            shocks = dict(empty_shocks)
     except Exception as ex:
         log.warning("calculate_pre_market_option_shocks failed: %s", ex)
-        shocks = {
-            "atm_strike": round(disc_spot / 50) * 50,
-            "atm_straddle_prev": None,
-            "atm_straddle_projected": None,
-            "straddle_shock_pct": None,
-            "projected_strikes": [],
-        }
+        shocks = dict(empty_shocks)
 
     pm_state["shocks"] = shocks
     pm_state["call_wall"] = cw
     pm_state["put_wall"] = pw
-    pm_state["walls"] = f"{cw:,.0f} / {pw:,.0f}"
+    cw_txt = f"{cw:,.0f}" if cw else "unavailable"
+    pw_txt = f"{pw:,.0f}" if pw else "unavailable"
+    pm_state["walls"] = f"{cw_txt} / {pw_txt}"
     if pm_state.get("is_morning_briefing") and not pm_state.get("is_discovered"):
         pm_state["gamma_flip"] = flip
         from data.pre_post_market import stamp_morning_briefing
@@ -4320,11 +4421,11 @@ async def get_session_commentary(symbol: Optional[str] = None):
         pm_state["briefing"] = pm_state["regime_briefing"]
     if not pm_state.get("briefing"):
         if gap_pts > 0:
-            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} (+{gap_pts:,.1f} pts). Call-gamma strike {cw:,.0f}. Put-gamma strike {pw:,.0f}. Neither strike is a floor or a ceiling."
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} (+{gap_pts:,.1f} pts). Call-gamma strike {cw_txt}. Put-gamma strike {pw_txt}. Neither strike is a floor or a ceiling."
         elif gap_pts < 0:
-            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Put-gamma strike {pw:,.0f}. Call-gamma strike {cw:,.0f}. Neither strike is a floor or a ceiling."
+            pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Put-gamma strike {pw_txt}. Call-gamma strike {cw_txt}. Neither strike is a floor or a ceiling."
         else:
-            pm_state["briefing"] = f"Flat open at ₹{disc_spot:,.0f}. Call-gamma strike {cw:,.0f}. Put-gamma strike {pw:,.0f}."
+            pm_state["briefing"] = f"Flat open at ₹{disc_spot:,.0f}. Call-gamma strike {cw_txt}. Put-gamma strike {pw_txt}."
 
     post_state = dict(get_post_market_state(sym, session_date=active_session_date) or {})
     if post_state:
@@ -5426,35 +5527,48 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
             from data.market_snapshot import get_snapshot
             snap = get_snapshot(sym) if lv is None else None
 
+            def _ws_px(val):
+                try:
+                    n = float(val)
+                except (TypeError, ValueError):
+                    return None
+                if n != n or n <= 0:
+                    return None
+                return n
+
+            chain_vix = None
+            iv = getattr(dash, "india_vix", None) if dash is not None else None
+            if isinstance(iv, dict):
+                chain_vix = iv.get("last")
+
             if quote and quote.get("spot"):
                 spot = float(quote["spot"])
-                fut = float(quote.get("fut_px") or spot)
-                real_vix = {
-                    "last": float(quote["vix"]) if quote.get("vix") is not None else float(
-                        (getattr(dash, "india_vix", None) or {}).get("last") or (snap.get("vix") if snap else 14.04)
-                    ),
-                    "change": 0.0,
-                    "pct_change": float(quote["vix_chg"]) if quote.get("vix_chg") is not None else 0.0,
-                }
+                fut = _ws_px(quote.get("fut_px")) or _ws_px(getattr(lv, "future_price", None) if lv is not None else None)
+                vix_last = _ws_px(quote.get("vix")) or _ws_px(chain_vix) or _ws_px((snap or {}).get("vix"))
+                try:
+                    vix_pct = float(quote["vix_chg"]) if quote.get("vix_chg") is not None else None
+                except (TypeError, ValueError):
+                    vix_pct = None
+                real_vix = {"last": vix_last, "change": None, "pct_change": vix_pct}
             elif lv is not None:
                 spot = float(lv.spot or 0.0)
-                fut = float(getattr(lv, "future_price", None) or spot)
-                real_vix = getattr(dash, "india_vix", None) or {"last": 14.04, "change": 0.0, "pct_change": 0.0}
+                fut = _ws_px(getattr(lv, "future_price", None))
+                real_vix = {"last": _ws_px(chain_vix), "change": None, "pct_change": None}
             elif snap and snap.get("spot"):
                 spot = float(snap["spot"])
-                fut = float(snap.get("spot") or spot)
-                real_vix = {
-                    "last": float(snap.get("vix") or 14.04),
-                    "change": 0.0,
-                    "pct_change": 0.0,
-                }
+                fut = None
+                real_vix = {"last": _ws_px(snap.get("vix")), "change": None, "pct_change": None}
             else:
                 await asyncio.sleep(0.25)
                 continue
 
+            basis = (fut - spot) if (fut is not None and spot > 0) else None
             cw = float(getattr(lv, "call_wall", 0) or 0) if lv is not None else (float(snap.get("call_wall") or 0.0) if snap else 0.0)
             pw = float(getattr(lv, "put_wall", 0) or 0) if lv is not None else (float(snap.get("put_wall") or 0.0) if snap else 0.0)
-            flip = float(_extract_active_gamma_flip(dash, sym) or 0.0) if dash is not None else (float(snap.get("gamma_flip") or 0.0) if snap else 0.0)
+            if dash is not None:
+                flip = _extract_active_gamma_flip(dash, sym)
+            else:
+                flip = _ws_px(snap.get("gamma_flip")) if snap else None
 
             now_t = time.time()
 
@@ -5464,7 +5578,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     (q.get("rec_id"), q.get("ltp"), q.get("target_1"), q.get("stop_loss"))
                     for q in rec_quotes
                 )
-                sig = (round(spot, 1), round(fut, 1), int(cw or 0), int(pw or 0), opt_sig)
+                sig = (round(spot, 1), None if fut is None else round(fut, 1), int(cw or 0), int(pw or 0), opt_sig)
                 if sig == last_sig and (now_t - last_send) < _WS_HEARTBEAT_S:
                     await asyncio.sleep(_WS_LIVE_SLEEP_S)
                     continue
@@ -5475,7 +5589,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "symbol": sym,
                     "spot": spot,
                     "future_price": fut,
-                    "basis": fut - spot,
+                    "basis": basis,
                     "india_vix": real_vix,
                     "call_wall": cw,
                     "put_wall": pw,
@@ -5498,7 +5612,7 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "symbol": sym,
                     "spot": spot,
                     "future_price": fut,
-                    "basis": fut - spot,
+                    "basis": basis,
                     "india_vix": real_vix,
                     "call_wall": cw,
                     "put_wall": pw,

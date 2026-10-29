@@ -170,13 +170,19 @@ class TestDirectionalBias:
         assert "not a pull" in label.lower()
 
     def test_regime_labels(self):
-        """Verify all regime labels are mapped correctly."""
+        """Labels sit on the live ±2.5 ceiling. 1.2 is bullish and not extreme."""
         from analytics.directional_bias import _regime_label
-        assert "Extreme Bullish" in _regime_label(8.0)
-        assert "Bullish" in _regime_label(5.0)
-        assert "Neutral" in _regime_label(0.0)
-        assert "Bearish" in _regime_label(-5.0)
-        assert "Extreme Bearish" in _regime_label(-8.0)
+        assert _regime_label(2.0).startswith("Extreme Bullish")
+        mild = _regime_label(1.2)
+        assert mild.startswith("Bullish")
+        assert "Extreme" not in mild
+        assert _regime_label(0.5).startswith("Mild Bullish")
+        assert _regime_label(0.0).startswith("Neutral")
+        assert _regime_label(-0.5).startswith("Mild Bearish")
+        bear = _regime_label(-1.2)
+        assert bear.startswith("Bearish")
+        assert "Extreme" not in bear
+        assert _regime_label(-2.0).startswith("Extreme Bearish")
 
 
 # ===========================================================================

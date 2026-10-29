@@ -220,6 +220,8 @@ def test_pcr_headline_is_the_full_expiry_and_the_band_is_the_caption():
     assert _extract_active_pcr(Dash()) == 1.13
     assert _pcr_caption(Dash()) == "21 strikes around spot 0.96"
     assert _pcr_mix_label(1.13) == "Mixed open interest"
+    assert _extract_active_pcr(None) is None
+    assert _pcr_mix_label(None) == "Open interest unavailable"
 
     class Wide:
         pcr_oi = 1.13
@@ -230,6 +232,22 @@ def test_pcr_headline_is_the_full_expiry_and_the_band_is_the_caption():
         levels = Wide()
 
     assert _pcr_caption(WideDash()) == "All strikes in the selected window"
+
+
+def test_missing_atm_iv_is_not_replaced_by_vix_or_fourteen_percent():
+    from web_server import _extract_active_atm_iv
+
+    class Levels:
+        atm_iv = None
+        spot = 23000.0
+
+    class Dash:
+        levels = Levels()
+        contracts = None
+        india_vix = {"last": 14.04}
+
+    assert _extract_active_atm_iv(None) is None
+    assert _extract_active_atm_iv(Dash()) is None
 
 
 def test_standing_oi_centre_matches_the_hand_check():

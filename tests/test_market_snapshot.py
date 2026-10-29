@@ -99,6 +99,20 @@ def test_closing_print_keeps_the_stored_previous_close(tmp_path, monkeypatch):
     assert snap["spot"] == 22753.2
 
 
+def test_save_snapshot_does_not_invent_walls(tmp_path, monkeypatch):
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "walls.db")
+    save_snapshot(
+        symbol="NIFTY",
+        spot=23000.0,
+        as_of="2026-10-29T10:00:00+00:00",
+        source="ws-tick",
+    )
+    row = get_snapshot("NIFTY")
+    assert row["spot"] == 23000.0
+    assert row["call_wall"] is None
+    assert row["put_wall"] is None
+
+
 def test_october_21_snapshot_is_older_than_the_october_26_book():
     book = datetime(2026, 10, 26, 10, 10, 20, tzinfo=timezone.utc)
     assert snapshot_is_older_than({"as_of": "2026-10-21T04:57:04+00:00"}, book)

@@ -470,7 +470,7 @@
             <div class="kpi-card" id="card-market-breadth">
               <small title="Market breadth">Market breadth</small>
               <b id="cockpit-breadth-val">—</b>
-              <span id="cockpit-breadth-sub">Advances / declines</span>
+              <span id="cockpit-breadth-sub">Sector breadth</span>
             </div>
           </div>
           <div id="gamma-blast-card" class="gamma-blast-row">
@@ -851,7 +851,7 @@
             <div>
               <span id="ladder-ws-status" style="color:var(--ink-mute);font-weight:700">Chain snapshot</span> · 
               Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">—</b> · 
-              Spot: <b id="ladder-spot-display" style="color:var(--spark)">₹23,146.2</b> · 
+              Spot: <b id="ladder-spot-display" style="color:var(--spark)">—</b> · 
               ATM: <b id="ladder-atm-display" style="color:var(--warn)">23,150</b>
             </div>
             <span style="font-size:0.7rem;color:var(--ink-faint)">Updated: Real-time 0ms</span>
@@ -939,9 +939,9 @@
               <div style="display:flex;gap:12px;font-family:var(--mono);color:#cbd5e1">
                 <span>LTP: <b id="te-strip-ltp" style="color:#38bdf8">₹124.5</b></span>
                 <span>Model Theo: <b id="te-strip-theo" style="color:#94a3b8">₹123.8</b></span>
-                <span>Strike IV: <b id="te-strip-iv" style="color:#facc15">14.2%</b></span>
+                <span>Strike IV: <b id="te-strip-iv" style="color:#facc15">—</b></span>
                 <span>Delta: <b id="te-strip-delta" style="color:#34d399">+0.512</b></span>
-                <span>Theta: <b id="te-strip-theta" style="color:#f87171">-14.2</b></span>
+                <span>Theta: <b id="te-strip-theta" style="color:#f87171">—</b></span>
                 <span>Vega: <b id="te-strip-vega" style="color:#c084fc">+18.5</b></span>
               </div>
             </div>
@@ -1229,23 +1229,23 @@
           <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
             <div class="kpi-card go">
               <small>CVD Regime</small>
-              <b id="sentinel-kpi-regime">BUYER_DOMINATED</b>
-              <span>Aggressive Delta Flow</span>
+              <b id="sentinel-kpi-regime">—</b>
+              <span>Session CVD from the tape</span>
             </div>
             <div class="kpi-card spark">
               <small>Net Cumulative Volume</small>
-              <b id="sentinel-kpi-net-cvd">+12,500</b>
-              <span>Delta Contracts</span>
+              <b id="sentinel-kpi-net-cvd">—</b>
+              <span id="sentinel-kpi-delta-note">Tick-rule estimate</span>
             </div>
             <div class="kpi-card warn">
               <small>Buyer Volume Ratio</small>
-              <b id="sentinel-kpi-buyer-ratio">58.4%</b>
-              <span>Buy vs Sell Sweeps</span>
+              <b id="sentinel-kpi-buyer-ratio">—</b>
+              <span>Tick-rule buy share</span>
             </div>
             <div class="kpi-card purple">
-              <small>Block Sweeps (&gt;₹20L)</small>
-              <b id="sentinel-kpi-blocks">14 Blocks</b>
-              <span>Institutional Tape Bursts</span>
+              <small>High-volume futures bars</small>
+              <b id="sentinel-kpi-blocks">—</b>
+              <span>Futures minutes, not option blocks</span>
             </div>
             <div class="kpi-card">
               <small>Absorption Status</small>
@@ -1324,7 +1324,7 @@
                 <span id="sentinel-10d-regime-badge" class="badge-active" style="background:var(--go-bg);color:var(--go);font-size:0.72rem">🟢 INSTITUTIONAL ACCUMULATION</span>
               </div>
               <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">
-                10-Day Net CVD: <b id="sentinel-10d-net-badge" style="color:var(--go)">+125,000</b> · Buyer Ratio: <b id="sentinel-10d-buyer-ratio">58.4%</b>
+                10-Day Net CVD: <b id="sentinel-10d-net-badge" style="color:var(--go)">—</b> · Buyer Ratio: <b id="sentinel-10d-buyer-ratio">—</b>
               </span>
             </div>
 
@@ -1332,22 +1332,22 @@
             <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
               <div class="kpi-card go">
                 <small>10-Day Cumulative Net CVD</small>
-                <b id="kpi-10d-net-cvd">+125,000</b>
-                <span id="kpi-10d-avg-cvd">Avg Daily: +12,500</span>
+                <b id="kpi-10d-net-cvd">—</b>
+                <span id="kpi-10d-avg-cvd">Avg Daily: —</span>
               </div>
               <div class="kpi-card go">
                 <small>Total 10D Buy Volume</small>
-                <b id="kpi-10d-buy-vol">850,000</b>
+                <b id="kpi-10d-buy-vol">—</b>
                 <span id="kpi-10d-buy-pct">54.0% of session volume</span>
               </div>
               <div class="kpi-card stop">
                 <small>Total 10D Sell Volume</small>
-                <b id="kpi-10d-sell-vol">725,000</b>
+                <b id="kpi-10d-sell-vol">—</b>
                 <span id="kpi-10d-sell-pct">46.0% of session volume</span>
               </div>
               <div class="kpi-card spark">
                 <small>Peak Absorption / Aggression</small>
-                <b id="kpi-10d-peaks">14-Oct vs 09-Oct</b>
+                <b id="kpi-10d-peaks">—</b>
                 <span id="kpi-10d-top-buy">Top Buy: 95,000</span>
               </div>
             </div>
@@ -1431,16 +1431,16 @@
             <!-- Institutional Block Tape -->
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                <h3 style="font-size:1.05rem;font-weight:800">⚡ Institutional Block Tape (&gt;₹20L)</h3>
-                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Live Sweeps</span>
+                <h3 style="font-size:1.05rem;font-weight:800">High-volume futures bars</h3>
+                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Futures tape</span>
               </div>
               <table class="block-tape-table">
                 <thead>
                   <tr>
                     <th>Time</th>
-                    <th>Strike</th>
-                    <th>Qty</th>
-                    <th>Premium</th>
+                    <th>Price</th>
+                    <th>Volume</th>
+                    <th>Delta</th>
                     <th>Tag</th>
                   </tr>
                 </thead>
@@ -1783,17 +1783,17 @@
           <div class="noa-kpi-grid">
             <div class="noa-kpi-card">
               <small>ATM IV</small>
-              <b id="noa-kpi-iv">14.2%</b>
-              <span id="noa-kpi-skew">Contango (Normal)</span>
+              <b id="noa-kpi-iv">—</b>
+              <span id="noa-kpi-skew">—</span>
             </div>
             <div class="noa-kpi-card">
               <small>PCR (OI)</small>
-              <b id="noa-kpi-pcr">1.18</b>
+              <b id="noa-kpi-pcr">—</b>
               <span id="noa-kpi-pcr-regime" style="color:var(--ink-mute)">Put-call open interest</span>
             </div>
             <div class="noa-kpi-card">
               <small>Max Pain Strike</small>
-              <b id="noa-kpi-mp">₹23,150</b>
+              <b id="noa-kpi-mp">—</b>
               <span id="noa-kpi-pin">—</span>
             </div>
             <div class="noa-kpi-card">
@@ -1809,7 +1809,7 @@
             <div class="noa-kpi-card">
               <small>Aggregate Bias</small>
               <b id="noa-kpi-bias">—</b>
-              <span id="noa-kpi-bias-sub">MOMENTUM_BULLISH</span>
+              <span id="noa-kpi-bias-sub">—</span>
             </div>
           </div>
 
@@ -1818,7 +1818,7 @@
             <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:10px">📏 Expected Move &amp; Standard Deviation Range</h3>
             <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.85rem;margin-bottom:6px">
               <span id="exp-move-low" style="color:var(--stop)">Lower 1σ: —</span>
-              <span id="exp-move-center" style="color:var(--ink);font-weight:800">Spot: ₹23,146.2</span>
+              <span id="exp-move-center" style="color:var(--ink);font-weight:800">Spot: —</span>
               <span id="exp-move-high" style="color:var(--go)">Upper 1σ: —</span>
             </div>
             <div id="exp-move-straddle" style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">ATM straddle: —</div>
@@ -1850,8 +1850,8 @@
               </div>
               <div style="display:flex;gap:12px;font-family:var(--mono);font-size:0.75rem">
                 <span>25Δ Skew: <b id="noa-skew-25d" style="color:var(--spark)">+1.8%</b></span>
-                <span>Near ATM IV: <b id="noa-skew-atm-iv">14.2%</b></span>
-                <span>Term Spread: <b id="noa-skew-term-spread" style="color:var(--go)">+0.85% (Contango)</b></span>
+                <span>Near ATM IV: <b id="noa-skew-atm-iv">—</b></span>
+                <span>Term Spread: <b id="noa-skew-term-spread" style="color:var(--go)">—</b></span>
               </div>
             </div>
             <!-- Dual-Line Call vs Put IV Curve Chart -->

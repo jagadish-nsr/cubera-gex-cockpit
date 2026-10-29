@@ -101,13 +101,24 @@ def test_record_daily_closing_cvd_from_bars():
     assert rec["sell_volume"] == 1200
 
 
-def test_ensure_historical_daily_cvd_returns_10_days():
-    recs = ensure_historical_daily_cvd("NIFTY-FUT", symbol="NIFTY", days=10)
-    assert len(recs) >= 10
-    for r in recs:
-        assert "trade_date" in r
-        assert "closing_cvd" in r
-        assert "buy_volume" in r
-        assert "sell_volume" in r
-        assert r["buy_volume"] >= 0
-        assert r["sell_volume"] >= 0
+def test_ensure_historical_daily_cvd_does_not_invent_days():
+    from sentinel.storage.db import save_daily_cvd, list_daily_cvd, _hashed_daily_signature
+
+    inst = "TEST-HASH-PURGE-FUT"
+    trade_date = "2024-01-02"
+    base_vol, delta, ref_px = _hashed_daily_signature(trade_date)
+    save_daily_cvd({
+        "trade_date": trade_date,
+        "instrument_id": inst,
+        "symbol": "TESTHASH",
+        "closing_cvd": delta,
+        "buy_volume": int(round((base_vol + delta) / 2.0)),
+        "sell_volume": int(round((base_vol - delta) / 2.0)),
+        "total_volume": base_vol,
+        "net_delta": delta,
+        "closing_price": ref_px,
+        "vwap": ref_px,
+    })
+    recs = ensure_historical_daily_cvd(inst, symbol="TESTHASH", days=10)
+    assert recs == []
+    assert list_daily_cvd(inst, limit=10) == []
