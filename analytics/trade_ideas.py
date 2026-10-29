@@ -2834,6 +2834,70 @@ def apply_tactical_watch(
     )
 
 
+def _rehydrate_bookmarked_trade_idea(r: dict, current_spot: float) -> TradeIdea:
+    """Instantiate a full TradeIdea from an existing SQLite/cached recommendation record."""
+    payload = {}
+    if r.get("payload_json"):
+        try:
+            payload = json.loads(r["payload_json"])
+        except Exception:
+            payload = {}
+
+    side = str(r.get("side") or payload.get("side", "CE")).upper()
+    strike = float(r.get("strike") or payload.get("strike", 0.0))
+    initial_ltp = float(r.get("initial_ltp") or payload.get("initial_ltp") or payload.get("entry_ltp", 1.0))
+    score = int(r.get("current_score") or r.get("initial_score") or payload.get("quality_score", 70))
+    conviction_tier = r.get("conviction_tier") or payload.get("conviction_tier", "LOW")
+    if conviction_tier == "HIGH":
+        conv_label = "HIGH CONVICTION (Grade A+)"
+        conv_col = "var(--go)"
+    elif conviction_tier == "MEDIUM":
+        conv_label = "SECONDARY PLAY (Grade B+)"
+        conv_col = "var(--spark)"
+    else:
+        conv_label = "TACTICAL OPPORTUNITY (Grade B)"
+        conv_col = "var(--ink-mute)"
+
+    sym = r.get("symbol") or payload.get("symbol", "")
+    badge = r.get("play_badge") or payload.get("play_badge", "STRATEGY")
+    rid = r.get("rec_id") or payload.get("rec_id", f"{sym}_{side}_{int(strike)}_{badge}")
+
+    idea = TradeIdea(
+        symbol=sym,
+        side=side,
+        play_type=r.get("play_type") or payload.get("play_type", "Strategy Play"),
+        play_badge=badge,
+        strike=strike,
+        option_symbol=r.get("option_symbol") or payload.get("option_symbol", f"{sym} {int(strike)} {side}"),
+        current_ltp=initial_ltp,
+        delta_approx=float(payload.get("delta_approx", 0.50 if side == "CE" else -0.50)),
+        entry_trigger=r.get("entry_trigger") or payload.get("entry_trigger", "Bookmarked Active Thesis"),
+        spot_invalidation=float(r.get("spot_invalidation") or payload.get("spot_invalidation", 0.0)),
+        spot_invalidation_text=r.get("spot_invalidation_text") or payload.get("spot_invalidation_text", ""),
+        target_1=float(r.get("target_1") or payload.get("target_1", 0.0)),
+        target_1_spot=float(r.get("target_1_spot") or payload.get("target_1_spot", 0.0)),
+        target_2=float(r.get("target_2") or payload.get("target_2", 0.0)),
+        target_2_spot=float(r.get("target_2_spot") or payload.get("target_2_spot", 0.0)),
+        stop_loss=float(r.get("stop_loss") or payload.get("stop_loss", 0.0)),
+        risk_reward_ratio=r.get("risk_reward_ratio") or payload.get("risk_reward_ratio", "1 : 2.5"),
+        quality_score=score,
+        conviction_label=conv_label,
+        conviction_color=conv_col,
+        rationale=r.get("rationale") or payload.get("rationale", "User-pinned setup preserved across market scans."),
+        catalyst_tags=payload.get("catalyst_tags") or (json.loads(r.get("catalyst_tags_json") or "[]") if r.get("catalyst_tags_json") else []),
+        rec_id=rid,
+        triggered_at=r.get("triggered_at") or payload.get("triggered_at", ""),
+        conviction_tier=conviction_tier,
+        is_bookmarked=True,
+        p_touch_target_1=float(payload.get("p_touch_target_1", 0.65)),
+        p_touch_sl=float(payload.get("p_touch_sl", 0.35)),
+        net_ev_pts=float(payload.get("net_ev_pts", 15.0)),
+        initial_ltp=initial_ltp,
+        initial_spot=float(r.get("initial_spot") or payload.get("initial_spot", current_spot)),
+    )
+    return idea
+
+
 def generate_trade_recommendations(
     data: Any,
     bias_result: Any | None = None,
@@ -3157,6 +3221,28 @@ def generate_trade_recommendations(
     except Exception:
         rec_store = None
 
+    # Re-hydrate bookmarked/pinned recommendations so they remain visible across strike drift & score fades
+    if rec_store:
+        try:
+            bm_records = rec_store.list_bookmarked_records(symbol)
+            existing_ce_ids = {getattr(t, "rec_id", None) for t in ce_recs}
+            existing_pe_ids = {getattr(t, "rec_id", None) for t in pe_recs}
+            for b_rec in bm_records:
+                rid = b_rec.get("rec_id")
+                if not rid:
+                    continue
+                b_side = str(b_rec.get("side", "CE")).upper()
+                if b_side == "CE" and rid not in existing_ce_ids:
+                    rehydrated = _rehydrate_bookmarked_trade_idea(b_rec, spot)
+                    ce_recs.append(rehydrated)
+                    existing_ce_ids.add(rid)
+                elif b_side == "PE" and rid not in existing_pe_ids:
+                    rehydrated = _rehydrate_bookmarked_trade_idea(b_rec, spot)
+                    pe_recs.append(rehydrated)
+                    existing_pe_ids.add(rid)
+        except Exception as exc:
+            log.warning("Error rehydrating bookmarked records for %s: %s", symbol, exc)
+
     from datetime import datetime, timezone, timedelta
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -3340,15 +3426,51 @@ def generate_trade_recommendations(
     all_ce_candidates = sorted(ce_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
     all_pe_candidates = sorted(pe_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
 
-    # 6. Quality-Gate Partitioning (Score > 85 Higher Conviction, 75 <= Score <= 85 Lower Fallback, or Active Latch)
-    higher_ce = [t for t in all_ce_candidates if t.quality_score > 85]
-    higher_pe = [t for t in all_pe_candidates if t.quality_score > 85]
+    # 6. Quality-Gate Partitioning (Score > 85 Higher Conviction, 75 <= Score <= 85 Lower Fallback, 65 <= Score < 75 Tactical, or Bookmarked/Active Latch)
+    higher_ce = [
+        t for t in all_ce_candidates
+        if (t.quality_score > 85)
+        or (t.is_bookmarked and t.conviction_tier == "HIGH" and t.latch_state != "INVALIDATED")
+    ]
+    higher_pe = [
+        t for t in all_pe_candidates
+        if (t.quality_score > 85)
+        or (t.is_bookmarked and t.conviction_tier == "HIGH" and t.latch_state != "INVALIDATED")
+    ]
 
-    lower_ce = [t for t in all_ce_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85 and t.quality_score >= 75)]
-    lower_pe = [t for t in all_pe_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85 and t.quality_score >= 75)]
+    lower_ce = [
+        t for t in all_ce_candidates
+        if (
+            (75 <= t.quality_score <= 85)
+            or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
+            or (t.is_bookmarked and t.conviction_tier == "MEDIUM" and t.latch_state != "INVALIDATED")
+        ) and t not in higher_ce
+    ]
+    lower_pe = [
+        t for t in all_pe_candidates
+        if (
+            (75 <= t.quality_score <= 85)
+            or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
+            or (t.is_bookmarked and t.conviction_tier == "MEDIUM" and t.latch_state != "INVALIDATED")
+        ) and t not in higher_pe
+    ]
 
-    tactical_ce = [t for t in all_ce_candidates if (65 <= t.quality_score < 75) or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)]
-    tactical_pe = [t for t in all_pe_candidates if (65 <= t.quality_score < 75) or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)]
+    tactical_ce = [
+        t for t in all_ce_candidates
+        if (
+            (65 <= t.quality_score < 75)
+            or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
+            or (t.is_bookmarked and (t.conviction_tier == "LOW" or t.quality_score < 75) and t.latch_state != "INVALIDATED")
+        ) and t not in higher_ce and t not in lower_ce
+    ]
+    tactical_pe = [
+        t for t in all_pe_candidates
+        if (
+            (65 <= t.quality_score < 75)
+            or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
+            or (t.is_bookmarked and (t.conviction_tier == "LOW" or t.quality_score < 75) and t.latch_state != "INVALIDATED")
+        ) and t not in higher_pe and t not in lower_pe
+    ]
     tactical_ce = [t for t in tactical_ce if t.latch_state != "INVALIDATED"]
     tactical_pe = [t for t in tactical_pe if t.latch_state != "INVALIDATED"]
 
@@ -3476,8 +3598,8 @@ def generate_trade_recommendations(
         tactical_pe_recommendations=tactical_pe,
         ce_fallback_active=ce_fallback,
         pe_fallback_active=pe_fallback,
-        ce_tactical_active=bool(ce_watch or (not higher_ce and not lower_ce and tactical_ce)),
-        pe_tactical_active=bool(pe_watch or (not higher_pe and not lower_pe and tactical_pe)),
+        ce_tactical_active=bool(ce_watch or (not higher_ce and not lower_ce and tactical_ce) or any(t.is_bookmarked for t in tactical_ce)),
+        pe_tactical_active=bool(pe_watch or (not higher_pe and not lower_pe and tactical_pe) or any(t.is_bookmarked for t in tactical_pe)),
         bookmarked_recommendations=bookmarked,
     )
 

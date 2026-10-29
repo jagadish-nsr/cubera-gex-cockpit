@@ -1367,10 +1367,11 @@
               ? '<span style="background:rgba(255,160,0,0.18);color:#ffa000;border:1px solid #ffa000;font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">⚡ NEW (&lt; 10m)</span>'
               : '<span style="background:rgba(0,180,216,0.18);color:var(--spark);border:1px solid var(--spark);font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">📌 PINNED</span>';
 
-            const ltp = Number(c.current_ltp || c.entry_ltp || 0).toFixed(1);
+            const ltp = Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0).toFixed(1);
             const t1 = Number(c.target_1 || 0).toFixed(1);
             const sl = Number(c.stop_loss || 0).toFixed(1);
-            const score = c.quality_score || 85;
+            const score = c.quality_score || c.current_score || c.initial_score || 85;
+            const invalNum = Number(c.spot_invalidation || 0);
 
             return `
               <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px">
@@ -1381,10 +1382,11 @@
                   </div>
                   <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
                 </div>
-                <div style="display:flex;justify-content:space-between;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
+                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
                   <span>LTP: <b id="cockpit-rec-ltp-${c.rec_id}" style="color:var(--ink)">₹${ltp}</b></span>
                   <span>T1: <b id="cockpit-rec-t1-${c.rec_id}" style="color:var(--go)">₹${t1}</b></span>
                   <span>SL: <b id="cockpit-rec-sl-${c.rec_id}" style="color:var(--stop)">₹${sl}</b></span>
+                  ${invalNum > 0 ? `<span>Inval: <b id="cockpit-rec-inval-${c.rec_id}" style="color:var(--stop)">₹${invalNum.toFixed(0)}</b></span>` : ""}
                 </div>
                 <div style="display:flex;justify-content:flex-end;gap:6px">
                   ${
@@ -1392,7 +1394,7 @@
                       ? `<button class="btn btn-secondary" onclick="window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
                       : `<button class="btn btn-secondary" onclick="window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`
                   }
-                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(c.current_ltp || c.entry_ltp || 0)}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
+                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0)}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
                 </div>
               </div>
             `;

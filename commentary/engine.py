@@ -231,6 +231,7 @@ class SessionCommentaryEngine:
 
         # 3. Run detectors (Macro, Microstructure, and Level-Down Flow)
         events = []
+        self.gap_det._restore_published(pit_view)
         events.extend(self.gap_det.detect(pit_view, state))
         events.extend(self.walls_det.detect(pit_view, state))
         events.extend(self.struct_det.detect(pit_view, state))
