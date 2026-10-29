@@ -327,6 +327,10 @@ def test_cockpit_recommendations_pinned_and_fresh_setups():
         assert "quality_score" in card
         assert "is_pinned" in card
         assert "is_fresh" in card
+        # Ensure expandable details payload fields are present or populated
+        assert "current_ltp" in card or "entry_ltp" in card
+        assert "spot_invalidation" in card
+        assert "target_1" in card
 
 
 def test_target_engine_candidate_structures_table():

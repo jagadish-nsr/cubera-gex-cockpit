@@ -2345,7 +2345,26 @@ async def get_cockpit_data(
             ws_ltp = 0.0
         priced = resolve_pinned_card_fields(r, active_idea, ws_ltp)
 
-        cockpit_cards.append({
+        card_dict = {}
+        if not active_idea:
+            try:
+                from analytics.trade_ideas import _rehydrate_bookmarked_trade_idea
+                active_idea = _rehydrate_bookmarked_trade_idea(r, spot)
+            except Exception:
+                active_idea = None
+
+        if active_idea:
+            try:
+                if priced["current_ltp"] > 0:
+                    active_idea.current_ltp = priced["current_ltp"]
+                if priced["entry_ltp"] > 0:
+                    active_idea.initial_ltp = priced["entry_ltp"]
+                card_dict = _serialize_trade_idea(active_idea, spot, 500000.0, 0.015, idx.lot_size)
+            except Exception as e:
+                log.warning("Serialize pinned idea error: %s", e)
+                card_dict = {}
+
+        card_dict.update({
             "rec_id": rid,
             "symbol": r.get("symbol", sym),
             "side": r.get("side", "CE"),
@@ -2366,6 +2385,7 @@ async def get_cockpit_data(
             "is_fresh": False,
             "triggered_at": r.get("triggered_at", ""),
         })
+        cockpit_cards.append(card_dict)
 
     for f in fresh_ideas:
         try:

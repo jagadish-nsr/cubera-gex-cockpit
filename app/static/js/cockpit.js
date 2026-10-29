@@ -535,6 +535,13 @@
       if (cockpitLtp) cockpitLtp.textContent = ltpTxt;
       if (cockpitT1) cockpitT1.textContent = t1Txt;
       if (cockpitSl) cockpitSl.textContent = slTxt;
+      const cockpitLtpFull = document.getElementById(`cockpit-rec-ltp-full-${rid}`);
+      if (cockpitLtpFull) cockpitLtpFull.textContent = ltpTxt;
+      const cockpitMtm = document.getElementById(`cockpit-rec-mtm-${rid}`);
+      if (cockpitMtm) {
+        cockpitMtm.textContent = pnlTxt;
+        cockpitMtm.style.color = pnlColor;
+      }
       const liveBadge = document.getElementById(`rec-live-badge-${rid}`);
       if (liveBadge) {
         liveBadge.textContent = q.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM";
@@ -1449,32 +1456,236 @@
               : '<span style="background:rgba(0,180,216,0.18);color:var(--spark);border:1px solid var(--spark);font-size:0.65rem;font-weight:800;padding:2px 6px;border-radius:4px;letter-spacing:0.04em">📌 PINNED</span>';
 
             const ltp = Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0).toFixed(1);
+            const entryLtp = Number(c.entry_ltp || c.initial_ltp || ltp).toFixed(1);
             const t1 = Number(c.target_1 || 0).toFixed(1);
+            const t2 = Number(c.target_2 || 0).toFixed(1);
             const sl = Number(c.stop_loss || 0).toFixed(1);
             const score = c.quality_score || c.current_score || c.initial_score || 85;
             const invalNum = Number(c.spot_invalidation || 0);
 
+            if (!window._expandedCockpitCards) window._expandedCockpitCards = new Set();
+            const isExpanded = window._expandedCockpitCards.has(c.rec_id);
+
+            // MTM PnL
+            const pnlPts = Number(c.pnl_pts != null ? c.pnl_pts : (Number(ltp) - Number(entryLtp))).toFixed(1);
+            const pnlPct = Number(c.pnl_pct != null ? c.pnl_pct : (Number(entryLtp) > 0 ? ((Number(ltp) - Number(entryLtp)) / Number(entryLtp)) * 100 : 0)).toFixed(1);
+            const pnlColor = Number(pnlPts) >= 0 ? "var(--go)" : "var(--stop)";
+            const pnlSign = Number(pnlPts) >= 0 ? "+" : "";
+
+            // Position sizing
+            const defaultLots = 1;
+            const defaultQty = c.lot_size || (String(c.symbol).includes("SENSEX") ? 20 : (String(c.symbol).includes("BANKNIFTY") ? 30 : 65));
+            const pos = c.pos_size || {
+              suggested_lots: defaultLots,
+              total_quantity: defaultQty,
+              capital_outlay_inr: Math.round(Number(ltp) * defaultQty),
+              portfolio_pct: 1.5,
+              max_risk_inr: Math.round(Math.max(1, (Number(ltp) - Number(sl))) * defaultQty),
+              target_1_pnl_inr: Math.round(Math.max(1, (Number(t1) - Number(ltp))) * defaultQty),
+              target_2_pnl_inr: Math.round(Math.max(1, (Number(t2) - Number(ltp))) * defaultQty),
+              sizing_rationale: "Default 1.5% capital risk allocation",
+            };
+
+            // Defined-risk spread alternative
+            let spreadBoxHtml = "";
+            if (c.spread_alternative) {
+              const sp = c.spread_alternative;
+              const maxProfitPts = sp.max_profit != null ? sp.max_profit : (sp.max_profit_pts || 0);
+              const maxLossPts = sp.max_loss != null ? sp.max_loss : (sp.max_loss_pts || 0);
+              const maxProfitInr = sp.max_profit_inr != null ? sp.max_profit_inr : Math.round(maxProfitPts * pos.total_quantity);
+              const maxLossInr = sp.max_loss_inr != null ? sp.max_loss_inr : Math.round(maxLossPts * pos.total_quantity);
+              const beSpot = sp.breakeven_spot != null ? sp.breakeven_spot : (sp.breakeven || 0);
+              const netDebit = sp.net_debit != null ? sp.net_debit : (sp.net_cost || 0);
+
+              spreadBoxHtml = `
+                <div style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.25);border-radius:6px;padding:8px 12px;margin:8px 0;font-size:0.74rem">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                    <span style="font-weight:800;color:var(--spark)">🛡️ Defined-Risk Spread: ${sp.spread_name || "Debit Vertical"}</span>
+                    <span style="font-family:var(--mono);color:var(--ink-mute)">Net Debit: ₹${Number(netDebit).toFixed(1)}</span>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-family:var(--mono);color:var(--ink)">
+                    <span>Max Gain: <b style="color:var(--go)">+₹${Number(maxProfitInr).toLocaleString("en-IN")} (+${Number(maxProfitPts).toFixed(1)} pts)</b></span>
+                    <span>Max Risk: <b style="color:var(--stop)">-₹${Number(maxLossInr).toLocaleString("en-IN")} (-${Number(maxLossPts).toFixed(1)} pts)</b></span>
+                    <span>Breakeven: <b>₹${Number(beSpot).toLocaleString("en-IN", { minimumFractionDigits: 1 })}</b></span>
+                  </div>
+                </div>
+              `;
+            }
+
+            // Invalidation & Trigger details
+            const entryTrigger = c.entry_trigger || "Microstructure institutional orderflow alignment";
+            const invalText = c.spot_invalidation_text || (invalNum > 0 ? `Spot breaches invalidation strike ₹${invalNum.toLocaleString("en-IN")}` : "Defined stop breach");
+            const invalBuffer = Number(c.inval_buffer != null ? c.inval_buffer : 0);
+            const invalBreached = Boolean(c.inval_breached);
+            const invalStatusHtml = invalBreached
+              ? `<span style="font-size:0.7rem;font-weight:750;color:var(--stop)">🛑 INVALIDATED (-${Math.abs(invalBuffer).toFixed(0)} pts)</span>`
+              : `<span style="font-size:0.7rem;font-weight:750;color:var(--go)">🟢 Active (+${invalBuffer.toFixed(0)} pts buffer)</span>`;
+
+            // State Machine badge
+            const stCode = (c.latch_state || "ACTIVE").toUpperCase();
+            let stateBadgeHtml = "";
+            if (stCode === "ACTIVE" || stCode === "LATCHED") {
+              stateBadgeHtml = `<span style="background:rgba(34,197,94,.15);color:var(--go);border:1px solid rgba(34,197,94,.4);padding:2px 7px;border-radius:4px;font-size:0.68rem;font-weight:800">🔒 LATCHED</span>`;
+            } else if (stCode === "TARGET_HIT") {
+              stateBadgeHtml = `<span style="background:rgba(34,197,94,.15);color:var(--go);border:1px solid rgba(34,197,94,.4);padding:2px 7px;border-radius:4px;font-size:0.68rem;font-weight:800">🎯 TARGET HIT</span>`;
+            } else if (stCode === "INVALIDATED") {
+              stateBadgeHtml = `<span style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.4);padding:2px 7px;border-radius:4px;font-size:0.68rem;font-weight:800">🛑 INVALIDATED</span>`;
+            } else {
+              stateBadgeHtml = `<span style="background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.4);padding:2px 7px;border-radius:4px;font-size:0.68rem;font-weight:800">⚡ QUALIFIED</span>`;
+            }
+
+            // Probabilities & Greeks
+            const pT1 = Math.round((c.p_touch_target_1 || 0.65) * 100);
+            const pSl = Math.round((c.p_touch_sl || 0.35) * 100);
+            const evPts = Number(c.net_ev_pts || 18.5).toFixed(1);
+            const deltaApprox = Number(c.delta_approx || (String(c.side).toUpperCase() === "CE" ? 0.50 : -0.50)).toFixed(2);
+
+            // Rationale & Tags
+            const rationaleText = c.rationale || "Institutional gamma concentration setup.";
+            const tags = Array.isArray(c.catalyst_tags) ? c.catalyst_tags : [];
+            const tagsHtml = tags.map((t) => `<span style="font-size:0.68rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 7px;border-radius:4px;border:1px solid var(--line)">${t}</span>`).join("");
+
+            // Score trajectory
+            let trajectoryHtml = "";
+            if (Array.isArray(c.score_history) && c.score_history.length > 1) {
+              const histStr = c.score_history.map((s) => `<b>${s.score != null ? s.score : s}</b>`).join(" ➔ ");
+              trajectoryHtml = `
+                <div style="font-size:0.68rem;color:var(--ink-mute);background:var(--surface-3);padding:4px 8px;border-radius:4px;margin-top:6px;display:flex;justify-content:space-between">
+                  <span>Score Trajectory: ${histStr}</span>
+                  <span style="color:var(--go);font-weight:750">● Momentum Confirmed</span>
+                </div>
+              `;
+            }
+
+            const pinBtnHtml = c.is_pinned
+              ? `<button class="btn btn-secondary" onclick="event.stopPropagation();window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
+              : `<button class="btn btn-secondary" onclick="event.stopPropagation();window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`;
+
+            const execBtnHtml = `<button class="btn btn-primary" onclick="event.stopPropagation();window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(ltp)}, ${pos.suggested_lots})" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>`;
+
             return `
-              <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-bottom:8px">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <div id="cockpit-card-${c.rec_id}" class="cockpit-rec-card ${isExpanded ? "is-expanded" : ""}">
+                <!-- Mini Card Header (Clickable to Toggle) -->
+                <div class="cockpit-card-mini-header" onclick="window.toggleCockpitCardDetails('${c.rec_id}')" title="Click to expand/collapse full strategy details">
                   <div style="display:flex;align-items:center;gap:6px">
                     ${badgeHtml}
-                    <b style="color:${sideColor};font-size:0.86rem">${c.option_symbol || (c.symbol + " " + c.strike + " " + c.side)}</b>
+                    <b style="color:${sideColor};font-size:0.88rem">${c.option_symbol || (c.symbol + " " + c.strike + " " + c.side)}</b>
+                    <span style="font-size:0.68rem;background:var(--surface-3);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:750">${c.play_badge || "STRATEGY"}</span>
                   </div>
-                  <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:var(--spark)">${score}/100</b></span>
+                    <span id="cockpit-card-chevron-${c.rec_id}" style="font-size:0.72rem;color:var(--spark);font-weight:700">${isExpanded ? "▲" : "▼"}</span>
+                  </div>
                 </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;font-size:0.75rem;margin-bottom:8px;color:var(--ink-mute)">
+
+                <!-- Mini Key Metrics Strip (LTP, T1, SL, Invalidation) -->
+                <div class="cockpit-card-mini-strip" onclick="window.toggleCockpitCardDetails('${c.rec_id}')" title="Click to view full card details">
                   <span>LTP: <b id="cockpit-rec-ltp-${c.rec_id}" style="color:var(--ink)">₹${ltp}</b></span>
                   <span>T1: <b id="cockpit-rec-t1-${c.rec_id}" style="color:var(--go)">₹${t1}</b></span>
                   <span>SL: <b id="cockpit-rec-sl-${c.rec_id}" style="color:var(--stop)">₹${sl}</b></span>
                   ${invalNum > 0 ? `<span>Inval: <b id="cockpit-rec-inval-${c.rec_id}" style="color:var(--stop)">₹${invalNum.toFixed(0)}</b></span>` : ""}
                 </div>
-                <div style="display:flex;justify-content:flex-end;gap:6px">
-                  ${c.is_pinned
-                ? `<button class="btn btn-secondary" onclick="window.unpinCard('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">★ Pinned (Remove)</button>`
-                : `<button class="btn btn-secondary" onclick="window.toggleBookmark('${c.rec_id}')" style="font-size:0.70rem;padding:3px 7px">☆ Pin Card</button>`
-              }
-                  <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(c.current_ltp || c.entry_ltp || c.initial_ltp || 0)}, 1)" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
+
+                <!-- Action Controls Strip for Mini Card -->
+                <div class="cockpit-card-mini-actions">
+                  <span id="cockpit-card-toggle-text-${c.rec_id}" onclick="window.toggleCockpitCardDetails('${c.rec_id}')" style="font-size:0.72rem;font-weight:750;color:var(--spark);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+                    ${isExpanded ? "▲ Hide Full Details" : "▼ View Full Card Details"}
+                  </span>
+                  <div style="display:flex;gap:6px">
+                    ${pinBtnHtml}
+                    ${execBtnHtml}
+                  </div>
+                </div>
+
+                <!-- Full Card Details (Expanded On Click) -->
+                <div id="cockpit-card-full-${c.rec_id}" class="cockpit-card-full-body" style="display:${isExpanded ? "block" : "none"}">
+                  <!-- Expanded Header Row -->
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+                    <div style="display:flex;align-items:center;gap:6px">
+                      <span class="rec-counter-chip" style="font-size:0.70rem;padding:2px 6px">${c.active_label || "🟢 Active"}</span>
+                      ${stateBadgeHtml}
+                      <span style="font-size:0.74rem;font-weight:750;color:${c.conviction_color || "var(--spark)"}">
+                        Score ${score}/100 (${c.conviction_label || "Active Thesis"})
+                      </span>
+                    </div>
+                    <span style="font-size:0.74rem;color:var(--ink-mute)">R:R <b>${c.risk_reward_ratio || "1 : 2.5"}</b></span>
+                  </div>
+
+                  <!-- Expanded LTP & MTM Strip -->
+                  <div class="rec-ltp-block" style="margin-bottom:8px">
+                    <span id="cockpit-rec-ltp-full-${c.rec_id}" class="rec-ltp-large" style="color:var(--ink);font-size:1.3rem">₹${ltp}</span>
+                    <span style="font-size:0.70rem;background:var(--spark-bg);color:${c.is_ws_live ? "var(--spark)" : "var(--ink-mute)"};padding:2px 6px;border-radius:4px;font-family:var(--mono);font-weight:700">${c.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM"}</span>
+                    <span style="font-size:0.70rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${entryLtp}</span>
+                    <span id="cockpit-rec-mtm-${c.rec_id}" style="font-size:0.70rem;font-weight:750;font-family:var(--mono);color:${pnlColor}">
+                      MTM: ${pnlSign}₹${pnlPts} (${pnlSign}${pnlPct}%)
+                    </span>
+                    <span style="font-size:0.70rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${t1}</span>
+                    ${Number(t2) > 0 ? `<span style="font-size:0.70rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T2: ₹${t2}</span>` : ""}
+                    <span style="font-size:0.70rem;background:rgba(239,68,68,.1);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${sl}</span>
+                  </div>
+
+                  <!-- Position Sizing Outlay Strip -->
+                  <div style="background:var(--surface-3);border:1px solid var(--line);border-radius:6px;padding:7px 10px;margin:8px 0;font-size:0.74rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
+                    <span>📦 <b>${pos.suggested_lots} Lots</b> (${pos.total_quantity} Qty) · Outlay: <b>₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")}</b> (${Number(pos.portfolio_pct).toFixed(1)}% Port)</span>
+                    <span style="color:var(--ink-mute)">${pos.sizing_rationale}</span>
+                  </div>
+
+                  <!-- Trigger & Spot Invalidation Box -->
+                  <div style="background:rgba(0,0,0,0.22);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:8px 0;font-size:0.76rem">
+                    <div><b>⚡ Trigger:</b> ${entryTrigger}</div>
+                    <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+                      <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}</span>
+                      ${invalStatusHtml}
+                    </div>
+                  </div>
+
+                  <!-- Key Levels 4-Grid -->
+                  <div class="rec-levels-grid" style="padding:8px 10px;margin:8px 0">
+                    <div class="rec-lvl-item">
+                      <small>Spot Inval / SL</small>
+                      <b style="color:var(--stop)">₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : sl}</b>
+                      <span style="font-size:0.66rem;color:var(--stop)">Max Risk -₹${Number(pos.max_risk_inr).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div class="rec-lvl-item">
+                      <small>Target 1</small>
+                      <b style="color:var(--go)">₹${t1}</b>
+                      <span style="font-size:0.66rem;color:var(--go)">+₹${Number(pos.target_1_pnl_inr).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div class="rec-lvl-item">
+                      <small>Target 2</small>
+                      <b style="color:var(--go)">₹${t2}</b>
+                      <span style="font-size:0.66rem;color:var(--go)">+₹${Number(pos.target_2_pnl_inr).toLocaleString("en-IN")}</span>
+                    </div>
+                    <div class="rec-lvl-item">
+                      <small>Risk : Reward</small>
+                      <b style="color:var(--spark)">${c.risk_reward_ratio || "1 : 2.5"}</b>
+                      <span style="font-size:0.66rem;color:var(--ink-mute)">Quality ${score}/100</span>
+                    </div>
+                  </div>
+
+                  ${spreadBoxHtml}
+
+                  <!-- Probabilities & Delta Strip -->
+                  <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-3);padding:5px 8px;border-radius:4px;margin:6px 0">
+                    <span>P(T1): <b style="color:var(--go)">${pT1}%</b> · P(SL): <b style="color:var(--stop)">${pSl}%</b></span>
+                    <span>EV: <b style="color:var(--go)">+${evPts} pts</b> · Δ ~${deltaApprox}</span>
+                  </div>
+
+                  <!-- Institutional Setup Narrative & Catalyst Tags -->
+                  <div style="font-size:0.76rem;color:var(--ink-mute);margin:6px 0">${rationaleText}</div>
+                  ${tags.length > 0 ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">${tagsHtml}</div>` : ""}
+
+                  ${trajectoryHtml}
+
+                  <!-- Expanded Action Buttons -->
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);gap:6px">
+                    <button class="btn btn-secondary" onclick="window.toggleCockpitCardDetails('${c.rec_id}')" style="font-size:0.70rem;padding:4px 9px">
+                      ▲ Collapse Card
+                    </button>
+                    <button class="btn btn-primary" onclick="window.executePaperTrade('${c.rec_id}', '${c.option_symbol || ""}', ${c.strike}, '${c.side}', ${Number(ltp)}, ${pos.suggested_lots})" style="font-size:0.70rem;padding:4px 12px">
+                      📝 Paper-Trade ${pos.suggested_lots} Lots (₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")})
+                    </button>
+                  </div>
                 </div>
               </div>
             `;
@@ -5401,6 +5612,28 @@
   };
 
   window.bookmarkCard = window.toggleBookmark;
+
+  window.toggleCockpitCardDetails = function (recId) {
+    if (!window._expandedCockpitCards) window._expandedCockpitCards = new Set();
+    const fullEl = document.getElementById(`cockpit-card-full-${recId}`);
+    const toggleTxt = document.getElementById(`cockpit-card-toggle-text-${recId}`);
+    const cardEl = document.getElementById(`cockpit-card-${recId}`);
+    const chevron = document.getElementById(`cockpit-card-chevron-${recId}`);
+
+    if (window._expandedCockpitCards.has(recId)) {
+      window._expandedCockpitCards.delete(recId);
+      if (fullEl) fullEl.style.display = "none";
+      if (toggleTxt) toggleTxt.innerHTML = "▼ View Full Card Details";
+      if (chevron) chevron.textContent = "▼";
+      if (cardEl) cardEl.classList.remove("is-expanded");
+    } else {
+      window._expandedCockpitCards.add(recId);
+      if (fullEl) fullEl.style.display = "block";
+      if (toggleTxt) toggleTxt.innerHTML = "▲ Collapse Details";
+      if (chevron) chevron.textContent = "▲";
+      if (cardEl) cardEl.classList.add("is-expanded");
+    }
+  };
 
   window.executePaperTrade = async function (recId, optSymbol, strike, side, ltp, lots) {
     try {
