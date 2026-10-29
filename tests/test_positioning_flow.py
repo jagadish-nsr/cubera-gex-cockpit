@@ -146,6 +146,19 @@ def test_a_small_move_on_a_large_book_stays_flat():
     assert "no participant name" in out["line"]
 
 
+def test_intraday_uses_the_last_captured_session_after_midnight(monkeypatch):
+    from datetime import date
+    import app.session_reads as reads
+
+    def pick(symbol, day):
+        if day == "2026-10-29":
+            return [{"time_ist": "15:20", "price": 100.0, "agg_oi": 10.0}], "NSE"
+        return [], None
+
+    monkeypatch.setattr(reads, "_pick_intraday", pick)
+    assert reads._session_with_intraday("NIFTY", date(2026, 10, 30)) == "2026-10-29"
+
+
 def test_previous_session_skips_the_gandhi_jayanti_weekend():
     # 2026-10-02 is an NSE holiday (Friday). Monday 5 Oct looks back to Thursday 1 Oct.
     assert previous_session_date(date(2026, 10, 5)) == date(2026, 10, 1)
