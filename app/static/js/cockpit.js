@@ -2999,6 +2999,8 @@
         renderClusterList("higher-pe-container", [], "PE", false);
         renderClusterList("fallback-ce-container", [], "CE", false);
         renderClusterList("fallback-pe-container", [], "PE", false);
+        renderClusterList("tactical-ce-container", [], "CE", false);
+        renderClusterList("tactical-pe-container", [], "PE", false);
         return;
       }
       if (noticeContainer) noticeContainer.innerHTML = "";
@@ -3010,6 +3012,10 @@
       // Render Secondary Conviction: CE on Left, PE on Right
       renderClusterList("fallback-ce-container", data.fallback_tier ? data.fallback_tier.ce_clusters : [], "CE", data.ce_fallback_active);
       renderClusterList("fallback-pe-container", data.fallback_tier ? data.fallback_tier.pe_clusters : [], "PE", data.pe_fallback_active);
+
+      // Render Tactical Opportunities: CE on Left, PE on Right
+      renderClusterList("tactical-ce-container", data.tactical_tier ? data.tactical_tier.ce_clusters : [], "CE", data.ce_tactical_active);
+      renderClusterList("tactical-pe-container", data.tactical_tier ? data.tactical_tier.pe_clusters : [], "PE", data.pe_tactical_active);
     } catch (e) {
       console.error("Error loading recommendations:", e);
     }
@@ -3024,9 +3030,18 @@
     container.innerHTML = "";
 
     if (!clusters || clusters.length === 0) {
-      const emptyMsg = isFallbackActive
-        ? `Secondary ${side} safety filter active — no qualified secondary setups.`
-        : `No ${side} candidate clusters currently active in this conviction tier.`;
+      let emptyMsg;
+      if (containerId.includes("tactical")) {
+        emptyMsg = isFallbackActive
+          ? `Tactical ${side} safety filter active — no qualified tactical setups.`
+          : `No ${side} tactical opportunity clusters currently active (Score 65–75).`;
+      } else if (containerId.includes("fallback")) {
+        emptyMsg = isFallbackActive
+          ? `Secondary ${side} safety filter active — no qualified secondary setups.`
+          : `No ${side} candidate clusters currently active in fallback tier.`;
+      } else {
+        emptyMsg = `No ${side} candidate clusters currently active in this conviction tier.`;
+      }
       container.innerHTML = `<div style="color:var(--ink-mute);font-size:0.8rem;padding:14px;background:var(--surface-2);border-radius:6px;border:1px dashed var(--line);text-align:center">${emptyMsg}</div>`;
       return;
     }

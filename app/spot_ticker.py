@@ -60,8 +60,13 @@ def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     snap = None
     if not ohlc or not ohlc.get("ltp"):
         try:
-            from data.market_snapshot import get_snapshot
-            snap = get_snapshot(symbol)
+            import config
+            if config.is_market_open():
+                from data.market_snapshot import get_snapshot
+                snap = get_snapshot(symbol)
+            else:
+                from data.market_snapshot import resolve_offmarket_snapshot
+                snap = resolve_offmarket_snapshot(symbol)
         except Exception:
             pass
 
@@ -150,16 +155,20 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
     ensure(symbol)
     rec = _STORE.get(symbol)
     now = time.time()
+    import config
+    market_open = config.is_market_open()
+    snap = None
+    if not market_open:
+        from data.market_snapshot import resolve_offmarket_snapshot
+        snap = resolve_offmarket_snapshot(symbol)
 
-    if rec and rec.get("quote"):
-        return rec["quote"]
+    stored = (rec or {}).get("quote")
+    if stored and (market_open or snap is None or stored.get("as_of") == snap.get("as_of")):
+        return stored
 
-    ohlc = rec.get("ohlc") if rec else None
+    ohlc = None if (not market_open and snap) else (rec.get("ohlc") if rec else None)
     if ohlc is None:
-        import config
-        if not config.is_market_open():
-            from data.market_snapshot import get_snapshot
-            snap = get_snapshot(symbol)
+        if not market_open:
             if snap:
                 ohlc = {
                     "ltp": snap.get("spot"),
@@ -322,30 +331,31 @@ def _loop(symbol: str, interval_s: float) -> None:
             except Exception:
                 phase_code = "OFF_HOURS"
 
-            # Hydrate _STORE from persistent snapshot if empty
-            if not _STORE.get(symbol) or not (_STORE[symbol].get("ohlc")):
-                from data.market_snapshot import get_snapshot
-                snap = get_snapshot(symbol)
-                if snap:
-                    d_init = {
-                        "ltp": snap.get("spot"),
-                        "close": snap.get("spot"),
-                        "prev_close": snap.get("prev_close"),
-                        "open": snap.get("open"),
-                        "high": snap.get("high"),
-                        "low": snap.get("low"),
-                        "vix": {"last": snap.get("vix", 13.5)},
-                        "as_of": snap.get("as_of"),
-                    }
-                    q_init = _compile_quote(symbol, d_init, None)
-                    _STORE[symbol] = {
-                        "ohlc": d_init,
-                        "fut": None,
-                        "quote": q_init,
-                        "at": time.time(),
-                        "ws_at": None,
-                        "err": None,
-                    }
+            # Hydrate from the last completed session, and replace a stored
+            # quote when a newer session snapshot appears.
+            from data.market_snapshot import resolve_offmarket_snapshot
+            snap = resolve_offmarket_snapshot(symbol)
+            stored_asof = ((_STORE.get(symbol) or {}).get("ohlc") or {}).get("as_of")
+            if snap and stored_asof != snap.get("as_of"):
+                d_init = {
+                    "ltp": snap.get("spot"),
+                    "close": snap.get("spot"),
+                    "prev_close": snap.get("prev_close"),
+                    "open": snap.get("open"),
+                    "high": snap.get("high"),
+                    "low": snap.get("low"),
+                    "vix": {"last": snap.get("vix", 13.5)},
+                    "as_of": snap.get("as_of"),
+                }
+                q_init = _compile_quote(symbol, d_init, None)
+                _STORE[symbol] = {
+                    "ohlc": d_init,
+                    "fut": None,
+                    "quote": q_init,
+                    "at": time.time(),
+                    "ws_at": None,
+                    "err": None,
+                }
 
             if phase_code != "PRE_MARKET_DISCOVERY":
                 time.sleep(30.0)

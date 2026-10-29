@@ -63,9 +63,10 @@ async def asgi_request(method: str, path: str, body: dict = None, headers: dict 
 
 @pytest.fixture(autouse=True)
 def fresh_journal_db(tmp_path, monkeypatch):
-    """Isolate journal tests to a fresh temporary database."""
+    """Isolate journal tests to a fresh temporary database and baseline off-market state."""
     tmp_db_path = tmp_path / "test_web_journal.db"
     monkeypatch.setattr(journal_store, "_DB_PATH", tmp_db_path)
+    monkeypatch.setattr(config, "is_market_open", lambda *args, **kwargs: False)
     journal_store.ensure_schema()
     yield tmp_db_path
 
@@ -362,6 +363,7 @@ def test_recommendations_and_1click_execution():
     rec_data = json.loads(content)
     # Off-market path returns is_market_closed=True with closed_notice; live path returns higher_conviction
     assert "is_market_closed" in rec_data or "higher_conviction" in rec_data or "trade_setups" in rec_data
+    assert "tactical_tier" in rec_data
     assert isinstance(rec_data["effectiveness_summary"]["total_tracked"], int)
     assert rec_data["effectiveness_summary"]["avg_realized_rr"] is None or isinstance(
         rec_data["effectiveness_summary"]["avg_realized_rr"], (int, float)
@@ -393,6 +395,57 @@ def test_recommendations_and_1click_execution():
     trade = open_trades[0]
     assert trade.trade_id == exec_res["trade_id"]
     assert trade.strategy_name == "⚡ Bull Call Spread"
+
+
+def test_recommendations_live_tactical_tier():
+    """Verify GET /api/recommendations returns tactical_tier in live session."""
+    from analytics.trade_ideas import RecommendationBatch, TradeIdea
+    mock_batch = RecommendationBatch(
+        symbol="NIFTY",
+        spot=24500.0,
+        session_vwap=24500.0,
+        call_wall=24600.0,
+        put_wall=24400.0,
+        gamma_flip=24500.0,
+        directional_bias_score=0.0,
+        bias_regime="Neutral",
+        tactical_ce_recommendations=[
+            TradeIdea(
+                symbol="NIFTY",
+                side="CE",
+                play_type="0DTE Vanna-Charm Theta Compression",
+                play_badge="VANNA-CHARM",
+                strike=24500.0,
+                option_symbol="NIFTY 24500 CE",
+                current_ltp=80.0,
+                delta_approx=0.30,
+                entry_trigger="Theta decay pin",
+                spot_invalidation=24400.0,
+                spot_invalidation_text="Below put wall",
+                target_1=110.0,
+                target_1_spot=24550.0,
+                target_2=130.0,
+                target_2_spot=24600.0,
+                stop_loss=60.0,
+                risk_reward_ratio="1 : 1.5",
+                quality_score=72,
+                conviction_label="TACTICAL OPPORTUNITY (Grade B+)",
+                conviction_color="var(--spark)",
+                rationale="Tactical theta compression near gamma flip",
+            )
+        ],
+        ce_tactical_active=True,
+    )
+    with patch("config.is_market_open", return_value=True), patch("web_server._latest_rec_batch", return_value=mock_batch):
+        status, _, content = asyncio.run(
+            asgi_request("GET", "/api/recommendations?symbol=NIFTY&window=current_week&capital=500000&risk=1.5")
+        )
+    assert status == 200
+    rec_data = json.loads(content)
+    assert "tactical_tier" in rec_data
+    assert "ce_clusters" in rec_data["tactical_tier"]
+    assert len(rec_data["tactical_tier"]["ce_clusters"]) == 1
+    assert rec_data["ce_tactical_active"] is True
 
 
 def test_sentinel_tape_ist_timestamps_and_series():

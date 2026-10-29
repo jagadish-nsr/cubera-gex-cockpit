@@ -36,5 +36,12 @@ logs/
 scratch/
 tests_artifacts/
 data/.cache/
+data/replay/
+data/journal/sentinel/
+data/journal/dhan_futures/
+data/journal/dhan_intraday/
+data/market_snapshot.db
 data/sentinel.db*
+*.log
+bin/
 

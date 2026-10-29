@@ -144,8 +144,12 @@ class RecommendationBatch:
     higher_pe_recommendations: list[TradeIdea] = field(default_factory=list)
     lower_ce_recommendations: list[TradeIdea] = field(default_factory=list)
     lower_pe_recommendations: list[TradeIdea] = field(default_factory=list)
+    tactical_ce_recommendations: list[TradeIdea] = field(default_factory=list)
+    tactical_pe_recommendations: list[TradeIdea] = field(default_factory=list)
     ce_fallback_active: bool = False
     pe_fallback_active: bool = False
+    ce_tactical_active: bool = False
+    pe_tactical_active: bool = False
     bookmarked_recommendations: list[TradeIdea] = field(default_factory=list)
 
     @property
@@ -3340,8 +3344,13 @@ def generate_trade_recommendations(
     higher_ce = [t for t in all_ce_candidates if t.quality_score > 85]
     higher_pe = [t for t in all_pe_candidates if t.quality_score > 85]
 
-    lower_ce = [t for t in all_ce_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85)]
-    lower_pe = [t for t in all_pe_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85)]
+    lower_ce = [t for t in all_ce_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85 and t.quality_score >= 75)]
+    lower_pe = [t for t in all_pe_candidates if (75 <= t.quality_score <= 85) or (t.latch_state == "ACTIVE" and t.quality_score <= 85 and t.quality_score >= 75)]
+
+    tactical_ce = [t for t in all_ce_candidates if (65 <= t.quality_score < 75) or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)]
+    tactical_pe = [t for t in all_pe_candidates if (65 <= t.quality_score < 75) or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)]
+    tactical_ce = [t for t in tactical_ce if t.latch_state != "INVALIDATED"]
+    tactical_pe = [t for t in tactical_pe if t.latch_state != "INVALIDATED"]
 
     # Display rule: Higher conviction if available; fallback to lower ONLY if zero higher conviction
     if higher_ce:
@@ -3463,8 +3472,12 @@ def generate_trade_recommendations(
         higher_pe_recommendations=higher_pe,
         lower_ce_recommendations=lower_ce,
         lower_pe_recommendations=lower_pe,
+        tactical_ce_recommendations=tactical_ce,
+        tactical_pe_recommendations=tactical_pe,
         ce_fallback_active=ce_fallback,
         pe_fallback_active=pe_fallback,
+        ce_tactical_active=bool(ce_watch or (not higher_ce and not lower_ce and tactical_ce)),
+        pe_tactical_active=bool(pe_watch or (not higher_pe and not lower_pe and tactical_pe)),
         bookmarked_recommendations=bookmarked,
     )
 
