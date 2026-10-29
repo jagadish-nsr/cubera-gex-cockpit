@@ -359,6 +359,15 @@ def test_higher_conviction_and_fallback_gating():
         for t in batch.ce_recommendations:
             assert 75 <= t.quality_score <= 85
 
+    assert hasattr(batch, "tactical_ce_recommendations")
+    assert hasattr(batch, "tactical_pe_recommendations")
+    assert hasattr(batch, "ce_tactical_active")
+    assert hasattr(batch, "pe_tactical_active")
+    for t in batch.tactical_ce_recommendations:
+        assert 65 <= t.quality_score < 75
+    for t in batch.tactical_pe_recommendations:
+        assert 65 <= t.quality_score < 75
+
 
 def test_bookmarking_and_recommendations_store():
     import data.journal.recommendations_store as rs
@@ -379,6 +388,38 @@ def test_bookmarking_and_recommendations_store():
         off_state = rs.toggle_bookmark(sample.rec_id)
         assert off_state is False
         assert rs.is_bookmarked(sample.rec_id) is False
+
+
+def test_save_or_update_recommendation_new_and_existing():
+    import data.journal.recommendations_store as rs
+    test_id = "TEST_REC_FRESH_UNITTEST"
+    payload = {
+        "rec_id": test_id,
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 22700,
+        "option_symbol": "NIFTY26OCT22700CE",
+        "play_type": "ATM Momentum Play",
+        "play_badge": "MOMENTUM",
+        "quality_score": 78,
+        "target_1": 120.0,
+        "target_2": 160.0,
+        "stop_loss": 60.0,
+        "spot_invalidation": 22600.0,
+    }
+    try:
+        # 1. Insert brand new record (tests is_fresh_day definition when existing is None)
+        saved_ts = rs.save_or_update_recommendation(payload)
+        assert saved_ts.startswith("2026-")
+
+        # 2. Update existing record
+        payload["quality_score"] = 82
+        updated_ts = rs.save_or_update_recommendation(payload)
+        assert updated_ts.startswith("2026-")
+    finally:
+        with rs._WRITE_LOCK, rs._get_write_conn() as conn:
+            conn.execute("DELETE FROM recommendation_records WHERE rec_id = ?", (test_id,))
+            conn.commit()
 
 
 def test_target_engine_reprice_and_probabilities():

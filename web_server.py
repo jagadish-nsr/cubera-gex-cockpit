@@ -516,6 +516,8 @@ def _iter_cached_ideas(batch) -> list:
         "higher_pe_recommendations",
         "lower_ce_recommendations",
         "lower_pe_recommendations",
+        "tactical_ce_recommendations",
+        "tactical_pe_recommendations",
         "bookmarked_recommendations",
     ):
         ideas.extend(list(getattr(batch, attr, None) or []))
@@ -1384,7 +1386,7 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
     spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     cw = float(dash.levels.call_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
     pw = float(dash.levels.put_wall or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
-    mp = float(dash.levels.max_pain or 0.0) if dash and hasattr(dash, "levels") and dash.levels else spot
+    mp = float(getattr(dash.levels, "max_pain", 0.0) or spot) if dash and hasattr(dash, "levels") and dash.levels else spot
     pcr = _extract_active_pcr(dash)
     call_doi = getattr(dash, "call_doi", None) or (getattr(dash.levels, "call_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
     put_doi = getattr(dash, "put_doi", None) or (getattr(dash.levels, "put_doi", None) if dash and hasattr(dash, "levels") and dash.levels else None)
@@ -2204,6 +2206,8 @@ async def get_cockpit_data(
                         + list(getattr(recs, "higher_pe_recommendations", None) or [])
                         + list(getattr(recs, "lower_ce_recommendations", None) or [])
                         + list(getattr(recs, "lower_pe_recommendations", None) or [])
+                        + list(getattr(recs, "tactical_ce_recommendations", None) or [])
+                        + list(getattr(recs, "tactical_pe_recommendations", None) or [])
                     )
             for idea in all_recs:
                 if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
@@ -2798,8 +2802,11 @@ async def get_recommendations(
             "executive_summary": "Session Closed. Live intraday recommendation engines are paused.",
             "ce_fallback_active": False,
             "pe_fallback_active": False,
+            "ce_tactical_active": False,
+            "pe_tactical_active": False,
             "higher_conviction": {"ce_clusters": [], "pe_clusters": []},
             "fallback_tier": {"ce_clusters": [], "pe_clusters": []},
+            "tactical_tier": {"ce_clusters": [], "pe_clusters": []},
             "effectiveness": eff_metrics,
             "effectiveness_summary": eff_summary,
         }
@@ -2829,6 +2836,11 @@ async def get_recommendations(
     high_pe_clusters = _cluster_ideas_by_strike(recs.higher_pe_recommendations)
     low_ce_clusters = _cluster_ideas_by_strike(recs.lower_ce_recommendations)
     low_pe_clusters = _cluster_ideas_by_strike(recs.lower_pe_recommendations)
+    tactical_ce_clusters = _cluster_ideas_by_strike(getattr(recs, "tactical_ce_recommendations", []))
+    tactical_pe_clusters = _cluster_ideas_by_strike(getattr(recs, "tactical_pe_recommendations", []))
+
+    ce_tactical_active = getattr(recs, "ce_tactical_active", False) or (len(high_ce_clusters) == 0 and len(low_ce_clusters) == 0 and len(tactical_ce_clusters) > 0)
+    pe_tactical_active = getattr(recs, "pe_tactical_active", False) or (len(high_pe_clusters) == 0 and len(low_pe_clusters) == 0 and len(tactical_pe_clusters) > 0)
 
     return {
         "symbol": sym,
@@ -2839,6 +2851,8 @@ async def get_recommendations(
         "executive_summary": recs.executive_summary,
         "ce_fallback_active": getattr(recs, "ce_fallback_active", False) or len(high_ce_clusters) == 0,
         "pe_fallback_active": getattr(recs, "pe_fallback_active", False) or len(high_pe_clusters) == 0,
+        "ce_tactical_active": ce_tactical_active,
+        "pe_tactical_active": pe_tactical_active,
         "higher_conviction": {
             "ce_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in high_ce_clusters],
             "pe_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in high_pe_clusters],
@@ -2846,6 +2860,10 @@ async def get_recommendations(
         "fallback_tier": {
             "ce_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in low_ce_clusters],
             "pe_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in low_pe_clusters],
+        },
+        "tactical_tier": {
+            "ce_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in tactical_ce_clusters],
+            "pe_clusters": [_serialize_cluster(c, spot, acct_cap, r_pct, idx.lot_size) for c in tactical_pe_clusters],
         },
         "effectiveness": eff_metrics,
         "effectiveness_summary": eff_summary,

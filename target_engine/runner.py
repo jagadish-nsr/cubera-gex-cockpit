@@ -55,7 +55,7 @@ def run_target_engine(
     fut = float(getattr(dash.levels, "future_price", None) or spot) if dash.levels else spot
     atm_iv = float(getattr(dash.levels, "atm_iv", None) or 0.15) if dash.levels else 0.15
     skew = float(getattr(dash.levels, "skew_25d", None) or 0.0) if dash.levels else 0.0
-    max_pain = float(dash.levels.max_pain or 0.0) if dash.levels else None
+    max_pain = float(getattr(dash.levels, "max_pain", 0.0) or 0.0) if dash.levels else None
     expiry = str(dash.expiries[0]) if dash.expiries else "2026-10-15"
     contracts_df = dash.contracts if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) else None
 

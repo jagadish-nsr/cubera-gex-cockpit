@@ -227,6 +227,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 init_spot = float(existing["initial_spot"]) if existing["initial_spot"] is not None else float(idea_dict.get("initial_spot", 0))
                 init_ltp = float(existing["initial_ltp"]) if existing["initial_ltp"] is not None else float(idea_dict.get("initial_ltp", 0))
         else:
+            is_fresh_day = True
             trig_at = new_trig
             init_score = idea_dict.get("quality_score", 0)
             init_spot = float(idea_dict.get("initial_spot", idea_dict.get("current_spot", 0)))

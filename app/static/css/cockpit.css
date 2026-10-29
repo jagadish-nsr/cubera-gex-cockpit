@@ -1867,6 +1867,16 @@ body {
   background: rgba(239, 68, 68, 0.08);
   border: 1px solid rgba(239, 68, 68, 0.25);
 }
+.rec-col-tactical-ce {
+  color: var(--spark);
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+.rec-col-tactical-pe {
+  color: #c084fc;
+  background: rgba(192, 132, 252, 0.08);
+  border: 1px solid rgba(192, 132, 252, 0.25);
+}
 
 /* Multi-Strategy Confluence */
 .confluence-banner {
