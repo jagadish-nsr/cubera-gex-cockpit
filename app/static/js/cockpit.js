@@ -1134,14 +1134,30 @@
         alertsContainer.innerHTML = "";
         data.orderflow_alerts.forEach((a) => {
           const div = document.createElement("div");
-          div.className = "signal-card";
+          const st = (a.status || (a.outcome ? a.outcome.status : null) || "ACTIVE").toUpperCase();
+
+          let stClass = "signal-active";
+          let stBadge = `<span class="rec-state-tag" style="background:rgba(16,185,129,.15);color:var(--go);border:1px solid rgba(16,185,129,.35);padding:1px 5px;border-radius:4px;font-size:0.62rem;font-weight:800">🟢 ACTIVE</span>`;
+          if (st === "INVALIDATED") {
+            stClass = "signal-invalidated";
+            stBadge = `<span class="rec-state-tag" style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.35);padding:1px 5px;border-radius:4px;font-size:0.62rem;font-weight:800">🛑 INVALIDATED</span>`;
+          } else if (st === "TARGET_HIT") {
+            stClass = "signal-target-hit";
+            stBadge = `<span class="rec-state-tag" style="background:rgba(14,165,233,.15);color:var(--spark);border:1px solid rgba(14,165,233,.35);padding:1px 5px;border-radius:4px;font-size:0.62rem;font-weight:800">🎯 TARGET HIT</span>`;
+          }
+
+          div.className = `signal-card ${stClass}`;
           const scoreClr = a.score >= 80 ? "var(--go)" : a.score >= 65 ? "var(--spark)" : "var(--warn)";
+          const invalVal = Number(a.invalidation_level || 0);
+          const invalText = invalVal > 0 ? `₹${invalVal.toLocaleString("en-IN")}` : "None";
+
           div.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div style="display:flex;align-items:center;gap:6px">
                 <span style="font-family:var(--mono);font-size:0.7rem;color:var(--ink-faint)">${a.time}</span>
                 <b style="font-size:0.8rem;color:var(--spark)">${a.type}</b>
                 <span style="font-size:0.65rem;background:var(--surface-3);padding:1px 6px;border-radius:3px">${a.category}</span>
+                ${stBadge}
               </div>
               <span style="font-size:0.72rem;font-weight:800;color:${scoreClr}">${a.score}/100</span>
             </div>
@@ -1149,7 +1165,7 @@
             <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono);border-top:1px dashed var(--line);padding-top:4px">
               <span>Delta: <b style="color:${a.delta >= 0 ? "var(--go)" : "var(--stop)"}">${a.delta >= 0 ? "+" : ""}${a.delta}</b></span>
               <span>RVOL: <b>${a.rvol_tod}x</b></span>
-              <span>Inval: <b>₹${a.invalidation_level.toLocaleString("en-IN")}</b></span>
+              <span>5m Inval: <b style="color:var(--stop)">${invalText}</b></span>
             </div>
           `;
           alertsContainer.appendChild(div);
@@ -4116,6 +4132,16 @@
     let filtered = state.sentinelSignals;
     if (category === "HIGH_CONF") {
       filtered = filtered.filter((s) => Number(s.score) >= 70);
+    } else if (category === "ACTIVE") {
+      filtered = filtered.filter((s) => (s.status || (s.outcome && s.outcome.status) || "ACTIVE") === "ACTIVE");
+    } else if (category === "INVALIDATED") {
+      filtered = filtered.filter((s) => (s.status || (s.outcome && s.outcome.status)) === "INVALIDATED");
+    } else if (category === "TARGET_HIT") {
+      filtered = filtered.filter((s) => (s.status || (s.outcome && s.outcome.status)) === "TARGET_HIT");
+    } else if (category === "BULL") {
+      filtered = filtered.filter((s) => s.category.toUpperCase().includes("BULL") || (s.bias && s.bias.toUpperCase() === "LONG"));
+    } else if (category === "BEAR") {
+      filtered = filtered.filter((s) => s.category.toUpperCase().includes("BEAR") || (s.bias && s.bias.toUpperCase() === "SHORT"));
     } else if (category && category !== "ALL") {
       filtered = filtered.filter((s) => s.category.toUpperCase().includes(category) || s.type.toUpperCase().includes(category));
     }
@@ -4128,14 +4154,34 @@
 
     filtered.forEach((s) => {
       const card = document.createElement("div");
-      card.className = "signal-card";
+      const st = (s.status || (s.outcome ? s.outcome.status : null) || "ACTIVE").toUpperCase();
+
+      let stClass = "signal-active";
+      let stBadge = `<span class="rec-state-tag" style="background:rgba(16,185,129,.15);color:var(--go);border:1px solid rgba(16,185,129,.35);padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:800;display:inline-flex;align-items:center;gap:3px">🟢 ACTIVE</span>`;
+      let outcomeLabel = `<b style="color:var(--go)">🟢 In-Flight (5m Active)</b>`;
+
+      if (st === "INVALIDATED") {
+        stClass = "signal-invalidated";
+        stBadge = `<span class="rec-state-tag" style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.35);padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:800;display:inline-flex;align-items:center;gap:3px">🛑 INVALIDATED</span>`;
+        outcomeLabel = `<b style="color:var(--stop)">🛑 Inval (5m Close) -${s.outcome ? s.outcome.mae : 0} pts</b>`;
+      } else if (st === "TARGET_HIT") {
+        stClass = "signal-target-hit";
+        stBadge = `<span class="rec-state-tag" style="background:rgba(14,165,233,.15);color:var(--spark);border:1px solid rgba(14,165,233,.35);padding:1px 6px;border-radius:4px;font-size:0.65rem;font-weight:800;display:inline-flex;align-items:center;gap:3px">🎯 TARGET HIT</span>`;
+        outcomeLabel = `<b style="color:var(--spark)">🎯 Target Reached (+${s.outcome ? s.outcome.mfe : 0} pts)</b>`;
+      }
+
+      card.className = `signal-card ${stClass}`;
       const scoreClr = s.score >= 80 ? "var(--go)" : s.score >= 65 ? "var(--spark)" : "var(--warn)";
+      const invalVal = Number(s.invalidation_level || 0);
+      const invalText = invalVal > 0 ? `₹${invalVal.toLocaleString("en-IN")}` : "None";
+
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div style="display:flex;align-items:center;gap:6px">
             <span style="font-family:var(--mono);font-size:0.7rem;color:var(--ink-faint)">${s.time}</span>
             <b style="font-size:0.8rem;color:var(--spark)">${s.type}</b>
             <span style="font-size:0.65rem;background:var(--surface-3);padding:1px 6px;border-radius:3px">${s.category}</span>
+            ${stBadge}
           </div>
           <span style="font-size:0.72rem;font-weight:800;color:${scoreClr}">${s.score}/100</span>
         </div>
@@ -4143,8 +4189,8 @@
         <div style="display:flex;justify-content:space-between;font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono);border-top:1px dashed var(--line);padding-top:4px">
           <span>Delta: <b style="color:${s.delta >= 0 ? "var(--go)" : "var(--stop)"}">${s.delta >= 0 ? "+" : ""}${s.delta}</b></span>
           <span>RVOL: <b>${s.rvol_tod}x</b></span>
-          <span>Inval: <b>₹${Number(s.invalidation_level || 0).toLocaleString("en-IN")}</b></span>
-          <span>${s.outcome ? (s.outcome.target_hit ? "Target" : s.outcome.stopped_out ? "Stopped" : `MFE ${s.outcome.mfe} / MAE ${s.outcome.mae}`) : "Open"}</span>
+          <span>5m Inval: <b style="color:var(--stop)">${invalText}</b></span>
+          <span>${outcomeLabel}</span>
         </div>
       `;
       container.appendChild(card);
@@ -5385,6 +5431,7 @@
         "options": "tab-analytics",
         "journal": "tab-journal",
         "scorecard": "tab-scorecard",
+        "reports": "tab-reports",
         "ops-calendar": "tab-ops",
         "ops": "tab-ops",
         "session-commentary": "tab-commentary",
@@ -5715,6 +5762,46 @@
     }
   }
 
+  async function loadReports() {
+    const status = document.getElementById("reports-status");
+    const list = document.getElementById("reports-list");
+    if (!status || !list) return;
+    status.textContent = "Loading…";
+    list.replaceChildren();
+    try {
+      const res = await fetch("/api/reports");
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const items = Array.isArray(data.reports) ? data.reports : [];
+      if (!items.length) {
+        status.textContent = "No session report has been written yet.";
+        return;
+      }
+      status.textContent = items.length === 1 ? "1 report" : `${items.length} reports`;
+      items.forEach((item) => {
+        const link = document.createElement("a");
+        link.href = item.href;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.className = "repricer-card";
+        link.style.display = "block";
+        link.style.marginBottom = "10px";
+        link.style.textDecoration = "none";
+        link.style.color = "inherit";
+        const title = document.createElement("b");
+        title.textContent = item.date || "Report";
+        const detail = document.createElement("div");
+        detail.style.color = "var(--ink-mute)";
+        detail.style.marginTop = "4px";
+        detail.textContent = item.summary || "";
+        link.append(title, detail);
+        list.appendChild(link);
+      });
+    } catch (e) {
+      status.textContent = "Report index did not load.";
+    }
+  }
+
   function refreshActiveTab() {
     switch (state.activeTab) {
       case "tab-cockpit":
@@ -5743,6 +5830,9 @@
         break;
       case "tab-scorecard":
         loadScorecard();
+        break;
+      case "tab-reports":
+        loadReports();
         break;
       case "tab-ops":
         loadOps();

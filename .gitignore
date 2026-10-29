@@ -38,6 +38,7 @@ tests_artifacts/
 data/.cache/
 data/replay/
 data/journal/sentinel/
+data/journal/reports/
 data/journal/dhan_futures/
 data/journal/dhan_intraday/
 data/market_snapshot.db

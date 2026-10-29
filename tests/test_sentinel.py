@@ -32,6 +32,7 @@ from sentinel import (
     save_bar,
     save_signal,
 )
+from sentinel.models import SentinelSignal
 from sentinel.feed.parser import pack_dhan_quote_packet
 
 
@@ -300,3 +301,71 @@ def test_outcome_tracker_evaluates_favorable_excursion():
     assert outcome.mfe_pts > 0
     assert outcome.stopped_out is False
     assert outcome.ret_1m_pts is not None
+
+
+def test_5m_close_invalidation_and_target_rules():
+    """Verify that a signal is invalidated or reaches target ONLY on completed 5-min candle closes."""
+    t0 = datetime(2026, 10, 15, 9, 20, 0, tzinfo=timezone.utc)
+    sig_long = SentinelSignal(
+        event_id="sig_long_test",
+        instrument_id="NIFTY",
+        timeframe="1m",
+        bar_start_ts=t0,
+        type="ABSORPTION_LOW",
+        category="BULLISH",
+        bias="LONG",
+        score=80,
+        confidence="HIGH",
+        rvol_tod=2.0,
+        delta=3000.0,
+        delta_ratio=0.3,
+        oi_change=500,
+        context_tags=["TEST"],
+        insight_text="Test Bull Absorption",
+        invalidation_level=24480.0,
+        entry_price=24500.0,
+        target_1_pts=50.0,  # Target is 24550.0
+    )
+
+    # 1. 1-minute bars with wick dipping below 24480, but 5m candle closes at 24485 (above invalidation)
+    # 09:20–09:25 interval (minutes 20, 21, 22, 23, 24)
+    bars_wick_dip = [
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=1), 24500.0, 24505.0, 24470.0, 24485.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=2), 24485.0, 24490.0, 24465.0, 24482.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=3), 24482.0, 24488.0, 24478.0, 24484.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=4), 24484.0, 24490.0, 24480.0, 24486.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        # 09:25 bar starts next interval, closing the 09:20–09:25 candle with close=24486
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=5), 24486.0, 24495.0, 24485.0, 24490.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+    ]
+    out1 = evaluate_signal_outcomes(sig_long, bars_wick_dip)
+    # Wick pierced to 24465, but 5m candle closed at 24486 (> 24480) -> NOT invalidated!
+    assert out1.stopped_out is False
+    assert out1.status == "ACTIVE"
+
+    # 2. 5-minute candle closes below 24480 (at 24475) -> INVALIDATED!
+    bars_5m_inval = [
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=1), 24500.0, 24505.0, 24480.0, 24485.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=2), 24485.0, 24490.0, 24475.0, 24480.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=3), 24480.0, 24482.0, 24472.0, 24476.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=4), 24476.0, 24478.0, 24470.0, 24475.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        # 09:25 bar closes the candle
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=5), 24475.0, 24480.0, 24472.0, 24478.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+    ]
+    out2 = evaluate_signal_outcomes(sig_long, bars_5m_inval)
+    # The 09:20–09:25 5m candle closed at 24475 (< 24480) -> INVALIDATED!
+    assert out2.stopped_out is True
+    assert out2.status == "INVALIDATED"
+
+    # 3. 5-minute candle closes above target (24555 >= 24550) -> TARGET_HIT!
+    bars_5m_target = [
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=1), 24500.0, 24520.0, 24500.0, 24518.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=2), 24518.0, 24535.0, 24515.0, 24530.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=3), 24530.0, 24545.0, 24528.0, 24540.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=4), 24540.0, 24560.0, 24538.0, 24555.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+        # 09:25 bar closes the candle
+        Bar("NIFTY", "1m", t0 + timedelta(minutes=5), 24555.0, 24565.0, 24550.0, 24560.0, 1000, 15, 500, 500, 0, 0, 1, 0, 0, 0, 0, 0, 0),
+    ]
+    out3 = evaluate_signal_outcomes(sig_long, bars_5m_target)
+    assert out3.target_hit is True
+    assert out3.stopped_out is False
+    assert out3.status == "TARGET_HIT"

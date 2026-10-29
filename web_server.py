@@ -17,6 +17,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -105,6 +106,7 @@ from sentinel.storage.db import (
     ensure_historical_daily_cvd,
     list_recent_bars,
     list_recent_outcomes,
+    save_outcome,
 )
 from sentinel.feed.demo import seed_sentinel_demo_if_needed
 from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_expiries, is_expiry_crossed
@@ -2278,14 +2280,26 @@ async def get_cockpit_data(
     # OrderFlow Sentinel Stream Summary (Tape Alerts)
     inst_id = f"{sym}-FUT"
     sigs = list_recent_signals(inst_id, limit=15)
+    try:
+        outcome_by_id_of = {o.event_id: o for o in list_recent_outcomes(inst_id, limit=30)}
+    except Exception:
+        outcome_by_id_of = {}
 
-    orderflow_alerts = [
-        {
+    orderflow_alerts = []
+    for s in sigs:
+        out = outcome_by_id_of.get(s.event_id)
+        st = "ACTIVE"
+        if out:
+            st = "TARGET_HIT" if out.target_hit else ("INVALIDATED" if out.stopped_out else "ACTIVE")
+        elif getattr(s, "status", None) in ("INVALIDATED", "TARGET_HIT", "ACTIVE"):
+            st = s.status
+
+        orderflow_alerts.append({
             "type": s.type,
             "category": s.category,
-            "bias": getattr(s, "bias", ""),
+            "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
             "score": s.score,
-            "status": getattr(s, "status", "NEW"),
+            "status": st,
             "rvol_tod": s.rvol_tod,
             "delta": s.delta,
             "invalidation_level": s.invalidation_level,
@@ -2294,9 +2308,14 @@ async def get_cockpit_data(
             "gex_alignment": getattr(s, "gex_alignment", "") or "",
             "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
             "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
-        }
-        for s in sigs
-    ]
+            "outcome": {
+                "mfe": round(float(out.mfe_pts or 0), 1),
+                "mae": round(float(out.mae_pts or 0), 1),
+                "target_hit": bool(out.target_hit),
+                "stopped_out": bool(out.stopped_out),
+                "status": st,
+            } if out else None,
+        })
 
     from data.sectors import fetch_sector_snap
     sec_snap = fetch_sector_snap()
@@ -3055,36 +3074,59 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     ema9 = _calc_ema_series(bars, 9)
     ema21 = _calc_ema_series(bars, 21)
 
-    # OrderFlow Signals list
-    signal_feed = [
-        {
+    # OrderFlow Signals list with live 5m-close invalidation & target evaluation
+    try:
+        outcome_by_id = {o.event_id: o for o in list_recent_outcomes(inst_id, limit=100)}
+    except Exception:
+        outcome_by_id = {}
+
+    signal_feed = []
+    for s in sigs:
+        outcome = outcome_by_id.get(s.event_id)
+        if outcome is None and raw_bars:
+            sub_bars = [b for b in raw_bars if b.start_ts > s.bar_start_ts]
+            if sub_bars:
+                try:
+                    from sentinel.engine.outcomes import evaluate_signal_outcomes
+                    outcome = evaluate_signal_outcomes(s, sub_bars, call_wall=cw, put_wall=pw)
+                    save_outcome(outcome)
+                    outcome_by_id[s.event_id] = outcome
+                except Exception:
+                    pass
+
+        st = "ACTIVE"
+        if outcome is not None:
+            if outcome.target_hit:
+                st = "TARGET_HIT"
+            elif outcome.stopped_out:
+                st = "INVALIDATED"
+            out_dict = {
+                "mfe": round(float(outcome.mfe_pts or 0), 1),
+                "mae": round(float(outcome.mae_pts or 0), 1),
+                "target_hit": bool(outcome.target_hit),
+                "stopped_out": bool(outcome.stopped_out),
+                "status": st,
+            }
+        else:
+            out_dict = None
+
+        signal_feed.append({
             "type": s.type,
             "category": s.category,
+            "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
             "score": s.score,
+            "status": st,
             "rvol_tod": s.rvol_tod,
             "delta": s.delta,
             "event_id": getattr(s, "event_id", ""),
             "invalidation_level": s.invalidation_level,
+            "entry_price": getattr(s, "entry_price", 0.0),
+            "target_1_pts": getattr(s, "target_1_pts", 0.0),
+            "actionable_play": getattr(s, "actionable_play", ""),
             "insight_text": s.insight_text,
             "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
-        }
-        for s in sigs
-    ]
-    try:
-        outcome_by_id = {o.event_id: o for o in list_recent_outcomes(inst_id, limit=80)}
-    except Exception:
-        outcome_by_id = {}
-    for row in signal_feed:
-        outcome = outcome_by_id.get(row.get("event_id"))
-        if outcome is None:
-            row["outcome"] = None
-            continue
-        row["outcome"] = {
-            "mfe": round(float(outcome.mfe_pts or 0), 1),
-            "mae": round(float(outcome.mae_pts or 0), 1),
-            "target_hit": bool(outcome.target_hit),
-            "stopped_out": bool(outcome.stopped_out),
-        }
+            "outcome": out_dict,
+        })
 
     # Authentic Block Tape derived from session volume and delta spikes
     tape = []
@@ -5361,6 +5403,41 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
 
 # Mount static assets
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+_REPORT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_REPORTS_DIR = ROOT_DIR / "data" / "journal" / "reports"
+
+
+@app.get("/api/reports")
+def list_session_reports():
+    """Index of written session reports, newest first."""
+    items = []
+    if _REPORTS_DIR.is_dir():
+        for path in sorted(_REPORTS_DIR.glob("*.json"), reverse=True):
+            if not _REPORT_DATE.match(path.stem):
+                continue
+            summary = "Session report"
+            try:
+                summary = json.loads(path.read_text(encoding="utf-8")).get("summary") or summary
+            except (OSError, json.JSONDecodeError):
+                pass
+            items.append({
+                "date": path.stem,
+                "href": f"/reports/{path.stem}",
+                "summary": summary,
+            })
+    return {"reports": items}
+
+
+@app.get("/reports/{session_date}")
+def session_report_page(session_date: str):
+    """One written session report."""
+    if not _REPORT_DATE.match(session_date):
+        raise HTTPException(status_code=404, detail="Report not found")
+    path = _REPORTS_DIR / f"{session_date}.html"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(path, media_type="text/html")
 
 
 @app.get("/api/health")

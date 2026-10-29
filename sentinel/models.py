@@ -68,7 +68,7 @@ class SentinelSignal:
     actionable_play: str = ""      # Specific derivative trade structure (e.g. "Bull Put Spread 24800/24700")
     trigger_speed: str = "CONFIRMED_BAR"  # "CONFIRMED_BAR" | "MICRO_BURST"
     rule_set_version: str = "v2.1"
-    status: str = "NEW"            # "NEW" | "CONFIRMED" | "FAILED" | "REPLACED"
+    status: str = "ACTIVE"            # "ACTIVE" | "INVALIDATED" | "TARGET_HIT"
     gex_alignment: str = "NEUTRAL" # "CONFIRMED_AT_WALL" | "COUNTER_TREND" | "NEUTRAL"
 
 
@@ -89,4 +89,5 @@ class SignalOutcome:
     mae_pts: float = 0.0           # Maximum Adverse Excursion
     stopped_out: bool = False
     target_hit: bool = False
+    status: str = "ACTIVE"         # "ACTIVE" | "INVALIDATED" | "TARGET_HIT"
     evaluated_at: datetime | None = None

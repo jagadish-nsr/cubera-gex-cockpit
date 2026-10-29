@@ -168,13 +168,20 @@ Each signal card features an explicit invalidation boundary:
 🛑 Invalidation: candle closes above 22,465.0
 ```
 
-### Why "Candle Closes" vs "Wick Touch"?
-1. In high-frequency Indian index futures (Nifty / Bank Nifty), institutional algorithms routinely run stop-hunts that pierce key levels by 2–5 points before snapping back.
-2. An intra-bar wick touch does **not** invalidate institutional absorption or resting limit support.
-3. A **candle body close** beyond the invalidation level confirms that resting liquidity has completely vanished.
+### Why "5-Minute Candle Closes" vs "Wick Touch"?
+1. In high-frequency Indian index futures (Nifty / Bank Nifty / Sensex), institutional algorithms routinely run stop-hunts that pierce key levels by 2–8 points before aggressive absorption snaps price back.
+2. An intra-bar wick touch or brief 1-minute dip does **not** invalidate institutional absorption or resting limit support.
+3. **5-Minute Candle Close Rule:**
+   - **Bullish / Long Signals:**
+     - **`🛑 INVALIDATED`:** A completed **5-minute candle closes strictly below** the stated Invalidation Level ($\text{Close}_{5\text{m}} < \text{Inval}$).
+     - **`🎯 TARGET HIT`:** A completed **5-minute candle closes strictly above** the target level ($\text{Close}_{5\text{m}} \ge \text{Target}$).
+   - **Bearish / Short Signals:**
+     - **`🛑 INVALIDATED`:** A completed **5-minute candle closes strictly above** the stated Invalidation Level ($\text{Close}_{5\text{m}} > \text{Inval}$).
+     - **`🎯 TARGET HIT`:** A completed **5-minute candle closes strictly below** the target level ($\text{Close}_{5\text{m}} \le \text{Target}$).
+   - **`🟢 ACTIVE`:** While no completed 5-minute candle has closed beyond the invalidation or target levels, the signal remains live and active in-flight.
 
 > [!IMPORTANT]
-> **Strict Exit Rule:** If a completed candle closes beyond the stated Invalidation Level, the microstructure thesis is dead. **Exit immediately without negotiation.** Never average into a trade whose invalidation has triggered.
+> **Strict Exit Rule:** Once a completed 5-minute candle closes beyond the stated Invalidation Level, the microstructure thesis is dead. **Exit immediately without negotiation.** Never average into a trade whose 5-minute invalidation close has triggered.
 
 ---
 

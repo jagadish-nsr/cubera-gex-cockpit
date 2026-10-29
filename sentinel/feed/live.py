@@ -16,6 +16,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import Any
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
 from sentinel.models import Bar, SentinelSignal
 from sentinel.engine.aggregator import BarAggregator, SessionVWAPTracker, aggregate_bars
 from sentinel.engine.classifier import SignalClassifierEngine
@@ -34,6 +35,20 @@ from sentinel.storage.db import (
 log = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
+
+
+def _as_ist(ts: datetime) -> datetime:
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=IST)
+    return ts.astimezone(IST)
+
+
+def _session_day(ts: datetime) -> str:
+    return _as_ist(ts).strftime("%Y-%m-%d")
+
+
+def _minute_floor(ts: datetime) -> datetime:
+    return _as_ist(ts).replace(second=0, microsecond=0)
 
 
 class LiveSentinelManager:
@@ -96,7 +111,9 @@ class LiveSentinelManager:
         target_date_str = target_date.strftime("%Y-%m-%d")
 
         existing_sample = list_recent_bars(instrument_id, limit=5, session_only=False, _auto_populate=False)
-        needs_day_rollover = bool(existing_sample and existing_sample[-1].start_ts.strftime("%Y-%m-%d") != target_date_str)
+        needs_day_rollover = bool(
+            existing_sample and _session_day(existing_sample[-1].start_ts) != target_date_str
+        )
 
         # Claim the slot, then release the lock before the broker call.
         # The event loop also waits on this lock, and Lock is not re-entrant.
@@ -128,8 +145,26 @@ class LiveSentinelManager:
 
         with _LOCK:
             try:
-                # Purge stale/demo bars only after verifying genuine Dhan data arrived
-                clear_sentinel_data(instrument_id)
+                # A reload mid-session must not delete live sweeps. Those rows
+                # are intra-bar prints; a 1m Dhan candle cannot recreate them.
+                # Purge only when the stored tape is a previous session.
+                stored = list_recent_bars(
+                    instrument_id, timeframe="1m", limit=800,
+                    session_only=False, _auto_populate=False,
+                )
+                stored_day = _session_day(stored[-1].start_ts) if stored else None
+                rollover = bool(stored_day and stored_day != target_date_str)
+                kept_by_minute: dict[datetime, Bar] = {}
+                if rollover:
+                    clear_sentinel_data(instrument_id)
+                    log.info(
+                        "Sentinel day rollover for %s: cleared session %s before %s sync",
+                        instrument_id, stored_day, target_date_str,
+                    )
+                else:
+                    for existing in stored:
+                        if _session_day(existing.start_ts) == target_date_str:
+                            kept_by_minute[_minute_floor(existing.start_ts)] = existing
 
                 # Sort by timestamp
                 df = df.sort_values("timestamp").reset_index(drop=True)
@@ -142,6 +177,8 @@ class LiveSentinelManager:
                 prev_oi = 0
                 bars_to_save: list[Bar] = []
                 signals_generated: list[SentinelSignal] = []
+                n_kept = 0
+                n_written = 0
 
                 # Context
                 day_high = float(df["high"].max())
@@ -167,6 +204,21 @@ class LiveSentinelManager:
                     ts_epoch = float(row["timestamp"])
                     bar_dt = datetime.fromtimestamp(ts_epoch, tz=timezone.utc).astimezone(IST)
                     if bar_dt > datetime.now(IST) + timedelta(minutes=2):
+                        continue
+
+                    kept = kept_by_minute.get(_minute_floor(bar_dt))
+                    if kept is not None:
+                        # Keep the live minute. Replacing it with candle-estimated
+                        # delta would erase the tape the sweeps were read from.
+                        typical_kept = (kept.high + kept.low + kept.close) / 3.0
+                        vwap_tracker.update(typical_kept, float(kept.volume_units))
+                        cum_cvd = kept.cvd
+                        if kept.oi > 0:
+                            prev_oi = kept.oi
+                        bars_to_save.append(kept)
+                        ctx.update_bar(kept)
+                        classifier.evaluate_bar(kept, ctx)
+                        n_kept += 1
                         continue
 
                     # Estimate buyer/seller volume from candle structure & price delta
@@ -221,6 +273,7 @@ class LiveSentinelManager:
                     )
                     bars_to_save.append(bar)
                     save_bar(bar)
+                    n_written += 1
 
                     ctx.update_bar(bar)
                     sig = classifier.evaluate_bar(bar, ctx)
@@ -256,9 +309,12 @@ class LiveSentinelManager:
                 self._aggregators[instrument_id] = agg
 
                 log.info(
-                    "Successfully synced %d real intraday bars for %s (latest close: %.1f)",
+                    "Successfully synced %d real intraday bars for %s "
+                    "(kept %d live minutes, wrote %d, latest close: %.1f)",
                     len(bars_to_save),
                     instrument_id,
+                    n_kept,
+                    n_written,
                     latest_bar.close,
                 )
                 try:

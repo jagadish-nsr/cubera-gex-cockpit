@@ -1736,9 +1736,23 @@ body {
   transition: var(--transition);
 }
 
+.signal-card.signal-active {
+  border-left: 3px solid var(--go);
+}
+
+.signal-card.signal-invalidated {
+  border-left: 3px solid var(--stop);
+  opacity: 0.78;
+}
+
+.signal-card.signal-target-hit {
+  border-left: 3px solid var(--spark);
+}
+
 .signal-card:hover {
   border-color: var(--spark);
   background: var(--surface-hover);
+  opacity: 1;
 }
 
 /* Options Analytics 6-Card Strip */

@@ -337,6 +337,15 @@
             <span>Scorecard</span>
           </button>
 
+          <button class="tab-btn" id="tab-btn-reports" data-tab="tab-reports" onclick="window.switchTab('tab-reports')">
+            <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M5 2.5H12.5L16.5 6.5V17.5H5V2.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              <path d="M12.5 2.5V6.5H16.5" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              <path d="M7.5 10H14M7.5 13H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+            <span>Reports</span>
+          </button>
+
           <button class="tab-btn" id="tab-btn-admin" data-tab="tab-admin" onclick="window.switchTab('tab-admin')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
@@ -1201,6 +1210,9 @@
                 <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Filter Signals:</label>
                 <select id="sentinel-signal-filter" class="form-control" style="font-size:0.76rem;padding:2px 6px" onchange="window.filterSentinelSignals(this.value)">
                   <option value="ALL">All Signals</option>
+                  <option value="ACTIVE">🟢 Active Only</option>
+                  <option value="INVALIDATED">🛑 Invalidated Only</option>
+                  <option value="TARGET_HIT">🎯 Target Hit Only</option>
                   <option value="HIGH_CONF">High Confidence (Score ≥ 70)</option>
                   <option value="BULL">Bullish Only</option>
                   <option value="BEAR">Bearish Only</option>
@@ -2144,6 +2156,14 @@
           </div>
         </div>
 
+        <div id="tab-reports" class="tab-pane">
+          <div class="repricer-card">
+            <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 6px">Session reports</h3>
+            <p id="reports-status" style="margin:0 0 12px;color:var(--ink-mute)">Loading…</p>
+            <div id="reports-list"></div>
+          </div>
+        </div>
+
         <div id="tab-admin" class="tab-pane">
           <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr)">
             <div class="kpi-card">
@@ -2252,6 +2272,6 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.39"></script>
+  <script src="/static/js/cockpit.js?v=6.40"></script>
 </body>
 </html>

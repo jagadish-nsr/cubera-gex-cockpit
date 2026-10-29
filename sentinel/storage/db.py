@@ -198,6 +198,7 @@ def save_signal(sig: SentinelSignal) -> None:
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
+            status_val = "ACTIVE" if sig.status in ("NEW", "", None) else sig.status
             conn.execute("""
                 INSERT OR REPLACE INTO sentinel_signals (
                     event_id, instrument_id, timeframe, bar_start_ts, type,
@@ -212,7 +213,7 @@ def save_signal(sig: SentinelSignal) -> None:
                 sig.type, sig.category, sig.bias, sig.score, sig.confidence, sig.rvol_tod,
                 sig.delta, sig.delta_ratio, sig.oi_change, json.dumps(sig.context_tags),
                 sig.insight_text, sig.invalidation_level, sig.rule_set_version,
-                sig.status, sig.gex_alignment,
+                status_val, sig.gex_alignment,
                 getattr(sig, "entry_price", 0.0),
                 getattr(sig, "target_1_pts", 0.0),
                 getattr(sig, "target_2_pts", 0.0),
@@ -437,6 +438,10 @@ def save_outcome(outcome: SignalOutcome) -> None:
                 1 if outcome.target_hit else 0,
                 outcome.evaluated_at.isoformat() if outcome.evaluated_at else None,
             ))
+            status_val = outcome.status if getattr(outcome, "status", None) else (
+                "TARGET_HIT" if outcome.target_hit else ("INVALIDATED" if outcome.stopped_out else "ACTIVE")
+            )
+            conn.execute("UPDATE sentinel_signals SET status = ? WHERE event_id = ?", (status_val, outcome.event_id))
             conn.commit()
         finally:
             conn.close()
@@ -461,6 +466,9 @@ def list_recent_outcomes(instrument_id: str | None = None, limit: int = 50) -> l
         outcomes = []
         for r in rows:
             eval_at = datetime.fromisoformat(r["evaluated_at"]) if r["evaluated_at"] else None
+            stopped = bool(r["stopped_out"])
+            thit = bool(r["target_hit"])
+            st_val = "TARGET_HIT" if thit else ("INVALIDATED" if stopped else "ACTIVE")
             outcomes.append(SignalOutcome(
                 event_id=r["event_id"],
                 instrument_id=r["instrument_id"],
@@ -474,8 +482,9 @@ def list_recent_outcomes(instrument_id: str | None = None, limit: int = 50) -> l
                 ret_30m_pts=r["ret_30m_pts"],
                 mfe_pts=r["mfe_pts"],
                 mae_pts=r["mae_pts"],
-                stopped_out=bool(r["stopped_out"]),
-                target_hit=bool(r["target_hit"]),
+                stopped_out=stopped,
+                target_hit=thit,
+                status=st_val,
                 evaluated_at=eval_at,
             ))
         return outcomes
