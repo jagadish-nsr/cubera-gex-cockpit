@@ -45,6 +45,21 @@ def _today(now: datetime | None) -> date:
     return clock.astimezone(IST).date()
 
 
+def _session_with_intraday(symbol: str, session: date) -> str:
+    """Today when that file exists. Otherwise the newest captured session.
+
+    After midnight the calendar date has no futures file yet. The last
+    session's snapshots are the tape that is actually on disk.
+    """
+    day = session
+    for _ in range(8):
+        rows, _source = _pick_intraday(symbol, day.isoformat())
+        if rows:
+            return day.isoformat()
+        day = previous_session_date(day)
+    return session.isoformat()
+
+
 def _pick_intraday(symbol: str, day: str):
     nse = load_futures_intraday_day(day, symbol, FUTURES_INTRADAY_DIR)
     dhan = load_futures_intraday_day(day, symbol, FUTURES_INTRADAY_DHAN_DIR)
@@ -91,12 +106,14 @@ def build_session_reads(symbol: str, now: datetime | None = None) -> dict:
     """Positioning flag and chop meter for one cockpit index. No recommendation score."""
     sym = config.index_key(symbol)
     session = _today(now)
-    day = session.isoformat()
+    day = _session_with_intraday(sym, session)
     fii = [] if sym == "SENSEX" else participant_series("FII", n=8)
     futures = [] if sym == "SENSEX" else futures_series(sym, n=8)
     overnight = overnight_positioning(fii, futures, symbol=sym)
     rows, source = _pick_intraday(sym, day)
     change = trailing_futures_change(rows)
+    if day != session.isoformat() and change.get("window") not in (None, "unavailable"):
+        change["window"] = f"{day} {change['window'][0].lower()}{change['window'][1:]}"
     try:
         bars = _bars(sym)
     except Exception:
