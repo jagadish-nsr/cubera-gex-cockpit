@@ -6,7 +6,7 @@
   <title>Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
   <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.20">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.21">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function() {
@@ -472,6 +472,19 @@
               <b id="cockpit-breadth-val">—</b>
               <span id="cockpit-breadth-sub">Sector breadth</span>
             </div>
+          </div>
+          <div class="cockpit-split session-reads">
+            <article class="session-read" id="card-positioning">
+              <small>Index futures positioning</small>
+              <b id="positioning-headline">—</b>
+              <p id="positioning-overnight">Overnight FII book and today's anonymous futures tape.</p>
+              <p id="positioning-live"></p>
+            </article>
+            <article class="session-read" id="card-choppiness">
+              <small>Path shape</small>
+              <b id="chop-headline">—</b>
+              <p id="chop-line">Five-minute chop and one-minute path efficiency.</p>
+            </article>
           </div>
           <div id="gamma-blast-card" class="gamma-blast-row">
             <small>Expiry gamma blast</small>
@@ -2272,6 +2285,6 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.41"></script>
+  <script src="/static/js/cockpit.js?v=6.42"></script>
 </body>
 </html>
