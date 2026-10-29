@@ -592,11 +592,11 @@ def test_ema_trend_influence_on_trade_score():
 
     # CE Momentum with Bullish EMA trend vs Bearish EMA trend
     score_ce_bull, _, _ = _compute_trade_score(
-        "CE", "ATM Momentum", 2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        "CE", "ATM Momentum", 0.2, 24500.0, 24500.0, 24700.0, 24300.0,
         None, 1000, ema_trend="BULLISH"
     )
     score_ce_bear, _, _ = _compute_trade_score(
-        "CE", "ATM Momentum", 2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        "CE", "ATM Momentum", 0.2, 24500.0, 24500.0, 24700.0, 24300.0,
         None, 1000, ema_trend="BEARISH"
     )
     # Bullish trend boosts CE momentum (+8 vs -12 penalty, 20 pts diff)
@@ -605,11 +605,11 @@ def test_ema_trend_influence_on_trade_score():
 
     # PE Momentum with Bearish EMA trend vs Bullish EMA trend
     score_pe_bear, _, _ = _compute_trade_score(
-        "PE", "ATM Momentum", -2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        "PE", "ATM Momentum", -0.2, 24500.0, 24500.0, 24700.0, 24300.0,
         None, 1000, ema_trend="BEARISH"
     )
     score_pe_bull, _, _ = _compute_trade_score(
-        "PE", "ATM Momentum", -2.0, 24500.0, 24500.0, 24700.0, 24300.0,
+        "PE", "ATM Momentum", -0.2, 24500.0, 24500.0, 24700.0, 24300.0,
         None, 1000, ema_trend="BULLISH"
     )
     assert score_pe_bear > score_pe_bull

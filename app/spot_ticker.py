@@ -92,12 +92,12 @@ def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     chg_sign = "+" if chg_pts >= 0 else ""
     chg_color = "var(--go)" if chg_pts >= 0 else "var(--stop)"
 
-    # Near futures & basis
-    default_basis = {"NIFTY": 25.0, "BANKNIFTY": 140.0, "SENSEX": 90.0}
-    fb_basis = default_basis.get(symbol.upper(), 30.0)
-    fut_px = float(fut.get("price")) if (fut and fut.get("price")) else (spot + fb_basis)
-    basis = fut_px - spot
-    basis_color = "var(--go)" if basis >= 0 else "var(--stop)"
+    # Near futures and basis. A missing futures print stays missing.
+    fut_px = float(fut.get("price")) if (fut and fut.get("price")) else None
+    if fut_px is not None and fut_px <= 0:
+        fut_px = None
+    basis = (fut_px - spot) if (fut_px is not None and spot > 0) else None
+    basis_color = "var(--go)" if (basis is not None and basis >= 0) else ("var(--stop)" if basis is not None else "var(--ink-mute)")
     fut_expiry = fut.get("expiry") if fut else None
     fut_chg = fut.get("change") if fut else None
 
@@ -177,7 +177,7 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
                     "open": snap.get("open"),
                     "high": snap.get("high"),
                     "low": snap.get("low"),
-                    "vix": {"last": snap.get("vix", 13.5)},
+                    "vix": {"last": snap.get("vix")} if snap.get("vix") is not None else {},
                     "as_of": snap.get("as_of"),
                 }
         else:
@@ -262,7 +262,8 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
         rec["quote"] = _compile_quote(symbol, rec.get("ohlc"), rec.get("fut"))
 
         # Throttle SQLite snapshot persistence: at most once per 15s in background
-        if now - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S:
+        import config
+        if config.is_market_open() and now - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S:
             _LAST_SNAPSHOT_SAVE[symbol] = now
             q = rec["quote"]
             threading.Thread(target=_bg_save_snapshot, args=(symbol, q), daemon=True, name=f"snap-{symbol}").start()
@@ -344,10 +345,11 @@ def _loop(symbol: str, interval_s: float) -> None:
                     "open": snap.get("open"),
                     "high": snap.get("high"),
                     "low": snap.get("low"),
-                    "vix": {"last": snap.get("vix", 13.5)},
+                    "vix": {"last": snap.get("vix")} if snap.get("vix") is not None else {},
                     "as_of": snap.get("as_of"),
                 }
-                q_init = _compile_quote(symbol, d_init, None)
+                prev_fut = (_STORE.get(symbol) or {}).get("fut")
+                q_init = _compile_quote(symbol, d_init, prev_fut)
                 _STORE[symbol] = {
                     "ohlc": d_init,
                     "fut": None,

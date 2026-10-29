@@ -682,166 +682,83 @@ def record_daily_closing_cvd(
     return rec
 
 
+def _hashed_daily_signature(trade_date: str) -> tuple[int, float, float]:
+    """The retired date-hash filler. Used only to recognise and delete those rows."""
+    day_hash = sum(ord(c) for c in trade_date)
+    base_vol = 50000 + (day_hash % 30000)
+    sign = 1 if (day_hash % 2 == 0) else -1
+    ratio = (0.05 + ((day_hash % 25) / 100.0)) * sign
+    delta = round(base_vol * ratio, 1)
+    ref_px = 22600.0 + ((day_hash % 300) - 150)
+    return base_vol, delta, ref_px
+
+
+def _purge_hashed_daily_cvd(instrument_id: str) -> int:
+    """Delete daily rows that match the retired date-hash filler."""
+    conn = _get_write_conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT trade_date, total_volume, closing_cvd, closing_price FROM sentinel_daily_cvd WHERE instrument_id = ?",
+            (instrument_id,),
+        ).fetchall()
+        doomed = []
+        for row in rows:
+            base_vol, delta, ref_px = _hashed_daily_signature(str(row["trade_date"]))
+            try:
+                vol = int(row["total_volume"] or 0)
+                cvd = float(row["closing_cvd"] or 0.0)
+                px = float(row["closing_price"] or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if vol == base_vol and abs(cvd - delta) < 0.05 and abs(px - ref_px) < 0.05:
+                doomed.append(row["trade_date"])
+        for trade_date in doomed:
+            conn.execute(
+                "DELETE FROM sentinel_daily_cvd WHERE instrument_id = ? AND trade_date = ?",
+                (instrument_id, trade_date),
+            )
+        if doomed:
+            conn.commit()
+            log.info("Purged %s date-hash CVD rows for %s", len(doomed), instrument_id)
+        return len(doomed)
+    finally:
+        conn.close()
+
+
+def _bar_backed_dates(instrument_id: str, limit: int) -> list[str]:
+    """Distinct session dates that have 1m bars, newest last, capped at ``limit``."""
+    conn = _get_read_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT substr(start_ts, 1, 10) AS trade_date
+            FROM sentinel_bars
+            WHERE instrument_id = ? AND timeframe = '1m' AND start_ts IS NOT NULL
+            ORDER BY trade_date DESC
+            LIMIT ?
+            """,
+            (instrument_id, int(limit)),
+        ).fetchall()
+    finally:
+        conn.close()
+    dates = [str(r["trade_date"]) for r in rows if r["trade_date"]]
+    dates.reverse()
+    return dates
+
+
 def ensure_historical_daily_cvd(
     instrument_id: str = "NIFTY-FUT",
     symbol: str = "NIFTY",
     days: int = 10,
 ) -> list[dict]:
-    """Ensure at least `days` of daily closing CVD history exist, backfilling from journal CSVs if needed."""
+    """Daily CVD rebuilt from stored 1m bars. No CSV estimate and no date-hash filler."""
     ensure_sentinel_schema()
     sym = symbol or instrument_id.split("-")[0]
-
-    # Record or update current day if bars exist
-    record_daily_closing_cvd(instrument_id, symbol=sym)
-
-    # 1. Backfill from data/journal/futures/{sym}/*.csv and data/journal/futures_intraday_dhan/{sym}/*.csv
-    import csv
-    conn = _get_read_conn()
-    try:
-        rows = conn.execute(
-            "SELECT trade_date FROM sentinel_daily_cvd WHERE instrument_id = ?",
-            (instrument_id,),
-        ).fetchall()
-        existing_dates = {r["trade_date"] for r in rows}
-    finally:
-        conn.close()
-
-    fut_dir = ROOT / "data" / "journal" / "futures" / sym
-    if fut_dir.exists():
-        csv_files = sorted(fut_dir.glob("*.csv"))
-        # Check all available CSV files for missing dates in DB
-        for fpath in reversed(csv_files):
-            d_str = fpath.stem
-            if d_str in existing_dates:
-                continue
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        tot_vol = int(float(row.get("agg_vol") or row.get("near_vol") or 0))
-                        if tot_vol <= 0:
-                            continue
-                        dprice = float(row.get("dprice") or 0.0)
-                        close_px = float(row.get("close") or row.get("spot") or 0.0)
-                        d_ratio = max(-0.45, min(0.45, dprice / max(100.0, close_px * 0.0075)))
-                        delta = round(tot_vol * d_ratio, 1)
-                        b_vol = int(round((tot_vol + delta) / 2.0))
-                        s_vol = int(round((tot_vol - delta) / 2.0))
-                        rec = {
-                            "trade_date": d_str,
-                            "instrument_id": instrument_id,
-                            "symbol": sym,
-                            "closing_cvd": delta,
-                            "buy_volume": b_vol,
-                            "sell_volume": s_vol,
-                            "total_volume": tot_vol,
-                            "net_delta": delta,
-                            "closing_price": close_px,
-                            "vwap": round(close_px - (dprice * 0.3), 1),
-                            "updated_at": datetime.now(IST).isoformat(),
-                        }
-                        save_daily_cvd(rec)
-                        existing_dates.add(d_str)
-                        break
-            except Exception as e:
-                log.debug("Failed to parse historical futures CSV %s: %s", fpath, e)
-
-    # Also check futures_intraday_dhan for any days not in EOD futures directory
-    dhan_fut_dir = ROOT / "data" / "journal" / "futures_intraday_dhan" / sym
-    if dhan_fut_dir.exists():
-        dhan_csv_files = sorted(dhan_fut_dir.glob("*.csv"))
-        for fpath in reversed(dhan_csv_files):
-            d_str = fpath.stem
-            if d_str in existing_dates:
-                continue
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    reader = list(csv.DictReader(f))
-                    if not reader:
-                        continue
-                    last_row = reader[-1]
-                    raw_vol = float(last_row.get("agg_vol") or last_row.get("volume") or 0.0)
-                    lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
-                    tot_vol = int(round(raw_vol / float(lot_size))) if raw_vol > 500000 else int(raw_vol)
-                    if tot_vol <= 0:
-                        continue
-                    close_px = float(last_row.get("price") or last_row.get("spot") or 0.0)
-                    dprice = float(last_row.get("change") or 0.0)
-                    d_ratio = max(-0.45, min(0.45, dprice / max(100.0, close_px * 0.0075)))
-                    delta = round(tot_vol * d_ratio, 1)
-                    b_vol = int(round((tot_vol + delta) / 2.0))
-                    s_vol = int(round((tot_vol - delta) / 2.0))
-                    rec = {
-                        "trade_date": d_str,
-                        "instrument_id": instrument_id,
-                        "symbol": sym,
-                        "closing_cvd": delta,
-                        "buy_volume": b_vol,
-                        "sell_volume": s_vol,
-                        "total_volume": tot_vol,
-                        "net_delta": delta,
-                        "closing_price": close_px,
-                        "vwap": round(close_px - (dprice * 0.3), 1),
-                        "updated_at": datetime.now(IST).isoformat(),
-                    }
-                    save_daily_cvd(rec)
-                    existing_dates.add(d_str)
-            except Exception as e:
-                log.debug("Failed to parse dhan futures intraday CSV %s: %s", fpath, e)
-
-    existing = list_daily_cvd(instrument_id, limit=days)
-    if len(existing) >= days:
-        return existing
-
-    needed = days - len(existing)
-
-    # 2. If still needed, synthesize authentic anchor trading days using data.holidays
-    if needed > 0:
-        try:
-            from data.holidays import roll_back_to_trading_day
-        except Exception:
-            def roll_back_to_trading_day(d):
-                while d.weekday() >= 5:
-                    d -= timedelta(days=1)
-                return d
-
-        curr_d = datetime.now(IST).date()
-        step = 0
-        while needed > 0 and step < 40:
-            step += 1
-            curr_d = roll_back_to_trading_day(curr_d - timedelta(days=1))
-            d_str = curr_d.strftime("%Y-%m-%d")
-            if d_str in existing_dates:
-                continue
-
-            day_hash = sum(ord(c) for c in d_str)
-            base_vol = 50000 + (day_hash % 30000)
-            sign = 1 if (day_hash % 2 == 0) else -1
-            ratio = (0.05 + ((day_hash % 25) / 100.0)) * sign
-            delta = round(base_vol * ratio, 1)
-            b_vol = int(round((base_vol + delta) / 2.0))
-            s_vol = int(round((base_vol - delta) / 2.0))
-            ref_px = 22600.0 + ((day_hash % 300) - 150)
-
-            rec = {
-                "trade_date": d_str,
-                "instrument_id": instrument_id,
-                "symbol": sym,
-                "closing_cvd": delta,
-                "buy_volume": b_vol,
-                "sell_volume": s_vol,
-                "total_volume": base_vol,
-                "net_delta": delta,
-                "closing_price": ref_px,
-                "vwap": ref_px,
-                "updated_at": datetime.now(IST).isoformat(),
-            }
-            save_daily_cvd(rec)
-            existing_dates.add(d_str)
-            needed -= 1
-
-    return list_daily_cvd(instrument_id, limit=days)
-
-
-
-
+    _purge_hashed_daily_cvd(instrument_id)
+    out = []
+    for trade_date in _bar_backed_dates(instrument_id, days):
+        rec = record_daily_closing_cvd(instrument_id, symbol=sym, trade_date=trade_date)
+        if rec:
+            out.append(rec)
+    return out

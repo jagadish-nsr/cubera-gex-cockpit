@@ -232,10 +232,9 @@ def _load_from_eod_snapshot(
                 return True
 
             clear_sentinel_data(instrument_id)
-            lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
-            vol = 150000
+            vol = 0
 
-            # Anchor bar from EOD snapshot -- derived metrics default to session-close neutral
+            # OHLC from the stored snapshot. Volume stays 0: this bar is not a print.
             eod_bar = Bar(
                 instrument_id=instrument_id,
                 timeframe="1m",
@@ -245,12 +244,12 @@ def _load_from_eod_snapshot(
                 low=round(low_px, 1),
                 close=round(spot_px, 1),
                 volume_units=vol,
-                volume_lots=round(vol / lot_size, 1),
-                buy_vol_est=round(vol / 2.0, 1),
-                sell_vol_est=round(vol / 2.0, 1),
+                volume_lots=0.0,
+                buy_vol_est=0.0,
+                sell_vol_est=0.0,
                 delta=0.0,
                 delta_ratio=0.0,
-                delta_quality=1.0,
+                delta_quality=0.0,
                 cvd=0.0,
                 vwap=round(spot_px, 1),
                 vwap_sigma_1=round(high_px, 1),

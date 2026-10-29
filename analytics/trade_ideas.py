@@ -4,7 +4,7 @@ Synthesizes:
 1. Real-time Spot & GEX Structure (Spot, Call Wall, Put Wall, Gamma Flip, Max Pain)
 2. OrderFlow Sentinel Microstructure (Session VWAP, Sigma Envelopes, Aggressive vs Passive Absorption)
 3. Institutional Buildup & Strike Velocity (OI changes, Short Covering, Long Buildup)
-4. Macro Context & Directional Bias (-10.0 to +10.0 conviction score)
+4. Macro Context & Directional Bias (live ceiling ±2.5: skew and India VIX)
 
 Evaluates 7 institutional options strategies for Calls (CE) and Puts (PE):
 - Strategy 1: ATM Momentum Play (Delta ~0.50, closest to Spot)
@@ -31,6 +31,7 @@ import time
 from typing import Any, Sequence
 
 import config
+from analytics.directional_bias import BIAS_MILD, BIAS_QUIET, BIAS_RATIO_LO, BIAS_STRONG
 
 # Deduplication cache for WebSocket option strike subscriptions: (symbol, strike)
 _SUBSCRIBED_REC_STRIKES: set[tuple[str, float]] = set()
@@ -1377,24 +1378,24 @@ def _compute_trade_score(
                 elif "ICEBERG" in pt_upper or "ABSORPTION" in pt_upper:
                     score += 4   # Fading extreme lower absorption is allowed
 
-    # 1. Macro & Directional Bias alignment (Weight: 25 pts)
+    # Directional bias. The live ceiling is ±2.5 (skew 1.5 + India VIX 1.0).
     if side == "CE":
-        if bias_score >= 4.0:
+        if bias_score >= BIAS_STRONG:
             score += 25
-        elif bias_score >= 1.5:
+        elif bias_score >= BIAS_MILD:
             score += 18
-        elif bias_score <= -4.0:
+        elif bias_score <= -BIAS_STRONG:
             score -= 22
-        elif bias_score <= -1.5:
+        elif bias_score <= -BIAS_MILD:
             score -= 12
     else:  # PE
-        if bias_score <= -4.0:
+        if bias_score <= -BIAS_STRONG:
             score += 25
-        elif bias_score <= -1.5:
+        elif bias_score <= -BIAS_MILD:
             score += 18
-        elif bias_score >= 4.0:
+        elif bias_score >= BIAS_STRONG:
             score -= 22
-        elif bias_score >= 1.5:
+        elif bias_score >= BIAS_MILD:
             score -= 12
 
     # 2. VWAP & Equilibrium Location (Continuous Sigmoid Scoring: eliminates cliff oscillation)
@@ -1490,27 +1491,27 @@ def _compute_trade_score(
         inside_corridor = (put_wall <= spot <= call_wall) or (abs(call_wall - put_wall) > 0 and put_wall * 0.998 <= spot <= call_wall * 1.002)
         if inside_corridor:
             score += 10
-        if abs(bias_score) <= 2.5:
+        if abs(bias_score) <= BIAS_QUIET:
             score += 8
 
     elif "VOL" in pt_upper or "DISPERSION" in pt_upper:
         # Edge: Range compression ready for explosive breakout
         if abs(spot - vwap) <= max(25.0, spot * 0.0015):
             score += 10
-        if has_breakout_sig or abs(bias_score) >= 2.5:
+        if has_breakout_sig or abs(bias_score) >= BIAS_QUIET:
             score += 8
 
     elif "RATIO" in pt_upper or "REVERSAL" in pt_upper:
         # Edge: Moderate directional drift with high R:R to Wall
         if side == "CE":
-            if 1.0 <= bias_score <= 4.0:
+            if BIAS_RATIO_LO <= bias_score <= BIAS_STRONG:
                 score += 14
-            elif bias_score > 4.0:
+            elif bias_score > BIAS_STRONG:
                 score += 6
         else:
-            if -4.0 <= bias_score <= -1.0:
+            if -BIAS_STRONG <= bias_score <= -BIAS_RATIO_LO:
                 score += 14
-            elif bias_score < -4.0:
+            elif bias_score < -BIAS_STRONG:
                 score += 6
 
     # 6. Target Engine Scenario Confluence (Weight: ±12 pts)
@@ -1846,23 +1847,23 @@ def _generate_strategy_score_reason(
 
     # 2. Directional Bias Score with exact numeric reading
     if side == "CE":
-        if bias_score >= 4.0:
-            reasons.append(f"Aggressive Bullish Bias ({bias_score:+.1f}/5.0)")
-        elif bias_score >= 1.5:
-            reasons.append(f"Directional Bias ({bias_score:+.1f}/5.0) confirming upside")
-        elif bias_score <= -1.5:
-            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/5.0)")
+        if bias_score >= BIAS_STRONG:
+            reasons.append(f"Aggressive Bullish Bias ({bias_score:+.1f}/2.5)")
+        elif bias_score >= BIAS_MILD:
+            reasons.append(f"Directional Bias ({bias_score:+.1f}/2.5) confirming upside")
+        elif bias_score <= -BIAS_MILD:
+            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/2.5)")
         else:
-            reasons.append(f"Neutral Bias ({bias_score:+.1f}/5.0)")
+            reasons.append(f"Neutral Bias ({bias_score:+.1f}/2.5)")
     else:
-        if bias_score <= -4.0:
-            reasons.append(f"Aggressive Bearish Bias ({bias_score:+.1f}/5.0)")
-        elif bias_score <= -1.5:
-            reasons.append(f"Directional Bias ({bias_score:+.1f}/5.0) confirming downside")
-        elif bias_score >= 1.5:
-            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/5.0)")
+        if bias_score <= -BIAS_STRONG:
+            reasons.append(f"Aggressive Bearish Bias ({bias_score:+.1f}/2.5)")
+        elif bias_score <= -BIAS_MILD:
+            reasons.append(f"Directional Bias ({bias_score:+.1f}/2.5) confirming downside")
+        elif bias_score >= BIAS_MILD:
+            reasons.append(f"Counter-trend headwind (Bias {bias_score:+.1f}/2.5)")
         else:
-            reasons.append(f"Neutral Bias ({bias_score:+.1f}/5.0)")
+            reasons.append(f"Neutral Bias ({bias_score:+.1f}/2.5)")
 
     # 3. Gamma Regime relative to Flip
     if flip > 0:

@@ -302,7 +302,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: INACTIVE",
             "description": "No spot on the book. The gamma-blast watch has nothing to mark.",
-            "score": 24,
+            "score": None,
             "is_expiry": False,
             "in_blast_window": False,
             "primary_strike": None,

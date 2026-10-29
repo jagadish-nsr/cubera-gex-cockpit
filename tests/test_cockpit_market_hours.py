@@ -70,24 +70,19 @@ def test_is_market_open_weekday_holidays():
     assert config.is_market_open(dt_holiday_tue) is False
 
 
-def test_web_server_load_active_dashboard_cold_fallback_uses_demo_when_closed():
-    """Verify that if market is closed and no snapshot files exist, _load_active_dashboard uses demo mode instead of hitting live APIs."""
+def test_web_server_load_active_dashboard_closed_without_book_is_empty():
+    """A closed session with no chain stays empty. It does not load the demo book."""
     from web_server import _load_active_dashboard, _DASH_MEM_CACHE
-    from pathlib import Path
 
     _DASH_MEM_CACHE.clear()
 
-    with patch("config.is_market_open", return_value=False):
-        with patch.object(Path, "exists", return_value=False):
-            with patch("web_server.load_dashboard") as mock_load:
-                mock_load.return_value = None
-                try:
-                    _load_active_dashboard("NIFTY", "weekly")
-                except Exception:
-                    pass
-                assert mock_load.called
-                _, kwargs = mock_load.call_args
-                assert kwargs.get("use_demo") is True
+    with patch("config.is_market_open", return_value=False), \
+         patch("web_server._unpickle_latest_snap", return_value=None), \
+         patch("web_server._from_lkgs", return_value=None), \
+         patch("web_server.load_dashboard") as mock_load:
+        out = _load_active_dashboard("NIFTY", "weekly")
+    assert out is None
+    assert not mock_load.called
 
 
 def test_gex_daemon_pauses_when_market_closed():
@@ -104,6 +99,23 @@ def test_gex_daemon_pauses_when_market_closed():
                 except KeyboardInterrupt:
                     pass
                 assert not mock_load.called
+
+
+def test_compile_quote_does_not_invent_futures():
+    from app.spot_ticker import _compile_quote
+    quote = _compile_quote("NIFTY", {"ltp": 23000.0, "prev_close": 22900.0}, None)
+    assert quote["fut_px"] is None
+    assert quote["basis"] is None
+    assert quote["vix"] is None
+
+
+def test_gamma_blast_missing_spot_has_no_score():
+    from app.gammablast import evaluate_dashboard_gamma_blast
+    from unittest.mock import MagicMock
+    dash = MagicMock()
+    dash.levels.spot = 0
+    result = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert result["score"] is None
 
 
 def test_gamma_blast_concluded_when_market_closed():

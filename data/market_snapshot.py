@@ -108,13 +108,6 @@ def save_snapshot(
 
         new_cw = float(call_wall) if call_wall is not None and float(call_wall) > min_valid else ex_cw
         new_pw = float(put_wall) if put_wall is not None and float(put_wall) > min_valid else ex_pw
-
-        if new_cw is None and new_spot:
-            step = 100 if sym in ("BANKNIFTY", "SENSEX") else 50
-            new_cw = float(round((new_spot + (400 if sym in ("BANKNIFTY", "SENSEX") else 150)) / step) * step)
-        if new_pw is None and new_spot:
-            step = 100 if sym in ("BANKNIFTY", "SENSEX") else 50
-            new_pw = float(round((new_spot - (400 if sym in ("BANKNIFTY", "SENSEX") else 150)) / step) * step)
         new_flip = float(gamma_flip) if gamma_flip is not None and gamma_flip > min_valid else ex.get("gamma_flip")
         new_mp = float(max_pain) if max_pain is not None and max_pain > min_valid else ex.get("max_pain")
         new_net_gex = float(net_gex) if net_gex is not None else ex.get("net_gex")
