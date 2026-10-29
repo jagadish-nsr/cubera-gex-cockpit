@@ -94,6 +94,7 @@ class TradeIdea:
     catalyst_tags: list[str] = field(default_factory=list)
     position_size: PositionSizeInfo | None = None
     is_ws_live: bool = False           # True when raw exchange trade ticks arrive via WebSocket
+    quote_source: str = ""             # "ws" | "chain" | "entry" | "estimated"
     rec_id: str = ""                   # Unique persistent ID e.g. "NIFTY_CE_22600_MOMENTUM"
     triggered_at: str = ""             # Formatted IST datetime string
     conviction_tier: str = "HIGH"      # "HIGH" (Score > 85), "MEDIUM" (75-85), "LOW" (<75)
@@ -1003,16 +1004,21 @@ class RecommendationLatchManager:
                 rec_id = idea.rec_id or f"{symbol}_{idea.side}_{int(idea.strike)}_{idea.play_badge}"
                 entry = self._latched.get(rec_id)
 
-                # Check spot boundary
+                # A missing level is 0. That is not a breach and not a target.
                 inval_breached = False
                 target_hit = False
-                if current_spot > 0:
+                inval_level = float(idea.spot_invalidation or 0.0)
+                target_level = float(idea.target_1_spot or 0.0)
+                if current_spot > 0 and inval_level > 0:
                     if idea.side == "CE":
-                        inval_breached = (current_spot < idea.spot_invalidation)
-                        target_hit = (current_spot >= idea.target_1_spot)
+                        inval_breached = current_spot < inval_level
                     else:
-                        inval_breached = (current_spot > idea.spot_invalidation)
-                        target_hit = (current_spot <= idea.target_1_spot)
+                        inval_breached = current_spot > inval_level
+                if current_spot > 0 and target_level > 0:
+                    if idea.side == "CE":
+                        target_hit = current_spot >= target_level
+                    else:
+                        target_hit = current_spot <= target_level
 
                 if inval_breached:
                     idea.latch_state = "INVALIDATED"
@@ -1073,10 +1079,10 @@ class RecommendationLatchManager:
                 else:
                     if idea.quality_score >= min_score:
                         idea.latch_state = "ACTIVE"
-                        init_ltp = float(idea.current_ltp or 0.0)
-                        init_spot = float(current_spot or 0.0)
-                        idea.initial_ltp = init_ltp
-                        idea.initial_spot = init_spot
+                        if idea.initial_ltp <= 0:
+                            idea.initial_ltp = float(idea.current_ltp or 0.0)
+                        if idea.initial_spot <= 0 and current_spot > 0:
+                            idea.initial_spot = float(current_spot)
                         idea.first_active_ts = now
                         idea.last_active_ts = now
                         self._latched[rec_id] = {
@@ -1089,8 +1095,8 @@ class RecommendationLatchManager:
                             "last_score": idea.quality_score,
                             "latch_state": "ACTIVE",
                             "triggered_at": idea.triggered_at,
-                            "initial_ltp": init_ltp,
-                            "initial_spot": init_spot,
+                            "initial_ltp": idea.initial_ltp,
+                            "initial_spot": idea.initial_spot,
                         }
                     else:
                         idea.latch_state = "QUALIFIED" if idea.quality_score >= 65 else "DEGRADED"
@@ -1129,9 +1135,9 @@ def update_trade_idea_live_telemetry(
     5. Real-time Unrealized PnL, Target Progress %, and Invalidation Buffer.
     6. Dynamic Time Since Last Active Counter.
     """
-    if idea.initial_ltp <= 0.0:
-        idea.initial_ltp = float(idea.current_ltp if idea.current_ltp > 0 else 1.0)
-    if idea.initial_spot <= 0.0 and current_spot > 0:
+    if idea.initial_ltp <= 0.0 and idea.current_ltp > 0 and getattr(idea, "quote_source", "") != "entry":
+        idea.initial_ltp = float(idea.current_ltp)
+    if idea.initial_spot <= 0.0 and current_spot > 0 and getattr(idea, "quote_source", "") != "entry":
         idea.initial_spot = float(current_spot)
 
     # 1. Check direct WebSocket quote (guarding against mock/replay spot mismatch)
@@ -1148,21 +1154,29 @@ def update_trade_idea_live_telemetry(
     if ws_q and float(ws_q.get("ltp") or 0.0) > 0:
         idea.current_ltp = float(ws_q["ltp"])
         idea.is_ws_live = True
+        idea.quote_source = "ws"
     else:
         idea.is_ws_live = False
-        # Preserve authentic chain price if already populated; fallback to spot-delta only if missing
-        if idea.current_ltp <= 0.0:
-            if current_spot > 0 and idea.initial_spot > 0:
+        if getattr(idea, "quote_source", "") == "entry":
+            # The stored entry is not a live premium. Leave it unlabeled as a quote.
+            if idea.current_ltp <= 0.0 and idea.initial_ltp > 0:
+                idea.current_ltp = float(idea.initial_ltp)
+        elif idea.current_ltp <= 0.0:
+            if current_spot > 0 and idea.initial_spot > 0 and idea.initial_ltp > 0:
                 spot_diff = current_spot - idea.initial_spot
                 if idea.side == "PE":
                     spot_diff = -spot_diff
                 eff_delta = max(0.15, min(0.95, abs(float(idea.delta_approx or 0.50))))
                 idea.current_ltp = max(0.5, round(idea.initial_ltp + (spot_diff * eff_delta), 1))
-            else:
-                idea.current_ltp = max(0.5, float(idea.initial_ltp or 1.0))
+                idea.quote_source = "estimated"
+            elif idea.initial_ltp > 0:
+                idea.current_ltp = float(idea.initial_ltp)
+                idea.quote_source = "entry"
+        elif not idea.quote_source:
+            idea.quote_source = "chain"
 
-    # Maintain strict SL < LTP invariant for live rendering
-    if idea.current_ltp > 0.0 and idea.stop_loss >= idea.current_ltp:
+    # A stored stop on an entry-sourced pin is the user's level. Do not rewrite it.
+    if idea.quote_source != "entry" and idea.current_ltp > 0.0 and idea.stop_loss >= idea.current_ltp:
         idea.stop_loss = max(0.05, round(idea.current_ltp * 0.72, 2))
 
     _refresh_trade_idea_pnl(idea, current_spot)
@@ -1185,13 +1199,17 @@ def _refresh_trade_idea_pnl(idea: TradeIdea, current_spot: float) -> None:
     else:
         idea.target_progress_pct = 0.0
 
-    if current_spot > 0:
+    inval_level = float(idea.spot_invalidation or 0.0)
+    if current_spot > 0 and inval_level > 0:
         if idea.side == "CE":
-            idea.inval_buffer = current_spot - idea.spot_invalidation
-            idea.inval_breached = (current_spot < idea.spot_invalidation)
+            idea.inval_buffer = current_spot - inval_level
+            idea.inval_breached = current_spot < inval_level
         else:
-            idea.inval_buffer = idea.spot_invalidation - current_spot
-            idea.inval_breached = (current_spot > idea.spot_invalidation)
+            idea.inval_buffer = inval_level - current_spot
+            idea.inval_breached = current_spot > inval_level
+    else:
+        idea.inval_buffer = 0.0
+        idea.inval_breached = False
 
     if getattr(idea, "last_active_ts", 0.0) > 0 or getattr(idea, "first_active_ts", 0.0) > 0:
         now_sec = time.time()
@@ -1218,6 +1236,9 @@ def refresh_trade_idea_live_mtm(
 ) -> TradeIdea:
     """Overlay live option LTP and (optionally) recompute T1/T2/SL from current premium + spot."""
     update_trade_idea_live_telemetry(idea, symbol, current_spot)
+    if getattr(idea, "quote_source", "") == "entry":
+        _refresh_trade_idea_pnl(idea, current_spot)
+        return idea
     if not reprice_targets:
         return idea
     ltp = float(idea.current_ltp or 0.0)
@@ -2834,33 +2855,99 @@ def apply_tactical_watch(
     )
 
 
-def _rehydrate_bookmarked_trade_idea(r: dict, current_spot: float) -> TradeIdea:
-    """Instantiate a full TradeIdea from an existing SQLite/cached recommendation record."""
+def _stored_float(record: dict, payload: dict, *keys: str) -> float:
+    """First present number. A missing field stays 0. It is not a model output."""
+    for source in (record, payload):
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            if key not in source:
+                continue
+            raw = source.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+    return 0.0
+
+
+def _stored_score(record: dict, payload: dict) -> int:
+    for source, key in (
+        (record, "current_score"),
+        (record, "initial_score"),
+        (record, "quality_score"),
+        (payload, "quality_score"),
+        (payload, "current_score"),
+    ):
+        if not isinstance(source, dict) or key not in source:
+            continue
+        raw = source.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _stored_tags(record: dict, payload: dict) -> list[str]:
+    tags = payload.get("catalyst_tags") if isinstance(payload, dict) else None
+    if isinstance(tags, list):
+        return [str(tag) for tag in tags]
+    raw = record.get("catalyst_tags_json") if isinstance(record, dict) else None
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if isinstance(parsed, list):
+        return [str(tag) for tag in parsed]
+    return []
+
+
+def _rehydrate_bookmarked_trade_idea(r: dict, _current_spot: float) -> TradeIdea:
+    """Rebuild a pinned card from the stored row. Missing model fields stay empty."""
     payload = {}
     if r.get("payload_json"):
         try:
-            payload = json.loads(r["payload_json"])
-        except Exception:
+            parsed = json.loads(r["payload_json"])
+            if isinstance(parsed, dict):
+                payload = parsed
+        except (TypeError, ValueError):
             payload = {}
 
-    side = str(r.get("side") or payload.get("side", "CE")).upper()
-    strike = float(r.get("strike") or payload.get("strike", 0.0))
-    initial_ltp = float(r.get("initial_ltp") or payload.get("initial_ltp") or payload.get("entry_ltp", 1.0))
-    score = int(r.get("current_score") or r.get("initial_score") or payload.get("quality_score", 70))
-    conviction_tier = r.get("conviction_tier") or payload.get("conviction_tier", "LOW")
+    side = str(r.get("side") or payload.get("side") or "CE").upper()
+    strike = _stored_float(r, payload, "strike")
+    initial_ltp = _stored_float(r, payload, "initial_ltp", "entry_ltp")
+    score = _stored_score(r, payload)
+    conviction_tier = str(r.get("conviction_tier") or payload.get("conviction_tier") or "").upper()
+    if conviction_tier not in ("HIGH", "MEDIUM", "LOW"):
+        conviction_tier = ""
     if conviction_tier == "HIGH":
         conv_label = "HIGH CONVICTION (Grade A+)"
         conv_col = "var(--go)"
     elif conviction_tier == "MEDIUM":
         conv_label = "SECONDARY PLAY (Grade B+)"
         conv_col = "var(--spark)"
-    else:
+    elif conviction_tier == "LOW":
         conv_label = "TACTICAL OPPORTUNITY (Grade B)"
         conv_col = "var(--ink-mute)"
+    else:
+        conv_label = ""
+        conv_col = ""
 
     sym = r.get("symbol") or payload.get("symbol", "")
     badge = r.get("play_badge") or payload.get("play_badge", "STRATEGY")
     rid = r.get("rec_id") or payload.get("rec_id", f"{sym}_{side}_{int(strike)}_{badge}")
+    raw_delta = payload.get("delta_approx") if "delta_approx" in payload else None
+    try:
+        delta = float(raw_delta) if raw_delta not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        delta = 0.0
 
     idea = TradeIdea(
         symbol=sym,
@@ -2870,30 +2957,31 @@ def _rehydrate_bookmarked_trade_idea(r: dict, current_spot: float) -> TradeIdea:
         strike=strike,
         option_symbol=r.get("option_symbol") or payload.get("option_symbol", f"{sym} {int(strike)} {side}"),
         current_ltp=initial_ltp,
-        delta_approx=float(payload.get("delta_approx", 0.50 if side == "CE" else -0.50)),
+        delta_approx=delta,
         entry_trigger=r.get("entry_trigger") or payload.get("entry_trigger", "Bookmarked Active Thesis"),
-        spot_invalidation=float(r.get("spot_invalidation") or payload.get("spot_invalidation", 0.0)),
+        spot_invalidation=_stored_float(r, payload, "spot_invalidation"),
         spot_invalidation_text=r.get("spot_invalidation_text") or payload.get("spot_invalidation_text", ""),
-        target_1=float(r.get("target_1") or payload.get("target_1", 0.0)),
-        target_1_spot=float(r.get("target_1_spot") or payload.get("target_1_spot", 0.0)),
-        target_2=float(r.get("target_2") or payload.get("target_2", 0.0)),
-        target_2_spot=float(r.get("target_2_spot") or payload.get("target_2_spot", 0.0)),
-        stop_loss=float(r.get("stop_loss") or payload.get("stop_loss", 0.0)),
-        risk_reward_ratio=r.get("risk_reward_ratio") or payload.get("risk_reward_ratio", "1 : 2.5"),
+        target_1=_stored_float(r, payload, "target_1"),
+        target_1_spot=_stored_float(r, payload, "target_1_spot"),
+        target_2=_stored_float(r, payload, "target_2"),
+        target_2_spot=_stored_float(r, payload, "target_2_spot"),
+        stop_loss=_stored_float(r, payload, "stop_loss"),
+        risk_reward_ratio=str(r.get("risk_reward_ratio") or payload.get("risk_reward_ratio") or ""),
         quality_score=score,
         conviction_label=conv_label,
         conviction_color=conv_col,
         rationale=r.get("rationale") or payload.get("rationale", "User-pinned setup preserved across market scans."),
-        catalyst_tags=payload.get("catalyst_tags") or (json.loads(r.get("catalyst_tags_json") or "[]") if r.get("catalyst_tags_json") else []),
+        catalyst_tags=_stored_tags(r, payload),
         rec_id=rid,
-        triggered_at=r.get("triggered_at") or payload.get("triggered_at", ""),
+        triggered_at=str(r.get("triggered_at") or payload.get("triggered_at") or ""),
         conviction_tier=conviction_tier,
         is_bookmarked=True,
-        p_touch_target_1=float(payload.get("p_touch_target_1", 0.65)),
-        p_touch_sl=float(payload.get("p_touch_sl", 0.35)),
-        net_ev_pts=float(payload.get("net_ev_pts", 15.0)),
+        p_touch_target_1=_stored_float(r, payload, "p_touch_target_1"),
+        p_touch_sl=_stored_float(r, payload, "p_touch_sl"),
+        net_ev_pts=_stored_float(r, payload, "net_ev_pts"),
         initial_ltp=initial_ltp,
-        initial_spot=float(r.get("initial_spot") or payload.get("initial_spot", current_spot)),
+        initial_spot=_stored_float(r, payload, "initial_spot"),
+        quote_source="entry",
     )
     return idea
 
@@ -3225,12 +3313,16 @@ def generate_trade_recommendations(
     if rec_store:
         try:
             bm_records = rec_store.list_bookmarked_records(symbol)
-            existing_ce_ids = {getattr(t, "rec_id", None) for t in ce_recs}
-            existing_pe_ids = {getattr(t, "rec_id", None) for t in pe_recs}
-            for b_rec in bm_records:
-                rid = b_rec.get("rec_id")
-                if not rid:
-                    continue
+        except Exception as exc:
+            log.warning("Error listing bookmarked records for %s: %s", symbol, exc)
+            bm_records = []
+        existing_ce_ids = {getattr(t, "rec_id", None) for t in ce_recs}
+        existing_pe_ids = {getattr(t, "rec_id", None) for t in pe_recs}
+        for b_rec in bm_records:
+            rid = b_rec.get("rec_id")
+            if not rid:
+                continue
+            try:
                 b_side = str(b_rec.get("side", "CE")).upper()
                 if b_side == "CE" and rid not in existing_ce_ids:
                     rehydrated = _rehydrate_bookmarked_trade_idea(b_rec, spot)
@@ -3240,8 +3332,8 @@ def generate_trade_recommendations(
                     rehydrated = _rehydrate_bookmarked_trade_idea(b_rec, spot)
                     pe_recs.append(rehydrated)
                     existing_pe_ids.add(rid)
-        except Exception as exc:
-            log.warning("Error rehydrating bookmarked records for %s: %s", symbol, exc)
+            except Exception as exc:
+                log.warning("Error rehydrating bookmark %s for %s: %s", rid, symbol, exc)
 
     from datetime import datetime, timezone, timedelta
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
@@ -3250,8 +3342,24 @@ def generate_trade_recommendations(
     for t in ce_recs + pe_recs:
         t.position_size = compute_position_size(t, account_capital=500_000.0, risk_pct=1.5, lot_size=lot_size)
         t.rec_id = f"{symbol}_{t.side}_{int(t.strike)}_{t.play_badge}"
-        t.triggered_at = now_ist
-        t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
+        pinned_row = None
+        if rec_store is not None:
+            try:
+                if rec_store.is_bookmarked(t.rec_id):
+                    t.is_bookmarked = True
+                    pinned_row = rec_store.get_bookmarked_record(t.rec_id)
+            except Exception:
+                pinned_row = None
+        if t.is_bookmarked:
+            stored_tier = str((pinned_row or {}).get("conviction_tier") or t.conviction_tier or "").upper()
+            if stored_tier in ("HIGH", "MEDIUM", "LOW"):
+                t.conviction_tier = stored_tier
+            stored_trigger = str((pinned_row or {}).get("triggered_at") or t.triggered_at or "")
+            if stored_trigger:
+                t.triggered_at = stored_trigger
+        else:
+            t.triggered_at = now_ist
+            t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
 
         # Generate strategy-specific microstructure reasoning with precise data points
         t.score_reason = _generate_strategy_score_reason(
@@ -3426,53 +3534,80 @@ def generate_trade_recommendations(
     all_ce_candidates = sorted(ce_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
     all_pe_candidates = sorted(pe_recs, key=lambda x: (x.quality_score, x.net_ev_pts), reverse=True)
 
-    # 6. Quality-Gate Partitioning (Score > 85 Higher Conviction, 75 <= Score <= 85 Lower Fallback, 65 <= Score < 75 Tactical, or Bookmarked/Active Latch)
+    # 6. Quality-Gate Partitioning.
+    # A pin stays in the tier stored when it was bookmarked. A faded score does
+    # not move it. A breached spot level removes it from every tier.
+    def _open(idea: TradeIdea) -> bool:
+        return idea.latch_state != "INVALIDATED"
+
     higher_ce = [
         t for t in all_ce_candidates
-        if (t.quality_score > 85)
-        or (t.is_bookmarked and t.conviction_tier == "HIGH" and t.latch_state != "INVALIDATED")
+        if _open(t) and (
+            (t.is_bookmarked and t.conviction_tier == "HIGH")
+            or ((not t.is_bookmarked) and t.quality_score > 85)
+        )
     ]
     higher_pe = [
         t for t in all_pe_candidates
-        if (t.quality_score > 85)
-        or (t.is_bookmarked and t.conviction_tier == "HIGH" and t.latch_state != "INVALIDATED")
+        if _open(t) and (
+            (t.is_bookmarked and t.conviction_tier == "HIGH")
+            or ((not t.is_bookmarked) and t.quality_score > 85)
+        )
     ]
 
     lower_ce = [
         t for t in all_ce_candidates
-        if (
-            (75 <= t.quality_score <= 85)
-            or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
-            or (t.is_bookmarked and t.conviction_tier == "MEDIUM" and t.latch_state != "INVALIDATED")
-        ) and t not in higher_ce
+        if _open(t) and t not in higher_ce and (
+            (t.is_bookmarked and t.conviction_tier == "MEDIUM")
+            or (
+                (not t.is_bookmarked)
+                and (
+                    (75 <= t.quality_score <= 85)
+                    or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
+                )
+            )
+        )
     ]
     lower_pe = [
         t for t in all_pe_candidates
-        if (
-            (75 <= t.quality_score <= 85)
-            or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
-            or (t.is_bookmarked and t.conviction_tier == "MEDIUM" and t.latch_state != "INVALIDATED")
-        ) and t not in higher_pe
+        if _open(t) and t not in higher_pe and (
+            (t.is_bookmarked and t.conviction_tier == "MEDIUM")
+            or (
+                (not t.is_bookmarked)
+                and (
+                    (75 <= t.quality_score <= 85)
+                    or (t.latch_state == "ACTIVE" and 75 <= t.quality_score <= 85)
+                )
+            )
+        )
     ]
 
     tactical_ce = [
         t for t in all_ce_candidates
-        if (
-            (65 <= t.quality_score < 75)
-            or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
-            or (t.is_bookmarked and (t.conviction_tier == "LOW" or t.quality_score < 75) and t.latch_state != "INVALIDATED")
-        ) and t not in higher_ce and t not in lower_ce
+        if _open(t) and t not in higher_ce and t not in lower_ce and (
+            (t.is_bookmarked and t.conviction_tier not in ("HIGH", "MEDIUM"))
+            or (
+                (not t.is_bookmarked)
+                and (
+                    (65 <= t.quality_score < 75)
+                    or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
+                )
+            )
+        )
     ]
     tactical_pe = [
         t for t in all_pe_candidates
-        if (
-            (65 <= t.quality_score < 75)
-            or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
-            or (t.is_bookmarked and (t.conviction_tier == "LOW" or t.quality_score < 75) and t.latch_state != "INVALIDATED")
-        ) and t not in higher_pe and t not in lower_pe
+        if _open(t) and t not in higher_pe and t not in lower_pe and (
+            (t.is_bookmarked and t.conviction_tier not in ("HIGH", "MEDIUM"))
+            or (
+                (not t.is_bookmarked)
+                and (
+                    (65 <= t.quality_score < 75)
+                    or (t.latch_state == "ACTIVE" and 65 <= t.quality_score < 75)
+                )
+            )
+        )
     ]
-    tactical_ce = [t for t in tactical_ce if t.latch_state != "INVALIDATED"]
-    tactical_pe = [t for t in tactical_pe if t.latch_state != "INVALIDATED"]
 
     # Display rule: Higher conviction if available; fallback to lower ONLY if zero higher conviction
     if higher_ce:
