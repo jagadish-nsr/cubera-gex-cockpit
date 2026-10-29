@@ -2738,5 +2738,65 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 .admin-state-weekend,
 .admin-state-special_session { color: var(--ink-mute); }
 
+/* Cockpit Active Recommendations Mini / Full Expandable Cards */
+.cockpit-rec-card {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 8px;
+  transition: all 0.2s ease;
+}
+
+.cockpit-rec-card:hover {
+  border-color: var(--line-strong);
+}
+
+.cockpit-rec-card.is-expanded {
+  border-color: var(--spark);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.14);
+}
+
+.cockpit-card-mini-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cockpit-card-mini-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.75rem;
+  margin-bottom: 8px;
+  color: var(--ink-mute);
+  cursor: pointer;
+  user-select: none;
+  background: var(--surface-3);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.cockpit-card-mini-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.cockpit-card-full-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  animation: fadeIn 0.2s ease;
+}
+
+
 
 
