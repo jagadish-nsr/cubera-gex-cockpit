@@ -9,7 +9,7 @@ Implements Sentinel §9:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sentinel.models import Bar, SentinelSignal, SignalOutcome
@@ -25,6 +25,7 @@ def evaluate_signal_outcomes(
     call_wall: float = 0.0,
     put_wall: float = 0.0,
     sigma_h: float | None = None,
+    bars_5m: list[Bar] | None = None,
 ) -> SignalOutcome:
     """Evaluate forward return and excursions of a signal across subsequent bars with dynamic vol & wall targets."""
     inst = str(signal.instrument_id).upper()
@@ -82,22 +83,15 @@ def evaluate_signal_outcomes(
     ret_15m: float | None = None
     ret_30m: float | None = None
 
+    # 3. Track excursion and forward returns on subsequent 1-minute bars
     for i, bar in enumerate(subsequent_bars):
         if is_long:
             fav = bar.high - entry_price
             adv = entry_price - bar.low
-            if bar.low <= signal.invalidation_level:
-                stopped = True
-            if bar.high >= target_price:
-                target_hit = True
             cur_ret = bar.close - entry_price
         else:
             fav = entry_price - bar.low
             adv = bar.high - entry_price
-            if bar.high >= signal.invalidation_level:
-                stopped = True
-            if bar.low <= target_price:
-                target_hit = True
             cur_ret = entry_price - bar.close
 
         mfe = max(mfe, fav)
@@ -114,6 +108,79 @@ def evaluate_signal_outcomes(
         elif i == 29:
             ret_30m = round(cur_ret, 2)
 
+    # 4. Invalidation & Target Hit: Evaluated ONLY when a completed 5-min candle CLOSES
+    # Long: 5-min close < invalidation_level (INVALIDATED) | 5-min close >= target_price (TARGET_HIT)
+    # Short: 5-min close > invalidation_level (INVALIDATED) | 5-min close <= target_price (TARGET_HIT)
+    # Intra-bar wicks and incomplete/forming candles do not invalidate or reach targets.
+    closed_5m_candles: list[Bar] = []
+
+    if bars_5m is not None:
+        for b5 in sorted(bars_5m, key=lambda b: b.start_ts):
+            b5_close_ts = b5.start_ts + timedelta(minutes=5)
+            if b5_close_ts > signal.bar_start_ts and not getattr(b5, "incomplete", False):
+                closed_5m_candles.append(b5)
+    elif subsequent_bars:
+        from collections import defaultdict
+        buckets: dict[datetime, list[Bar]] = defaultdict(list)
+        for b in sorted(subsequent_bars, key=lambda b: b.start_ts):
+            dt = b.start_ts
+            bucket_min = (dt.minute // 5) * 5
+            bucket_ts = dt.replace(minute=bucket_min, second=0, microsecond=0)
+            buckets[bucket_ts].append(b)
+
+        sorted_buckets = sorted(buckets.items(), key=lambda x: x[0])
+        for idx, (b_ts, b_list) in enumerate(sorted_buckets):
+            b_close_ts = b_ts + timedelta(minutes=5)
+            # A 5-minute candle is closed if:
+            # 1. A subsequent bucket exists in subsequent_bars, OR
+            # 2. It contains all 5 1-minute bars of that interval
+            is_closed = (idx < len(sorted_buckets) - 1) or (len(b_list) >= 5)
+            if is_closed and b_close_ts > signal.bar_start_ts:
+                closed_5m_candles.append(Bar(
+                    instrument_id=signal.instrument_id,
+                    timeframe="5m",
+                    start_ts=b_ts,
+                    open=b_list[0].open,
+                    high=max(x.high for x in b_list),
+                    low=min(x.low for x in b_list),
+                    close=b_list[-1].close,
+                    volume_units=sum(x.volume_units for x in b_list),
+                    volume_lots=round(sum(x.volume_units for x in b_list) / 65.0, 1),
+                    buy_vol_est=sum(x.buy_vol_est for x in b_list),
+                    sell_vol_est=sum(x.sell_vol_est for x in b_list),
+                    delta=sum(x.delta for x in b_list),
+                    delta_ratio=0.0,
+                    delta_quality=1.0,
+                    cvd=b_list[-1].cvd,
+                    vwap=b_list[-1].vwap,
+                    vwap_sigma_1=b_list[-1].vwap_sigma_1,
+                    vwap_sigma_2=b_list[-1].vwap_sigma_2,
+                    vwap_lower_1=b_list[-1].vwap_lower_1,
+                    vwap_lower_2=b_list[-1].vwap_lower_2,
+                    oi=b_list[-1].oi,
+                    delta_oi=0,
+                ))
+
+    # Evaluate closed 5-minute candles in chronological order
+    for c5 in closed_5m_candles:
+        c_close = float(c5.close)
+        if is_long:
+            if signal.invalidation_level > 0 and c_close < signal.invalidation_level:
+                stopped = True
+                break
+            elif c_close >= target_price:
+                target_hit = True
+                break
+        else:
+            if signal.invalidation_level > 0 and c_close > signal.invalidation_level:
+                stopped = True
+                break
+            elif c_close <= target_price:
+                target_hit = True
+                break
+
+    status_val = "TARGET_HIT" if target_hit else ("INVALIDATED" if stopped else "ACTIVE")
+
     return SignalOutcome(
         event_id=signal.event_id,
         instrument_id=signal.instrument_id,
@@ -129,5 +196,6 @@ def evaluate_signal_outcomes(
         mae_pts=round(mae, 2),
         stopped_out=stopped,
         target_hit=target_hit,
+        status=status_val,
         evaluated_at=datetime.now(timezone.utc),
     )

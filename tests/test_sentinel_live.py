@@ -12,8 +12,17 @@ from sentinel.feed.live import (
     sync_live_sentinel_if_needed,
     push_live_tick_to_sentinel,
 )
-from sentinel.models import Bar, SentinelSignal
-from sentinel.storage.db import list_recent_bars, clear_sentinel_data
+from sentinel.feed.live import IST, _minute_floor
+from sentinel.models import Bar, SentinelSignal, SignalOutcome
+from sentinel.storage.db import (
+    list_recent_bars,
+    list_recent_signals,
+    list_recent_outcomes,
+    clear_sentinel_data,
+    save_bar,
+    save_signal,
+    save_outcome,
+)
 
 
 class TestSentinelLive(unittest.TestCase):
@@ -70,6 +79,168 @@ class TestSentinelLive(unittest.TestCase):
         self.assertEqual(bars[-1].close, 22518.0)
         self.assertEqual(bars[-1].volume_units, 6500)
         self.assertGreater(bars[-1].vwap, 0.0)
+
+    def _session_clock(self):
+        """A market-hours clock that is not in the future relative to the machine."""
+        real_now = datetime.now(IST)
+        if real_now.hour < 10:
+            session_now = (real_now - timedelta(days=1)).replace(
+                hour=11, minute=30, second=0, microsecond=0,
+            )
+        else:
+            session_now = real_now.replace(second=0, microsecond=0)
+
+        class _Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return session_now.replace(tzinfo=None)
+                return session_now.astimezone(tz)
+
+        return session_now, _Clock
+
+    def _bar(self, start_ts: datetime, *, close: float, delta: float, volume: int = 4000) -> Bar:
+        return Bar(
+            instrument_id="TEST-FUT",
+            timeframe="1m",
+            start_ts=start_ts,
+            open=close - 2,
+            high=close + 4,
+            low=close - 6,
+            close=close,
+            volume_units=volume,
+            volume_lots=round(volume / 65.0, 1),
+            buy_vol_est=round((volume + delta) / 2.0, 1),
+            sell_vol_est=round((volume - delta) / 2.0, 1),
+            delta=delta,
+            delta_ratio=round(delta / volume, 4),
+            delta_quality=1.0,
+            cvd=delta,
+            vwap=close,
+            vwap_sigma_1=close + 8,
+            vwap_sigma_2=close + 16,
+            vwap_lower_1=close - 8,
+            vwap_lower_2=close - 16,
+            oi=1000000,
+            delta_oi=0,
+            oi_fresh=True,
+            incomplete=False,
+        )
+
+    @patch("data.holidays.is_trading_day", return_value=True)
+    @patch("data.dhan.nearest_futures")
+    @patch("data.dhan.fetch_futures_intraday")
+    def test_in_session_resync_keeps_live_sweeps_and_bars(self, mock_fetch, mock_nearest, _trading):
+        """A mid-session reload fills missing minutes and leaves live sweeps in sqlite."""
+        session_now, clock = self._session_clock()
+        kept_ts = session_now - timedelta(minutes=6)
+        gap_ts = session_now - timedelta(minutes=5)
+        live_bar = self._bar(kept_ts, close=22555.0, delta=7777.0)
+        save_bar(live_bar)
+        sweep = SentinelSignal(
+            event_id="sig_test_micro_buyer_sweep",
+            instrument_id="TEST-FUT",
+            timeframe="15s",
+            bar_start_ts=kept_ts + timedelta(seconds=12),
+            type="CONTINUATION_BULL",
+            category="BULLISH",
+            bias="LONG",
+            score=68,
+            confidence="MEDIUM",
+            rvol_tod=2.0,
+            delta=4200.0,
+            delta_ratio=0.55,
+            oi_change=0,
+            context_tags=["MICRO_BURST", "INSTANT_TAPE"],
+            insight_text="⚡ Buyer sweep (+9000 units in 15s, Δ +4,200).",
+            invalidation_level=22540.0,
+            trigger_speed="MICRO_BURST",
+        )
+        save_signal(sweep)
+        save_outcome(SignalOutcome(
+            event_id=sweep.event_id,
+            instrument_id="TEST-FUT",
+            signal_type=sweep.type,
+            entry_price=22555.0,
+            invalidation_level=22540.0,
+            mfe_pts=12.5,
+            mae_pts=1.0,
+        ))
+
+        mock_nearest.return_value = [{"security_id": 99999, "symbol": "TEST-FUT", "lot": 65}]
+        mock_fetch.return_value = pd.DataFrame([
+            {
+                "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5,
+                "volume": 10, "oi": 1, "timestamp": int(kept_ts.timestamp()),
+            },
+            {
+                "open": 22560.0, "high": 22570.0, "low": 22558.0, "close": 22566.0,
+                "volume": 8000, "oi": 1001000, "timestamp": int(gap_ts.timestamp()),
+            },
+        ])
+        mgr = LiveSentinelManager()
+        with patch("sentinel.feed.live.datetime", clock), \
+                patch("sentinel.feed.live.clear_sentinel_data") as wipe:
+            ok = mgr.sync_live_session("TEST-FUT", "TEST", call_wall=22600.0, put_wall=22400.0, force=True)
+        self.assertTrue(ok)
+        wipe.assert_not_called()
+
+        bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
+        by_minute = {_minute_floor(b.start_ts): b for b in bars}
+        kept = by_minute[_minute_floor(kept_ts)]
+        self.assertEqual(kept.close, 22555.0)
+        self.assertEqual(kept.delta, 7777.0)
+        gap = by_minute[_minute_floor(gap_ts)]
+        self.assertEqual(gap.close, 22566.0)
+
+        signals = list_recent_signals("TEST-FUT", limit=20)
+        self.assertIn(sweep.event_id, [s.event_id for s in signals])
+        outcomes = list_recent_outcomes("TEST-FUT", limit=20)
+        self.assertIn(sweep.event_id, [o.event_id for o in outcomes])
+        kept_outcome = next(o for o in outcomes if o.event_id == sweep.event_id)
+        self.assertEqual(kept_outcome.mfe_pts, 12.5)
+
+    @patch("data.holidays.is_trading_day", return_value=True)
+    @patch("data.dhan.nearest_futures")
+    @patch("data.dhan.fetch_futures_intraday")
+    def test_day_rollover_still_clears_previous_session(self, mock_fetch, mock_nearest, _trading):
+        session_now, clock = self._session_clock()
+        stale_ts = (session_now - timedelta(days=10)).replace(hour=15, minute=20, second=0, microsecond=0)
+        save_bar(self._bar(stale_ts, close=21000.0, delta=50.0))
+        save_signal(SentinelSignal(
+            event_id="sig_previous_session",
+            instrument_id="TEST-FUT",
+            timeframe="15s",
+            bar_start_ts=stale_ts,
+            type="CONTINUATION_BEAR",
+            category="BEARISH",
+            bias="SHORT",
+            score=60,
+            confidence="MEDIUM",
+            rvol_tod=1.2,
+            delta=-100.0,
+            delta_ratio=-0.4,
+            oi_change=0,
+            context_tags=["MICRO_BURST"],
+            insight_text="⚡ Seller sweep from the prior session.",
+            invalidation_level=21020.0,
+            trigger_speed="MICRO_BURST",
+        ))
+        bar_ts = session_now - timedelta(minutes=4)
+        mock_nearest.return_value = [{"security_id": 99999, "symbol": "TEST-FUT", "lot": 65}]
+        mock_fetch.return_value = pd.DataFrame([{
+            "open": 22500.0, "high": 22510.0, "low": 22495.0, "close": 22508.0,
+            "volume": 5000, "oi": 1000000, "timestamp": int(bar_ts.timestamp()),
+        }])
+        mgr = LiveSentinelManager()
+        with patch("sentinel.feed.live.datetime", clock):
+            ok = mgr.sync_live_session("TEST-FUT", "TEST", force=True)
+        self.assertTrue(ok)
+        signals = list_recent_signals("TEST-FUT", limit=20)
+        self.assertNotIn("sig_previous_session", [s.event_id for s in signals])
+        bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
+        self.assertTrue(any(b.close == 22508.0 for b in bars))
+        self.assertFalse(any(b.close == 21000.0 for b in bars))
 
     def test_on_tick_advances_bar(self):
         mgr = LiveSentinelManager()
