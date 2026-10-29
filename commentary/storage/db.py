@@ -249,6 +249,37 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
             _RECENT_ENTRIES_CACHE.pop()
 
 
+def find_session_gap(symbol: str, session_date: str) -> dict[str, Any] | None:
+    """The first opening-gap facts already stored for this symbol and session.
+
+    A process restart must not narrate the open again. The cash gap is the
+    one that was published, not a later futures print.
+    """
+    ensure_commentary_schema()
+    day = str(session_date)[:10]
+    with _get_read_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT facts_json FROM commentary_entries
+            WHERE symbol = ? AND substr(ts, 1, 10) = ?
+              AND (tags_json LIKE '%GAP_UP%' OR tags_json LIKE '%GAP_DOWN%')
+            ORDER BY ts ASC
+            LIMIT 1
+            """,
+            (symbol.upper(), day),
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        facts = json.loads(row["facts_json"] or "{}")
+    except (TypeError, ValueError):
+        return None
+    event_facts = facts.get("event_facts") if isinstance(facts, dict) else None
+    if not isinstance(event_facts, dict) or not event_facts.get("open"):
+        return None
+    return event_facts
+
+
 def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> list[dict[str, Any]]:
     """Retrieve recent commentary entries with low-latency cache backed by SQLite WAL."""
     global _CACHE_INITIALIZED, _CACHE_SYNC_TS

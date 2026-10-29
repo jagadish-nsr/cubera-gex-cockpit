@@ -153,7 +153,7 @@ class LiveSentinelManager:
                     session_only=False, _auto_populate=False,
                 )
                 stored_day = _session_day(stored[-1].start_ts) if stored else None
-                rollover = bool(stored_day and stored_day != target_date_str)
+                rollover = bool(needs_day_rollover and stored_day and stored_day != target_date_str)
                 kept_by_minute: dict[datetime, Bar] = {}
                 if rollover:
                     clear_sentinel_data(instrument_id)

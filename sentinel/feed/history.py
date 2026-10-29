@@ -106,6 +106,15 @@ def _load_from_eod_snapshot(
                 rows = list(reader)
 
             if rows:
+                existing_today = list_recent_bars(
+                    instrument_id, timeframe="1m", limit=5,
+                    session_only=False, _auto_populate=False,
+                )
+                today_dt = datetime.now(IST).date()
+                if existing_today and existing_today[-1].start_ts.date() == today_dt:
+                    log.debug("Preserving today's authentic session bars for %s instead of wiping with CSV", instrument_id)
+                    return True
+
                 clear_sentinel_data(instrument_id)
                 vwap_tracker = SessionVWAPTracker()
                 cum_cvd = 0.0
@@ -219,7 +228,7 @@ def _load_from_eod_snapshot(
                 instrument_id, timeframe="1m", limit=5,
                 session_only=False, _auto_populate=False,
             )
-            if existing and existing[-1].start_ts.date() == session_close_ts.date():
+            if existing and (existing[-1].start_ts.date() == session_close_ts.date() or existing[-1].start_ts.date() == datetime.now(IST).date()):
                 return True
 
             clear_sentinel_data(instrument_id)

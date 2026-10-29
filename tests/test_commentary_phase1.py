@@ -150,6 +150,94 @@ def test_opening_gap_rejects_prior_close_from_another_book():
     assert events == []
 
 
+def test_opening_gap_uses_cash_spot_not_the_futures_candle():
+    """29 Oct 09:12 stored +81.4 because the futures open was 22,780 against cash 22,690."""
+    t0 = datetime(2026, 10, 29, 9, 15, tzinfo=IST)
+    pit = PointInTimeView(
+        as_of=t0,
+        symbol="NIFTY",
+        spot=22690.65,
+        prior_close=22698.8,
+        atm_iv=0.14,
+        expected_move_1d=120.0,
+        call_wall=23000.0,
+        put_wall=22500.0,
+        gamma_flip=22670.0,
+        max_pain=22700.0,
+        net_gex_sign=1,
+        candles_1m=[{"start_ts": "2026-10-29T09:15:00+05:30", "open": 22780.2, "high": 22790.0, "low": 22740.0, "close": 22750.0}],
+    )
+    events = OpeningGapDetector().detect(pit, StoryState(phase="opening_15m"))
+    assert events == []
+
+
+def test_opening_gap_does_not_refire_from_an_afternoon_futures_bar():
+    t0 = datetime(2026, 10, 13, 15, 17, tzinfo=IST)
+    pit = PointInTimeView(
+        as_of=t0,
+        symbol="GAPTEST",
+        spot=22940.0,
+        prior_close=22698.8,
+        atm_iv=0.14,
+        expected_move_1d=120.0,
+        call_wall=23000.0,
+        put_wall=22800.0,
+        gamma_flip=22950.0,
+        max_pain=22900.0,
+        net_gex_sign=-1,
+        candles_1m=[{"start_ts": "2026-10-13T14:17:00+05:30", "open": 22900.0, "high": 22950.0, "low": 22880.0, "close": 22940.0}],
+    )
+    events = OpeningGapDetector().detect(pit, StoryState(phase="afternoon"))
+    assert events == []
+
+
+def test_opening_gap_restart_keeps_the_published_open(monkeypatch):
+    monkeypatch.setattr(
+        "commentary.storage.db.find_session_gap",
+        lambda symbol, day: {"open": 22690.7, "prior_close": 22698.8, "gap_pts": -8.1},
+    )
+    t0 = datetime(2026, 10, 13, 15, 17, tzinfo=IST)
+    pit = PointInTimeView(
+        as_of=t0,
+        symbol="NIFTY",
+        spot=22940.0,
+        prior_close=22698.8,
+        atm_iv=0.14,
+        expected_move_1d=120.0,
+        call_wall=23000.0,
+        put_wall=22800.0,
+        gamma_flip=22950.0,
+        max_pain=22900.0,
+        net_gex_sign=-1,
+        candles_1m=[{"open": 22900.0, "high": 22950.0, "low": 22880.0, "close": 22940.0}],
+    )
+    detector = OpeningGapDetector()
+    detector._restore_published(pit)
+    events = detector.detect(pit, StoryState(phase="afternoon"))
+    assert all(e.type != "GAP_UP" for e in events)
+
+
+def test_call_wall_far_from_spot_is_not_a_break():
+    """29 Oct close: Sensex spot 74,151 narrated a break of the 69,300 wall."""
+    t0 = datetime(2026, 10, 29, 15, 30, tzinfo=IST)
+    detector = WallGexShiftDetector()
+    pit = PointInTimeView(
+        as_of=t0,
+        symbol="SENSEX",
+        spot=74151.0,
+        prior_close=73200.0,
+        atm_iv=0.14,
+        expected_move_1d=400.0,
+        call_wall=69300.0,
+        put_wall=69300.0,
+        gamma_flip=74000.0,
+        max_pain=74000.0,
+        net_gex_sign=-1,
+    )
+    events = detector.detect(pit, StoryState(phase="close"))
+    assert all(e.type != "WALL_BREAK" for e in events)
+
+
 def test_opening_gap_keeps_a_real_session_gap():
     detector = OpeningGapDetector()
     events = detector.detect(_gap_view(22524.4, 22600.0, 22524.4, em=80.0), StoryState(phase="opening_15m"))

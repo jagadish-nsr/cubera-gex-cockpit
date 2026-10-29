@@ -10,6 +10,18 @@ from commentary.detectors.base import BaseDetector
 from commentary.models import Event, PointInTimeView, StoryState
 
 
+# A strike this far from spot is a different book. Sensex at 74,151 with a
+# 69,300 wall is that case: price did not "break" a strike four thousand
+# points behind it.
+_MAX_WALL_VS_SPOT = 0.02
+
+
+def _wall_near_spot(spot: float, wall: float) -> bool:
+    if spot <= 0 or wall <= 0:
+        return False
+    return abs(wall - spot) / spot <= _MAX_WALL_VS_SPOT
+
+
 class WallGexShiftDetector(BaseDetector):
     """Detects Wall tests, Wall breaks, Wall migrations, and Gamma Flip crossings."""
 
@@ -36,7 +48,7 @@ class WallGexShiftDetector(BaseDetector):
         test_band_pts = max(10.0, sigma_1d * self.wall_test_sigma_band)
 
         # 1. Wall Migration Check
-        if self._prev_call_wall is not None and cw > 0 and cw != self._prev_call_wall:
+        if self._prev_call_wall is not None and _wall_near_spot(spot, cw) and cw != self._prev_call_wall:
             events.append(
                 Event(
                     id=f"evt_{int(pit_view.as_of.timestamp())}_CW_MIGRATION",
@@ -51,7 +63,7 @@ class WallGexShiftDetector(BaseDetector):
                     magnitude_sigma=0.7,
                 )
             )
-        if self._prev_put_wall is not None and pw > 0 and pw != self._prev_put_wall:
+        if self._prev_put_wall is not None and _wall_near_spot(spot, pw) and pw != self._prev_put_wall:
             events.append(
                 Event(
                     id=f"evt_{int(pit_view.as_of.timestamp())}_PW_MIGRATION",
@@ -105,7 +117,7 @@ class WallGexShiftDetector(BaseDetector):
 
         # 4. Wall Test & Wall Break Checks
         # Call Wall Test / Break
-        if cw > 0:
+        if _wall_near_spot(spot, cw):
             dist_cw = cw - spot
             if dist_cw < -5.0:  # Spot closed above Call Wall
                 if cw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=cw):
@@ -139,7 +151,7 @@ class WallGexShiftDetector(BaseDetector):
                         )
 
         # Put Wall Test / Break
-        if pw > 0:
+        if _wall_near_spot(spot, pw):
             dist_pw = spot - pw
             if dist_pw < -5.0:  # Spot closed below Put Wall
                 if pw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=pw):

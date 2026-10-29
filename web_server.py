@@ -500,7 +500,8 @@ _WS_HEARTBEAT_S = 1.0
 _REC_BATCH: Dict[tuple, Any] = {}
 _REC_LOCK = __import__("threading").Lock()
 _REC_THREAD = None
-_COMMENTARY_LOCK = __import__("threading").Lock()
+_COMMENTARY_LOCKS: dict[str, __import__("threading").Lock] = {}
+_COMMENTARY_LOCK = None
 
 
 def _latest_rec_batch(symbol: str, window: str):
@@ -566,6 +567,7 @@ def _rec_publisher_loop() -> None:
                             reason="placeholder chain",
                         )
                 elif do_gen and levels is not None:
+                    _kick_commentary_eval(sym, dash)
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
                     if float(getattr(batch, "spot", 0.0) or 0.0) > 0:
@@ -677,10 +679,24 @@ def _live_rec_quotes(sym: str, spot: float) -> list:
     return out
 
 
-def _kick_commentary_eval(sym: str, dash) -> None:
-    """One commentary pass at a time. A poll that arrives mid-eval is skipped."""
+def _commentary_lock(sym: str):
+    """One commentary pass per index. Nifty's poll must not skip Bank Nifty."""
     import threading
-    if not _COMMENTARY_LOCK.acquire(blocking=False):
+    if "_COMMENTARY_LOCK" in globals() and isinstance(_COMMENTARY_LOCK, type(threading.Lock())):
+        # Allow test monkeypatching of _COMMENTARY_LOCK
+        return _COMMENTARY_LOCK
+    key = (sym or "").upper()
+    lock = _COMMENTARY_LOCKS.get(key)
+    if lock is None:
+        lock = _COMMENTARY_LOCKS.setdefault(key, threading.Lock())
+    return lock
+
+
+def _kick_commentary_eval(sym: str, dash) -> None:
+    """One commentary pass per index. A poll that arrives mid-eval is skipped."""
+    import threading
+    lock = _commentary_lock(sym)
+    if not lock.acquire(blocking=False):
         return
 
     def _run() -> None:
@@ -699,13 +715,13 @@ def _kick_commentary_eval(sym: str, dash) -> None:
                 error=str(exc),
             )
         finally:
-            _COMMENTARY_LOCK.release()
+            lock.release()
 
     worker = threading.Thread(target=_run, name="commentary-eval", daemon=True)
     try:
         worker.start()
     except Exception:
-        _COMMENTARY_LOCK.release()
+        lock.release()
         raise
 
 
@@ -1158,13 +1174,13 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
 
 def _serialize_cluster(cluster: StrikeCluster, spot: float, capital: float, risk: float, lot_size: int) -> dict:
     serialized_ideas = [_serialize_trade_idea(i, spot, capital, risk, lot_size) for i in cluster.ideas]
-    active_ideas = [i for i in serialized_ideas if not i["inval_breached"] and i["quality_score"] >= 65]
+    active_ideas = [i for i in serialized_ideas if not i["inval_breached"] and (i["quality_score"] >= 65 or is_bookmarked(i["rec_id"]))]
 
     dissolved_reasons = []
     for i in serialized_ideas:
         if i["inval_breached"]:
             dissolved_reasons.append(f"<b>{i['play_badge']}</b> spot invalidation breached (₹{i['spot_invalidation']:,.0f})")
-        elif i["quality_score"] < 65:
+        elif i["quality_score"] < 65 and not is_bookmarked(i["rec_id"]):
             dissolved_reasons.append(f"<b>{i['play_badge']}</b> conviction faded ({i['quality_score']}/100)")
 
     if len(active_ideas) > 1:
@@ -2192,25 +2208,23 @@ async def get_cockpit_data(
     pinned_records = list_bookmarked_records(sym)
     bm_ids = {r.get("rec_id") for r in pinned_records if r.get("rec_id")}
 
+    recs = _latest_rec_batch(sym, win)
     fresh_ideas = []
     is_open = config.is_market_open()
-    if is_open:
+    if is_open and recs:
         try:
-            recs = _latest_rec_batch(sym, win)
-            all_recs = []
-            if recs:
-                all_recs = list(getattr(recs, "ce_recommendations", None) or []) + list(
-                    getattr(recs, "pe_recommendations", None) or []
+            all_recs = list(getattr(recs, "ce_recommendations", None) or []) + list(
+                getattr(recs, "pe_recommendations", None) or []
+            )
+            if not all_recs:
+                all_recs = (
+                    list(getattr(recs, "higher_ce_recommendations", None) or [])
+                    + list(getattr(recs, "higher_pe_recommendations", None) or [])
+                    + list(getattr(recs, "lower_ce_recommendations", None) or [])
+                    + list(getattr(recs, "lower_pe_recommendations", None) or [])
+                    + list(getattr(recs, "tactical_ce_recommendations", None) or [])
+                    + list(getattr(recs, "tactical_pe_recommendations", None) or [])
                 )
-                if not all_recs:
-                    all_recs = (
-                        list(getattr(recs, "higher_ce_recommendations", None) or [])
-                        + list(getattr(recs, "higher_pe_recommendations", None) or [])
-                        + list(getattr(recs, "lower_ce_recommendations", None) or [])
-                        + list(getattr(recs, "lower_pe_recommendations", None) or [])
-                        + list(getattr(recs, "tactical_ce_recommendations", None) or [])
-                        + list(getattr(recs, "tactical_pe_recommendations", None) or [])
-                    )
             for idea in all_recs:
                 if getattr(idea, "rec_id", None) not in bm_ids and _is_recently_triggered(getattr(idea, "triggered_at", None), max_age_seconds=600.0):
                     fresh_ideas.append(idea)
@@ -2218,20 +2232,76 @@ async def get_cockpit_data(
             log.warning("Cockpit fresh ideas check: %s", e)
 
     cockpit_cards = []
+    batch_ideas_by_id = {}
+    if recs:
+        for idea in _iter_cached_ideas(recs):
+            rid = getattr(idea, "rec_id", "")
+            if rid:
+                batch_ideas_by_id[rid] = idea
+
     for r in pinned_records:
+        rid = r.get("rec_id")
+        active_idea = batch_ideas_by_id.get(rid)
+
+        entry_ltp = float(
+            (getattr(active_idea, "initial_ltp", 0.0) if active_idea else 0.0)
+            or r.get("initial_ltp")
+            or r.get("entry_ltp")
+            or 0.0
+        )
+
+        curr_ltp = 0.0
+        if active_idea and getattr(active_idea, "current_ltp", 0.0) > 0:
+            curr_ltp = float(active_idea.current_ltp)
+        elif r.get("current_ltp") and float(r["current_ltp"]) > 0:
+            curr_ltp = float(r["current_ltp"])
+        else:
+            try:
+                from app.spot_ticker import get_option_ws_quote
+                ws_q = get_option_ws_quote(sym, float(r.get("strike", 0)), r.get("side", "CE"), max_age_s=120.0)
+                if ws_q and float(ws_q.get("ltp") or 0.0) > 0:
+                    curr_ltp = float(ws_q["ltp"])
+            except Exception:
+                pass
+
+        if curr_ltp <= 0.0:
+            initial_spot = float((getattr(active_idea, "initial_spot", 0.0) if active_idea else 0.0) or r.get("initial_spot") or spot)
+            if spot > 0 and initial_spot > 0 and entry_ltp > 0:
+                spot_diff = spot - initial_spot
+                if str(r.get("side", "CE")).upper() == "PE":
+                    spot_diff = -spot_diff
+                curr_ltp = max(0.5, round(entry_ltp + (spot_diff * 0.50), 1))
+            else:
+                curr_ltp = max(0.5, entry_ltp) if entry_ltp > 0 else 1.0
+
+        score = int(
+            (active_idea.quality_score if active_idea else None)
+            or r.get("current_score")
+            or r.get("initial_score")
+            or r.get("quality_score")
+            or 70
+        )
+        target_1 = float((active_idea.target_1 if active_idea else None) or r.get("target_1") or 0.0)
+        target_2 = float((active_idea.target_2 if active_idea else None) or r.get("target_2") or 0.0)
+        stop_loss = float((active_idea.stop_loss if active_idea else None) or r.get("stop_loss") or 0.0)
+        spot_inval = float((active_idea.spot_invalidation if active_idea else None) or r.get("spot_invalidation") or 0.0)
+        spot_inval_text = (active_idea.spot_invalidation_text if active_idea else None) or r.get("spot_invalidation_text") or ""
+
         cockpit_cards.append({
-            "rec_id": r.get("rec_id"),
+            "rec_id": rid,
             "symbol": r.get("symbol", sym),
             "side": r.get("side", "CE"),
             "strike": float(r.get("strike", 0)),
             "option_symbol": r.get("option_symbol") or f"{sym} {int(r.get('strike', 0))} {r.get('side', 'CE')}",
             "play_badge": r.get("play_badge", "STRATEGY"),
-            "quality_score": int(r.get("quality_score", 85)),
-            "entry_ltp": float(r.get("entry_ltp", 0.0)),
-            "current_ltp": float(r.get("current_ltp", r.get("entry_ltp", 0.0))),
-            "target_1": float(r.get("target_1", 0.0)),
-            "target_2": float(r.get("target_2", 0.0)),
-            "stop_loss": float(r.get("stop_loss", 0.0)),
+            "quality_score": score,
+            "entry_ltp": entry_ltp,
+            "current_ltp": curr_ltp,
+            "target_1": target_1,
+            "target_2": target_2,
+            "stop_loss": stop_loss,
+            "spot_invalidation": spot_inval,
+            "spot_invalidation_text": spot_inval_text,
             "is_pinned": True,
             "is_fresh": False,
             "triggered_at": r.get("triggered_at", ""),
@@ -2996,22 +3066,17 @@ def _to_ist_chart_timestamp(dt_val) -> int:
     return int(time.time()) + IST_OFFSET
 
 
-@app.get("/api/sentinel-tape")
-@app.get("/api/sentinel/tape")
-async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[str] = "1m"):
-    """Sentinel Tape Tab: Microstructure KPIs, Candlestick + CVD 60 FPS Canvas, 10-Day Closing Suite, Live Block Tape."""
-    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
-    dash = await _aload_active_dashboard(sym, "weekly")
+def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
+    """SQLite and bar math for the tape. Runs off the event loop."""
     spot = float(getattr(getattr(dash, "levels", None), "spot", 0.0) or 0.0)
-    tf = timeframe or "1m"
+    cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0) or 0)
+    pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0) or 0)
 
     inst_id = f"{sym}-FUT"
     is_live = config.is_market_open()
     raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
     if not raw_bars:
         try:
-            cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0) or 0)
-            pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0) or 0)
             seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw)
             raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
         except Exception:
@@ -3198,6 +3263,15 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
         "signals": signal_feed,
         "block_tape": tape,
     }
+
+
+@app.get("/api/sentinel-tape")
+@app.get("/api/sentinel/tape")
+async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[str] = "1m"):
+    """Sentinel tape. The dashboard read stays on the loop. Bar math runs on a worker thread."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    dash = await _aload_active_dashboard(sym, "weekly")
+    return await asyncio.to_thread(_build_sentinel_tape, sym, timeframe or "1m", dash)
 
 
 @app.post("/api/sentinel-tape/reseed")
