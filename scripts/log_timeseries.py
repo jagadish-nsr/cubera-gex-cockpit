@@ -10,11 +10,10 @@ Reuses the dashboard pipeline (ONE NSE fetch -> levels + OI/volume aggregates), 
 the engine stays the single source of truth. A failed pull is logged and the loop
 keeps going (fail loud per row, don't crash the day). Decision-support only.
 
-BUNDLED GAMMA-BLAST: on an EXPIRY day, once we reach the blast window
-(13:00-15:30 IST), the SAME task switches to a 1-min per-strike gamma-blast
-capture until the close — no separate scheduled task needed. Expiry is detected
-live from the pull itself (``data.expiries[0] == today``), so nothing to maintain.
-The 5-min time-series keeps flowing (deduped) through the window.
+BUNDLED GAMMA-BLAST: inside 13:00-15:30 IST, the same --once task stays up
+at a 1-minute cadence until 15:30 when Nifty, Bank Nifty, or Sensex has its
+nearest listed expiry today. Each index is judged on its own chain. A pid lock
+stops the next 15-minute fire from starting a second loop.
 
 NOTE: the session guard does NOT know NSE holidays — on a holiday it will idle
 during 09:15-15:30 IST and record flat/stale data (the OI staleness flag covers
@@ -24,6 +23,7 @@ this). Add the holiday calendar later if it matters.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -154,27 +154,107 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     return f"{head}  -> {path.name}{extra}{bf_tag}{fut_tag}{blast_tag}", data
 
 
-def _run_blast_window(symbol: str | None) -> None:
-    """On an expiry day, keep capturing at 1-min cadence until the blast window
-    ends (15:30 IST). Each tick reuses capture_once, which writes the 1-min
-    gamma-blast row every time and the 5-min time-series row when due (min_gap
-    ~4). Triggered from the same 5-min task — no separate scheduled task."""
-    while True:
-        _time.sleep(60)
-        ist = _ist_now()
-        if not _in_blast_window(ist):
-            _print(f"{ist:%H:%M} IST  blast window over — bundled 1-min capture stopped")
-            return
+def _blast_lock_path() -> Path:
+    return ROOT / "data" / "journal" / "gamma_blast.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _blast_already_running() -> bool:
+    path = _blast_lock_path()
+    if not path.is_file():
+        return False
+    try:
+        pid = int(path.read_text().strip())
+    except ValueError:
+        return False
+    return pid != os.getpid() and _pid_alive(pid)
+
+
+def _acquire_blast_lock() -> bool:
+    if _blast_already_running():
+        return False
+    path = _blast_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()))
+    return True
+
+
+def _release_blast_lock() -> None:
+    path = _blast_lock_path()
+    try:
+        if path.is_file() and path.read_text().strip() == str(os.getpid()):
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _capture_other_blasts(primary: str) -> bool:
+    """Write Bank Nifty and Sensex when that index's own nearest expiry is today."""
+    from scripts.log_gamma_blast import BLAST_SYMBOLS, capture_once as blast_once
+    expiry = False
+    for sym in BLAST_SYMBOLS:
+        if sym == primary:
+            continue
         try:
-            msg, data = capture_once(min_gap=4.0, symbol=symbol)
-            _print(msg)
-            _note_capture(msg, data)
-            if not _is_expiry_day(data):
+            msg = blast_once(symbol=sym)
+        except Exception as e:  # noqa: BLE001 - one index must not drop the others
+            _print(f"[{sym}] blast capture FAILED: {e}")
+            continue
+        _print(msg)
+        if "not an expiry day" not in msg:
+            expiry = True
+    return expiry
+
+
+def _run_blast_window(symbol: str | None) -> None:
+    """Keep capturing at 1-min cadence until 15:30 IST.
+
+    The default scheduled fire (no --symbol) covers Nifty, Bank Nifty, and
+    Sensex. Nifty keeps the time-series row. The other two write only the
+    gamma-blast file, and only on their own expiry day.
+    """
+    from scripts.log_gamma_blast import BLAST_SYMBOLS, capture_once as blast_once
+    if not _acquire_blast_lock():
+        _print("gamma-blast window already running")
+        return
+    symbols = (symbol,) if symbol else BLAST_SYMBOLS
+    try:
+        while True:
+            _time.sleep(60)
+            ist = _ist_now()
+            if not _in_blast_window(ist):
+                _print(f"{ist:%H:%M} IST  blast window over — bundled 1-min capture stopped")
+                return
+            still = False
+            for sym in symbols:
+                try:
+                    if symbol is None and sym != "NIFTY":
+                        msg = blast_once(symbol=sym)
+                        _print(msg)
+                        if "not an expiry day" not in msg:
+                            still = True
+                    else:
+                        msg, data = capture_once(min_gap=4.0, symbol=sym if symbol else None)
+                        _print(msg)
+                        _note_capture(msg, data)
+                        if _is_expiry_day(data):
+                            still = True
+                except Exception as e:  # noqa: BLE001 - one bad pull must not stop the window
+                    _print(f"{ist:%H:%M} IST  blast capture FAILED (kept looping): {e}")
+                    _note_capture("", error=e)
+                    still = True
+            if not still:
                 _print("nearest expiry rolled — bundled capture stopped")
                 return
-        except Exception as e:  # noqa: BLE001 - one bad pull must not stop the window
-            _print(f"{ist:%H:%M} IST  blast capture FAILED (kept looping): {e}")
-            _note_capture("", error=e)
+    finally:
+        _release_blast_lock()
 
 
 def _note_capture(msg, data=None, error=None) -> None:
@@ -239,14 +319,16 @@ def main() -> None:
             _note_capture("", error=e)
             shutdown(ok=False, error=str(e))
             sys.exit(1)
-        # Bundled gamma-blast: on an expiry day inside the blast window, this SAME
-        # --once fire stays resident at 1-min cadence until 15:30 IST (no separate
-        # task). Safe: the scheduler's ExecutionTimeLimit spans the window and
-        # IgnoreNew stops the 5-min re-fires from stacking on top of this loop.
-        if _is_expiry_day(data) and _in_blast_window(ist):
-            _print(f"[{data.symbol}] {ist:%H:%M} IST  EXPIRY DAY — bundled 1-min "
-                   "gamma-blast capture until 15:30 IST")
-            _run_blast_window(args.symbol)
+        # Stay up through 15:30 when any of the three indices expires today.
+        # The lock ignores the later 15-minute fires so they do not stack a second loop.
+        if _in_blast_window(ist):
+            if _blast_already_running():
+                _print(f"{ist:%H:%M} IST  gamma-blast window already running")
+            else:
+                extra = _capture_other_blasts(data.symbol) if args.symbol is None else False
+                if _is_expiry_day(data) or extra:
+                    _print(f"{ist:%H:%M} IST  expiry blast — 1-min capture until 15:30 IST")
+                    _run_blast_window(args.symbol)
         return
 
     # Never let the guard block the loop's own cadence: keep it below the interval.

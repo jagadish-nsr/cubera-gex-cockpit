@@ -1,18 +1,19 @@
 """Gamma-blast 1-min capture — EXPIRY DAY only, 13:00-15:30 IST.
 
 Captures per-strike OI/ΔOI + nearest-expiry premiums + gamma exposure every
-minute through the blast window, into data\\journal\\gamma_blast\\YYYY-MM-DD.csv
-(same schema as the daily oi_strikes capture, finer cadence). This is the fine-
-grained record for studying whether the ATM call/put premium crossover precedes a
-gamma blast on Nifty — the thing the 15-min daily capture is too coarse to see.
+minute through the blast window, into data/journal/gamma_blast/<SYMBOL>/YYYY-MM-DD.csv
+(same schema as the daily oi_strikes capture, finer cadence). One pull per index.
+Nifty expires Tuesday, Bank Nifty on the last Tuesday, Sensex on Thursday. A
+holiday moves that contract to the previous trading day. The gate is the nearest
+listed expiry on that index's own chain, not the weekday.
 
-  python scripts/log_gamma_blast.py            # loop 1-min during the window (expiry day)
-  python scripts/log_gamma_blast.py --once      # one tick if in-window + expiry (schedulers)
-  python scripts/log_gamma_blast.py --once --force   # ignore the expiry/window gate (testing)
+  python scripts/log_gamma_blast.py            # loop 1-min, all three indices
+  python scripts/log_gamma_blast.py --once      # one tick if in-window + expiry
+  python scripts/log_gamma_blast.py --symbol SENSEX
+  python scripts/log_gamma_blast.py --once --force   # ignore the expiry/window gate
 
-Reuses the dashboard pipeline (ONE NSE fetch). Exits cleanly off-window, on
-weekends, or on a non-expiry day, so a scheduled 1-min fire is a safe no-op.
-Decision-support only — no trades.
+Reuses the dashboard pipeline (one fetch per index). A symbol whose nearest
+expiry is not today is skipped. Decision-support only — no trades.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ from app.timeseries import (GAMMA_BLAST_DIR, append_strike_rows,  # noqa: E402
 
 _WIN_START_IST = (13, 0)     # gamma-blast window 13:00-15:30 IST (afternoon)
 _WIN_END_IST = (15, 30)
+# Own chain each. Bank Nifty is monthly; Sensex is Thursday. Do not substring-match NIFTY.
+BLAST_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
 
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -53,6 +56,14 @@ def _in_window(ist: datetime) -> bool:
             return False
     m = ist.hour * 60 + ist.minute
     return _WIN_START_IST[0] * 60 + _WIN_START_IST[1] <= m <= _WIN_END_IST[0] * 60 + _WIN_END_IST[1]
+
+
+def resolve_symbols(explicit: str | None) -> tuple[str, ...]:
+    """Default is all three indices. A comma list restricts the pull."""
+    if not explicit:
+        return BLAST_SYMBOLS
+    out = tuple(part.strip().upper() for part in explicit.split(",") if part.strip())
+    return out or BLAST_SYMBOLS
 
 
 def capture_once(force: bool = False, symbol: str | None = None) -> str:
@@ -96,11 +107,27 @@ def _print(s: str) -> None:
     print(s, flush=True)
 
 
+def capture_symbols(force: bool = False, explicit: str | None = None) -> list[str]:
+    """One pull per index. A symbol that is not expiring today is skipped in the message."""
+    messages = []
+    for sym in resolve_symbols(explicit):
+        try:
+            msg = capture_once(force=force, symbol=sym)
+        except Exception as e:  # noqa: BLE001 - one index must not drop the others
+            msg = f"[{sym}] capture FAILED: {e}"
+            _note(error=e)
+        messages.append(msg)
+        _print(msg)
+        if "FAILED" not in msg:
+            _note(msg)
+    return messages
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Expiry-day 1-min gamma-blast capture.")
     ap.add_argument("--once", action="store_true", help="single tick then exit (schedulers)")
     ap.add_argument("--symbol", default=None,
-                    help="index to capture (NIFTY/BANKNIFTY); default NIFTY")
+                    help="NIFTY, BANKNIFTY, and/or SENSEX (comma list). Default: all three")
     ap.add_argument("--loop", type=float, default=1.0, help="interval in minutes (loop mode)")
     ap.add_argument("--force", action="store_true",
                     help="ignore the expiry-day / window gate (testing)")
@@ -114,32 +141,23 @@ def main() -> None:
             _print(f"{ist:%Y-%m-%d %H:%M} IST  outside 13:00-15:30 window - skipped")
             shutdown(ok=True, message="outside window")
             return
-        try:
-            msg = capture_once(force=args.force, symbol=args.symbol)
-            _print(msg)
-            _note(msg)
-        except Exception as e:  # noqa: BLE001 - surface + non-zero for schedulers
-            _print(f"capture FAILED: {e}")
-            _note(error=e)
-            shutdown(ok=False, error=str(e))
+        messages = capture_symbols(force=args.force, explicit=args.symbol)
+        failed = [m for m in messages if "FAILED" in m]
+        if failed and len(failed) == len(messages):
+            shutdown(ok=False, error=failed[0])
             sys.exit(1)
         shutdown(ok=True, message="captured")
         return
 
     interval = max(args.loop, 0.25) * 60.0
-    _print(f"Gamma-blast capture: every {args.loop:g} min, 13:00-15:30 IST, expiry day. "
-           "Ctrl+C to stop.")
+    names = ", ".join(resolve_symbols(args.symbol))
+    _print(f"Gamma-blast capture: every {args.loop:g} min, 13:00-15:30 IST, "
+           f"expiry day, {names}. Ctrl+C to stop.")
     try:
         while True:
             ist = _ist_now()
             if args.force or _in_window(ist):
-                try:
-                    msg = capture_once(force=args.force, symbol=args.symbol)
-                    _print(msg)
-                    _note(msg)
-                except Exception as e:  # noqa: BLE001 - one bad pull must not stop the run
-                    _print(f"{ist:%H:%M} IST  capture FAILED (kept looping): {e}")
-                    _note(error=e)
+                capture_symbols(force=args.force, explicit=args.symbol)
             else:
                 _print(f"{ist:%Y-%m-%d %H:%M} IST  outside window - idle")
             _time.sleep(interval)
