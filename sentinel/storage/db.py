@@ -726,20 +726,21 @@ def _purge_hashed_daily_cvd(instrument_id: str) -> int:
         conn.close()
 
 
-def _bar_backed_dates(instrument_id: str, limit: int) -> list[str]:
-    """Distinct session dates that have 1m bars, newest last, capped at ``limit``."""
+def _bar_backed_dates(instrument_id: str, limit: int | None = None) -> list[str]:
+    """Distinct session dates that have 1m bars, oldest first."""
+    sql = """
+        SELECT DISTINCT substr(start_ts, 1, 10) AS trade_date
+        FROM sentinel_bars
+        WHERE instrument_id = ? AND timeframe = '1m' AND start_ts IS NOT NULL
+        ORDER BY trade_date DESC
+    """
+    params: list[Any] = [instrument_id]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
     conn = _get_read_conn()
     try:
-        rows = conn.execute(
-            """
-            SELECT DISTINCT substr(start_ts, 1, 10) AS trade_date
-            FROM sentinel_bars
-            WHERE instrument_id = ? AND timeframe = '1m' AND start_ts IS NOT NULL
-            ORDER BY trade_date DESC
-            LIMIT ?
-            """,
-            (instrument_id, int(limit)),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     dates = [str(r["trade_date"]) for r in rows if r["trade_date"]]
@@ -747,18 +748,141 @@ def _bar_backed_dates(instrument_id: str, limit: int) -> list[str]:
     return dates
 
 
+def _split_recorded_volume(total_volume: int, dprice: float, close_px: float) -> tuple[float, int, int]:
+    """Buy and sell shares of a recorded futures volume.
+
+    The session journal stores the day's volume and the close-to-close
+    change. It does not store an aggressor print, so the split follows the
+    sign and size of that change. A day that has 1m bars keeps the tape.
+    """
+    scale = max(100.0, close_px * 0.0075)
+    ratio = max(-0.45, min(0.45, dprice / scale))
+    delta = round(total_volume * ratio, 1)
+    buy = int(round((total_volume + delta) / 2.0))
+    sell = int(round((total_volume - delta) / 2.0))
+    return delta, buy, sell
+
+
+def _journal_futures_dirs(symbol: str) -> list[Path]:
+    sym = (symbol or "").upper()
+    return [
+        ROOT / "data" / "journal" / "futures" / sym,
+        ROOT / "data" / "journal" / "futures_intraday_dhan" / sym,
+    ]
+
+
+def _index_lot(symbol: str) -> int:
+    try:
+        import config
+        return int(config.get_index(symbol).lot_size)
+    except Exception:
+        return 65
+
+
+def _backfill_daily_cvd_from_journal(instrument_id: str, symbol: str, protected_dates: set[str]) -> set[str]:
+    """Write daily rows from recorded futures journal files.
+
+    A date in ``protected_dates`` already has a 1m tape and is left alone.
+    Every other journal day is rewritten from that file so a leftover row
+    cannot stand in for the session.
+    """
+    import csv
+
+    sym = symbol.upper()
+    eod_dir, dhan_dir = _journal_futures_dirs(sym)
+    written: set[str] = set()
+
+    if eod_dir.exists():
+        for fpath in reversed(sorted(eod_dir.glob("*.csv"))):
+            d_str = fpath.stem
+            if d_str in protected_dates:
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as handle:
+                    for row in csv.DictReader(handle):
+                        tot_vol = int(float(row.get("agg_vol") or row.get("near_vol") or 0))
+                        if tot_vol <= 0:
+                            continue
+                        dprice = float(row.get("dprice") or 0.0)
+                        close_px = float(row.get("close") or row.get("spot") or 0.0)
+                        delta, buy, sell = _split_recorded_volume(tot_vol, dprice, close_px)
+                        save_daily_cvd({
+                            "trade_date": d_str,
+                            "instrument_id": instrument_id,
+                            "symbol": sym,
+                            "closing_cvd": delta,
+                            "buy_volume": buy,
+                            "sell_volume": sell,
+                            "total_volume": tot_vol,
+                            "net_delta": delta,
+                            "closing_price": close_px,
+                            "vwap": round(close_px - (dprice * 0.3), 1),
+                            "updated_at": datetime.now(IST).isoformat(),
+                        })
+                        written.add(d_str)
+                        break
+            except Exception as exc:
+                log.debug("Failed to parse historical futures CSV %s: %s", fpath, exc)
+
+    if dhan_dir.exists():
+        lot_size = _index_lot(sym)
+        for fpath in reversed(sorted(dhan_dir.glob("*.csv"))):
+            d_str = fpath.stem
+            if d_str in protected_dates or d_str in written:
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8") as handle:
+                    reader = list(csv.DictReader(handle))
+                if not reader:
+                    continue
+                last_row = reader[-1]
+                raw_vol = float(last_row.get("agg_vol") or last_row.get("volume") or 0.0)
+                tot_vol = int(round(raw_vol / float(lot_size))) if raw_vol > 500000 else int(raw_vol)
+                if tot_vol <= 0:
+                    continue
+                close_px = float(last_row.get("price") or last_row.get("spot") or 0.0)
+                dprice = float(last_row.get("change") or 0.0)
+                delta, buy, sell = _split_recorded_volume(tot_vol, dprice, close_px)
+                save_daily_cvd({
+                    "trade_date": d_str,
+                    "instrument_id": instrument_id,
+                    "symbol": sym,
+                    "closing_cvd": delta,
+                    "buy_volume": buy,
+                    "sell_volume": sell,
+                    "total_volume": tot_vol,
+                    "net_delta": delta,
+                    "closing_price": close_px,
+                    "vwap": round(close_px - (dprice * 0.3), 1),
+                    "updated_at": datetime.now(IST).isoformat(),
+                })
+                written.add(d_str)
+            except Exception as exc:
+                log.debug("Failed to parse dhan futures intraday CSV %s: %s", fpath, exc)
+    return written
+
+
 def ensure_historical_daily_cvd(
     instrument_id: str = "NIFTY-FUT",
     symbol: str = "NIFTY",
     days: int = 10,
 ) -> list[dict]:
-    """Daily CVD rebuilt from stored 1m bars. No CSV estimate and no date-hash filler."""
+    """Last `days` closing CVD rows.
+
+    A day with 1m bars uses that tape. A day that only has a futures journal
+    file uses that file's recorded volume, split by the day's price change.
+    Dates are never invented to pad the window out to ten.
+    """
     ensure_sentinel_schema()
     sym = symbol or instrument_id.split("-")[0]
     _purge_hashed_daily_cvd(instrument_id)
-    out = []
-    for trade_date in _bar_backed_dates(instrument_id, days):
-        rec = record_daily_closing_cvd(instrument_id, symbol=sym, trade_date=trade_date)
-        if rec:
-            out.append(rec)
-    return out
+    bar_dates = _bar_backed_dates(instrument_id)
+    for trade_date in bar_dates:
+        record_daily_closing_cvd(instrument_id, symbol=sym, trade_date=trade_date)
+    journal_dates = _backfill_daily_cvd_from_journal(instrument_id, sym, set(bar_dates))
+    keep = set(bar_dates) | journal_dates
+    recorded = [
+        row for row in list_daily_cvd(instrument_id, limit=500)
+        if row["trade_date"] in keep
+    ]
+    return recorded[-int(days):]
