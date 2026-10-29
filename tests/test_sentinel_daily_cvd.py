@@ -101,6 +101,47 @@ def test_record_daily_closing_cvd_from_bars():
     assert rec["sell_volume"] == 1200
 
 
+def test_journal_volume_fills_a_missing_day_and_does_not_pad(tmp_path, monkeypatch):
+    """A recorded futures file supplies that day. A day with no file stays absent.
+
+    Hand check: volume 1000, close 20000, change -100.
+    Scale is max(100, 20000 * 0.0075) = 150. Ratio clamps to -0.45.
+    Delta = -450. Buy = 275. Sell = 725.
+    """
+    from pathlib import Path
+    from sentinel.storage import db as storage
+
+    inst = "TEST-JOURNAL-CVD-FUT"
+    day = "2026-10-16"
+    folder = Path(tmp_path)
+    (folder / f"{day}.csv").write_text(
+        "date_ist,close,dprice,agg_vol,spot\n"
+        "2026-10-16,20000,-100,1000,20000\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(storage, "_journal_futures_dirs", lambda symbol: [folder, folder / "missing"])
+    save_daily_cvd({
+        "trade_date": "2026-10-15",
+        "instrument_id": inst,
+        "symbol": "TESTJOURNAL",
+        "closing_cvd": 999.0,
+        "buy_volume": 500,
+        "sell_volume": 500,
+        "total_volume": 1000,
+        "net_delta": 999.0,
+        "closing_price": 1.0,
+        "vwap": 1.0,
+    })
+
+    recs = ensure_historical_daily_cvd(inst, symbol="TESTJOURNAL", days=10)
+    assert [r["trade_date"] for r in recs] == [day]
+    assert recs[0]["closing_cvd"] == -450.0
+    assert recs[0]["buy_volume"] == 275
+    assert recs[0]["sell_volume"] == 725
+    assert recs[0]["total_volume"] == 1000
+    assert "2026-10-15" not in [r["trade_date"] for r in recs]
+
+
 def test_ensure_historical_daily_cvd_does_not_invent_days():
     from sentinel.storage.db import save_daily_cvd, list_daily_cvd, _hashed_daily_signature
 
