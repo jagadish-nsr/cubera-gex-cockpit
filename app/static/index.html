@@ -1,15 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cubera GEX Trading Cockpit — High Performance Institutional Trading Terminal</title>
-  <meta name="description" content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
+  <meta name="description"
+    content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
   <link rel="stylesheet" href="/static/css/cockpit.css?v=5.23">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
-    (function() {
+    (function () {
       try {
         var saved = localStorage.getItem('cubera_theme');
         var theme = saved || (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -17,12 +19,13 @@
         if (theme === 'light') {
           document.documentElement.classList.add('theme-light');
         }
-      } catch (e) {}
+      } catch (e) { }
     })();
   </script>
   <script src="/static/lightweight-charts.standalone.js"></script>
   <script src="https://s3.tradingview.com/tv.js"></script>
 </head>
+
 <body>
   <div id="app-layout">
     <!-- Persistent Left Sidebar -->
@@ -57,8 +60,12 @@
         <!-- Live / Offline Quote Box -->
         <div class="quote-box">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span id="quote-box-label" style="font-size:0.68rem;text-transform:uppercase;color:var(--ink-mute);font-weight:750">Spot Close (EOD)</span>
-            <span id="quote-source-badge" style="font-size:0.65rem;color:var(--ink-mute);background:var(--surface-3);border:1px solid var(--line);padding:1px 6px;border-radius:4px;font-family:var(--mono)">EOD Close</span>
+            <span id="quote-box-label"
+              style="font-size:0.68rem;text-transform:uppercase;color:var(--ink-mute);font-weight:750">Spot Close
+              (EOD)</span>
+            <span id="quote-source-badge"
+              style="font-size:0.65rem;color:var(--ink-mute);background:var(--surface-3);border:1px solid var(--line);padding:1px 6px;border-radius:4px;font-family:var(--mono)">EOD
+              Close</span>
           </div>
           <div class="quote-spot">
             <span id="quote-status-dot" class="offline-dot"></span>
@@ -100,35 +107,48 @@
 
         <!-- Active Expiry Target Card -->
         <div style="background:var(--surface-2);padding:10px 12px;border-radius:9px;border:1px solid var(--line)">
-          <div style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">Active Expiry Target</div>
+          <div
+            style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">
+            Active Expiry Target</div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin:4px 0 2px">
-            <span id="active-expiry-target" style="font-size:1.02rem;font-weight:800;color:var(--ink)">15-Oct-2026</span>
-            <span id="active-dte-badge" style="font-size:.75rem;font-weight:700;background:var(--spark);color:#fff;padding:2px 7px;border-radius:5px">0DTE Today</span>
+            <span id="active-expiry-target"
+              style="font-size:1.02rem;font-weight:800;color:var(--ink)">15-Oct-2026</span>
+            <span id="active-dte-badge"
+              style="font-size:.75rem;font-weight:700;background:var(--spark);color:#fff;padding:2px 7px;border-radius:5px">0DTE
+              Today</span>
           </div>
-          <div id="active-mode-desc" style="font-size:.72rem;color:var(--ink-mute)">Single Expiry Isolated GEX · NIFTY 50</div>
+          <div id="active-mode-desc" style="font-size:.72rem;color:var(--ink-mute)">Single Expiry Isolated GEX · NIFTY
+            50</div>
         </div>
 
         <!-- Two-Mode Feed Streaming Banner -->
         <div id="feed-mode-banner" class="feed-mode-banner live">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">⚡ Feed Mode</span>
-            <span id="feed-status-badge" style="font-size:.68rem;color:var(--go);font-weight:700;background:var(--go-bg);padding:2px 7px;border-radius:4px">🟢 WebSocket Live</span>
+            <span
+              style="font-size:.65rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;letter-spacing:.05em">⚡
+              Feed Mode</span>
+            <span id="feed-status-badge"
+              style="font-size:.68rem;color:var(--go);font-weight:700;background:var(--go-bg);padding:2px 7px;border-radius:4px">🟢
+              WebSocket Live</span>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">
+          <div
+            style="display:flex;justify-content:space-between;align-items:center;font-size:.70rem;color:var(--ink-mute);margin-top:4px">
             <span id="session-title-display">Ingestion: WebSocket Stream</span>
             <span>Push: <b style="color:var(--ink)">&lt; 1ms</b></span>
             <span>Cache: <b style="color:var(--spark)">0ms Memory</b></span>
           </div>
-          <div id="session-substate-display" style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">
+          <div id="session-substate-display"
+            style="font-size:.66rem;color:var(--ink-mute);margin-top:4px;border-top:1px dashed var(--line);padding-top:4px">
             Live direct exchange tick stream
           </div>
         </div>
 
         <!-- Refresh Button -->
         <button id="btn-force-refresh" class="btn btn-secondary btn-block">Sync from Dhan</button>
-        
+
         <!-- Sidebar Theme Toggle Button -->
-        <button id="btn-sidebar-theme-toggle" class="btn btn-secondary btn-block theme-toggle-btn" title="Toggle Theme (Dark / Light)">
+        <button id="btn-sidebar-theme-toggle" class="btn btn-secondary btn-block theme-toggle-btn"
+          title="Toggle Theme (Dark / Light)">
           <span id="sidebar-theme-toggle-icon">🌙</span>
           <span id="sidebar-theme-toggle-label">Theme Mode: Dark</span>
         </button>
@@ -138,10 +158,14 @@
         <!-- Dhan Broker API Token Manager -->
         <div class="token-box">
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:.68rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🔑 Dhan Broker Token</span>
-            <span id="token-status-pill" style="font-size:.66rem;padding:1px 6px;border-radius:4px;background:var(--go-bg);color:var(--go);font-weight:700">Active (14h)</span>
+            <span style="font-size:.68rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🔑 Dhan Broker
+              Token</span>
+            <span id="token-status-pill"
+              style="font-size:.66rem;padding:1px 6px;border-radius:4px;background:var(--go-bg);color:var(--go);font-weight:700">Active
+              (14h)</span>
           </div>
-          <input type="password" id="dhan-token-input" class="form-control" placeholder="Paste Dhan Access Token..." style="font-size:0.75rem">
+          <input type="password" id="dhan-token-input" class="form-control" placeholder="Paste Dhan Access Token..."
+            style="font-size:0.75rem">
           <button id="btn-save-token" class="btn btn-primary btn-block" style="font-size:0.76rem">💾 Save Token</button>
         </div>
 
@@ -177,16 +201,18 @@
             <h1>
               <span class="cockpit-header-icon-wrap" title="Cubera Quantitative Trading Cockpit">
                 <svg class="cockpit-title-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <circle cx="12" cy="12" r="9.5" stroke="url(#cockpitGrad)" stroke-width="1.8" stroke-dasharray="3 1.5"/>
-                  <circle cx="12" cy="12" r="6" stroke="url(#cockpitGrad)" stroke-width="1.2" opacity="0.6"/>
-                  <circle cx="12" cy="12" r="2.2" fill="#00f2fe"/>
-                  <path d="M4 12H8M16 12H20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
-                  <path d="M12 4V7.5M12 16.5V20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round"/>
-                  <path d="M8 15L10 12L12 14L14 12L16 15" stroke="#00e676" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"/>
+                  <circle cx="12" cy="12" r="9.5" stroke="url(#cockpitGrad)" stroke-width="1.8"
+                    stroke-dasharray="3 1.5" />
+                  <circle cx="12" cy="12" r="6" stroke="url(#cockpitGrad)" stroke-width="1.2" opacity="0.6" />
+                  <circle cx="12" cy="12" r="2.2" fill="#00f2fe" />
+                  <path d="M4 12H8M16 12H20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" />
+                  <path d="M12 4V7.5M12 16.5V20" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" />
+                  <path d="M8 15L10 12L12 14L14 12L16 15" stroke="#00e676" stroke-width="1.5" stroke-linecap="round"
+                    stroke-linejoin="round" opacity="0.85" />
                   <defs>
                     <linearGradient id="cockpitGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                      <stop offset="0%" stop-color="#00f2fe"/>
-                      <stop offset="100%" stop-color="#00e676"/>
+                      <stop offset="0%" stop-color="#00f2fe" />
+                      <stop offset="100%" stop-color="#00e676" />
                     </linearGradient>
                   </defs>
                 </svg>
@@ -199,7 +225,8 @@
               <span id="header-clock" style="font-family:var(--mono)">14:30:15 IST</span>
             </div>
           </div>
-          <div class="header-session-card" id="header-session-card" title="Session status, next phase, and market status">
+          <div class="header-session-card" id="header-session-card"
+            title="Session status, next phase, and market status">
             <span id="session-phase-badge" class="badge-active">MARKET STATUS</span>
             <span class="header-session-line">
               <span id="cockpit-exec-status">Loading session…</span>
@@ -212,75 +239,89 @@
         <!-- 11 Tab Navigation Bar -->
         <nav class="nav-tabs" id="nav-tabs">
           <!-- 1. Cockpit -->
-          <button class="tab-btn active" id="tab-btn-cockpit" data-tab="tab-cockpit" onclick="window.switchTab('tab-cockpit')">
+          <button class="tab-btn active" id="tab-btn-cockpit" data-tab="tab-cockpit"
+            onclick="window.switchTab('tab-cockpit')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1.5"/>
-              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/>
-              <line x1="10" y1="1" x2="10" y2="4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="10" y1="15.5" x2="10" y2="19" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="1" y1="10" x2="4.5" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="15.5" y1="10" x2="19" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 1.5" />
+              <circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5" />
+              <line x1="10" y1="1" x2="10" y2="4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="10" y1="15.5" x2="10" y2="19" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="1" y1="10" x2="4.5" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="15.5" y1="10" x2="19" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
             <span>Cockpit</span>
           </button>
 
           <!-- 2. Trade Recommendations -->
-          <button class="tab-btn" id="tab-btn-recommendations" data-tab="tab-recommendations" onclick="window.switchTab('tab-recommendations')">
+          <button class="tab-btn" id="tab-btn-recommendations" data-tab="tab-recommendations"
+            onclick="window.switchTab('tab-recommendations')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M11.5 1.5L3.5 11H10L8.5 18.5L16.5 9H10L11.5 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" fill="currentColor" fill-opacity="0.15"/>
+              <path d="M11.5 1.5L3.5 11H10L8.5 18.5L16.5 9H10L11.5 1.5Z" stroke="currentColor" stroke-width="1.5"
+                stroke-linejoin="round" fill="currentColor" fill-opacity="0.15" />
             </svg>
             <span>Trade Recommendations</span>
           </button>
 
           <!-- 3. Sentinel Tape -->
-          <button class="tab-btn" id="tab-btn-sentinel" data-tab="tab-sentinel" onclick="window.switchTab('tab-sentinel')">
+          <button class="tab-btn" id="tab-btn-sentinel" data-tab="tab-sentinel"
+            onclick="window.switchTab('tab-sentinel')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M1.5 10H5L7.5 4L11 16L13.5 8L15.5 12H18.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
-              <circle cx="18.5" cy="12" r="1.5" fill="currentColor"/>
+              <path d="M1.5 10H5L7.5 4L11 16L13.5 8L15.5 12H18.5" stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="18.5" cy="12" r="1.5" fill="currentColor" />
             </svg>
             <span>Sentinel Tape</span>
           </button>
 
           <!-- 4. Target Engine -->
-          <button class="tab-btn" id="tab-btn-target-engine" data-tab="tab-target-engine" onclick="window.switchTab('tab-target-engine')">
+          <button class="tab-btn" id="tab-btn-target-engine" data-tab="tab-target-engine"
+            onclick="window.switchTab('tab-target-engine')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.4"/>
-              <circle cx="10" cy="10" r="5" stroke="currentColor" stroke-width="1.4"/>
-              <circle cx="10" cy="10" r="2" fill="currentColor"/>
-              <path d="M14 6L18 2M18 2H14.5M18 2V5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4" opacity="0.4" />
+              <circle cx="10" cy="10" r="5" stroke="currentColor" stroke-width="1.4" />
+              <circle cx="10" cy="10" r="2" fill="currentColor" />
+              <path d="M14 6L18 2M18 2H14.5M18 2V5.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             <span>Target Engine</span>
           </button>
 
           <!-- 5. Session Commentary -->
-          <button class="tab-btn" id="tab-btn-commentary" data-tab="tab-commentary" onclick="window.switchTab('tab-commentary')">
+          <button class="tab-btn" id="tab-btn-commentary" data-tab="tab-commentary"
+            onclick="window.switchTab('tab-commentary')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="7" y="2" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.15"/>
-              <path d="M4.5 8C4.5 11.0376 6.96243 13.5 10 13.5C13.0376 13.5 15.5 11.0376 15.5 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="10" y1="13.5" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="7" y1="17" x2="13" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <rect x="7" y="2" width="6" height="9" rx="3" stroke="currentColor" stroke-width="1.5" fill="currentColor"
+                fill-opacity="0.15" />
+              <path d="M4.5 8C4.5 11.0376 6.96243 13.5 10 13.5C13.0376 13.5 15.5 11.0376 15.5 8" stroke="currentColor"
+                stroke-width="1.5" stroke-linecap="round" />
+              <line x1="10" y1="13.5" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="7" y1="17" x2="13" y2="17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
             <span>Session Commentary</span>
           </button>
 
           <!-- 6. Market Intelligence -->
-          <button class="tab-btn" id="tab-btn-market-intel" data-tab="tab-market-intel" onclick="window.switchTab('tab-market-intel')">
+          <button class="tab-btn" id="tab-btn-market-intel" data-tab="tab-market-intel"
+            onclick="window.switchTab('tab-market-intel')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4"/>
-              <polygon points="10,4 12.5,9.5 10,8.5 7.5,9.5" fill="currentColor"/>
-              <polygon points="10,16 12.5,10.5 10,11.5 7.5,10.5" fill="currentColor" opacity="0.35"/>
-              <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+              <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.4" />
+              <polygon points="10,4 12.5,9.5 10,8.5 7.5,9.5" fill="currentColor" />
+              <polygon points="10,16 12.5,10.5 10,11.5 7.5,10.5" fill="currentColor" opacity="0.35" />
+              <circle cx="10" cy="10" r="1.5" fill="currentColor" />
             </svg>
             <span>Market Intelligence</span>
           </button>
 
           <!-- 7. Options Analytics -->
-          <button class="tab-btn" id="tab-btn-analytics" data-tab="tab-analytics" onclick="window.switchTab('tab-analytics')">
+          <button class="tab-btn" id="tab-btn-analytics" data-tab="tab-analytics"
+            onclick="window.switchTab('tab-analytics')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M2 15C5 15 6 5 10 5C14 5 15 15 18 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-              <line x1="2" y1="17" x2="18" y2="17" stroke="currentColor" stroke-width="1.2" opacity="0.4"/>
-              <line x1="10" y1="5" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2" opacity="0.6"/>
-              <circle cx="10" cy="5" r="2" fill="currentColor"/>
+              <path d="M2 15C5 15 6 5 10 5C14 5 15 15 18 15" stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round" />
+              <line x1="2" y1="17" x2="18" y2="17" stroke="currentColor" stroke-width="1.2" opacity="0.4" />
+              <line x1="10" y1="5" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2 2"
+                opacity="0.6" />
+              <circle cx="10" cy="5" r="2" fill="currentColor" />
             </svg>
             <span>Options Analytics</span>
           </button>
@@ -288,26 +329,27 @@
           <!-- 8. Ops & Calendar -->
           <button class="tab-btn" id="tab-btn-ops" data-tab="tab-ops" onclick="window.switchTab('tab-ops')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5"/>
-              <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2"/>
-              <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <circle cx="7" cy="11" r="1" fill="currentColor"/>
-              <circle cx="10" cy="11" r="1" fill="currentColor"/>
-              <circle cx="13" cy="11" r="1" fill="currentColor"/>
-              <circle cx="7" cy="14" r="1" fill="currentColor"/>
-              <circle cx="10" cy="14" r="1" fill="currentColor"/>
-              <circle cx="13" cy="14" r="1" fill="currentColor"/>
+              <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5" />
+              <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2" />
+              <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <circle cx="7" cy="11" r="1" fill="currentColor" />
+              <circle cx="10" cy="11" r="1" fill="currentColor" />
+              <circle cx="13" cy="11" r="1" fill="currentColor" />
+              <circle cx="7" cy="14" r="1" fill="currentColor" />
+              <circle cx="10" cy="14" r="1" fill="currentColor" />
+              <circle cx="13" cy="14" r="1" fill="currentColor" />
             </svg>
             <span>Ops &amp; Calendar</span>
           </button>
 
           <!-- 9. Signal Efficiency -->
-          <button class="tab-btn" id="tab-btn-efficiency" data-tab="tab-efficiency" onclick="window.switchTab('tab-efficiency')">
+          <button class="tab-btn" id="tab-btn-efficiency" data-tab="tab-efficiency"
+            onclick="window.switchTab('tab-efficiency')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 14A8 8 0 1 1 17 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <circle cx="10" cy="13" r="2" fill="currentColor"/>
-              <path d="M10 13L14 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+              <path d="M3 14A8 8 0 1 1 17 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <circle cx="10" cy="13" r="2" fill="currentColor" />
+              <path d="M10 13L14 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </svg>
             <span>Signal Efficiency</span>
           </button>
@@ -315,41 +357,48 @@
           <!-- 10. Journal -->
           <button class="tab-btn" id="tab-btn-journal" data-tab="tab-journal" onclick="window.switchTab('tab-journal')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="4" y="2.5" width="12" height="15" rx="2" stroke="currentColor" stroke-width="1.5"/>
-              <line x1="7" y1="6.5" x2="13" y2="6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="7" y1="13.5" x2="10.5" y2="13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="2.5" y1="6" x2="4" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="2.5" y1="10" x2="4" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              <line x1="2.5" y1="14" x2="4" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <rect x="4" y="2.5" width="12" height="15" rx="2" stroke="currentColor" stroke-width="1.5" />
+              <line x1="7" y1="6.5" x2="13" y2="6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="7" y1="13.5" x2="10.5" y2="13.5" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" />
+              <line x1="2.5" y1="6" x2="4" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="2.5" y1="10" x2="4" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="2.5" y1="14" x2="4" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
             <span>Journal</span>
           </button>
 
           <!-- 11. Scorecard -->
-          <button class="tab-btn" id="tab-btn-scorecard" data-tab="tab-scorecard" onclick="window.switchTab('tab-scorecard')">
+          <button class="tab-btn" id="tab-btn-scorecard" data-tab="tab-scorecard"
+            onclick="window.switchTab('tab-scorecard')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="2.5" y="11" width="3.5" height="6.5" rx="1" fill="currentColor" fill-opacity="0.25" stroke="currentColor" stroke-width="1.4"/>
-              <rect x="8.2" y="7" width="3.5" height="10.5" rx="1" fill="currentColor" fill-opacity="0.25" stroke="currentColor" stroke-width="1.4"/>
-              <rect x="14" y="3" width="3.5" height="14.5" rx="1" fill="currentColor" fill-opacity="0.4" stroke="currentColor" stroke-width="1.4"/>
-              <path d="M4 8L9.5 4.5L15.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <rect x="2.5" y="11" width="3.5" height="6.5" rx="1" fill="currentColor" fill-opacity="0.25"
+                stroke="currentColor" stroke-width="1.4" />
+              <rect x="8.2" y="7" width="3.5" height="10.5" rx="1" fill="currentColor" fill-opacity="0.25"
+                stroke="currentColor" stroke-width="1.4" />
+              <rect x="14" y="3" width="3.5" height="14.5" rx="1" fill="currentColor" fill-opacity="0.4"
+                stroke="currentColor" stroke-width="1.4" />
+              <path d="M4 8L9.5 4.5L15.5 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+                stroke-linejoin="round" />
             </svg>
             <span>Scorecard</span>
           </button>
 
           <button class="tab-btn" id="tab-btn-reports" data-tab="tab-reports" onclick="window.switchTab('tab-reports')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M5 2.5H12.5L16.5 6.5V17.5H5V2.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-              <path d="M12.5 2.5V6.5H16.5" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
-              <path d="M7.5 10H14M7.5 13H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              <path d="M5 2.5H12.5L16.5 6.5V17.5H5V2.5Z" stroke="currentColor" stroke-width="1.4"
+                stroke-linejoin="round" />
+              <path d="M12.5 2.5V6.5H16.5" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+              <path d="M7.5 10H14M7.5 13H12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
             </svg>
             <span>Reports</span>
           </button>
 
           <button class="tab-btn" id="tab-btn-admin" data-tab="tab-admin" onclick="window.switchTab('tab-admin')">
             <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
-              <path d="M7 8H13M7 12H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <rect x="3" y="3" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5" />
+              <path d="M7 8H13M7 12H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
             </svg>
             <span>Admin &amp; Data</span>
           </button>
@@ -366,43 +415,64 @@
               <div style="display:flex;align-items:center;gap:8px">
                 <span style="font-size:1.15rem">🌅</span>
                 <b style="font-size:0.95rem;color:var(--warn)">Pre-Bell Tactical Briefing &amp; Opening Discovery</b>
-                <span id="pm-discovered-at" style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:08 IST Discovery</span>
+                <span id="pm-discovered-at" style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">09:08
+                  IST Discovery</span>
               </div>
               <div>
-                <span id="pm-regime-badge" class="badge-active" style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">PRE-OPEN SETUP</span>
+                <span id="pm-regime-badge" class="badge-active"
+                  style="background:var(--surface-2);color:var(--warn);border:1px solid var(--warn);font-size:0.72rem">PRE-OPEN
+                  SETUP</span>
               </div>
             </div>
             <div class="pre-bell-grid">
               <div class="pre-bell-item">
-                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative Open</small>
+                <small
+                  style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Indicative
+                  Open</small>
                 <b id="pm-indicative-open" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink)">—</b>
               </div>
               <div class="pre-bell-item">
-                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening Gap</small>
-                <b id="pm-opening-gap" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink-mute)">Awaiting 09:08 match</b>
+                <small
+                  style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Opening
+                  Gap</small>
+                <b id="pm-opening-gap" style="font-size:1.1rem;font-family:var(--mono);color:var(--ink-mute)">Awaiting
+                  09:08 match</b>
               </div>
               <div class="pre-bell-item">
-                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call / Put Wall</small>
+                <small
+                  style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Call
+                  / Put Wall</small>
                 <b id="pm-walls" style="font-size:1.0rem;font-family:var(--mono);color:var(--spark)">—</b>
               </div>
               <div class="pre-bell-item">
-                <small style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Favored Opening Play</small>
+                <small
+                  style="font-size:0.64rem;color:var(--ink-mute);text-transform:uppercase;font-weight:700;display:block">Favored
+                  Opening Play</small>
                 <b id="pm-favored-play" style="font-size:0.92rem;color:var(--spark)">—</b>
               </div>
             </div>
-            <div id="pm-briefing-text" style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:9px 12px;border-radius:6px;border:1px solid var(--line);margin-bottom:10px">
+            <div id="pm-briefing-text"
+              style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:9px 12px;border-radius:6px;border:1px solid var(--line);margin-bottom:10px">
               Prior-session walls and FII context. Equilibrium prints ~09:08 IST.
             </div>
 
             <!-- Projected Opening Option Shocks Table (5 Strikes around ATM) -->
-            <details class="collapsible-matrix" style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)">
-              <summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;list-style:none;user-select:none;outline:none">
+            <details class="collapsible-matrix"
+              style="background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)">
+              <summary
+                style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;list-style:none;user-select:none;outline:none">
                 <div style="display:flex;align-items:center;gap:8px">
-                  <span class="matrix-chevron" style="color:var(--spark);font-size:0.72rem;display:inline-block;transition:transform 0.2s">▼</span>
-                  <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯 Pre-Bell Projected Option Openings (Target Engine Black-76)</span>
-                  <span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse / Expand</span>
+                  <span class="matrix-chevron"
+                    style="color:var(--spark);font-size:0.72rem;display:inline-block;transition:transform 0.2s">▼</span>
+                  <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">🎯
+                    Pre-Bell Projected Option Openings (Target Engine Black-76)</span>
+                  <span
+                    style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line)">Collapse
+                    / Expand</span>
                 </div>
-                <span id="pm-straddle-badge" style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM Straddle: —</span>
+                <span id="pm-straddle-badge"
+                  style="font-size:0.7rem;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.2);padding:2px 8px;border-radius:4px;font-family:var(--mono)">ATM
+                  Straddle: —</span>
               </summary>
               <div style="margin-top:8px;overflow-x:auto">
                 <table class="shock-table">
@@ -489,7 +559,8 @@
           <div id="gamma-blast-card" class="gamma-blast-row">
             <small>Expiry gamma blast</small>
             <div id="gamma-blast-badge" class="gamma-blast-badge">GAMMA BLAST: INACTIVE</div>
-            <div id="gamma-blast-desc" class="gamma-blast-desc">No gamma-blast trigger. Concentration is a map, not a pin.</div>
+            <div id="gamma-blast-desc" class="gamma-blast-desc">No gamma-blast trigger. Concentration is a map, not a
+              pin.</div>
             <span id="gamma-blast-score" class="gamma-blast-score">—</span>
           </div>
 
@@ -503,15 +574,20 @@
               <div class="alert-tape-message">
                 <div id="alert-tape-track" class="alert-tape-track">
                   <div class="alert-tape-line">
-                    <p class="tape-odr-line"><span class="tape-odr-label">Outcome</span> Waiting for a live price. There is nothing to buy yet.</p>
-                    <p class="tape-odr-line"><span class="tape-odr-label">Drivers</span> The walls and the orderflow tape are still loading.</p>
-                    <p class="tape-odr-line"><span class="tape-odr-label">Risk</span> A premium paid before a live price is a guess.</p>
+                    <p class="tape-odr-line"><span class="tape-odr-label">Outcome</span> Waiting for a live price. There
+                      is nothing to buy yet.</p>
+                    <p class="tape-odr-line"><span class="tape-odr-label">Drivers</span> The walls and the orderflow
+                      tape are still loading.</p>
+                    <p class="tape-odr-line"><span class="tape-odr-label">Risk</span> A premium paid before a live price
+                      is a guess.</p>
                   </div>
                 </div>
               </div>
               <div class="alert-tape-anchor-right">
-                <button id="alert-bell-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleAlertBell()" title="Toggle 3-second alert bell sound">🔔 Bell: ON</button>
-                <button id="alert-bell-test-btn" class="tape-ctrl-btn" onclick="window.testAlertBell()" title="Audition 3-second louder brass bell chime">🔔 Test</button>
+                <button id="alert-bell-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleAlertBell()"
+                  title="Toggle 3-second alert bell sound">🔔 Bell: ON</button>
+                <button id="alert-bell-test-btn" class="tape-ctrl-btn" onclick="window.testAlertBell()"
+                  title="Audition 3-second louder brass bell chime">🔔 Test</button>
               </div>
             </div>
             <div class="cockpit-orderflow-tape" id="cockpit-orderflow-tape">
@@ -526,9 +602,12 @@
 
           <!-- Active Cockpit Recommendations Section (Pinned + Fresh Setups) -->
           <div class="ladder-card" id="cockpit-recommendations-wrapper">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-              <h3 style="font-size:1.05rem;font-weight:800;margin:0" id="cockpit-rec-title">★ Active Cockpit Recommendations (<span id="cockpit-rec-count">0</span>)</h3>
-              <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600" id="cockpit-rec-subtitle">Cockpit Watchlist · Preserved across scans</span>
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <h3 style="font-size:1.05rem;font-weight:800;margin:0" id="cockpit-rec-title">★ Active Cockpit
+                Recommendations (<span id="cockpit-rec-count">0</span>)</h3>
+              <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600" id="cockpit-rec-subtitle">Cockpit
+                Watchlist · Preserved across scans</span>
             </div>
             <div id="pinned-setups-container">
               <!-- Dynamically populated or institutional empty state banner -->
@@ -537,65 +616,90 @@
 
           <div class="cockpit-split">
             <div id="crossover-watch" class="repricer-card">
-            <div style="font-size:0.78rem;font-weight:750;margin-bottom:4px">Crossover watch</div>
-            <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:8px">Call premium minus put premium at the magnet and at the money. By parity that difference locates spot against the strike.</div>
-            <div id="crossover-watch-body" style="font-size:0.8rem;color:var(--ink-mute)">Waiting for paired premiums.</div>
-          </div>
+              <div style="font-size:0.78rem;font-weight:750;margin-bottom:4px">Crossover watch</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:8px">Call premium minus put premium at
+                the magnet and at the money. By parity that difference locates spot against the strike.</div>
+              <div id="crossover-watch-body" style="font-size:0.8rem;color:var(--ink-mute)">Waiting for paired premiums.
+              </div>
+            </div>
 
             <div class="ladder-card" id="book-structure-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-              <h3 style="font-size:1.05rem;font-weight:800;margin:0">Illustrative structure</h3>
-              <span id="book-structure-bucket" style="font-size:0.72rem;font-weight:750;background:var(--surface-2);border:1px solid var(--line);padding:3px 10px;border-radius:5px">—</span>
+              <div
+                style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+                <h3 style="font-size:1.05rem;font-weight:800;margin:0">Illustrative structure</h3>
+                <span id="book-structure-bucket"
+                  style="font-size:0.72rem;font-weight:750;background:var(--surface-2);border:1px solid var(--line);padding:3px 10px;border-radius:5px">—</span>
+              </div>
+              <p id="book-structure-playbook" style="font-size:0.82rem;color:var(--ink);margin:0 0 8px"></p>
+              <div id="book-structure-variants" style="display:flex;gap:8px;margin-bottom:8px"></div>
+              <div id="book-structure-legs"
+                style="font-family:var(--mono);font-size:0.84rem;font-weight:700;margin-bottom:6px"></div>
+              <p id="book-structure-why" style="font-size:0.8rem;color:var(--ink-mute);margin:0 0 4px"></p>
+              <p id="book-structure-risk" style="font-size:0.78rem;color:var(--ink);margin:0"></p>
+              <p style="font-size:0.72rem;color:var(--ink-mute);margin:8px 0 0">Paper only. You confirm. Nothing is
+                sent.</p>
             </div>
-            <p id="book-structure-playbook" style="font-size:0.82rem;color:var(--ink);margin:0 0 8px"></p>
-            <div id="book-structure-variants" style="display:flex;gap:8px;margin-bottom:8px"></div>
-            <div id="book-structure-legs" style="font-family:var(--mono);font-size:0.84rem;font-weight:700;margin-bottom:6px"></div>
-            <p id="book-structure-why" style="font-size:0.8rem;color:var(--ink-mute);margin:0 0 4px"></p>
-            <p id="book-structure-risk" style="font-size:0.78rem;color:var(--ink);margin:0"></p>
-            <p style="font-size:0.72rem;color:var(--ink-mute);margin:8px 0 0">Paper only. You confirm. Nothing is sent.</p>
-          </div>
           </div>
 
           <!-- TradingView Chart Card for Selected Index (1m, 5min, 15m Timeframes) -->
           <div class="repricer-card" id="cockpit-tv-card">
             <div class="tv-toolbar-wrap">
               <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                <h3 id="cockpit-chart-title" style="font-size:1.02rem;font-weight:800;margin:0;display:flex;align-items:center;gap:6px">
+                <h3 id="cockpit-chart-title"
+                  style="font-size:1.02rem;font-weight:800;margin:0;display:flex;align-items:center;gap:6px">
                   <span>📈</span>
                   <span id="cockpit-chart-symbol-badge" style="color:var(--spark)">NIFTY</span>
                   <span>TradingView Chart</span>
                 </h3>
-                <span id="cockpit-chart-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 8px;border-radius:4px;font-weight:700;font-size:0.70rem;font-family:var(--mono)">5m · LIVE</span>
+                <span id="cockpit-chart-badge"
+                  style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 8px;border-radius:4px;font-weight:700;font-size:0.70rem;font-family:var(--mono)">5m
+                  · LIVE</span>
               </div>
 
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                 <!-- Timeframe Selector (1m, 5min, 15m) -->
-                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 4px;border-radius:6px;border:1px solid var(--line);align-items:center">
+                <div
+                  style="display:flex;gap:3px;background:var(--surface-2);padding:2px 4px;border-radius:6px;border:1px solid var(--line);align-items:center">
                   <span style="font-size:0.68rem;color:var(--ink-mute);font-weight:700;padding:0 4px">TF:</span>
-                  <button class="btn btn-secondary" id="btn-cockpit-tf-1m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('1m')">1m</button>
-                  <button class="btn btn-primary" id="btn-cockpit-tf-5m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('5m')">5min</button>
-                  <button class="btn btn-secondary" id="btn-cockpit-tf-15m" style="font-size:0.70rem;padding:3px 9px" onclick="window.switchCockpitTimeframe('15m')">15m</button>
+                  <button class="btn btn-secondary" id="btn-cockpit-tf-1m" style="font-size:0.70rem;padding:3px 9px"
+                    onclick="window.switchCockpitTimeframe('1m')">1m</button>
+                  <button class="btn btn-primary" id="btn-cockpit-tf-5m" style="font-size:0.70rem;padding:3px 9px"
+                    onclick="window.switchCockpitTimeframe('5m')">5min</button>
+                  <button class="btn btn-secondary" id="btn-cockpit-tf-15m" style="font-size:0.70rem;padding:3px 9px"
+                    onclick="window.switchCockpitTimeframe('15m')">15m</button>
                 </div>
 
                 <!-- Index Mode Indicator (Index Only GEX Canvas) -->
-                <div style="display:flex;gap:3px;background:var(--surface-2);padding:2px 8px;border-radius:6px;border:1px solid var(--line);align-items:center">
-                  <span style="font-size:0.68rem;color:var(--spark);font-weight:750" id="cockpit-chart-engine-badge">⚡ GEX Canvas (Index Tape)</span>
+                <div
+                  style="display:flex;gap:3px;background:var(--surface-2);padding:2px 8px;border-radius:6px;border:1px solid var(--line);align-items:center">
+                  <span style="font-size:0.68rem;color:var(--spark);font-weight:750" id="cockpit-chart-engine-badge">⚡
+                    GEX Canvas (Index Tape)</span>
                 </div>
 
                 <!-- Height Presets, Fullscreen & Popout -->
                 <div style="display:flex;gap:4px">
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 7px;font-weight:700;color:var(--spark);border-color:rgba(56,189,248,0.3)" title="Reset and fit chart to recent candles" onclick="window.resetCockpitChartFit()">🎯 Fit</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(440)">440px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(580)">580px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setCockpitChartHeight(740)">740px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" title="Toggle Fullscreen" onclick="window.toggleCockpitChartFullscreen()">⛶ Fullscreen</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750" onclick="window.openCockpitPopoutChart()">⤢ Popout</button>
+                  <button class="btn btn-secondary"
+                    style="font-size:0.68rem;padding:2px 7px;font-weight:700;color:var(--spark);border-color:rgba(56,189,248,0.3)"
+                    title="Reset and fit chart to recent candles" onclick="window.resetCockpitChartFit()">🎯
+                    Fit</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setCockpitChartHeight(440)">440px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setCockpitChartHeight(580)">580px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setCockpitChartHeight(740)">740px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" title="Toggle Fullscreen"
+                    onclick="window.toggleCockpitChartFullscreen()">⛶ Fullscreen</button>
+                  <button class="btn btn-secondary"
+                    style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750"
+                    onclick="window.openCockpitPopoutChart()">⤢ Popout</button>
                 </div>
               </div>
             </div>
 
             <!-- Real-Time Crosshair Hover HUD (for GEX Canvas mode) -->
-            <div id="cockpit-hover-legend" style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+            <div id="cockpit-hover-legend"
+              style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
               <span style="font-weight:750;color:var(--spark)" id="chl-sym">NIFTY</span>
               <span style="color:var(--ink-mute)" id="chl-time">--:-- IST</span>
               <span id="chl-ohlc" style="color:var(--ink)">O: -- H: -- L: -- C: --</span>
@@ -605,21 +709,26 @@
             </div>
 
             <!-- Chart Mounting Viewport -->
-            <div id="cockpit-chart-viewport" style="height:520px;position:relative;background:var(--surface-2);border-radius:6px;overflow:hidden;border:1px solid var(--line)">
+            <div id="cockpit-chart-viewport"
+              style="height:520px;position:relative;background:var(--surface-2);border-radius:6px;overflow:hidden;border:1px solid var(--line)">
               <!-- TV Lightweight Chart Container -->
-              <div id="cockpit-gex-canvas-container" style="width:100%;height:100%;position:relative;display:block"></div>
+              <div id="cockpit-gex-canvas-container" style="width:100%;height:100%;position:relative;display:block">
+              </div>
             </div>
 
             <!-- 2D Vertical Drag Handle -->
-            <div class="chart-resize-handle" id="cockpit-chart-drag" title="Drag vertically to resize chart height"></div>
+            <div class="chart-resize-handle" id="cockpit-chart-drag" title="Drag vertically to resize chart height">
+            </div>
 
             <!-- Chart Legend Strip -->
-            <div id="cockpit-chart-legend-strip" style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
+            <div id="cockpit-chart-legend-strip"
+              style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
               <span id="legend-sym-tag" style="color:var(--spark);font-weight:700">INDEX: NIFTY 50</span>
               <span id="legend-tf-tag">Timeframe: 5m</span>
               <span style="color:#ef4444">🟥 <b>Call gamma (<span id="cockpit-legend-cw-val">--</span>)</b></span>
               <span style="color:#22c55e">🟩 <b>Put gamma (<span id="cockpit-legend-pw-val">--</span>)</b></span>
-              <span style="color:#eab308">🟨 <b>Call−put balance (<span id="cockpit-legend-flip-val">--</span>)</b></span>
+              <span style="color:#eab308">🟨 <b>Call−put balance (<span
+                    id="cockpit-legend-flip-val">--</span>)</b></span>
               <span style="color:#c084fc">🟣 <b>VWAP Session Mean</b></span>
               <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
             </div>
@@ -627,16 +736,20 @@
 
           <!-- Gamma Price Ladder -->
           <div class="ladder-card">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
               <div>
-                <h3 style="font-size:1.05rem;font-weight:800;display:inline-block;margin-right:8px">🗺️ Gamma Price Ladder (Spot Centered)</h3>
+                <h3 style="font-size:1.05rem;font-weight:800;display:inline-block;margin-right:8px">🗺️ Gamma Price
+                  Ladder (Spot Centered)</h3>
                 <span style="font-size:0.74rem;color:var(--ink-mute)">Gamma by strike. Concentration map.</span>
               </div>
-              <div id="ladder-flip-pill" style="font-size:0.72rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.25);padding:3px 10px;border-radius:5px;font-family:var(--mono);font-weight:700">
+              <div id="ladder-flip-pill"
+                style="font-size:0.72rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.25);padding:3px 10px;border-radius:5px;font-family:var(--mono);font-weight:700">
                 🔀 Call−put balance: <span id="ladder-flip-val">--</span>
               </div>
             </div>
-            <div id="standing-oi-strip" style="display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;margin-bottom:10px;font-size:0.82rem">
+            <div id="standing-oi-strip"
+              style="display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;margin-bottom:10px;font-size:0.82rem">
               <span>Put OI centre <b id="standing-oi-put" style="font-family:var(--mono)">—</b></span>
               <span>Call OI centre <b id="standing-oi-call" style="font-family:var(--mono)">—</b></span>
               <span id="standing-oi-note" style="color:var(--ink-mute);font-size:0.74rem"></span>
@@ -659,12 +772,16 @@
             </table>
             <div style="margin-top:14px">
               <div style="font-size:0.84rem;font-weight:750;margin-bottom:4px">Magnet path</div>
-              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">Last magnet of each captured session. Combined gamma peak. Not a forecast that price will stay there.</div>
-              <div id="magnet-path-body" style="font-family:var(--mono);font-size:0.78rem;color:var(--ink-mute)">No captured sessions.</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">Last magnet of each captured
+                session. Combined gamma peak. Not a forecast that price will stay there.</div>
+              <div id="magnet-path-body" style="font-family:var(--mono);font-size:0.78rem;color:var(--ink-mute)">No
+                captured sessions.</div>
             </div>
             <div style="margin-top:14px">
-              <div style="font-size:0.84rem;font-weight:750;margin-bottom:4px">Participant holdings <span id="participant-date" style="font-weight:500;color:var(--ink-mute)"></span></div>
-              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">End-of-day long and short contracts. Market-wide. Open interest is not buyer-versus-seller flow.</div>
+              <div style="font-size:0.84rem;font-weight:750;margin-bottom:4px">Participant holdings <span
+                  id="participant-date" style="font-weight:500;color:var(--ink-mute)"></span></div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:6px">End-of-day long and short
+                contracts. Market-wide. Open interest is not buyer-versus-seller flow.</div>
               <table class="ladder-table">
                 <thead>
                   <tr>
@@ -683,24 +800,25 @@
           </div>
 
           <div class="ladder-card">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                <h3 style="font-size:1.05rem;font-weight:800">💼 Active Paper Positions</h3>
-                <span id="cockpit-open-mtm-badge" style="font-family:var(--mono);font-size:0.82rem;font-weight:800;color:var(--ink-mute)">MTM: —</span>
-              </div>
-              <table class="block-tape-table">
-                <thead>
-                  <tr>
-                    <th>Strategy</th>
-                    <th>Qty</th>
-                    <th>Entry</th>
-                    <th>Current</th>
-                    <th>PnL</th>
-                  </tr>
-                </thead>
-                <tbody id="cockpit-open-positions-body">
-                  <!-- Dynamically populated open trades -->
-                </tbody>
-              </table>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+              <h3 style="font-size:1.05rem;font-weight:800">💼 Active Paper Positions</h3>
+              <span id="cockpit-open-mtm-badge"
+                style="font-family:var(--mono);font-size:0.82rem;font-weight:800;color:var(--ink-mute)">MTM: —</span>
+            </div>
+            <table class="block-tape-table">
+              <thead>
+                <tr>
+                  <th>Strategy</th>
+                  <th>Qty</th>
+                  <th>Entry</th>
+                  <th>Current</th>
+                  <th>PnL</th>
+                </tr>
+              </thead>
+              <tbody id="cockpit-open-positions-body">
+                <!-- Dynamically populated open trades -->
+              </tbody>
+            </table>
           </div>
 
         </div>
@@ -708,11 +826,15 @@
         <!-- Tab 2: 🎯 Target Engine -->
         <div id="tab-target-engine" class="tab-pane">
           <!-- Target Engine Model Controls Bar: Target Horizon & Scoring Mode -->
-          <div class="repricer-card" style="padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+          <div class="repricer-card"
+            style="padding:12px 16px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
             <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
               <div style="display:flex;align-items:center;gap:8px">
-                <label style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">⏱️ Target Horizon:</label>
-                <select id="te-horizon-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:170px" onchange="window.onTargetEngineParamsChange()">
+                <label
+                  style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">⏱️
+                  Target Horizon:</label>
+                <select id="te-horizon-select" class="form-control"
+                  style="font-size:0.8rem;padding:5px 10px;width:170px" onchange="window.onTargetEngineParamsChange()">
                   <option value="30">30 mins (0.5 hr)</option>
                   <option value="60">60 mins (1 hr)</option>
                   <option value="120" selected>120 mins (2 hrs)</option>
@@ -721,8 +843,11 @@
                 </select>
               </div>
               <div style="display:flex;align-items:center;gap:8px">
-                <label style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">🔬 Scoring Mode:</label>
-                <select id="te-mode-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:190px" onchange="window.onTargetEngineParamsChange()">
+                <label
+                  style="font-size:0.75rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.04em">🔬
+                  Scoring Mode:</label>
+                <select id="te-mode-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:190px"
+                  onchange="window.onTargetEngineParamsChange()">
                   <option value="heuristic" selected>Heuristic Baseline</option>
                   <option value="calibrated">Calibrated (Stage B)</option>
                 </select>
@@ -735,30 +860,41 @@
 
           <!-- Dominant Scenario Banner & Multi-Color Probability Bar -->
           <div class="repricer-card" style="padding:16px 18px;margin-bottom:14px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
               <div>
-                <span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mute);font-weight:700">Dominant Scenario</span>
-                <div id="te-dominant-scenario" style="font-size:1.35rem;font-weight:900;color:var(--go);text-transform:uppercase;letter-spacing:0.02em">
+                <span
+                  style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mute);font-weight:700">Dominant
+                  Scenario</span>
+                <div id="te-dominant-scenario"
+                  style="font-size:1.35rem;font-weight:900;color:var(--go);text-transform:uppercase;letter-spacing:0.02em">
                   BULL (62.4%)
                 </div>
               </div>
               <div style="text-align:right">
-                <span id="te-edge-badge" style="background:#064e3b;color:#f8fafc;padding:4px 10px;border-radius:4px;font-size:0.74rem;font-weight:800;letter-spacing:0.04em;border:1px solid rgba(16,185,129,0.3)">
+                <span id="te-edge-badge"
+                  style="background:#064e3b;color:#f8fafc;padding:4px 10px;border-radius:4px;font-size:0.74rem;font-weight:800;letter-spacing:0.04em;border:1px solid rgba(16,185,129,0.3)">
                   CONFIRMED EDGE
                 </span>
                 <div style="font-size:0.78rem;color:var(--ink-mute);margin-top:4px">
-                  Conviction: <b id="te-conviction-val" style="color:var(--ink)">78%</b> &nbsp;|&nbsp; Spot: <b id="te-spot-val" style="color:var(--spark)">₹24,480.0</b>
+                  Conviction: <b id="te-conviction-val" style="color:var(--ink)">78%</b> &nbsp;|&nbsp; Spot: <b
+                    id="te-spot-val" style="color:var(--spark)">₹24,480.0</b>
                 </div>
               </div>
             </div>
 
             <!-- Multi-color Segmented Progress Bar -->
-            <div style="display:flex;height:16px;border-radius:6px;overflow:hidden;background:#334155;box-shadow:inset 0 1px 3px rgba(0,0,0,0.4)">
-              <div id="te-bar-bull" style="width:62.4%;background:#10b981;transition:width 0.4s ease" title="Bull: 62.4%"></div>
-              <div id="te-bar-base" style="width:25.1%;background:#3b82f6;transition:width 0.4s ease" title="Base: 25.1%"></div>
-              <div id="te-bar-bear" style="width:12.5%;background:#ef4444;transition:width 0.4s ease" title="Bear: 12.5%"></div>
+            <div
+              style="display:flex;height:16px;border-radius:6px;overflow:hidden;background:#334155;box-shadow:inset 0 1px 3px rgba(0,0,0,0.4)">
+              <div id="te-bar-bull" style="width:62.4%;background:#10b981;transition:width 0.4s ease"
+                title="Bull: 62.4%"></div>
+              <div id="te-bar-base" style="width:25.1%;background:#3b82f6;transition:width 0.4s ease"
+                title="Base: 25.1%"></div>
+              <div id="te-bar-bear" style="width:12.5%;background:#ef4444;transition:width 0.4s ease"
+                title="Bear: 12.5%"></div>
             </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.76rem;color:var(--ink-mute);margin-top:8px">
+            <div
+              style="display:flex;justify-content:space-between;font-size:0.76rem;color:var(--ink-mute);margin-top:8px">
               <span>🟢 Bullish: <b id="te-prob-bull" style="color:#10b981">62.4%</b></span>
               <span>🔵 Base (Range): <b id="te-prob-base" style="color:#3b82f6">25.1%</b></span>
               <span>🔴 Bearish: <b id="te-prob-bear" style="color:#ef4444">12.5%</b></span>
@@ -768,17 +904,21 @@
           <!-- Tri-Scenario Price Target Cards: Bull, Base, Bear with P(Touch), P(Close Beyond) & Forecast IV -->
           <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:14px;margin-bottom:18px">
             <!-- Bull Target Card -->
-            <div style="background:rgba(16, 185, 129, 0.05);border:1px solid rgba(16, 185, 129, 0.28);border-radius:8px;padding:14px">
+            <div
+              style="background:rgba(16, 185, 129, 0.05);border:1px solid rgba(16, 185, 129, 0.28);border-radius:8px;padding:14px">
               <div style="font-weight:750;color:#10b981;font-size:0.92rem;margin-bottom:6px">
                 🚀 Bull Target (<span id="te-bull-horizon-badge">120m</span>)
               </div>
-              <div id="te-bull-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
+              <div id="te-bull-target-val"
+                style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,620.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
-                Stop: <span id="te-bull-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,395.0</span>
+                Stop: <span id="te-bull-stop-val"
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,395.0</span>
               </div>
-              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
+              <div
+                style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Target): <b id="te-bull-ptouch" style="color:#10b981">68.4%</b><br>
                 • P(Close Beyond): <b id="te-bull-pclose" style="color:#38bdf8">42.1%</b><br>
                 • Forecast ATM IV: <b id="te-bull-iv" style="color:#facc15">14.12%</b><br>
@@ -787,17 +927,21 @@
             </div>
 
             <!-- Base Case Target Card -->
-            <div style="background:rgba(59, 130, 246, 0.05);border:1px solid rgba(59, 130, 246, 0.28);border-radius:8px;padding:14px">
+            <div
+              style="background:rgba(59, 130, 246, 0.05);border:1px solid rgba(59, 130, 246, 0.28);border-radius:8px;padding:14px">
               <div style="font-weight:750;color:#3b82f6;font-size:0.92rem;margin-bottom:6px">
                 ⚖️ Base / Range Target (<span id="te-base-horizon-badge">120m</span>)
               </div>
-              <div id="te-base-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
+              <div id="te-base-target-val"
+                style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,535.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
-                Band Stop: <span id="te-base-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
+                Band Stop: <span id="te-base-stop-val"
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
               </div>
-              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
+              <div
+                style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Target): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
                 • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">58.6%</b><br>
                 • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">13.85%</b><br>
@@ -806,17 +950,21 @@
             </div>
 
             <!-- Bear Target Card -->
-            <div style="background:rgba(239, 68, 68, 0.05);border:1px solid rgba(239, 68, 68, 0.28);border-radius:8px;padding:14px">
+            <div
+              style="background:rgba(239, 68, 68, 0.05);border:1px solid rgba(239, 68, 68, 0.28);border-radius:8px;padding:14px">
               <div style="font-weight:750;color:#ef4444;font-size:0.92rem;margin-bottom:6px">
                 🔻 Bear Target (<span id="te-bear-horizon-badge">120m</span>)
               </div>
-              <div id="te-bear-target-val" style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
+              <div id="te-bear-target-val"
+                style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
                 ₹24,395.0
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
-                Stop: <span id="te-bear-stop-val" style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,550.0</span>
+                Stop: <span id="te-bear-stop-val"
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,550.0</span>
               </div>
-              <div style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
+              <div
+                style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
                 • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">32.0%</b><br>
                 • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">18.5%</b><br>
                 • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">15.40%</b><br>
@@ -828,43 +976,55 @@
           <!-- Confluence Dial Box -->
           <div class="dial-box">
             <div>
-              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">T2 Institutional Confluence Dial</span>
-              <div style="font-size:1.35rem;font-weight:800;color:var(--go);margin:4px 0" id="dial-verdict">CONFLUENCE BULLISH</div>
-              <div style="font-size:0.78rem;color:var(--ink-mute)">T2 conviction (0–100). Verdict follows the dominant scenario, not rank_score.</div>
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">T2
+                Institutional Confluence Dial</span>
+              <div style="font-size:1.35rem;font-weight:800;color:var(--go);margin:4px 0" id="dial-verdict">CONFLUENCE
+                BULLISH</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">T2 conviction (0–100). Verdict follows the dominant
+                scenario, not rank_score.</div>
             </div>
             <div style="text-align:right">
               <div class="dial-score-num" id="dial-score-num">—</div>
-              <span id="dial-conviction-badge" style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH CONVICTION</span>
+              <span id="dial-conviction-badge"
+                style="font-size:0.72rem;background:var(--go-bg);color:var(--go);padding:2px 8px;border-radius:4px;font-weight:700">HIGH
+                CONVICTION</span>
             </div>
           </div>
 
           <!-- Reference Anchors Status Strip -->
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
-            <div style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
+            <div
+              style="background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <span style="font-weight:750;color:var(--go)">🟢 Bullish / Calls (CE) Reference</span>
-                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-ce-inval" style="color:var(--stop)">24,395.0</b></span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-ce-inval"
+                    style="color:var(--stop)">24,395.0</b></span>
               </div>
               <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
-                Target 1: <b id="ladder-ce-tgt1" style="color:var(--go)">24,535.0</b> · Target 2: <b id="ladder-ce-tgt2" style="color:#4ade80">24,620.0</b>
+                Target 1: <b id="ladder-ce-tgt1" style="color:var(--go)">24,535.0</b> · Target 2: <b id="ladder-ce-tgt2"
+                  style="color:#4ade80">24,620.0</b>
               </div>
             </div>
-            <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
+            <div
+              style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:8px;padding:10px 14px;font-size:0.8rem">
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <span style="font-weight:750;color:var(--stop)">🔴 Bearish / Puts (PE) Reference</span>
-                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-pe-inval" style="color:var(--stop)">24,550.0</b></span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-pe-inval"
+                    style="color:var(--stop)">24,550.0</b></span>
               </div>
               <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
-                Target 1: <b id="ladder-pe-tgt1" style="color:var(--stop)">24,420.0</b> · Target 2: <b id="ladder-pe-tgt2" style="color:#f87171">24,350.0</b>
+                Target 1: <b id="ladder-pe-tgt1" style="color:var(--stop)">24,420.0</b> · Target 2: <b
+                  id="ladder-pe-tgt2" style="color:#f87171">24,350.0</b>
               </div>
             </div>
           </div>
 
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.74rem;color:var(--ink-mute)">
+          <div
+            style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:0.74rem;color:var(--ink-mute)">
             <div>
-              <span id="ladder-ws-status" style="color:var(--ink-mute);font-weight:700">Chain snapshot</span> · 
-              Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">—</b> · 
-              Spot: <b id="ladder-spot-display" style="color:var(--spark)">—</b> · 
+              <span id="ladder-ws-status" style="color:var(--ink-mute);font-weight:700">Chain snapshot</span> ·
+              Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">—</b> ·
+              Spot: <b id="ladder-spot-display" style="color:var(--spark)">—</b> ·
               ATM: <b id="ladder-atm-display" style="color:var(--warn)">23,150</b>
             </div>
             <span style="font-size:0.7rem;color:var(--ink-faint)">Updated: Real-time 0ms</span>
@@ -901,26 +1061,34 @@
 
           <div class="ladder-card" id="te-candidates-card" style="margin-top:14px">
             <h3 style="font-size:1.05rem;font-weight:800;margin:0 0 8px">Ranked structures</h3>
-            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Scored against the current book. Entry, target, and stop come from the matching scenario.</p>
+            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Scored against the current book. Entry,
+              target, and stop come from the matching scenario.</p>
             <div id="te-candidates-body"></div>
             <div id="te-features-body" style="margin-top:10px"></div>
           </div>
 
           <!-- Target Engine Target/SL Calculator & Repricer Suite -->
           <div class="repricer-card" style="margin-top:16px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
               <div>
-                <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎛️ Interactive 'What-If' Option Repricer &amp; Target/SL Calculator</h3>
-                <div style="font-size:0.75rem;color:var(--ink-mute);margin-top:2px">Calculate exact option target &amp; stop-loss premiums, PnL per lot, risk:reward, and Greeks for any strike across any expiry.</div>
+                <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎛️ Interactive 'What-If' Option Repricer &amp;
+                  Target/SL Calculator</h3>
+                <div style="font-size:0.75rem;color:var(--ink-mute);margin-top:2px">Calculate exact option target &amp;
+                  stop-loss premiums, PnL per lot, risk:reward, and Greeks for any strike across any expiry.</div>
               </div>
-              <div style="display:flex;gap:6px;background:var(--surface-2);padding:3px;border-radius:6px;border:1px solid var(--line)">
-                <button id="te-mode-calc" class="btn btn-secondary active" style="font-size:0.72rem;padding:4px 10px" onclick="window.switchTEMode('calc')">🎯 Target / SL Calculator</button>
-                <button id="te-mode-sliders" class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px" onclick="window.switchTEMode('sliders')">🎛️ Custom What-If Sliders</button>
+              <div
+                style="display:flex;gap:6px;background:var(--surface-2);padding:3px;border-radius:6px;border:1px solid var(--line)">
+                <button id="te-mode-calc" class="btn btn-secondary active" style="font-size:0.72rem;padding:4px 10px"
+                  onclick="window.switchTEMode('calc')">🎯 Target / SL Calculator</button>
+                <button id="te-mode-sliders" class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px"
+                  onclick="window.switchTEMode('sliders')">🎛️ Custom What-If Sliders</button>
               </div>
             </div>
 
             <!-- Contract Selector Bar -->
-            <div style="display:grid;grid-template-columns:1.8fr 2fr 1.2fr;gap:12px;background:var(--surface-2);padding:10px 14px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px">
+            <div
+              style="display:grid;grid-template-columns:1.8fr 2fr 1.2fr;gap:12px;background:var(--surface-2);padding:10px 14px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px">
               <div>
                 <label class="form-label" style="font-size:0.72rem">📅 Expiry Contract:</label>
                 <select id="te-calc-expiry" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
@@ -928,15 +1096,20 @@
               <div>
                 <label class="form-label" style="font-size:0.72rem">Strike, or type a custom strike:</label>
                 <select id="te-calc-strike" class="form-control" style="font-size:0.8rem;padding:4px 8px"></select>
-                <input id="te-calc-custom-strike" class="form-control" type="number" step="1" placeholder="Custom strike" style="font-size:0.8rem;padding:4px 8px;margin-top:6px" onchange="window.recalculateTargetSL()">
+                <input id="te-calc-custom-strike" class="form-control" type="number" step="1"
+                  placeholder="Custom strike" style="font-size:0.8rem;padding:4px 8px;margin-top:6px"
+                  onchange="window.recalculateTargetSL()">
               </div>
               <div>
                 <label class="form-label" style="font-size:0.72rem">Option Type:</label>
                 <div style="display:flex;gap:12px;align-items:center;height:32px">
-                  <label style="font-size:0.8rem;font-weight:750;color:var(--go);cursor:pointer;display:flex;align-items:center;gap:4px">
-                    <input type="radio" name="te_calc_type" value="CE" checked onchange="window.recalculateTargetSL()"> CE
+                  <label
+                    style="font-size:0.8rem;font-weight:750;color:var(--go);cursor:pointer;display:flex;align-items:center;gap:4px">
+                    <input type="radio" name="te_calc_type" value="CE" checked onchange="window.recalculateTargetSL()">
+                    CE
                   </label>
-                  <label style="font-size:0.8rem;font-weight:750;color:var(--stop);cursor:pointer;display:flex;align-items:center;gap:4px">
+                  <label
+                    style="font-size:0.8rem;font-weight:750;color:var(--stop);cursor:pointer;display:flex;align-items:center;gap:4px">
                     <input type="radio" name="te_calc_type" value="PE" onchange="window.recalculateTargetSL()"> PE
                   </label>
                 </div>
@@ -944,10 +1117,12 @@
             </div>
 
             <!-- Contract Telemetry Strip -->
-            <div id="te-contract-strip" style="background:rgba(15, 23, 42, 0.85);border:1px solid #334155;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+            <div id="te-contract-strip"
+              style="background:rgba(15, 23, 42, 0.85);border:1px solid #334155;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
               <div>
                 <b id="te-strip-title" style="color:#f8fafc">NIFTY 23,150 CE</b>
-                <span id="te-strip-sub" style="color:#94a3b8;font-size:0.72rem;margin-left:6px">(ATM Reference Contract)</span>
+                <span id="te-strip-sub" style="color:#94a3b8;font-size:0.72rem;margin-left:6px">(ATM Reference
+                  Contract)</span>
               </div>
               <div style="display:flex;gap:12px;font-family:var(--mono);color:#cbd5e1">
                 <span>LTP: <b id="te-strip-ltp" style="color:#38bdf8">₹124.5</b></span>
@@ -963,32 +1138,46 @@
             <div id="te-calc-panel">
               <!-- Quick Preset Buttons -->
               <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
-                <button id="te-btn-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull Preset (+1σ)</button>
-                <button id="te-btn-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear Preset (-1σ)</button>
-                <button id="te-btn-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
-                <button id="te-btn-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
+                <button id="te-btn-preset-bull" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)"
+                  onclick="window.applyTEPreset('bull')">🚀 Bull Preset (+1σ)</button>
+                <button id="te-btn-preset-bear" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)"
+                  onclick="window.applyTEPreset('bear')">🔻 Bear Preset (-1σ)</button>
+                <button id="te-btn-preset-base" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)"
+                  onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
+                <button id="te-btn-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px"
+                  onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
               </div>
 
               <!-- Inputs Grid -->
               <div style="display:grid;grid-template-columns:1fr 1fr 1.2fr 1.2fr;gap:12px;margin-bottom:14px">
                 <div>
                   <label class="form-label" style="font-size:0.72rem">Target Spot Level (₹):</label>
-                  <input type="number" id="te-input-target-spot" class="form-control" style="font-size:0.84rem;font-family:var(--mono)" step="10" value="24570" onchange="window.recalculateTargetSL()">
+                  <input type="number" id="te-input-target-spot" class="form-control"
+                    style="font-size:0.84rem;font-family:var(--mono)" step="10" value="" placeholder="Target Spot (₹)"
+                    onchange="window.recalculateTargetSL()">
                 </div>
                 <div>
                   <label class="form-label" style="font-size:0.72rem">Stop Loss Spot Level (₹):</label>
-                  <input type="number" id="te-input-sl-spot" class="form-control" style="font-size:0.84rem;font-family:var(--mono)" step="10" value="24460" onchange="window.recalculateTargetSL()">
+                  <input type="number" id="te-input-sl-spot" class="form-control"
+                    style="font-size:0.84rem;font-family:var(--mono)" step="10" value="" placeholder="SL Spot (₹)"
+                    onchange="window.recalculateTargetSL()">
                 </div>
                 <div>
                   <div style="display:flex;justify-content:space-between">
                     <label class="form-label" style="font-size:0.72rem">Holding Time (mins):</label>
-                    <span id="te-val-holding-mins" style="font-family:var(--mono);font-size:0.72rem;color:var(--spark)">60 mins</span>
+                    <span id="te-val-holding-mins"
+                      style="font-family:var(--mono);font-size:0.72rem;color:var(--spark)">60 mins</span>
                   </div>
-                  <input type="range" id="te-slider-holding-mins" min="5" max="375" step="15" value="60" oninput="document.getElementById('te-val-holding-mins').textContent = this.value + ' mins'; window.recalculateTargetSL()">
+                  <input type="range" id="te-slider-holding-mins" min="5" max="375" step="15" value="60"
+                    oninput="document.getElementById('te-val-holding-mins').textContent = this.value + ' mins'; window.recalculateTargetSL()">
                 </div>
                 <div>
                   <label class="form-label" style="font-size:0.72rem">IV Scenario Shock:</label>
-                  <select id="te-select-iv-shock" class="form-control" style="font-size:0.8rem;padding:4px 8px" onchange="window.recalculateTargetSL()">
+                  <select id="te-select-iv-shock" class="form-control" style="font-size:0.8rem;padding:4px 8px"
+                    onchange="window.recalculateTargetSL()">
                     <option value="Auto (Regime-Conditioned)" selected>Auto (Regime-Conditioned)</option>
                     <option value="Flat IV (0.0 pts)">Flat IV (0.0 pts)</option>
                     <option value="Mild Vol Compression (-1.0 pts)">Mild Vol Compression (-1.0 pts)</option>
@@ -1005,37 +1194,49 @@
                   <small>Target Option Premium</small>
                   <b id="te-out-tgt-ltp">₹168.40</b>
                   <span id="te-out-tgt-gain" style="color:var(--go)">+43.90 pts (+35.3%)</span>
-                  <div id="te-out-tgt-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target PnL / Lot: +₹1,098 · P(Touch): 68.4%</div>
+                  <div id="te-out-tgt-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target PnL /
+                    Lot: +₹1,098 · P(Touch): 68.4%</div>
                 </div>
                 <div class="kpi-card stop">
                   <small>Stop Loss Option Premium</small>
                   <b id="te-out-sl-ltp">₹98.20</b>
                   <span id="te-out-sl-loss" style="color:var(--stop)">-26.30 pts (-21.1%)</span>
-                  <div id="te-out-sl-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Risk / Lot: -₹658 · P(Touch SL): 32.1%</div>
+                  <div id="te-out-sl-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Risk / Lot:
+                    -₹658 · P(Touch SL): 32.1%</div>
                 </div>
                 <div class="kpi-card spark">
                   <small>Risk : Reward Ratio</small>
                   <b id="te-out-rr-ratio">1.67 : 1</b>
                   <span id="te-out-rr-verdict" style="color:var(--spark)">Sub-Optimal (&lt; 1.8)</span>
-                  <div id="te-out-rr-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Net Spread: +17.6 pts · Breakeven: ₹24,624.5</div>
+                  <div id="te-out-rr-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Net Spread:
+                    +17.6 pts · Breakeven: ₹24,624.5</div>
                 </div>
                 <div class="kpi-card purple">
                   <small>Touch-Weighted EV / Lot</small>
                   <b id="te-out-ev-val">+₹540</b>
                   <span id="te-out-ev-verdict" style="color:var(--go)">Positive Expectancy</span>
-                  <div id="te-out-ev-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target IV: 13.5% (-0.8 pts)</div>
+                  <div id="te-out-ev-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target IV:
+                    13.5% (-0.8 pts)</div>
                 </div>
               </div>
 
               <!-- Collapsible Greek Decomposition Table -->
-              <details style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin-bottom:10px" open>
-                <summary style="font-size:0.76rem;font-weight:750;color:var(--spark);cursor:pointer">🔬 Greek Attribution Breakdown at Target &amp; Stop Loss</summary>
+              <details
+                style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin-bottom:10px"
+                open>
+                <summary style="font-size:0.76rem;font-weight:750;color:var(--spark);cursor:pointer">🔬 Greek
+                  Attribution Breakdown at Target &amp; Stop Loss</summary>
                 <table style="width:100%;font-size:0.72rem;border-collapse:collapse;margin-top:8px">
                   <thead>
                     <tr style="border-bottom:1px solid var(--line);color:var(--ink-mute);text-align:left">
-                      <th style="padding:4px 6px">Phase</th><th style="padding:4px 6px">Spot Move</th><th style="padding:4px 6px">Full PnL</th>
-                      <th style="padding:4px 6px">Delta PnL</th><th style="padding:4px 6px">Gamma PnL</th><th style="padding:4px 6px">Vega PnL</th>
-                      <th style="padding:4px 6px">Theta Bleed</th><th style="padding:4px 6px">Residual</th>
+                      <th style="padding:4px 6px">Phase</th>
+                      <th style="padding:4px 6px">Spot Move</th>
+                      <th style="padding:4px 6px">Full PnL</th>
+                      <th style="padding:4px 6px">Delta PnL</th>
+                      <th style="padding:4px 6px">Gamma PnL</th>
+                      <th style="padding:4px 6px">Vega PnL</th>
+                      <th style="padding:4px 6px">Theta Bleed</th>
+                      <th style="padding:4px 6px">Residual</th>
                     </tr>
                   </thead>
                   <tbody id="te-greek-attr-body"></tbody>
@@ -1047,10 +1248,17 @@
             <div id="te-sliders-panel" style="display:none">
               <!-- Preset Buttons in Sliders Mode -->
               <div style="display:grid;grid-template-columns:repeat(4, 1fr);gap:10px;margin-bottom:12px">
-                <button id="te-slider-preset-bull" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)" onclick="window.applyTEPreset('bull')">🚀 Bull (+1σ)</button>
-                <button id="te-slider-preset-bear" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)" onclick="window.applyTEPreset('bear')">🔻 Bear (-1σ)</button>
-                <button id="te-slider-preset-base" class="btn btn-secondary" style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)" onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
-                <button id="te-slider-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px" onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
+                <button id="te-slider-preset-bull" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--go);border-color:rgba(34,197,94,.3)"
+                  onclick="window.applyTEPreset('bull')">🚀 Bull (+1σ)</button>
+                <button id="te-slider-preset-bear" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--stop);border-color:rgba(239,68,68,.3)"
+                  onclick="window.applyTEPreset('bear')">🔻 Bear (-1σ)</button>
+                <button id="te-slider-preset-base" class="btn btn-secondary"
+                  style="font-size:0.74rem;padding:6px;color:var(--spark);border-color:rgba(56,189,248,.3)"
+                  onclick="window.applyTEPreset('base')">⚖️ Base (Range)</button>
+                <button id="te-slider-preset-reset" class="btn btn-secondary" style="font-size:0.74rem;padding:6px"
+                  onclick="window.applyTEPreset('reset')">↺ Reset (0)</button>
               </div>
               <div class="slider-row">
                 <label for="slider-spot-shift">Underlying Spot Shift:</label>
@@ -1067,8 +1275,10 @@
                 <input type="range" id="slider-decay-mins" min="0" max="360" value="60" step="15">
                 <span id="val-decay-mins" class="slider-val">60 mins</span>
               </div>
-              <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:14px;font-size:0.8rem">
-                <b>Repriced Sample Option (ATM CE):</b> Base LTP — ➔ <b style="color:var(--spark)" id="repriced-sample-ltp">—</b> (<span id="repriced-sample-pnl" style="color:var(--go)">—</span>)
+              <div
+                style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:14px;font-size:0.8rem">
+                <b>Repriced Sample Option (ATM CE):</b> Base LTP — ➔ <b style="color:var(--spark)"
+                  id="repriced-sample-ltp">—</b> (<span id="repriced-sample-pnl" style="color:var(--go)">—</span>)
               </div>
             </div>
           </div>
@@ -1081,7 +1291,8 @@
             <div class="sizer-inputs">
               <div class="form-group" style="flex:1">
                 <label class="form-label" for="sizer-cap-slider">💼 Account Trading Capital:</label>
-                <select id="sizer-cap-select" class="form-control" style="font-size:0.85rem;font-weight:750" onchange="window.updateSizerPreferences()">
+                <select id="sizer-cap-select" class="form-control" style="font-size:0.85rem;font-weight:750"
+                  onchange="window.updateSizerPreferences()">
                   <option value="100000">₹1,00,000 (1.0 Lakh)</option>
                   <option value="250000">₹2,50,000 (2.5 Lakh)</option>
                   <option value="500000" selected>₹5,00,000 (5.0 Lakh)</option>
@@ -1093,63 +1304,79 @@
                 <label class="form-label">🎯 Risk Tolerance per Trade:</label>
                 <div style="display:flex;gap:8px;height:36px;align-items:center">
                   <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
-                    <input type="radio" name="sizer_risk_radio" value="1.0" onchange="window.updateSizerPreferences()"> 🛡️ Cons (1.0%)
+                    <input type="radio" name="sizer_risk_radio" value="1.0" onchange="window.updateSizerPreferences()">
+                    🛡️ Cons (1.0%)
                   </label>
                   <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
-                    <input type="radio" name="sizer_risk_radio" value="1.5" checked onchange="window.updateSizerPreferences()"> ⚖️ Bal (1.5%)
+                    <input type="radio" name="sizer_risk_radio" value="1.5" checked
+                      onchange="window.updateSizerPreferences()"> ⚖️ Bal (1.5%)
                   </label>
                   <label style="font-size:0.75rem;cursor:pointer;display:flex;align-items:center;gap:4px">
-                    <input type="radio" name="sizer_risk_radio" value="2.5" onchange="window.updateSizerPreferences()"> 🚀 Aggr (2.5%)
+                    <input type="radio" name="sizer_risk_radio" value="2.5" onchange="window.updateSizerPreferences()">
+                    🚀 Aggr (2.5%)
                   </label>
                 </div>
               </div>
             </div>
             <div class="sizer-budget-banner">
               <div style="color:var(--ink-mute);font-size:0.68rem;text-transform:uppercase">Max Risk Budget</div>
-              <div id="sizer-budget-val" style="font-size:1.3rem;font-weight:850;font-family:var(--mono);color:var(--stop)">₹7,500 / trade</div>
+              <div id="sizer-budget-val"
+                style="font-size:1.3rem;font-weight:850;font-family:var(--mono);color:var(--stop)">₹7,500 / trade</div>
             </div>
           </div>
 
           <!-- Position Sizing Telemetry Strip -->
-          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px 12px;margin:4px 0 14px;font-size:0.76rem;display:flex;justify-content:space-between">
+          <div
+            style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:6px 12px;margin:4px 0 14px;font-size:0.76rem;display:flex;justify-content:space-between">
             <span>Max Risk Budget: <b id="hud-risk-budget" style="color:var(--stop)">₹7,500 / trade</b></span>
             <span>Portfolio Outlay Cap (15%): <b id="hud-outlay-cap" style="color:var(--spark)">₹75,000</b></span>
             <span>Contract Lot: <b id="hud-lot-size" style="color:var(--ink)">—</b></span>
           </div>
 
           <!-- Strategy Effectiveness Telemetry Strip -->
-          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:16px">
+          <div
+            style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:16px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">📊 Strategy Effectiveness &amp; ML Ground-Truth Telemetry</span>
-              <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● AI/ML Logger Active (SQLite)</span>
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">📊 Strategy
+                Effectiveness &amp; ML Ground-Truth Telemetry</span>
+              <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● AI/ML Logger Active
+                (SQLite)</span>
             </div>
             <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:10px;font-size:0.76rem">
-              <div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b id="eff-total-tracked">—</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="eff-tgt-rate" style="color:var(--go)">—</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="eff-sl-rate" style="color:var(--stop)">—</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="eff-inval-rate" style="color:var(--warn)">—</b></div>
-              <div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b id="eff-avg-rr" style="color:var(--spark)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Total Tracked</span><b id="eff-total-tracked">—</b>
+              </div>
+              <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="eff-tgt-rate"
+                  style="color:var(--go)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="eff-sl-rate"
+                  style="color:var(--stop)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="eff-inval-rate"
+                  style="color:var(--warn)">—</b></div>
+              <div><span style="color:var(--ink-mute);display:block">Avg Realized R:R</span><b id="eff-avg-rr"
+                  style="color:var(--spark)">—</b></div>
             </div>
           </div>
 
           <!-- Higher Conviction (Grade A+) Section: Strict 2-Column Side-by-Side CE / PE -->
           <div style="margin-bottom:28px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <h3 style="font-size:1.15rem;font-weight:850;margin:0">⚡ Higher Conviction Recommendations (Score &gt; 85 · Grade A+)</h3>
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">⚡ Higher Conviction Recommendations (Score &gt; 85
+                · Grade A+)</h3>
               <span style="font-size:0.72rem;color:var(--ink-mute)">Institutional Quality Gates</span>
             </div>
             <div class="rec-grid-ce-pe">
               <div>
                 <div class="rec-column-header rec-col-ce">
                   <span id="ce-higher-header-title">🟢 Higher Conviction Calls (Score &gt; 85)</span>
-                  <span style="font-size:0.70rem;background:rgba(34,197,94,.15);padding:1px 6px;border-radius:4px">Grade A+</span>
+                  <span style="font-size:0.70rem;background:rgba(34,197,94,.15);padding:1px 6px;border-radius:4px">Grade
+                    A+</span>
                 </div>
                 <div id="higher-ce-container"></div>
               </div>
               <div>
                 <div class="rec-column-header rec-col-pe">
                   <span id="pe-higher-header-title">🔴 Higher Conviction Puts (Score &gt; 85)</span>
-                  <span style="font-size:0.70rem;background:rgba(239,68,68,.15);padding:1px 6px;border-radius:4px">Grade A+</span>
+                  <span style="font-size:0.70rem;background:rgba(239,68,68,.15);padding:1px 6px;border-radius:4px">Grade
+                    A+</span>
                 </div>
                 <div id="higher-pe-container"></div>
               </div>
@@ -1159,21 +1386,28 @@
           <!-- Secondary Conviction (Fallback Tier 75-85) Section: Strict 2-Column Side-by-Side CE / PE -->
           <div style="margin-bottom:28px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎯 Secondary Conviction / Fallback Tier (Score 75–85)</h3>
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">🎯 Secondary Conviction / Fallback Tier (Score
+                75–85)</h3>
               <span style="font-size:0.72rem;color:var(--ink-mute)">Fallback Risk Sized</span>
             </div>
             <div class="rec-grid-ce-pe">
               <div>
-                <div class="rec-column-header" style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
+                <div class="rec-column-header"
+                  style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
                   <span id="ce-fallback-header-title">🟡 Secondary Conviction Calls (Score 75–85)</span>
-                  <span style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback Tier</span>
+                  <span
+                    style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback
+                    Tier</span>
                 </div>
                 <div id="fallback-ce-container"></div>
               </div>
               <div>
-                <div class="rec-column-header" style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
+                <div class="rec-column-header"
+                  style="color:#eab308;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25)">
                   <span id="pe-fallback-header-title">🟡 Secondary Conviction Puts (Score 75–85)</span>
-                  <span style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback Tier</span>
+                  <span
+                    style="font-size:0.70rem;background:rgba(234,179,8,.15);padding:1px 6px;border-radius:4px">Fallback
+                    Tier</span>
                 </div>
                 <div id="fallback-pe-container"></div>
               </div>
@@ -1183,24 +1417,117 @@
           <!-- Tactical Opportunities (Grade B+ 65-75) Section: Strict 2-Column Side-by-Side CE / PE -->
           <div style="margin-bottom:28px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-              <h3 style="font-size:1.15rem;font-weight:850;margin:0">🏹 Tactical Opportunities (Score 65–75 · Grade B+)</h3>
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">🏹 Tactical Opportunities (Score 65–75 · Grade B+)
+              </h3>
               <span style="font-size:0.72rem;color:var(--ink-mute)">Mean-Reversion &amp; Tactical Allocation</span>
             </div>
             <div class="rec-grid-ce-pe">
               <div>
                 <div class="rec-column-header rec-col-tactical-ce">
                   <span id="ce-tactical-header-title">🔵 Tactical Calls (Score 65–75)</span>
-                  <span style="font-size:0.70rem;background:rgba(56,189,248,.15);padding:1px 6px;border-radius:4px">Grade B+</span>
+                  <span
+                    style="font-size:0.70rem;background:rgba(56,189,248,.15);padding:1px 6px;border-radius:4px">Grade
+                    B+</span>
                 </div>
                 <div id="tactical-ce-container"></div>
               </div>
               <div>
                 <div class="rec-column-header rec-col-tactical-pe">
                   <span id="pe-tactical-header-title">🟣 Tactical Puts (Score 65–75)</span>
-                  <span style="font-size:0.70rem;background:rgba(192,132,252,.15);padding:1px 6px;border-radius:4px">Grade B+</span>
+                  <span
+                    style="font-size:0.70rem;background:rgba(192,132,252,.15);padding:1px 6px;border-radius:4px">Grade
+                    B+</span>
                 </div>
                 <div id="tactical-pe-container"></div>
               </div>
+            </div>
+          </div>
+
+          <!-- Trade Recommendation History & Intraday Lifecycle Audit -->
+          <div style="margin-bottom:36px;margin-top:12px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+              <div>
+                <h3 style="font-size:1.15rem;font-weight:850;margin:0;display:flex;align-items:center;gap:8px">
+                  <span>📜 Trade Recommendation History</span>
+                  <span id="rec-history-count-badge" style="font-size:0.72rem;background:var(--surface-3);color:var(--spark);border:1px solid var(--line);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0 Records</span>
+                </h3>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">All recommendations that entered High Conviction (&gt;85), Secondary (75–85), or Tactical (65–75) tiers</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <!-- Session Date Filter -->
+                <div style="display:flex;align-items:center;gap:4px">
+                  <label for="rec-history-session-select" style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Session:</label>
+                  <select id="rec-history-session-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:125px" onchange="window.filterRecommendationHistory()">
+                    <option value="today" selected>Today's Session</option>
+                    <option value="all">All Sessions</option>
+                  </select>
+                </div>
+                <!-- Symbol Filter -->
+                <div style="display:flex;align-items:center;gap:4px">
+                  <label for="rec-history-symbol-select" style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Symbol:</label>
+                  <select id="rec-history-symbol-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:115px" onchange="window.filterRecommendationHistory()">
+                    <option value="CURRENT" selected>Current Symbol</option>
+                    <option value="ALL">All Symbols</option>
+                    <option value="NIFTY">NIFTY</option>
+                    <option value="BANKNIFTY">BANKNIFTY</option>
+                    <option value="SENSEX">SENSEX</option>
+                  </select>
+                </div>
+                <!-- Refresh Button -->
+                <button class="btn btn-secondary" onclick="window.loadRecommendationHistory()" style="font-size:0.72rem;padding:3px 10px;display:flex;align-items:center;gap:4px" title="Refresh history records">
+                  <span>🔄</span> Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Tier & State Quick-Filter Strip -->
+            <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap" id="rec-history-tier-filters">
+                <span style="font-size:0.72rem;color:var(--ink-mute);font-weight:700;margin-right:2px">Tier:</span>
+                <button class="btn btn-sm btn-primary rec-tier-filter-btn" data-tier="all" onclick="window.setRecHistoryTierFilter('all')">All Tiers (<span id="rec-hist-all-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="high" onclick="window.setRecHistoryTierFilter('high')">⚡ High Conviction (<span id="rec-hist-high-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="secondary" onclick="window.setRecHistoryTierFilter('secondary')">🎯 Secondary (<span id="rec-hist-sec-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="tactical" onclick="window.setRecHistoryTierFilter('tactical')">🏹 Tactical (<span id="rec-hist-tact-count">0</span>)</button>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <!-- Status Filter Dropdown -->
+                <select id="rec-history-status-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:135px" onchange="window.filterRecommendationHistory()">
+                  <option value="all" selected>All States</option>
+                  <option value="active">⚡ Active Only</option>
+                  <option value="target">🎯 Targets Achieved</option>
+                  <option value="stop">⛔ Stop Loss Hit</option>
+                  <option value="invalidated">🛑 Invalidated</option>
+                </select>
+                <!-- Real-time Search Input -->
+                <input type="text" id="rec-history-search-input" placeholder="Search strike, strategy..." class="form-control" style="font-size:0.72rem;padding:3px 8px;width:160px" oninput="window.filterRecommendationHistory()" />
+              </div>
+            </div>
+
+            <!-- Recommendation History Table Container -->
+            <div class="table-responsive" style="border:1px solid var(--line);border-radius:8px;background:var(--surface-2);overflow-x:auto">
+              <table class="table table-hover" style="width:100%;font-size:0.74rem;margin-bottom:0;border-collapse:collapse">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--line);background:var(--surface-3);color:var(--ink-mute);text-align:left">
+                    <th style="width:36px;text-align:center"></th>
+                    <th style="width:90px">Triggered</th>
+                    <th style="width:90px">Last Seen</th>
+                    <th style="width:165px">Setup &amp; Play</th>
+                    <th style="width:125px">Peak Tier / Score</th>
+                    <th style="width:85px">Score</th>
+                    <th style="width:110px">Current State</th>
+                    <th style="width:120px">Entry → LTP</th>
+                    <th style="width:105px">MTM PnL</th>
+                    <th style="width:150px">Key Levels</th>
+                    <th style="width:100px;text-align:right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="rec-history-tbody">
+                  <tr>
+                    <td colspan="11" style="text-align:center;padding:28px;color:var(--ink-mute)">Loading recommendation history...</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -1208,11 +1535,14 @@
         <!-- Tab 4: ⚡ Sentinel Tape -->
         <div id="tab-sentinel" class="tab-pane">
           <!-- Top Timeframe, Filter, & Re-Seed Controls Bar -->
-          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div
+            style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
             <div style="display:flex;align-items:center;gap:12px">
               <div style="display:flex;align-items:center;gap:6px">
                 <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Timeframe:</label>
-                <select id="sentinel-timeframe-select" class="form-control" style="font-size:0.76rem;width:80px;padding:2px 6px" onchange="window.switchSentinelTimeframe(this.value)">
+                <select id="sentinel-timeframe-select" class="form-control"
+                  style="font-size:0.76rem;width:80px;padding:2px 6px"
+                  onchange="window.switchSentinelTimeframe(this.value)">
                   <option value="1m" selected>1m</option>
                   <option value="3m">3m</option>
                   <option value="5m">5m</option>
@@ -1221,7 +1551,8 @@
               </div>
               <div style="display:flex;align-items:center;gap:6px">
                 <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Filter Signals:</label>
-                <select id="sentinel-signal-filter" class="form-control" style="font-size:0.76rem;padding:2px 6px" onchange="window.filterSentinelSignals(this.value)">
+                <select id="sentinel-signal-filter" class="form-control" style="font-size:0.76rem;padding:2px 6px"
+                  onchange="window.filterSentinelSignals(this.value)">
                   <option value="ALL">All Signals</option>
                   <option value="ACTIVE">🟢 Active Only</option>
                   <option value="INVALIDATED">🛑 Invalidated Only</option>
@@ -1233,8 +1564,14 @@
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px">
-              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750" onclick="window.syncLiveSentinelFeed()" title="Force-sync genuine 1m candles from Dhan broker feed">🔄 Sync Broker Feed</button>
-              <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px;color:var(--spark);border-color:rgba(56,189,248,.4);font-weight:750" onclick="window.loadEODSentinelSnapshot()" title="Load last verified exchange closing session snapshot">📥 Load EOD Snapshot</button>
+              <button class="btn btn-secondary"
+                style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750"
+                onclick="window.syncLiveSentinelFeed()" title="Force-sync genuine 1m candles from Dhan broker feed">🔄
+                Sync Broker Feed</button>
+              <button class="btn btn-secondary"
+                style="font-size:0.72rem;padding:4px 10px;color:var(--spark);border-color:rgba(56,189,248,.4);font-weight:750"
+                onclick="window.loadEODSentinelSnapshot()"
+                title="Load last verified exchange closing session snapshot">📥 Load EOD Snapshot</button>
             </div>
           </div>
 
@@ -1271,38 +1608,60 @@
           <div class="repricer-card" style="padding:16px;margin-top:16px">
             <div class="tv-toolbar-wrap">
               <div style="display:flex;align-items:center;gap:8px">
-                <h3 id="sentinel-chart-title" style="font-size:1.02rem;font-weight:800;margin:0">📊 ⚡ Full OrderFlow: Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, gamma strikes + CVD &amp; Delta</h3>
-                <span id="sentinel-bar-count-badge" style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.70rem">Full Session (250 bars)</span>
+                <h3 id="sentinel-chart-title" style="font-size:1.02rem;font-weight:800;margin:0">📊 ⚡ Full OrderFlow:
+                  Candlesticks, VWAP Envelopes, EMA 9/21 Ribbon, gamma strikes + CVD &amp; Delta</h3>
+                <span id="sentinel-bar-count-badge"
+                  style="background:rgba(56,189,248,0.12);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:700;font-size:0.70rem">Full
+                  Session (250 bars)</span>
               </div>
               <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
                 <!-- 4 Distinct Profiles -->
-                <div style="display:flex;gap:4px;background:var(--surface-2);padding:2px;border-radius:6px;border:1px solid var(--line)">
-                  <button class="btn btn-primary" id="btn-prof-full" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Full')">⚡ Full OrderFlow</button>
-                  <button class="btn btn-secondary" id="btn-prof-pure" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Pure')">🎯 Pure Price</button>
-                  <button class="btn btn-secondary" id="btn-prof-cvd" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('CVD')">🌊 CVD Focus</button>
-                  <button class="btn btn-secondary" id="btn-prof-trend" style="font-size:0.70rem;padding:3px 8px" onclick="window.switchSentinelProfile('Trend')">📈 Trend Follower</button>
+                <div
+                  style="display:flex;gap:4px;background:var(--surface-2);padding:2px;border-radius:6px;border:1px solid var(--line)">
+                  <button class="btn btn-primary" id="btn-prof-full" style="font-size:0.70rem;padding:3px 8px"
+                    onclick="window.switchSentinelProfile('Full')">⚡ Full OrderFlow</button>
+                  <button class="btn btn-secondary" id="btn-prof-pure" style="font-size:0.70rem;padding:3px 8px"
+                    onclick="window.switchSentinelProfile('Pure')">🎯 Pure Price</button>
+                  <button class="btn btn-secondary" id="btn-prof-cvd" style="font-size:0.70rem;padding:3px 8px"
+                    onclick="window.switchSentinelProfile('CVD')">🌊 CVD Focus</button>
+                  <button class="btn btn-secondary" id="btn-prof-trend" style="font-size:0.70rem;padding:3px 8px"
+                    onclick="window.switchSentinelProfile('Trend')">📈 Trend Follower</button>
                 </div>
                 <!-- 2D Zoom & Scaling Controls -->
-                <div style="display:flex;gap:3px;align-items:center;background:rgba(15,23,42,0.85);padding:2px 5px;border-radius:6px;border:1px solid #334155">
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Zoom In (Both Axes)" onclick="window.zoomSentinelBoth(1.3)">🔍 +</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Zoom Out (Both Axes)" onclick="window.zoomSentinelBoth(0.77)">🔍 −</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Reset / Auto Price Scale (Vertical)" onclick="window.resetSentinelPriceScale()">↕ Price</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Fit Time (Horizontal)" onclick="window.fitSentinelTimeScale()">↔ Time</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Reset Both Axes" onclick="window.resetSentinelAxes()">↺ Reset</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Maximize Fullscreen" onclick="window.toggleSentinelFullscreen()">⛶ Fullscreen</button>
+                <div
+                  style="display:flex;gap:3px;align-items:center;background:rgba(15,23,42,0.85);padding:2px 5px;border-radius:6px;border:1px solid #334155">
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px"
+                    title="Zoom In (Both Axes)" onclick="window.zoomSentinelBoth(1.3)">🔍 +</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px"
+                    title="Zoom Out (Both Axes)" onclick="window.zoomSentinelBoth(0.77)">🔍 −</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px"
+                    title="Reset / Auto Price Scale (Vertical)" onclick="window.resetSentinelPriceScale()">↕
+                    Price</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px"
+                    title="Fit Time (Horizontal)" onclick="window.fitSentinelTimeScale()">↔ Time</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px" title="Reset Both Axes"
+                    onclick="window.resetSentinelAxes()">↺ Reset</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 5px"
+                    title="Maximize Fullscreen" onclick="window.toggleSentinelFullscreen()">⛶ Fullscreen</button>
                 </div>
                 <!-- Height Presets & Popout -->
                 <div style="display:flex;gap:4px">
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(460)">Compact 460px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(620)">Expanded 620px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px" onclick="window.setChartHeight(820)">Deep 820px</button>
-                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750" onclick="window.openPopoutChart()">⤢ Open in New Window</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setChartHeight(460)">Compact 460px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setChartHeight(620)">Expanded 620px</button>
+                  <button class="btn btn-secondary" style="font-size:0.68rem;padding:2px 6px"
+                    onclick="window.setChartHeight(820)">Deep 820px</button>
+                  <button class="btn btn-secondary"
+                    style="font-size:0.68rem;padding:2px 8px;color:var(--spark);border-color:rgba(56,189,248,0.4);font-weight:750"
+                    onclick="window.openPopoutChart()">⤢ Open in New Window</button>
                 </div>
               </div>
             </div>
 
             <!-- Top Real-Time Crosshair Hover HUD -->
-            <div id="sentinel-hover-legend" style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+            <div id="sentinel-hover-legend"
+              style="background:rgba(15,23,42,0.85);border:1px solid #334155;border-radius:6px;padding:5px 12px;margin:8px 0;font-size:0.74rem;font-family:var(--mono);display:flex;gap:14px;align-items:center;flex-wrap:wrap">
               <span style="font-weight:750;color:var(--spark)" id="shl-sym">NIFTY</span>
               <span style="color:var(--ink-mute)" id="shl-time">--:-- IST</span>
               <span id="shl-ohlc" style="color:var(--ink)">O: -- H: -- L: -- C: --</span>
@@ -1314,7 +1673,8 @@
             <!-- TV Lightweight Chart Container -->
             <div id="sentinel-chart-mount" class="cvd-chart-container" style="height:520px;position:relative"></div>
             <!-- 2D Vertical Drag Handle -->
-            <div class="chart-resize-handle" id="sentinel-chart-drag" title="Drag vertically to resize chart height"></div>
+            <div class="chart-resize-handle" id="sentinel-chart-drag" title="Drag vertically to resize chart height">
+            </div>
 
             <!-- Chart Legend Strip -->
             <div style="font-size:0.74rem;color:var(--ink-mute);display:flex;gap:12px;flex-wrap:wrap;padding-top:8px">
@@ -1334,13 +1694,17 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
               <div style="display:flex;align-items:center;gap:10px">
                 <div>
-                  <h3 style="font-size:1.1rem;font-weight:850">📊 10-Day Closing CVD &amp; Session Volume Delta History</h3>
-                  <div style="font-size:0.72rem;color:var(--ink-mute);font-weight:600;margin-top:2px">Tape days use the 1-minute print. Other days split the recorded futures volume by that session's price change.</div>
+                  <h3 style="font-size:1.1rem;font-weight:850">📊 10-Day Closing CVD &amp; Session Volume Delta History
+                  </h3>
+                  <div style="font-size:0.72rem;color:var(--ink-mute);font-weight:600;margin-top:2px">Tape days use the
+                    1-minute print. Other days split the recorded futures volume by that session's price change.</div>
                 </div>
-                <span id="sentinel-10d-regime-badge" class="badge-active" style="background:var(--go-bg);color:var(--go);font-size:0.72rem">🟢 INSTITUTIONAL ACCUMULATION</span>
+                <span id="sentinel-10d-regime-badge" class="badge-active"
+                  style="background:var(--go-bg);color:var(--go);font-size:0.72rem">🟢 INSTITUTIONAL ACCUMULATION</span>
               </div>
               <span style="font-size:0.75rem;color:var(--ink-mute);font-weight:600">
-                10-Day Net CVD: <b id="sentinel-10d-net-badge" style="color:var(--go)">—</b> · Buyer Ratio: <b id="sentinel-10d-buyer-ratio">—</b>
+                10-Day Net CVD: <b id="sentinel-10d-net-badge" style="color:var(--go)">—</b> · Buyer Ratio: <b
+                  id="sentinel-10d-buyer-ratio">—</b>
               </span>
             </div>
 
@@ -1370,28 +1734,34 @@
 
             <!-- 3 Subtabs for 10-Day CVD History -->
             <div class="subtabs-bar">
-              <button class="subtab-btn active" id="btn-subtab-cvd-chart" onclick="window.switchSentinelSubtab('chart')">
+              <button class="subtab-btn active" id="btn-subtab-cvd-chart"
+                onclick="window.switchSentinelSubtab('chart')">
                 <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M2 13C4 11 7 14 10 12C13 10 16 13 18 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-                  <path d="M2 16C5 14 8 16 11 14C14 12 16 15 18 13.5" stroke="currentColor" stroke-width="1.2" opacity="0.4" stroke-linecap="round"/>
+                  <path d="M2 13C4 11 7 14 10 12C13 10 16 13 18 11" stroke="currentColor" stroke-width="1.6"
+                    stroke-linecap="round" />
+                  <path d="M2 16C5 14 8 16 11 14C14 12 16 15 18 13.5" stroke="currentColor" stroke-width="1.2"
+                    opacity="0.4" stroke-linecap="round" />
                 </svg>
                 <span>10-Day Closing CVD Bar Chart</span>
               </button>
-              <button class="subtab-btn" id="btn-subtab-vol-breakdown" onclick="window.switchSentinelSubtab('breakdown')">
+              <button class="subtab-btn" id="btn-subtab-vol-breakdown"
+                onclick="window.switchSentinelSubtab('breakdown')">
                 <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <line x1="3" y1="6" x2="17" y2="6" stroke="currentColor" stroke-width="1.5"/>
-                  <line x1="10" y1="3" x2="10" y2="17" stroke="currentColor" stroke-width="1.5"/>
-                  <path d="M4 6L2 12H7L5 6" stroke="currentColor" stroke-width="1.2"/>
-                  <path d="M16 6L14 12H19L17 6" stroke="currentColor" stroke-width="1.2"/>
+                  <line x1="3" y1="6" x2="17" y2="6" stroke="currentColor" stroke-width="1.5" />
+                  <line x1="10" y1="3" x2="10" y2="17" stroke="currentColor" stroke-width="1.5" />
+                  <path d="M4 6L2 12H7L5 6" stroke="currentColor" stroke-width="1.2" />
+                  <path d="M16 6L14 12H19L17 6" stroke="currentColor" stroke-width="1.2" />
                 </svg>
                 <span>Buyer vs Seller Volume Breakdown</span>
               </button>
               <button class="subtab-btn" id="btn-subtab-daily-ledger" onclick="window.switchSentinelSubtab('ledger')">
                 <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <rect x="4" y="3" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                  <line x1="7" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                  <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                  <line x1="7" y1="13" x2="11" y2="13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  <rect x="4" y="3" width="12" height="14" rx="2" stroke="currentColor" stroke-width="1.5" />
+                  <line x1="7" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                  <line x1="7" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="round" />
+                  <line x1="7" y1="13" x2="11" y2="13" stroke="currentColor" stroke-width="1.4"
+                    stroke-linecap="round" />
                 </svg>
                 <span>Historical Daily Ledger</span>
               </button>
@@ -1433,10 +1803,14 @@
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="font-size:1.05rem;font-weight:800">⚡ Live OrderFlow Signal Stream</h3>
                 <div class="news-filters" style="display:flex;gap:4px">
-                  <button class="btn btn-primary" onclick="window.filterSentinelSignals('ALL')" style="font-size:0.68rem;padding:2px 7px">ALL</button>
-                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('ABSORPTION')" style="font-size:0.68rem;padding:2px 7px">Absorption</button>
-                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('SWEPT')" style="font-size:0.68rem;padding:2px 7px">Sweeps</button>
-                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('DIVERGENCE')" style="font-size:0.68rem;padding:2px 7px">Divergence</button>
+                  <button class="btn btn-primary" onclick="window.filterSentinelSignals('ALL')"
+                    style="font-size:0.68rem;padding:2px 7px">ALL</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('ABSORPTION')"
+                    style="font-size:0.68rem;padding:2px 7px">Absorption</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('SWEPT')"
+                    style="font-size:0.68rem;padding:2px 7px">Sweeps</button>
+                  <button class="btn btn-secondary" onclick="window.filterSentinelSignals('DIVERGENCE')"
+                    style="font-size:0.68rem;padding:2px 7px">Divergence</button>
                 </div>
               </div>
               <div id="sentinel-signals-stream-container" class="signal-stream-container">
@@ -1448,7 +1822,8 @@
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="font-size:1.05rem;font-weight:800">High-volume futures bars</h3>
-                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Futures tape</span>
+                <span class="badge-active"
+                  style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Futures tape</span>
               </div>
               <table class="block-tape-table">
                 <thead>
@@ -1471,31 +1846,37 @@
         <!-- Tab 5: 🎯 Signal Efficiency -->
         <div id="tab-efficiency" class="tab-pane">
           <!-- Header & Period Filter Controls Bar -->
-          <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap;gap:12px">
+          <div
+            style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap;gap:12px">
             <div>
               <div style="font-size:1.1rem;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:8px">
                 <span>📈 OrderFlow Sentinel Signal Efficiency Analytics</span>
               </div>
               <div style="font-size:0.72rem;color:var(--ink-mute);margin-top:2px">
-                Descriptive statistical performance of orderflow signals evaluated against forward returns &amp; MFE/MAE excursions.
+                Descriptive statistical performance of orderflow signals evaluated against forward returns &amp; MFE/MAE
+                excursions.
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <div style="display:flex;align-items:center;gap:6px">
                 <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Period:</label>
-                <select id="eff-period-select" class="form-control" style="font-size:0.76rem;padding:3px 8px;width:150px" onchange="window.switchEffPeriod(this.value)">
+                <select id="eff-period-select" class="form-control"
+                  style="font-size:0.76rem;padding:3px 8px;width:150px" onchange="window.switchEffPeriod(this.value)">
                   <option value="daily" selected>Daily (by Date)</option>
                   <option value="weekly">Weekly (by Week)</option>
                 </select>
               </div>
               <div style="display:flex;align-items:center;gap:6px">
                 <label style="font-size:0.74rem;color:var(--ink-mute);font-weight:700">Scope:</label>
-                <select id="eff-scope-select" class="form-control" style="font-size:0.76rem;padding:3px 8px;width:160px" onchange="window.switchEffScope(this.value)">
+                <select id="eff-scope-select" class="form-control" style="font-size:0.76rem;padding:3px 8px;width:160px"
+                  onchange="window.switchEffScope(this.value)">
                   <option value="symbol" selected>Current Symbol (FUT)</option>
                   <option value="ALL">All Symbols Combined</option>
                 </select>
               </div>
-              <a href="/guide/signal_efficiency_guide" target="_blank" style="font-size:0.74rem;background:var(--surface);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">📖 Efficiency Guide ↗</a>
+              <a href="/guide/signal_efficiency_guide" target="_blank"
+                style="font-size:0.74rem;background:var(--surface);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700">📖
+                Efficiency Guide ↗</a>
             </div>
           </div>
 
@@ -1532,33 +1913,34 @@
           <div class="subtabs-bar" style="margin-bottom:12px">
             <button class="subtab-btn active" id="btn-eff-tab-timeline" onclick="window.switchEffSubtab('timeline')">
               <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5"/>
-                <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2"/>
-                <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <rect x="3" y="4" width="14" height="13.5" rx="2" stroke="currentColor" stroke-width="1.5" />
+                <line x1="3" y1="8" x2="17" y2="8" stroke="currentColor" stroke-width="1.2" />
+                <line x1="6.5" y1="2" x2="6.5" y2="5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                <line x1="13.5" y1="2" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" />
               </svg>
               <span>Efficiency Timeline</span>
             </button>
             <button class="subtab-btn" id="btn-eff-tab-breakdowns" onclick="window.switchEffSubtab('breakdowns')">
               <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 10L10 3H16V9L9 16L3 10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-                <circle cx="13" cy="6" r="1.5" fill="currentColor"/>
+                <path d="M3 10L10 3H16V9L9 16L3 10Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <circle cx="13" cy="6" r="1.5" fill="currentColor" />
               </svg>
               <span>Breakdowns (Type &amp; GEX)</span>
             </button>
             <button class="subtab-btn" id="btn-eff-tab-expectancy" onclick="window.switchEffSubtab('expectancy')">
               <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="10" cy="11" r="7" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M10 7V11L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                <line x1="8" y1="2" x2="12" y2="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                <circle cx="10" cy="11" r="7" stroke="currentColor" stroke-width="1.5" />
+                <path d="M10 7V11L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                <line x1="8" y1="2" x2="12" y2="2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
               </svg>
               <span>Return Expectancy</span>
             </button>
             <button class="subtab-btn" id="btn-eff-tab-calib" onclick="window.switchEffSubtab('calib')">
               <svg class="tab-icon" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.4"/>
-                <circle cx="10" cy="10" r="4.5" stroke="currentColor" stroke-width="1.4"/>
-                <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+                <circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.4" />
+                <circle cx="10" cy="10" r="4.5" stroke="currentColor" stroke-width="1.4" />
+                <circle cx="10" cy="10" r="1.5" fill="currentColor" />
               </svg>
               <span>Model Calibration &amp; Options Expectancy</span>
             </button>
@@ -1566,7 +1948,8 @@
 
           <!-- Subtab 1: Efficiency Timeline -->
           <div id="eff-content-timeline" class="repricer-card" style="padding:14px;margin-bottom:12px">
-            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">📅 Aggregated Period Timeline (<span id="eff-timeline-period-label">Daily</span>)</h3>
+            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:8px">📅 Aggregated Period Timeline (<span
+                id="eff-timeline-period-label">Daily</span>)</h3>
             <div style="overflow-x:auto">
               <table class="ladder-table" style="font-size:0.75rem">
                 <thead>
@@ -1630,8 +2013,10 @@
 
           <!-- Subtab 3: Return Expectancy Profile -->
           <div id="eff-content-expectancy" class="repricer-card" style="display:none;padding:14px;margin-bottom:12px">
-            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:6px">⏱️ Forward Return Expectancy Profile (+1m to +30m)</h3>
-            <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:12px">Average post-signal excursion across standardized forward holding horizons.</div>
+            <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:6px">⏱️ Forward Return Expectancy Profile (+1m to
+              +30m)</h3>
+            <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:12px">Average post-signal excursion across
+              standardized forward holding horizons.</div>
             <div id="eff-expectancy-bars" style="display:flex;flex-direction:column;gap:10px">
               <!-- Dynamically populated forward return bars -->
             </div>
@@ -1640,9 +2025,11 @@
           <!-- Subtab 4: Model Calibration & Options Expectancy -->
           <div id="eff-content-calib" style="display:none;margin-bottom:12px">
             <div class="repricer-card" style="padding:14px;margin-bottom:12px">
-              <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:4px">🎯 Target Engine Model Calibration &amp; Options Expectancy Curve</h3>
+              <h3 style="font-size:0.95rem;font-weight:800;margin-bottom:4px">🎯 Target Engine Model Calibration &amp;
+                Options Expectancy Curve</h3>
               <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:12px">
-                Quantitative reflection-principle calibration alpha (Empirical Hit Rate − Theoretical P(touch)) &amp; Black-76 forward repricing.
+                Quantitative reflection-principle calibration alpha (Empirical Hit Rate − Theoretical P(touch)) &amp;
+                Black-76 forward repricing.
               </div>
               <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
                 <div class="kpi-card go">
@@ -1668,19 +2055,33 @@
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
                 <div>
-                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha by Signal Type</div>
+                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha
+                    by Signal Type</div>
                   <table class="ladder-table" style="font-size:0.72rem">
                     <thead>
-                      <tr><th>Signal Type</th><th>Count</th><th>Empirical</th><th>Theoretical</th><th>Alpha</th></tr>
+                      <tr>
+                        <th>Signal Type</th>
+                        <th>Count</th>
+                        <th>Empirical</th>
+                        <th>Theoretical</th>
+                        <th>Alpha</th>
+                      </tr>
                     </thead>
                     <tbody id="calib-by-type-body"></tbody>
                   </table>
                 </div>
                 <div>
-                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha by GEX Alignment</div>
+                  <div style="font-size:0.80rem;font-weight:750;color:var(--spark);margin-bottom:6px">Calibration Alpha
+                    by GEX Alignment</div>
                   <table class="ladder-table" style="font-size:0.72rem">
                     <thead>
-                      <tr><th>Alignment</th><th>Count</th><th>Empirical</th><th>Theoretical</th><th>Alpha</th></tr>
+                      <tr>
+                        <th>Alignment</th>
+                        <th>Count</th>
+                        <th>Empirical</th>
+                        <th>Theoretical</th>
+                        <th>Alpha</th>
+                      </tr>
                     </thead>
                     <tbody id="calib-by-align-body"></tbody>
                   </table>
@@ -1696,15 +2097,20 @@
           <div class="mi-macro-card">
             <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
               <div>
-                <div class="eyebrow" style="color:var(--spark);font-size:0.74rem;letter-spacing:0.5px">🧭 Market Intelligence & Macro Synthesis</div>
-                <div id="intel-verdict" style="font-size:1.18rem;font-weight:850;color:var(--ink);margin:4px 0">⚖️ Balanced Sector Dispersion</div>
+                <div class="eyebrow" style="color:var(--spark);font-size:0.74rem;letter-spacing:0.5px">🧭 Market
+                  Intelligence & Macro Synthesis</div>
+                <div id="intel-verdict" style="font-size:1.18rem;font-weight:850;color:var(--ink);margin:4px 0">⚖️
+                  Balanced Sector Dispersion</div>
                 <div id="intel-narrative" style="font-size:0.83rem;color:var(--ink-2);line-height:1.55;max-width:960px">
                   Loading macro intelligence and sector synthesis...
                 </div>
               </div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                <a href="/guide/market_intelligence_guide" target="_blank" style="font-size:0.75rem;background:var(--surface-2);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700;display:inline-flex;align-items:center;gap:4px">📖 Intel Guide ↗</a>
-                <span id="intel-risk-chip" class="sentinel-chip go" style="font-size:0.74rem">🟢 LOW EXOGENOUS RISK</span>
+                <a href="/guide/market_intelligence_guide" target="_blank"
+                  style="font-size:0.75rem;background:var(--surface-2);color:var(--spark);padding:5px 10px;border-radius:6px;border:1px solid var(--line);text-decoration:none;font-weight:700;display:inline-flex;align-items:center;gap:4px">📖
+                  Intel Guide ↗</a>
+                <span id="intel-risk-chip" class="sentinel-chip go" style="font-size:0.74rem">🟢 LOW EXOGENOUS
+                  RISK</span>
               </div>
             </div>
 
@@ -1735,7 +2141,8 @@
 
           <!-- Actionable Trader Takeaways -->
           <div class="mi-takeaways-card">
-            <div style="font-size:0.72rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+            <div
+              style="font-size:0.72rem;font-weight:750;color:var(--ink-mute);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
               🎯 Actionable Trader Takeaways
             </div>
             <div id="intel-takeaways-container" style="display:flex;flex-direction:column;gap:5px">
@@ -1747,23 +2154,27 @@
           <div class="mi-grid-2col">
             <!-- Left Column: Sector Performance Leaderboard -->
             <div class="repricer-card" style="margin-bottom:0">
-              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📊 Sector Performance Leaderboard (~Nifty 50 Weights)</div>
-              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Exchange % change vs previous session close</div>
-              
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📊 Sector Performance Leaderboard
+                (~Nifty 50 Weights)</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Exchange % change vs previous
+                session close</div>
+
               <div id="sector-table-container" class="sector-table">
                 <!-- Dynamically populated sector rows -->
               </div>
 
               <!-- Broad Market Context -->
               <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--line)">
-                <div class="eyebrow" style="font-size:0.70rem;margin-bottom:6px;color:var(--ink-mute)">Broad Market Context</div>
+                <div class="eyebrow" style="font-size:0.70rem;margin-bottom:6px;color:var(--ink-mute)">Broad Market
+                  Context</div>
                 <div id="broad-market-container" class="sector-table">
                   <!-- Dynamically populated benchmark rows -->
                 </div>
               </div>
 
               <!-- Source Footer -->
-              <div style="margin-top:12px;font-size:0.68rem;color:var(--ink-mute);display:flex;justify-content:space-between">
+              <div
+                style="margin-top:12px;font-size:0.68rem;color:var(--ink-mute);display:flex;justify-content:space-between">
                 <span id="sector-source-label">Source: NSE</span>
                 <span id="sector-weights-label">Weights as of: 2025-07</span>
               </div>
@@ -1771,8 +2182,10 @@
 
             <!-- Right Column: Real-Time Financial News & Catalysts -->
             <div class="repricer-card" style="margin-bottom:0">
-              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📰 Real-Time Financial News & Catalysts</div>
-              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Aggregated from Economic Times & Times of India</div>
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📰 Real-Time Financial News &
+                Catalysts</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Aggregated from Economic Times &
+                Times of India</div>
 
               <!-- Category Filter Pills -->
               <div id="news-category-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
@@ -1785,8 +2198,10 @@
               </div>
 
               <!-- Phase B Confound Control Notice -->
-              <div style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:9px 12px;font-size:0.70rem;color:var(--ink-mute);line-height:1.45;border:1px solid var(--line)">
-                <b style="color:var(--ink-2)">Phase B confound control:</b> A headline burst with keyword-weighted impact of 6 or more flags an outside shock. The positioning map does not override the headline.
+              <div
+                style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:9px 12px;font-size:0.70rem;color:var(--ink-mute);line-height:1.45;border:1px solid var(--line)">
+                <b style="color:var(--ink-2)">Phase B confound control:</b> A headline burst with keyword-weighted
+                impact of 6 or more flags an outside shock. The positioning map does not override the headline.
               </div>
             </div>
           </div>
@@ -1831,23 +2246,34 @@
 
           <!-- Expected Move Range Bar -->
           <div class="repricer-card">
-            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:10px">📏 Expected Move &amp; Standard Deviation Range</h3>
-            <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.85rem;margin-bottom:6px">
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:10px">📏 Expected Move &amp; Standard Deviation
+              Range</h3>
+            <div
+              style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:0.85rem;margin-bottom:6px">
               <span id="exp-move-low" style="color:var(--stop)">Lower 1σ: —</span>
               <span id="exp-move-center" style="color:var(--ink);font-weight:800">Spot: —</span>
               <span id="exp-move-high" style="color:var(--go)">Upper 1σ: —</span>
             </div>
-            <div id="exp-move-straddle" style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">ATM straddle: —</div>
+            <div id="exp-move-straddle" style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">ATM straddle:
+              —</div>
             <div style="background:var(--surface-3);height:8px;border-radius:4px;position:relative">
-              <div id="exp-move-marker" style="position:absolute;left:50%;top:-3px;width:2px;height:14px;background:var(--ink)"></div>
+              <div id="exp-move-marker"
+                style="position:absolute;left:50%;top:-3px;width:2px;height:14px;background:var(--ink)"></div>
             </div>
           </div>
 
           <div class="ladder-card" style="margin-top:14px">
             <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:8px">Book-balance rows</h3>
-            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Skew and India VIX move the score. The other rows are facts and contribute zero.</p>
+            <p style="font-size:0.75rem;color:var(--ink-mute);margin:0 0 8px">Skew and India VIX move the score. The
+              other rows are facts and contribute zero.</p>
             <table class="ladder-table">
-              <thead><tr><th>Row</th><th>Read</th><th>Points</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Row</th>
+                  <th>Read</th>
+                  <th>Points</th>
+                </tr>
+              </thead>
               <tbody id="bias-rows-body"></tbody>
             </table>
           </div>
@@ -1862,7 +2288,8 @@
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
               <div style="display:flex;align-items:center;gap:10px">
                 <h3 style="font-size:1.05rem;font-weight:800">📉 Intraday IV Skew &amp; Term Structure Curve</h3>
-                <span id="noa-skew-badge" class="badge-active" style="background:var(--spark-bg);color:var(--spark);font-size:0.72rem">CALL WING SKEW</span>
+                <span id="noa-skew-badge" class="badge-active"
+                  style="background:var(--spark-bg);color:var(--spark);font-size:0.72rem">CALL WING SKEW</span>
               </div>
               <div style="display:flex;gap:12px;font-family:var(--mono);font-size:0.75rem">
                 <span>25Δ Skew: <b id="noa-skew-25d" style="color:var(--spark)">+1.8%</b></span>
@@ -1871,10 +2298,12 @@
               </div>
             </div>
             <!-- Dual-Line Call vs Put IV Curve Chart -->
-            <div id="iv-skew-chart-container" style="width:100%;min-height:220px;background:var(--surface-2);border-radius:8px;padding:10px 0;display:flex;align-items:center;justify-content:center">
+            <div id="iv-skew-chart-container"
+              style="width:100%;min-height:220px;background:var(--surface-2);border-radius:8px;padding:10px 0;display:flex;align-items:center;justify-content:center">
               <!-- Dynamically populated SVG dual line curve -->
             </div>
-            <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);padding-top:6px">
+            <div
+              style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);padding-top:6px">
               <span>🔵 <b>Call IV Smile (Wing Risk)</b></span>
               <span>🟠 <b>Put IV Smile (Crash Protection)</b></span>
               <span>⚪ <b>ATM Strike Anchor</b></span>
@@ -1907,7 +2336,8 @@
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
                 <h3 style="font-size:1.05rem;font-weight:800">⚡ Intraday Microstructure Shift Events</h3>
-                <span class="badge-active" style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Telemetry Log</span>
+                <span class="badge-active"
+                  style="font-size:0.7rem;background:var(--spark-bg);color:var(--spark)">Telemetry Log</span>
               </div>
               <div id="noa-shift-events-container" class="shift-timeline">
                 <!-- Dynamically populated shift events -->
@@ -1945,8 +2375,10 @@
                 <span style="font-size:0.75rem;color:var(--ink-mute)">Live Mark-to-Market paper-trade ledger</span>
               </div>
               <div style="text-align:right">
-                <span style="font-size:0.7rem;color:var(--ink-faint);text-transform:uppercase">Total Unrealized MTM</span>
-                <div id="journal-total-mtm" style="font-size:1.4rem;font-weight:900;font-family:var(--mono);color:var(--ink-mute)">—</div>
+                <span style="font-size:0.7rem;color:var(--ink-faint);text-transform:uppercase">Total Unrealized
+                  MTM</span>
+                <div id="journal-total-mtm"
+                  style="font-size:1.4rem;font-weight:900;font-family:var(--mono);color:var(--ink-mute)">—</div>
               </div>
             </div>
 
@@ -1968,7 +2400,8 @@
                 <!-- Dynamically populated -->
               </tbody>
             </table>
-            <div id="journal-close-panel" style="display:none;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:8px">
+            <div id="journal-close-panel"
+              style="display:none;margin-top:12px;padding:10px;border:1px solid var(--line);border-radius:8px">
               <div style="font-size:0.78rem;margin-bottom:8px">Close <b id="journal-close-id">—</b></div>
               <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end">
                 <label style="font-size:0.75rem">Exit premium
@@ -2012,7 +2445,8 @@
                 <input type="number" id="manual-prem" class="form-control" value="115.0" step="0.5">
               </div>
             </div>
-            <button id="btn-manual-submit" class="btn btn-primary" style="margin-top:4px">📥 Execute &amp; Save Paper Trade</button>
+            <button id="btn-manual-submit" class="btn btn-primary" style="margin-top:4px">📥 Execute &amp; Save Paper
+              Trade</button>
           </div>
         </div>
 
@@ -2049,7 +2483,8 @@
           <!-- Cumulative Realized Equity Curve -->
           <div class="repricer-card">
             <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:12px">📈 Cumulative Realized Equity Curve</h3>
-            <div id="equity-curve-container" style="height:260px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);border-radius:8px">
+            <div id="equity-curve-container"
+              style="height:260px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);border-radius:8px">
               <!-- SVG chart will mount here -->
             </div>
           </div>
@@ -2074,16 +2509,49 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
             <div class="ladder-card">
               <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">By book state</h3>
-              <table class="ladder-table"><thead><tr><th>State</th><th>Trades</th><th>Win rate</th><th>Net</th></tr></thead><tbody id="scorecard-regime-body"></tbody></table>
+              <table class="ladder-table">
+                <thead>
+                  <tr>
+                    <th>State</th>
+                    <th>Trades</th>
+                    <th>Win rate</th>
+                    <th>Net</th>
+                  </tr>
+                </thead>
+                <tbody id="scorecard-regime-body"></tbody>
+              </table>
             </div>
             <div class="ladder-card">
               <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">By strategy</h3>
-              <table class="ladder-table"><thead><tr><th>Strategy</th><th>Trades</th><th>Win rate</th><th>Net</th></tr></thead><tbody id="scorecard-strategy-body"></tbody></table>
+              <table class="ladder-table">
+                <thead>
+                  <tr>
+                    <th>Strategy</th>
+                    <th>Trades</th>
+                    <th>Win rate</th>
+                    <th>Net</th>
+                  </tr>
+                </thead>
+                <tbody id="scorecard-strategy-body"></tbody>
+              </table>
             </div>
           </div>
           <div class="ladder-card" style="margin-top:14px">
             <h3 style="font-size:1.0rem;font-weight:800;margin-bottom:8px">Sentinel forward ledger</h3>
-            <table class="ladder-table"><thead><tr><th>Signal</th><th>Entry</th><th>MFE</th><th>MAE</th><th>+5m</th><th>+15m</th><th>Status</th></tr></thead><tbody id="scorecard-sentinel-body"></tbody></table>
+            <table class="ladder-table">
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>Entry</th>
+                  <th>MFE</th>
+                  <th>MAE</th>
+                  <th>+5m</th>
+                  <th>+15m</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="scorecard-sentinel-body"></tbody>
+            </table>
           </div>
         </div>
 
@@ -2120,7 +2588,8 @@
 
           <!-- Indian Market 11-Window Timeline -->
           <div class="repricer-card">
-            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:14px">🇮🇳 Indian Market 11-Window Execution Timeline</h3>
+            <h3 style="font-size:1.05rem;font-weight:800;margin-bottom:14px">🇮🇳 Indian Market 11-Window Execution
+              Timeline</h3>
             <div class="timeline-track" id="timeline-track-container">
               <!-- Dynamically populated timeline nodes -->
             </div>
@@ -2131,9 +2600,12 @@
         <div id="tab-commentary" class="tab-pane">
           <div class="dial-box">
             <div>
-              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎙️ AI Audio Speech Synthesis &amp; Session Narrative</span>
-              <div style="font-size:1.35rem;font-weight:800;color:var(--spark);margin:4px 0" id="commentary-phase-title">Power Hour Session Narrative</div>
-              <div style="font-size:0.78rem;color:var(--ink-mute)">Session narrative. Gamma-strike shifts are a map, not a hedge alert.</div>
+              <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎙️ AI
+                Audio Speech Synthesis &amp; Session Narrative</span>
+              <div style="font-size:1.35rem;font-weight:800;color:var(--spark);margin:4px 0"
+                id="commentary-phase-title">Power Hour Session Narrative</div>
+              <div style="font-size:0.78rem;color:var(--ink-mute)">Session narrative. Gamma-strike shifts are a map, not
+                a hedge alert.</div>
             </div>
             <div style="display:flex;align-items:center;gap:12px">
               <button id="btn-play-voice" class="btn btn-success">▶ Play Voice Broadcast</button>
@@ -2154,11 +2626,15 @@
           <!-- Commentary Filter Bar -->
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
             <div style="display:flex;gap:6px">
-              <button class="btn btn-primary" id="comm-flt-all" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('ALL')">📜 All Story Entries</button>
-              <button class="btn btn-secondary" id="comm-flt-bites" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('BITES')">⚡ Actionable Bites Only</button>
-              <button class="btn btn-secondary" id="comm-flt-pinned" style="font-size:0.72rem;padding:4px 10px" onclick="window.filterCommentary('PINNED')">📌 Pinned Recommendations</button>
+              <button class="btn btn-primary" id="comm-flt-all" style="font-size:0.72rem;padding:4px 10px"
+                onclick="window.filterCommentary('ALL')">📜 All Story Entries</button>
+              <button class="btn btn-secondary" id="comm-flt-bites" style="font-size:0.72rem;padding:4px 10px"
+                onclick="window.filterCommentary('BITES')">⚡ Actionable Bites Only</button>
+              <button class="btn btn-secondary" id="comm-flt-pinned" style="font-size:0.72rem;padding:4px 10px"
+                onclick="window.filterCommentary('PINNED')">📌 Pinned Recommendations</button>
             </div>
-            <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px" onclick="window.loadCommentary()">🔄 Refresh Stream</button>
+            <button class="btn btn-secondary" style="font-size:0.72rem;padding:4px 10px"
+              onclick="window.loadCommentary()">🔄 Refresh Stream</button>
           </div>
 
           <!-- Chronological Commentary Cards Stream -->
@@ -2167,7 +2643,8 @@
           </div>
 
           <!-- Post-Market Settlement & Daily Close Scorecard -->
-          <div id="comm-post-market-card" class="ladder-card" style="margin-top:20px;border-top:3px solid var(--purple)">
+          <div id="comm-post-market-card" class="ladder-card"
+            style="margin-top:20px;border-top:3px solid var(--purple)">
             <!-- Dynamically populated post-market wrap -->
           </div>
         </div>
@@ -2247,7 +2724,9 @@
 
           <div class="ladder-card">
             <h3 style="margin:0 0 8px">Repair</h3>
-            <p id="admin-repair-note" style="margin:0 0 8px;color:var(--ink-mute)">Plan first. Confirm starts one allowlisted backfill. A day already on disk is not rewritten for options. Futures will not rewrite today's file while the session is open.</p>
+            <p id="admin-repair-note" style="margin:0 0 8px;color:var(--ink-mute)">Plan first. Confirm starts one
+              allowlisted backfill. A day already on disk is not rewritten for options. Futures will not rewrite today's
+              file while the session is open.</p>
             <label style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
               <input type="checkbox" id="admin-live-confirm">
               Also write today's options files while the session is open
@@ -2267,12 +2746,29 @@
             <h3 style="margin:0 0 8px">Processes</h3>
             <p id="admin-ops-http" style="margin:0 0 8px;color:var(--ink-mute)">HTTP —</p>
             <table class="admin-table">
-              <thead><tr><th>Process</th><th>PID</th><th>Last beat</th><th>Last error</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Process</th>
+                  <th>PID</th>
+                  <th>Last beat</th>
+                  <th>Last error</th>
+                </tr>
+              </thead>
               <tbody id="admin-ops-processes"></tbody>
             </table>
             <h3 style="margin:14px 0 8px">Workflows</h3>
             <table class="admin-table">
-              <thead><tr><th>Name</th><th>Process</th><th>Last ok</th><th>Last error</th><th>Ok</th><th>Errors</th><th>ms</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Process</th>
+                  <th>Last ok</th>
+                  <th>Last error</th>
+                  <th>Ok</th>
+                  <th>Errors</th>
+                  <th>ms</th>
+                </tr>
+              </thead>
               <tbody id="admin-ops-workflows"></tbody>
             </table>
             <h3 style="margin:14px 0 8px">Events</h3>
@@ -2290,4 +2786,5 @@
   <script src="/static/js/admin.js?v=6"></script>
   <script src="/static/js/cockpit.js?v=6.42"></script>
 </body>
+
 </html>

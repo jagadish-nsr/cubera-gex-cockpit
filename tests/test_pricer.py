@@ -358,3 +358,56 @@ class TestTargetSLRepricing:
         # Manual strike pricing works identically
         p_custom = price(spot, custom_strike, 10.0 / 365.0, 0.15, 0.065, "CE")
         assert p_custom > 0
+
+    def test_sensex_greek_attribution_sanity(self):
+        """Verify SENSEX Greek attribution breakdown numbers are realistic and mathematically consistent."""
+        F = 74151.0
+        K = 74200.0
+        T_now = 6.0 / 365.0
+        T_horizon = (6.0 - 60.0 / 375.0) / 365.0
+        sigma = 0.135
+        sigma_tgt = 0.135 - 0.0075
+        sigma_sl = 0.135 + 0.012
+
+        # Target reach (+250 pts)
+        attr_tgt = greek_attribution(F, F + 250.0, sigma, sigma_tgt, T_now, T_horizon, K, 0.065, "CE")
+        assert attr_tgt.full_reprice_pnl > 50.0
+        assert attr_tgt.delta_pnl > 0.0
+        assert attr_tgt.gamma_pnl > 0.0
+        assert attr_tgt.theta_pnl < 0.0
+        # Residual must be small relative to full PnL
+        assert abs(attr_tgt.residual) < 3.0
+        assert math.isclose(attr_tgt.total_modeled_pnl + attr_tgt.residual, attr_tgt.full_reprice_pnl, abs_tol=1e-5)
+
+        # Stop loss (-150 pts)
+        attr_sl = greek_attribution(F, F - 150.0, sigma, sigma_sl, T_now, T_horizon, K, 0.065, "CE")
+        assert attr_sl.full_reprice_pnl < 0.0  # Option must lose value at stop loss
+        assert attr_sl.delta_pnl < 0.0
+        assert attr_sl.gamma_pnl > 0.0
+        assert abs(attr_sl.residual) < 3.0
+        assert math.isclose(attr_sl.total_modeled_pnl + attr_sl.residual, attr_sl.full_reprice_pnl, abs_tol=1e-5)
+
+    def test_reprice_target_engine_sensex_sanitization(self):
+        """Verify reprice_target_engine sanitizes cross-symbol inputs and produces realistic Greeks for SENSEX."""
+        import asyncio
+        from web_server import reprice_target_engine
+        # Simulate payload where client sent stale Nifty levels (24570 / 24460) for SENSEX
+        res = asyncio.run(reprice_target_engine({
+            "symbol": "SENSEX",
+            "target_spot": 24570,
+            "sl_spot": 24460,
+        }))
+        assert "error" not in res
+        attr = res["greek_attribution"]
+        assert len(attr) == 2
+        # Target Reach row
+        tgt_row = attr[0]
+        assert tgt_row["phase"] == "🎯 Target Reach"
+        assert "+250.0 pts" in tgt_row["spot_move"]
+        assert float(tgt_row["residual"]) < 5.0
+        # Stop loss row
+        sl_row = attr[1]
+        assert sl_row["phase"] == "🛑 Stop Invalidation"
+        assert "-150.0 pts" in sl_row["spot_move"]
+        assert float(sl_row["full_pnl"].replace(" pts", "")) < 0.0  # Must be a negative PnL (loss)
+        assert float(sl_row["residual"]) < 5.0

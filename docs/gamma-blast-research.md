@@ -148,13 +148,15 @@ sign model or to tell a later edit to flip `DEALER_SIGN_MODEL`.
 
 - `app/gammablast.py` — pure, hand-checkable: `pick_anchors`, `crossover_state`,
   `detect_crossovers`, `gamma_concentration` (`tests/test_gammablast.py`).
-- Dashboard **"Gamma-blast crossover watch"**: two anchored call-vs-put premium
-  charts with crossover flags + the gamma-concentration strip. **PCR(OI)** added
-  to the key metrics.
-- Capture: per-strike **nearest-expiry premiums** (`nearest_expiry_premiums`) +
-  per-strike **`net_gex`** ride the per-strike logging.
-- `scripts/log_gamma_blast.py` + `run_gamma_blast.bat` — **1-min**, **expiry day
-  only**, **13:00–15:30 IST**, into `data/journal/gamma_blast/`.
+- Dashboard **"Gamma-blast crossover watch" & Expiry Detonation Card**:
+  - Live dashboard card evaluated dynamically via `evaluate_dashboard_gamma_blast`: scores expiry-day blast conditions (quiet morning range < 0.8%, spot proximity/crossing of anchored strikes after 13:00 IST, IV expansion, 0-DTE acceleration).
+  - Theme colors and detonation alert headlines (`GAMMA BLAST DETONATION ALERT`) activate when score threshold is crossed.
+  - Clean off-market gating: off-hours and non-expiry sessions display an inactive state with zero synthetic triggers.
+- **Per-Index Listed Expiry Gating (`scripts/log_gamma_blast.py` & `run_gamma_blast.sh`)**:
+  - Each index is judged on its **own nearest listed expiry date** (Nifty Tuesday, Bank Nifty last Tuesday of month, Sensex Thursday; holidays roll back to previous trading day).
+  - Multi-symbol support covers `NIFTY`, `BANKNIFTY`, and `SENSEX`. Any symbol whose nearest listed expiry is not today is safely skipped.
+  - Captures 1-min strike OI, $\Delta\text{OI}$, nearest-expiry premiums, and GEX during the **13:00–15:30 IST** window into per-index directories: `data/journal/gamma_blast/<SYMBOL>/YYYY-MM-DD.csv`.
+  - Staggered production crons ensure data collection does not collide with 15-minute timeseries snapshots.
 
 Everything is labelled decision-support; it flags **where/when** a pivot happens,
 never the **direction**.

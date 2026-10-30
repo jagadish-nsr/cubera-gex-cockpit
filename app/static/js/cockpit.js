@@ -2967,16 +2967,35 @@
           strikeSelect.onchange = () => window.recalculateTargetSL();
         }
 
-        // Initialize Spot Target inputs if empty
+        // Initialize or update Spot Target inputs when empty, symbol changed, or out of range
         const tgtSpotInput = document.getElementById("te-input-target-spot");
         const slSpotInput = document.getElementById("te-input-sl-spot");
-        if (tgtSpotInput && (!tgtSpotInput.value || tgtSpotInput.value === "24570")) {
-          const bullTgt = (data.targets && data.targets.bull) ? data.targets.bull.target : (data.spot + 60.0);
+        const currentTgtVal = tgtSpotInput ? parseFloat(tgtSpotInput.value) : NaN;
+        const currentSlVal = slSpotInput ? parseFloat(slSpotInput.value) : NaN;
+
+        const isSensex = (state.symbol || "").toUpperCase() === "SENSEX";
+        const isBnf = (state.symbol || "").toUpperCase() === "BANKNIFTY";
+        const defTgtOffset = isSensex ? 250.0 : (isBnf ? 180.0 : 70.0);
+        const defSlOffset = isSensex ? 150.0 : (isBnf ? 100.0 : 40.0);
+
+        const bullTgt = (data.targets && data.targets.bull && data.targets.bull.target > 0)
+          ? data.targets.bull.target
+          : (data.spot + defTgtOffset);
+        const bullSl = (data.targets && data.targets.bull && data.targets.bull.stop > 0)
+          ? data.targets.bull.stop
+          : (data.spot - defSlOffset);
+
+        const symbolChanged = teCalcState.lastSymbol !== state.symbol;
+        const tgtOutOfRange = !Number.isFinite(currentTgtVal) || Math.abs(currentTgtVal - data.spot) > (data.spot * 0.15);
+        const slOutOfRange = !Number.isFinite(currentSlVal) || Math.abs(currentSlVal - data.spot) > (data.spot * 0.15);
+
+        if (tgtSpotInput && (symbolChanged || tgtOutOfRange)) {
           tgtSpotInput.value = bullTgt.toFixed(1);
         }
-        if (slSpotInput && (!slSpotInput.value || slSpotInput.value === "24460")) {
-          slSpotInput.value = (data.spot - 35.0).toFixed(1);
+        if (slSpotInput && (symbolChanged || slOutOfRange)) {
+          slSpotInput.value = bullSl.toFixed(1);
         }
+        teCalcState.lastSymbol = state.symbol;
 
         // Trigger initial calculation
         setTimeout(() => {
@@ -3019,17 +3038,22 @@
     const slInput = document.getElementById("te-input-sl-spot");
     if (!tgtInput || !slInput) return;
 
-    const baseSpot = (state.teData && state.teData.spot) ? state.teData.spot : (state.spot || 24500.0);
+    const isSensex = (state.symbol || "").toUpperCase() === "SENSEX";
+    const isBnf = (state.symbol || "").toUpperCase() === "BANKNIFTY";
+    const defTgtOffset = isSensex ? 250.0 : (isBnf ? 180.0 : 70.0);
+    const defSlOffset = isSensex ? 150.0 : (isBnf ? 100.0 : 40.0);
+
+    const baseSpot = (state.teData && state.teData.spot) ? state.teData.spot : (state.spot || (isSensex ? 75000.0 : (isBnf ? 52000.0 : 24500.0)));
     const ceRadio = document.querySelector('input[name="te_calc_type"][value="CE"]');
     const peRadio = document.querySelector('input[name="te_calc_type"][value="PE"]');
 
     const targets = (state.teData && state.teData.targets) ? state.teData.targets : {};
-    const bTgt = targets.bull ? targets.bull.target : baseSpot + 60.0;
-    const bSl = targets.bull && targets.bull.stop ? targets.bull.stop : baseSpot - 35.0;
-    const bearTgt = targets.bear ? targets.bear.target : baseSpot - 60.0;
-    const bearSl = targets.bear && targets.bear.stop ? targets.bear.stop : baseSpot + 35.0;
+    const bTgt = targets.bull ? targets.bull.target : baseSpot + defTgtOffset;
+    const bSl = targets.bull && targets.bull.stop ? targets.bull.stop : baseSpot - defSlOffset;
+    const bearTgt = targets.bear ? targets.bear.target : baseSpot - defTgtOffset;
+    const bearSl = targets.bear && targets.bear.stop ? targets.bear.stop : baseSpot + defSlOffset;
     const basePin = targets.base ? targets.base.target : baseSpot;
-    const baseSl = baseSpot - 25.0;
+    const baseSl = baseSpot - defSlOffset;
 
     // Toggle visual active button state in both panels
     ["bull", "bear", "base", "reset"].forEach((p) => {
@@ -3056,15 +3080,15 @@
     } else if (preset === "base") {
       const isCe = ceRadio && ceRadio.checked;
       if (isCe) {
-        tgtInput.value = (basePin + 45.0).toFixed(1);
+        tgtInput.value = (basePin + (defTgtOffset * 0.7)).toFixed(1);
         slInput.value = baseSl.toFixed(1);
       } else {
-        tgtInput.value = (basePin - 45.0).toFixed(1);
-        slInput.value = (baseSpot + 25.0).toFixed(1);
+        tgtInput.value = (basePin - (defTgtOffset * 0.7)).toFixed(1);
+        slInput.value = (baseSpot + (defSlOffset * 0.7)).toFixed(1);
       }
     } else if (preset === "reset") {
-      tgtInput.value = (baseSpot + 60.0).toFixed(1);
-      slInput.value = (baseSpot - 35.0).toFixed(1);
+      tgtInput.value = (baseSpot + defTgtOffset).toFixed(1);
+      slInput.value = (baseSpot - defSlOffset).toFixed(1);
       if (ceRadio) ceRadio.checked = true;
       const hSlider = document.getElementById("te-slider-holding-mins");
       if (hSlider) {
@@ -3088,11 +3112,11 @@
     const decayMins = document.getElementById("slider-decay-mins");
     if (spotShift && ivShock && decayMins) {
       if (preset === "bull") {
-        spotShift.value = "60";
+        spotShift.value = String(Math.round(defTgtOffset));
         ivShock.value = "-0.5";
         decayMins.value = "30";
       } else if (preset === "bear") {
-        spotShift.value = "-60";
+        spotShift.value = String(-Math.round(defTgtOffset));
         ivShock.value = "1.0";
         decayMins.value = "30";
       } else if (preset === "base") {
@@ -3120,6 +3144,11 @@
       const hSlider = document.getElementById("te-slider-holding-mins");
       const ivSelect = document.getElementById("te-select-iv-shock");
 
+      const isSensex = (state.symbol || "").toUpperCase() === "SENSEX";
+      const isBnf = (state.symbol || "").toUpperCase() === "BANKNIFTY";
+      const defTgtOffset = isSensex ? 250.0 : (isBnf ? 180.0 : 70.0);
+      const defSlOffset = isSensex ? 150.0 : (isBnf ? 100.0 : 40.0);
+
       const customStrikeEl = document.getElementById("te-calc-custom-strike");
       const customStrike = customStrikeEl && customStrikeEl.value !== "" ? parseFloat(customStrikeEl.value) : NaN;
       const strike = Number.isFinite(customStrike)
@@ -3127,8 +3156,12 @@
         : (strikeSel ? parseFloat(strikeSel.value) : state.spot);
       const expiry = expSel ? expSel.value : "current_week";
       const side = typeRadio ? typeRadio.value : "CE";
-      const targetSpot = tgtInput ? parseFloat(tgtInput.value) : (state.spot + 60);
-      const slSpot = slInput ? parseFloat(slInput.value) : (state.spot - 35);
+      const targetSpot = (tgtInput && Number.isFinite(parseFloat(tgtInput.value)))
+        ? parseFloat(tgtInput.value)
+        : (state.spot + defTgtOffset);
+      const slSpot = (slInput && Number.isFinite(parseFloat(slInput.value)))
+        ? parseFloat(slInput.value)
+        : (state.spot - defSlOffset);
       const horizonMins = hSlider ? parseInt(hSlider.value) : 60;
       const ivShock = ivSelect ? ivSelect.value : "Auto (Regime-Conditioned)";
 
@@ -3310,6 +3343,7 @@
         renderClusterList("fallback-pe-container", [], "PE", false);
         renderClusterList("tactical-ce-container", [], "CE", false);
         renderClusterList("tactical-pe-container", [], "PE", false);
+        loadRecommendationHistory();
         return;
       }
       if (noticeContainer) noticeContainer.innerHTML = "";
@@ -3325,9 +3359,408 @@
       // Render Tactical Opportunities: CE on Left, PE on Right
       renderClusterList("tactical-ce-container", data.tactical_tier ? data.tactical_tier.ce_clusters : [], "CE", data.ce_tactical_active);
       renderClusterList("tactical-pe-container", data.tactical_tier ? data.tactical_tier.pe_clusters : [], "PE", data.pe_tactical_active);
+
+      // Also render recommendation history table
+      loadRecommendationHistory();
     } catch (e) {
       console.error("Error loading recommendations:", e);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Trade Recommendation History & Intraday Lifecycle Audit
+  // ---------------------------------------------------------------------------
+  window._expandedHistoryCards = window._expandedHistoryCards || new Set();
+  window._currentRecHistoryTierFilter = window._currentRecHistoryTierFilter || "all";
+  window._cachedRecHistoryData = null;
+
+  async function loadRecommendationHistory() {
+    const tbody = document.getElementById("rec-history-tbody");
+    if (!tbody) return;
+
+    const sessionSel = document.getElementById("rec-history-session-select");
+    const sessionDate = sessionSel ? sessionSel.value : "today";
+
+    const symSel = document.getElementById("rec-history-symbol-select");
+    let sym = symSel ? symSel.value : "CURRENT";
+    if (sym === "CURRENT") sym = state.symbol || "NIFTY";
+
+    const statusSel = document.getElementById("rec-history-status-select");
+    const statusVal = statusSel ? statusSel.value : "all";
+
+    const tierVal = window._currentRecHistoryTierFilter || "all";
+
+    try {
+      const url = `/api/recommendations/history?symbol=${encodeURIComponent(sym)}&session_date=${encodeURIComponent(sessionDate)}&tier=${encodeURIComponent(tierVal)}&status=${encodeURIComponent(statusVal)}&limit=150`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      window._cachedRecHistoryData = data;
+      renderRecommendationHistory(data);
+    } catch (err) {
+      console.warn("Failed to load recommendation history:", err);
+      if (tbody && (!window._cachedRecHistoryData || !window._cachedRecHistoryData.history)) {
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--stop)">Failed to load recommendation history. Click Refresh to retry.</td></tr>`;
+      }
+    }
+  }
+
+  window.loadRecommendationHistory = loadRecommendationHistory;
+
+  window.setRecHistoryTierFilter = function (tier) {
+    window._currentRecHistoryTierFilter = tier || "all";
+    document.querySelectorAll(".rec-tier-filter-btn").forEach((btn) => {
+      const bTier = btn.getAttribute("data-tier");
+      if (bTier === window._currentRecHistoryTierFilter) {
+        btn.classList.remove("btn-secondary");
+        btn.classList.add("btn-primary");
+      } else {
+        btn.classList.remove("btn-primary");
+        btn.classList.add("btn-secondary");
+      }
+    });
+    loadRecommendationHistory();
+  };
+
+  window.filterRecommendationHistory = function () {
+    const searchInput = document.getElementById("rec-history-search-input");
+    const searchVal = searchInput ? searchInput.value.trim().toLowerCase() : "";
+
+    const sessionSel = document.getElementById("rec-history-session-select");
+    const symSel = document.getElementById("rec-history-symbol-select");
+    const statusSel = document.getElementById("rec-history-status-select");
+
+    const currentSession = sessionSel ? sessionSel.value : "today";
+    const currentSym = symSel ? symSel.value : "CURRENT";
+    const currentStatus = statusSel ? statusSel.value : "all";
+
+    if (
+      !window._cachedRecHistoryData ||
+      window._lastHistSession !== currentSession ||
+      window._lastHistSym !== currentSym ||
+      window._lastHistStatus !== currentStatus
+    ) {
+      window._lastHistSession = currentSession;
+      window._lastHistSym = currentSym;
+      window._lastHistStatus = currentStatus;
+      loadRecommendationHistory();
+      return;
+    }
+
+    renderRecommendationHistory(window._cachedRecHistoryData, searchVal);
+  };
+
+  window.toggleHistoryCardDetails = function (recId) {
+    if (!window._expandedHistoryCards) window._expandedHistoryCards = new Set();
+    const rowEl = document.getElementById(`rec-hist-expander-${recId}`);
+    const parentRow = document.getElementById(`rec-hist-row-${recId}`);
+    const toggleBtn = document.getElementById(`rec-hist-btn-${recId}`);
+    const chevron = document.getElementById(`rec-hist-chevron-${recId}`);
+
+    if (window._expandedHistoryCards.has(recId)) {
+      window._expandedHistoryCards.delete(recId);
+      if (rowEl) rowEl.style.display = "none";
+      if (parentRow) parentRow.classList.remove("is-expanded");
+      if (toggleBtn) toggleBtn.innerHTML = "▼ View";
+      if (chevron) chevron.textContent = "▼";
+    } else {
+      window._expandedHistoryCards.add(recId);
+      if (rowEl) rowEl.style.display = "table-row";
+      if (parentRow) parentRow.classList.add("is-expanded");
+      if (toggleBtn) toggleBtn.innerHTML = "▲ Hide";
+      if (chevron) chevron.textContent = "▲";
+    }
+  };
+
+  function renderRecommendationHistory(data, filterQuery = "") {
+    const tbody = document.getElementById("rec-history-tbody");
+    if (!tbody || !data) return;
+
+    const countBadge = document.getElementById("rec-history-count-badge");
+    if (countBadge) countBadge.textContent = `${data.total || 0} Records`;
+
+    const allCount = document.getElementById("rec-hist-all-count");
+    const highCount = document.getElementById("rec-hist-high-count");
+    const secCount = document.getElementById("rec-hist-sec-count");
+    const tactCount = document.getElementById("rec-hist-tact-count");
+    if (allCount) allCount.textContent = data.summary ? data.summary.total : (data.total || 0);
+    if (highCount) highCount.textContent = data.summary ? data.summary.high_count : 0;
+    if (secCount) secCount.textContent = data.summary ? data.summary.sec_count : 0;
+    if (tactCount) tactCount.textContent = data.summary ? data.summary.tact_count : 0;
+
+    let items = Array.isArray(data.history) ? data.history : [];
+    if (filterQuery) {
+      const q = filterQuery.toLowerCase();
+      items = items.filter((r) =>
+        (r.symbol && r.symbol.toLowerCase().includes(q)) ||
+        (r.option_symbol && r.option_symbol.toLowerCase().includes(q)) ||
+        (r.play_badge && r.play_badge.toLowerCase().includes(q)) ||
+        (r.strike && String(r.strike).includes(q)) ||
+        (r.side && r.side.toLowerCase().includes(q)) ||
+        (r.highest_tier && r.highest_tier.toLowerCase().includes(q)) ||
+        (r.status && r.status.toLowerCase().includes(q))
+      );
+    }
+
+    if (items.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:28px;color:var(--ink-mute)">No recommendations found matching current criteria.</td></tr>`;
+      return;
+    }
+
+    if (!window._expandedHistoryCards) window._expandedHistoryCards = new Set();
+
+    let html = "";
+    items.forEach((r) => {
+      const isExpanded = window._expandedHistoryCards.has(r.rec_id);
+      const isCall = String(r.side).toUpperCase() === "CE";
+      const sideColor = isCall ? "var(--go)" : "var(--stop)";
+      const sideBg = isCall ? "rgba(34,197,94,0.14)" : "rgba(239,68,68,0.14)";
+      const sideBorder = isCall ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)";
+      const sideLabel = isCall ? "CALL" : "PUT";
+
+      let peakBadgeClass = "tier-tactical";
+      let peakBadgeLabel = `🏹 TACT (${r.highest_score})`;
+      if (r.highest_tier === "HIGH") {
+        peakBadgeClass = "tier-high";
+        peakBadgeLabel = `⚡ HIGH (${r.highest_score})`;
+      } else if (r.highest_tier === "MEDIUM") {
+        peakBadgeClass = "tier-medium";
+        peakBadgeLabel = `🎯 SEC (${r.highest_score})`;
+      }
+
+      let deltaHtml = `<span style="color:var(--ink-mute);font-size:0.68rem">― 0</span>`;
+      if (r.score_delta > 0) {
+        deltaHtml = `<span style="color:var(--go);font-size:0.68rem;font-weight:750">▲ +${r.score_delta}</span>`;
+      } else if (r.score_delta < 0) {
+        deltaHtml = `<span style="color:var(--stop);font-size:0.68rem;font-weight:750">▼ ${r.score_delta}</span>`;
+      }
+
+      let stateClass = "state-active";
+      const st = String(r.status || "ACTIVE").toUpperCase();
+      if (st.includes("TGT") || st.includes("TARGET")) stateClass = "state-target";
+      else if (st.includes("SL") || st.includes("STOP")) stateClass = "state-stop";
+      else if (st.includes("INVAL")) stateClass = "state-inval";
+      else if (st.includes("STALE") || st.includes("EXPIRED")) stateClass = "state-stale";
+
+      const pnlColor = Number(r.pnl_pts) >= 0 ? "var(--go)" : "var(--stop)";
+      const pnlSign = Number(r.pnl_pts) >= 0 ? "+" : "";
+
+      const trigTime = r.triggered_at ? (r.triggered_at.length > 11 ? r.triggered_at.substring(11, 19) : r.triggered_at) : "—";
+      const lastTime = r.last_appeared ? (r.last_appeared.length > 11 ? r.last_appeared.substring(11, 19) : r.last_appeared) : trigTime;
+
+      const c = r.full_card || r;
+      const ltp = Number(c.current_ltp || r.current_ltp || r.initial_ltp || 0).toFixed(1);
+      const entryLtp = Number(c.entry_ltp || r.initial_ltp || ltp).toFixed(1);
+      const t1 = Number(c.target_1 || r.target_1 || 0).toFixed(1);
+      const t2 = Number(c.target_2 || r.target_2 || 0).toFixed(1);
+      const sl = Number(c.stop_loss || r.stop_loss || 0).toFixed(1);
+      const invalNum = Number(c.spot_invalidation || r.spot_invalidation || 0);
+
+      const defaultLots = 1;
+      const defaultQty = c.lot_size || (String(r.symbol).includes("SENSEX") ? 20 : (String(r.symbol).includes("BANKNIFTY") ? 30 : 65));
+      const pos = c.pos_size || {
+        suggested_lots: defaultLots,
+        total_quantity: defaultQty,
+        capital_outlay_inr: Math.round(Number(ltp) * defaultQty),
+        portfolio_pct: 1.5,
+        max_risk_inr: Math.round(Math.max(1, (Number(ltp) - Number(sl))) * defaultQty),
+        target_1_pnl_inr: Math.round(Math.max(1, (Number(t1) - Number(ltp))) * defaultQty),
+        target_2_pnl_inr: Math.round(Math.max(1, (Number(t2) - Number(ltp))) * defaultQty),
+        sizing_rationale: "Default 1.5% capital risk allocation",
+      };
+
+      let spreadBoxHtml = "";
+      if (c.spread_alternative) {
+        const sp = c.spread_alternative;
+        const maxProfitPts = sp.max_profit != null ? sp.max_profit : (sp.max_profit_pts || 0);
+        const maxLossPts = sp.max_loss != null ? sp.max_loss : (sp.max_loss_pts || 0);
+        const maxProfitInr = sp.max_profit_inr != null ? sp.max_profit_inr : Math.round(maxProfitPts * pos.total_quantity);
+        const maxLossInr = sp.max_loss_inr != null ? sp.max_loss_inr : Math.round(maxLossPts * pos.total_quantity);
+        const beSpot = sp.breakeven_spot != null ? sp.breakeven_spot : (sp.breakeven || 0);
+        const netDebit = sp.net_debit != null ? sp.net_debit : (sp.net_cost || 0);
+
+        spreadBoxHtml = `
+          <div style="background:rgba(56,189,248,0.06);border:1px solid rgba(56,189,248,0.25);border-radius:6px;padding:8px 12px;margin:8px 0;font-size:0.74rem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-weight:800;color:var(--spark)">🛡️ Defined-Risk Spread: ${sp.spread_name || "Debit Vertical"}</span>
+              <span style="font-family:var(--mono);color:var(--ink-mute)">Net Debit: ₹${Number(netDebit).toFixed(1)}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;font-family:var(--mono);color:var(--ink)">
+              <span>Max Gain: <b style="color:var(--go)">+₹${Number(maxProfitInr).toLocaleString("en-IN")} (+${Number(maxProfitPts).toFixed(1)} pts)</b></span>
+              <span>Max Risk: <b style="color:var(--stop)">-₹${Number(maxLossInr).toLocaleString("en-IN")} (-${Number(maxLossPts).toFixed(1)} pts)</b></span>
+              <span>Breakeven: <b>₹${Number(beSpot).toLocaleString("en-IN", { minimumFractionDigits: 1 })}</b></span>
+            </div>
+          </div>
+        `;
+      }
+
+      const entryTrigger = c.entry_trigger || r.entry_trigger || "Microstructure institutional orderflow alignment";
+      const invalText = c.spot_invalidation_text || r.spot_invalidation_text || (invalNum > 0 ? `Spot breaches invalidation strike ₹${invalNum.toLocaleString("en-IN")}` : "Defined stop breach");
+      const invalBuffer = Number(c.inval_buffer != null ? c.inval_buffer : 0);
+      const invalBreached = Boolean(c.inval_breached || st === "INVALIDATED");
+      const invalStatusHtml = invalBreached
+        ? `<span style="font-size:0.7rem;font-weight:750;color:var(--stop)">🛑 INVALIDATED</span>`
+        : `<span style="font-size:0.7rem;font-weight:750;color:var(--go)">🟢 Buffer Active (+${invalBuffer.toFixed(0)} pts)</span>`;
+
+      const pT1 = Math.round((c.p_touch_target_1 || 0.65) * 100);
+      const pSl = Math.round((c.p_touch_sl || 0.35) * 100);
+      const evPts = Number(c.net_ev_pts || 18.5).toFixed(1);
+      const deltaApprox = Number(c.delta_approx || (isCall ? 0.50 : -0.50)).toFixed(2);
+
+      const rationaleText = c.rationale || r.rationale || "Institutional gamma concentration setup.";
+      const tags = Array.isArray(c.catalyst_tags) ? c.catalyst_tags : (Array.isArray(r.catalyst_tags) ? r.catalyst_tags : []);
+      const tagsHtml = tags.map((t) => `<span style="font-size:0.68rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 7px;border-radius:4px;border:1px solid var(--line)">${t}</span>`).join("");
+
+      let trajectoryHtml = "";
+      const hist = (c.score_history && c.score_history.length > 0) ? c.score_history : (r.score_history || []);
+      if (Array.isArray(hist) && hist.length > 1) {
+        const histStr = hist.map((s) => `<b>${s.score != null ? s.score : s}</b>`).join(" ➔ ");
+        trajectoryHtml = `
+          <div style="font-size:0.68rem;color:var(--ink-mute);background:var(--surface-3);padding:4px 8px;border-radius:4px;margin-top:6px;display:flex;justify-content:space-between">
+            <span>Score Trajectory: ${histStr}</span>
+            <span style="color:var(--go);font-weight:750">● Momentum Trail</span>
+          </div>
+        `;
+      }
+
+      const bmText = r.is_bookmarked ? "★ Pinned" : "☆ Pin";
+
+      html += `
+        <tr id="rec-hist-row-${r.rec_id}" class="rec-history-row ${isExpanded ? "is-expanded" : ""}" onclick="window.toggleHistoryCardDetails('${r.rec_id}')" title="Click to view full card details">
+          <td style="text-align:center">
+            <span id="rec-hist-chevron-${r.rec_id}" style="color:var(--spark);font-size:0.76rem;font-weight:800">${isExpanded ? "▲" : "▼"}</span>
+          </td>
+          <td style="font-family:var(--mono);color:var(--ink-mute)" title="${r.triggered_at}">${trigTime}</td>
+          <td style="font-family:var(--mono);color:var(--ink-mute)" title="${r.last_appeared}">${lastTime}</td>
+          <td>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="background:${sideBg};color:${sideColor};border:1px solid ${sideBorder};padding:1px 5px;border-radius:3px;font-weight:800;font-size:0.68rem">${sideLabel}</span>
+              <b style="font-size:0.82rem">${r.symbol} ${r.strike}</b>
+            </div>
+            <div style="font-size:0.68rem;color:var(--ink-mute);margin-top:2px">${r.play_badge || "STRATEGY"}</div>
+          </td>
+          <td>
+            <span class="rec-tier-badge ${peakBadgeClass}">${peakBadgeLabel}</span>
+          </td>
+          <td>
+            <div style="font-family:var(--mono);font-weight:750;font-size:0.80rem">${r.current_score}/100</div>
+            <div>${deltaHtml}</div>
+          </td>
+          <td>
+            <span class="rec-state-pill ${stateClass}">${r.status_label || r.status}</span>
+          </td>
+          <td style="font-family:var(--mono)">
+            <div>₹${entryLtp} → <b style="color:var(--ink)">₹${ltp}</b></div>
+          </td>
+          <td style="font-family:var(--mono)">
+            <b style="color:${pnlColor}">${pnlSign}₹${r.pnl_pts}</b>
+            <div style="font-size:0.68rem;color:${pnlColor}">(${pnlSign}${r.pnl_pct}%)</div>
+          </td>
+          <td style="font-size:0.70rem;color:var(--ink-mute)">
+            <div>T1: <b style="color:var(--go)">₹${t1}</b> · SL: <b style="color:var(--stop)">₹${sl}</b></div>
+            ${invalNum > 0 ? `<div style="color:var(--stop)">Inval: ₹${invalNum.toFixed(0)}</div>` : ""}
+          </td>
+          <td style="text-align:right" onclick="event.stopPropagation()">
+            <div style="display:flex;gap:4px;justify-content:flex-end">
+              <button class="btn btn-secondary" onclick="event.stopPropagation();window.toggleBookmark('${r.rec_id}');this.textContent=this.textContent.includes('★')?'☆ Pin':'★ Pinned'" style="font-size:0.68rem;padding:2px 6px" title="Pin / Unpin setup">
+                ${bmText}
+              </button>
+              <button id="rec-hist-btn-${r.rec_id}" class="btn btn-secondary" onclick="event.stopPropagation();window.toggleHistoryCardDetails('${r.rec_id}')" style="font-size:0.68rem;padding:2px 6px">
+                ${isExpanded ? "▲ Hide" : "▼ View"}
+              </button>
+            </div>
+          </td>
+        </tr>
+
+        <tr id="rec-hist-expander-${r.rec_id}" class="rec-history-expander-row" style="display:${isExpanded ? "table-row" : "none"}">
+          <td colspan="11">
+            <div class="rec-history-full-card-wrapper">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px">
+                <div style="display:flex;align-items:center;gap:6px">
+                  <span class="rec-tier-badge ${peakBadgeClass}">Peak: ${r.highest_tier_label || peakBadgeLabel}</span>
+                  <span class="rec-state-pill ${stateClass}">${r.status_label || r.status}</span>
+                  <span style="font-size:0.75rem;font-weight:750;color:var(--spark)">
+                    Current Conviction: ${r.current_score}/100 (${deltaHtml})
+                  </span>
+                </div>
+                <span style="font-size:0.74rem;color:var(--ink-mute)">Risk:Reward <b>${r.risk_reward_ratio || "1 : 2.5"}</b> · Triggered ${r.triggered_at}</span>
+              </div>
+
+              <div class="rec-ltp-block" style="margin-bottom:8px">
+                <span class="rec-ltp-large" style="color:var(--ink);font-size:1.3rem">₹${ltp}</span>
+                <span style="font-size:0.70rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${entryLtp}</span>
+                <span style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${pnlColor}">
+                  MTM PnL: ${pnlSign}₹${r.pnl_pts} (${pnlSign}${r.pnl_pct}%)
+                </span>
+                <span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${t1}</span>
+                ${Number(t2) > 0 ? `<span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T2: ₹${t2}</span>` : ""}
+                <span style="font-size:0.70rem;background:rgba(239,68,68,.12);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${sl}</span>
+              </div>
+
+              <div style="background:var(--surface-3);border:1px solid var(--line);border-radius:6px;padding:7px 10px;margin:8px 0;font-size:0.74rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
+                <span>📦 <b>${pos.suggested_lots} Lots</b> (${pos.total_quantity} Qty) · Capital Outlay: <b>₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")}</b> (${Number(pos.portfolio_pct).toFixed(1)}% Port)</span>
+                <span style="color:var(--ink-mute)">${pos.sizing_rationale}</span>
+              </div>
+
+              <div style="background:rgba(0,0,0,0.22);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:8px 0;font-size:0.76rem">
+                <div><b>⚡ Microstructure Trigger:</b> ${entryTrigger}</div>
+                <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+                  <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}</span>
+                  ${invalStatusHtml}
+                </div>
+              </div>
+
+              <div class="rec-levels-grid" style="padding:8px 10px;margin:8px 0">
+                <div class="rec-lvl-item">
+                  <small>Spot Inval / SL</small>
+                  <b style="color:var(--stop)">₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : sl}</b>
+                  <span style="font-size:0.66rem;color:var(--stop)">Max Risk -₹${Number(pos.max_risk_inr).toLocaleString("en-IN")}</span>
+                </div>
+                <div class="rec-lvl-item">
+                  <small>Target 1</small>
+                  <b style="color:var(--go)">₹${t1}</b>
+                  <span style="font-size:0.66rem;color:var(--go)">+₹${Number(pos.target_1_pnl_inr).toLocaleString("en-IN")}</span>
+                </div>
+                <div class="rec-lvl-item">
+                  <small>Target 2</small>
+                  <b style="color:var(--go)">₹${t2}</b>
+                  <span style="font-size:0.66rem;color:var(--go)">+₹${Number(pos.target_2_pnl_inr).toLocaleString("en-IN")}</span>
+                </div>
+                <div class="rec-lvl-item">
+                  <small>Risk : Reward</small>
+                  <b style="color:var(--spark)">${r.risk_reward_ratio || "1 : 2.5"}</b>
+                  <span style="font-size:0.66rem;color:var(--ink-mute)">Quality ${r.current_score}/100</span>
+                </div>
+              </div>
+
+              ${spreadBoxHtml}
+
+              <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-3);padding:5px 8px;border-radius:4px;margin:6px 0">
+                <span>P(T1): <b style="color:var(--go)">${pT1}%</b> · P(SL): <b style="color:var(--stop)">${pSl}%</b></span>
+                <span>EV: <b style="color:var(--go)">+${evPts} pts</b> · Δ ~${deltaApprox}</span>
+              </div>
+
+              <div style="font-size:0.76rem;color:var(--ink-mute);margin:6px 0">${rationaleText}</div>
+              ${tags.length > 0 ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">${tagsHtml}</div>` : ""}
+
+              ${trajectoryHtml}
+
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:8px;border-top:1px dashed var(--line);gap:6px">
+                <button class="btn btn-secondary" onclick="window.toggleHistoryCardDetails('${r.rec_id}')" style="font-size:0.70rem;padding:4px 9px">
+                  ▲ Collapse Card
+                </button>
+                <button class="btn btn-primary" onclick="window.executePaperTrade('${r.rec_id}', '${r.option_symbol || ""}', ${r.strike}, '${r.side}', ${Number(ltp)}, ${pos.suggested_lots})" style="font-size:0.70rem;padding:4px 12px">
+                  📝 Paper-Trade ${pos.suggested_lots} Lots (₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")})
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = html;
+  }
   }
 
   // Active strategy indices per cluster

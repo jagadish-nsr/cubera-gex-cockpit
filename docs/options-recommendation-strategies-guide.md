@@ -8,11 +8,35 @@ This guide details the institutional microstructure models, trigger mechanics, d
 
 The engine synthesizes **GEX structural walls**, **OrderFlow volume delta (CVD)**, **Session VWAP equilibrium**, **ADX trend regimes**, **Sector Breadth**, **FII positioning**, and **live Dhan WebSocket streaming prices** across seven complementary institutional strategies per side.
 
-### 🛡️ Quality Gating: Score ≥ 75 (High Conviction Only)
-Rather than displaying a static number of trade ideas regardless of quality, the engine evaluates **all 7 strategies** for Calls (CE) and Puts (PE) and applies an institutional quality gate:
-* **Only setups achieving Quality Score ≥ 75 (Grade A / A+ High Conviction)** are presented in the primary recommendation cards.
-* In flat, choppy, or low-conviction market regimes where no setup achieves $\ge 75$, the terminal activates **Capital Preservation Mode**, advising traders to stand aside.
-* Traders can expand the **Lower-Conviction Watchlist (< 75 Score)** anytime to inspect candidate setups under formation.
+### 🛡️ Two-Tier Recommendation Architecture & Quality Gating
+Rather than displaying a flat list of trade ideas regardless of quality, the engine evaluates **all 7 strategies** for Calls (CE) and Puts (PE) across a structured two-tier taxonomy:
+
+1. **Core High-Conviction Setups (Score ≥ 75)**:
+   - Primary institutional setups achieving **Quality Score ≥ 75 (Grade A / A+)**.
+   - Presented prominently in the primary recommendation columns (`🟢 Core Calls` and `🔴 Core Puts`).
+   - Requires full multi-factor confluence across orderflow, GEX walls, session VWAP, and sector breadth.
+   - When no setup achieves $\ge 75$ during choppy regimes, the terminal activates **Capital Preservation Mode**, advising operators to stand aside.
+
+2. **Tactical Opportunities Section (Score 65–75)**:
+   - Secondary institutional setups qualifying within the **Score 65–75** window.
+   - Displayed in dedicated columns: `🔵 Tactical Calls (Score 65–75)` and `🟣 Tactical Puts (Score 65–75)`.
+   - Designed for agile operators seeking early structural positioning or momentum continuation while waiting for full macro alignment.
+   - Governed by independent tactical safety filters (`ce_tactical_active` / `pe_tactical_active`); setups are immediately suppressed if adverse tape conditions or structural invalidations emerge.
+
+3. **Expandable Mini-to-Full Card Toggle**:
+   - Every active recommendation card supports an instant interactive view toggle:
+     - **Mini-Card View**: Compact, high-density HUD displaying the contract symbol, score grade, entry, T1, T2, SL, and live dwell timer.
+     - **Full-Card View**: Expands on demand to reveal the analytical engine details: underlying spot targets, Black-76 expected value, Greeks attribution breakdown (Delta, Gamma, Vega, Theta), and defined-risk vertical spread pricing.
+
+4. **Recommendation History & Lifecycle Audit**:
+   - Dedicated historical tracking table capturing every recommendation that ever entered **High Conviction (>85)**, **Secondary (75–85)**, or **Tactical (65–75)** tiers.
+   - **Monotonic Peak Conviction**: Preserves the highest tier and peak score achieved across the session, recording trajectory delta as conviction strengthens or fades.
+   - **Lifecycle State Machine**: Real-time audit of setup status (`⚡ Active`, `🔒 Latched`, `🎯 TGT1 Hit`, `🚀 TGT2 Hit`, `⛔ SL Hit`, `🛑 Spot Inval`, `⏱️ Stale`).
+   - **Inline Full-Card Expander**: One-click inline expansion displaying the complete institutional card (Greeks, position sizing, risk/reward 4-grid, defined-risk spread, and setup narrative).
+
+5. **Corridor Protection & Authentic Chains**:
+   - The engine enforces a **minimum two-strike corridor** between the Call Wall and Put Wall before staging setups.
+   - Incomplete or placeholder option chains are strictly withheld from trade synthesis to prevent phantom recommendations.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -281,5 +305,8 @@ To eliminate card flickering, disappearance, and false exits during live streami
    - All spot prices, strike quotes, and GEX levels are sourced strictly from Dhan WebSocket feeds or verified exchange snapshots. Synthetic fallback levels are strictly blocked.
 3. **Clamping of Target Spot Reach**:
    - Target spot levels are mathematically clamped to realistic 1-SD horizon expected moves ($\sigma_h$), preventing unachievable targets on low-volatility sessions.
-4. **Pinned Cards Retention**:
-   - Pinned cards persist in the local storage registry across page reloads and browser sessions until explicitly unpinned by the user or until the contract crosses its expiry date.
+4. **Pinned Cards Retention & Authentic LTP Resolution**:
+   - Pinned cards persist in the local storage registry across page reloads, session restarts, and multi-day holding periods until explicitly unpinned by the user or until the contract crosses its expiry date.
+   - **Stored Tier Persistence**: A pinned card remains locked in its stored tier (`core` vs `tactical`), preventing visual jumping between columns.
+   - **Protection Against Score Fades & Strike Drift**: Once pinned, the card is protected against eviction from score dips or strike drift.
+   - **Authentic Live LTP**: Pinned cards resolve authentic, live tick premiums directly from the streaming option chain or underlying futures feeds, keeping PnL and MTM calculations strictly accurate without placeholder estimates.

@@ -85,11 +85,16 @@ def ensure_schema() -> None:
             status TEXT DEFAULT 'ACTIVE',
             outcome_ts TEXT,
             payload_json TEXT NOT NULL,
+            last_appeared TEXT,
+            highest_score INTEGER,
+            highest_tier TEXT,
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
 
         CREATE INDEX IF NOT EXISTS idx_rec_symbol_status ON recommendation_records(symbol, status);
         CREATE INDEX IF NOT EXISTS idx_rec_bookmarked ON recommendation_records(is_bookmarked);
+        CREATE INDEX IF NOT EXISTS idx_rec_last_appeared ON recommendation_records(last_appeared);
+        CREATE INDEX IF NOT EXISTS idx_rec_highest_tier ON recommendation_records(highest_tier, highest_score);
 
         CREATE TABLE IF NOT EXISTS recommendation_score_history (
             history_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,6 +170,39 @@ def ensure_schema() -> None:
             market_hour_of_day INTEGER
         );
         """)
+
+        # Schema evolution: Ensure trajectory & peak conviction columns exist
+        for col_name, col_type in (
+            ("last_appeared", "TEXT"),
+            ("highest_score", "INTEGER"),
+            ("highest_tier", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE recommendation_records ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Backfill initial trajectory & peak tier data for legacy rows
+        try:
+            conn.execute("""
+                UPDATE recommendation_records
+                SET
+                  last_appeared = COALESCE(last_appeared, outcome_ts, (SELECT MAX(recorded_at) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id), triggered_at, created_at),
+                  highest_score = COALESCE(highest_score, MAX(initial_score, current_score, COALESCE((SELECT MAX(score) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id), 0)))
+                WHERE last_appeared IS NULL OR highest_score IS NULL
+            """)
+            conn.execute("""
+                UPDATE recommendation_records
+                SET highest_tier = CASE
+                    WHEN highest_score > 85 THEN 'HIGH'
+                    WHEN highest_score >= 75 THEN 'MEDIUM'
+                    ELSE 'TACTICAL'
+                END
+                WHERE highest_tier IS NULL
+            """)
+        except Exception:
+            pass
+
         conn.commit()
 
 
@@ -200,7 +238,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
     with _WRITE_LOCK, _get_write_conn() as conn:
         existing = conn.execute(
-            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp, conviction_tier FROM recommendation_records WHERE rec_id = ?",
+            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp, conviction_tier, highest_score, highest_tier FROM recommendation_records WHERE rec_id = ?",
             (rec_id,)
         ).fetchone()
 
@@ -208,13 +246,13 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
         bm_at = existing["bookmarked_at"] if existing else idea_dict.get("bookmarked_at")
 
         new_trig = idea_dict.get("triggered_at") or _now_ist_str()
+        curr_score = int(idea_dict.get("quality_score", 0))
         if existing and existing["triggered_at"]:
             existing_trig = str(existing["triggered_at"])
             existing_date = existing_trig[:10]
             current_date = str(new_trig)[:10]
             is_fresh_day = (existing_date != current_date)
             prev_score = int(existing["current_score"] or existing["initial_score"] or 0)
-            curr_score = int(idea_dict.get("quality_score", 0))
             was_previously_sub_threshold = (prev_score < 75 and curr_score >= 75)
             if is_fresh_day or was_previously_sub_threshold:
                 trig_at = new_trig
@@ -229,7 +267,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
         else:
             is_fresh_day = True
             trig_at = new_trig
-            init_score = idea_dict.get("quality_score", 0)
+            init_score = curr_score
             init_spot = float(idea_dict.get("initial_spot", idea_dict.get("current_spot", 0)))
             init_ltp = float(idea_dict.get("initial_ltp", idea_dict.get("current_ltp", 0)))
 
@@ -239,6 +277,12 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
         else:
             tier = idea_dict.get("conviction_tier") or "HIGH"
 
+        now_ts = _now_ist_str()
+        existing_high = int(existing["highest_score"]) if (existing and "highest_score" in existing.keys() and existing["highest_score"] is not None) else 0
+        peak_score = max(existing_high, int(init_score), curr_score)
+        peak_tier = "HIGH" if peak_score > 85 else ("MEDIUM" if peak_score >= 75 else "TACTICAL")
+        last_seen = now_ts
+
         conn.execute("""
             INSERT INTO recommendation_records (
                 rec_id, symbol, side, strike, option_symbol, play_type, play_badge,
@@ -246,8 +290,8 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 conviction_tier, target_1, target_1_spot, target_2, target_2_spot,
                 stop_loss, spot_invalidation, spot_invalidation_text, risk_reward_ratio,
                 entry_trigger, rationale, catalyst_tags_json, is_bookmarked, bookmarked_at,
-                status, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, payload_json, last_appeared, highest_score, highest_tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(rec_id) DO UPDATE SET
                 triggered_at = excluded.triggered_at,
                 initial_score = excluded.initial_score,
@@ -268,6 +312,13 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 rationale = excluded.rationale,
                 catalyst_tags_json = excluded.catalyst_tags_json,
                 payload_json = excluded.payload_json,
+                last_appeared = excluded.last_appeared,
+                highest_score = MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score),
+                highest_tier = CASE
+                    WHEN MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score) > 85 THEN 'HIGH'
+                    WHEN MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score) >= 75 THEN 'MEDIUM'
+                    ELSE 'TACTICAL'
+                END,
                 status = CASE WHEN ? THEN 'ACTIVE' ELSE recommendation_records.status END,
                 outcome_ts = CASE WHEN ? THEN NULL ELSE recommendation_records.outcome_ts END
         """, (
@@ -282,7 +333,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             init_spot,
             init_ltp,
             int(init_score),
-            int(idea_dict.get("quality_score", 0)),
+            int(curr_score),
             tier,
             float(idea_dict["target_1"]),
             float(idea_dict.get("target_1_spot", 0)),
@@ -299,6 +350,9 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             bm_at,
             idea_dict.get("status", "ACTIVE"),
             payload_json or json.dumps(idea_dict),
+            last_seen,
+            peak_score,
+            peak_tier,
             int(is_fresh_day),
             int(is_fresh_day),
         ))
@@ -389,6 +443,73 @@ def list_bookmarked_records(symbol: str | None = None) -> list[dict]:
     except Exception:
         pass
     return records
+
+
+def get_recommendation_history(
+    symbol: str | None = None,
+    tier: str | None = None,
+    status: str | None = None,
+    session_date: str | None = None,
+    limit: int = 150,
+) -> list[dict]:
+    """Retrieve all recommendations that entered High Conviction (>85), Secondary (75-85), or Tactical (65-75).
+
+    Returns a list of dicts with calculated peak tier, trajectory, and stored attributes.
+    """
+    ensure_schema()
+    query = """
+        SELECT *
+        FROM recommendation_records
+        WHERE (
+            COALESCE(highest_score, initial_score, current_score, 0) >= 65
+            OR conviction_tier IN ('HIGH', 'MEDIUM')
+            OR highest_tier IN ('HIGH', 'MEDIUM', 'TACTICAL')
+        )
+    """
+    params: list = []
+
+    if symbol and symbol.upper() not in ("ALL", "CURRENT", ""):
+        query += " AND symbol = ?"
+        params.append(symbol.upper())
+
+    if session_date and session_date.lower() not in ("all", ""):
+        if session_date.lower() == "today":
+            today_str = datetime.now(IST).strftime("%Y-%m-%d")
+            query += " AND substr(triggered_at, 1, 10) = ?"
+            params.append(today_str)
+        else:
+            query += " AND substr(triggered_at, 1, 10) = ?"
+            params.append(session_date[:10])
+
+    if tier and tier.lower() not in ("all", ""):
+        t = tier.lower()
+        if t in ("high", "high_conviction"):
+            query += " AND (highest_tier = 'HIGH' OR COALESCE(highest_score, initial_score, current_score, 0) > 85)"
+        elif t in ("secondary", "medium", "fallback"):
+            query += " AND (highest_tier = 'MEDIUM' OR (COALESCE(highest_score, initial_score, current_score, 0) >= 75 AND COALESCE(highest_score, initial_score, current_score, 0) <= 85))"
+        elif t in ("tactical", "low"):
+            query += " AND (highest_tier = 'TACTICAL' OR (COALESCE(highest_score, initial_score, current_score, 0) >= 65 AND COALESCE(highest_score, initial_score, current_score, 0) < 75))"
+
+    if status and status.lower() not in ("all", ""):
+        st = status.lower()
+        if st in ("active", "latched"):
+            query += " AND status = 'ACTIVE'"
+        elif st in ("target", "hit", "target_hit", "tgt"):
+            query += " AND status IN ('TGT1_HIT', 'TGT2_HIT')"
+        elif st in ("stop", "sl", "sl_hit"):
+            query += " AND status = 'SL_HIT'"
+        elif st in ("inval", "invalidated"):
+            query += " AND status = 'INVALIDATED'"
+        elif st in ("resolved", "closed"):
+            query += " AND status != 'ACTIVE'"
+
+    query += " ORDER BY COALESCE(last_appeared, outcome_ts, triggered_at) DESC, triggered_at DESC LIMIT ?"
+    params.append(max(10, min(500, int(limit))))
+
+    with _get_read_conn() as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
 
 
 def append_score_history(
