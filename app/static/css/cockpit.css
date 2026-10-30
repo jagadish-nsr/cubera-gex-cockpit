@@ -2804,6 +2804,119 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   animation: fadeIn 0.2s ease;
 }
 
+/* Recommendation History Table & Lifecycle Audit Styles */
+.rec-history-row {
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+
+.rec-history-row:hover {
+  background: var(--surface-3) !important;
+}
+
+.rec-history-row.is-expanded {
+  background: rgba(56, 189, 248, 0.08) !important;
+  border-left: 3px solid var(--spark);
+}
+
+.rec-history-expander-row {
+  animation: fadeIn 0.18s ease;
+}
+
+.rec-history-expander-row > td {
+  padding: 0 !important;
+  border-top: none !important;
+}
+
+.rec-history-full-card-wrapper {
+  padding: 14px 16px;
+  background: var(--surface-1);
+  border-top: 1px dashed var(--line);
+  border-bottom: 2px solid var(--line);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.rec-tier-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.rec-tier-badge.tier-high {
+  background: rgba(34, 197, 94, 0.16);
+  color: var(--go);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.rec-tier-badge.tier-medium,
+.rec-tier-badge.tier-secondary {
+  background: rgba(234, 179, 8, 0.16);
+  color: #eab308;
+  border: 1px solid rgba(234, 179, 8, 0.35);
+}
+
+.rec-tier-badge.tier-tactical,
+.rec-tier-badge.tier-low {
+  background: rgba(56, 189, 248, 0.16);
+  color: var(--spark);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.rec-state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.68rem;
+  font-weight: 750;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.rec-state-pill.state-active {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--go);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+.rec-state-pill.state-target {
+  background: rgba(34, 197, 94, 0.2);
+  color: var(--go);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+}
+
+.rec-state-pill.state-stop {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--stop);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+}
+
+.rec-state-pill.state-inval {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--stop);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+}
+
+.rec-state-pill.state-stale {
+  background: var(--surface-3);
+  color: var(--ink-mute);
+  border: 1px solid var(--line);
+}
+
+.rec-tier-filter-btn {
+  font-size: 0.70rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 700;
+  transition: all 0.15s ease;
+}
+
+
 
 
 

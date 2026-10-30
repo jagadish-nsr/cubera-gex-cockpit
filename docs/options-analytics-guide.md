@@ -12,7 +12,7 @@ The **Options Analytics** tab implements the **Intraday Options Analytics System
 1. **One book**: Both call and put gamma are stored short. The call-gamma strike and the put-gamma strike are concentrations. They are not floors, ceilings, or levels a writer is measured to defend. Who hedges on NSE is unmeasured.
 2. **What moves the bias number**: The card shows eight rows. PCR, the gamma-strike midpoint, max pain, and open-interest changes are facts and contribute 0. Only 25Δ skew and India VIX move the score.
 3. **Open interest is not flow**: A change in open interest is a stock of contracts. It is not a buyer-versus-seller print and it does not forecast a top or a bottom.
-4. **Independent Card Polling**: Each visual panel is isolated via Streamlit card fragments, ensuring that rapid real-time updates do not reload the page or disrupt user focus.
+4. **Asynchronous DOM Streaming**: Each visual card updates independently via FastAPI REST endpoints and Vanilla JS DOM patches, ensuring that rapid real-time updates do not reload the page or disrupt operator focus.
 
 ---
 
@@ -45,7 +45,7 @@ The top horizontal strip aggregates critical macroeconomic and options market me
 | Metric | Calculation / Data Source | Normal Baseline | Thresholds & Interpretation | Trader Action |
 | :--- | :--- | :--- | :--- | :--- |
 | **ATM IV** | Near ATM implied volatility from front-month options chain. | $11.0\% - 15.0\%$ | • `< 11\%`: Volatility crushed (Cheap options, favor buying debit spreads)<br>• `> 18\%`: Volatility expanded (Expensive options, favor selling credit spreads) | Select trade strategy by Vega sensitivity. |
-| **PCR (OI)** | Put open interest divided by call open interest. | $0.90 - 1.10$ | Above 1 is put-heavy open interest. Below 1 is call-heavy open interest. Neither is a floor, a ceiling, or a squeeze. | A ratio. The user confirms. |
+| **PCR (OI)** | Headline full-expiry Put open interest divided by Call open interest (total series). | $0.90 - 1.10$ | Above 1 is put-heavy open interest. Below 1 is call-heavy open interest. Neither is a floor, a ceiling, or a squeeze. | A ratio. The user confirms. |
 | **Max Pain** | Strike that minimizes total intrinsic payout. | Distance from spot. | A nearby max pain is a payout fact. It is not a forecast that expiry will pin there. | Context on expiry day. The user confirms. |
 | **IV Rank (30D)** | $\frac{\text{IV}_{\text{current}} - \text{IV}_{\text{30D Min}}}{\text{IV}_{\text{30D Max}} - \text{IV}_{\text{30D Min}}} \times 100$ | $20\% - 60\%$ | • `< 20\%`: Low IV Rank (Favor long Vega)<br>• `> 70\%`: High IV Rank (Favor short Vega / Iron Condors) | Select Net Debit vs Net Credit structures. |
 | **India VIX** | Annualized implied volatility of NIFTY options across out-of-the-money strikes. | $12.0 - 15.0$ | • `< 13.0`: Calm regime (Orderly trends, tight expected moves)<br>• `> 18.0`: High turbulence regime (Wider stop-losses required) | Size positions and adjust stop-loss distance according to VIX. |
@@ -190,7 +190,7 @@ $$\text{Basis Discrepancy} = \text{Actual Future Price} - \text{Synthetic Future
    - `09:45 - 11:30 IST`: Primary institutional trend establishment.
    - `11:30 - 13:00 IST`: European overlap / midday consolidation.
    - `13:30 - 15:15 IST`: Expiry window. Near-the-money gamma is high because time is short. That is not a pin.
-3. **Respect Independent Card Fragments**: The Options Analytics tab updates smoothly without page jumps. Use the top KPI strip for situational awareness and dive into specific rows for tactical trade execution.
+3. **Respect Asynchronous Panel Telemetry**: The Options Analytics tab updates smoothly via dedicated REST endpoints without page jumps. Use the top KPI strip for situational awareness and dive into specific rows for tactical trade execution.
 
 ---
 

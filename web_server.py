@@ -83,6 +83,7 @@ from data.journal.recommendations_store import (
     is_bookmarked,
     toggle_bookmark,
     list_bookmarked_records,
+    get_recommendation_history,
     get_score_history,
     record_event,
     evaluate_recommendation_lifecycle,
@@ -2784,8 +2785,31 @@ async def reprice_target_engine(payload: dict = Body(...)):
         sel_expiry = default_exp
     sel_strike = float(payload.get("strike", spot))
     sel_type = (payload.get("option_type") or payload.get("side") or "CE").upper()
-    user_tgt_spot = float(payload.get("target_spot", payload.get("target", base_fut + (70 if sel_type == "CE" else -70))))
-    user_sl_spot = float(payload.get("stop_loss_spot", payload.get("sl_spot", base_fut - (40 if sel_type == "CE" else -40))))
+    step = getattr(idx, "strike_step", 100.0 if sym in ("BANKNIFTY", "SENSEX") else 50.0)
+    is_sensex = sym == "SENSEX"
+    is_bnf = sym == "BANKNIFTY"
+    def_tgt_pts = 250.0 if is_sensex else (180.0 if is_bnf else 70.0)
+    def_sl_pts = 150.0 if is_sensex else (100.0 if is_bnf else 40.0)
+
+    # Sanitize and validate target and stop-loss spot levels
+    # Guard against stale cross-symbol values (e.g. NIFTY ~24k target sent for SENSEX ~74k)
+    raw_tgt = payload.get("target_spot", payload.get("target"))
+    raw_sl = payload.get("stop_loss_spot", payload.get("sl_spot"))
+    try:
+        user_tgt_spot = float(raw_tgt) if raw_tgt is not None else (base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts))
+    except (TypeError, ValueError):
+        user_tgt_spot = base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts)
+
+    try:
+        user_sl_spot = float(raw_sl) if raw_sl is not None else (base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts))
+    except (TypeError, ValueError):
+        user_sl_spot = base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts)
+
+    if user_tgt_spot <= 0 or abs(user_tgt_spot - base_fut) > base_fut * 0.15:
+        user_tgt_spot = base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts)
+    if user_sl_spot <= 0 or abs(user_sl_spot - base_fut) > base_fut * 0.15:
+        user_sl_spot = base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts)
+
     tgt_mins = int(payload.get("holding_mins", payload.get("holding_minutes", 60)))
     iv_regime_shock = payload.get("iv_regime_shock", "Auto (Regime-Conditioned)")
 
@@ -2793,8 +2817,10 @@ async def reprice_target_engine(payload: dict = Body(...)):
     T_now = calculate_fractional_t(now_dt, sel_expiry)
     _, T_horizon = calculate_horizon_t(now_dt, tgt_mins, sel_expiry)
 
-    # Strike IV from the listed contract. The book ATM IV is only a start.
-    strike_iv = _extract_active_atm_iv(dash)
+    # Strike IV from the listed contract. Ensure realistic floor for Black-76 Greeks stability.
+    raw_atm_iv = _extract_active_atm_iv(dash)
+    fallback_iv = max(0.08, min(0.60, float(raw_atm_iv))) if (raw_atm_iv and float(raw_atm_iv) > 0.05) else 0.135
+    strike_iv = fallback_iv
     market_ltp = None
     contracts_df = getattr(dash, "contracts", None)
     if contracts_df is not None and not contracts_df.empty:
@@ -2803,8 +2829,7 @@ async def reprice_target_engine(payload: dict = Body(...)):
         if "expiry" in contracts_df.columns:
             def _match_exp(e):
                 return (e.strftime("%Y-%m-%d") if hasattr(e, "strftime") else str(e).strip()) == sel_expiry
-            exp_match = contracts_df[type_mask & contracts_df["expiry"].apply(_match_exp)]
-            match_rows = exp_match if not exp_match.empty else contracts_df[type_mask]
+            match_rows = contracts_df[type_mask & contracts_df["expiry"].apply(_match_exp)]
         else:
             match_rows = contracts_df[type_mask]
         if not match_rows.empty:
@@ -2816,7 +2841,11 @@ async def reprice_target_engine(payload: dict = Body(...)):
                     break
             raw_iv = crow.get("iv")
             if raw_iv is not None and float(raw_iv) > 0:
-                strike_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
+                parsed_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
+                if 0.05 <= parsed_iv <= 0.90:
+                    strike_iv = parsed_iv
+
+    strike_iv = max(0.07, min(0.90, strike_iv))
 
     if strike_iv is None or strike_iv <= 0:
         return {
@@ -2853,8 +2882,8 @@ async def reprice_target_engine(payload: dict = Body(...)):
             d_iv_tgt = 0.015 if user_tgt_spot < base_fut else -0.010
             d_iv_sl = -0.008 if user_sl_spot > base_fut else 0.010
 
-    iv_at_tgt = max(0.04, strike_iv + d_iv_tgt)
-    iv_at_sl = max(0.04, strike_iv + d_iv_sl)
+    iv_at_tgt = max(0.05, strike_iv + d_iv_tgt)
+    iv_at_sl = max(0.05, strike_iv + d_iv_sl)
 
     p_target = price(user_tgt_spot, sel_strike, T_horizon, iv_at_tgt, 0.065, sel_type)
     p_stop = price(user_sl_spot, sel_strike, T_horizon, iv_at_sl, 0.065, sel_type)
@@ -3065,6 +3094,188 @@ async def get_recommendations(
         },
         "effectiveness": eff_metrics,
         "effectiveness_summary": eff_summary,
+    }
+
+
+@app.get("/api/recommendations/history")
+async def get_recommendations_history_endpoint(
+    symbol: Optional[str] = None,
+    tier: Optional[str] = None,
+    status: Optional[str] = None,
+    session_date: Optional[str] = None,
+    limit: Optional[int] = 150,
+):
+    """Retrieve historical recommendations that reached High Conviction, Secondary, or Tactical tiers.
+
+    Enriches each record with peak score, score trajectory delta, current lifecycle state, live MTM PnL,
+    and a fully serialized full_card payload for expander views.
+    """
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    acct_cap = float(_ACTIVE_STATE.get("account_capital", 500000.0))
+    r_pct = float(_ACTIVE_STATE.get("risk_pct", 1.5)) / 100.0
+
+    query_sym = None if sym in ("ALL", "ANY") else sym
+    raw_records = get_recommendation_history(
+        symbol=query_sym,
+        tier=tier,
+        status=status,
+        session_date=session_date,
+        limit=limit or 150,
+    )
+
+    from analytics.trade_ideas import _rehydrate_bookmarked_trade_idea
+    from app.spot_ticker import latest_quote
+
+    # Global quotes cache by symbol to avoid redundant calls
+    quote_cache: dict[str, dict] = {}
+
+    def _get_spot(s: str) -> float:
+        if s not in quote_cache:
+            quote_cache[s] = latest_quote(s) or {}
+        return float(quote_cache[s].get("spot") or 0.0)
+
+    history = []
+    high_count = 0
+    sec_count = 0
+    tact_count = 0
+    active_count = 0
+    target_count = 0
+    sl_count = 0
+    inval_count = 0
+
+    for r in raw_records:
+        r_sym = str(r.get("symbol") or "NIFTY").upper()
+        spot = _get_spot(r_sym)
+        if spot <= 0:
+            spot = float(r.get("initial_spot") or 24500.0)
+
+        idx = config.get_index(r_sym)
+        lot_size = getattr(idx, "lot_size", 65)
+
+        peak_score = int(r.get("highest_score") or r.get("initial_score") or r.get("current_score") or 0)
+        curr_score = int(r.get("current_score") or 0)
+        score_delta = curr_score - peak_score
+
+        # Determine peak tier
+        peak_tier = r.get("highest_tier")
+        if not peak_tier:
+            if peak_score > 85 or r.get("conviction_tier") == "HIGH":
+                peak_tier = "HIGH"
+            elif peak_score >= 75 or r.get("conviction_tier") == "MEDIUM":
+                peak_tier = "MEDIUM"
+            else:
+                peak_tier = "TACTICAL"
+
+        if peak_tier == "HIGH":
+            peak_label = "High Conviction (Grade A+)"
+            peak_color = "var(--go)"
+            high_count += 1
+        elif peak_tier == "MEDIUM":
+            peak_label = "Secondary Play (Grade B+)"
+            peak_color = "#eab308"
+            sec_count += 1
+        else:
+            peak_label = "Tactical Opportunity (Grade B)"
+            peak_color = "var(--spark)"
+            tact_count += 1
+
+        # Current state
+        st = str(r.get("status") or "ACTIVE").upper()
+        if st == "ACTIVE":
+            active_count += 1
+            st_label = "⚡ Active"
+            st_color = "var(--go)"
+        elif st in ("TGT1_HIT", "TGT2_HIT", "TARGET_HIT"):
+            target_count += 1
+            st_label = "🎯 Target 2 Hit" if st == "TGT2_HIT" else "🎯 Target 1 Hit"
+            st_color = "var(--go)"
+        elif st in ("SL_HIT", "STOP_HIT"):
+            sl_count += 1
+            st_label = "⛔ Stop Loss Hit"
+            st_color = "var(--stop)"
+        elif st == "INVALIDATED":
+            inval_count += 1
+            st_label = "🛑 Spot Inval"
+            st_color = "var(--stop)"
+        elif st == "STALE":
+            st_label = "⏱️ Stale"
+            st_color = "var(--ink-mute)"
+        else:
+            st_label = st
+            st_color = "var(--ink-mute)"
+
+        # PnL resolution
+        entry_ltp = float(r.get("initial_ltp") or 0.0)
+        curr_ltp = float(r.get("current_ltp") or entry_ltp or 0.0)
+        pnl_pts = round(curr_ltp - entry_ltp, 1)
+        pnl_pct = round(((curr_ltp - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+
+        # Build full card payload for expander
+        card_dict = {}
+        try:
+            active_idea = _rehydrate_bookmarked_trade_idea(r, spot)
+            if active_idea:
+                if curr_ltp > 0:
+                    active_idea.current_ltp = curr_ltp
+                active_idea.quality_score = curr_score
+                card_dict = _serialize_trade_idea(active_idea, spot, acct_cap, r_pct, lot_size)
+        except Exception as e_ser:
+            log.debug("Error serializing history idea %s: %s", r.get("rec_id"), e_ser)
+            card_dict = {}
+
+        history_item = {
+            "rec_id": r.get("rec_id"),
+            "symbol": r_sym,
+            "side": r.get("side", "CE"),
+            "strike": float(r.get("strike", 0)),
+            "option_symbol": r.get("option_symbol", ""),
+            "play_type": r.get("play_type", ""),
+            "play_badge": r.get("play_badge", ""),
+            "triggered_at": r.get("triggered_at", ""),
+            "last_appeared": r.get("last_appeared") or r.get("triggered_at", ""),
+            "highest_tier": peak_tier,
+            "highest_tier_label": peak_label,
+            "highest_tier_color": peak_color,
+            "highest_score": peak_score,
+            "current_score": curr_score,
+            "score_delta": score_delta,
+            "conviction_tier": r.get("conviction_tier", ""),
+            "status": st,
+            "status_label": st_label,
+            "status_color": st_color,
+            "initial_spot": float(r.get("initial_spot") or spot),
+            "current_spot": spot,
+            "initial_ltp": entry_ltp,
+            "current_ltp": curr_ltp,
+            "pnl_pts": pnl_pts,
+            "pnl_pct": pnl_pct,
+            "target_1": float(r.get("target_1") or 0),
+            "target_2": float(r.get("target_2") or 0),
+            "stop_loss": float(r.get("stop_loss") or 0),
+            "spot_invalidation": float(r.get("spot_invalidation") or 0),
+            "spot_invalidation_text": r.get("spot_invalidation_text", ""),
+            "risk_reward_ratio": r.get("risk_reward_ratio", ""),
+            "is_bookmarked": bool(r.get("is_bookmarked", False)),
+            "full_card": card_dict,
+        }
+        history.append(history_item)
+
+    summary = {
+        "total": len(history),
+        "high_count": high_count,
+        "sec_count": sec_count,
+        "tact_count": tact_count,
+        "active_count": active_count,
+        "target_count": target_count,
+        "sl_count": sl_count,
+        "inval_count": inval_count,
+    }
+
+    return {
+        "symbol": sym,
+        "total": len(history),
+        "summary": summary,
+        "history": history,
     }
 
 

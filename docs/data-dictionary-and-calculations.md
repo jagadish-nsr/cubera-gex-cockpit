@@ -125,3 +125,64 @@ $$\text{Basis Discrepancy} = \text{Actual Futures Price} - \text{Synthetic Futur
    $$\text{Outlay}_{\text{lot}} = \text{LTP} \times \text{LotSize}$$
 5. **Recommended Lots**:
    $$\text{Lots} = \max\left(1, \; \min\left(\left\lfloor \frac{\text{Budget}_{\text{risk}}}{\text{Risk}_{\text{lot}}} \right\rfloor, \; \left\lfloor \frac{\text{Cap}_{\text{outlay}}}{\text{Outlay}_{\text{lot}}} \right\rfloor\right)\right)$$
+
+---
+
+### 6. Session Path Shape & Choppiness Meter (`analytics/choppiness.py`)
+
+Quantifies whether the current intraday session is trending with high directional efficiency or grinding in consolidation:
+
+1. **Intraday Choppiness Index ($CHOP_{14}$)** (evaluated across 5-minute candles):
+   $$CHOP = 100 \times \frac{\log_{10}\left(\frac{\sum_{i=1}^{n} \text{TR}_i}{\max_{i=1}^n(\text{High}_i) - \min_{i=1}^n(\text{Low}_i)}\right)}{\log_{10}(n)}$$
+   - **$CHOP \ge 61.8$**: Choppy / Mean-Reverting regime (favor horizontal spreads, fade extremes, size down).
+   - **$CHOP \le 38.2$**: Trending / Momentum impulse regime (favor directional continuation, trail stops).
+   - **$38.2 < CHOP < 61.8$**: Transition / Developing auction.
+
+2. **1-Minute Path Efficiency ($PE$)**:
+   Ratio of net linear price displacement to gross cumulative path length over rolling 15-minute windows:
+   $$PE = \frac{|P_t - P_{t-k}|}{\sum_{j=1}^k |P_j - P_{j-1}|}, \quad PE \in [0.0, 1.0]$$
+   - $PE \ge 0.60$: Clean directional velocity with minimal counter-ticks.
+   - $PE \le 0.30$: High friction, frequent reversals, and spread-absorbing chop.
+
+---
+
+### 7. Index Futures Positioning & Flow (`analytics/positioning_flow.py`)
+
+1. **Overnight FII Net Positioning**:
+   Sourced from NSE daily clearing participant files (aggregated across near and next month contracts):
+   $$\text{Net FII Contracts} = \text{FII Long Futures} - \text{FII Short Futures}$$
+   $$\text{FII Long/Short Ratio} = \frac{\text{FII Long Futures}}{\max(1, \text{FII Short Futures})}$$
+2. **Trailing Intraday Flow**:
+   Computes price and volume drift across trailing 15-minute and 60-minute windows from recorded futures journals.
+3. **Micro-Burst Notional**:
+   $$\text{Burst Notional (₹ Cr)} = \frac{\Delta \text{Volume} \times \text{Futures Price} \times \text{LotSize}}{10^7}$$
+
+---
+
+### 8. Full-Expiry Headline PCR vs. Strike-Band PCR
+
+1. **Headline Full-Expiry PCR**:
+   Ratio of aggregate Put open interest to aggregate Call open interest across **all listed strikes** in the active contract series:
+   $$\text{PCR}_{\text{full}} = \frac{\sum_{\text{all } K} \text{PutOI}_K}{\sum_{\text{all } K} \text{CallOI}_K}$$
+2. **Local Strike-Band PCR ($\pm 6$ strikes around ATM)**:
+   Focuses purely on front-line hedging concentration immediately surrounding the current spot index.
+
+---
+
+### 9. Sentinel 5-Minute Candle Close Invalidation Rule (`sentinel/engine/outcomes.py`)
+
+To eliminate algorithmic wick stop-hunts from prematurely killing valid orderflow theses:
+- **Long / Bullish Signals**:
+  - $\text{Status} = \text{INVALIDATED} \iff \text{Completed 5-min Candle Close} < \text{Invalidation Level}$
+  - $\text{Status} = \text{TARGET HIT} \iff \text{Completed 5-min Candle Close} \ge \text{Target Price}$
+- **Short / Bearish Signals**:
+  - $\text{Status} = \text{INVALIDATED} \iff \text{Completed 5-min Candle Close} > \text{Invalidation Level}$
+  - $\text{Status} = \text{TARGET HIT} \iff \text{Completed 5-min Candle Close} \le \text{Target Price}$
+- Intra-bar wicks and incomplete candles leave the signal in the `ACTIVE` status.
+
+---
+
+### 10. Recommendation Conviction Tiers
+- **Core Recommendations Tier**: Quality Score $\ge 75$ (Grade A/A+).
+- **Tactical Opportunities Tier**: $65 \le \text{Quality Score} < 75$, subject to active directional safety filters (`ce_tactical_active` / `pe_tactical_active`).
+- **Minimum Wall Corridor**: Minimum two strike steps required between Call Wall and Put Wall ($|CW - PW| \ge 2 \times \text{step}$). Placeholder chains without real market depth are withheld from recommendation synthesis.
