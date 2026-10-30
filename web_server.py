@@ -4663,6 +4663,13 @@ async def log_market_alert(payload: dict = Body(...)):
         return {"status": "error", "message": str(e)}
 
 
+def _next_session_levels(call_wall, put_wall):
+    """Both walls, or nothing. A missing wall is None, and None > 0 aborts the response."""
+    if not call_wall or not put_wall:
+        return None
+    return f"{call_wall:,.0f} call-gamma / {put_wall:,.0f} put-gamma"
+
+
 @app.get("/api/session-commentary")
 async def get_session_commentary(symbol: Optional[str] = None):
     """Session Commentary Tab: Strictly single trading session date narrative, Morning Anchor pre-market card, and post-market scorecard."""
@@ -4792,8 +4799,10 @@ async def get_session_commentary(symbol: Optional[str] = None):
             lo = float(getattr(dash, "day_low", 0.0) or getattr(getattr(dash, "levels", None), "day_low", 0.0) or 0.0)
             if hi > 0 and lo > 0:
                 post_state["day_range"] = f"₹{hi:,.1f} / ₹{lo:,.1f}"
-        if not post_state.get("next_key_levels") and cw > 0 and pw > 0:
-            post_state["next_key_levels"] = f"{cw:,.0f} call-gamma / {pw:,.0f} put-gamma"
+        if not post_state.get("next_key_levels"):
+            levels = _next_session_levels(cw, pw)
+            if levels:
+                post_state["next_key_levels"] = levels
 
     cards = []
     if session_entries:

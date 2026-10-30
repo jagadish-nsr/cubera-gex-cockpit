@@ -11,7 +11,10 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
-from web_server import app, _to_ist_chart_timestamp, _fmt_snapshot_as_of, _is_pre_bell_ephemeral
+from web_server import (
+    app, _to_ist_chart_timestamp, _fmt_snapshot_as_of, _is_pre_bell_ephemeral,
+    _next_session_levels,
+)
 import config
 import data.journal.store as journal_store
 
@@ -926,6 +929,13 @@ class TestOffMarketPersistence:
             sc_data = json.loads(sc_content)
             assert "cards" in sc_data
             assert "session_date" in sc_data
+
+    def test_missing_wall_does_not_block_commentary_levels(self):
+        """A missing wall is None. Comparing it with > 0 used to 500 the commentary tab."""
+        assert _next_session_levels(None, None) is None
+        assert _next_session_levels(None, 22800) is None
+        assert _next_session_levels(23000, None) is None
+        assert _next_session_levels(23000, 22800) == "23,000 call-gamma / 22,800 put-gamma"
 
     def test_health_check_endpoint(self):
         """Verify /api/health endpoint returns 200, valid status, and semantic version."""
