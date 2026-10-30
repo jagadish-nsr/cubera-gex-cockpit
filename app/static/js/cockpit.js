@@ -3529,10 +3529,12 @@
       }
 
       let deltaHtml = `<span style="color:var(--ink-mute);font-size:0.68rem">― 0</span>`;
-      if (r.score_delta > 0) {
-        deltaHtml = `<span style="color:var(--go);font-size:0.68rem;font-weight:750">▲ +${r.score_delta}</span>`;
+      if (r.score_delta_label) {
+        deltaHtml = `<span style="color:${r.score_delta_color || "var(--ink-mute)"};font-size:0.68rem;font-weight:750">${r.score_delta_label}</span>`;
       } else if (r.score_delta < 0) {
-        deltaHtml = `<span style="color:var(--stop);font-size:0.68rem;font-weight:750">▼ ${r.score_delta}</span>`;
+        deltaHtml = `<span style="color:var(--stop);font-size:0.68rem;font-weight:750">▼ ${Math.abs(r.score_delta)} vs Peak</span>`;
+      } else if (r.score_delta === 0) {
+        deltaHtml = `<span style="color:var(--go);font-size:0.68rem;font-weight:750">⚡ At Peak</span>`;
       }
 
       let stateClass = "state-active";
@@ -3542,9 +3544,8 @@
       else if (st.includes("INVAL")) stateClass = "state-inval";
       else if (st.includes("STALE") || st.includes("EXPIRED")) stateClass = "state-stale";
 
-      const pnlColor = Number(r.pnl_pts) >= 0 ? "var(--go)" : "var(--stop)";
-      const pnlSign = Number(r.pnl_pts) >= 0 ? "+" : "";
-
+      const isResolved = st !== "ACTIVE";
+      const hasLiveLtp = Number(r.current_ltp) > 0 && Number(r.current_ltp) !== Number(r.initial_ltp);
       const trigTime = r.triggered_at ? (r.triggered_at.length > 11 ? r.triggered_at.substring(11, 19) : r.triggered_at) : "—";
       const lastTime = r.last_appeared ? (r.last_appeared.length > 11 ? r.last_appeared.substring(11, 19) : r.last_appeared) : trigTime;
 
@@ -3555,6 +3556,21 @@
       const t2 = Number(c.target_2 || r.target_2 || 0).toFixed(1);
       const sl = Number(c.stop_loss || r.stop_loss || 0).toFixed(1);
       const invalNum = Number(c.spot_invalidation || r.spot_invalidation || 0);
+
+      const ltpColDisplay = (hasLiveLtp || isResolved)
+        ? `<div>₹${entryLtp} → <b style="color:var(--ink)">₹${ltp}</b></div>`
+        : `<div style="color:var(--ink-mute)">Entry: ₹${entryLtp}</div>`;
+
+      let pnlColDisplay = `<span style="color:var(--ink-mute)">—</span>`;
+      if (r.pnl_pts !== null && r.pnl_pts !== undefined && (hasLiveLtp || isResolved)) {
+        const pnlPtsNum = Number(r.pnl_pts);
+        const pnlColor = pnlPtsNum >= 0 ? "var(--go)" : "var(--stop)";
+        const pnlSign = pnlPtsNum >= 0 ? "+" : "";
+        pnlColDisplay = `
+          <b style="color:${pnlColor}">${pnlSign}₹${pnlPtsNum.toFixed(1)}</b>
+          <div style="font-size:0.68rem;color:${pnlColor}">(${pnlSign}${Number(r.pnl_pct || 0).toFixed(1)}%${isResolved ? " Realized" : ""})</div>
+        `;
+      }
 
       const defaultLots = 1;
       const defaultQty = c.lot_size || (String(r.symbol).includes("SENSEX") ? 20 : (String(r.symbol).includes("BANKNIFTY") ? 30 : 65));
@@ -3602,10 +3618,27 @@
         ? `<span style="font-size:0.7rem;font-weight:750;color:var(--stop)">🛑 INVALIDATED</span>`
         : `<span style="font-size:0.7rem;font-weight:750;color:var(--go)">🟢 Buffer Active (+${invalBuffer.toFixed(0)} pts)</span>`;
 
-      const pT1 = Math.round((c.p_touch_target_1 || 0.65) * 100);
-      const pSl = Math.round((c.p_touch_sl || 0.35) * 100);
-      const evPts = Number(c.net_ev_pts || 18.5).toFixed(1);
-      const deltaApprox = Number(c.delta_approx || (isCall ? 0.50 : -0.50)).toFixed(2);
+      const hasPt1 = c.p_touch_target_1 != null && Number(c.p_touch_target_1) > 0;
+      const hasPsl = c.p_touch_sl != null && Number(c.p_touch_sl) > 0;
+      const hasEv = c.net_ev_pts != null && Number(c.net_ev_pts) !== 0;
+      const hasDelta = c.delta_approx != null && Number(c.delta_approx) !== 0;
+
+      let probGreeksHtml = "";
+      if (hasPt1 || hasPsl || hasEv || hasDelta) {
+        const pT1Str = hasPt1 ? `${Math.round(Number(c.p_touch_target_1) * 100)}%` : "—";
+        const pSlStr = hasPsl ? `${Math.round(Number(c.p_touch_sl) * 100)}%` : "—";
+        const evNum = Number(c.net_ev_pts || 0);
+        const evPtsStr = hasEv ? `${evNum >= 0 ? "+" : ""}${evNum.toFixed(1)} pts` : "—";
+        const evColor = evNum >= 0 ? "var(--go)" : "var(--stop)";
+        const deltaApproxStr = hasDelta ? `${Number(c.delta_approx) >= 0 ? "+" : ""}${Number(c.delta_approx).toFixed(2)}` : "—";
+
+        probGreeksHtml = `
+          <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-3);padding:5px 8px;border-radius:4px;margin:6px 0">
+            <span>P(T1): <b style="color:var(--go)">${pT1Str}</b> · P(SL): <b style="color:var(--stop)">${pSlStr}</b></span>
+            <span>EV: <b style="color:${evColor}">${evPtsStr}</b> · Δ ~${deltaApproxStr}</span>
+          </div>
+        `;
+      }
 
       const rationaleText = c.rationale || r.rationale || "Institutional gamma concentration setup.";
       const tags = Array.isArray(c.catalyst_tags) ? c.catalyst_tags : (Array.isArray(r.catalyst_tags) ? r.catalyst_tags : []);
@@ -3650,11 +3683,10 @@
             <span class="rec-state-pill ${stateClass}">${r.status_label || r.status}</span>
           </td>
           <td style="font-family:var(--mono)">
-            <div>₹${entryLtp} → <b style="color:var(--ink)">₹${ltp}</b></div>
+            ${ltpColDisplay}
           </td>
           <td style="font-family:var(--mono)">
-            <b style="color:${pnlColor}">${pnlSign}₹${r.pnl_pts}</b>
-            <div style="font-size:0.68rem;color:${pnlColor}">(${pnlSign}${r.pnl_pct}%)</div>
+            ${pnlColDisplay}
           </td>
           <td style="font-size:0.70rem;color:var(--ink-mute)">
             <div>T1: <b style="color:var(--go)">₹${t1}</b> · SL: <b style="color:var(--stop)">₹${sl}</b></div>
@@ -3687,11 +3719,13 @@
               </div>
 
               <div class="rec-ltp-block" style="margin-bottom:8px">
-                <span class="rec-ltp-large" style="color:var(--ink);font-size:1.3rem">₹${ltp}</span>
+                <span class="rec-ltp-large" style="color:var(--ink);font-size:1.3rem">${(hasLiveLtp || isResolved) ? `₹${ltp}` : `Entry: ₹${entryLtp}`}</span>
                 <span style="font-size:0.70rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${entryLtp}</span>
-                <span style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${pnlColor}">
-                  MTM PnL: ${pnlSign}₹${r.pnl_pts} (${pnlSign}${r.pnl_pct}%)
-                </span>
+                ${(r.pnl_pts !== null && r.pnl_pts !== undefined && (hasLiveLtp || isResolved)) ? `
+                  <span style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${Number(r.pnl_pts) >= 0 ? "var(--go)" : "var(--stop)"}">
+                    ${isResolved ? "Realized" : "MTM"} PnL: ${Number(r.pnl_pts) >= 0 ? "+" : ""}₹${Number(r.pnl_pts).toFixed(1)} (${Number(r.pnl_pts) >= 0 ? "+" : ""}${Number(r.pnl_pct || 0).toFixed(1)}%)
+                  </span>` : ""
+                }
                 <span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${t1}</span>
                 ${Number(t2) > 0 ? `<span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T2: ₹${t2}</span>` : ""}
                 <span style="font-size:0.70rem;background:rgba(239,68,68,.12);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${sl}</span>
@@ -3735,10 +3769,7 @@
 
               ${spreadBoxHtml}
 
-              <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-3);padding:5px 8px;border-radius:4px;margin:6px 0">
-                <span>P(T1): <b style="color:var(--go)">${pT1}%</b> · P(SL): <b style="color:var(--stop)">${pSl}%</b></span>
-                <span>EV: <b style="color:var(--go)">+${evPts} pts</b> · Δ ~${deltaApprox}</span>
-              </div>
+              ${probGreeksHtml}
 
               <div style="font-size:0.76rem;color:var(--ink-mute);margin:6px 0">${rationaleText}</div>
               ${tags.length > 0 ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0">${tagsHtml}</div>` : ""}
@@ -3749,9 +3780,15 @@
                 <button class="btn btn-secondary" onclick="window.toggleHistoryCardDetails('${r.rec_id}')" style="font-size:0.70rem;padding:4px 9px">
                   ▲ Collapse Card
                 </button>
-                <button class="btn btn-primary" onclick="window.executePaperTrade('${r.rec_id}', '${r.option_symbol || ""}', ${r.strike}, '${r.side}', ${Number(ltp)}, ${pos.suggested_lots})" style="font-size:0.70rem;padding:4px 12px">
-                  📝 Paper-Trade ${pos.suggested_lots} Lots (₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")})
-                </button>
+                ${r.status === "ACTIVE" ? `
+                  <button class="btn btn-primary" onclick="window.executePaperTrade('${r.rec_id}', '${r.option_symbol || ""}', ${r.strike}, '${r.side}', ${Number(ltp)}, ${pos.suggested_lots})" style="font-size:0.70rem;padding:4px 12px">
+                    📝 Paper-Trade ${pos.suggested_lots} Lots (₹${Number(pos.capital_outlay_inr).toLocaleString("en-IN")})
+                  </button>
+                ` : `
+                  <span style="font-size:0.72rem;color:var(--ink-mute);background:var(--surface-3);padding:4px 10px;border-radius:4px;border:1px solid var(--line)">
+                    🔒 Setup Resolved (${r.status_label || r.status})
+                  </span>
+                `}
               </div>
             </div>
           </td>
@@ -3760,7 +3797,6 @@
     });
 
     tbody.innerHTML = html;
-  }
   }
 
   // Active strategy indices per cluster

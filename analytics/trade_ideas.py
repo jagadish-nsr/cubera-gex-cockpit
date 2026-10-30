@@ -2957,7 +2957,7 @@ def _rehydrate_bookmarked_trade_idea(r: dict, _current_spot: float) -> TradeIdea
         play_badge=badge,
         strike=strike,
         option_symbol=r.get("option_symbol") or payload.get("option_symbol", f"{sym} {int(strike)} {side}"),
-        current_ltp=initial_ltp,
+        current_ltp=_stored_float(r, payload, "current_ltp") or initial_ltp,
         delta_approx=delta,
         entry_trigger=r.get("entry_trigger") or payload.get("entry_trigger", "Bookmarked Active Thesis"),
         spot_invalidation=_stored_float(r, payload, "spot_invalidation"),
@@ -2983,6 +2983,7 @@ def _rehydrate_bookmarked_trade_idea(r: dict, _current_spot: float) -> TradeIdea
         net_ev_pts=_stored_float(r, payload, "net_ev_pts"),
         initial_ltp=initial_ltp,
         initial_spot=_stored_float(r, payload, "initial_spot"),
+        greek_attribution=payload.get("greek_attribution", {}),
         quote_source="entry",
     )
     return idea
@@ -3448,6 +3449,13 @@ def generate_trade_recommendations(
                     "rationale": t.rationale,
                     "catalyst_tags": t.catalyst_tags,
                     "is_bookmarked": 1 if t.is_bookmarked else 0,
+                    "current_ltp": float(getattr(t, "current_ltp", 0.0) or 0.0),
+                    "delta_approx": float(getattr(t, "delta_approx", 0.0) or 0.0),
+                    "p_touch_target_1": float(getattr(t, "p_touch_target_1", 0.0) or 0.0),
+                    "p_touch_sl": float(getattr(t, "p_touch_sl", 0.0) or 0.0),
+                    "net_ev_pts": float(getattr(t, "net_ev_pts", 0.0) or 0.0),
+                    "spread_alternative": getattr(t, "spread_alternative", None),
+                    "greek_attribution": getattr(t, "greek_attribution", {}),
                 }
 
                 # Log point-in-time ML telemetry features

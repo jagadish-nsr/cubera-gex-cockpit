@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "recommendations.db"
-_WRITE_LOCK = threading.Lock()
+_WRITE_LOCK = threading.RLock()
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -187,8 +187,21 @@ def ensure_schema() -> None:
             conn.execute("""
                 UPDATE recommendation_records
                 SET
-                  last_appeared = COALESCE(last_appeared, outcome_ts, (SELECT MAX(recorded_at) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id), triggered_at, created_at),
-                  highest_score = COALESCE(highest_score, MAX(initial_score, current_score, COALESCE((SELECT MAX(score) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id), 0)))
+                  last_appeared = COALESCE(
+                      last_appeared,
+                      (SELECT MAX(recorded_at) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id),
+                      outcome_ts,
+                      triggered_at,
+                      created_at
+                  ),
+                  highest_score = COALESCE(
+                      highest_score,
+                      MAX(
+                          initial_score,
+                          current_score,
+                          COALESCE((SELECT MAX(score) FROM recommendation_score_history WHERE rec_id = recommendation_records.rec_id), 0)
+                      )
+                  )
                 WHERE last_appeared IS NULL OR highest_score IS NULL
             """)
             conn.execute("""
@@ -196,12 +209,13 @@ def ensure_schema() -> None:
                 SET highest_tier = CASE
                     WHEN highest_score > 85 THEN 'HIGH'
                     WHEN highest_score >= 75 THEN 'MEDIUM'
-                    ELSE 'TACTICAL'
+                    WHEN highest_score >= 65 THEN 'TACTICAL'
+                    ELSE 'SUB_THRESHOLD'
                 END
-                WHERE highest_tier IS NULL
+                WHERE highest_tier IS NULL OR (highest_score < 65 AND highest_tier = 'TACTICAL')
             """)
-        except Exception:
-            pass
+        except Exception as e_backfill:
+            log.warning("Recommendation schema backfill warning: %s", e_backfill)
 
         conn.commit()
 
@@ -280,7 +294,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
         now_ts = _now_ist_str()
         existing_high = int(existing["highest_score"]) if (existing and "highest_score" in existing.keys() and existing["highest_score"] is not None) else 0
         peak_score = max(existing_high, int(init_score), curr_score)
-        peak_tier = "HIGH" if peak_score > 85 else ("MEDIUM" if peak_score >= 75 else "TACTICAL")
+        peak_tier = "HIGH" if peak_score > 85 else ("MEDIUM" if peak_score >= 75 else ("TACTICAL" if peak_score >= 65 else "SUB_THRESHOLD"))
         last_seen = now_ts
 
         conn.execute("""
@@ -317,7 +331,8 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
                 highest_tier = CASE
                     WHEN MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score) > 85 THEN 'HIGH'
                     WHEN MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score) >= 75 THEN 'MEDIUM'
-                    ELSE 'TACTICAL'
+                    WHEN MAX(COALESCE(recommendation_records.highest_score, 0), excluded.highest_score, excluded.current_score) >= 65 THEN 'TACTICAL'
+                    ELSE 'SUB_THRESHOLD'
                 END,
                 status = CASE WHEN ? THEN 'ACTIVE' ELSE recommendation_records.status END,
                 outcome_ts = CASE WHEN ? THEN NULL ELSE recommendation_records.outcome_ts END
@@ -460,11 +475,7 @@ def get_recommendation_history(
     query = """
         SELECT *
         FROM recommendation_records
-        WHERE (
-            COALESCE(highest_score, initial_score, current_score, 0) >= 65
-            OR conviction_tier IN ('HIGH', 'MEDIUM')
-            OR highest_tier IN ('HIGH', 'MEDIUM', 'TACTICAL')
-        )
+        WHERE COALESCE(highest_score, initial_score, current_score, 0) >= 65
     """
     params: list = []
 
@@ -475,11 +486,12 @@ def get_recommendation_history(
     if session_date and session_date.lower() not in ("all", ""):
         if session_date.lower() == "today":
             today_str = datetime.now(IST).strftime("%Y-%m-%d")
-            query += " AND substr(triggered_at, 1, 10) = ?"
-            params.append(today_str)
+            query += " AND (substr(triggered_at, 1, 10) = ? OR substr(last_appeared, 1, 10) = ?)"
+            params.extend([today_str, today_str])
         else:
-            query += " AND substr(triggered_at, 1, 10) = ?"
-            params.append(session_date[:10])
+            s_date = session_date[:10]
+            query += " AND (substr(triggered_at, 1, 10) = ? OR substr(last_appeared, 1, 10) = ?)"
+            params.extend([s_date, s_date])
 
     if tier and tier.lower() not in ("all", ""):
         t = tier.lower()
@@ -664,7 +676,8 @@ def record_event(
             message, 1 if was_bookmarked else 0
         ))
 
-        # Update recommendation record status
+        # Update recommendation record status ONLY if currently ACTIVE or upgrading TGT1 -> TGT2.
+        # An already-resolved card (TGT1_HIT, TGT2_HIT, SL_HIT, INVALIDATED) must NEVER be overwritten by a later event!
         status_map = {
             "TGT1_HIT": "TGT1_HIT",
             "TGT2_HIT": "TGT2_HIT",
@@ -672,10 +685,16 @@ def record_event(
             "INVALIDATED": "INVALIDATED",
         }
         rec_status = status_map.get(event_type, "ACTIVE")
-        conn.execute(
-            "UPDATE recommendation_records SET status = ?, outcome_ts = ? WHERE rec_id = ?",
-            (rec_status, now_ts, rec_id)
-        )
+        conn.execute("""
+            UPDATE recommendation_records
+            SET status = ?, outcome_ts = ?
+            WHERE rec_id = ?
+              AND (
+                status = 'ACTIVE'
+                OR status IS NULL
+                OR (? = 'TGT2_HIT' AND status = 'TGT1_HIT')
+              )
+        """, (rec_status, now_ts, rec_id, rec_status))
         conn.commit()
 
         # Update in-memory cache if bookmarked

@@ -29,9 +29,9 @@ The Indian financial markets operate under distinct microstructure regimes acros
 ```
 
 > [!NOTE]
-> **Streamlined 2-Mode Streaming & Off-Hours Synchronization Architecture**:
-> 1. **🟢 WebSocket Live Feed**: Active during trading hours (09:15–15:40 IST), Pre-Market Discovery (09:07:30–09:15 IST), and the F&O window through 15:40 IST. Push latency is <1ms from the Dhan binary feed. There is no replay mode on this live production feed.
-> 2. **🛑 Offline Snapshot Mode & Selective Dhan Sync**: Active during off-hours, weekends, holidays, and post-market settlement. Background continuous pollers are paused to conserve API rate limits. Off-market Dhan sync is triggered strictly under three conditions: (a) manual on-demand sync from the UI, (b) scheduled morning run at **06:30 IST**, and (c) whenever an access token is saved. From 06:30 IST until 09:00 IST, the Cockpit serves the prior-session book directly from disk snapshots without polling Dhan quotes.
+> **Streamlined 2-Mode Streaming Architecture**: The legacy 4-tier selectbox (3s/10s/30s/Manual) has been consolidated into two strict operating modes:
+> 1. **🟢 WebSocket Live Feed**: Active during trading hours (09:15–15:40 IST), Pre-Market Discovery (09:07:30–09:15 IST), and the F&O window through 15:40 IST. Push latency is <1ms from the Dhan binary feed. There is no replay mode on this feed.
+> 2. **🛑 Offline Snapshot Mode**: Active during off-hours, weekends, holidays, and post-market settlement. Background API pollers are paused to conserve rate limits and prevent phantom ticks; the UI serves authentic closing data cached from the SQLite snapshot registry with manual on-demand refresh.
 
 ---
 
@@ -412,37 +412,32 @@ $$\text{Closeness} = \max\left(0, 100 - \frac{|S_{\text{settle}} - \text{Strike}
 
 ## Part 3: High-Conviction Recommendations Lifecycle
 
-### 3.1 Two-Tier Architecture & State Machine Lifecycle
-
-The Recommendations Engine operates a dual-tier qualification pipeline:
-1. **Tier 1: Core High-Conviction Setups (Score ≥ 75)**: High-conviction trades with confirmed orderflow, wall alignment, and sector breadth agreement (`🟢 Core Calls` / `🔴 Core Puts`).
-2. **Tier 2: Tactical Opportunities (Score 65–75)**: Secondary setups qualifying between 65 and 75 displayed in dedicated columns (`🔵 Tactical Calls` / `🟣 Tactical Puts`) with dedicated safety filtering (`ce_tactical_active` / `pe_tactical_active`).
-3. **Corridor Protection**: Staging requires a minimum two-strike corridor between walls; placeholder chains are withheld.
+### 3.1 Recommendation State Machine Lifecycle Architecture
 
 To eliminate card flickering, disappearance, and false exits during live streaming ticks, recommendations are governed by an explicit finite-state machine managed by `RecommendationLatchManager`:
 
 ```
    ┌─────────┐
-   │ DORMANT │ ◀── Initial State (Score < 65)
+   │ DORMANT │ ◀── Initial State (Score < 75)
    └────┬────┘
-        │ Quality Score >= 75 (Core) or >= 65 (Tactical)
+        │ Quality Score >= 75 (Initial Qualification)
         ▼
   ┌───────────┐
   │ QUALIFIED │
   └─────┬─────┘
-        │ Quality Score >= min_score & Initial Lease Granted
+        │ Quality Score >= min_score (75/85) & Initial Lease Granted
         ▼
    ┌──────────┐ ◀──────────────────────────────────────────────┐
-   │  ACTIVE  │ ── Score fluctuates within hysteresis band     │
+   │  ACTIVE  │ ── Score fluctuates between [65, 100] (Hysteresis)│
    └────┬─────┘ ── 180s Dwell Lease Guarantees Display         │
         │                                                      │
         ├──────────────────────┬──────────────────────┐        │
         │ Target 1 Hit         │ Spot Invalidation    │ Lease Expired
-        │ (Spot >= T1 / <= T1) │ Breached             │ & Score < Floor
+        │ (Spot >= T1 / <= T1) │ Breached             │ & Score < 65
         ▼                      ▼                      ▼        │
  ┌────────────┐        ┌─────────────┐        ┌──────────┐     │
  │ TARGET_HIT │        │ INVALIDATED │        │ DEGRADED │ ────┘
- └────────────┘        └─────────────┘        └──────────┘  Re-qualifies if score recovers
+ └────────────┘        └─────────────┘        └──────────┘  Re-qualifies if score >= 75
  (Card flags Target    (Filtered out          (Demoted to
   Reached; locks gain)  from display)          Watchlist)
 ```
@@ -450,9 +445,9 @@ To eliminate card flickering, disappearance, and false exits during live streami
 #### State Machine Invariants:
 1. **Dwell Time Lease (180 Seconds)**: Once promoted to `ACTIVE`, an options recommendation card is guaranteed a minimum dwell lease of 180 seconds. It will not vanish on ephemeral microsecond tick dips.
 2. **Score Hysteresis ($\Delta = 10\text{ pts}$)**:
-   - Initial entry requires $\text{Score} \ge 75$ (Core) or $\ge 65$ (Tactical).
-   - Once `ACTIVE`, the card remains in active display even if score fluctuates down to **65** for Core ($\text{min\_score} - 10$) or **55** for Tactical.
-   - Only when score stays below threshold *after* the 180s dwell lease expires does the card transition to `DEGRADED`.
+   - Initial entry requires $\text{Score} \ge 75$ (or 85 for High Conviction).
+   - Once `ACTIVE`, the card remains in active display even if score fluctuates down to **65** ($\text{min\_score} - 10$).
+   - Only when score stays below 65 *after* the 180s dwell lease expires does the card transition to `DEGRADED`.
 3. **Target 1 Touch Recognition (`TARGET_HIT`)**:
    - Monitored on live spot and option LTP ticks.
    - For Calls: Triggers when $\text{Spot} \ge \text{Target 1 Spot}$.
@@ -464,17 +459,17 @@ To eliminate card flickering, disappearance, and false exits during live streami
 
 ---
 
-### 3.2 Pinned Cards Retention & Authentic LTP Resolution
+### 3.2 Pinned Cards Retention Rules
 Previously, bookmarked recommendation cards could be cleared across intraday restarts or daily scans. The updated lifecycle model enforces strict operational persistence:
 
 ```
-[Card Generated & Bookmarked by User (Core or Tactical)]
+[Card Generated & Bookmarked by User]
                   │
                   ▼
    Card Stored in Persistent SQLite DB
                   │
                   ▼
-      Check Daily & On Each Scan:
+        Check Daily & On Each Scan:
                   │
        ┌──────────┴──────────┐
        ▼                     ▼
@@ -487,23 +482,17 @@ Previously, bookmarked recommendation cards could be cleared across intraday res
 
 #### Retention Guarantees:
 1. **Cross-Session Persistence**: Pinned cards remain active across application restarts, browser refreshes, and multi-day holds.
-2. **Tier Locking**: Pinned cards remain locked in their stored tier (`core` vs `tactical`), maintaining clear visual categorization.
-3. **Fade & Drift Protection**: Pinned cards are immune to eviction from score fades or strike drift; they remain on the Cockpit HUD and Recommendations tab.
-4. **Authentic Live LTP Resolution**: Pinned cards resolve real-time option LTPs directly from streaming chain quotes or underlying futures, ensuring accurate live PnL and MTM tracking.
-5. **Contract Expiry Enforcement**:
-   - Evaluated by `is_contract_expired(record)` in `data/pre_post_market.py`.
+2. **Contract Expiry Enforcement**:
+   - Evaluated by `is_contract_expired(record)` in [`data/pre_post_market.py`](file:///Users/jagadish/MyProjects/Applications/cubera-gex-cockpit/data/pre_post_market.py#L360-L402).
    - Card remains active until the end of the contract expiry date.
    - Once `today > contract_expiry_date`, the card is automatically retired.
-6. **Multi-Format Parsing**:
+3. **Multi-Format Parsing**:
    - Supports ISO format: `payload["expiry"] = "2026-10-15"`
    - Supports formatted symbol string: `"NIFTY 13 OCT 22700 CE"` $\to$ extracts Day (`13`), Month (`OCT`), and Year (`2026`).
 
 ---
 
-### 3.3 Expandable Mini-to-Full Card Toggle & Visual Enhancements
-Every active recommendation card (across both the Cockpit tab and Trade Recommendations tab) features an interactive **Mini / Full toggle**:
-- **Mini-Card Mode**: High-density format for rapid scanning of entry, target, stop loss, score grade, and live dwell timer.
-- **Full-Card Mode**: Expanded analytical view displaying Greek attribution (Delta, Gamma, Vega, Theta), Target Engine Black-76 expected values, and defined-risk vertical spread structures.
+### 3.3 Recommendation Card Visual Enhancements & "Time Since Last Active" Counter
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
