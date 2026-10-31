@@ -1001,11 +1001,21 @@ def _cluster_ideas_by_strike(ideas: List[TradeIdea]) -> List[StrikeCluster]:
     return sorted(res, key=lambda c: c.best_idea.quality_score, reverse=True)
 
 
-def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: float, lot_size: int) -> dict:
-    try:
-        refresh_trade_idea_live_mtm(idea, idea.symbol, float(spot or 0.0), reprice_targets=True)
-    except Exception:
-        pass
+def _serialize_trade_idea(
+    idea: TradeIdea,
+    spot: float,
+    capital: float,
+    risk: float,
+    lot_size: int,
+    *,
+    record_lifecycle_events: bool = False,
+    is_historical: bool = False,
+) -> dict:
+    if not is_historical:
+        try:
+            refresh_trade_idea_live_mtm(idea, idea.symbol, float(spot or 0.0), reprice_targets=True)
+        except Exception:
+            pass
     pos_size = compute_position_size(
         idea,
         account_capital=capital,
@@ -1018,7 +1028,7 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
     pnl_pct = getattr(idea, "live_pnl_pct", round((pnl_pts / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0)
 
     # Invalidation buffer & breach status
-    if spot > 0:
+    if not is_historical and spot > 0:
         if idea.side == "CE":
             inval_buffer = spot - idea.spot_invalidation
             is_active = (spot >= idea.spot_invalidation)
@@ -1026,36 +1036,37 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
             inval_buffer = idea.spot_invalidation - spot
             is_active = (spot <= idea.spot_invalidation)
     else:
-        inval_buffer = 0.0
-        is_active = True
+        inval_buffer = float(getattr(idea, "inval_buffer", 0.0) or 0.0)
+        is_active = not getattr(idea, "inval_breached", False)
 
     inval_breached = not is_active
-    st_code = "INVALIDATED" if inval_breached else ("ACTIVE" if idea.quality_score >= 65 else "DEGRADED")
+    st_code = getattr(idea, "latch_state", "") or ("INVALIDATED" if inval_breached else ("ACTIVE" if idea.quality_score >= 65 else "DEGRADED"))
 
     bm = is_bookmarked(idea.rec_id)
 
-    # Lifecycle target / stop / invalidation checking and event recording
+    # Lifecycle target / stop / invalidation checking and event recording (ONLY for live non-historical requests)
     tgt1_pct = round(((idea.target_1 - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
     tgt2_pct = round(((idea.target_2 - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
     sl_pct = round(((idea.stop_loss - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
 
     event_type_hit = None
     event_msg_hit = ""
-    if inval_breached:
-        event_type_hit = "INVALIDATED"
-        event_msg_hit = f"🛑 Spot Invalidation Breached at ₹{spot:,.1f} (Inval level: ₹{idea.spot_invalidation:,.0f})"
-    elif curr_ltp > 0:
-        if idea.target_2 > 0 and curr_ltp >= idea.target_2:
-            event_type_hit = "TGT2_HIT"
-            event_msg_hit = f"🚀 Target 2 Achieved at ₹{curr_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
-        elif idea.target_1 > 0 and curr_ltp >= idea.target_1:
-            event_type_hit = "TGT1_HIT"
-            event_msg_hit = f"🎯 Target 1 Achieved at ₹{curr_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
-        elif idea.stop_loss > 0 and curr_ltp <= idea.stop_loss:
-            event_type_hit = "SL_HIT"
-            event_msg_hit = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({sl_pct:+.0f}%)"
+    if not is_historical:
+        if inval_breached:
+            event_type_hit = "INVALIDATED"
+            event_msg_hit = f"🛑 Spot Invalidation Breached at ₹{spot:,.1f} (Inval level: ₹{idea.spot_invalidation:,.0f})"
+        elif curr_ltp > 0:
+            if idea.target_2 > 0 and curr_ltp >= idea.target_2:
+                event_type_hit = "TGT2_HIT"
+                event_msg_hit = f"🚀 Target 2 Achieved at ₹{curr_ltp:,.1f} (+{tgt2_pct:+.0f}%)"
+            elif idea.target_1 > 0 and curr_ltp >= idea.target_1:
+                event_type_hit = "TGT1_HIT"
+                event_msg_hit = f"🎯 Target 1 Achieved at ₹{curr_ltp:,.1f} (+{tgt1_pct:+.0f}%)"
+            elif idea.stop_loss > 0 and curr_ltp <= idea.stop_loss:
+                event_type_hit = "SL_HIT"
+                event_msg_hit = f"⛔ Stop Loss Hit at ₹{curr_ltp:,.1f} ({sl_pct:+.0f}%)"
 
-    if event_type_hit:
+    if not is_historical and event_type_hit and record_lifecycle_events:
         try:
             record_event(
                 rec_id=idea.rec_id,
@@ -1113,24 +1124,28 @@ def _serialize_trade_idea(idea: TradeIdea, spot: float, capital: float, risk: fl
         "last_active_ts": float(getattr(idea, "last_active_ts", 0.0) or time.time()),
         "active_label": act_lbl,
         "active_color": act_col,
-        "delta_approx": getattr(idea, "delta_approx", 0.50 if idea.side == "CE" else -0.50),
-        "p_touch_target_1": getattr(idea, "p_touch_target_1", 0.65),
-        "p_touch_sl": getattr(idea, "p_touch_sl", 0.35),
-        "net_ev_pts": getattr(idea, "net_ev_pts", 18.5),
-        "spread_alternative": getattr(idea, "spread_alternative", {
-            "spread_name": "Bull Call Spread" if idea.side == "CE" else "Bear Put Spread",
-            "long_leg": f"{int(idea.strike)} {idea.side}",
-            "short_leg": f"{int(idea.strike + (100 if idea.side == 'CE' else -100))} {idea.side}",
-            "net_debit": round(curr_ltp * 0.62, 1),
-            "max_profit": round(100 - (curr_ltp * 0.62), 1),
-            "max_loss": round(curr_ltp * 0.62, 1),
-            "rr_ratio": "1 : 1.6",
-            "breakeven_spot": round(idea.strike + (curr_ltp * 0.62 if idea.side == "CE" else -(curr_ltp * 0.62)), 0),
-        }),
-        "score_history": get_score_history(idea.rec_id) or [
-            {"time": _get_ist_now().strftime("%H:%M"), "score": idea.quality_score, "delta": "+2", "rationale": "High absorption at Put Wall" if idea.side == "CE" else "Heavy distribution at Call Wall"},
-            {"time": (_get_ist_now() - timedelta(minutes=15)).strftime("%H:%M"), "score": max(50, idea.quality_score - 4), "delta": "+4", "rationale": "Initial qualification"},
-        ],
+        "delta_approx": (
+            float(getattr(idea, "delta_approx", 0.0) or 0.0)
+            if getattr(idea, "delta_approx", None) is not None
+            else None
+        ),
+        "p_touch_target_1": (
+            float(getattr(idea, "p_touch_target_1", 0.0) or 0.0)
+            if getattr(idea, "p_touch_target_1", None) is not None
+            else None
+        ),
+        "p_touch_sl": (
+            float(getattr(idea, "p_touch_sl", 0.0) or 0.0)
+            if getattr(idea, "p_touch_sl", None) is not None
+            else None
+        ),
+        "net_ev_pts": (
+            float(getattr(idea, "net_ev_pts", 0.0) or 0.0)
+            if getattr(idea, "net_ev_pts", None) is not None
+            else None
+        ),
+        "spread_alternative": getattr(idea, "spread_alternative", None),
+        "score_history": get_score_history(idea.rec_id) or [],
         "pos_size": {
             "suggested_lots": pos_size.suggested_lots,
             "total_quantity": pos_size.total_quantity,
@@ -2446,6 +2461,7 @@ async def get_cockpit_data(
             st = s.status
 
         orderflow_alerts.append({
+            "event_id": getattr(s, "event_id", "") or f"{s.type}_{s.bar_start_ts}",
             "type": s.type,
             "category": s.category,
             "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
@@ -3107,54 +3123,103 @@ async def get_recommendations_history_endpoint(
 ):
     """Retrieve historical recommendations that reached High Conviction, Secondary, or Tactical tiers.
 
-    Enriches each record with peak score, score trajectory delta, current lifecycle state, live MTM PnL,
-    and a fully serialized full_card payload for expander views.
+    Strictly read-only: does not record lifecycle events or mutate database outcomes.
+    Enriches each record with peak score, score trajectory delta vs peak, current lifecycle state,
+    and a serialized full_card payload for expander views.
     """
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     acct_cap = float(_ACTIVE_STATE.get("account_capital", 500000.0))
     r_pct = float(_ACTIVE_STATE.get("risk_pct", 1.5)) / 100.0
 
     query_sym = None if sym in ("ALL", "ANY") else sym
-    raw_records = get_recommendation_history(
+
+    # Retrieve all records for the session/symbol first to compute stable tier counts
+    all_records = get_recommendation_history(
         symbol=query_sym,
-        tier=tier,
+        tier=None,
         status=status,
         session_date=session_date,
-        limit=limit or 150,
+        limit=500,
     )
+
+    high_count = sum(1 for x in all_records if x.get("highest_tier") == "HIGH" or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) > 85)
+    sec_count = sum(
+        1 for x in all_records
+        if (x.get("highest_tier") == "MEDIUM" or (75 <= int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) <= 85))
+        and not (x.get("highest_tier") == "HIGH" or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) > 85)
+    )
+    tact_count = sum(
+        1 for x in all_records
+        if (65 <= int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) < 75 or x.get("highest_tier") == "TACTICAL")
+        and not (x.get("highest_tier") in ("HIGH", "MEDIUM") or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) >= 75)
+    )
+
+    # Filter by requested tier if specified
+    if tier and tier.lower() not in ("all", ""):
+        t = tier.lower()
+        if t in ("high", "high_conviction"):
+            raw_records = [x for x in all_records if x.get("highest_tier") == "HIGH" or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) > 85]
+        elif t in ("secondary", "medium", "fallback"):
+            raw_records = [
+                x for x in all_records
+                if (x.get("highest_tier") == "MEDIUM" or (75 <= int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) <= 85))
+                and not (x.get("highest_tier") == "HIGH" or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) > 85)
+            ]
+        elif t in ("tactical", "low"):
+            raw_records = [
+                x for x in all_records
+                if (65 <= int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) < 75 or x.get("highest_tier") == "TACTICAL")
+                and not (x.get("highest_tier") in ("HIGH", "MEDIUM") or int(x.get("highest_score") or x.get("initial_score") or x.get("current_score") or 0) >= 75)
+            ]
+        else:
+            raw_records = all_records
+    else:
+        raw_records = all_records
+
+    raw_records = raw_records[:(limit or 150)]
 
     from analytics.trade_ideas import _rehydrate_bookmarked_trade_idea
     from app.spot_ticker import latest_quote
 
-    # Global quotes cache by symbol to avoid redundant calls
     quote_cache: dict[str, dict] = {}
 
-    def _get_spot(s: str) -> float:
+    def _get_spot(s: str, init_sp: float = 0.0) -> float:
         if s not in quote_cache:
             quote_cache[s] = latest_quote(s) or {}
-        return float(quote_cache[s].get("spot") or 0.0)
+        sp = float(quote_cache[s].get("spot") or 0.0)
+        # A 24,500 Nifty print is the display placeholder, not a live quote.
+        if sp > 0 and not config.chain_spot_is_placeholder(s, sp):
+            return sp
+        if init_sp > 0 and not config.chain_spot_is_placeholder(s, init_sp):
+            return init_sp
+        return 0.0
 
     history = []
-    high_count = 0
-    sec_count = 0
-    tact_count = 0
     active_count = 0
     target_count = 0
     sl_count = 0
     inval_count = 0
 
+    today_str = datetime.now(IST).strftime("%Y-%m-%d")
+
     for r in raw_records:
         r_sym = str(r.get("symbol") or "NIFTY").upper()
-        spot = _get_spot(r_sym)
-        if spot <= 0:
-            spot = float(r.get("initial_spot") or 24500.0)
+        init_spot_val = float(r.get("initial_spot") or 0.0)
+        spot = _get_spot(r_sym, init_spot_val)
 
         idx = config.get_index(r_sym)
         lot_size = getattr(idx, "lot_size", 65)
 
         peak_score = int(r.get("highest_score") or r.get("initial_score") or r.get("current_score") or 0)
         curr_score = int(r.get("current_score") or 0)
-        score_delta = curr_score - peak_score
+        fade_pts = curr_score - peak_score  # <= 0: distance below peak conviction
+
+        if fade_pts == 0:
+            score_delta_label = "⚡ At Peak"
+            score_delta_color = "var(--go)"
+        else:
+            score_delta_label = f"▼ {abs(fade_pts)} vs Peak"
+            score_delta_color = "var(--stop)"
 
         # Determine peak tier
         peak_tier = r.get("highest_tier")
@@ -3163,21 +3228,23 @@ async def get_recommendations_history_endpoint(
                 peak_tier = "HIGH"
             elif peak_score >= 75 or r.get("conviction_tier") == "MEDIUM":
                 peak_tier = "MEDIUM"
-            else:
+            elif peak_score >= 65 or r.get("conviction_tier") == "LOW":
                 peak_tier = "TACTICAL"
+            else:
+                peak_tier = "SUB_THRESHOLD"
 
         if peak_tier == "HIGH":
             peak_label = "High Conviction (Grade A+)"
             peak_color = "var(--go)"
-            high_count += 1
         elif peak_tier == "MEDIUM":
             peak_label = "Secondary Play (Grade B+)"
             peak_color = "#eab308"
-            sec_count += 1
-        else:
+        elif peak_tier == "TACTICAL":
             peak_label = "Tactical Opportunity (Grade B)"
             peak_color = "var(--spark)"
-            tact_count += 1
+        else:
+            peak_label = "Sub-Threshold"
+            peak_color = "var(--ink-mute)"
 
         # Current state
         st = str(r.get("status") or "ACTIVE").upper()
@@ -3204,21 +3271,54 @@ async def get_recommendations_history_endpoint(
             st_label = st
             st_color = "var(--ink-mute)"
 
-        # PnL resolution
+        # PnL resolution: Realized PnL for resolved setups, live tick MTM if active today, else None
         entry_ltp = float(r.get("initial_ltp") or 0.0)
-        curr_ltp = float(r.get("current_ltp") or entry_ltp or 0.0)
-        pnl_pts = round(curr_ltp - entry_ltp, 1)
-        pnl_pct = round(((curr_ltp - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+        curr_ltp = None
+        pnl_pts = None
+        pnl_pct = None
 
-        # Build full card payload for expander
+        is_resolved = (st != "ACTIVE")
+        if is_resolved:
+            if st == "TGT1_HIT":
+                curr_ltp = float(r.get("target_1") or entry_ltp)
+            elif st == "TGT2_HIT":
+                curr_ltp = float(r.get("target_2") or entry_ltp)
+            elif st in ("SL_HIT", "STOP_HIT", "INVALIDATED"):
+                curr_ltp = float(r.get("stop_loss") or entry_ltp)
+            if curr_ltp is not None and entry_ltp > 0:
+                pnl_pts = round(curr_ltp - entry_ltp, 1)
+                pnl_pct = round(((curr_ltp - entry_ltp) / entry_ltp) * 100.0, 1)
+        else:
+            # Check if active today
+            rec_date = (r.get("last_appeared") or r.get("triggered_at") or "")[:10]
+            if rec_date == today_str:
+                try:
+                    from app.spot_ticker import get_option_ws_quote
+                    ws_q = get_option_ws_quote(r_sym, float(r.get("strike", 0)), str(r.get("side", "CE")), max_age_s=120.0)
+                    if ws_q and float(ws_q.get("ltp") or 0.0) > 0:
+                        curr_ltp = float(ws_q["ltp"])
+                        pnl_pts = round(curr_ltp - entry_ltp, 1)
+                        pnl_pct = round(((curr_ltp - entry_ltp) / entry_ltp) * 100.0, 1) if entry_ltp > 0 else 0.0
+                except Exception:
+                    pass
+
+        # Build full card payload for expander (STRICTLY READ-ONLY, NO EVENT RECORDING)
         card_dict = {}
         try:
             active_idea = _rehydrate_bookmarked_trade_idea(r, spot)
             if active_idea:
-                if curr_ltp > 0:
+                if curr_ltp is not None and curr_ltp > 0:
                     active_idea.current_ltp = curr_ltp
                 active_idea.quality_score = curr_score
-                card_dict = _serialize_trade_idea(active_idea, spot, acct_cap, r_pct, lot_size)
+                card_dict = _serialize_trade_idea(
+                    active_idea,
+                    spot,
+                    acct_cap,
+                    r_pct,
+                    lot_size,
+                    record_lifecycle_events=False,
+                    is_historical=True,
+                )
         except Exception as e_ser:
             log.debug("Error serializing history idea %s: %s", r.get("rec_id"), e_ser)
             card_dict = {}
@@ -3238,7 +3338,9 @@ async def get_recommendations_history_endpoint(
             "highest_tier_color": peak_color,
             "highest_score": peak_score,
             "current_score": curr_score,
-            "score_delta": score_delta,
+            "score_delta": fade_pts,
+            "score_delta_label": score_delta_label,
+            "score_delta_color": score_delta_color,
             "conviction_tier": r.get("conviction_tier", ""),
             "status": st,
             "status_label": st_label,
@@ -3261,7 +3363,7 @@ async def get_recommendations_history_endpoint(
         history.append(history_item)
 
     summary = {
-        "total": len(history),
+        "total": len(all_records),
         "high_count": high_count,
         "sec_count": sec_count,
         "tact_count": tact_count,
@@ -3645,6 +3747,36 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     dash = await _aload_active_dashboard(sym, "weekly")
     return await asyncio.to_thread(_build_sentinel_tape, sym, timeframe or "1m", dash)
+
+
+@app.get("/api/sentinel/signals")
+@app.get("/api/sentinel-signals")
+async def get_sentinel_signals(symbol: Optional[str] = None, limit: int = 25):
+    """Lightweight endpoint returning recent OrderFlow Sentinel signals for real-time alerting."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    inst_id = f"{sym}-FUT"
+
+    def _fetch():
+        sigs = list_recent_signals(inst_id, limit=limit)
+        return [
+            {
+                "event_id": getattr(s, "event_id", "") or f"{s.type}_{s.bar_start_ts}",
+                "type": s.type,
+                "category": s.category,
+                "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
+                "score": s.score,
+                "status": getattr(s, "status", "ACTIVE"),
+                "rvol_tod": s.rvol_tod,
+                "delta": s.delta,
+                "invalidation_level": s.invalidation_level,
+                "insight_text": s.insight_text,
+                "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
+            }
+            for s in sigs
+        ]
+
+    signals = await asyncio.to_thread(_fetch)
+    return {"symbol": sym, "signals": signals}
 
 
 @app.post("/api/sentinel-tape/reseed")
@@ -4560,6 +4692,13 @@ async def log_market_alert(payload: dict = Body(...)):
         return {"status": "error", "message": str(e)}
 
 
+def _next_session_levels(call_wall, put_wall):
+    """Both walls, or nothing. A missing wall is None, and None > 0 aborts the response."""
+    if not call_wall or not put_wall:
+        return None
+    return f"{call_wall:,.0f} call-gamma / {put_wall:,.0f} put-gamma"
+
+
 @app.get("/api/session-commentary")
 async def get_session_commentary(symbol: Optional[str] = None):
     """Session Commentary Tab: Strictly single trading session date narrative, Morning Anchor pre-market card, and post-market scorecard."""
@@ -4689,8 +4828,10 @@ async def get_session_commentary(symbol: Optional[str] = None):
             lo = float(getattr(dash, "day_low", 0.0) or getattr(getattr(dash, "levels", None), "day_low", 0.0) or 0.0)
             if hi > 0 and lo > 0:
                 post_state["day_range"] = f"₹{hi:,.1f} / ₹{lo:,.1f}"
-        if not post_state.get("next_key_levels") and cw > 0 and pw > 0:
-            post_state["next_key_levels"] = f"{cw:,.0f} call-gamma / {pw:,.0f} put-gamma"
+        if not post_state.get("next_key_levels"):
+            levels = _next_session_levels(cw, pw)
+            if levels:
+                post_state["next_key_levels"] = levels
 
     cards = []
     if session_entries:

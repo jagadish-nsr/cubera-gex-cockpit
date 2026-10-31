@@ -10,6 +10,26 @@ from analytics.trade_ideas import (
 )
 from gex.levels import Levels
 import pandas as pd
+import data.journal.recommendations_store as rs
+import analytics.trade_ideas as ti
+
+
+@pytest.fixture(autouse=True)
+def isolate_trade_ideas_db(tmp_path, monkeypatch):
+    """Ensure test runs in test_trade_ideas never touch or pollute live recommendations.db."""
+    test_db = tmp_path / "test_trade_ideas.db"
+    monkeypatch.setattr(rs, "_DB_PATH", test_db)
+    with rs._BOOKMARK_CACHE_LOCK:
+        rs._BOOKMARK_CACHE.clear()
+        rs._CACHE_INITIALIZED = False
+    rs.ensure_schema()
+    ti.clear_latch_manager()
+    yield test_db
+    ti.flush_telemetry(timeout=None)
+    ti.clear_latch_manager()
+    with rs._BOOKMARK_CACHE_LOCK:
+        rs._BOOKMARK_CACHE.clear()
+        rs._CACHE_INITIALIZED = False
 
 
 def _mock_levels(spot=24500.0, cw=24700.0, pw=24300.0, flip=24520.0):
@@ -1085,6 +1105,7 @@ def test_empty_high_conviction_card_keeps_the_best_tactical_read():
 
 def test_placeholder_chain_is_withheld_unless_the_quote_confirms_it():
     assert config.withhold_placeholder_ideas("NIFTY", 24500, 22678)
+    assert config.withhold_placeholder_ideas("NIFTY", 24500, 23092.5)
     assert config.withhold_placeholder_ideas("NIFTY", 24500, 0)
     assert not config.withhold_placeholder_ideas("NIFTY", 24500, 24510)
     assert not config.withhold_placeholder_ideas("NIFTY", 22650, 22678)

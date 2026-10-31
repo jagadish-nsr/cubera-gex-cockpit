@@ -55,8 +55,8 @@ flowchart LR
   * **$\text{Edge Ratio} < 1.00\times$ (Red 🔴):** Negative edge. Trades suffer more adverse drift than forward follow-through.
 
 ### 2.4 Target Hit Rate vs. Stop-Out Rate
-* **Target Hit Rate ($1R$):** Percentage of signals that successfully reach a minimum $1:1$ risk-to-reward target before hitting the invalidation level (evaluated when a completed 5-minute candle closes at or beyond the target price).
-* **Stop-Out Rate:** Percentage of signals where a **completed 5-minute candle closes strictly beyond the explicit invalidation level** ($\text{Close}_{5\text{m}} < \text{Inval}$ for longs, $\text{Close}_{5\text{m}} > \text{Inval}$ for shorts). Intra-bar wicks and incomplete candles do not trigger invalidations.
+* **Target Hit Rate ($1R$):** Percentage of signals that successfully reach a minimum $1:1$ risk-to-reward target before hitting the invalidation level.
+* **Stop-Out Rate:** Percentage of signals whose low (for longs) or high (for shorts) pierced the explicit invalidation level.
 * **Benchmark:** In institutional momentum trading, a **$52\% - 60\%$ hit rate** paired with an **Edge Ratio $> 1.6\times$** delivers exceptional compounding expectancy.
 
 ### 2.5 Forward Return Expectancy Curve ($+1\text{m} \to +30\text{m}$)

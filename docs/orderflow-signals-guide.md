@@ -212,11 +212,7 @@ The **Sentinel Tape** interface incorporates institutional desk controls:
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.1 Persistent SQLite Telemetry & Authentic Data Pipeline
-* **Zero-Fabrication Contract**: Synthetic demo generation is completely decommissioned. The Sentinel engine strictly enforces a zero-fabrication contract: random walks, sine-wave math, and simulated ticks are prohibited.
-* **Dual-Source Ingestion Pipeline (`sentinel/feed/history.py`)**:
-  1. **Dhan Live Binary Feed (`sentinel/feed/live.py`)**: During live market hours, consumes real-time binary ticks, computes bar delta, CVD, and micro-burst orderflow directly into `sentinel_db.db` with WAL journaling.
-  2. **Authentic Historical Snapshot Loader (`sentinel/feed/history.py`)**: During off-market hours or terminal restarts, automatically populates authentic intraday bars and missing session CVD from local intraday CSV journals (`data/journal/futures_intraday_dhan/<SYM>/*.csv`) and the SQLite snapshot registry (`data/journal/market_snapshot.db`). If no authentic file exists, the UI renders a clean "Feed Offline" state rather than fabricating data.
-* **CVD Continuity**: Missing CVD days are backfilled from recorded futures journals so cumulative multi-day flow curves remain unbroken.
-* **Session Outcome Reporting**: Invalidation and target hits are evaluated against completed 5-minute candles; detailed forward excursions (MFE/MAE) and win/loss breakdowns are recorded into `data/sentinel.db` and rendered into intraday Session Reports.
-* **Timezone Fidelity**: Epoch timestamps are converted to strict Indian Standard Time (IST), with future-dated and out-of-sequence anomaly filters.
+### 4.1 Persistent SQLite Telemetry Architecture
+* All tick packets and constructed bars are committed to `sentinel_db.db` via WAL journaling.
+* Dual feed pipeline: Connects directly to **Dhan Live Binary Feed** (`sentinel/feed/live.py`) with automatic fallback to **Synthetic Demo Feed** (`sentinel/feed/demo.py`) during off-market hours.
+* Epoch timestamps are converted to strict Indian Standard Time (IST), with automatic validation guards filtering out any future-dated tick anomalies.

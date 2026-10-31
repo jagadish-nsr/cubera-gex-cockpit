@@ -66,7 +66,8 @@ def test_demotion_policy_triggers():
 
 
 def test_replay_harness_execution():
-    t0 = dt.datetime(2026, 10, 13, 9, 15, tzinfo=dt.timezone.utc)
+    ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
+    t0 = dt.datetime(2026, 10, 13, 9, 15, tzinfo=ist)
     snapshots = [
         PointInTimeView(
             as_of=t0,

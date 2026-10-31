@@ -22,7 +22,7 @@ Historically, retail and discretionary trading setups have relied on crude heuri
 3. **Full Cross-Platform Integration:**
    The Target Engine does not sit in isolation. It powers:
    - The dedicated **Target Engine Tab** (interactive scenarios, ranked candidate payoffs, "what-if" repricer).
-   - **Trade Recommendations Engine** (closed-form Black-76 target/stop pricing, touch probabilities $P(\text{touch})$, Net EV, and Greek attribution across both Core $\ge 75$ and Tactical $65-75$ setups, displayed in expandable mini/full cards).
+   - **Trade Recommendations Engine** (closed-form Black-76 target/stop pricing, touch probabilities $P(\text{touch})$, Net EV).
    - **Pre-Market 7-Minute Alpha Window** (09:08–09:15 IST opening option shock repricing & straddle expansion/crush).
    - **OrderFlow Sentinel Tape** (dynamic vol & GEX wall target calibration, live contract play chips).
    - **Signal Efficiency Analytics** (model calibration alpha against theoretical diffusion, options expectancy realization curve).
