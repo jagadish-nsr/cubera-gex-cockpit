@@ -22,7 +22,7 @@ def pinned_db(tmp_path, monkeypatch):
     ideas._MEM_SCORE_HISTORY.clear()
     ideas.clear_latch_manager()
     yield rec_store
-    ideas.flush_telemetry(timeout=2.0)
+    ideas.flush_telemetry(timeout=None)
     ideas._MEM_SCORE_HISTORY.clear()
     ideas.clear_latch_manager()
     rec_store._CACHE_INITIALIZED = False
@@ -126,7 +126,7 @@ def test_faded_high_pin_stays_in_its_stored_tier(pinned_db):
     assert all(t.rec_id != row["rec_id"] for t in batch.tactical_ce_recommendations)
     assert all(t.rec_id != row["rec_id"] for t in batch.lower_ce_recommendations)
 
-    ideas.flush_telemetry(timeout=2.0)
+    ideas.flush_telemetry(timeout=None)
     faded = dict(row)
     faded["quality_score"] = 58
     faded["conviction_tier"] = "LOW"

@@ -42,8 +42,13 @@ _PENDING_PERSIST_FUTURES: list[concurrent.futures.Future] = []
 _MEM_SCORE_HISTORY: dict[str, list[dict]] = {}
 
 
-def flush_telemetry(rec_id: str | None = None, timeout: float = 1.0) -> None:
-    """Flush pending asynchronous SQLite persistence writes for recommendations and telemetry."""
+def flush_telemetry(rec_id: str | None = None, timeout: float | None = 1.0) -> None:
+    """Flush pending asynchronous SQLite persistence writes for recommendations and telemetry.
+
+    `timeout=None` waits until every queued write has finished. A short timeout
+    leaves the future running, and a later restore of the live database path
+    can let that write land in the production journal.
+    """
     global _PENDING_PERSIST_FUTURES
     pending = [f for f in _PENDING_PERSIST_FUTURES if not f.done()]
     if pending:
@@ -52,6 +57,20 @@ def flush_telemetry(rec_id: str | None = None, timeout: float = 1.0) -> None:
         except Exception:
             pass
     _PENDING_PERSIST_FUTURES = [f for f in _PENDING_PERSIST_FUTURES if not f.done()]
+
+
+def resolve_unpinned_trigger(stored_trigger: str, now_ist: str, market_open: bool) -> str:
+    """Keep the first trigger. A later session replaces it only while the market is open.
+
+    The latch often still holds yesterday's timestamp on a process that stayed up
+    overnight. Callers must use this result even when the in-memory idea already
+    has a trigger, otherwise the store never sees a new date and skips the fresh-day reset.
+    """
+    stored = str(stored_trigger or "").strip()
+    now = str(now_ist or "").strip()
+    if stored and (not market_open or stored[:10] == now[:10]):
+        return stored
+    return now
 
 
 
@@ -3345,24 +3364,35 @@ def generate_trade_recommendations(
     for t in ce_recs + pe_recs:
         t.position_size = compute_position_size(t, account_capital=500_000.0, risk_pct=1.5, lot_size=lot_size)
         t.rec_id = f"{symbol}_{t.side}_{int(t.strike)}_{t.play_badge}"
-        pinned_row = None
+        rec_row = None
         if rec_store is not None:
             try:
                 if rec_store.is_bookmarked(t.rec_id):
                     t.is_bookmarked = True
-                    pinned_row = rec_store.get_bookmarked_record(t.rec_id)
+                    rec_row = rec_store.get_bookmarked_record(t.rec_id)
+                else:
+                    rec_row = rec_store.get_recommendation_record(t.rec_id)
             except Exception:
-                pinned_row = None
+                rec_row = None
         if t.is_bookmarked:
-            stored_tier = str((pinned_row or {}).get("conviction_tier") or t.conviction_tier or "").upper()
+            stored_tier = str((rec_row or {}).get("conviction_tier") or t.conviction_tier or "").upper()
             if stored_tier in ("HIGH", "MEDIUM", "LOW"):
                 t.conviction_tier = stored_tier
-            stored_trigger = str((pinned_row or {}).get("triggered_at") or t.triggered_at or "")
+            stored_trigger = str((rec_row or {}).get("triggered_at") or t.triggered_at or "")
             if stored_trigger:
                 t.triggered_at = stored_trigger
         else:
-            t.triggered_at = now_ist
+            stored_trigger = str((rec_row or {}).get("triggered_at") or "")
+            t.triggered_at = resolve_unpinned_trigger(
+                stored_trigger, now_ist, config.is_market_open(),
+            )
             t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
+
+        if rec_row:
+            if float(rec_row.get("initial_spot") or 0.0) > 0 and t.initial_spot <= 0:
+                t.initial_spot = float(rec_row["initial_spot"])
+            if float(rec_row.get("initial_ltp") or 0.0) > 0 and t.initial_ltp <= 0:
+                t.initial_ltp = float(rec_row["initial_ltp"])
 
         # Generate strategy-specific microstructure reasoning with precise data points
         t.score_reason = _generate_strategy_score_reason(
@@ -3519,16 +3549,19 @@ def generate_trade_recommendations(
 
     # Asynchronous non-blocking background flush of SQLite persistence and ML telemetry
     if persist_items and rec_store:
-        def _persist_worker(items=persist_items, store=rec_store):
-            for payload, mlf, h_item in items:
-                try:
-                    store.save_or_update_recommendation(payload)
-                    if mlf:
-                        store.log_ml_features(mlf)
-                    if h_item:
-                        store.append_score_history(**h_item)
-                except Exception:
-                    pass
+        queued_db = rec_store.active_db_path()
+
+        def _persist_worker(items=persist_items, store=rec_store, db_path=queued_db):
+            with store._BoundDbPath(db_path):
+                for payload, mlf, h_item in items:
+                    try:
+                        store.save_or_update_recommendation(payload)
+                        if mlf:
+                            store.log_ml_features(mlf)
+                        if h_item:
+                            store.append_score_history(**h_item)
+                    except Exception:
+                        pass
 
         try:
             fut = _BG_PERSIST_EXECUTOR.submit(_persist_worker)

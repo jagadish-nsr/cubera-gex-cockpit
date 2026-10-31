@@ -19,12 +19,44 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
+import config
+
 log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "recommendations.db"
 _WRITE_LOCK = threading.RLock()
+_THREAD_DB = threading.local()
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def active_db_path() -> Path:
+    """Database for this thread. A persist worker keeps the path it was queued with."""
+    override = getattr(_THREAD_DB, "path", None)
+    if override is not None:
+        return Path(override)
+    return _DB_PATH
+
+
+class _BoundDbPath:
+    """Point this thread at `path` for the duration of a background persist."""
+
+    def __init__(self, path: Path):
+        self._path = Path(path)
+        self._previous: Path | None = None
+        self._had_previous = False
+
+    def __enter__(self) -> Path:
+        self._had_previous = hasattr(_THREAD_DB, "path")
+        self._previous = getattr(_THREAD_DB, "path", None)
+        _THREAD_DB.path = self._path
+        return self._path
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._had_previous:
+            _THREAD_DB.path = self._previous
+        elif hasattr(_THREAD_DB, "path"):
+            del _THREAD_DB.path
 
 
 def _now_ist_str() -> str:
@@ -33,8 +65,9 @@ def _now_ist_str() -> str:
 
 
 def _get_write_conn() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    path = active_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
@@ -43,8 +76,9 @@ def _get_write_conn() -> sqlite3.Connection:
 
 
 def _get_read_conn() -> sqlite3.Connection:
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+    path = active_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
     conn.row_factory = sqlite3.Row
@@ -252,7 +286,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
     with _WRITE_LOCK, _get_write_conn() as conn:
         existing = conn.execute(
-            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp, conviction_tier, highest_score, highest_tier FROM recommendation_records WHERE rec_id = ?",
+            "SELECT is_bookmarked, bookmarked_at, triggered_at, initial_score, current_score, initial_spot, initial_ltp, conviction_tier, highest_score, highest_tier, last_appeared FROM recommendation_records WHERE rec_id = ?",
             (rec_id,)
         ).fetchone()
 
@@ -261,13 +295,15 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
         new_trig = idea_dict.get("triggered_at") or _now_ist_str()
         curr_score = int(idea_dict.get("quality_score", 0))
+        market_open = config.is_market_open()
         if existing and existing["triggered_at"]:
             existing_trig = str(existing["triggered_at"])
             existing_date = existing_trig[:10]
             current_date = str(new_trig)[:10]
-            is_fresh_day = (existing_date != current_date)
+            # A fresh day trigger should only take effect during live market hours
+            is_fresh_day = (existing_date != current_date) and market_open
             prev_score = int(existing["current_score"] or existing["initial_score"] or 0)
-            was_previously_sub_threshold = (prev_score < 75 and curr_score >= 75)
+            was_previously_sub_threshold = (prev_score < 75 and curr_score >= 75) and market_open
             if is_fresh_day or was_previously_sub_threshold:
                 trig_at = new_trig
                 init_score = curr_score
@@ -295,7 +331,11 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
         existing_high = int(existing["highest_score"]) if (existing and "highest_score" in existing.keys() and existing["highest_score"] is not None) else 0
         peak_score = max(existing_high, int(init_score), curr_score)
         peak_tier = "HIGH" if peak_score > 85 else ("MEDIUM" if peak_score >= 75 else ("TACTICAL" if peak_score >= 65 else "SUB_THRESHOLD"))
-        last_seen = now_ts
+        # Only advance last_appeared when the market is actively open, preserving last seen off-market
+        if existing and ("last_appeared" in existing.keys()) and existing["last_appeared"] and not market_open:
+            last_seen = str(existing["last_appeared"])
+        else:
+            last_seen = now_ts
 
         conn.execute("""
             INSERT INTO recommendation_records (
@@ -442,6 +482,21 @@ def get_bookmarked_record(rec_id: str) -> dict | None:
     with _BOOKMARK_CACHE_LOCK:
         row = _BOOKMARK_CACHE.get(rec_id)
         return dict(row) if row else None
+
+
+def get_recommendation_record(rec_id: str) -> dict | None:
+    """Return the raw recommendation record by rec_id from SQLite, or None if not found."""
+    ensure_schema()
+    try:
+        with _get_read_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM recommendation_records WHERE rec_id = ?",
+                (rec_id,)
+            ).fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        log.warning(f"Failed to get recommendation record {rec_id}: {e}")
+        return None
 
 
 def list_bookmarked_records(symbol: str | None = None) -> list[dict]:

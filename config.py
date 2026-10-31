@@ -119,21 +119,28 @@ def placeholder_disagrees_with_quote(
     return abs(quote - chain) / chain > band
 
 
+# A quote confirms a placeholder print only when it sits on that print.
+# Six percent of 24,500 is about 1,470 Nifty points, wide enough to treat a
+# 23,092 cash print as confirmation of the display placeholder.
+_PLACEHOLDER_CONFIRM_PTS = 25.0
+
+
 def withhold_placeholder_ideas(
     symbol: str | None,
     chain_spot: float,
     quote_spot: float,
 ) -> bool:
-    """A placeholder chain is an idea book only when the live quote confirms it."""
+    """A placeholder chain is an idea book only when the live quote is on that print."""
     if not chain_spot_is_placeholder(symbol, chain_spot):
         return False
     try:
         quote = float(quote_spot or 0)
+        chain = float(chain_spot)
     except (TypeError, ValueError):
-        quote = 0.0
-    if quote <= 0:
         return True
-    return placeholder_disagrees_with_quote(symbol, chain_spot, quote)
+    if quote <= 0 or chain <= 0:
+        return True
+    return abs(quote - chain) > _PLACEHOLDER_CONFIRM_PTS
 
 
 def get_index(symbol: str | None) -> Index:

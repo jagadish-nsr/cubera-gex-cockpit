@@ -469,3 +469,196 @@ def test_summary_tier_counts_remain_stable_across_filter():
     assert summary["sec_count"] == 1, "Secondary count dropped to 0 when high filter was selected!"
     assert summary["tact_count"] == 1, "Tactical count dropped to 0 when high filter was selected!"
     assert summary["total"] == 3
+
+
+def test_off_market_preserves_triggered_at_and_last_appeared(monkeypatch):
+    """Off-market updates and day rolls must never rewrite triggered_at or advance last_appeared."""
+    import config
+    monkeypatch.setattr(config, "is_market_open", lambda: False)
+
+    orig_triggered = "2026-10-30 09:35:00"
+    orig_appeared = "2026-10-30 09:40:00"
+    rec_id = "TEST_TIMESTAMP_PRESERVATION"
+
+    # Seed record with original trigger timestamp
+    rs.save_or_update_recommendation({
+        "rec_id": rec_id,
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23100.0,
+        "option_symbol": "NIFTY 23100 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": orig_triggered,
+        "initial_spot": 23090.0,
+        "initial_ltp": 95.0,
+        "quality_score": 88,
+        "conviction_tier": "HIGH",
+        "target_1": 130.0,
+        "target_1_spot": 23150.0,
+        "target_2": 160.0,
+        "target_2_spot": 23200.0,
+        "stop_loss": 75.0,
+        "spot_invalidation": 23050.0,
+        "spot_invalidation_text": "Breach below 23050",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Trigger",
+        "rationale": "Rationale",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    })
+
+    # Explicitly set last_appeared to historical timestamp
+    with rs._WRITE_LOCK, rs._get_write_conn() as conn:
+        conn.execute("UPDATE recommendation_records SET last_appeared = ? WHERE rec_id = ?", (orig_appeared, rec_id))
+        conn.commit()
+
+    # Re-evaluate off-market on a new day (e.g. 2026-10-31)
+    new_payload = {
+        "rec_id": rec_id,
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23100.0,
+        "option_symbol": "NIFTY 23100 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": "2026-10-31 12:00:00",
+        "initial_spot": 23090.0,
+        "initial_ltp": 95.0,
+        "quality_score": 85,
+        "conviction_tier": "HIGH",
+        "target_1": 130.0,
+        "target_1_spot": 23150.0,
+        "target_2": 160.0,
+        "target_2_spot": 23200.0,
+        "stop_loss": 75.0,
+        "spot_invalidation": 23050.0,
+        "spot_invalidation_text": "Breach below 23050",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Trigger",
+        "rationale": "Rationale",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    }
+    rs.save_or_update_recommendation(new_payload)
+
+    # Verify that triggered_at and last_appeared were NOT rewritten
+    record = rs.get_recommendation_record(rec_id)
+    assert record is not None
+    assert record["triggered_at"] == orig_triggered, f"Expected {orig_triggered}, got {record['triggered_at']}"
+    assert record["last_appeared"] == orig_appeared, f"Expected {orig_appeared}, got {record['last_appeared']}"
+
+
+def test_unpinned_trigger_advances_on_a_later_open_session():
+    """A process that stayed up overnight must still stamp the new session."""
+    from analytics.trade_ideas import resolve_unpinned_trigger
+
+    stored = "2026-10-30 10:15:00"
+    monday = "2026-11-02 09:20:00"
+    assert resolve_unpinned_trigger(stored, monday, market_open=True) == monday
+    assert resolve_unpinned_trigger(stored, "2026-10-31 12:00:00", market_open=False) == stored
+    assert resolve_unpinned_trigger(stored, "2026-10-30 14:05:00", market_open=True) == stored
+    assert resolve_unpinned_trigger("", monday, market_open=False) == monday
+
+
+def test_open_market_new_session_resets_trigger(monkeypatch):
+    """When the caller sends today's trigger during market hours, the stored stamp moves."""
+    import config
+    monkeypatch.setattr(config, "is_market_open", lambda: True)
+
+    rec_id = "TEST_FRESH_SESSION_TRIGGER"
+    rs.save_or_update_recommendation({
+        "rec_id": rec_id,
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23100.0,
+        "option_symbol": "NIFTY 23100 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": "2026-10-30 09:35:00",
+        "initial_spot": 23090.0,
+        "initial_ltp": 95.0,
+        "quality_score": 88,
+        "conviction_tier": "HIGH",
+        "target_1": 130.0,
+        "target_1_spot": 23150.0,
+        "target_2": 160.0,
+        "target_2_spot": 23200.0,
+        "stop_loss": 75.0,
+        "spot_invalidation": 23050.0,
+        "spot_invalidation_text": "Breach below 23050",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Trigger",
+        "rationale": "Rationale",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    })
+    rs.save_or_update_recommendation({
+        "rec_id": rec_id,
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23100.0,
+        "option_symbol": "NIFTY 23100 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": "2026-11-02 09:20:00",
+        "initial_spot": 23110.0,
+        "current_spot": 23110.0,
+        "initial_ltp": 102.0,
+        "current_ltp": 102.0,
+        "quality_score": 90,
+        "conviction_tier": "HIGH",
+        "target_1": 140.0,
+        "target_1_spot": 23160.0,
+        "target_2": 170.0,
+        "target_2_spot": 23210.0,
+        "stop_loss": 80.0,
+        "spot_invalidation": 23060.0,
+        "spot_invalidation_text": "Breach below 23060",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Trigger",
+        "rationale": "Rationale",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    })
+    record = rs.get_recommendation_record(rec_id)
+    assert record is not None
+    assert record["triggered_at"] == "2026-11-02 09:20:00"
+    assert float(record["initial_spot"]) == 23110.0
+
+
+def test_background_persist_keeps_the_queued_database(tmp_path, monkeypatch):
+    """A path restore on the caller thread must not redirect a write already queued."""
+    queued = tmp_path / "queued.db"
+    restored = tmp_path / "restored.db"
+    monkeypatch.setattr(rs, "_DB_PATH", queued)
+    payload = {
+        "rec_id": "TEST_BOUND_DB_PATH",
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23100.0,
+        "option_symbol": "NIFTY 23100 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": "2026-10-30 09:35:00",
+        "initial_spot": 23090.0,
+        "initial_ltp": 95.0,
+        "quality_score": 80,
+        "conviction_tier": "MEDIUM",
+        "target_1": 130.0,
+        "target_2": 160.0,
+        "stop_loss": 75.0,
+        "spot_invalidation": 23050.0,
+        "spot_invalidation_text": "Breach",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Trigger",
+        "rationale": "Rationale",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    }
+    monkeypatch.setattr(rs, "_DB_PATH", restored)
+    with rs._BoundDbPath(queued):
+        rs.save_or_update_recommendation(payload)
+    assert rs.get_recommendation_record("TEST_BOUND_DB_PATH") is None
+    with rs._BoundDbPath(queued):
+        assert rs.get_recommendation_record("TEST_BOUND_DB_PATH") is not None

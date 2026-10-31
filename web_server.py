@@ -3186,14 +3186,12 @@ async def get_recommendations_history_endpoint(
         if s not in quote_cache:
             quote_cache[s] = latest_quote(s) or {}
         sp = float(quote_cache[s].get("spot") or 0.0)
-        if sp > 0:
+        # A 24,500 Nifty print is the display placeholder, not a live quote.
+        if sp > 0 and not config.chain_spot_is_placeholder(s, sp):
             return sp
-        if init_sp > 0:
+        if init_sp > 0 and not config.chain_spot_is_placeholder(s, init_sp):
             return init_sp
-        idx_cfg = config.get_index(s)
-        if idx_cfg:
-            return float(getattr(idx_cfg, "base_price", None) or getattr(idx_cfg, "default_spot", 0.0) or 0.0)
-        return 24500.0 if s == "NIFTY" else 0.0
+        return 0.0
 
     history = []
     active_count = 0
