@@ -2461,6 +2461,7 @@ async def get_cockpit_data(
             st = s.status
 
         orderflow_alerts.append({
+            "event_id": getattr(s, "event_id", "") or f"{s.type}_{s.bar_start_ts}",
             "type": s.type,
             "category": s.category,
             "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
@@ -3746,6 +3747,36 @@ async def get_sentinel_tape(symbol: Optional[str] = None, timeframe: Optional[st
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     dash = await _aload_active_dashboard(sym, "weekly")
     return await asyncio.to_thread(_build_sentinel_tape, sym, timeframe or "1m", dash)
+
+
+@app.get("/api/sentinel/signals")
+@app.get("/api/sentinel-signals")
+async def get_sentinel_signals(symbol: Optional[str] = None, limit: int = 25):
+    """Lightweight endpoint returning recent OrderFlow Sentinel signals for real-time alerting."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    inst_id = f"{sym}-FUT"
+
+    def _fetch():
+        sigs = list_recent_signals(inst_id, limit=limit)
+        return [
+            {
+                "event_id": getattr(s, "event_id", "") or f"{s.type}_{s.bar_start_ts}",
+                "type": s.type,
+                "category": s.category,
+                "bias": getattr(s, "bias", "") or ("LONG" if s.category == "BULLISH" else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")),
+                "score": s.score,
+                "status": getattr(s, "status", "ACTIVE"),
+                "rvol_tod": s.rvol_tod,
+                "delta": s.delta,
+                "invalidation_level": s.invalidation_level,
+                "insight_text": s.insight_text,
+                "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
+            }
+            for s in sigs
+        ]
+
+    signals = await asyncio.to_thread(_fetch)
+    return {"symbol": sym, "signals": signals}
 
 
 @app.post("/api/sentinel-tape/reseed")

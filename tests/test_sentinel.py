@@ -212,6 +212,76 @@ def test_classifier_continuation_bull():
     assert sig.bias == "LONG"
 
 
+def test_classifier_exhaustion_up_and_down_categories():
+    """Verify EXHAUSTION_UP is strictly BEARISH/SHORT and EXHAUSTION_DOWN is BULLISH/LONG."""
+    engine = SignalClassifierEngine()
+    context = MarketContext()
+
+    # Buying climax rejection at midday (12:15 IST is 06:45 UTC) -> EXHAUSTION_UP (BEARISH / SHORT)
+    # Using delta_ratio 0.05 so absorption / continuation are bypassed and exhaustion fires
+    t0 = datetime(2026, 10, 2, 6, 45, tzinfo=timezone.utc)
+    bar_up = Bar(
+        instrument_id="NIFTY-FUT",
+        timeframe="1m",
+        start_ts=t0,
+        open=24500.0,
+        high=24550.0,
+        low=24495.0,
+        close=24505.0,  # close near low of bar (close_pos <= 0.35), upper wick = 45/55 >= 0.40
+        volume_units=60000,  # rvol >> 2.2
+        volume_lots=923.0,
+        buy_vol_est=31500.0,
+        sell_vol_est=28500.0,
+        delta=3000.0,
+        delta_ratio=0.05,  # within (-0.18, 0.18) to avoid absorption
+        delta_quality=1.0,
+        cvd=3000.0,
+        vwap=24500.0,
+        vwap_sigma_1=24520.0,
+        vwap_sigma_2=24540.0,
+        vwap_lower_1=24480.0,
+        vwap_lower_2=24460.0,
+    )
+    context.update_bar(bar_up)
+    sig_up = engine.evaluate_bar(bar_up, context)
+    assert sig_up is not None
+    assert sig_up.type == "EXHAUSTION_UP"
+    assert sig_up.category == "BEARISH"
+    assert sig_up.bias == "SHORT"
+
+    # Selling climax rejection -> EXHAUSTION_DOWN (BULLISH / LONG)
+    engine_down = SignalClassifierEngine()
+    context_down = MarketContext()
+    bar_down = Bar(
+        instrument_id="NIFTY-FUT",
+        timeframe="1m",
+        start_ts=t0 + timedelta(minutes=5),
+        open=24500.0,
+        high=24505.0,
+        low=24450.0,
+        close=24495.0,  # close near high of bar (close_pos >= 0.65), lower wick = 45/55 >= 0.40
+        volume_units=60000,  # rvol >> 2.2
+        volume_lots=923.0,
+        buy_vol_est=28500.0,
+        sell_vol_est=31500.0,
+        delta=-3000.0,
+        delta_ratio=-0.05,  # within (-0.18, 0.18) to avoid absorption
+        delta_quality=1.0,
+        cvd=-3000.0,
+        vwap=24500.0,
+        vwap_sigma_1=24520.0,
+        vwap_sigma_2=24540.0,
+        vwap_lower_1=24480.0,
+        vwap_lower_2=24460.0,
+    )
+    context_down.update_bar(bar_down)
+    sig_down = engine_down.evaluate_bar(bar_down, context_down)
+    assert sig_down is not None
+    assert sig_down.type == "EXHAUSTION_DOWN"
+    assert sig_down.category == "BULLISH"
+    assert sig_down.bias == "LONG"
+
+
 def test_classifier_3_bar_cooldown():
     engine = SignalClassifierEngine()
     context = MarketContext()

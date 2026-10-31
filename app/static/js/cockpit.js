@@ -15,6 +15,7 @@
     riskPct: 1.5,
     activeTab: "tab-cockpit",
     soundEnabled: true,
+    sentinelSoundEnabled: localStorage.getItem("cubera_sentinel_sound_muted") !== "true",
     theme: localStorage.getItem("cubera_theme") || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
     alertBellEnabled: localStorage.getItem("cubera_alert_bell_muted") !== "true",
     lastAlertScenarios: {},
@@ -27,6 +28,11 @@
     audioCtx: null,
     pendingAlertBell: false,
     pendingAlertBellTime: 0,
+    pendingSentinelAlert: null,
+    pendingSentinelAlertTime: 0,
+    seenSentinelSignals: {},
+    sentinelInitialized: {},
+    lastSentinelSoundTime: 0,
     spot: 24500.0,
     ws: null,
     sentinelChart: null,
@@ -114,6 +120,12 @@
         if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
           state.pendingAlertBell = false;
           playTraderBellRing();
+        }
+        if (state.pendingSentinelAlert && (Date.now() - state.pendingSentinelAlertTime < 30000)) {
+          const p = state.pendingSentinelAlert;
+          state.pendingSentinelAlert = null;
+          if (p.type === "BULL") playSentinelBullishSound(p.force);
+          else if (p.type === "BEAR") playSentinelBearishSound(p.force);
         }
       }).catch(() => { });
 
@@ -215,6 +227,289 @@
     playTraderBellRing();
     showToast("Auditioning 3.0s Louder Brass Bell Alert", "🔔");
   };
+
+  // -------------------------------------------------------------------------
+  // OrderFlow Sentinel Signals Web Audio Synthesizers (Bullish & Bearish)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Unique Bullish Sentinel Signal Audio Synthesizer (Ascending Crystal Chime)
+   * A vibrant, ascending major-chord arpeggio culminating in a shimmering crystalline peak.
+   * Conveys positive buyer-initiated momentum, absorption, and continuation.
+   */
+  function playSentinelBullishSound(force = false) {
+    if (!force && !state.sentinelSoundEnabled) return;
+    try {
+      const ctx = initAudioContext();
+      if (!ctx) return;
+      if (ctx.state === "suspended") {
+        state.pendingSentinelAlert = { type: "BULL", force };
+        state.pendingSentinelAlertTime = Date.now();
+        return; // Do not schedule oscillators while suspended; will play on first click unlock
+      }
+
+      const now = ctx.currentTime;
+
+      // Master output gain
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.85, now);
+      masterGain.connect(ctx.destination);
+
+      // 4 Ascending crystal arpeggio notes (F5 -> A5 -> C6 -> F6 + C7/F7 shimmer)
+      const notes = [
+        { timeOffset: 0.00, freq: 698.46, gain: 0.22, decay: 0.18, type: "sine" },     // F5 base tone
+        { timeOffset: 0.00, freq: 1396.91, gain: 0.08, decay: 0.12, type: "sine" },    // F6 harmonic sparkle
+        { timeOffset: 0.07, freq: 880.00, gain: 0.25, decay: 0.20, type: "sine" },     // A5 major 3rd
+        { timeOffset: 0.14, freq: 1046.50, gain: 0.28, decay: 0.25, type: "sine" },    // C6 perfect 5th
+        { timeOffset: 0.21, freq: 1396.91, gain: 0.35, decay: 0.65, type: "triangle" },// F6 peak octave crown
+        { timeOffset: 0.21, freq: 2093.00, gain: 0.15, decay: 0.50, type: "sine" },    // C7 upper harmonic sparkle
+        { timeOffset: 0.23, freq: 2793.83, gain: 0.08, decay: 0.40, type: "sine" },    // F7 crystalline shimmer
+      ];
+
+      notes.forEach((n) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = n.type || "sine";
+        const t = now + n.timeOffset;
+        osc.frequency.setValueAtTime(n.freq, t);
+
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(n.gain, t + 0.004);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + n.decay);
+
+        osc.connect(g);
+        g.connect(masterGain);
+        osc.start(t);
+        osc.stop(t + n.decay + 0.05);
+      });
+    } catch (e) {
+      console.warn("Error synthesizing Bullish Sentinel sound:", e);
+    }
+  }
+
+  /**
+   * Unique Bearish Sentinel Signal Audio Synthesizer (Descending Sub-Impact Pulse)
+   * An authoritative descending warning strike with pitch-bend cascade and deep sub-harmonic grounding impact.
+   * Conveys seller-initiated liquidation, resistance absorption failure, and downward breakdown.
+   */
+  function playSentinelBearishSound(force = false) {
+    if (!force && !state.sentinelSoundEnabled) return;
+    try {
+      const ctx = initAudioContext();
+      if (!ctx) return;
+      if (ctx.state === "suspended") {
+        state.pendingSentinelAlert = { type: "BEAR", force };
+        state.pendingSentinelAlertTime = Date.now();
+        return; // Do not schedule oscillators while suspended; will play on first click unlock
+      }
+
+      const now = ctx.currentTime;
+
+      // Master output gain
+      const masterGain = ctx.createGain();
+      masterGain.gain.setValueAtTime(0.90, now);
+      masterGain.connect(ctx.destination);
+
+      // Stage 1: Sharp high warning strike at t = 0 (E5 bending down to D5)
+      const osc1 = ctx.createOscillator();
+      const g1 = ctx.createGain();
+      osc1.type = "sawtooth";
+      osc1.frequency.setValueAtTime(659.25, now);
+      osc1.frequency.exponentialRampToValueAtTime(587.33, now + 0.12);
+      g1.gain.setValueAtTime(0.0001, now);
+      g1.gain.linearRampToValueAtTime(0.20, now + 0.003);
+      g1.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
+      osc1.connect(g1);
+      g1.connect(masterGain);
+      osc1.start(now);
+      osc1.stop(now + 0.15);
+
+      // Stage 1 body (mid-tone body at E4)
+      const osc1b = ctx.createOscillator();
+      const g1b = ctx.createGain();
+      osc1b.type = "sine";
+      osc1b.frequency.setValueAtTime(329.63, now);
+      g1b.gain.setValueAtTime(0.0001, now);
+      g1b.gain.linearRampToValueAtTime(0.18, now + 0.003);
+      g1b.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+      osc1b.connect(g1b);
+      g1b.connect(masterGain);
+      osc1b.start(now);
+      osc1b.stop(now + 0.17);
+
+      // Stage 2: Descending cascade tone at t = 0.11s (C5 dropping down to A4)
+      const t2 = now + 0.11;
+      const osc2 = ctx.createOscillator();
+      const g2 = ctx.createGain();
+      osc2.type = "triangle";
+      osc2.frequency.setValueAtTime(523.25, t2);
+      osc2.frequency.exponentialRampToValueAtTime(440.00, t2 + 0.13);
+      g2.gain.setValueAtTime(0.0001, t2);
+      g2.gain.linearRampToValueAtTime(0.24, t2 + 0.003);
+      g2.gain.exponentialRampToValueAtTime(0.0001, t2 + 0.18);
+      osc2.connect(g2);
+      g2.connect(masterGain);
+      osc2.start(t2);
+      osc2.stop(t2 + 0.20);
+
+      // Stage 3: Low-Frequency Resonance Impact (Sub-Pulse Gong) at t = 0.20s
+      // A deep, authoritative grounding thud (130.81 Hz C3 dropping to 110.00 Hz A2)
+      const t3 = now + 0.20;
+      const osc3 = ctx.createOscillator();
+      const g3 = ctx.createGain();
+      osc3.type = "triangle";
+      osc3.frequency.setValueAtTime(130.81, t3);
+      osc3.frequency.exponentialRampToValueAtTime(110.00, t3 + 0.40);
+      g3.gain.setValueAtTime(0.0001, t3);
+      g3.gain.linearRampToValueAtTime(0.38, t3 + 0.005);
+      g3.gain.exponentialRampToValueAtTime(0.0001, t3 + 0.60);
+      osc3.connect(g3);
+      g3.connect(masterGain);
+      osc3.start(t3);
+      osc3.stop(t3 + 0.65);
+
+      // Stage 3 sub-bass fundamental weight (warm sine 65.41 Hz C2 underbelly)
+      const osc3Sub = ctx.createOscillator();
+      const g3Sub = ctx.createGain();
+      osc3Sub.type = "sine";
+      osc3Sub.frequency.setValueAtTime(65.41, t3);
+      g3Sub.gain.setValueAtTime(0.0001, t3);
+      g3Sub.gain.linearRampToValueAtTime(0.32, t3 + 0.006);
+      g3Sub.gain.exponentialRampToValueAtTime(0.0001, t3 + 0.50);
+      osc3Sub.connect(g3Sub);
+      g3Sub.connect(masterGain);
+      osc3Sub.start(t3);
+      osc3Sub.stop(t3 + 0.55);
+
+    } catch (e) {
+      console.warn("Error synthesizing Bearish Sentinel sound:", e);
+    }
+  }
+
+  function updateSentinelSoundUI() {
+    const isEnabled = state.sentinelSoundEnabled;
+    const btns = [
+      document.getElementById("sentinel-sound-toggle-btn"),
+      document.getElementById("cockpit-sentinel-sound-btn")
+    ];
+    btns.forEach((btn) => {
+      if (btn) {
+        if (isEnabled) {
+          btn.textContent = "🔔 Audio: ON";
+          btn.className = "tape-ctrl-btn active";
+        } else {
+          btn.textContent = "🔕 Audio: MUTE";
+          btn.className = "tape-ctrl-btn muted";
+        }
+      }
+    });
+  }
+
+  window.toggleSentinelSound = function () {
+    state.sentinelSoundEnabled = !state.sentinelSoundEnabled;
+    localStorage.setItem("cubera_sentinel_sound_muted", (!state.sentinelSoundEnabled).toString());
+    updateSentinelSoundUI();
+    showToast(`Sentinel Audio Signals ${state.sentinelSoundEnabled ? "ENABLED" : "MUTED"}`, state.sentinelSoundEnabled ? "🔔" : "🔕");
+  };
+
+  window.testSentinelBullishSound = function () {
+    initAudioContext();
+    playSentinelBullishSound(true);
+    showToast("Auditioning Bullish Sentinel Alert (Ascending Crystal Chime)", "🟢");
+  };
+
+  window.testSentinelBearishSound = function () {
+    initAudioContext();
+    playSentinelBearishSound(true);
+    showToast("Auditioning Bearish Sentinel Alert (Descending Sub-Pulse)", "🔴");
+  };
+
+  window.playSentinelBullishSound = playSentinelBullishSound;
+  window.playSentinelBearishSound = playSentinelBearishSound;
+
+  // -------------------------------------------------------------------------
+  // Real-Time Sentinel Signals Tracker & Sound Alert Dispatcher
+  // -------------------------------------------------------------------------
+  function processSentinelSignals(signals, sym) {
+    const currentSym = (sym || state.symbol || "NIFTY").toUpperCase();
+
+    if (!state.seenSentinelSignals) {
+      state.seenSentinelSignals = {};
+    }
+    if (!state.sentinelInitialized) {
+      state.sentinelInitialized = {};
+    }
+
+    // Seed whatever signals (if any) existed on initial load/switch
+    if (!state.sentinelInitialized[currentSym]) {
+      state.sentinelInitialized[currentSym] = true;
+      const initialSet = new Set();
+      if (Array.isArray(signals) && signals.length > 0) {
+        signals.forEach((s) => {
+          const id = s.event_id || `${s.type}_${s.time || s.bar_start_ts}`;
+          if (id) initialSet.add(id);
+        });
+      }
+      state.seenSentinelSignals[currentSym] = initialSet;
+      return; // Seed existing signals silently on startup or index switch
+    }
+
+    if (!signals || !Array.isArray(signals) || signals.length === 0) return;
+
+    let seenSet = state.seenSentinelSignals[currentSym] || new Set();
+    state.seenSentinelSignals[currentSym] = seenSet;
+
+    // Identify genuine new signals that were not present on prior evaluations
+    const newSignals = [];
+    signals.forEach((s) => {
+      const id = s.event_id || `${s.type}_${s.time || s.bar_start_ts}`;
+      if (id && !seenSet.has(id)) {
+        seenSet.add(id);
+        newSignals.push(s);
+      }
+    });
+
+    if (newSignals.length === 0) return;
+
+    // signals are returned newest-first; reverse to chronological order so alerts play sequentially
+    const chronologicalNew = [...newSignals].reverse();
+    chronologicalNew.forEach((s, idx) => {
+      // Direction strictly derived from category and bias (never type "UP" / "DOWN" substring)
+      const cat = (s.category || "").toUpperCase();
+      const bias = (s.bias || "").toUpperCase();
+
+      const isBull = cat.includes("BULL") || bias === "LONG";
+      const isBear = !isBull && (cat.includes("BEAR") || bias === "SHORT");
+
+      // Stagger playback so multiple new signals (e.g. both bull and bear in same poll) all sound clearly
+      setTimeout(() => {
+        if (isBull) {
+          playSentinelBullishSound();
+        } else if (isBear) {
+          playSentinelBearishSound();
+        }
+      }, idx * 800);
+
+      // Visual Toast Notification
+      const icon = isBull ? "🟢" : isBear ? "🔴" : "⚡";
+      const tag = isBull ? "BULLISH SENTINEL" : isBear ? "BEARISH SENTINEL" : "SENTINEL SIGNAL";
+      const scoreTxt = s.score != null ? ` · Score ${s.score}` : "";
+      showToast(`${tag}: ${s.type || "Signal"}${scoreTxt}`, icon);
+    });
+  }
+
+  async function pollSentinelSignals() {
+    try {
+      const sym = (state.symbol || "NIFTY").toUpperCase();
+      const res = await fetch(`/api/sentinel-signals?symbol=${encodeURIComponent(sym)}&limit=15`);
+      if (!res.ok) return;
+      const data = await res.json();
+      // Ensure response matches currently active symbol before processing
+      if (data && data.signals && (data.symbol || "").toUpperCase() === (state.symbol || "").toUpperCase()) {
+        processSentinelSignals(data.signals, sym);
+      }
+    } catch (e) { }
+  }
 
   // -------------------------------------------------------------------------
   // Toast Notifications
@@ -1214,6 +1509,7 @@
       // OrderFlow Alerts (Tape) Quadrant
       const alertsContainer = document.getElementById("cockpit-orderflow-alerts-container");
       if (alertsContainer && data.orderflow_alerts) {
+        processSentinelSignals(data.orderflow_alerts, requestedSym);
         alertsContainer.innerHTML = "";
         data.orderflow_alerts.forEach((a) => {
           const div = document.createElement("div");
@@ -4094,9 +4390,15 @@
 
   async function loadSentinelTape() {
     try {
-      const res = await fetch(`/api/sentinel-tape?symbol=${state.symbol}&timeframe=${sentinelState.timeframe}`);
+      const requestedSym = (state.symbol || "NIFTY").toUpperCase();
+      const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(requestedSym)}&timeframe=${sentinelState.timeframe}`);
       if (!res.ok) return;
       const data = await res.json();
+      // Discard stale in-flight response if index switched while fetch was running
+      if (requestedSym !== (state.symbol || "").toUpperCase() ||
+        (data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase())) {
+        return;
+      }
       state.sentinelData = data;
       const show = (v) => (v == null || v === "" ? "—" : v);
 
@@ -4505,8 +4807,9 @@
         });
       }
 
-      // Render OrderFlow Signals Stream
+      // Render OrderFlow Signals Stream & Dispatch Sound Alerts
       state.sentinelSignals = data.signals || [];
+      processSentinelSignals(data.signals, requestedSym);
       renderSentinelSignalsList("ALL");
 
       // Live Block Tape Table
@@ -6286,6 +6589,7 @@
         });
         showToast(`Index switched to ${state.symbol}`);
         refreshAll();
+        pollSentinelSignals();
       });
     }
 
@@ -6837,6 +7141,9 @@
         bellBtn.className = "tape-ctrl-btn muted";
       }
     }
+    // Initialize Sentinel Sound UI buttons
+    updateSentinelSoundUI();
+
     // Apply initialized theme state
     applyTheme(state.theme, false);
 
@@ -6852,6 +7159,11 @@
     setInterval(() => {
       if (state.activeTab === "tab-cockpit") loadCockpit();
     }, 20000);
+    setInterval(() => {
+      if (state.activeTab === "tab-sentinel") loadSentinelTape();
+    }, 10000);
+    setInterval(pollSentinelSignals, 8000);
+    pollSentinelSignals();
     setInterval(() => {
       if (!isClientPreBellWindow()) syncCockpitPreBellCard(false);
     }, 1000);

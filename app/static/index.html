@@ -593,7 +593,12 @@
             <div class="cockpit-orderflow-tape" id="cockpit-orderflow-tape">
               <div class="cockpit-orderflow-head">
                 <span>OrderFlow sentinel tape</span>
-                <span class="badge-active">Microstructure</span>
+                <div style="display:flex;align-items:center;gap:6px">
+                  <button id="cockpit-sentinel-sound-btn" class="tape-ctrl-btn active"
+                    style="font-size:0.65rem;padding:2px 7px" onclick="window.toggleSentinelSound()"
+                    title="Toggle Sentinel Signal Audio Alerts">🔔 Audio: ON</button>
+                  <span class="badge-active">Microstructure</span>
+                </div>
               </div>
               <div id="cockpit-orderflow-alerts-container" class="signal-stream-container">
               </div>
@@ -1445,27 +1450,37 @@
 
           <!-- Trade Recommendation History & Intraday Lifecycle Audit -->
           <div style="margin-bottom:36px;margin-top:12px">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
               <div>
                 <h3 style="font-size:1.15rem;font-weight:850;margin:0;display:flex;align-items:center;gap:8px">
                   <span>📜 Trade Recommendation History</span>
-                  <span id="rec-history-count-badge" style="font-size:0.72rem;background:var(--surface-3);color:var(--spark);border:1px solid var(--line);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0 Records</span>
+                  <span id="rec-history-count-badge"
+                    style="font-size:0.72rem;background:var(--surface-3);color:var(--spark);border:1px solid var(--line);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0
+                    Records</span>
                 </h3>
-                <span style="font-size:0.72rem;color:var(--ink-mute)">All recommendations that entered High Conviction (&gt;85), Secondary (75–85), or Tactical (65–75) tiers</span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">All recommendations that entered High Conviction
+                  (&gt;85), Secondary (75–85), or Tactical (65–75) tiers</span>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                 <!-- Session Date Filter -->
                 <div style="display:flex;align-items:center;gap:4px">
-                  <label for="rec-history-session-select" style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Session:</label>
-                  <select id="rec-history-session-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:125px" onchange="window.filterRecommendationHistory()">
+                  <label for="rec-history-session-select"
+                    style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Session:</label>
+                  <select id="rec-history-session-select" class="form-control"
+                    style="font-size:0.72rem;padding:3px 8px;width:125px"
+                    onchange="window.filterRecommendationHistory()">
                     <option value="today" selected>Today's Session</option>
                     <option value="all">All Sessions</option>
                   </select>
                 </div>
                 <!-- Symbol Filter -->
                 <div style="display:flex;align-items:center;gap:4px">
-                  <label for="rec-history-symbol-select" style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Symbol:</label>
-                  <select id="rec-history-symbol-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:115px" onchange="window.filterRecommendationHistory()">
+                  <label for="rec-history-symbol-select"
+                    style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Symbol:</label>
+                  <select id="rec-history-symbol-select" class="form-control"
+                    style="font-size:0.72rem;padding:3px 8px;width:115px"
+                    onchange="window.filterRecommendationHistory()">
                     <option value="CURRENT" selected>Current Symbol</option>
                     <option value="ALL">All Symbols</option>
                     <option value="NIFTY">NIFTY</option>
@@ -1474,25 +1489,37 @@
                   </select>
                 </div>
                 <!-- Refresh Button -->
-                <button class="btn btn-secondary" onclick="window.loadRecommendationHistory()" style="font-size:0.72rem;padding:3px 10px;display:flex;align-items:center;gap:4px" title="Refresh history records">
+                <button class="btn btn-secondary" onclick="window.loadRecommendationHistory()"
+                  style="font-size:0.72rem;padding:3px 10px;display:flex;align-items:center;gap:4px"
+                  title="Refresh history records">
                   <span>🔄</span> Refresh
                 </button>
               </div>
             </div>
 
             <!-- Tier & State Quick-Filter Strip -->
-            <div style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;flex-wrap:wrap;gap:8px">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap" id="rec-history-tier-filters">
                 <span style="font-size:0.72rem;color:var(--ink-mute);font-weight:700;margin-right:2px">Tier:</span>
-                <button class="btn btn-sm btn-primary rec-tier-filter-btn" data-tier="all" onclick="window.setRecHistoryTierFilter('all')">All Tiers (<span id="rec-hist-all-count">0</span>)</button>
-                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="high" onclick="window.setRecHistoryTierFilter('high')">⚡ High Conviction (<span id="rec-hist-high-count">0</span>)</button>
-                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="secondary" onclick="window.setRecHistoryTierFilter('secondary')">🎯 Secondary (<span id="rec-hist-sec-count">0</span>)</button>
-                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="tactical" onclick="window.setRecHistoryTierFilter('tactical')">🏹 Tactical (<span id="rec-hist-tact-count">0</span>)</button>
+                <button class="btn btn-sm btn-primary rec-tier-filter-btn" data-tier="all"
+                  onclick="window.setRecHistoryTierFilter('all')">All Tiers (<span
+                    id="rec-hist-all-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="high"
+                  onclick="window.setRecHistoryTierFilter('high')">⚡ High Conviction (<span
+                    id="rec-hist-high-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="secondary"
+                  onclick="window.setRecHistoryTierFilter('secondary')">🎯 Secondary (<span
+                    id="rec-hist-sec-count">0</span>)</button>
+                <button class="btn btn-sm btn-secondary rec-tier-filter-btn" data-tier="tactical"
+                  onclick="window.setRecHistoryTierFilter('tactical')">🏹 Tactical (<span
+                    id="rec-hist-tact-count">0</span>)</button>
               </div>
 
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                 <!-- Status Filter Dropdown -->
-                <select id="rec-history-status-select" class="form-control" style="font-size:0.72rem;padding:3px 8px;width:135px" onchange="window.filterRecommendationHistory()">
+                <select id="rec-history-status-select" class="form-control"
+                  style="font-size:0.72rem;padding:3px 8px;width:135px" onchange="window.filterRecommendationHistory()">
                   <option value="all" selected>All States</option>
                   <option value="active">⚡ Active Only</option>
                   <option value="target">🎯 Targets Achieved</option>
@@ -1500,15 +1527,20 @@
                   <option value="invalidated">🛑 Invalidated</option>
                 </select>
                 <!-- Real-time Search Input -->
-                <input type="text" id="rec-history-search-input" placeholder="Search strike, strategy..." class="form-control" style="font-size:0.72rem;padding:3px 8px;width:160px" oninput="window.filterRecommendationHistory()" />
+                <input type="text" id="rec-history-search-input" placeholder="Search strike, strategy..."
+                  class="form-control" style="font-size:0.72rem;padding:3px 8px;width:160px"
+                  oninput="window.filterRecommendationHistory()" />
               </div>
             </div>
 
             <!-- Recommendation History Table Container -->
-            <div class="table-responsive" style="border:1px solid var(--line);border-radius:8px;background:var(--surface-2);overflow-x:auto">
-              <table class="table table-hover" style="width:100%;font-size:0.74rem;margin-bottom:0;border-collapse:collapse">
+            <div class="table-responsive"
+              style="border:1px solid var(--line);border-radius:8px;background:var(--surface-2);overflow-x:auto">
+              <table class="table table-hover"
+                style="width:100%;font-size:0.74rem;margin-bottom:0;border-collapse:collapse">
                 <thead>
-                  <tr style="border-bottom:1px solid var(--line);background:var(--surface-3);color:var(--ink-mute);text-align:left">
+                  <tr
+                    style="border-bottom:1px solid var(--line);background:var(--surface-3);color:var(--ink-mute);text-align:left">
                     <th style="width:36px;text-align:center"></th>
                     <th style="width:90px">Triggered</th>
                     <th style="width:90px">Last Seen</th>
@@ -1524,7 +1556,8 @@
                 </thead>
                 <tbody id="rec-history-tbody">
                   <tr>
-                    <td colspan="11" style="text-align:center;padding:28px;color:var(--ink-mute)">Loading recommendation history...</td>
+                    <td colspan="11" style="text-align:center;padding:28px;color:var(--ink-mute)">Loading recommendation
+                      history...</td>
                   </tr>
                 </tbody>
               </table>
@@ -1564,6 +1597,14 @@
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px">
+              <button id="sentinel-sound-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleSentinelSound()"
+                title="Toggle Sentinel Signal Audio Alerts">🔔 Audio: ON</button>
+              <button class="tape-ctrl-btn" style="color:var(--go);border-color:rgba(34,197,94,.4)"
+                onclick="window.testSentinelBullishSound()"
+                title="Audition Unique Bullish Sentinel Alert (Ascending Crystal Chime)">🟢 Bull Sound</button>
+              <button class="tape-ctrl-btn" style="color:var(--stop);border-color:rgba(239,68,68,.4)"
+                onclick="window.testSentinelBearishSound()"
+                title="Audition Unique Bearish Sentinel Alert (Descending Sub-Pulse)">🔴 Bear Sound</button>
               <button class="btn btn-secondary"
                 style="font-size:0.72rem;padding:4px 10px;color:var(--go);border-color:rgba(34,197,94,.4);font-weight:750"
                 onclick="window.syncLiveSentinelFeed()" title="Force-sync genuine 1m candles from Dhan broker feed">🔄
@@ -1801,7 +1842,16 @@
             <!-- OrderFlow Signals Stream -->
             <div class="ladder-card">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-                <h3 style="font-size:1.05rem;font-weight:800">⚡ Live OrderFlow Signal Stream</h3>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <h3 style="font-size:1.05rem;font-weight:800;margin:0">⚡ Live OrderFlow Signal Stream</h3>
+                  <button class="tape-ctrl-btn"
+                    style="font-size:0.62rem;padding:1px 6px;color:var(--go);border-color:rgba(34,197,94,.4)"
+                    onclick="window.testSentinelBullishSound()" title="Audition Unique Bullish Chime">🟢 Bull</button>
+                  <button class="tape-ctrl-btn"
+                    style="font-size:0.62rem;padding:1px 6px;color:var(--stop);border-color:rgba(239,68,68,.4)"
+                    onclick="window.testSentinelBearishSound()" title="Audition Unique Bearish Sub-Pulse">🔴
+                    Bear</button>
+                </div>
                 <div class="news-filters" style="display:flex;gap:4px">
                   <button class="btn btn-primary" onclick="window.filterSentinelSignals('ALL')"
                     style="font-size:0.68rem;padding:2px 7px">ALL</button>

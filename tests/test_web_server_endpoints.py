@@ -534,6 +534,78 @@ def test_journal_and_scorecard():
     assert "sentinel_outcomes" in s_data
 
 
+def test_sentinel_signals_endpoint_and_alert_audio_controls():
+    """Verify /api/sentinel/signals endpoint, classification, gain-node AudioParam safety, and race guards."""
+    # 1. Test /api/sentinel/signals and /api/sentinel-signals endpoints
+    for route in ("/api/sentinel/signals?symbol=NIFTY", "/api/sentinel-signals?symbol=NIFTY"):
+        status, headers, content = asyncio.run(asgi_request("GET", route))
+        assert status == 200
+        data = json.loads(content)
+        assert data["symbol"] == "NIFTY"
+        assert "signals" in data
+        assert isinstance(data["signals"], list)
+        for s in data["signals"]:
+            assert "event_id" in s
+            assert "category" in s
+            assert "bias" in s
+            assert "type" in s
+
+    # 2. Test Cockpit Dash Orderflow alerts contain event_id
+    status, _, c_content = asyncio.run(asgi_request("GET", "/api/cockpit-data?symbol=NIFTY"))
+    assert status == 200
+    c_data = json.loads(c_content)
+    assert "orderflow_alerts" in c_data
+    for a in c_data["orderflow_alerts"]:
+        assert "event_id" in a
+
+    # 3. Test index.html contains sentinel audio toggle and audition buttons
+    idx_status, _, idx_content = asyncio.run(asgi_request("GET", "/"))
+    assert idx_status == 200
+    html = idx_content.decode()
+    assert "sentinel-sound-toggle-btn" in html
+    assert "testSentinelBullishSound" in html
+    assert "testSentinelBearishSound" in html
+    assert "toggleSentinelSound" in html
+    assert "cockpit-sentinel-sound-btn" in html
+
+    # 4. Test cockpit.js logic for direction classification, AudioParam safety, and symbol isolation
+    js_status, _, js_content = asyncio.run(asgi_request("GET", "/static/js/cockpit.js"))
+    assert js_status == 200
+    js = js_content.decode()
+
+    # Audio synthesizers exist
+    assert "playSentinelBullishSound" in js
+    assert "playSentinelBearishSound" in js
+    assert "processSentinelSignals" in js
+    assert "pollSentinelSignals" in js
+
+    # Gain node AudioParam bug verification: must target .gain AudioParam, not GainNode directly
+    assert "g3Sub.gain.linearRampToValueAtTime" in js
+    assert "g3Sub.gain.exponentialRampToValueAtTime" in js
+    assert "g3Sub.linearRampToValueAtTime" not in js
+    assert "g3Sub.exponentialRampToValueAtTime" not in js
+
+    # Direction logic: EXHAUSTION_UP must be classified by category/bias, not type containing UP/DOWN
+    assert 'type.includes("UP")' not in js
+    assert 'type.includes("DOWN")' not in js
+    assert 'cat.includes("BULL") || bias === "LONG"' in js
+    assert 'cat.includes("BEAR") || bias === "SHORT"' in js
+
+    # Audition buttons force audio even if muted
+    assert "playSentinelBullishSound(true)" in js
+    assert "playSentinelBearishSound(true)" in js
+    assert "function playSentinelBullishSound(force = false)" in js
+    assert "function playSentinelBearishSound(force = false)" in js
+
+    # Suspended AudioContext guard: return without scheduling oscillators to prevent double-play
+    assert "state.pendingSentinelAlert = { type: \"BULL\", force };" in js
+    assert "state.pendingSentinelAlert = { type: \"BEAR\", force };" in js
+
+    # Empty book initialization & symbol race protection
+    assert "state.sentinelInitialized" in js
+    assert "requestedSym !== (state.symbol || \"\").toUpperCase()" in js
+
+
 def test_effectiveness_empty_sample_has_no_stand_in_rates(monkeypatch):
     """A zero-count journal must not invent hit rates or a 1:2.8 payoff."""
     from data.journal import recommendations_store as store
