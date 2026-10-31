@@ -28,8 +28,7 @@
     audioCtx: null,
     pendingAlertBell: false,
     pendingAlertBellTime: 0,
-    pendingSentinelAlert: null,
-    pendingSentinelAlertTime: 0,
+    pendingSentinelAlerts: [],
     seenSentinelSignals: {},
     sentinelInitialized: {},
     lastSentinelSoundTime: 0,
@@ -121,11 +120,16 @@
           state.pendingAlertBell = false;
           playTraderBellRing();
         }
-        if (state.pendingSentinelAlert && (Date.now() - state.pendingSentinelAlertTime < 30000)) {
-          const p = state.pendingSentinelAlert;
-          state.pendingSentinelAlert = null;
-          if (p.type === "BULL") playSentinelBullishSound(p.force);
-          else if (p.type === "BEAR") playSentinelBearishSound(p.force);
+        if (state.pendingSentinelAlerts && state.pendingSentinelAlerts.length > 0) {
+          const now = Date.now();
+          const alertsToPlay = state.pendingSentinelAlerts.filter((p) => now - p.time < 30000);
+          state.pendingSentinelAlerts = [];
+          alertsToPlay.forEach((p, idx) => {
+            setTimeout(() => {
+              if (p.type === "BULL") playSentinelBullishSound(p.force);
+              else if (p.type === "BEAR") playSentinelBearishSound(p.force);
+            }, idx * 1100);
+          });
         }
       }).catch(() => { });
 
@@ -243,9 +247,11 @@
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        state.pendingSentinelAlert = { type: "BULL", force };
-        state.pendingSentinelAlertTime = Date.now();
-        return; // Do not schedule oscillators while suspended; will play on first click unlock
+        if (!state.pendingSentinelAlerts) state.pendingSentinelAlerts = [];
+        if (state.pendingSentinelAlerts.length < 5) {
+          state.pendingSentinelAlerts.push({ type: "BULL", force, time: Date.now() });
+        }
+        return; // Do not schedule oscillators while suspended; will play sequentially on first click unlock
       }
 
       const now = ctx.currentTime;
@@ -298,9 +304,11 @@
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        state.pendingSentinelAlert = { type: "BEAR", force };
-        state.pendingSentinelAlertTime = Date.now();
-        return; // Do not schedule oscillators while suspended; will play on first click unlock
+        if (!state.pendingSentinelAlerts) state.pendingSentinelAlerts = [];
+        if (state.pendingSentinelAlerts.length < 5) {
+          state.pendingSentinelAlerts.push({ type: "BEAR", force, time: Date.now() });
+        }
+        return; // Do not schedule oscillators while suspended; will play sequentially on first click unlock
       }
 
       const now = ctx.currentTime;
@@ -481,14 +489,14 @@
       const isBull = cat.includes("BULL") || bias === "LONG";
       const isBear = !isBull && (cat.includes("BEAR") || bias === "SHORT");
 
-      // Stagger playback so multiple new signals (e.g. both bull and bear in same poll) all sound clearly
+      // Stagger playback so multiple new signals (e.g. both bull and bear in same poll) all sound clearly without acoustic overlap
       setTimeout(() => {
         if (isBull) {
           playSentinelBullishSound();
         } else if (isBear) {
           playSentinelBearishSound();
         }
-      }, idx * 800);
+      }, idx * 1100);
 
       // Visual Toast Notification
       const icon = isBull ? "🟢" : isBear ? "🔴" : "⚡";
