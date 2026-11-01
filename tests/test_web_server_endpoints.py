@@ -597,9 +597,10 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert "function playSentinelBullishSound(force = false)" in js
     assert "function playSentinelBearishSound(force = false)" in js
 
-    # Suspended AudioContext guard: queue pending alerts without scheduling oscillators to prevent double-play & drops
-    assert "state.pendingSentinelAlerts.push({ type: \"BULL\", force, time: Date.now() });" in js
-    assert "state.pendingSentinelAlerts.push({ type: \"BEAR\", force, time: Date.now() });" in js
+    # Active user session guard: play only in active session, no backlog queue when switching/unlocking
+    assert "pendingSentinelAlerts" not in js
+    assert "document.hidden" in js
+    assert 'ctx.state === "suspended"' in js
     assert "idx * 1100" in js
 
     # Empty book initialization & symbol race protection
