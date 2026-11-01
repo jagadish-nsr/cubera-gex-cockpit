@@ -28,7 +28,6 @@
     audioCtx: null,
     pendingAlertBell: false,
     pendingAlertBellTime: 0,
-    pendingSentinelAlerts: [],
     seenSentinelSignals: {},
     sentinelInitialized: {},
     lastSentinelSoundTime: 0,
@@ -119,17 +118,6 @@
         if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
           state.pendingAlertBell = false;
           playTraderBellRing();
-        }
-        if (state.pendingSentinelAlerts && state.pendingSentinelAlerts.length > 0) {
-          const now = Date.now();
-          const alertsToPlay = state.pendingSentinelAlerts.filter((p) => now - p.time < 30000);
-          state.pendingSentinelAlerts = [];
-          alertsToPlay.forEach((p, idx) => {
-            setTimeout(() => {
-              if (p.type === "BULL") playSentinelBullishSound(p.force);
-              else if (p.type === "BEAR") playSentinelBearishSound(p.force);
-            }, idx * 1100);
-          });
         }
       }).catch(() => { });
 
@@ -242,16 +230,18 @@
    * Conveys positive buyer-initiated momentum, absorption, and continuation.
    */
   function playSentinelBullishSound(force = false) {
-    if (!force && !state.sentinelSoundEnabled) return;
+    if (!force) {
+      if (!state.sentinelSoundEnabled) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+    }
     try {
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        if (!state.pendingSentinelAlerts) state.pendingSentinelAlerts = [];
-        if (state.pendingSentinelAlerts.length < 5) {
-          state.pendingSentinelAlerts.push({ type: "BULL", force, time: Date.now() });
+        if (force) {
+          ctx.resume().then(() => playSentinelBullishSound(true)).catch(() => { });
         }
-        return; // Do not schedule oscillators while suspended; will play sequentially on first click unlock
+        return; // Play only in active user session; do not backlog sounds while suspended or inactive
       }
 
       const now = ctx.currentTime;
@@ -299,16 +289,18 @@
    * Conveys seller-initiated liquidation, resistance absorption failure, and downward breakdown.
    */
   function playSentinelBearishSound(force = false) {
-    if (!force && !state.sentinelSoundEnabled) return;
+    if (!force) {
+      if (!state.sentinelSoundEnabled) return;
+      if (typeof document !== "undefined" && document.hidden) return;
+    }
     try {
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        if (!state.pendingSentinelAlerts) state.pendingSentinelAlerts = [];
-        if (state.pendingSentinelAlerts.length < 5) {
-          state.pendingSentinelAlerts.push({ type: "BEAR", force, time: Date.now() });
+        if (force) {
+          ctx.resume().then(() => playSentinelBearishSound(true)).catch(() => { });
         }
-        return; // Do not schedule oscillators while suspended; will play sequentially on first click unlock
+        return; // Play only in active user session; do not backlog sounds while suspended or inactive
       }
 
       const now = ctx.currentTime;
@@ -421,14 +413,22 @@
   };
 
   window.testSentinelBullishSound = function () {
-    initAudioContext();
-    playSentinelBullishSound(true);
+    const ctx = initAudioContext();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().then(() => playSentinelBullishSound(true)).catch(() => { });
+    } else {
+      playSentinelBullishSound(true);
+    }
     showToast("Auditioning Bullish Sentinel Alert (Ascending Crystal Chime)", "🟢");
   };
 
   window.testSentinelBearishSound = function () {
-    initAudioContext();
-    playSentinelBearishSound(true);
+    const ctx = initAudioContext();
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().then(() => playSentinelBearishSound(true)).catch(() => { });
+    } else {
+      playSentinelBearishSound(true);
+    }
     showToast("Auditioning Bearish Sentinel Alert (Descending Sub-Pulse)", "🔴");
   };
 
