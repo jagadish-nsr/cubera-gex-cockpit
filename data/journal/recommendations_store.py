@@ -127,8 +127,6 @@ def ensure_schema() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_rec_symbol_status ON recommendation_records(symbol, status);
         CREATE INDEX IF NOT EXISTS idx_rec_bookmarked ON recommendation_records(is_bookmarked);
-        CREATE INDEX IF NOT EXISTS idx_rec_last_appeared ON recommendation_records(last_appeared);
-        CREATE INDEX IF NOT EXISTS idx_rec_highest_tier ON recommendation_records(highest_tier, highest_score);
 
         CREATE TABLE IF NOT EXISTS recommendation_score_history (
             history_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,6 +213,16 @@ def ensure_schema() -> None:
                 conn.execute(f"ALTER TABLE recommendation_records ADD COLUMN {col_name} {col_type}")
             except sqlite3.OperationalError:
                 pass
+
+        # Indexes follow the ALTER. An existing table does not gain columns from
+        # CREATE TABLE IF NOT EXISTS, so indexing them inside the script above
+        # aborts before the columns are added.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rec_last_appeared ON recommendation_records(last_appeared)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rec_highest_tier ON recommendation_records(highest_tier, highest_score)"
+        )
 
         # Backfill initial trajectory & peak tier data for legacy rows
         try:

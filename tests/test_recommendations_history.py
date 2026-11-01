@@ -134,6 +134,66 @@ def test_schema_has_trajectory_and_peak_columns():
     assert "highest_tier" in cols
 
 
+def test_legacy_table_gains_last_appeared_before_its_index():
+    """An existing book has no last_appeared. Indexing that column first used to abort the cockpit."""
+    with rs._get_write_conn() as conn:
+        conn.execute("DROP TABLE recommendation_records")
+        conn.execute("""
+            CREATE TABLE recommendation_records (
+                rec_id TEXT PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                strike REAL NOT NULL,
+                option_symbol TEXT NOT NULL,
+                play_type TEXT NOT NULL,
+                play_badge TEXT NOT NULL,
+                triggered_at TEXT NOT NULL,
+                initial_spot REAL NOT NULL,
+                initial_ltp REAL NOT NULL,
+                initial_score INTEGER NOT NULL,
+                current_score INTEGER NOT NULL,
+                conviction_tier TEXT NOT NULL,
+                target_1 REAL NOT NULL,
+                target_1_spot REAL NOT NULL,
+                target_2 REAL NOT NULL,
+                target_2_spot REAL NOT NULL,
+                stop_loss REAL NOT NULL,
+                spot_invalidation REAL NOT NULL,
+                spot_invalidation_text TEXT NOT NULL,
+                risk_reward_ratio TEXT NOT NULL,
+                entry_trigger TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                catalyst_tags_json TEXT NOT NULL,
+                is_bookmarked INTEGER DEFAULT 0,
+                bookmarked_at TEXT,
+                status TEXT DEFAULT 'ACTIVE',
+                outcome_ts TEXT,
+                payload_json TEXT NOT NULL,
+                created_at TEXT
+            )
+        """)
+        conn.execute(
+            "INSERT INTO recommendation_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                "legacy-1", "NIFTY", "CE", 23000, "NIFTY23000CE", "NAKED", "CE",
+                "2026-10-30 10:45:00", 22900, 100, 80, 70, "MEDIUM",
+                120, 23100, 150, 23200, 80, 22800, "below", "1.5", "spot",
+                "why", "[]", 0, None, "ACTIVE", None, "{}", "2026-10-30 10:45:00",
+            ),
+        )
+    rs.ensure_schema()
+    with rs._get_read_conn() as conn:
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(recommendation_records)").fetchall()]
+        indexes = [r[1] for r in conn.execute("PRAGMA index_list(recommendation_records)").fetchall()]
+        row = conn.execute("SELECT last_appeared, highest_score FROM recommendation_records WHERE rec_id='legacy-1'").fetchone()
+    assert "last_appeared" in cols
+    assert "highest_score" in cols
+    assert "highest_tier" in cols
+    assert "idx_rec_last_appeared" in indexes
+    assert row["last_appeared"] == "2026-10-30 10:45:00"
+    assert row["highest_score"] == 80
+
+
 def test_get_history_endpoint_is_strictly_read_only_and_safe_for_banknifty():
     """Verify GET /api/recommendations/history is 100% read-only and does not mutate Bank Nifty cards."""
     now_ts = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
