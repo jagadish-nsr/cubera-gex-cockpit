@@ -435,6 +435,33 @@
   window.playSentinelBullishSound = playSentinelBullishSound;
   window.playSentinelBearishSound = playSentinelBearishSound;
 
+  function formatInrLevel(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return "";
+    return `₹${v.toLocaleString("en-IN", { maximumFractionDigits: 1 })}`;
+  }
+
+  function sentinelTargetMarkup(s) {
+    const entry = Number(s.entry_price || 0);
+    const pts = Number(s.target_1_pts || 0);
+    if (!(entry > 0) || !(pts > 0)) return "";
+    const bias = String(s.bias || "").toUpperCase();
+    const cat = String(s.category || "").toUpperCase();
+    const isShort = bias === "SHORT" || (bias !== "LONG" && cat.includes("BEAR"));
+    const spot = isShort ? entry - pts : entry + pts;
+    const ptsTxt = pts.toLocaleString("en-IN", { maximumFractionDigits: 1 });
+    return `<span>5m Target: <b style="color:var(--go)">${formatInrLevel(spot)} (${ptsTxt} pts)</b></span>`;
+  }
+
+  function spotTargetBesideInval(card) {
+    const spot = Number(card && (card.target_1_spot || card.target_spot) || 0);
+    if (!(spot > 0)) return "";
+    const inval = Number(card.spot_invalidation || 0);
+    const pts = inval > 0 ? Math.abs(spot - inval) : 0;
+    const ptsTxt = pts > 0 ? ` · ${pts.toLocaleString("en-IN", { maximumFractionDigits: 0 })} pts from inval` : "";
+    return ` · <span style="color:var(--go)"><b>Target spot:</b> ${formatInrLevel(spot)}${ptsTxt}</span>`;
+  }
+
   // -------------------------------------------------------------------------
   // Real-Time Sentinel Signals Tracker & Sound Alert Dispatcher
   // -------------------------------------------------------------------------
@@ -1553,6 +1580,7 @@
               <span>Delta: <b style="color:${a.delta >= 0 ? "var(--go)" : "var(--stop)"}">${a.delta >= 0 ? "+" : ""}${a.delta}</b></span>
               <span>RVOL: <b>${a.rvol_tod}x</b></span>
               <span>5m Inval: <b style="color:var(--stop)">${invalText}</b></span>
+              ${sentinelTargetMarkup(a)}
             </div>
           `;
           alertsContainer.appendChild(div);
@@ -1938,7 +1966,7 @@
                   <div style="background:rgba(0,0,0,0.22);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:8px 0;font-size:0.76rem">
                     <div><b>⚡ Trigger:</b> ${entryTrigger}</div>
                     <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
-                      <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}</span>
+                      <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}${spotTargetBesideInval(c)}</span>
                       ${invalStatusHtml}
                     </div>
                   </div>
@@ -4043,7 +4071,7 @@
               <div style="background:rgba(0,0,0,0.22);border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin:8px 0;font-size:0.76rem">
                 <div><b>⚡ Microstructure Trigger:</b> ${entryTrigger}</div>
                 <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
-                  <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}</span>
+                  <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${invalText}${spotTargetBesideInval(c)}</span>
                   ${invalStatusHtml}
                 </div>
               </div>
@@ -4325,7 +4353,7 @@
         <div style="background:rgba(0,0,0,0.25);border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin:8px 0;font-size:0.78rem">
           <div><b>⚡ Trigger:</b> ${best.entry_trigger}</div>
           <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center">
-            <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${best.spot_invalidation.toLocaleString("en-IN")} — ${best.spot_invalidation_text}</span>
+            <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${best.spot_invalidation.toLocaleString("en-IN")} — ${best.spot_invalidation_text}${spotTargetBesideInval(best)}</span>
             <span style="font-size:0.7rem;font-weight:750;color:${best.inval_breached ? "var(--stop)" : "var(--go)"}">
               ${best.inval_breached ? `🛑 INVALIDATED (-${Math.abs(best.inval_buffer).toFixed(0)} pts)` : `🟢 Active (+${best.inval_buffer.toFixed(0)} pts buffer)`}
             </span>
@@ -5284,6 +5312,7 @@
           <span>Delta: <b style="color:${s.delta >= 0 ? "var(--go)" : "var(--stop)"}">${s.delta >= 0 ? "+" : ""}${s.delta}</b></span>
           <span>RVOL: <b>${s.rvol_tod}x</b></span>
           <span>5m Inval: <b style="color:var(--stop)">${invalText}</b></span>
+          ${sentinelTargetMarkup(s)}
           <span>${outcomeLabel}</span>
         </div>
       `;
