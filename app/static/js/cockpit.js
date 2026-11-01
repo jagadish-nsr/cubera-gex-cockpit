@@ -230,10 +230,7 @@
    * Conveys positive buyer-initiated momentum, absorption, and continuation.
    */
   function playSentinelBullishSound(force = false) {
-    if (!force) {
-      if (!state.sentinelSoundEnabled) return;
-      if (typeof document !== "undefined" && document.hidden) return;
-    }
+    if (!force && !state.sentinelSoundEnabled) return;
     try {
       const ctx = initAudioContext();
       if (!ctx) return;
@@ -241,7 +238,7 @@
         if (force) {
           ctx.resume().then(() => playSentinelBullishSound(true)).catch(() => { });
         }
-        return; // Play only in active user session; do not backlog sounds while suspended or inactive
+        return; // Drop silent backlog while context is uninitialized/suspended; never queue stale sounds
       }
 
       const now = ctx.currentTime;
@@ -289,10 +286,7 @@
    * Conveys seller-initiated liquidation, resistance absorption failure, and downward breakdown.
    */
   function playSentinelBearishSound(force = false) {
-    if (!force) {
-      if (!state.sentinelSoundEnabled) return;
-      if (typeof document !== "undefined" && document.hidden) return;
-    }
+    if (!force && !state.sentinelSoundEnabled) return;
     try {
       const ctx = initAudioContext();
       if (!ctx) return;
@@ -300,7 +294,7 @@
         if (force) {
           ctx.resume().then(() => playSentinelBearishSound(true)).catch(() => { });
         }
-        return; // Play only in active user session; do not backlog sounds while suspended or inactive
+        return; // Drop silent backlog while context is uninitialized/suspended; never queue stale sounds
       }
 
       const now = ctx.currentTime;
