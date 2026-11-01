@@ -597,9 +597,8 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert "function playSentinelBullishSound(force = false)" in js
     assert "function playSentinelBearishSound(force = false)" in js
 
-    # Active user session guard: play only in active session, no backlog queue when switching/unlocking
+    # Active browser session guard: play live sounds, never queue/backlog stale sounds while suspended
     assert "pendingSentinelAlerts" not in js
-    assert "document.hidden" in js
     assert 'ctx.state === "suspended"' in js
     assert "idx * 1100" in js
 

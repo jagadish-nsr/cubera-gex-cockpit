@@ -12,6 +12,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 
 STALL_S = 45.0
 TICK_S = 1.0
@@ -32,7 +33,22 @@ def stalled(now: float, beat: float, armed_at: float, stall_s: float) -> bool:
     return (now - anchor) > stall_s
 
 
+def main_thread_stack(limit: int = 40) -> str:
+    """Innermost frames of the main thread.
+
+    The watchdog thread reads this while the loop thread is blocked. The
+    blocked call is the last frame.
+    """
+    ident = threading.main_thread().ident
+    frame = sys._current_frames().get(ident) if ident is not None else None
+    if frame is None:
+        return "main thread stack unavailable"
+    lines = traceback.format_stack(frame)
+    return "".join(lines[-limit:]).rstrip()
+
+
 def _default_restart() -> None:
+    stack = main_thread_stack()
     try:
         from app.obs import event
         event(
@@ -41,11 +57,13 @@ def _default_restart() -> None:
             ok=False,
             workflow="watchdog",
             message="event loop stalled; restarting process",
+            stack=stack,
         )
     except Exception:
         pass
     try:
         os.write(2, b"event loop stalled; restarting process\n")
+        os.write(2, stack.encode("utf-8", errors="replace") + b"\n")
     except Exception:
         pass
     os.execv(sys.executable, [sys.executable, *sys.argv])
