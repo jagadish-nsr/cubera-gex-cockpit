@@ -2470,6 +2470,8 @@ async def get_cockpit_data(
             "rvol_tod": s.rvol_tod,
             "delta": s.delta,
             "invalidation_level": s.invalidation_level,
+            "entry_price": getattr(s, "entry_price", 0.0) or 0.0,
+            "target_1_pts": getattr(s, "target_1_pts", 0.0) or 0.0,
             "insight_text": s.insight_text,
             "actionable_play": getattr(s, "actionable_play", "") or "",
             "gex_alignment": getattr(s, "gex_alignment", "") or "",
@@ -3769,6 +3771,8 @@ async def get_sentinel_signals(symbol: Optional[str] = None, limit: int = 25):
                 "rvol_tod": s.rvol_tod,
                 "delta": s.delta,
                 "invalidation_level": s.invalidation_level,
+                "entry_price": getattr(s, "entry_price", 0.0) or 0.0,
+                "target_1_pts": getattr(s, "target_1_pts", 0.0) or 0.0,
                 "insight_text": s.insight_text,
                 "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
             }

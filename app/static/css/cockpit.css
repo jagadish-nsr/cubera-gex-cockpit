@@ -1001,7 +1001,7 @@ body {
 /* Market alert tape and the orderflow sentinel tape share one row under the KPIs. */
 #tab-cockpit .cockpit-tape-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   gap: 6px;
   align-items: stretch;
   margin-bottom: 8px;
@@ -1091,7 +1091,8 @@ body {
   .header-session-line {
     justify-content: flex-start;
   }
-  #tab-cockpit .cockpit-tape-row {
+  #tab-cockpit .cockpit-tape-row,
+  .sentinel-bottom-row {
     grid-template-columns: 1fr;
   }
   #tab-cockpit .kpi-grid {
@@ -1763,6 +1764,14 @@ body {
   color: var(--spark);
   border-color: var(--spark);
   box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
+}
+
+/* OrderFlow stream sits beside the high-volume tape. Give the cards a little more of the row. */
+.sentinel-bottom-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 18px;
+  margin-top: 20px;
 }
 
 /* Sentinel Signals Stream Cards */
