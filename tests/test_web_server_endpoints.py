@@ -562,11 +562,15 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     idx_status, _, idx_content = asyncio.run(asgi_request("GET", "/"))
     assert idx_status == 200
     html = idx_content.decode()
-    assert "sentinel-sound-toggle-btn" in html
+    assert 'id="sidebar-audio-toggle"' in html
     assert "testSentinelBullishSound" in html
     assert "testSentinelBearishSound" in html
-    assert "toggleSentinelSound" in html
-    assert "cockpit-sentinel-sound-btn" in html
+    assert 'id="sidebar-sentinel-sound-toggle"' not in html
+    assert 'id="sidebar-alert-bell-toggle"' not in html
+    assert 'id="sidebar-chimes-toggle"' not in html
+    assert 'id="sentinel-sound-toggle-btn"' not in html
+    assert 'id="cockpit-sentinel-sound-btn"' not in html
+    assert 'id="alert-bell-toggle-btn"' not in html
 
     # 4. Test cockpit.js logic for direction classification, AudioParam safety, and symbol isolation
     js_status, _, js_content = asyncio.run(asgi_request("GET", "/static/js/cockpit.js"))
@@ -576,6 +580,8 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     # Audio synthesizers exist
     assert "playSentinelBullishSound" in js
     assert "playSentinelBearishSound" in js
+    assert "toggleAudio" in js
+    assert "setAllAudioEnabled" in js
     assert "processSentinelSignals" in js
     assert "pollSentinelSignals" in js
 

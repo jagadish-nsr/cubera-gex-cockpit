@@ -8,7 +8,7 @@
   <meta name="description"
     content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.24">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.28">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function () {
@@ -152,6 +152,9 @@
           <span id="sidebar-theme-toggle-icon">🌙</span>
           <span id="sidebar-theme-toggle-label">Theme Mode: Dark</span>
         </button>
+
+        <button id="sidebar-audio-toggle" class="btn btn-secondary btn-block audio-toggle-btn active"
+          type="button" title="Toggle all cockpit audio (alert bell, sentinel, and chimes)">🔔 Audio: ON</button>
 
         <hr style="border:none;border-top:1px solid var(--line);margin:4px 0">
 
@@ -583,22 +586,11 @@
                   </div>
                 </div>
               </div>
-              <div class="alert-tape-anchor-right">
-                <button id="alert-bell-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleAlertBell()"
-                  title="Toggle 3-second alert bell sound">🔔 Bell: ON</button>
-                <button id="alert-bell-test-btn" class="tape-ctrl-btn" onclick="window.testAlertBell()"
-                  title="Audition 3-second louder brass bell chime">🔔 Test</button>
-              </div>
             </div>
             <div class="cockpit-orderflow-tape" id="cockpit-orderflow-tape">
               <div class="cockpit-orderflow-head">
                 <span>OrderFlow sentinel tape</span>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <button id="cockpit-sentinel-sound-btn" class="tape-ctrl-btn active"
-                    style="font-size:0.65rem;padding:2px 7px" onclick="window.toggleSentinelSound()"
-                    title="Toggle Sentinel Signal Audio Alerts">🔔 Audio: ON</button>
-                  <span class="badge-active">Microstructure</span>
-                </div>
+                <span class="badge-active">Microstructure</span>
               </div>
               <div id="cockpit-orderflow-alerts-container" class="signal-stream-container">
               </div>
@@ -1597,8 +1589,6 @@
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:6px">
-              <button id="sentinel-sound-toggle-btn" class="tape-ctrl-btn active" onclick="window.toggleSentinelSound()"
-                title="Toggle Sentinel Signal Audio Alerts">🔔 Audio: ON</button>
               <button class="tape-ctrl-btn" style="color:var(--go);border-color:rgba(34,197,94,.4)"
                 onclick="window.testSentinelBullishSound()"
                 title="Audition Unique Bullish Sentinel Alert (Ascending Crystal Chime)">🟢 Bull Sound</button>
@@ -2834,7 +2824,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.42"></script>
+  <script src="/static/js/cockpit.js?v=6.44"></script>
 </body>
 
 </html>
