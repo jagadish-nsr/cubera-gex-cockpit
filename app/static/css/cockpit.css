@@ -1018,8 +1018,10 @@ body {
 }
 
 #tab-cockpit .alert-tape-anchor-left {
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-width: 0;
+  flex-direction: row;
+  align-items: center;
   flex-wrap: nowrap;
   gap: 6px;
 }
@@ -1034,9 +1036,12 @@ body {
 }
 
 #tab-cockpit .alert-tape-badge {
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 #tab-cockpit .cockpit-orderflow-tape {
@@ -2702,6 +2707,36 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 .theme-toggle-label {
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+.sidebar-audio-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.sidebar-audio-controls .audio-toggle-btn,
+.sidebar-audio-controls .audio-test-btn {
+  justify-content: flex-start;
+  font-size: 0.76rem;
+  font-weight: 700;
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.sidebar-audio-controls .audio-toggle-btn.active {
+  border-color: var(--go);
+  color: var(--go);
+}
+
+.sidebar-audio-controls .audio-toggle-btn.muted {
+  border-color: var(--line);
+  color: var(--ink-mute);
+}
+
+.sidebar-audio-controls .audio-test-btn {
+  color: var(--ink-mute);
 }
 
 .admin-table {

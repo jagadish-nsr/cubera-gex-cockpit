@@ -14,10 +14,10 @@
     capital: 500000,
     riskPct: 1.5,
     activeTab: "tab-cockpit",
-    soundEnabled: true,
-    sentinelSoundEnabled: localStorage.getItem("cubera_sentinel_sound_muted") !== "true",
+    soundEnabled: localStorage.getItem("cubera_audio_muted") !== "true",
+    sentinelSoundEnabled: localStorage.getItem("cubera_audio_muted") !== "true",
     theme: localStorage.getItem("cubera_theme") || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"),
-    alertBellEnabled: localStorage.getItem("cubera_alert_bell_muted") !== "true",
+    alertBellEnabled: localStorage.getItem("cubera_audio_muted") !== "true",
     lastAlertScenarios: {},
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
@@ -199,20 +199,37 @@
     }
   }
 
-  window.toggleAlertBell = function () {
-    state.alertBellEnabled = !state.alertBellEnabled;
-    localStorage.setItem("cubera_alert_bell_muted", (!state.alertBellEnabled).toString());
-    const btn = document.getElementById("alert-bell-toggle-btn");
-    if (btn) {
-      if (state.alertBellEnabled) {
-        btn.textContent = "🔔 Bell: ON";
-        btn.className = "tape-ctrl-btn active";
-      } else {
-        btn.textContent = "🔕 Bell: MUTE";
-        btn.className = "tape-ctrl-btn muted";
-      }
-    }
+  function isAudioEnabled() {
+    return Boolean(state.soundEnabled && state.sentinelSoundEnabled && state.alertBellEnabled);
+  }
+
+  function updateAudioUI() {
+    const btn = document.getElementById("sidebar-audio-toggle");
+    if (!btn) return;
+    const enabled = isAudioEnabled();
+    btn.textContent = enabled ? "🔔 Audio: ON" : "🔕 Audio: MUTE";
+    btn.classList.toggle("active", enabled);
+    btn.classList.toggle("muted", !enabled);
+  }
+
+  function setAllAudioEnabled(enabled) {
+    state.soundEnabled = enabled;
+    state.sentinelSoundEnabled = enabled;
+    state.alertBellEnabled = enabled;
+    localStorage.setItem("cubera_audio_muted", (!enabled).toString());
+    updateAudioUI();
+  }
+
+  window.toggleAudio = function () {
+    const next = !isAudioEnabled();
+    setAllAudioEnabled(next);
+    showToast(`Audio ${next ? "ENABLED" : "MUTED"}`, next ? "🔔" : "🔕");
   };
+
+  // Keep old names pointing at the single master toggle.
+  window.toggleAlertBell = window.toggleAudio;
+  window.toggleSentinelSound = window.toggleAudio;
+  window.toggleAudioChimes = window.toggleAudio;
 
   window.testAlertBell = function () {
     initAudioContext();
@@ -381,30 +398,8 @@
   }
 
   function updateSentinelSoundUI() {
-    const isEnabled = state.sentinelSoundEnabled;
-    const btns = [
-      document.getElementById("sentinel-sound-toggle-btn"),
-      document.getElementById("cockpit-sentinel-sound-btn")
-    ];
-    btns.forEach((btn) => {
-      if (btn) {
-        if (isEnabled) {
-          btn.textContent = "🔔 Audio: ON";
-          btn.className = "tape-ctrl-btn active";
-        } else {
-          btn.textContent = "🔕 Audio: MUTE";
-          btn.className = "tape-ctrl-btn muted";
-        }
-      }
-    });
+    updateAudioUI();
   }
-
-  window.toggleSentinelSound = function () {
-    state.sentinelSoundEnabled = !state.sentinelSoundEnabled;
-    localStorage.setItem("cubera_sentinel_sound_muted", (!state.sentinelSoundEnabled).toString());
-    updateSentinelSoundUI();
-    showToast(`Sentinel Audio Signals ${state.sentinelSoundEnabled ? "ENABLED" : "MUTED"}`, state.sentinelSoundEnabled ? "🔔" : "🔕");
-  };
 
   window.testSentinelBullishSound = function () {
     const ctx = initAudioContext();
@@ -6807,14 +6802,9 @@
       });
     }
 
-    // Sound toggle
-    const btnSound = document.getElementById("btn-sound-toggle");
-    if (btnSound) {
-      btnSound.addEventListener("click", () => {
-        state.soundEnabled = !state.soundEnabled;
-        btnSound.textContent = state.soundEnabled ? "🔔 Audio Chimes: ON" : "🔕 Audio Chimes: OFF";
-        showToast(`Sound alerts ${state.soundEnabled ? "enabled" : "muted"}`);
-      });
+    const btnSidebarAudio = document.getElementById("sidebar-audio-toggle");
+    if (btnSidebarAudio) {
+      btnSidebarAudio.addEventListener("click", () => window.toggleAudio());
     }
 
     // Theme Mode Toggle (Header & Sidebar buttons, plus Ctrl+Shift+D shortcut)
@@ -7162,18 +7152,7 @@
         window.closePosition(state.closingTradeId, prem, reason);
       });
     }
-    const bellBtn = document.getElementById("alert-bell-toggle-btn");
-    if (bellBtn) {
-      if (state.alertBellEnabled) {
-        bellBtn.textContent = "🔔 Bell: ON";
-        bellBtn.className = "tape-ctrl-btn active";
-      } else {
-        bellBtn.textContent = "🔕 Bell: MUTE";
-        bellBtn.className = "tape-ctrl-btn muted";
-      }
-    }
-    // Initialize Sentinel Sound UI buttons
-    updateSentinelSoundUI();
+    updateAudioUI();
 
     // Apply initialized theme state
     applyTheme(state.theme, false);
