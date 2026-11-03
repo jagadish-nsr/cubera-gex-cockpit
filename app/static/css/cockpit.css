@@ -998,6 +998,22 @@ body {
   text-overflow: ellipsis;
 }
 
+#tab-cockpit .gamma-blast-audio-preview {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#tab-cockpit .gamma-blast-audio-btn {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: var(--ink-mute);
+}
+
 /* Market alert tape and the orderflow sentinel tape share one row under the KPIs. */
 #tab-cockpit .cockpit-tape-row {
   display: grid;

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gamma Blast Sound Preview</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a222c;
+      --ink: #e8eef4;
+      --mute: #8b9aab;
+      --line: #2a3542;
+      --coil: #e6b84d;
+      --blast: #e85d5d;
+      --go: #3dbf7a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      background: radial-gradient(ellipse at 30% 0%, #1a2838 0%, var(--bg) 55%);
+      color: var(--ink);
+      padding: 40px 24px 64px;
+    }
+    main { max-width: 640px; margin: 0 auto; }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 750;
+      letter-spacing: -0.02em;
+      margin: 0 0 6px;
+    }
+    .sub {
+      color: var(--mute);
+      font-size: 0.92rem;
+      line-height: 1.45;
+      margin: 0 0 28px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px 18px 16px;
+      margin-bottom: 14px;
+    }
+    .card.coil { border-left: 3px solid var(--coil); }
+    .card.blast { border-left: 3px solid var(--blast); }
+    .card h2 {
+      margin: 0 0 4px;
+      font-size: 0.95rem;
+      font-weight: 750;
+    }
+    .card p {
+      margin: 0 0 14px;
+      font-size: 0.82rem;
+      color: var(--mute);
+      line-height: 1.4;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    button {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #243040;
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 700;
+      padding: 8px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { border-color: #4a5d72; }
+    button.primary-coil { border-color: var(--coil); color: var(--coil); }
+    button.primary-blast { border-color: var(--blast); color: var(--blast); }
+    button.stop { color: var(--mute); }
+    .status {
+      margin-top: 18px;
+      font-size: 0.8rem;
+      color: var(--mute);
+      font-family: "IBM Plex Mono", ui-monospace, monospace;
+      min-height: 1.2em;
+    }
+    .note {
+      margin-top: 22px;
+      font-size: 0.78rem;
+      color: var(--mute);
+      line-height: 1.45;
+      border-top: 1px solid var(--line);
+      padding-top: 14px;
+    }
+    .note b { color: var(--go); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Expiry gamma blast — sound preview</h1>
+    <p class="sub">
+      Review these synthesizers before they stay wired to live COILING / ACTIVE states.
+      Click once to unlock audio, then audition each cue.
+    </p>
+
+    <section class="card coil">
+      <h2>1. Coiling / Imminent — heartbeat</h2>
+      <p>
+        Soft lub–dub at ~67 bpm. Loops while the badge stays
+        <code>COILING / IMMINENT</code>. Preview runs ~6 seconds.
+      </p>
+      <div class="row">
+        <button type="button" class="primary-coil" id="btn-heart">▶ Preview heartbeat</button>
+      </div>
+    </section>
+
+    <section class="card blast">
+      <h2>2. Active blast — car rev</h2>
+      <p>
+        Engine rumble: idle → throttle spike → hold near redline → back off (~10s).
+        Intensity raises volume <em>and</em> RPM. Live mode drives that from movement spikes.
+      </p>
+      <div class="row">
+        <button type="button" class="primary-blast" id="btn-rev">▶ Preview engine rev</button>
+      </div>
+    </section>
+
+    <div class="row">
+      <button type="button" class="stop" id="btn-stop">Stop</button>
+    </div>
+    <div class="status" id="status">Idle — click a preview.</div>
+    <p class="note">
+      Live wiring is <b>on</b>: COILING → heartbeat loop, ACTIVE → engine rev (volume + RPM from
+      movement spikes). Mute via the cockpit Audio toggle. Preview buttons still audition here and on the card.
+    </p>
+  </main>
+
+  <script>
+    (function () {
+      "use strict";
+
+      const REV_MAX_GAIN = 0.22;
+      let audioCtx = null;
+      let heartbeatTimer = null;
+      let heartbeatStopAt = 0;
+      let revNodes = null;
+      let previewTimers = [];
+      const statusEl = document.getElementById("status");
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      function initCtx() {
+        if (!audioCtx) {
+          const C = window.AudioContext || window.webkitAudioContext;
+          if (!C) {
+            setStatus("Web Audio not available in this browser.");
+            return null;
+          }
+          audioCtx = new C();
+        }
+        if (audioCtx.state === "suspended") audioCtx.resume();
+        return audioCtx;
+      }
+
+      function clearPreviewTimers() {
+        previewTimers.forEach((id) => clearTimeout(id));
+        previewTimers = [];
+      }
+
+      function stopHeartbeat() {
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+        heartbeatStopAt = 0;
+      }
+
+      function stopRev() {
+        clearPreviewTimers();
+        const nodes = revNodes;
+        revNodes = null;
+        if (!nodes) return;
+        const now = nodes.ctx.currentTime;
+        nodes.master.gain.cancelScheduledValues(now);
+        nodes.master.gain.setValueAtTime(Math.max(0.0001, nodes.master.gain.value), now);
+        nodes.master.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+        setTimeout(() => {
+          try {
+            (nodes.oscs || []).forEach((o) => { try { o.stop(); } catch (_) {} });
+            if (nodes.lfo) nodes.lfo.stop();
+            if (nodes.noise) nodes.noise.stop();
+          } catch (_) {}
+        }, 480);
+      }
+
+      function stopAll() {
+        stopHeartbeat();
+        stopRev();
+        setStatus("Stopped.");
+      }
+
+      function fireThump(ctx, when) {
+        function strike(partials, t0) {
+          partials.forEach((p) => {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = p.type;
+            osc.frequency.setValueAtTime(p.freq, t0);
+            osc.frequency.exponentialRampToValueAtTime(Math.max(30, p.freq * 0.65), t0 + p.decay);
+            g.gain.setValueAtTime(0.0001, t0);
+            g.gain.linearRampToValueAtTime(p.gain, t0 + p.attack);
+            g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
+            osc.connect(g);
+            g.connect(ctx.destination);
+            osc.start(t0);
+            osc.stop(t0 + p.decay + 0.04);
+          });
+        }
+        strike([
+          { freq: 55, gain: 0.38, attack: 0.012, decay: 0.16, type: "sine" },
+          { freq: 95, gain: 0.14, attack: 0.010, decay: 0.12, type: "triangle" },
+        ], when);
+        strike([
+          { freq: 70, gain: 0.30, attack: 0.010, decay: 0.14, type: "sine" },
+          { freq: 120, gain: 0.11, attack: 0.008, decay: 0.10, type: "triangle" },
+        ], when + 0.18);
+      }
+
+      function startHeartbeat() {
+        stopAll();
+        const ctx = initCtx();
+        if (!ctx) return;
+        heartbeatStopAt = Date.now() + 6000;
+        const fire = () => {
+          if (heartbeatStopAt && Date.now() >= heartbeatStopAt) {
+            stopHeartbeat();
+            setStatus("Heartbeat preview finished.");
+            return;
+          }
+          fireThump(ctx, ctx.currentTime);
+        };
+        fire();
+        heartbeatTimer = setInterval(fire, 900);
+        setStatus("Playing coiling heartbeat (~6s)…");
+      }
+
+      function setIntensity(level, rampSec) {
+        if (!revNodes) return;
+        const t = revNodes.ctx.currentTime;
+        const r = Math.max(0.05, rampSec || 0.25);
+        const clamped = Math.max(0, Math.min(1, level));
+        const target = Math.max(0.0001, clamped * revNodes.maxGain);
+        revNodes.master.gain.cancelScheduledValues(t);
+        revNodes.master.gain.setValueAtTime(Math.max(0.0001, revNodes.master.gain.value), t);
+        revNodes.master.gain.linearRampToValueAtTime(target, t + r);
+
+        const rpmHz = 58 + clamped * 152;
+        (revNodes.oscs || []).forEach((osc, i) => {
+          const ratio = (revNodes.ratios && revNodes.ratios[i]) || 1;
+          const f = rpmHz * ratio;
+          osc.frequency.cancelScheduledValues(t);
+          osc.frequency.setValueAtTime(Math.max(20, osc.frequency.value || f), t);
+          osc.frequency.linearRampToValueAtTime(f, t + r);
+        });
+
+        if (revNodes.filter) {
+          const cut = 320 + clamped * 2400;
+          revNodes.filter.frequency.cancelScheduledValues(t);
+          revNodes.filter.frequency.setValueAtTime(Math.max(80, revNodes.filter.frequency.value || cut), t);
+          revNodes.filter.frequency.linearRampToValueAtTime(cut, t + r);
+        }
+        if (revNodes.lfo) {
+          const lfoRate = 6 + clamped * 32;
+          revNodes.lfo.frequency.cancelScheduledValues(t);
+          revNodes.lfo.frequency.setValueAtTime(Math.max(0.5, revNodes.lfo.frequency.value || lfoRate), t);
+          revNodes.lfo.frequency.linearRampToValueAtTime(lfoRate, t + r);
+        }
+        if (revNodes.noiseGain) {
+          const ng = 0.015 + clamped * 0.11;
+          revNodes.noiseGain.gain.cancelScheduledValues(t);
+          revNodes.noiseGain.gain.setValueAtTime(Math.max(0.0001, revNodes.noiseGain.gain.value), t);
+          revNodes.noiseGain.gain.linearRampToValueAtTime(ng, t + r);
+        }
+      }
+
+      function startRev() {
+        stopAll();
+        const ctx = initCtx();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const master = ctx.createGain();
+        master.gain.setValueAtTime(0.0001, now);
+        master.connect(ctx.destination);
+
+        const filter = ctx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.setValueAtTime(400, now);
+        filter.Q.setValueAtTime(1.4, now);
+        filter.connect(master);
+
+        const lfo = ctx.createOscillator();
+        const lfoGain = ctx.createGain();
+        lfo.type = "sine";
+        lfo.frequency.setValueAtTime(8, now);
+        lfoGain.gain.setValueAtTime(28, now);
+        lfo.connect(lfoGain);
+
+        const partials = [
+          { ratio: 0.5, type: "sine", gain: 0.42 },
+          { ratio: 1.0, type: "sawtooth", gain: 0.55 },
+          { ratio: 2.02, type: "sawtooth", gain: 0.22 },
+          { ratio: 3.01, type: "triangle", gain: 0.10 },
+        ];
+        const idleHz = 58;
+        const oscs = partials.map((p) => {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = p.type;
+          osc.frequency.setValueAtTime(idleHz * p.ratio, now);
+          if (p.ratio === 1.0) lfoGain.connect(osc.frequency);
+          g.gain.setValueAtTime(p.gain, now);
+          osc.connect(g);
+          g.connect(filter);
+          osc.start(now);
+          return osc;
+        });
+        lfo.start(now);
+
+        const noiseDur = 2;
+        const noiseBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * noiseDur), ctx.sampleRate);
+        const noiseData = noiseBuf.getChannelData(0);
+        for (let i = 0; i < noiseData.length; i++) noiseData[i] = Math.random() * 2 - 1;
+        const noise = ctx.createBufferSource();
+        noise.buffer = noiseBuf;
+        noise.loop = true;
+        const noiseFilter = ctx.createBiquadFilter();
+        noiseFilter.type = "bandpass";
+        noiseFilter.frequency.setValueAtTime(900, now);
+        noiseFilter.Q.setValueAtTime(0.6, now);
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.02, now);
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(filter);
+        noise.start(now);
+
+        revNodes = {
+          ctx, master, oscs, ratios: partials.map((p) => p.ratio),
+          filter, lfo, lfoGain, noise, noiseGain, maxGain: REV_MAX_GAIN,
+        };
+
+        setIntensity(0.12, 0.4);
+        const steps = [
+          { at: 800, level: 0.30 },
+          { at: 1600, level: 0.52 },
+          { at: 2600, level: 0.82 },
+          { at: 3400, level: 0.62 },
+          { at: 4300, level: 1.00 },
+          { at: 5800, level: 0.95 },
+          { at: 7000, level: 0.40 },
+          { at: 8400, level: 0.15 },
+          { at: 9500, level: 0.0 },
+        ];
+        previewTimers = steps.map((s) =>
+          setTimeout(() => setIntensity(s.level, 0.35), s.at)
+        );
+        previewTimers.push(setTimeout(() => {
+          stopRev();
+          setStatus("Engine rev preview finished.");
+        }, 10000));
+        setStatus("Playing blast engine rev (idle → spike → fade)…");
+      }
+
+      document.getElementById("btn-heart").addEventListener("click", startHeartbeat);
+      document.getElementById("btn-rev").addEventListener("click", startRev);
+      document.getElementById("btn-stop").addEventListener("click", stopAll);
+    })();
+  </script>
+</body>
+</html>
