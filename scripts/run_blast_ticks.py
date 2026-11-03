@@ -79,7 +79,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="NIFTY")
     ap.add_argument("--freeze", default="13:45", help="HH:MM IST to fix the ATM anchor + start capture")
-    ap.add_argument("--market-hours", action="store_true", help="wait for freeze, stop at 15:30 IST")
+    ap.add_argument("--market-hours", action="store_true", help="wait for freeze, stop at the F&O close")
     ap.add_argument("--any-day", action="store_true", help="skip the expiry-day gate (for smoke tests)")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = until 15:30)")
     args = ap.parse_args()
@@ -112,7 +112,8 @@ def main() -> None:
 
     if args.market_hours:
         if time.time() >= close_dt.timestamp():
-            _print("Past 15:30 IST — session over. Nothing to capture.")
+            close_hm = f"{CLOSE_MIN // 60:02d}:{CLOSE_MIN % 60:02d}"
+            _print(f"Past {close_hm} IST — session over. Nothing to capture.")
             shutdown(ok=True, message="session over")
             return
         wait = freeze_dt.timestamp() - time.time()

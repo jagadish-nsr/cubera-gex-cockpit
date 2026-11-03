@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import os
+import threading
 
 # |call - put| within this many points counts as "at the crossover" (spot ≈ K).
 CROSS_TOL_PTS = 5.0
@@ -253,6 +254,89 @@ def blast_score(direction: str, crossed: list[dict], ahead: list[dict] | None = 
             "wall_ratio": wall_ratio, "wall_frac": wall_frac}
 
 
+# A blast is a few minutes of covering. The day's open-interest change stays
+# positive on a normal expiry morning, and that must not count as defense.
+_COVER_MIN_BASE = timedelta(minutes=3)
+_COVER_WINDOW = timedelta(minutes=10)
+_COVER_KEEP = timedelta(minutes=30)
+_COVER_SAMPLE_GAP = timedelta(seconds=45)
+_OI_HISTORY: dict[str, list[tuple[datetime, dict[float, tuple[float, float]]]]] = {}
+_OI_LOCK = threading.Lock()
+
+
+def reset_strike_oi_history() -> None:
+    """Drop the in-process strike-OI tape. Tests start from an empty book."""
+    with _OI_LOCK:
+        _OI_HISTORY.clear()
+
+
+def note_strike_oi(symbol: str, oi_strikes, now: datetime) -> None:
+    """Remember absolute call and put OI at each strike.
+
+    A second print inside 45 seconds replaces the latest sample, so a cockpit
+    poll does not fill the tape. Samples older than 30 minutes are dropped.
+    """
+    book: dict[float, tuple[float, float]] = {}
+    for row in oi_strikes or []:
+        strike = row.get("strike")
+        if strike is None:
+            continue
+        try:
+            book[float(strike)] = (
+                float(row.get("call_oi") or 0.0),
+                float(row.get("put_oi") or 0.0),
+            )
+        except (TypeError, ValueError):
+            continue
+    if not book or now is None:
+        return
+    key = (symbol or "NIFTY").upper()
+    with _OI_LOCK:
+        hist = _OI_HISTORY.setdefault(key, [])
+        if hist and now - hist[-1][0] < _COVER_SAMPLE_GAP:
+            hist[-1] = (now, book)
+        else:
+            hist.append((now, book))
+        cutoff = now - _COVER_KEEP
+        while hist and hist[0][0] < cutoff:
+            hist.pop(0)
+
+
+def window_cover_frac(symbol: str, strike: float, side: str, now: datetime) -> float | None:
+    """OI change at ``strike`` over the last 3–10 minutes, as a fraction of the base.
+
+    Positive means open interest rose (writers adding). Negative means it fell
+    (covering). None until a sample at least 3 minutes old exists. The day's
+    open-interest change is not this number.
+    """
+    if strike is None or now is None:
+        return None
+    idx = 0 if side == "call" else 1
+    key = (symbol or "NIFTY").upper()
+    target = now - _COVER_WINDOW
+    with _OI_LOCK:
+        hist = list(_OI_HISTORY.get(key) or [])
+    if len(hist) < 2:
+        return None
+    latest = hist[-1][1].get(float(strike))
+    if not latest or latest[idx] <= 0:
+        return None
+    base = None
+    base_at = None
+    for ts, book in hist:
+        if now - ts < _COVER_MIN_BASE:
+            continue
+        row = book.get(float(strike))
+        if not row or row[idx] <= 0:
+            continue
+        if base is None or abs((ts - target).total_seconds()) < abs((base_at - target).total_seconds()):
+            base = row[idx]
+            base_at = ts
+    if base is None:
+        return None
+    return (latest[idx] - base) / base
+
+
 def gamma_concentration(oi_strikes, spot: float, n: int = 6,
                         band_pts: float = 600.0) -> list[dict]:
     """Candidate gamma-blast strikes: those near spot with the largest gamma
@@ -327,13 +411,13 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         dt_ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
 
     ist_min = dt_ist.hour * 60 + dt_ist.minute
-    cut_min, _ = afternoon_cut()
-    # Window opens around 13:00 IST and peaks from 13:45 to 15:30 IST
-    in_blast_window = (ist_min >= 13 * 60 and ist_min <= 15 * 60 + 30)
-
-    # Off-market hours safety gate: dealer gamma blast model is strictly an active market regime
+    # Afternoon watch runs from 13:00 through the F&O close (15:40).
     import config
-    if not config.is_market_open(dt_ist) or ist_min > 15 * 60 + 30 or ist_min < 9 * 60 + 15:
+    fno_close = int(getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40))
+    in_blast_window = 13 * 60 <= ist_min < fno_close
+
+    # Off-market hours safety gate: the blast watch is an open-session read.
+    if not config.is_market_open(dt_ist):
         return {
             "state": "NO_TRIGGER",
             "badge": "GAMMA BLAST: SESSION CONCLUDED",
@@ -374,27 +458,25 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     pw_breach = (put_wall > 0 and spot <= put_wall + 5.0)
     pw_testing = (put_wall > 0 and spot <= put_wall + step * 0.6)
 
-    # 4. Strike OI & Covering Ratio (Ignition)
+    # 4. Covering is the change in strike OI over the last few minutes.
+    # The day's call_doi stays positive after a normal morning build, and that
+    # is not writers defending the blast.
+    note_strike_oi(symbol, oi_strikes, dt_ist)
     cover_frac = 0.0
     primary_strike = None
+    cover_side = "call"
     if cw_testing or (cw_dist <= pw_dist and call_wall > 0):
         primary_strike = call_wall
-        for s in oi_strikes:
-            if abs(float(s.get("strike", 0.0)) - call_wall) < step / 2:
-                coi = float(s.get("call_oi") or 0.0)
-                c_doi = float(s.get("call_doi") or s.get("call_doi_near") or 0.0)
-                if coi > 0:
-                    cover_frac = c_doi / coi
-                break
+        cover_side = "call"
     elif pw_testing or put_wall > 0:
         primary_strike = put_wall
-        for s in oi_strikes:
-            if abs(float(s.get("strike", 0.0)) - put_wall) < step / 2:
-                poi = float(s.get("put_oi") or 0.0)
-                p_doi = float(s.get("put_doi") or s.get("put_doi_near") or 0.0)
-                if poi > 0:
-                    cover_frac = p_doi / poi
-                break
+        cover_side = "put"
+    cover_known = False
+    if primary_strike:
+        recent = window_cover_frac(symbol, float(primary_strike), cover_side, dt_ist)
+        if recent is not None:
+            cover_frac = recent
+            cover_known = True
 
     # 5. Non-Expiry Session
     if not is_expiry:
@@ -423,11 +505,11 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             base_score = 38
             state = "COILING"
             badge = "GAMMA BLAST: COILING (PRE-BLAST)"
-            desc = f"0-DTE morning session. Spot testing {'Call' if cw_testing else 'Put'} barrier ({primary_strike:,.0f}). Blast acceleration window opens at 13:30 IST."
+            desc = f"0-DTE morning session. Spot testing {'Call' if cw_testing else 'Put'} barrier ({primary_strike:,.0f}). Blast acceleration window opens at 13:00 IST."
         else:
             state = "NO_TRIGGER"
             badge = "GAMMA BLAST: INACTIVE (MORNING)"
-            desc = "0-DTE morning. No blast trigger yet. The blast window is 13:30–15:15 IST."
+            desc = "0-DTE morning. No blast trigger yet. The blast window is 13:00–15:40 IST."
         return {
             "state": state,
             "badge": badge,
@@ -438,7 +520,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             "primary_strike": primary_strike,
         }
 
-    # 7. Expiry Session: Afternoon Blast Window (13:00 - 15:30 IST)
+    # 7. Expiry Session: Afternoon Blast Window (13:00 through the F&O close)
     # Ignition points (0 to 40)
     if cover_frac < 0:
         # Writers covering! Saturates at 30% covering
@@ -474,9 +556,12 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
 
     raw_score = round(ignition_pts + proximity_pts + regime_pts)
 
-    # Defending cap: if writers are actively adding OI at K, blast cannot sustain
-    if cover_frac > 0.05:
+    # Defending cap: open interest rising at the strike over the last few minutes.
+    if cover_known and cover_frac > 0.05:
         raw_score = min(raw_score, 34)
+    # A breach with no recent open-interest tape is a location, not a blast yet.
+    elif not cover_known:
+        raw_score = min(raw_score, 59)
 
     score = max(12, min(96, raw_score))
 

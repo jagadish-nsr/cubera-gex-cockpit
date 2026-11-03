@@ -46,12 +46,20 @@ def test_ist_now_carries_ist_not_utc(monkeypatch):
 
 
 def test_in_blast_window_bounds():
-    # blast window 13:00-15:30 IST (Tue 2026-06-30 is a weekday).
-    assert not lt._in_blast_window(_ist(12, 59))  # 12:59 IST — before
-    assert lt._in_blast_window(_ist(13, 0))       # 13:00 IST — opens
-    assert lt._in_blast_window(_ist(14, 15))      # 14:15 IST — inside
-    assert lt._in_blast_window(_ist(15, 30))      # 15:30 IST — closes (inclusive)
-    assert not lt._in_blast_window(_ist(15, 31))  # 15:31 IST — shut
+    # 13:00 through the F&O close. 15:39 is still open; 15:40 is the close.
+    assert not lt._in_blast_window(_ist(12, 59))
+    assert lt._in_blast_window(_ist(13, 0))
+    assert lt._in_blast_window(_ist(14, 15))
+    assert lt._in_blast_window(_ist(15, 30))
+    assert lt._in_blast_window(_ist(15, 39))
+    assert not lt._in_blast_window(_ist(15, 40))
+
+
+def test_next_blast_minute_waits_out_a_short_remainder():
+    early = datetime(2026, 6, 30, 14, 15, 10)
+    assert lt.seconds_until_next_blast_minute(early) == 50
+    almost = datetime(2026, 6, 30, 14, 15, 58)
+    assert lt.seconds_until_next_blast_minute(almost) == 62
 
 
 def test_is_expiry_day_matches_nearest_expiry_today():

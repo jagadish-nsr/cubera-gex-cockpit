@@ -3,7 +3,8 @@
 from app.gammablast import (atm_strike, blast_score, crossover_state,
                             detect_crossovers, evaluate_dashboard_gamma_blast,
                             gamma_concentration, grade_blast, next_strike,
-                            pick_anchors, strike_oi, strike_premiums)
+                            pick_anchors, reset_strike_oi_history, strike_oi,
+                            strike_premiums)
 
 
 def _strikes(spot=24000):
@@ -129,6 +130,7 @@ def test_blast_score_defensive_none():
 
 def test_evaluate_dashboard_gamma_blast_non_expiry():
     from unittest.mock import MagicMock
+    reset_strike_oi_history()
     dash = MagicMock()
     dash.levels.spot = 22800.0
     dash.levels.call_wall = 23000.0
@@ -153,6 +155,7 @@ def test_evaluate_dashboard_gamma_blast_non_expiry():
 def test_evaluate_dashboard_gamma_blast_0dte_breakout():
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
+    reset_strike_oi_history()
     dash = MagicMock()
     dash.levels.spot = 23020.0  # breached Call Wall
     dash.levels.call_wall = 23000.0
@@ -171,28 +174,60 @@ def test_evaluate_dashboard_gamma_blast_0dte_breakout():
     res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
     assert res["is_expiry"] is True
     assert res["in_blast_window"] is True
-    assert res["state"] == "TRIGGERED"
-    assert res["badge"] == "GAMMA BLAST: ACTIVE"
-    assert "call-gamma strike" in res["description"]
-    assert res["score"] >= 60
+    # One print has no 3-minute open-interest tape, so a breach stays coiling.
+    assert res["state"] == "COILING"
+    assert res["score"] >= 35
+    assert res["score"] < 60
 
 
-def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
-    from datetime import datetime, timezone
+def _breach_dash(call_oi, call_doi, when):
+    from datetime import timezone
     from unittest.mock import MagicMock
     dash = MagicMock()
-    dash.levels.spot = 23020.0  # breached Call Wall
+    dash.levels.spot = 23020.0  # through the call-gamma strike
     dash.levels.call_wall = 23000.0
     dash.levels.put_wall = 22600.0
     dash.levels.flip = 22950.0
     dash.levels.magnet = 22900.0
     dash.levels.total_net_gex = -50_000_000.0
     dash.view.regime = "NEGATIVE"
-    dash.dte_now = 0.0  # 0-DTE
-    # Call writers adding +20% OI (defending)
-    dash.oi_strikes = [{"strike": 23000.0, "call_oi": 100000.0, "call_doi": 20000.0}]
-    dash.fetched_at = datetime(2026, 10, 19, 9, 15, tzinfo=timezone.utc)
+    dash.dte_now = 0.0
+    dash.oi_strikes = [{"strike": 23000.0, "call_oi": call_oi, "call_doi": call_doi, "put_oi": 1.0}]
+    dash.fetched_at = when.replace(tzinfo=timezone.utc)
+    return dash
 
+
+def test_day_oi_build_does_not_cap_the_blast():
+    """The morning's open-interest build is not a defense of this afternoon's cross."""
+    from datetime import datetime
+    reset_strike_oi_history()
+    # Day change is +300k on 388k, the 3 Nov 23,750 print. No prior minute yet.
+    dash = _breach_dash(388_000.0, 313_000.0, datetime(2026, 11, 3, 8, 10))
+    res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert res["is_expiry"] is True
+    assert res["score"] >= 35
+    assert res["state"] != "NO_TRIGGER"
+
+
+def test_recent_covering_triggers_while_the_day_is_still_built():
+    from datetime import datetime
+    reset_strike_oi_history()
+    first = _breach_dash(100_000.0, 80_000.0, datetime(2026, 11, 3, 8, 0))
+    evaluate_dashboard_gamma_blast(first, "NIFTY")
+    # Ten minutes later the strike OI is down 25%. The day change is still positive.
+    second = _breach_dash(75_000.0, 55_000.0, datetime(2026, 11, 3, 8, 10))
+    res = evaluate_dashboard_gamma_blast(second, "NIFTY")
+    assert res["state"] == "TRIGGERED"
+    assert res["score"] >= 60
+
+
+def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
+    from datetime import datetime
+    reset_strike_oi_history()
+    first = _breach_dash(100_000.0, 20_000.0, datetime(2026, 10, 19, 9, 5))
+    evaluate_dashboard_gamma_blast(first, "NIFTY")
+    # Ten minutes later call OI at the strike is up 20%.
+    dash = _breach_dash(120_000.0, 40_000.0, datetime(2026, 10, 19, 9, 15))
     res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
     assert res["is_expiry"] is True
     assert res["state"] == "NO_TRIGGER"
