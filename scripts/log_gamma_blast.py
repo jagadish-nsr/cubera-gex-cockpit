@@ -31,8 +31,7 @@ from app.data_access import load_dashboard  # noqa: E402
 from app.timeseries import (GAMMA_BLAST_DIR, append_strike_rows,  # noqa: E402
                             build_strike_rows)
 
-_WIN_START_IST = (13, 0)     # gamma-blast window 13:00-15:30 IST (afternoon)
-_WIN_END_IST = (15, 30)
+_WIN_START_IST = (13, 0)     # gamma-blast window 13:00 through the F&O close
 # Own chain each. Bank Nifty is monthly; Sensex is Thursday. Do not substring-match NIFTY.
 BLAST_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
 
@@ -55,7 +54,9 @@ def _in_window(ist: datetime) -> bool:
         if ist.weekday() >= 5:
             return False
     m = ist.hour * 60 + ist.minute
-    return _WIN_START_IST[0] * 60 + _WIN_START_IST[1] <= m <= _WIN_END_IST[0] * 60 + _WIN_END_IST[1]
+    import config
+    close_min = int(getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40))
+    return _WIN_START_IST[0] * 60 + _WIN_START_IST[1] <= m < close_min
 
 
 def resolve_symbols(explicit: str | None) -> tuple[str, ...]:
@@ -138,7 +139,7 @@ def main() -> None:
     if args.once:
         ist = _ist_now()
         if not args.force and not _in_window(ist):
-            _print(f"{ist:%Y-%m-%d %H:%M} IST  outside 13:00-15:30 window - skipped")
+            _print(f"{ist:%Y-%m-%d %H:%M} IST  outside 13:00-15:40 window - skipped")
             shutdown(ok=True, message="outside window")
             return
         messages = capture_symbols(force=args.force, explicit=args.symbol)
@@ -151,7 +152,7 @@ def main() -> None:
 
     interval = max(args.loop, 0.25) * 60.0
     names = ", ".join(resolve_symbols(args.symbol))
-    _print(f"Gamma-blast capture: every {args.loop:g} min, 13:00-15:30 IST, "
+    _print(f"Gamma-blast capture: every {args.loop:g} min, 13:00 through the F&O close, "
            f"expiry day, {names}. Ctrl+C to stop.")
     try:
         while True:
