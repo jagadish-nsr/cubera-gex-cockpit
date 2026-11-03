@@ -565,6 +565,11 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert 'id="sidebar-audio-toggle"' in html
     assert "testSentinelBullishSound" in html
     assert "testSentinelBearishSound" in html
+    assert "previewGammaBlastHeartbeat" in html
+    assert "previewGammaBlastSiren" in html
+    assert "stopGammaBlastPreview" in html
+    assert 'id="gb-preview-heartbeat"' in html
+    assert 'id="gb-preview-siren"' in html
     assert 'id="sidebar-sentinel-sound-toggle"' not in html
     assert 'id="sidebar-alert-bell-toggle"' not in html
     assert 'id="sidebar-chimes-toggle"' not in html
@@ -584,6 +589,28 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert "setAllAudioEnabled" in js
     assert "processSentinelSignals" in js
     assert "pollSentinelSignals" in js
+    # Gamma-blast audition + live COILING/ACTIVE wiring (heartbeat + engine rev)
+    assert "previewGammaBlastHeartbeat" in js
+    assert "previewGammaBlastSiren" in js
+    assert "stopGammaBlastPreview" in js
+    assert "startGammaBlastHeartbeat" in js
+    assert "startGammaBlastSiren" in js
+    assert "BLAST_SIREN_MAX_GAIN" in js
+    assert "setGammaBlastSirenIntensity" in js
+    assert "syncGammaBlastAudio" in js
+    assert "computeBlastSirenIntensity" in js
+    assert "stopGammaBlastAudio" in js
+    assert 'blastAudioMode === "coiling"' in js
+    assert 'blastAudioMode === "active"' in js
+    assert "syncGammaBlastAudio(data.gamma_blast" in js
+    assert "syncGammaBlastAudio(state.lastCockpitDash.gamma_blast" in js
+    # Car-rev synth (not the retired dual-tone siren)
+    assert "Car-revving engine" in js or "engine rev" in js
+    assert "idleHz" in js or "const idleHz = 58" in js
+    assert "58 + clamped * 152" in js
+    assert "baseFreqs = [620, 780]" not in js
+    assert "lfo.frequency.setValueAtTime(0.45" not in js
+    assert "if (!enabled) stopGammaBlastAudio()" in js
 
     # Gain node AudioParam bug verification: must target .gain AudioParam, not GainNode directly
     assert "g3Sub.gain.linearRampToValueAtTime" in js

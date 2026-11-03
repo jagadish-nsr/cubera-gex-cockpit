@@ -565,6 +565,17 @@
             <div id="gamma-blast-desc" class="gamma-blast-desc">No gamma-blast trigger. Concentration is a map, not a
               pin.</div>
             <span id="gamma-blast-score" class="gamma-blast-score">—</span>
+            <div class="gamma-blast-audio-preview" title="Audition gamma-blast sounds before enabling live playback">
+              <button type="button" id="gb-preview-heartbeat" class="btn btn-secondary gamma-blast-audio-btn"
+                onclick="window.previewGammaBlastHeartbeat()"
+                title="Preview coiling/imminent heartbeat (loops ~6s)">♥ Coil</button>
+              <button type="button" id="gb-preview-siren" class="btn btn-secondary gamma-blast-audio-btn"
+                onclick="window.previewGammaBlastSiren()"
+                title="Preview active blast engine rev with intensity ramp (idle→spike→fade)">🏎️ Rev</button>
+              <button type="button" id="gb-preview-stop" class="btn btn-secondary gamma-blast-audio-btn"
+                onclick="window.stopGammaBlastPreview()"
+                title="Stop gamma-blast sound preview">Stop</button>
+            </div>
           </div>
 
           <div class="cockpit-tape-row">

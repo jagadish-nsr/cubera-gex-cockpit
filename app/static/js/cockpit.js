@@ -33,6 +33,16 @@
     lastSentinelSoundTime: 0,
     lastSentinelSoundEventId: null,
     pendingSentinelSoundTimers: [],
+    // Gamma-blast audio: live mode + preview loops
+    blastHeartbeatTimer: null,
+    blastHeartbeatStopAt: 0,
+    blastSirenNodes: null,
+    blastSirenIntensityTimer: null,
+    blastAudioMode: null,       // null | 'coiling' | 'active'
+    blastPreviewActive: false,
+    blastLastSpot: null,
+    blastSpotSpikeEma: 0,
+    blastLastScore: null,
     spot: 24500.0,
     ws: null,
     sentinelChart: null,
@@ -219,6 +229,7 @@
     state.sentinelSoundEnabled = enabled;
     state.alertBellEnabled = enabled;
     localStorage.setItem("cubera_audio_muted", (!enabled).toString());
+    if (!enabled) stopGammaBlastAudio();
     updateAudioUI();
   }
 
@@ -425,6 +436,434 @@
 
   window.playSentinelBullishSound = playSentinelBullishSound;
   window.playSentinelBearishSound = playSentinelBearishSound;
+
+  // -------------------------------------------------------------------------
+  // Expiry Gamma Blast — heartbeat (coiling) + siren (active) Web Audio
+  // Live: COILING → looping heartbeat; TRIGGERED → intensity-linked siren.
+  // -------------------------------------------------------------------------
+
+  const BLAST_SIREN_MAX_GAIN = 0.22; // desk-safe ceiling — audible, not harsh
+
+  function _clearBlastSirenPreviewTimers() {
+    const timers = state._blastSirenPreviewTimers;
+    if (!timers || !timers.length) return;
+    timers.forEach((id) => {
+      clearTimeout(id);
+      try { clearInterval(id); } catch (_) { }
+    });
+    state._blastSirenPreviewTimers = null;
+  }
+
+  function _endBlastPreview() {
+    state.blastPreviewActive = false;
+  }
+
+  /** Soft dual thump (lub–dub). One beat cycle; scheduled by the loop timer. */
+  function _fireBlastHeartbeatThump(ctx, when) {
+    const lub = [
+      { freq: 55, gain: 0.38, attack: 0.012, decay: 0.16, type: "sine" },
+      { freq: 95, gain: 0.14, attack: 0.010, decay: 0.12, type: "triangle" },
+    ];
+    const dub = [
+      { freq: 70, gain: 0.30, attack: 0.010, decay: 0.14, type: "sine" },
+      { freq: 120, gain: 0.11, attack: 0.008, decay: 0.10, type: "triangle" },
+    ];
+
+    function strike(partials, t0) {
+      partials.forEach((p) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = p.type;
+        osc.frequency.setValueAtTime(p.freq, t0);
+        osc.frequency.exponentialRampToValueAtTime(Math.max(30, p.freq * 0.65), t0 + p.decay);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.linearRampToValueAtTime(p.gain, t0 + p.attack);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
+        osc.connect(g);
+        g.connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + p.decay + 0.04);
+      });
+    }
+
+    strike(lub, when);
+    strike(dub, when + 0.18);
+  }
+
+  function stopGammaBlastHeartbeat() {
+    if (state.blastHeartbeatTimer) {
+      clearInterval(state.blastHeartbeatTimer);
+      state.blastHeartbeatTimer = null;
+    }
+    state.blastHeartbeatStopAt = 0;
+    if (state.blastAudioMode === "coiling") state.blastAudioMode = null;
+  }
+
+  function stopGammaBlastSiren() {
+    _clearBlastSirenPreviewTimers();
+    state.blastSirenSetIntensity = null;
+    const nodes = state.blastSirenNodes;
+    state.blastSirenNodes = null;
+    if (state.blastAudioMode === "active") state.blastAudioMode = null;
+    if (!nodes) return;
+    try {
+      const now = nodes.ctx.currentTime;
+      nodes.master.gain.cancelScheduledValues(now);
+      nodes.master.gain.setValueAtTime(Math.max(0.0001, nodes.master.gain.value), now);
+      nodes.master.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
+      setTimeout(() => {
+        try {
+          (nodes.oscs || []).forEach((o) => { try { o.stop(); } catch (_) { } });
+          if (nodes.lfo) nodes.lfo.stop();
+          if (nodes.noise) nodes.noise.stop();
+        } catch (_) { }
+      }, 480);
+    } catch (e) {
+      console.warn("Error stopping gamma-blast engine rev:", e);
+    }
+  }
+
+  function stopGammaBlastAudio() {
+    stopGammaBlastHeartbeat();
+    stopGammaBlastSiren();
+    state.blastAudioMode = null;
+    state.blastSpotSpikeEma = 0;
+  }
+
+  /**
+   * Drive engine rev intensity 0..1 → volume, RPM pitch, filter open, exhaust grit.
+   * Spikes raise the rev; fade drops back toward idle.
+   */
+  function setGammaBlastSirenIntensity(level, rampSec) {
+    const nodes = state.blastSirenNodes;
+    if (!nodes) return;
+    const t = nodes.ctx.currentTime;
+    const r = Math.max(0.05, rampSec || 0.25);
+    const clamped = Math.max(0, Math.min(1, Number(level) || 0));
+
+    const target = Math.max(0.0001, clamped * nodes.maxGain);
+    nodes.master.gain.cancelScheduledValues(t);
+    nodes.master.gain.setValueAtTime(Math.max(0.0001, nodes.master.gain.value), t);
+    nodes.master.gain.linearRampToValueAtTime(target, t + r);
+
+    // Idle ~58 Hz → redline ~210 Hz (fundamental)
+    const rpmHz = 58 + clamped * 152;
+    (nodes.oscs || []).forEach((osc, i) => {
+      const ratio = (nodes.ratios && nodes.ratios[i]) || 1;
+      const f = rpmHz * ratio;
+      try {
+        osc.frequency.cancelScheduledValues(t);
+        osc.frequency.setValueAtTime(Math.max(20, osc.frequency.value || f), t);
+        osc.frequency.linearRampToValueAtTime(f, t + r);
+      } catch (_) { }
+    });
+
+    if (nodes.filter) {
+      const cut = 320 + clamped * 2400;
+      nodes.filter.frequency.cancelScheduledValues(t);
+      nodes.filter.frequency.setValueAtTime(Math.max(80, nodes.filter.frequency.value || cut), t);
+      nodes.filter.frequency.linearRampToValueAtTime(cut, t + r);
+      if (nodes.filter.Q) {
+        const q = 1.2 + clamped * 2.4;
+        nodes.filter.Q.cancelScheduledValues(t);
+        nodes.filter.Q.setValueAtTime(nodes.filter.Q.value || q, t);
+        nodes.filter.Q.linearRampToValueAtTime(q, t + r);
+      }
+    }
+
+    // Combustion pulse speeds up with RPM
+    if (nodes.lfo) {
+      const lfoRate = 6 + clamped * 32;
+      nodes.lfo.frequency.cancelScheduledValues(t);
+      nodes.lfo.frequency.setValueAtTime(Math.max(0.5, nodes.lfo.frequency.value || lfoRate), t);
+      nodes.lfo.frequency.linearRampToValueAtTime(lfoRate, t + r);
+    }
+    if (nodes.lfoGain) {
+      // Stronger chug at low RPM; smoother at high
+      const depth = 18 + (1 - clamped) * 22;
+      nodes.lfoGain.gain.cancelScheduledValues(t);
+      nodes.lfoGain.gain.setValueAtTime(nodes.lfoGain.gain.value || depth, t);
+      nodes.lfoGain.gain.linearRampToValueAtTime(depth, t + r);
+    }
+
+    if (nodes.noiseGain) {
+      const ng = 0.015 + clamped * 0.11;
+      nodes.noiseGain.gain.cancelScheduledValues(t);
+      nodes.noiseGain.gain.setValueAtTime(Math.max(0.0001, nodes.noiseGain.gain.value), t);
+      nodes.noiseGain.gain.linearRampToValueAtTime(ng, t + r);
+    }
+  }
+
+  /** Pts-per-tick scale for movement spikes (index-aware). */
+  function blastSpikeRefPts(symbol) {
+    const sym = String(symbol || state.symbol || "NIFTY").toUpperCase();
+    if (sym === "BANKNIFTY") return 40;
+    if (sym === "SENSEX") return 50;
+    return 20; // NIFTY
+  }
+
+  /**
+   * Score (60–96) → base intensity; EMA of |Δspot| → spike boost that fades.
+   * Returns 0..1 for the siren master gain fraction.
+   */
+  function computeBlastSirenIntensity(score, spot) {
+    const sc = Number(score);
+    const base = Number.isFinite(sc)
+      ? 0.30 + Math.max(0, Math.min(1, (sc - 60) / 36)) * 0.45
+      : 0.40;
+
+    const px = Number(spot);
+    let spike = state.blastSpotSpikeEma || 0;
+    if (Number.isFinite(px) && px > 0) {
+      const prev = state.blastLastSpot;
+      if (Number.isFinite(prev) && prev > 0) {
+        const absDelta = Math.abs(px - prev);
+        const instant = Math.max(0, Math.min(1, absDelta / blastSpikeRefPts()));
+        // Fast attack on spikes, slower decay when movement fades
+        const alpha = instant > spike ? 0.55 : 0.18;
+        spike = spike + alpha * (instant - spike);
+      }
+      state.blastLastSpot = px;
+    }
+    state.blastSpotSpikeEma = spike;
+    state.blastLastScore = Number.isFinite(sc) ? sc : state.blastLastScore;
+
+    // Base carries the blast; spikes lift toward the desk-safe ceiling; quiet when calm
+    return Math.max(0.12, Math.min(1, base * 0.65 + spike * 0.55 + base * spike * 0.25));
+  }
+
+  /**
+   * Looping coiling/imminent heartbeat. Soft, persistent while state stays COILING.
+   * Preview defaults to ~6 seconds then auto-stops. Pass durationMs: 0 for open-ended.
+   */
+  function startGammaBlastHeartbeat(opts) {
+    const force = Boolean(opts && opts.force);
+    const durationMs = (opts && opts.durationMs != null) ? Number(opts.durationMs) : 6000;
+    if (!force && !state.soundEnabled) return;
+
+    stopGammaBlastHeartbeat();
+    stopGammaBlastSiren();
+
+    const ctx = initAudioContext();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().then(() => startGammaBlastHeartbeat(opts)).catch(() => { });
+      return;
+    }
+
+    const beatEveryMs = 900; // ~67 bpm — calm coil, not panic
+    const fire = () => {
+      try {
+        if (state.blastHeartbeatStopAt && Date.now() >= state.blastHeartbeatStopAt) {
+          stopGammaBlastHeartbeat();
+          if (state.blastPreviewActive) _endBlastPreview();
+          return;
+        }
+        _fireBlastHeartbeatThump(ctx, ctx.currentTime);
+      } catch (e) {
+        console.warn("Error synthesizing gamma-blast heartbeat:", e);
+        stopGammaBlastHeartbeat();
+      }
+    };
+
+    state.blastHeartbeatStopAt = durationMs > 0 ? Date.now() + durationMs : 0;
+    if (!force) state.blastAudioMode = "coiling";
+    fire();
+    state.blastHeartbeatTimer = setInterval(fire, beatEveryMs);
+  }
+
+  /**
+   * Car-revving engine for ACTIVE blast. Intensity 0..1 raises volume + RPM
+   * (movement spikes → louder/higher rev; fade → idle). Desk-safe gain cap.
+   */
+  function startGammaBlastSiren(opts) {
+    const force = Boolean(opts && opts.force);
+    const preview = Boolean(opts && opts.preview);
+    if (!force && !state.soundEnabled) return;
+
+    stopGammaBlastHeartbeat();
+    stopGammaBlastSiren();
+
+    const ctx = initAudioContext();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().then(() => startGammaBlastSiren(opts)).catch(() => { });
+      return;
+    }
+
+    try {
+      const now = ctx.currentTime;
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0001, now);
+      master.connect(ctx.destination);
+
+      // Shared resonant low-pass = exhaust / intake body
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(400, now);
+      filter.Q.setValueAtTime(1.4, now);
+      filter.connect(master);
+
+      // Combustion pulse LFO → slight pitch rocker on the fundamental
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.type = "sine";
+      lfo.frequency.setValueAtTime(8, now);
+      lfoGain.gain.setValueAtTime(28, now);
+      lfo.connect(lfoGain);
+
+      // Engine partials: sub + grit fundamental + rough octave
+      const partials = [
+        { ratio: 0.5, type: "sine", gain: 0.42 },
+        { ratio: 1.0, type: "sawtooth", gain: 0.55 },
+        { ratio: 2.02, type: "sawtooth", gain: 0.22 },
+        { ratio: 3.01, type: "triangle", gain: 0.10 },
+      ];
+      const idleHz = 58;
+      const oscs = partials.map((p) => {
+        const osc = ctx.createOscillator();
+        const g = ctx.createGain();
+        osc.type = p.type;
+        osc.frequency.setValueAtTime(idleHz * p.ratio, now);
+        if (p.ratio === 1.0) lfoGain.connect(osc.frequency);
+        g.gain.setValueAtTime(p.gain, now);
+        osc.connect(g);
+        g.connect(filter);
+        osc.start(now);
+        return osc;
+      });
+      lfo.start(now);
+
+      // Exhaust hiss / tire grit — looped noise through a bandpass
+      const noiseDur = 2;
+      const noiseBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * noiseDur), ctx.sampleRate);
+      const noiseData = noiseBuf.getChannelData(0);
+      for (let i = 0; i < noiseData.length; i++) noiseData[i] = Math.random() * 2 - 1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuf;
+      noise.loop = true;
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.setValueAtTime(900, now);
+      noiseFilter.Q.setValueAtTime(0.6, now);
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.02, now);
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(filter);
+      noise.start(now);
+
+      state.blastSirenNodes = {
+        ctx,
+        master,
+        oscs,
+        ratios: partials.map((p) => p.ratio),
+        filter,
+        lfo,
+        lfoGain,
+        noise,
+        noiseGain,
+        maxGain: BLAST_SIREN_MAX_GAIN,
+      };
+      state.blastSirenSetIntensity = setGammaBlastSirenIntensity;
+      if (!force) state.blastAudioMode = "active";
+
+      if (preview) {
+        // Demo curve: idle → rev spike → hold → back off (~10s)
+        setGammaBlastSirenIntensity(0.12, 0.4);
+        const steps = [
+          { at: 800, level: 0.30 },
+          { at: 1600, level: 0.52 },
+          { at: 2600, level: 0.82 },
+          { at: 3400, level: 0.62 },
+          { at: 4300, level: 1.00 },
+          { at: 5800, level: 0.95 },
+          { at: 7000, level: 0.40 },
+          { at: 8400, level: 0.15 },
+          { at: 9500, level: 0.0 },
+        ];
+        const timers = steps.map((s) =>
+          setTimeout(() => setGammaBlastSirenIntensity(s.level, 0.35), s.at)
+        );
+        timers.push(setTimeout(() => {
+          stopGammaBlastSiren();
+          _endBlastPreview();
+        }, 10000));
+        state._blastSirenPreviewTimers = timers;
+      } else {
+        const initial = (opts && opts.intensity != null) ? Number(opts.intensity) : 0.35;
+        setGammaBlastSirenIntensity(initial, 0.5);
+      }
+    } catch (e) {
+      console.warn("Error synthesizing gamma-blast engine rev:", e);
+      stopGammaBlastSiren();
+    }
+  }
+
+  /**
+   * Drive live gamma-blast audio from dashboard/tick state.
+   * COILING → heartbeat loop; TRIGGERED → engine rev with score+spot intensity; else silence.
+   */
+  function syncGammaBlastAudio(blast, spot) {
+    if (state.blastPreviewActive) return;
+    if (!state.soundEnabled) {
+      if (state.blastAudioMode) stopGammaBlastAudio();
+      return;
+    }
+
+    const gb = blast || {};
+    const rawState = String(gb.state || "").toUpperCase();
+    const badge = String(gb.badge || "").toUpperCase();
+    const isCoiling = rawState === "COILING" || badge.includes("COILING");
+    // ACTIVE badge / TRIGGERED state only — score alone is not enough (map, not a pin)
+    const isActive = rawState === "TRIGGERED" || badge.includes(": ACTIVE");
+
+    if (isActive) {
+      const intensity = computeBlastSirenIntensity(gb.score, spot);
+      if (state.blastAudioMode === "active" && state.blastSirenNodes) {
+        setGammaBlastSirenIntensity(intensity, 0.28);
+      } else {
+        startGammaBlastSiren({ intensity });
+      }
+      return;
+    }
+
+    if (isCoiling) {
+      state.blastSpotSpikeEma = 0;
+      if (Number.isFinite(Number(spot)) && Number(spot) > 0) state.blastLastSpot = Number(spot);
+      if (state.blastAudioMode === "coiling" && state.blastHeartbeatTimer) return;
+      startGammaBlastHeartbeat({ durationMs: 0 });
+      return;
+    }
+
+    // Inactive / non-expiry / session concluded — silence and decay tracking
+    if (state.blastAudioMode) stopGammaBlastAudio();
+    else {
+      // Still track spot so the first ACTIVE tick has a delta baseline
+      if (Number.isFinite(Number(spot)) && Number(spot) > 0) state.blastLastSpot = Number(spot);
+      state.blastSpotSpikeEma *= 0.85;
+    }
+  }
+
+  window.stopGammaBlastPreview = function () {
+    _endBlastPreview();
+    stopGammaBlastAudio();
+    showToast("Gamma-blast preview stopped", "⏹");
+  };
+
+  window.previewGammaBlastHeartbeat = function () {
+    state.blastPreviewActive = true;
+    state.blastAudioMode = null;
+    startGammaBlastHeartbeat({ force: true, durationMs: 6000 });
+    showToast("Preview: coiling heartbeat (~6s loop)", "♥");
+  };
+
+  window.previewGammaBlastSiren = function () {
+    state.blastPreviewActive = true;
+    state.blastAudioMode = null;
+    startGammaBlastSiren({ force: true, preview: true });
+    showToast("Preview: blast engine rev (idle→spike→fade)", "🏎️");
+  };
 
   function formatInrLevel(n) {
     const v = Number(n);
@@ -866,6 +1305,11 @@
     paintRecLiveQuotes(tick.rec_quotes);
     patchCockpitDashFromTick(tick);
     if (state.lastCockpitDash) updateMarketAlertTape(state.lastCockpitDash);
+
+    // Siren intensity follows live spot spikes while blast is ACTIVE
+    if (state.lastCockpitDash && state.lastCockpitDash.gamma_blast) {
+      syncGammaBlastAudio(state.lastCockpitDash.gamma_blast, tick.spot);
+    }
   }
 
   function paintRecLiveQuotes(quotes) {
@@ -1687,6 +2131,11 @@
 
       if (gbBadge) gbBadge.style.color = themeColor;
       if (gbCard) gbCard.style.borderLeftColor = themeColor;
+
+      // Live gamma-blast audio: coiling heartbeat / active siren
+      if (data.gamma_blast) {
+        syncGammaBlastAudio(data.gamma_blast, data.spot != null ? data.spot : state.spot);
+      }
 
       const crossBody = document.getElementById("crossover-watch-body");
       if (crossBody) {
@@ -6645,6 +7094,10 @@
         state.headerExecRich = false;
         state.tapeLatch = null;
         state.lastTapePaintSig = null;
+        // Don't carry coil/rev audio or spot-spike EMA across indices
+        if (!state.blastPreviewActive) stopGammaBlastAudio();
+        state.blastLastSpot = null;
+        state.blastSpotSpikeEma = 0;
 
         // Clear forming bar HUD immediately so previous index values don't linger
         const chlOhlc = document.getElementById("chl-ohlc");
