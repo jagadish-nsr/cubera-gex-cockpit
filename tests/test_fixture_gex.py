@@ -69,6 +69,31 @@ def test_walls_magnet_and_book_balance():
     assert core.regime(df) == "NEGATIVE"
 
 
+def test_far_dust_does_not_name_a_wall():
+    # Spot 23,810. Near strikes are numerical leftovers. 17,000 is larger and
+    # still nothing next to a live wall. The book names no strike.
+    df = pd.DataFrame({
+        "strike": [17000.0, 23700.0, 23800.0],
+        "call_gex": [-1_000_000.0, -1.0, -2.0],
+        "put_gex": [-1_000_000.0, -1.0, -1.0],
+        "net_gex": [-2_000_000.0, -2.0, -3.0],
+    })
+    named = core.live_walls(df, spot=23810.0, step=50)
+    assert named["near_book_expired"] is True
+    assert named["call_wall"] is None
+    assert named["put_wall"] is None
+    assert named["magnet"] is None
+
+
+def test_a_near_wall_is_still_the_largest_magnitude():
+    df = _gex()
+    named = core.live_walls(df, spot=SPOT, step=5)
+    assert named["near_book_expired"] is False
+    assert named["call_wall"] == 105
+    assert named["put_wall"] == 95
+    assert named["magnet"] == 95
+
+
 def test_other_sign_model_is_rejected():
     with pytest.raises(ValueError, match="short_call_short_put"):
         core.per_strike_gex(

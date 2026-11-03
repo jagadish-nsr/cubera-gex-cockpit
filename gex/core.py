@@ -96,6 +96,69 @@ def magnet(per_strike: pd.DataFrame) -> float:
     return float(per_strike.loc[idx, "strike"])
 
 
+# Strikes this many steps from spot still count as the near book.
+# 16 × 50 = 800 Nifty points, 16 × 100 = 1,600 for Bank Nifty and Sensex.
+NEAR_STRIKES = 16
+# A far strike is dust when the near band holds under this fraction of the
+# chain's peak. A live wall inside the band is never dust.
+_FAR_DUST_FRACTION = 0.001
+
+
+def _band_peak(per_strike: pd.DataFrame, column: str, spot: float, step: float) -> float:
+    band = float(step) * NEAR_STRIKES
+    near = per_strike[(per_strike["strike"] - float(spot)).abs() <= band + 1e-6]
+    if near.empty:
+        return 0.0
+    return float(near[column].abs().max())
+
+
+def _far_dust(strike: float, near_peak: float, chain_peak: float, spot: float, step: float) -> bool:
+    """True when the named strike sits outside the near band and the near band is empty of gamma."""
+    if abs(float(strike) - float(spot)) <= float(step) * NEAR_STRIKES:
+        return False
+    if chain_peak <= 0:
+        return True
+    return near_peak < _FAR_DUST_FRACTION * chain_peak
+
+
+def live_walls(per_strike: pd.DataFrame, spot: float, step: float) -> dict:
+    """Walls for the live book.
+
+    The wall is still the largest magnitude on the chain. When that strike is
+    far from spot and the near band's gamma is a rounding leftover, no strike
+    is named. A far leftover is not a wall.
+    """
+    call_strike = call_wall(per_strike)
+    put_strike = put_wall(per_strike)
+    magnet_strike = magnet(per_strike)
+    call_dust = _far_dust(
+        call_strike, _band_peak(per_strike, "call_gex", spot, step),
+        float(per_strike["call_gex"].abs().max()), spot, step,
+    )
+    put_dust = _far_dust(
+        put_strike, _band_peak(per_strike, "put_gex", spot, step),
+        float(per_strike["put_gex"].abs().max()), spot, step,
+    )
+    magnet_dust = _far_dust(
+        magnet_strike, _band_peak(per_strike, "net_gex", spot, step),
+        float(per_strike["net_gex"].abs().max()), spot, step,
+    )
+    expired = call_dust and put_dust and magnet_dust
+    if expired:
+        return {
+            "call_wall": None,
+            "put_wall": None,
+            "magnet": None,
+            "near_book_expired": True,
+        }
+    return {
+        "call_wall": None if call_dust else call_strike,
+        "put_wall": None if put_dust else put_strike,
+        "magnet": None if magnet_dust else magnet_strike,
+        "near_book_expired": False,
+    }
+
+
 def total_net_gex(per_strike: pd.DataFrame) -> float:
     return float(per_strike["net_gex"].sum())
 

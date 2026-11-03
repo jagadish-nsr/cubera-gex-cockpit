@@ -128,6 +128,47 @@ def test_blast_score_defensive_none():
     assert blast_score("up", [{"call_oi": 0, "call_ltp": 0}]) is None  # zero start OI
 
 
+def test_expired_near_book_names_no_wall():
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    reset_strike_oi_history()
+    dash = MagicMock()
+    dash.levels.spot = 23810.0
+    dash.levels.call_wall = 0.0
+    dash.levels.put_wall = 0.0
+    dash.levels.flip = 0.0
+    dash.levels.magnet = 0.0
+    dash.levels.total_net_gex = 0.0
+    dash.levels.flags = ["near book expired — gamma near spot is gone, so no wall is named"]
+    dash.view.regime = "FLAT"
+    dash.dte_now = 0.0
+    dash.expiries = []
+    dash.oi_strikes = []
+    dash.fetched_at = datetime(2026, 11, 3, 10, 0, tzinfo=timezone.utc)  # 15:30 IST
+    res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
+    assert res["state"] == "NO_TRIGGER"
+    assert res["primary_strike"] is None
+    assert "gone to dust" in res["description"]
+    assert "17,000" not in res["description"]
+
+
+def test_score_journal_writes_a_change_once(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path)
+    gb._score_written.clear()
+    fetched = datetime(2026, 11, 3, 9, 30, tzinfo=timezone.utc)  # 15:00 IST
+    result = {"score": 59, "state": "COILING", "primary_strike": 23700}
+    assert gb.journal_blast_read("NIFTY", 23720.0, result, fetched) is True
+    assert gb.journal_blast_read("NIFTY", 23720.0, result, fetched) is False
+    changed = dict(result, score=62, state="TRIGGERED")
+    assert gb.journal_blast_read("BANKNIFTY", 54000.0, changed, fetched) is True
+    nifty = (tmp_path / "NIFTY" / "2026-11-03.csv").read_text()
+    bank = (tmp_path / "BANKNIFTY" / "2026-11-03.csv").read_text()
+    assert nifty.count("\n") == 2  # header + one row
+    assert bank.splitlines()[1].split(",")[3] == "BANKNIFTY"
+
+
 def test_evaluate_dashboard_gamma_blast_non_expiry():
     from unittest.mock import MagicMock
     reset_strike_oi_history()

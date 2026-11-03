@@ -70,6 +70,9 @@ STRIKE_FIELDS = [
     # Nearest-expiry ABSOLUTE OI — a source-consistent series (live + Dhan backfill) that the
     # trailing windows difference (baseline cancels → the window's nearest-expiry OI change).
     "call_oi_near", "put_oi_near",
+    # Chain spot versus the same snapshot's put-call parity. spot_stale is 1 when
+    # the printed spot is unchanged and the at-the-money premiums have moved.
+    "parity_spot", "spot_stale",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -198,6 +201,104 @@ def build_row(data) -> dict:
     }
 
 
+def _num(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def chain_parity_spot(rows: list[dict]) -> float | None:
+    """Spot implied by the strike nearest the printed spot: K + call − put.
+
+    On expiry the discount is small, so this sits next to the chain spot.
+    A gap that opens while the chain spot is stuck is the stale-spot check.
+    """
+    if not rows:
+        return None
+    spot = _num(rows[0].get("spot"))
+    if spot is None:
+        return None
+    best = None
+    for row in rows:
+        strike = _num(row.get("strike"))
+        call = _num(row.get("call_ltp"))
+        put = _num(row.get("put_ltp"))
+        if strike is None or call is None or put is None:
+            continue
+        if call <= 0 and put <= 0:
+            continue
+        dist = abs(strike - spot)
+        if best is None or dist < best[0]:
+            best = (dist, strike, call, put)
+    if best is None:
+        return None
+    _, strike, call, put = best
+    return round(strike + call - put, 2)
+
+
+def spot_is_stale(current: list[dict], previous: list[dict], move: float = 1.0) -> bool:
+    """True when the printed spot did not move and the at-the-money premium did.
+
+    ``move`` is rupees. One rupee on the expiring premium is the 3 Nov case:
+    spot sat on 23,731.8 while the 23,700 call went from 49 to 55.
+    """
+    if not current or not previous:
+        return False
+    now_spot = _num(current[0].get("spot"))
+    then_spot = _num(previous[0].get("spot"))
+    if now_spot is None or then_spot is None or abs(now_spot - then_spot) > 0.05:
+        return False
+
+    def atm(rows, spot):
+        found = None
+        for row in rows:
+            strike = _num(row.get("strike"))
+            if strike is None:
+                continue
+            if found is None or abs(strike - spot) < abs(found[0] - spot):
+                found = (strike, row)
+        return found
+
+    now_atm = atm(current, now_spot)
+    then_atm = atm(previous, then_spot)
+    if now_atm is None or then_atm is None or now_atm[0] != then_atm[0]:
+        return False
+    for side in ("call_ltp", "put_ltp"):
+        now_px = _num(now_atm[1].get(side))
+        then_px = _num(then_atm[1].get(side))
+        if now_px is None or then_px is None:
+            continue
+        if abs(now_px - then_px) >= move:
+            return True
+    return False
+
+
+def annotate_spot_check(rows: list[dict], previous: list[dict] | None = None) -> list[dict]:
+    """Write parity_spot and spot_stale onto every row of this snapshot."""
+    if not rows:
+        return rows
+    parity = chain_parity_spot(rows)
+    stale = 1 if spot_is_stale(rows, previous or []) else 0
+    for row in rows:
+        row["parity_spot"] = "" if parity is None else parity
+        row["spot_stale"] = stale
+    return rows
+
+
+def last_strike_snapshot(path) -> list[dict]:
+    """Rows from the last timestamp already in a blast file. Empty if none."""
+    if path is None or not path.exists():
+        return []
+    frame = pd.read_csv(path)
+    if frame.empty or "timestamp_utc" not in frame.columns:
+        return []
+    last = frame["timestamp_utc"].iloc[-1]
+    return frame[frame["timestamp_utc"] == last].to_dict("records")
+
+
 def build_strike_rows(data) -> list[dict]:
     """Flatten a DashboardData bundle's per-strike OI into long-format rows
     (keys == STRIKE_FIELDS). Empty list if the bundle carries no per-strike OI
@@ -229,8 +330,10 @@ def build_strike_rows(data) -> list[dict]:
             "put_dprem": _f(s.get("put_dprem"), 2),
             "call_oi_near": _f(s.get("call_oi_near")),
             "put_oi_near": _f(s.get("put_oi_near")),
+            "parity_spot": "",
+            "spot_stale": 0,
         })
-    return rows
+    return annotate_spot_check(rows)
 
 
 def strikes_path_for(date_ist: str, symbol: str | None = None,
@@ -238,6 +341,26 @@ def strikes_path_for(date_ist: str, symbol: str | None = None,
     # Resolve the module global at CALL time (default-arg binding would capture it
     # at def-time and break monkeypatch in tests / any reassignment of OISTRIKES_DIR).
     return _stream_dir(directory or OISTRIKES_DIR, symbol) / f"{date_ist}.csv"
+
+
+def write_gamma_blast(data) -> list[dict]:
+    """Append one expiry snapshot to that feed's blast file.
+
+    The previous snapshot in the same file is the stale-spot check. Returns
+    the rows written (empty when the bundle has no strikes).
+    """
+    rows = build_strike_rows(data)
+    if not rows:
+        return []
+    fa = data.fetched_at
+    if fa.tzinfo is None:
+        fa = fa.replace(tzinfo=timezone.utc)
+    day = _ist(fa).strftime("%Y-%m-%d")
+    directory = gamma_blast_dir_for(getattr(data, "source", None))
+    previous = last_strike_snapshot(strikes_path_for(day, data.symbol, directory))
+    annotate_spot_check(rows, previous)
+    append_strike_rows(rows, date_ist=day, symbol=data.symbol, directory=directory)
+    return rows
 
 
 def append_strike_rows(rows: list[dict], date_ist: str | None = None,
