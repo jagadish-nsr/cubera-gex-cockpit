@@ -143,3 +143,71 @@ def test_append_if_due_dedup(tmp_path, monkeypatch):
     _, w3 = ts.append_if_due(row, min_gap_minutes=0)
     assert w3                                        # guard disabled -> writes
     assert len(ts.load_day(row["date_ist"])) == 2
+
+
+def _published_pickle(path, fetched):
+    import pickle
+    from types import SimpleNamespace
+    path.parent.mkdir(parents=True, exist_ok=True)
+    bundle = SimpleNamespace(
+        symbol="NIFTY",
+        source="dhan",
+        levels=SimpleNamespace(spot=23222.3),
+        fetched_at=fetched,
+    )
+    with open(path, "wb") as handle:
+        pickle.dump({"data": bundle, "fetched_at": fetched}, handle)
+    return bundle
+
+
+def test_published_book_rejects_a_stale_file(tmp_path, monkeypatch):
+    from datetime import timedelta
+    import scripts.log_timeseries as log_ts
+    monkeypatch.setattr(log_ts, "ROOT", tmp_path)
+    fetched = datetime.now(timezone.utc) - timedelta(minutes=10)
+    _published_pickle(tmp_path / "data" / "journal" / "latest_snap_NIFTY.pkl", fetched)
+    assert log_ts.published_book("NIFTY") is None
+
+
+def test_published_book_returns_a_fresh_file(tmp_path, monkeypatch):
+    import scripts.log_timeseries as log_ts
+    monkeypatch.setattr(log_ts, "ROOT", tmp_path)
+    fetched = datetime.now(timezone.utc)
+    bundle = _published_pickle(tmp_path / "data" / "journal" / "latest_snap_NIFTY.pkl", fetched)
+    got = log_ts.published_book("NIFTY")
+    assert got is not None
+    assert got.levels.spot == bundle.levels.spot
+
+
+def test_empty_chain_records_the_published_book(monkeypatch):
+    import scripts.log_timeseries as log_ts
+    fetched = datetime.now(timezone.utc)
+    book = SimpleNamespace(
+        symbol="NIFTY",
+        source="nse",
+        fetched_at=fetched,
+        expiries=[],
+    )
+
+    def _empty(**_kwargs):
+        raise ValueError("snapshot has no contracts (empty chain)")
+
+    monkeypatch.setattr(log_ts, "load_dashboard", _empty)
+    monkeypatch.setattr(log_ts, "published_book", lambda symbol, max_age_s=180: book)
+    monkeypatch.setattr(log_ts, "build_row", lambda data: {
+        "date_ist": "2026-11-02", "time_ist": "10:18", "spot": 23222.3,
+        "regime": "POSITIVE", "mode_label": "CALL-HEAVY",
+        "put_wall": 23200, "call_wall": 23300, "magnet": 23300,
+        "pcr_oi": 1.1, "news_count": 0, "news_impact": 0,
+    })
+    monkeypatch.setattr(log_ts, "append_if_due", lambda *a, **k: (SimpleNamespace(name="2026-11-02.csv"), True))
+    monkeypatch.setattr(log_ts, "build_strike_rows", lambda data: [])
+    monkeypatch.setattr(log_ts, "append_strike_rows", lambda *a, **k: None)
+    monkeypatch.setattr(log_ts, "_is_expiry_day", lambda data: False)
+    monkeypatch.setattr(
+        "app.futures_buildup.capture_futures_from_ws",
+        lambda **k: None,
+    )
+    msg, data = log_ts.capture_once(symbol="NIFTY")
+    assert data is book
+    assert "[published book]" in msg

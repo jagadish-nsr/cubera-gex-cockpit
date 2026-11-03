@@ -29,7 +29,8 @@ DEFAULT_INTERVAL_S = 60
 DEFAULT_LEAD_S = 15.0
 _SNAP_DIR = Path("data") / "journal"
 
-_STORE: dict = {}       # key -> {"data", "as_of", "fetched", "err", "window"}
+_STORE: dict = {}          # key -> {"data", "as_of", "fetched", "err", "window"}
+_SPOT_HELD: dict[str, tuple[float, float]] = {}  # symbol -> (spot, since_epoch)
 _THREADS: dict = {}     # key -> Thread
 _CFG: dict = {}         # key -> config dict
 _FORCE: dict = {}       # key -> Event
@@ -80,6 +81,30 @@ def _live_quote_spot(symbol: str) -> float:
         return float(quote.get("spot") or 0.0)
     except Exception:
         return 0.0
+
+
+# Same chain spot, held this long while the cash session is open, is not a live print.
+# Nifty on 2 Nov stayed at 23,331.1 from 15:15:29 until the 15:30 official close.
+SPOT_STALE_S = 180.0
+
+
+def chain_spot_hold(
+    previous: tuple[float, float] | None,
+    spot: float,
+    now: float,
+) -> tuple[tuple[float, float], bool, float]:
+    """How long this chain spot has been the published print.
+
+    ``previous`` is ``(spot, since_epoch)`` or None. A print within 0.05 of the
+    last one is the same print. Three minutes of that print is a stale spot.
+    Returns ``(record, stale, held_seconds)``.
+    """
+    if previous is not None and abs(float(previous[0]) - float(spot)) < 0.05:
+        since = float(previous[1])
+    else:
+        since = float(now)
+    held = max(0.0, float(now) - since)
+    return (float(spot), since), held >= SPOT_STALE_S, held
 
 
 def _chain_spot(data) -> float:
@@ -265,11 +290,23 @@ def _loop(store_key) -> None:
                 _persist_pickle(symbol, window, data)
                 fields = book_fields(data)
                 fields["symbol"] = fields.get("symbol") or symbol
+                chain_spot = fields.get("spot")
+                spot_stale = False
+                spot_held_s = 0.0
+                if chain_spot and config.is_market_open():
+                    record, spot_stale, spot_held_s = chain_spot_hold(
+                        _SPOT_HELD.get(symbol), float(chain_spot), time.time(),
+                    )
+                    _SPOT_HELD[symbol] = record
+                    data.spot_stale = spot_stale
+                    data.spot_held_s = spot_held_s
                 event(
                     "chain.published",
                     workflow=f"chain.{symbol}",
                     duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
                     window=window,
+                    spot_stale=spot_stale,
+                    spot_held_s=round(spot_held_s, 1),
                     **fields,
                 )
             except Exception as e:  # noqa: BLE001 - keep the loop alive

@@ -1821,6 +1821,12 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         feed_source = "0ms Direct Memory" if is_live else "Session Snapshot"
         pollers_status = "Active (1s Push)" if is_live else "Paused"
         feed_subtext = "Live direct exchange tick stream" if is_live else "Tick stream paused · Broker pollers idle"
+        if is_live and getattr(dash, "spot_stale", False):
+            held_m = max(1, int(float(getattr(dash, "spot_held_s", 0) or 0) // 60))
+            feed_badge = "Stale spot"
+            feed_subtext = (
+                f"Chain spot unchanged for {held_m}m. This print is not a live tick."
+            )
     pm_st = get_pre_market_state(sym)
     is_pre_bell_ephemeral = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_st)
 
@@ -2526,6 +2532,9 @@ async def get_cockpit_data(
         exec_status_text = f"Pre-open · prior-session GEX · Spot ₹{spot:,.1f}"
     elif not is_open:
         exec_status_text = f"Snapshot Locked at ₹{spot:,.1f} · {regime_val} Mode"
+    elif getattr(dash, "spot_stale", False):
+        held_m = max(1, int(float(getattr(dash, "spot_held_s", 0) or 0) // 60))
+        exec_status_text = f"{regime_val} Mode · Spot ₹{spot:,.1f} · chain spot unchanged for {held_m}m"
     else:
         exec_status_text = f"{regime_val} Mode · Spot ₹{spot:,.1f}"
 

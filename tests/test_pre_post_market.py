@@ -303,6 +303,55 @@ class TestPrePostMarket(unittest.TestCase):
         mock_ensure.assert_called()
         self.assertFalse(state.get("is_discovered"))
 
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.pre_post_market.ensure_pre_market_poller")
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_missed_auction_takes_the_day_open(self, mock_snap, mock_fetch, _poller, _save):
+        """The 09:08 poll missed. After 09:15 the open already on the quote is the gap."""
+        from data import pre_post_market as ppm
+        import app.spot_ticker as ticker
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 23053.1,
+            "prev_close": 22936.75,
+            "open": 22964.5,
+            "call_wall": 23000.0,
+            "put_wall": 23000.0,
+            "gamma_flip": 23062.9,
+            "as_of": "2026-10-30T10:10:20+00:00",
+        }
+        ticker._STORE["NIFTY"] = {
+            "ohlc": {
+                "open": 23222.3,
+                "ltp": 23250.0,
+                "prev_close": 23250.0,
+                "as_of": "2026-11-02 09:16:00",
+            }
+        }
+        try:
+            early = get_pre_market_state(
+                "NIFTY", force_refresh=False,
+                now=datetime(2026, 11, 2, 9, 10, tzinfo=IST),
+            )
+            self.assertFalse(early["is_discovered"])
+            mock_fetch.assert_not_called()
+            ppm._PRE_MARKET_CACHE.clear()
+            state = get_pre_market_state(
+                "NIFTY", force_refresh=False,
+                now=datetime(2026, 11, 2, 10, 15, tzinfo=IST),
+            )
+        finally:
+            ticker._STORE.pop("NIFTY", None)
+        mock_fetch.assert_not_called()
+        self.assertTrue(state["is_discovered"])
+        self.assertEqual(state["discovered_spot"], 23222.3)
+        self.assertEqual(state["prev_close"], 23053.1)
+        self.assertEqual(state["gap_pts"], 169.2)
+        self.assertEqual(state["open_source"], "day-print")
+        self.assertIn("day print", state["status_text"])
+        self.assertIn("did not record", state["status_text"])
+
     def test_classify_opening_gap_regimes(self):
         # 1. Call Wall test
         cw_res = classify_opening_gap(gap_pts=50.0, gap_pct=0.22, spot=22700.0, call_wall=22700.0, put_wall=22400.0)
