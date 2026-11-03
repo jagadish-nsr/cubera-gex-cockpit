@@ -53,9 +53,9 @@ $(block "${DEV_DIR}" '*/15' 20 0 0 dev)
 $(block "${PROD_DIR}" '3,18,33,48' 23 3 3 prod)
 # prod big-money futures tape, one process from 09:10 IST, Mon-Fri
 10 9 * * 1-5 ${PROD_DIR}/run_big_money.sh
-# prod gamma-blast option ticks from 13:40 IST, Mon-Fri.
+# prod gamma-blast option ticks from 12:55 IST, Mon-Fri (waits for the 13:00 freeze).
 # The script skips an index whose nearest expiry is not today and stops at the F&O close.
-40 13 * * 1-5 ${PROD_DIR}/run_blast_ticks.sh
+55 12 * * 1-5 ${PROD_DIR}/run_blast_ticks.sh
 # END cubera-gex data collection
 EOF
 )"

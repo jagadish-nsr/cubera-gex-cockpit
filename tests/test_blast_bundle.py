@@ -96,6 +96,45 @@ def _blast_row(spot, call, put, fetched):
     )
 
 
+def test_save_blast_journals_score_tape(tmp_path, monkeypatch):
+    """Headless 1-min blast write also appends gamma_blast_score (UI-independent)."""
+    import app.timeseries as ts
+    import app.gammablast as gb
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DIR", tmp_path / "blast")
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DHAN_DIR", tmp_path / "blast_dhan")
+    monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path / "score")
+    gb._score_written.clear()
+
+    fa = datetime(2026, 11, 3, 8, 15, tzinfo=timezone.utc)  # 13:45 IST
+    data = SimpleNamespace(
+        symbol="NIFTY",
+        source="nse",
+        fetched_at=fa,
+        expiries=[date(2026, 11, 3)],
+        dte_now=0.1,
+        levels=SimpleNamespace(
+            spot=23720.0, call_wall=23750.0, put_wall=23650.0,
+            flip=23700.0, magnet=23700.0, total_net_gex=-1e8,
+            near_book_expired=False,
+        ),
+        view=SimpleNamespace(regime="NEGATIVE"),
+        oi_strikes=[{
+            "strike": 23700.0, "call_oi": 100, "put_oi": 80,
+            "call_ltp": 40.0, "put_ltp": 30.0, "net_gex": -1e6,
+            "call_doi": -5, "put_doi": 2, "call_vol": 1, "put_vol": 1,
+        }],
+    )
+    n = lt._save_blast(data)
+    assert n >= 1
+    score_path = tmp_path / "score" / "NIFTY" / "2026-11-03.csv"
+    assert score_path.is_file()
+    text = score_path.read_text()
+    assert "score" in text and "NIFTY" in text
+    # Second save in the same minute does not duplicate the score row
+    lt._save_blast(data)
+    assert text.count("\n") == score_path.read_text().count("\n")
+
+
 def test_stuck_chain_spot_is_flagged_when_premiums_move(tmp_path, monkeypatch):
     import app.timeseries as ts
     monkeypatch.setattr(ts, "GAMMA_BLAST_DHAN_DIR", tmp_path)

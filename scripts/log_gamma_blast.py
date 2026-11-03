@@ -66,7 +66,17 @@ def resolve_symbols(explicit: str | None) -> tuple[str, ...]:
 
 
 def capture_once(force: bool = False, symbol: str | None = None) -> str:
-    data = load_dashboard(symbol=symbol)  # live NSE, single fetch
+    # Empty chain → reuse the live process's fresh published book (same as timeseries),
+    # so one flaky pull does not punch a hole in the 1-min blast tape.
+    try:
+        data = load_dashboard(symbol=symbol)  # live NSE, single fetch
+    except Exception as exc:
+        if "no contracts" not in str(exc):
+            raise
+        from scripts.log_timeseries import published_book
+        data = published_book(symbol or "NIFTY")
+        if data is None:
+            raise
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     ist_today = ist.date()
     nearest = data.expiries[0] if data.expiries else None
@@ -81,6 +91,11 @@ def capture_once(force: bool = False, symbol: str | None = None) -> str:
                 "blast left to the minute loop")
     from app.timeseries import write_gamma_blast
     rows = write_gamma_blast(data)
+    try:
+        from app.gammablast import journal_blast_from_dashboard
+        journal_blast_from_dashboard(data, getattr(data, "symbol", "NIFTY"))
+    except Exception:  # noqa: BLE001
+        pass
     if not rows:
         return f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  no per-strike data (live feed only) — skipped"
     stale = ""

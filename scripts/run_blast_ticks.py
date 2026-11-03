@@ -5,12 +5,15 @@ blast fixes), and captures their WS ticks to data/journal/blast_ticks/<SYM>/<day
 close. When spot trades through the outer subscribed strike, the next strike on that index's own
 step is added. Nifty steps 50, Bank Nifty and Sensex step 100.
 
-  python scripts/run_blast_ticks.py --market-hours            # wait for 13:45 IST, stop at the F&O close
+  python scripts/run_blast_ticks.py --market-hours            # wait for 13:00 IST, stop at the F&O close
   python scripts/run_blast_ticks.py --any-day --seconds 120   # off-expiry smoke test (skip the expiry gate)
-  python scripts/run_blast_ticks.py --symbols NIFTY --freeze 13:45
+  python scripts/run_blast_ticks.py --symbols NIFTY --freeze 13:00
 
 Only runs on a symbol whose NEAREST option expiry is today (the 0-DTE gate) unless --any-day. Reconnects
-on drop; token 24h-capped → repaste data/.dhan_token. Exchange tick time. Sign-free; NEVER auto-executes."""
+on drop; token 24h-capped → repaste data/.dhan_token. Exchange tick time. Sign-free; NEVER auto-executes.
+
+Freeze defaults to 13:00 IST so the tick tape covers the full gamma-blast window (walls roll as
+spot moves). Pass --freeze 13:45 to keep the older ATM-fix start."""
 from __future__ import annotations
 
 import argparse
@@ -114,7 +117,8 @@ def _spot(symbol: str, tries: int = 5):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", default="NIFTY")
-    ap.add_argument("--freeze", default="13:45", help="HH:MM IST to fix the ATM anchor + start capture")
+    ap.add_argument("--freeze", default="13:00",
+                    help="HH:MM IST to fix the ATM anchor + start capture (default 13:00 = blast window open)")
     ap.add_argument("--market-hours", action="store_true", help="wait for freeze, stop at the F&O close")
     ap.add_argument("--any-day", action="store_true", help="skip the expiry-day gate (for smoke tests)")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (0 = until 15:30)")

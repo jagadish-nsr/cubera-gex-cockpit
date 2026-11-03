@@ -610,7 +610,8 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
 
 _SCORE_FIELDS = (
     "timestamp_utc", "time_ist", "date_ist", "symbol", "spot",
-    "score", "state", "primary_strike",
+    "score", "state", "primary_strike", "badge",
+    "call_wall", "put_wall", "in_blast_window",
 )
 _score_written: dict[str, tuple] = {}
 BLAST_SCORE_DIR = (
@@ -619,11 +620,12 @@ BLAST_SCORE_DIR = (
 
 
 def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) -> bool:
-    """Append the card reading when the minute, score, state, or strike changes.
+    """Append one card reading per IST minute (headless + UI share this path).
 
-    One row per change is enough to replay the card after the session. A poll
-    that repeats the same reading does not append. Returns True when a row
-    was written. The directory is ``data/journal/gamma_blast_score/<SYMBOL>``.
+    At most one row per symbol per minute so a cockpit poll storm does not
+    duplicate the tape, while a flat COILING stretch still leaves a minute
+    grid for later intelligence. Returns True when a row was written.
+    Directory: ``data/journal/gamma_blast_score/<SYMBOL>``.
     """
     import csv
 
@@ -639,10 +641,13 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
     score = result.get("score")
     state = result.get("state")
     strike = result.get("primary_strike")
-    key = (day, minute, score, state, strike)
+    key = (day, minute)  # one print per minute — trajectory, not only changes
     sym = (symbol or "NIFTY").upper()
     if _score_written.get(sym) == key:
         return False
+    levels = result.get("levels") or {}
+    call_wall = result.get("call_wall", levels.get("call_wall") if isinstance(levels, dict) else None)
+    put_wall = result.get("put_wall", levels.get("put_wall") if isinstance(levels, dict) else None)
     directory = BLAST_SCORE_DIR / sym
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{day}.csv"
@@ -656,6 +661,10 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
         "score": score,
         "state": state,
         "primary_strike": "" if strike is None else strike,
+        "badge": result.get("badge") or "",
+        "call_wall": "" if call_wall in (None, "") else call_wall,
+        "put_wall": "" if put_wall in (None, "") else put_wall,
+        "in_blast_window": int(bool(result.get("in_blast_window"))),
     }
     with path.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS)
@@ -664,3 +673,23 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
         writer.writerow(row)
     _score_written[sym] = key
     return True
+
+
+def journal_blast_from_dashboard(dash, symbol: str = "NIFTY") -> bool:
+    """Evaluate + journal from a live pull (timeseries / blast loop). Fail soft."""
+    try:
+        result = evaluate_dashboard_gamma_blast(dash, symbol)
+    except Exception:
+        return False
+    if not result.get("is_expiry"):
+        return False
+    levels = getattr(dash, "levels", None)
+    spot = float(getattr(levels, "spot", 0.0) or 0.0)
+    # Persist walls beside the score so later studies need no second join.
+    result = dict(result)
+    result["call_wall"] = float(getattr(levels, "call_wall", 0.0) or 0.0) or None
+    result["put_wall"] = float(getattr(levels, "put_wall", 0.0) or 0.0) or None
+    try:
+        return journal_blast_read(symbol, spot, result, getattr(dash, "fetched_at", None))
+    except Exception:
+        return False
