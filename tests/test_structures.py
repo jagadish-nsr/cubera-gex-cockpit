@@ -54,6 +54,42 @@ def test_expiry_day_notes():
     assert suggest_structure(L, "calm", lot_size=65, is_expiry_day=False).expiry_note == ""
 
 
+def test_expiry_blast_active_overrides_note_and_keeps_shorts_off_magnet():
+    from structures.suggest import suggest_structures
+
+    L = _Levels(spot=24060, call_wall=24000, put_wall=23600)
+    L.magnet = 24050
+    blast = {
+        "is_expiry": True,
+        "state": "TRIGGERED",
+        "score": 70,
+        "badge": "GAMMA BLAST: ACTIVE",
+        "primary_strike": 24050,
+    }
+    cands = suggest_structures(L, "calm", lot_size=65, is_expiry_day=True, blast=blast)
+    assert cands
+    assert "ACTIVE" in cands[0].expiry_note
+    assert "dealers" not in cands[0].expiry_note.lower()
+    for cs in cands:
+        for action, _right, strike in (cs.legs or []):
+            if action == "SELL":
+                assert int(strike) != 24050
+
+
+def test_expiry_blast_coiling_note():
+    L = _Levels(spot=23980, call_wall=24000, put_wall=23600)
+    blast = {
+        "is_expiry": True,
+        "state": "COILING",
+        "score": 45,
+        "badge": "GAMMA BLAST: COILING / IMMINENT",
+        "primary_strike": 24000,
+    }
+    cs = suggest_structure(L, "calm", lot_size=65, is_expiry_day=True, blast=blast)
+    assert "COILING" in cs.expiry_note
+    assert "map" in cs.expiry_note.lower() or "Nearness" in cs.expiry_note
+
+
 def test_calm_outside_band_waits():
     # calm but spot below the put wall -> no clean condor -> wait.
     L = _Levels(spot=23547, call_wall=24000, put_wall=23700)

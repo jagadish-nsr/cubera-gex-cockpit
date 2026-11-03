@@ -398,7 +398,7 @@ def _standing_oi(dash, spot: float, band_pts: float) -> dict:
     }
 
 
-def _concentration_structures(dash, idx, bias_score=None, sentinel_signals=None) -> dict:
+def _concentration_structures(dash, idx, bias_score=None, sentinel_signals=None, blast=None) -> dict:
     """Illustrative structure from the absolute-GEX bucket. The call−put sign is not an input."""
     from app.intraday_features import structure_vol_regime
     from structures.suggest import suggest_structures
@@ -415,6 +415,14 @@ def _concentration_structures(dash, idx, bias_score=None, sentinel_signals=None)
         step = int(idx.strike_step)
         expiries = list(getattr(dash, "expiries", None) or [])
         nearest = expiries[0] if expiries else None
+        blast_payload = blast
+        if blast_payload is None:
+            try:
+                from app.gammablast import evaluate_dashboard_gamma_blast
+                sym = str(getattr(dash, "symbol", None) or getattr(idx, "symbol", "NIFTY"))
+                blast_payload = evaluate_dashboard_gamma_blast(dash, sym)
+            except Exception:
+                blast_payload = None
         cands = suggest_structures(
             dash.levels,
             tag,
@@ -425,6 +433,7 @@ def _concentration_structures(dash, idx, bias_score=None, sentinel_signals=None)
             is_expiry_day=bool(nearest == _get_ist_now().date()),
             bias_score=bias_score,
             sentinel_signals=sentinel_signals,
+            blast=blast_payload,
         )
     except Exception as exc:
         log.warning("structure suggestion: %s", exc)
@@ -2598,7 +2607,7 @@ async def get_cockpit_data(
         "is_degraded": is_degraded,
         "fetched_at": str(getattr(dash, "fetched_at", "") or ""),
         "structures": _concentration_structures(
-            dash, idx, bias_score=bias_res.score, sentinel_signals=sigs,
+            dash, idx, bias_score=bias_res.score, sentinel_signals=sigs, blast=gamma_blast,
         ),
         "standing_oi": standing_oi,
     }
