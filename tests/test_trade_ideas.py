@@ -163,6 +163,57 @@ def test_generate_recommendations_score_filter():
     assert "Capital preservation" in batch_99.executive_summary
 
 
+def test_blast_active_desizes_without_raising_quality(monkeypatch):
+    """ACTIVE blast cuts risk_pct / lots; quality scores are not boosted for direction."""
+    from app.blast_risk import SIZE_MULT_ACTIVE
+
+    data = MockDashboardData(spot=24500.0, symbol="NIFTY")
+    # Force 0-DTE-ish so evaluate path can run; we fully stub the evaluator.
+    data.dte_now = 0.1
+    data.expiries = []
+
+    def _blast_active(dash, symbol="NIFTY"):
+        return {
+            "is_expiry": True,
+            "state": "TRIGGERED",
+            "score": 72,
+            "badge": "GAMMA BLAST: ACTIVE",
+            "primary_strike": 24500,
+            "in_blast_window": True,
+        }
+
+    def _blast_off(dash, symbol="NIFTY"):
+        return {
+            "is_expiry": False,
+            "state": "NO_TRIGGER",
+            "score": None,
+            "badge": "GAMMA BLAST: INACTIVE (NON-EXPIRY)",
+            "primary_strike": None,
+            "in_blast_window": False,
+        }
+
+    monkeypatch.setattr("app.gammablast.evaluate_dashboard_gamma_blast", _blast_off)
+    base = generate_trade_recommendations(data, min_score=0)
+    monkeypatch.setattr("app.gammablast.evaluate_dashboard_gamma_blast", _blast_active)
+    active = generate_trade_recommendations(data, min_score=0)
+
+    assert "BLAST ACTIVE" in active.executive_summary or any(
+        "BLAST ACTIVE" in (t.rationale or "") for t in active.all_ce_candidates + active.all_pe_candidates
+    )
+
+    # Pair by rec_id: active size should be <= base (risk cut); quality not systematically higher
+    base_by_id = {t.rec_id: t for t in base.all_ce_candidates + base.all_pe_candidates}
+    for t in active.all_ce_candidates + active.all_pe_candidates:
+        b = base_by_id.get(t.rec_id)
+        if not b or not b.position_size or not t.position_size:
+            continue
+        assert t.position_size.suggested_lots <= b.position_size.suggested_lots
+        # Direction must not get a blast score boost
+        assert t.quality_score <= b.quality_score + 1  # allow ± noise / penalty only
+        if SIZE_MULT_ACTIVE < 1.0 and b.position_size.max_risk_inr > 0:
+            assert t.position_size.max_risk_inr <= b.position_size.max_risk_inr + 1e-6
+
+
 def test_position_sizing_basic():
     from analytics.trade_ideas import compute_position_size, PositionSizeInfo
 

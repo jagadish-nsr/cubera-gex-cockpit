@@ -10,6 +10,7 @@ credit or debit. The user confirms. No order is sent.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -37,6 +38,7 @@ def suggest_structure(
     bias_score: float | None = None,
     sentinel_signals: list[Any] | None = None,
     strike_step: int = 50,
+    blast: dict | None = None,
 ) -> CandidateStructure:
     """Return the primary candidate structure (backwards-compatible)."""
     return suggest_structures(
@@ -49,6 +51,7 @@ def suggest_structure(
         bias_score=bias_score,
         sentinel_signals=sentinel_signals,
         strike_step=strike_step,
+        blast=blast,
     )[0]
 
 
@@ -62,16 +65,30 @@ def suggest_structures(
     bias_score: float | None = None,
     sentinel_signals: list[Any] | None = None,
     strike_step: int = 50,
+    blast: dict | None = None,
 ) -> list[CandidateStructure]:
     """Return 1-2 candidate structures: primary + optional alternate structure."""
+    from app.blast_risk import blast_risk_adjust
+
+    spot = float(getattr(levels, "spot", 0.0) or 0.0)
+    blast_adj = blast_risk_adjust(blast, spot) if (is_expiry_day or blast) else {
+        "applies": False, "size_mult": 1.0, "tag": "", "risk_line": "",
+        "active": False, "coiling": False, "primary_strike": None,
+    }
+
     candidates = _base_structures(
         levels, vol_regime, lot_size, spread_width, nearest_expiry,
         bias_score=bias_score, strike_step=strike_step,
+        blast_primary=blast_adj.get("primary_strike"),
     )
     if is_expiry_day:
-        note = _expiry_note(vol_regime)
+        note = _expiry_note(vol_regime, blast_adj)
         for cs in candidates:
             cs.expiry_note = note
+            if blast_adj.get("applies") and blast_adj.get("risk_line"):
+                if blast_adj["risk_line"] not in (cs.risk_note or ""):
+                    base = cs.risk_note or ""
+                    cs.risk_note = f"{base} {blast_adj['risk_line']}".strip() if base and base != "—" else blast_adj["risk_line"]
 
     # Enrich with OrderFlow Sentinel signals if available
     if sentinel_signals:
@@ -93,8 +110,20 @@ def suggest_structures(
 
 
 
-def _expiry_note(vol_regime) -> str:
+def _expiry_note(vol_regime, blast_adj: dict | None = None) -> str:
     """Expiry-day reading. Concentration is the vol context. It is not a pin call."""
+    adj = blast_adj or {}
+    if adj.get("active"):
+        return (
+            "EXPIRY DAY · GAMMA BLAST ACTIVE: spot is through / at a gamma strike on the book. "
+            "That is a location, not a measured hedge. De-size. Do not sell the magnet. "
+            "Shorts stay one step beyond the call/put walls."
+        )
+    if adj.get("coiling"):
+        return (
+            "EXPIRY DAY · GAMMA BLAST COILING: spot is near a gamma concentration. "
+            "Nearness is a map, not a coil that must break. Mild de-size. Do not sell the magnet."
+        )
     if vol_regime == "calm":
         return ("EXPIRY DAY: HIGH gamma concentration. A PIN toward the crowded strikes is the "
                 "historical base case for this bucket, and a late break can become a GAMMA BLAST. "
@@ -112,6 +141,19 @@ def _beyond(wall: float, step: int, side: int) -> int:
     return _round_strike(wall, step) + side * step
 
 
+def _nudge_short_off_magnet(short_k: int, magnet: float | None, step: int, side: int) -> int:
+    """If a short would sit on the blast/magnet strike, push it one more step beyond."""
+    if magnet is None or step <= 0:
+        return short_k
+    try:
+        mag = _round_strike(float(magnet), step)
+    except (TypeError, ValueError):
+        return short_k
+    if short_k == mag:
+        return short_k + side * step
+    return short_k
+
+
 def _base_structures(
     levels,
     vol_regime,
@@ -120,6 +162,7 @@ def _base_structures(
     nearest_expiry=None,
     bias_score: float | None = None,
     strike_step: int = 50,
+    blast_primary: float | None = None,
 ) -> list[CandidateStructure]:
     exit_by = "exit at least 1 trading day before expiry" + (
         f" ({nearest_expiry})" if nearest_expiry else ""
@@ -127,8 +170,15 @@ def _base_structures(
     step = int(strike_step) if int(strike_step) > 0 else 50
     cw = _round_strike(levels.call_wall, step)
     pw = _round_strike(levels.put_wall, step)
-    short_call = _beyond(levels.call_wall, step, +1)
-    short_put = _beyond(levels.put_wall, step, -1)
+    magnet = getattr(levels, "magnet", None)
+    avoid = blast_primary if blast_primary is not None else magnet
+    short_call = _nudge_short_off_magnet(_beyond(levels.call_wall, step, +1), avoid, step, +1)
+    short_put = _nudge_short_off_magnet(_beyond(levels.put_wall, step, -1), avoid, step, -1)
+    # Also never sit on the raw magnet / walls themselves
+    short_call = _nudge_short_off_magnet(short_call, magnet, step, +1)
+    short_put = _nudge_short_off_magnet(short_put, magnet, step, -1)
+    short_call = _nudge_short_off_magnet(short_call, cw, step, +1)
+    short_put = _nudge_short_off_magnet(short_put, pw, step, -1)
     spot = levels.spot
     risk_def = f"{spread_width} x {lot_size} = Rs {spread_width * lot_size:,}"
 

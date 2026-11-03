@@ -3360,9 +3360,43 @@ def generate_trade_recommendations(
     from datetime import datetime, timezone, timedelta
     now_ist = datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%Y-%m-%d %H:%M:%S")
 
+    # Expiry gamma-blast risk conditioner (map, not a CE/PE direction boost).
+    blast_adj: dict = {"applies": False, "size_mult": 1.0, "tag": "", "risk_line": "",
+                       "active": False, "coiling": False, "primary_strike": None}
+    _blast_penalty_fn = None
+    try:
+        from app.blast_risk import apply_active_short_magnet_penalty as _blast_penalty_fn
+        from app.blast_risk import blast_risk_adjust
+        from app.gammablast import evaluate_dashboard_gamma_blast
+        blast_raw = evaluate_dashboard_gamma_blast(data, symbol) if data is not None else {}
+        blast_adj = blast_risk_adjust(blast_raw, spot)
+    except Exception as exc:
+        log.debug("blast risk adjust skipped: %s", exc)
+
+    base_risk_pct = 1.5
+    blast_risk_pct = base_risk_pct * float(blast_adj.get("size_mult") or 1.0)
+
     persist_items: list[tuple[dict, dict, dict]] = []
     for t in ce_recs + pe_recs:
-        t.position_size = compute_position_size(t, account_capital=500_000.0, risk_pct=1.5, lot_size=lot_size)
+        if _blast_penalty_fn and blast_adj.get("active"):
+            _blast_penalty_fn(t, blast_adj, float(step))
+        t.position_size = compute_position_size(
+            t, account_capital=500_000.0, risk_pct=blast_risk_pct, lot_size=lot_size,
+        )
+        if blast_adj.get("applies") and blast_adj.get("tag"):
+            tag = blast_adj["tag"]
+            line = blast_adj.get("risk_line") or ""
+            t.rationale = f"{t.rationale} [{tag}: size×{blast_adj['size_mult']:.2f}]".strip()
+            if line:
+                # TradeIdea has no risk_note field — fold into catalyst tags + rationale tail
+                if tag not in (t.catalyst_tags or []):
+                    t.catalyst_tags = list(t.catalyst_tags or []) + [tag]
+                if line not in t.rationale:
+                    t.rationale = f"{t.rationale} {line}".strip()
+            if t.position_size and blast_adj["size_mult"] < 1.0:
+                t.position_size.sizing_rationale = (
+                    f"{t.position_size.sizing_rationale} · {tag} risk×{blast_adj['size_mult']:.2f}"
+                ).strip(" ·")
         t.rec_id = f"{symbol}_{t.side}_{int(t.strike)}_{t.play_badge}"
         rec_row = None
         if rec_store is not None:
@@ -3706,6 +3740,11 @@ def generate_trade_recommendations(
         regime_notes.append(f"FII macro: {fii_bias.title()}")
     if is_lunch:
         regime_notes.append("Lunch-hour low RVOL window")
+    if blast_adj.get("applies") and blast_adj.get("tag"):
+        regime_notes.append(
+            f"{blast_adj['tag']} · size×{float(blast_adj.get('size_mult') or 1.0):.2f} "
+            "(location map, not a direction call)"
+        )
     reg_suffix = f" [{' · '.join(regime_notes)}]" if regime_notes else ""
 
     if ce_watch or pe_watch:
