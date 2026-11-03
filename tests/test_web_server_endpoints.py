@@ -160,7 +160,11 @@ def test_get_cockpit_data_levels_and_tape():
     assert "is_magnet" in data["ladder"][0]
     assert "is_gamma_flip" in data["ladder"][0]
     assert any(r["is_gamma_flip"] for r in data["ladder"])
-    assert any(r.get("is_call_wall") or r.get("is_put_wall") for r in data["ladder"])
+    # Near-book can expire overnight (walls null) — only require wall flags when walls exist.
+    cw = (data["kpis"].get("call_wall") or {}).get("val")
+    pw = (data["kpis"].get("put_wall") or {}).get("val")
+    if cw or pw:
+        assert any(r.get("is_call_wall") or r.get("is_put_wall") for r in data["ladder"])
     assert "orderflow_alerts" in data
     assert "strike_step" in data
     assert data["strike_step"] > 0
