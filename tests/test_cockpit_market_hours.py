@@ -199,30 +199,33 @@ def test_live_hours_does_not_load_the_demo_book():
     mock_load.assert_not_called()
 
 
-def test_market_snapshot_rejects_corrupted_walls():
-    """Verify save_snapshot and _load_active_dashboard reject corrupt outlier walls (e.g. 17000 for NIFTY)."""
-    from web_server import _load_active_dashboard, _DASH_MEM_CACHE
-    from unittest.mock import MagicMock
+def test_market_snapshot_rejects_corrupted_walls(tmp_path, monkeypatch):
+    """save_snapshot drops NIFTY walls at/below 19000 (e.g. 17000) and keeps prior good walls."""
+    from data.market_snapshot import save_snapshot, get_snapshot
 
-    _DASH_MEM_CACHE.clear()
-    fake_dash = MagicMock()
-    fake_dash.levels.spot = 22888.95
-    fake_dash.levels.call_wall = 23000.0
-    fake_dash.levels.put_wall = 22500.0
-
-    with patch("config.is_market_open", return_value=False):
-        with patch("web_server.load_dashboard", return_value=fake_dash):
-            # Corrupted db snapshot with 17000
-            with patch("data.market_snapshot.get_snapshot", return_value={
-                "spot": 22888.95,
-                "call_wall": 17000.0,
-                "put_wall": 17000.0,
-            }):
-                dash = _load_active_dashboard("NIFTY", "weekly")
-                # Must NOT overwrite authentic snapshot walls with corrupted 17000.0
-                assert dash.levels.call_wall != 17000.0
-                assert dash.levels.put_wall != 17000.0
-                assert dash.levels.call_wall >= 19000.0
-                assert dash.levels.put_wall >= 19000.0
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "corrupt_walls.db")
+    save_snapshot(
+        symbol="NIFTY",
+        spot=22888.95,
+        call_wall=23000.0,
+        put_wall=22500.0,
+        as_of="2026-10-29T10:00:00+00:00",
+        source="ws-tick",
+    )
+    save_snapshot(
+        symbol="NIFTY",
+        spot=22888.95,
+        call_wall=17000.0,
+        put_wall=17000.0,
+        as_of="2026-10-29T10:01:00+00:00",
+        source="ws-tick",
+    )
+    row = get_snapshot("NIFTY")
+    assert row["call_wall"] != 17000.0
+    assert row["put_wall"] != 17000.0
+    assert row["call_wall"] >= 19000.0
+    assert row["put_wall"] >= 19000.0
+    assert row["call_wall"] == 23000.0
+    assert row["put_wall"] == 22500.0
 
 
