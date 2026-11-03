@@ -2116,9 +2116,19 @@ async def get_cockpit_data(
 
     pcr_sub = _pcr_caption(dash)
 
+    expired_book = bool(getattr(dash.levels, "near_book_expired", False))
+    if expired_book:
+        call_sub = "Near book expired"
+        put_sub = "Near book expired"
     kpis = {
-        "call_wall": {"val": float(dash.levels.call_wall or 0), "sub": call_sub},
-        "put_wall": {"val": float(dash.levels.put_wall or 0), "sub": put_sub},
+        "call_wall": {
+            "val": None if expired_book else float(dash.levels.call_wall or 0),
+            "sub": call_sub,
+        },
+        "put_wall": {
+            "val": None if expired_book else float(dash.levels.put_wall or 0),
+            "sub": put_sub,
+        },
         "gamma_flip": {"val": flip_val, "sub": flip_sub, "raw": flip_val},
         "max_pain": {
             "val": mp_val,
@@ -2305,8 +2315,13 @@ async def get_cockpit_data(
 
     # Gamma Blast Verdict (Evaluated dynamically via app.gammablast)
     try:
-        from app.gammablast import evaluate_dashboard_gamma_blast
+        from app.gammablast import evaluate_dashboard_gamma_blast, journal_blast_read
         gamma_blast = evaluate_dashboard_gamma_blast(dash, sym)
+        try:
+            if gamma_blast.get("is_expiry"):
+                journal_blast_read(sym, spot, gamma_blast, getattr(dash, "fetched_at", None))
+        except Exception as journal_exc:
+            log.debug("gamma blast score journal: %s", journal_exc)
     except Exception as exc:
         log.warning("Gamma blast dynamic evaluation fallback: %s", exc)
         gamma_blast = {

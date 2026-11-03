@@ -126,16 +126,41 @@ class Status:
     started_at: float = field(default_factory=time.time)
 
 
+def next_roll(calls: list[float], puts: list[float], implied: float | None,
+              step: float) -> tuple[str, float] | None:
+    """The next strike to subscribe once spot is through an outer contract.
+
+    ``step`` is that index's own strike step (Nifty 50, Bank Nifty 100, Sensex
+    100). Returns ``("CE", strike)`` or ``("PE", strike)``, or None while spot
+    is still between the subscribed strikes. The anchor pair is not moved.
+    """
+    if implied is None or not calls or not puts or step <= 0:
+        return None
+    hi = max(float(k) for k in calls)
+    lo = min(float(k) for k in puts)
+    if float(implied) >= hi:
+        return ("CE", hi + float(step))
+    if float(implied) <= lo:
+        return ("PE", lo - float(step))
+    return None
+
+
 class BlastTickCollector:
-    """Background WS capture of a fixed CALL+PUT pair → per-day CSV. Reconnects on drop (token is 24h-
-    capped). Give it a ``contracts`` dict from ``pair_contracts`` — the pair is fixed for the session
-    (the blast freezes its ATM strike), so no re-resolve loop; a new day = a new collector."""
+    """Background WS capture of the blast contracts → per-day CSV.
+
+    The anchor pair stays the strike captured at the start. When spot trades
+    through the outer call or put, ``extend`` adds the next strike and the
+    socket resubscribes. Reconnects on drop. A new day is a new collector.
+    """
 
     def __init__(self, contracts: dict[int, dict], own_archive: bool = True):
-        self.contracts = contracts
+        self.contracts = dict(contracts)
         self.own_archive = own_archive                       # False ⇒ never write (a second, read-only lane)
         self.status = Status()
+        self.last_ltp: dict[int, float] = {}
+        self.rolled: set[tuple[str, float]] = set()
         self._stop = threading.Event()
+        self._reconnect = threading.Event()
         self._thread: threading.Thread | None = None
         self._buf: list[tuple[str, str, dict]] = []          # (symbol, day, row)
         self._last_flush = time.time()
@@ -152,6 +177,26 @@ class BlastTickCollector:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def extend(self, extra: dict[int, dict]) -> None:
+        """Add contracts and resubscribe. The archive lock stays held."""
+        if not extra:
+            return
+        self.contracts.update(extra)
+        self._reconnect.set()
+
+    def implied_from_anchor(self) -> float | None:
+        """K + call − put from the latest anchor ticks. None until both have printed."""
+        anchors = [c for c in self.contracts.values() if c.get("role") == "anchor"]
+        call = next((c for c in anchors if c.get("side") == "CE"), None)
+        put = next((c for c in anchors if c.get("side") == "PE"), None)
+        if call is None or put is None:
+            return None
+        call_px = self.last_ltp.get(int(call["security_id"]))
+        put_px = self.last_ltp.get(int(put["security_id"]))
+        if call_px is None or put_px is None:
+            return None
+        return float(call["strike"]) + float(call_px) - float(put_px)
 
     def alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -238,13 +283,19 @@ class BlastTickCollector:
             ws.settimeout(2.0)
             try:
                 while not self._stop.is_set():
+                    if self._reconnect.is_set():
+                        self._flush(force=True)
+                        break
                     if time.monotonic() >= count_at:
                         count_at = time.monotonic() + 60.0
                         self._feed("blast_ticks.count", ticks=self.status.n_ticks)
                     try:
                         opcode, frame = ws.recv_data()
                     except websocket.WebSocketTimeoutException:
-                        self._flush(); continue
+                        self._flush()
+                        if self._reconnect.is_set():
+                            break
+                        continue
                     if opcode == websocket.ABNF.OPCODE_CLOSE:
                         break
                     if not isinstance(frame, (bytes, bytearray)) or len(frame) < 8:
@@ -253,6 +304,8 @@ class BlastTickCollector:
                     if tick is None or tick.code not in (4, 8) or tick.ltp is None:
                         continue
                     c = self.contracts.get(tick.security_id)
+                    if c is not None:
+                        self.last_ltp[int(tick.security_id)] = float(tick.ltp)
                     if c is None:
                         continue
                     epoch = (int(tick.ltt) - _IST_OFFSET_S) if tick.ltt else int(time.time())
@@ -265,12 +318,15 @@ class BlastTickCollector:
             except Exception as e:  # noqa: BLE001 - never let one bad frame kill the capture
                 self.status.error = f"recv: {type(e).__name__}"
             finally:
+                rolling = self._reconnect.is_set()
+                if rolling:
+                    self._reconnect.clear()
                 try:
                     ws.close()
                 except Exception:  # noqa: BLE001
                     pass
                 self._flush(force=True)
-                if linked:
+                if linked and not rolling:
                     self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=self.status.error or "socket closed")
                     linked = False
             self.status.connected = False

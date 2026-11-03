@@ -15,6 +15,7 @@ direction (that depends on the UNVALIDATED India dealer sign — see CLAUDE.md).
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 import os
 import threading
 
@@ -498,6 +499,19 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             "primary_strike": primary_strike,
         }
 
+    raw_flags = getattr(levels, "flags", None)
+    flags = raw_flags if isinstance(raw_flags, (list, tuple)) else []
+    if any("near book expired" in str(flag) for flag in flags):
+        return {
+            "state": "NO_TRIGGER",
+            "badge": "GAMMA BLAST: INACTIVE",
+            "description": "Near gamma has gone to dust. No strike is named as a wall.",
+            "score": 12,
+            "is_expiry": True,
+            "in_blast_window": in_blast_window,
+            "primary_strike": None,
+        }
+
     # 6. Expiry Session: Pre-Blast Window (< 13:00 IST)
     if not in_blast_window and ist_min < 13 * 60:
         base_score = 24
@@ -592,3 +606,61 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         "in_blast_window": in_blast_window,
         "primary_strike": primary_strike,
     }
+
+
+_SCORE_FIELDS = (
+    "timestamp_utc", "time_ist", "date_ist", "symbol", "spot",
+    "score", "state", "primary_strike",
+)
+_score_written: dict[str, tuple] = {}
+BLAST_SCORE_DIR = (
+    Path(__file__).resolve().parents[1] / "data" / "journal" / "gamma_blast_score"
+)
+
+
+def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) -> bool:
+    """Append the card reading when the minute, score, state, or strike changes.
+
+    One row per change is enough to replay the card after the session. A poll
+    that repeats the same reading does not append. Returns True when a row
+    was written. The directory is ``data/journal/gamma_blast_score/<SYMBOL>``.
+    """
+    import csv
+
+    if not result or result.get("score") is None:
+        return False
+    if fetched_at is None:
+        fetched_at = datetime.now(timezone.utc)
+    elif getattr(fetched_at, "tzinfo", None) is None:
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+    ist = fetched_at.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    minute = ist.strftime("%H:%M")
+    day = ist.strftime("%Y-%m-%d")
+    score = result.get("score")
+    state = result.get("state")
+    strike = result.get("primary_strike")
+    key = (day, minute, score, state, strike)
+    sym = (symbol or "NIFTY").upper()
+    if _score_written.get(sym) == key:
+        return False
+    directory = BLAST_SCORE_DIR / sym
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{day}.csv"
+    new_file = not path.exists()
+    row = {
+        "timestamp_utc": fetched_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "time_ist": minute,
+        "date_ist": day,
+        "symbol": sym,
+        "spot": round(float(spot), 2) if spot else "",
+        "score": score,
+        "state": state,
+        "primary_strike": "" if strike is None else strike,
+    }
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS)
+        if new_file:
+            writer.writeheader()
+        writer.writerow(row)
+    _score_written[sym] = key
+    return True

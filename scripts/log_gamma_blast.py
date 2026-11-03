@@ -1,4 +1,4 @@
-"""Gamma-blast 1-min capture — EXPIRY DAY only, 13:00-15:30 IST.
+"""Gamma-blast 1-min capture — EXPIRY DAY only, 13:00 through the F&O close.
 
 Captures per-strike OI/ΔOI + nearest-expiry premiums + gamma exposure every
 minute through the blast window, into data/journal/gamma_blast/<SYMBOL>/YYYY-MM-DD.csv
@@ -28,8 +28,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.data_access import load_dashboard  # noqa: E402
-from app.timeseries import (GAMMA_BLAST_DIR, append_strike_rows,  # noqa: E402
-                            build_strike_rows)
 
 _WIN_START_IST = (13, 0)     # gamma-blast window 13:00 through the F&O close
 # Own chain each. Bank Nifty is monthly; Sensex is Thursday. Do not substring-match NIFTY.
@@ -77,14 +75,21 @@ def capture_once(force: bool = False, symbol: str | None = None) -> str:
         return (f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  not an expiry day "
                 f"(nearest {nearest}) — skipped")
 
-    rows = build_strike_rows(data)
+    from scripts.log_timeseries import _blast_already_running
+    if _blast_already_running():
+        return (f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  "
+                "blast left to the minute loop")
+    from app.timeseries import write_gamma_blast
+    rows = write_gamma_blast(data)
     if not rows:
         return f"[{data.symbol}] {ist:%Y-%m-%d %H:%M} IST  no per-strike data (live feed only) — skipped"
-    from app.timeseries import gamma_blast_dir_for
-    path = append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                              symbol=data.symbol, directory=gamma_blast_dir_for(data.source))
+    stale = ""
+    if rows[0].get("spot_stale"):
+        stale = f"  spot stale — chain {rows[0]['spot']} parity {rows[0]['parity_spot']}"
+    expired = bool(getattr(data.levels, "near_book_expired", False))
+    where = "near book expired" if expired else f"magnet {data.levels.magnet:,.0f}"
     return (f"[{data.symbol}] {ist:%Y-%m-%d} {ist:%H:%M} IST  spot {data.levels.spot:,.1f}  "
-            f"magnet {data.levels.magnet:,.0f}  {len(rows)} strikes -> {path.name}")
+            f"{where}  {len(rows)} strikes{stale}")
 
 
 def _note(msg: str | None = None, error=None) -> None:

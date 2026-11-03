@@ -1224,6 +1224,10 @@
     const val = Number(node.val);
     if (Number.isFinite(val) && val > 0) {
       el.textContent = `₹${Math.round(val).toLocaleString("en-IN")}`;
+    } else if (node.sub && String(node.sub).indexOf("expired") >= 0) {
+      el.textContent = "Expired";
+    } else if (node.val == null || val === 0) {
+      el.textContent = "—";
     }
     if (subId && node.sub) {
       const subEl = document.getElementById(subId);

@@ -44,6 +44,7 @@ class Levels:
     atm_iv: float | None = None
     pcr_oi: float | None = None
     pcr_near: float | None = None
+    near_book_expired: bool = False
 
 
 def compute_levels(
@@ -219,11 +220,17 @@ def compute_levels(
         pass
 
     sign_model = snapshot.dealer_sign_model
+    from config import strike_step_for
+    named = core.live_walls(per_strike, spot, strike_step_for(snapshot.underlying))
+    if named["near_book_expired"]:
+        flags.append(
+            "near book expired — gamma near spot is gone, so no wall is named"
+        )
     return Levels(
         spot=spot,
-        call_wall=core.call_wall(per_strike),
-        put_wall=core.put_wall(per_strike),
-        magnet=core.magnet(per_strike),
+        call_wall=float(named["call_wall"] or 0.0),
+        put_wall=float(named["put_wall"] or 0.0),
+        magnet=float(named["magnet"] or 0.0),
         flip=flip_res.flip,
         max_pain=mp,
         total_net_gex=core.writer_imbalance_net(per_strike, sign_model),
@@ -241,6 +248,7 @@ def compute_levels(
         atm_iv=calc_atm_iv,
         pcr_oi=calc_pcr_oi,
         pcr_near=calc_pcr_near,
+        near_book_expired=bool(named["near_book_expired"]),
     )
 
 

@@ -1,9 +1,11 @@
 """Gamma-blast anchor-strike tick capture — headless driver (P0 of the blast-realtime effort).
 
 On an EXPIRY day it waits to the 13:45 freeze, reads spot, resolves the ATM CALL+PUT (the anchor the
-blast fixes), and captures their WS ticks to data/journal/blast_ticks/<SYM>/<day>.csv until 15:30.
+blast fixes), and captures their WS ticks to data/journal/blast_ticks/<SYM>/<day>.csv until the F&O
+close. When spot trades through the outer subscribed strike, the next strike on that index's own
+step is added. Nifty steps 50, Bank Nifty and Sensex step 100.
 
-  python scripts/run_blast_ticks.py --market-hours            # wait for 13:45 IST, stop 15:30 (scheduled task)
+  python scripts/run_blast_ticks.py --market-hours            # wait for 13:45 IST, stop at the F&O close
   python scripts/run_blast_ticks.py --any-day --seconds 120   # off-expiry smoke test (skip the expiry gate)
   python scripts/run_blast_ticks.py --symbols NIFTY --freeze 13:45
 
@@ -26,7 +28,7 @@ except (AttributeError, ValueError):
     pass
 
 from app.big_money import IST                              # noqa: E402
-from app.blast_ticks import BlastTickCollector, set_contracts   # noqa: E402
+from app.blast_ticks import BlastTickCollector, next_roll, set_contracts   # noqa: E402
 from data.dhan_feed import resolve_blast_set               # noqa: E402
 from data.dhan_live import fetch_index_ohlc                # noqa: E402
 import config                                             # noqa: E402
@@ -55,6 +57,40 @@ def _spot_from_chain(symbol: str):
         return float(sp) if sp else None
     except Exception:  # noqa: BLE001
         return None
+
+
+_MAX_ROLLS = 6
+
+
+def _maybe_roll(symbol: str, collector) -> str | None:
+    """Subscribe one strike further when the anchor pair says spot is through the outer contract."""
+    if len(collector.rolled) >= _MAX_ROLLS:
+        return None
+    calls, puts = [], []
+    for contract in collector.contracts.values():
+        strike = float(contract["strike"])
+        if contract.get("side") == "CE":
+            calls.append(strike)
+        elif contract.get("side") == "PE":
+            puts.append(strike)
+    implied = collector.implied_from_anchor()
+    roll = next_roll(calls, puts, implied, config.strike_step_for(symbol))
+    if roll is None:
+        return None
+    side, strike = roll
+    if (side, float(strike)) in collector.rolled:
+        return None
+    expiry = next(iter(collector.contracts.values()))["expiry"]
+    from data.dhan_feed import resolve_option
+    leg = resolve_option(symbol, strike, side, expiry)
+    collector.rolled.add((side, float(strike)))
+    if not leg:
+        return f"{symbol}: no listed {side} {strike:.0f} — left the outer strike as it is"
+    leg = dict(leg)
+    leg["role"] = "wall_up" if side == "CE" else "wall_dn"
+    leg["symbol"] = symbol
+    collector.extend({int(leg["security_id"]): leg})
+    return f"{symbol}: added {side} {strike:.0f} (anchor parity {implied:.1f})"
 
 
 def _spot(symbol: str, tries: int = 5):
@@ -153,6 +189,9 @@ def main() -> None:
             time.sleep(2.0)
             if time.time() - last_beat >= 60:
                 for sym, c in collectors:
+                    rolled = _maybe_roll(sym, c)
+                    if rolled:
+                        _print(f"  · {rolled}")
                     s = c.status
                     _print(f"  · {datetime.now(IST):%H:%M} {sym} · {'live' if s.connected else (s.error or 'connecting')} "
                            f"· {s.n_ticks} ticks · CE/PE {s.per_side.get('CE', 0)}/{s.per_side.get('PE', 0)}")

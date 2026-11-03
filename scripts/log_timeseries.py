@@ -79,15 +79,27 @@ def _in_blast_window(ist: datetime) -> bool:
 
 
 def seconds_until_next_blast_minute(ist: datetime) -> float:
-    """Wait until the next minute mark so a pull lands once a minute.
+    """Seconds until the next minute mark.
 
-    A remainder under 5 seconds waits for the minute after that, so a pull
-    that is already finishing does not start a second one in the same minute.
+    A pull that finishes at second 58 waits about two seconds and is stored
+    in the minute it lands in. It does not skip that minute.
     """
     remain = 60.0 - ist.second - ist.microsecond / 1_000_000
-    if remain < 5.0:
-        remain += 60.0
+    if remain <= 0:
+        return 60.0
     return remain
+
+
+def next_blast_due(finished: datetime) -> datetime:
+    """The next minute boundary strictly after a pull finishes.
+
+    14:15:58 is due at 14:16:00. 14:16:00 exactly is due at 14:17:00, so a pull
+    that lands on the mark is not started again in the same second.
+    """
+    nxt = finished.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    if nxt <= finished:
+        nxt += timedelta(minutes=1)
+    return nxt
 
 
 def _is_expiry_day(data) -> bool:
@@ -100,13 +112,15 @@ def _is_expiry_day(data) -> bool:
 def _save_blast(data) -> int:
     """Write this pull's per-strike rows to the 1-min gamma-blast journal, routed to the feed's own
     tree (Dhan -> gamma_blast_dhan/<SYMBOL>/). Returns the strike count (0 on demo)."""
-    from app.timeseries import gamma_blast_dir_for
-    rows = build_strike_rows(data)
+    from app.timeseries import write_gamma_blast
+    rows = write_gamma_blast(data)
     if not rows:
         return 0
-    ist = data.fetched_at + timedelta(hours=5, minutes=30)
-    append_strike_rows(rows, date_ist=ist.strftime("%Y-%m-%d"),
-                       symbol=data.symbol, directory=gamma_blast_dir_for(getattr(data, "source", None)))
+    if rows[0].get("spot_stale"):
+        _print(
+            f"[{data.symbol}] spot stale — chain {rows[0]['spot']} "
+            f"parity {rows[0]['parity_spot']}"
+        )
     return len(rows)
 
 
@@ -175,13 +189,26 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     path, written = append_if_due(row, min_gap_minutes=min_gap, symbol=data.symbol)
 
     # Bundled gamma-blast: expiry day + blast window -> 1-min per-strike stream.
-    blast_n = _save_blast(data) if (_is_expiry_day(data) and _in_blast_window(ist)) else 0
-    blast_tag = f"  [blast +{blast_n}]" if blast_n else ""
+    # The minute loop holds the lock. A later 15-minute fire must not append
+    # a second snapshot of the same minute into that file.
+    blast_tag = ""
+    if _is_expiry_day(data) and _in_blast_window(ist):
+        if _blast_already_running():
+            blast_tag = "  [blast left to the minute loop]"
+        else:
+            blast_n = _save_blast(data)
+            blast_tag = f"  [blast +{blast_n}]" if blast_n else ""
 
     published_tag = "  [published book]" if from_published else ""
+    levels = getattr(data, "levels", None)
+    expired = bool(getattr(levels, "near_book_expired", False))
+    if expired:
+        wall_txt = "near book expired"
+    else:
+        wall_txt = f"walls {row['put_wall']:,}-{row['call_wall']:,}  magnet {row['magnet']:,}"
     head = (f"[{data.symbol}] {row['date_ist']} {row['time_ist']} IST  spot {row['spot']:,}  "
             f"{row['regime']}/{row['mode_label']}  "
-            f"walls {row['put_wall']:,}-{row['call_wall']:,}  magnet {row['magnet']:,}  "
+            f"{wall_txt}  "
             f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})"
             f"{published_tag}")
     if not written:
@@ -306,9 +333,23 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
     primary = symbol or "NIFTY"
     skipped = set(not_today or ())
     retry_after: dict[str, float] = {}
+    # Each index keeps its own minute. A slow Bank Nifty pull does not add
+    # an extra skipped minute onto Sensex, or the other way around.
+    due = {sym: next_blast_due(_ist_now()) for sym in symbols}
     try:
         while True:
-            _time.sleep(seconds_until_next_blast_minute(_ist_now()))
+            ist = _ist_now()
+            if not _in_blast_window(ist):
+                _print(f"{ist:%H:%M} IST  blast window over — bundled 1-min capture stopped")
+                return
+            pending = [sym for sym in symbols if sym not in skipped]
+            if not pending:
+                _print("nearest expiry rolled — bundled capture stopped")
+                return
+            wait_for = min(due[sym] for sym in pending)
+            delay = (wait_for - _ist_now()).total_seconds()
+            if delay > 0:
+                _time.sleep(delay)
             ist = _ist_now()
             if not _in_blast_window(ist):
                 _print(f"{ist:%H:%M} IST  blast window over — bundled 1-min capture stopped")
@@ -317,6 +358,9 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
             still = False
             for sym in symbols:
                 if sym in skipped or now_epoch < retry_after.get(sym, 0.0):
+                    continue
+                if _ist_now() < due[sym]:
+                    still = True
                     continue
                 try:
                     if sym != primary:
@@ -327,10 +371,10 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
                         else:
                             still = True
                     else:
-                        msg, data = capture_once(min_gap=4.0, symbol=sym if symbol else None)
+                        msg, pulled = capture_once(min_gap=4.0, symbol=sym if symbol else None)
                         _print(msg)
-                        _note_capture(msg, data)
-                        if _is_expiry_day(data):
+                        _note_capture(msg, pulled)
+                        if _is_expiry_day(pulled):
                             still = True
                         else:
                             skipped.add(sym)
@@ -341,6 +385,8 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
                         still = True
                     else:
                         retry_after[sym] = _time.time() + 600.0
+                finally:
+                    due[sym] = next_blast_due(_ist_now())
             if not still:
                 _print("nearest expiry rolled — bundled capture stopped")
                 return

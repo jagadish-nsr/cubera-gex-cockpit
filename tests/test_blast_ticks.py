@@ -2,8 +2,9 @@
 trip. The WS loop itself needs a live socket (not unit-tested here)."""
 from types import SimpleNamespace as NS
 
+import config
 from app.blast_ticks import (pair_contracts, set_contracts, tick_row, BlastTickCollector,
-                             load_blast_ticks)
+                             load_blast_ticks, next_roll)
 
 
 def _pair():
@@ -64,6 +65,27 @@ def test_archive_round_trip(tmp_path, monkeypatch):
     assert df is not None and len(df) == 1
     assert df.iloc[0]["side"] == "CE" and df.iloc[0]["ltp"] == 100.0
     assert load_blast_ticks("NIFTY", "2099-01-01") is None    # absent day → None
+
+
+def test_roll_uses_each_index_step():
+    # Nifty 50. Spot through 23,750 adds 23,800, the strike the 3 Nov run settled on.
+    assert config.strike_step_for("NIFTY") == 50
+    assert next_roll([23700, 23750], [23650, 23700], 23810, 50) == ("CE", 23800)
+    # Between the outer strikes, the subscription stays put.
+    assert next_roll([23700, 23750], [23650, 23700], 23710, 50) is None
+    # Bank Nifty and Sensex step 100. The shorter name is not matched inside the longer one.
+    assert config.strike_step_for("BANKNIFTY") == 100
+    assert config.strike_step_for("SENSEX") == 100
+    assert next_roll([54000, 54100], [53900, 54000], 54120, config.strike_step_for("BANKNIFTY")) == ("CE", 54200)
+    assert next_roll([77000, 77100], [76900, 77000], 76880, config.strike_step_for("SENSEX")) == ("PE", 76800)
+
+
+def test_implied_anchor_is_strike_plus_call_minus_put():
+    col = BlastTickCollector(set_contracts(_set()))
+    assert col.implied_from_anchor() is None
+    col.last_ltp[65693] = 110.9
+    col.last_ltp[65694] = 0.05
+    assert col.implied_from_anchor() == 24000 + 110.9 - 0.05
 
 
 def test_empty_collector_is_safe():

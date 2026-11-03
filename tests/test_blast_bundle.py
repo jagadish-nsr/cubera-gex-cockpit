@@ -55,11 +55,25 @@ def test_in_blast_window_bounds():
     assert not lt._in_blast_window(_ist(15, 40))
 
 
-def test_next_blast_minute_waits_out_a_short_remainder():
+def test_next_blast_minute_keeps_a_late_pull():
     early = datetime(2026, 6, 30, 14, 15, 10)
     assert lt.seconds_until_next_blast_minute(early) == 50
+    # Second 58 waits two seconds and lands in 14:16. It does not skip to 14:17.
     almost = datetime(2026, 6, 30, 14, 15, 58)
-    assert lt.seconds_until_next_blast_minute(almost) == 62
+    assert lt.seconds_until_next_blast_minute(almost) == 2
+    assert lt.next_blast_due(almost) == datetime(2026, 6, 30, 14, 16, 0)
+    on_the_mark = datetime(2026, 6, 30, 14, 16, 0)
+    assert lt.next_blast_due(on_the_mark) == datetime(2026, 6, 30, 14, 17, 0)
+
+
+def test_other_process_does_not_append_the_blast_file(tmp_path, monkeypatch):
+    lock = tmp_path / "gamma_blast.lock"
+    lock.write_text("424242")
+    monkeypatch.setattr(lt, "_blast_lock_path", lambda: lock)
+    monkeypatch.setattr(lt, "_pid_alive", lambda pid: pid == 424242)
+    assert lt._blast_already_running() is True
+    monkeypatch.setattr(lt, "_pid_alive", lambda pid: False)
+    assert lt._blast_already_running() is False
 
 
 def test_is_expiry_day_matches_nearest_expiry_today():
@@ -71,6 +85,35 @@ def test_is_expiry_day_matches_nearest_expiry_today():
     assert lt._is_expiry_day(today) is True     # nearest expiry == today
     assert lt._is_expiry_day(later) is False    # nearest is a week out
     assert lt._is_expiry_day(empty) is False    # no expiries -> never
+
+
+def _blast_row(spot, call, put, fetched):
+    return SimpleNamespace(
+        symbol="NIFTY", source="dhan", fetched_at=fetched,
+        levels=SimpleNamespace(spot=spot),
+        oi_strikes=[{"strike": 23700.0, "call_oi": 1, "put_oi": 1,
+                     "call_ltp": call, "put_ltp": put, "net_gex": -1}],
+    )
+
+
+def test_stuck_chain_spot_is_flagged_when_premiums_move(tmp_path, monkeypatch):
+    import app.timeseries as ts
+    monkeypatch.setattr(ts, "GAMMA_BLAST_DHAN_DIR", tmp_path)
+    fetched = datetime(2026, 11, 3, 9, 45, tzinfo=timezone.utc)  # 15:15 IST
+    # 15:15 print. Parity is 23,700 + 49.2 − 9.4.
+    first = lt._save_blast(_blast_row(23731.8, 49.2, 9.4, fetched))
+    assert first == 1
+    later = fetched + timedelta(minutes=5)
+    # Same chain spot, premiums moved. Parity is 23,700 + 55.0 − 5.6 = 23,749.4.
+    assert lt._save_blast(_blast_row(23731.8, 55.0, 5.6, later)) == 1
+    df = ts.load_strikes_day("2026-11-03", symbol="NIFTY", directory=tmp_path)
+    assert list(df["spot_stale"]) == [0, 1]
+    assert float(df["parity_spot"].iloc[1]) == 23749.4
+    # A spot that actually moved is not flagged.
+    moved = later + timedelta(minutes=1)
+    assert lt._save_blast(_blast_row(23790.0, 90.0, 0.1, moved)) == 1
+    df = ts.load_strikes_day("2026-11-03", symbol="NIFTY", directory=tmp_path)
+    assert int(df["spot_stale"].iloc[-1]) == 0
 
 
 def test_save_blast_writes_to_gamma_blast_dir(tmp_path, monkeypatch):
