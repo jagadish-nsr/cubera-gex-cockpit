@@ -97,12 +97,66 @@ def _save_blast(data) -> int:
     return len(rows)
 
 
+# The live process rewrites this pickle on every publish. A cron fetch that
+# comes back empty can still record that book when the pickle is this fresh.
+_PUBLISHED_BOOK_MAX_AGE_S = 180.0
+
+
+def published_book(symbol: str, max_age_s: float = _PUBLISHED_BOOK_MAX_AGE_S):
+    """The chain the live process last published, when that file is still fresh.
+
+    Returns the dashboard bundle, or None when the file is missing, synthetic,
+    or older than ``max_age_s``. An old file is not written into the journal:
+    a stale row would look like a new print.
+    """
+    import pickle
+    path = ROOT / "data" / "journal" / f"latest_snap_{(symbol or 'NIFTY').upper()}.pkl"
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as handle:
+            raw = pickle.load(handle)
+    except Exception:
+        return None
+    bundle = raw
+    fetched = None
+    if isinstance(raw, dict) and "data" in raw:
+        bundle = raw.get("data")
+        fetched = raw.get("fetched_at")
+    if bundle is None or not hasattr(bundle, "levels"):
+        return None
+    src = str(getattr(bundle, "source", "") or "").lower()
+    if any(k in src for k in ("demo", "synthetic", "mock", "test")):
+        return None
+    if not isinstance(fetched, datetime):
+        return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > max_age_s:
+        return None
+    return bundle
+
+
 def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str, object]:
     """One live pull -> 5-min time-series row (+ per-strike OI, deduped). On an
     expiry day inside the blast window it ALSO appends a 1-min gamma-blast row from
     the SAME pull. Returns (log line, DashboardData) so the caller can decide
-    whether to enter the bundled 1-min blast loop."""
-    data = load_dashboard(symbol=symbol)  # live NSE, single fetch
+    whether to enter the bundled 1-min blast loop.
+
+    An empty chain uses the live process's published book when that file is
+    under three minutes old. The journal then matches the book on screen.
+    """
+    from_published = False
+    try:
+        data = load_dashboard(symbol=symbol)  # live NSE, single fetch
+    except Exception as exc:
+        if "no contracts" not in str(exc):
+            raise
+        data = published_book(symbol or "NIFTY")
+        if data is None:
+            raise
+        from_published = True
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     row = build_row(data)
     path, written = append_if_due(row, min_gap_minutes=min_gap, symbol=data.symbol)
@@ -111,10 +165,12 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     blast_n = _save_blast(data) if (_is_expiry_day(data) and _in_blast_window(ist)) else 0
     blast_tag = f"  [blast +{blast_n}]" if blast_n else ""
 
+    published_tag = "  [published book]" if from_published else ""
     head = (f"[{data.symbol}] {row['date_ist']} {row['time_ist']} IST  spot {row['spot']:,}  "
             f"{row['regime']}/{row['mode_label']}  "
             f"walls {row['put_wall']:,}-{row['call_wall']:,}  magnet {row['magnet']:,}  "
-            f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})")
+            f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})"
+            f"{published_tag}")
     if not written:
         return f"{head}  -> skipped (a row < {min_gap:g} min old exists){blast_tag}", data
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main

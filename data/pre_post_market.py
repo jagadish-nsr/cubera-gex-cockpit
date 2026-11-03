@@ -370,6 +370,113 @@ _PM_POLL_END_MIN = 9 * 60 + 22
 _MORNING_BRIEFING_MIN = 6 * 60 + 30
 
 
+def _cash_open_has_passed(now: datetime) -> bool:
+    """True once today's cash session has started. The auction poll owns the time before 09:15."""
+    if now.weekday() >= 5:
+        return False
+    try:
+        from data.holidays import is_trading_day
+        if not is_trading_day(now.date()):
+            return False
+    except Exception:
+        pass
+    return now.hour * 60 + now.minute >= 9 * 60 + 15
+
+
+def _prints_for_opening_gap(symbol: str, now: datetime) -> tuple[float, float] | None:
+    """Today's open and the prior session's last price, from books already in memory.
+
+    The auction poll is the one that calls Dhan. This only reads the quote and
+    the snapshot. A previous close that is a copy of today's print is refused.
+    When the snapshot is still the prior session, that session's spot is its close.
+    """
+    from data.market_snapshot import as_of_datetime, get_snapshot, prev_close_copied_from_spot
+
+    today = now.date()
+    open_px = 0.0
+    prior = 0.0
+    try:
+        from app.spot_ticker import _STORE
+        ohlc = (_STORE.get(symbol.upper()) or {}).get("ohlc") or {}
+        as_of = str(ohlc.get("as_of") or "")
+        if as_of[:10] == today.isoformat():
+            op = float(ohlc.get("open") or 0.0)
+            if op > 0:
+                open_px = op
+            pc = float(ohlc.get("prev_close") or 0.0)
+            ltp = float(ohlc.get("ltp") or op or 0.0)
+            if pc > 0 and ltp > 0 and not prev_close_copied_from_spot(pc, ltp):
+                prior = pc
+    except Exception:
+        pass
+
+    snap = get_snapshot(symbol) or {}
+    snap_dt = as_of_datetime(snap.get("as_of"))
+    snap_day = snap_dt.date() if snap_dt else None
+    if open_px <= 0 and snap_day == today:
+        op = float(snap.get("open") or 0.0)
+        if op > 0:
+            open_px = op
+    if prior <= 0:
+        if snap_day == today:
+            pc = float(snap.get("prev_close") or 0.0)
+            spot = float(snap.get("spot") or open_px or 0.0)
+            if pc > 0 and spot > 0 and not prev_close_copied_from_spot(pc, spot):
+                prior = pc
+        elif snap_day is not None and snap_day < today:
+            last = float(snap.get("spot") or 0.0)
+            if last > 0:
+                prior = last
+    if open_px <= 0 or prior <= 0:
+        return None
+    return round(open_px, 2), round(prior, 2)
+
+
+def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
+    """Record the opening gap from the day print when the 09:08 poll never discovered one.
+
+    Leaves the state alone before 09:15, and when either print is missing.
+    """
+    if state.get("is_discovered") or not _cash_open_has_passed(now):
+        return state
+    prints = _prints_for_opening_gap(symbol, now)
+    if prints is None:
+        return state
+    disc_spot, p_close = prints
+    gap_pts = round(disc_spot - p_close, 2)
+    gap_pct = round((gap_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0
+    cw_val = float(state.get("call_wall") or 0.0)
+    pw_val = float(state.get("put_wall") or 0.0)
+    flip_val = float(state.get("gamma_flip") or 0.0)
+    net_gex_val = float(state.get("net_gex") or 0.0)
+    gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
+    state["is_discovered"] = True
+    state["discovered_spot"] = disc_spot
+    state["prev_close"] = p_close
+    state["gap_pts"] = gap_pts
+    state["gap_pct"] = gap_pct
+    state["gap_fill_status"] = "UNFILLED"
+    state["gap_regime"] = gap_cls.get("regime", "AUCTION_BALANCED")
+    state["favored_play"] = gap_cls.get("favored_play", "MAP ONLY")
+    state["regime_badge"] = gap_cls.get("badge", "")
+    state["regime_color"] = gap_cls.get("color", "")
+    state["regime_briefing"] = gap_cls.get("briefing", "")
+    state["discovered_at"] = "09:15:00"
+    state["open_source"] = "day-print"
+    state["status_text"] = (
+        f"Open taken from the day print: ₹{disc_spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%). "
+        "The 09:08 auction poll did not record a price."
+    )
+    state["_polled_at"] = time.time()
+    try:
+        save_pre_market_state(symbol.upper(), state)
+    except Exception as exc:
+        log.debug("missed-open save failed for %s: %s", symbol, exc)
+    with _CACHE_LOCK:
+        _PRE_MARKET_CACHE[symbol.upper()] = state
+    return state
+
+
 def pre_market_poller_asleep(now: datetime | None = None) -> bool:
     """True outside 08:50–09:22 IST on a weekday. The morning briefing does not wake this poller."""
     now_ist = now or datetime.now(IST)
@@ -551,7 +658,7 @@ def get_pre_market_state(
             if (time.time() - cached.get("_polled_at", 0)) < 2.8:
                 phase_now, _, _ = get_current_session_phase(now_ist)
                 if not (cached.get("is_morning_briefing") and phase_now != "PRE_MARKET_SETUP"):
-                    return cached
+                    return _apply_missed_open(cached, symbol, now_ist)
 
     # Check persistent DB if not in memory
     if not force_refresh:
@@ -728,9 +835,9 @@ def get_pre_market_state(
                 existing["phase_code"] = phase_code
                 existing["phase_label"] = phase_label
                 existing["is_pre_market"] = phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")
-                return existing
+                return _apply_missed_open(existing, symbol, now_ist)
             _PRE_MARKET_CACHE[symbol.upper()] = state
-        return state
+        return _apply_missed_open(state, symbol, now_ist)
 
     if phase_code == "PRE_MARKET_ENTRY":
         state["status_text"] = (
@@ -797,6 +904,8 @@ def get_pre_market_state(
     except Exception as e:
         log.debug(f"Pre-market poll failed for {symbol}: {e}")
 
+    if not state.get("is_discovered"):
+        state = _apply_missed_open(state, symbol, now_ist)
     if state.get("is_discovered"):
         state = attach_pre_market_shocks(state)
     with _CACHE_LOCK:

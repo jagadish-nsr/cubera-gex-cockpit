@@ -56,6 +56,25 @@ def init_db() -> None:
         conn.commit()
 
 
+def prev_close_copied_from_spot(prev_close: float, spot: float) -> bool:
+    """True when the feed has written today's print into the previous-close field.
+
+    After the session, Dhan's OHLC close becomes the last trade. That copy is
+    not always exact. On 2 Nov the Sensex row stored 75,703.06 against a spot
+    of 75,692.78, ten points away, and that replaced Friday's 74,459.53.
+    The band is the larger of 15 points and 0.05% of spot. A real prior
+    session is hundreds of points away and still gets written.
+    """
+    try:
+        prev = float(prev_close)
+        px = float(spot)
+    except (TypeError, ValueError):
+        return False
+    if prev <= 0 or px <= 0:
+        return False
+    return abs(prev - px) <= max(15.0, abs(px) * 0.0005)
+
+
 def save_snapshot(
     symbol: str,
     spot: float | None = None,
@@ -87,13 +106,14 @@ def save_snapshot(
         new_spot = float(spot) if spot is not None and spot > min_valid else ex.get("spot")
         new_pc = float(prev_close) if prev_close is not None and prev_close > min_valid else ex.get("prev_close")
         # A closing print sometimes copies the settle into prev_close. Keep the
-        # previous close already stored when the new value is just the new spot.
+        # previous close already stored when the new value is that copy and the
+        # stored close is still a different session.
         if (
             ex.get("prev_close")
             and new_pc is not None
             and new_spot is not None
-            and abs(float(new_pc) - float(new_spot)) < 0.05
-            and abs(float(ex["prev_close"]) - float(new_spot)) >= 1.0
+            and prev_close_copied_from_spot(float(new_pc), float(new_spot))
+            and not prev_close_copied_from_spot(float(ex["prev_close"]), float(new_spot))
         ):
             new_pc = ex["prev_close"]
         new_open = float(open_px) if open_px is not None and open_px > min_valid else ex.get("open")

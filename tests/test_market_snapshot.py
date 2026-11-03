@@ -99,6 +99,38 @@ def test_closing_print_keeps_the_stored_previous_close(tmp_path, monkeypatch):
     assert snap["spot"] == 22753.2
 
 
+def test_near_spot_previous_close_does_not_replace_the_prior_session(tmp_path, monkeypatch):
+    """2 Nov Sensex: 75,703.06 is ten points from the 75,692.78 spot, not Friday's 74,459.53."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(
+        symbol="SENSEX",
+        spot=74459.53,
+        prev_close=74459.53,
+        as_of="2026-10-30T10:07:30+00:00",
+        source="dhan-verified",
+    )
+    save_snapshot(
+        symbol="SENSEX",
+        spot=75692.78,
+        prev_close=74459.53,
+        open_px=75178.24,
+        as_of="2026-11-02T04:00:00+00:00",
+        source="ws-tick",
+    )
+    save_snapshot(
+        symbol="SENSEX",
+        spot=75692.78,
+        prev_close=75703.06,
+        open_px=75178.24,
+        as_of="2026-11-02T10:09:45+00:00",
+        source="session-close",
+    )
+    snap = get_snapshot("SENSEX")
+    assert snap["prev_close"] == 74459.53
+    assert snap["spot"] == 75692.78
+    assert snap["open"] == 75178.24
+
+
 def test_save_snapshot_does_not_invent_walls(tmp_path, monkeypatch):
     monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "walls.db")
     save_snapshot(
