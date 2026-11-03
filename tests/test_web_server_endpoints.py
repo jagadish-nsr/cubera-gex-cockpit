@@ -606,11 +606,25 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     # Active browser session guard: play live sounds, never queue/backlog stale sounds while suspended
     assert "pendingSentinelAlerts" not in js
     assert 'ctx.state === "suspended"' in js
-    assert "idx * 1100" in js
+    assert "idx * 1100" not in js
+    assert "isLiveAttentionSignal" in js
+    assert "SENTINEL_SOUND_MAX_AGE_MS" in js
+    assert "clearPendingSentinelSounds" in js
+    assert "priorSeenCount <= 0 && newSignals.length > 1" in js
+    assert "newSignals[0]" in js
+    assert "lastSentinelSoundEventId" in js
+    assert "s.ts" in js
 
     # Empty book initialization & symbol race protection
     assert "state.sentinelInitialized" in js
     assert "requestedSym !== (state.symbol || \"\").toUpperCase()" in js
+
+    # Lightweight poller carries unix ts so the client can drop stale backlog
+    status, _, sig_content = asyncio.run(asgi_request("GET", "/api/sentinel-signals?symbol=NIFTY"))
+    assert status == 200
+    sig_data = json.loads(sig_content)
+    for s in sig_data["signals"]:
+        assert "ts" in s
 
 
 def test_effectiveness_empty_sample_has_no_stand_in_rates(monkeypatch):

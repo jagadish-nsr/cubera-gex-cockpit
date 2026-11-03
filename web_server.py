@@ -3639,6 +3639,7 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
             "actionable_play": getattr(s, "actionable_play", ""),
             "insight_text": s.insight_text,
             "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
+            "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
             "outcome": out_dict,
         })
 
@@ -3784,6 +3785,7 @@ async def get_sentinel_signals(symbol: Optional[str] = None, limit: int = 25):
                 "target_1_pts": getattr(s, "target_1_pts", 0.0) or 0.0,
                 "insight_text": s.insight_text,
                 "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
+                "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
             }
             for s in sigs
         ]

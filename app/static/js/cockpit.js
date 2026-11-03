@@ -31,6 +31,8 @@
     seenSentinelSignals: {},
     sentinelInitialized: {},
     lastSentinelSoundTime: 0,
+    lastSentinelSoundEventId: null,
+    pendingSentinelSoundTimers: [],
     spot: 24500.0,
     ws: null,
     sentinelChart: null,
@@ -454,6 +456,51 @@
   // -------------------------------------------------------------------------
   // Real-Time Sentinel Signals Tracker & Sound Alert Dispatcher
   // -------------------------------------------------------------------------
+  // Attention rule: at most ONE sound — the single newest live print that needs
+  // attention right now. Index switch, session catch-up, and older rows stay silent.
+  const SENTINEL_SOUND_MAX_AGE_MS = 90 * 1000;
+
+  function clearPendingSentinelSounds() {
+    (state.pendingSentinelSoundTimers || []).forEach((id) => clearTimeout(id));
+    state.pendingSentinelSoundTimers = [];
+  }
+
+  function seedSentinelSignalIds(signals, currentSym) {
+    const initialSet = new Set();
+    if (Array.isArray(signals)) {
+      signals.forEach((s) => {
+        const id = s.event_id || `${s.type}_${s.time || s.bar_start_ts}`;
+        if (id) initialSet.add(id);
+      });
+    }
+    state.seenSentinelSignals[currentSym] = initialSet;
+    state.sentinelInitialized[currentSym] = true;
+  }
+
+  function sentinelSignalAgeMs(s) {
+    const now = Date.now();
+    if (typeof s.ts === "number" && Number.isFinite(s.ts)) {
+      const ms = s.ts > 1e12 ? s.ts : s.ts * 1000;
+      return now - ms;
+    }
+    const raw = s.bar_start_ts || s.time;
+    if (!raw) return null;
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+      const ms = raw > 1e12 ? raw : raw * 1000;
+      return now - ms;
+    }
+    const parsed = Date.parse(String(raw));
+    if (!Number.isNaN(parsed)) return now - parsed;
+    // Display stamps like "01-11-2026 09:15:00 IST" are not reliable across days; treat as stale.
+    return null;
+  }
+
+  function isLiveAttentionSignal(s) {
+    const age = sentinelSignalAgeMs(s);
+    if (age == null) return false;
+    return age >= 0 && age <= SENTINEL_SOUND_MAX_AGE_MS;
+  }
+
   function processSentinelSignals(signals, sym) {
     const currentSym = (sym || state.symbol || "NIFTY").toUpperCase();
 
@@ -464,18 +511,11 @@
       state.sentinelInitialized = {};
     }
 
-    // Seed whatever signals (if any) existed on initial load/switch
+    // Seed whatever signals (if any) existed on initial load/switch — never sound history.
     if (!state.sentinelInitialized[currentSym]) {
-      state.sentinelInitialized[currentSym] = true;
-      const initialSet = new Set();
-      if (Array.isArray(signals) && signals.length > 0) {
-        signals.forEach((s) => {
-          const id = s.event_id || `${s.type}_${s.time || s.bar_start_ts}`;
-          if (id) initialSet.add(id);
-        });
-      }
-      state.seenSentinelSignals[currentSym] = initialSet;
-      return; // Seed existing signals silently on startup or index switch
+      clearPendingSentinelSounds();
+      seedSentinelSignalIds(signals, currentSym);
+      return;
     }
 
     if (!signals || !Array.isArray(signals) || signals.length === 0) return;
@@ -483,7 +523,7 @@
     let seenSet = state.seenSentinelSignals[currentSym] || new Set();
     state.seenSentinelSignals[currentSym] = seenSet;
 
-    // Identify genuine new signals that were not present on prior evaluations
+    // Payload is newest-first. Mark every unseen id immediately so catch-up cannot replay.
     const newSignals = [];
     signals.forEach((s) => {
       const id = s.event_id || `${s.type}_${s.time || s.bar_start_ts}`;
@@ -495,31 +535,39 @@
 
     if (newSignals.length === 0) return;
 
-    // signals are returned newest-first; reverse to chronological order so alerts play sequentially
-    const chronologicalNew = [...newSignals].reverse();
-    chronologicalNew.forEach((s, idx) => {
-      // Direction strictly derived from category and bias (never type "UP" / "DOWN" substring)
-      const cat = (s.category || "").toUpperCase();
-      const bias = (s.bias || "").toUpperCase();
+    clearPendingSentinelSounds();
 
-      const isBull = cat.includes("BULL") || bias === "LONG";
-      const isBear = !isBull && (cat.includes("BEAR") || bias === "SHORT");
+    // Empty book → many rows is session catch-up. Absorb silently.
+    const priorSeenCount = seenSet.size - newSignals.length;
+    if (priorSeenCount <= 0 && newSignals.length > 1) {
+      return;
+    }
 
-      // Stagger playback so multiple new signals (e.g. both bull and bear in same poll) all sound clearly without acoustic overlap
-      setTimeout(() => {
-        if (isBull) {
-          playSentinelBullishSound();
-        } else if (isBear) {
-          playSentinelBearishSound();
-        }
-      }, idx * 1100);
+    // Exactly one attention sound: the newest unseen row only. Older rows in the
+    // same batch are marked seen above and never get a chime or toast.
+    const only = newSignals[0];
+    const onlyId = only.event_id || `${only.type}_${only.time || only.bar_start_ts}`;
+    if (!isLiveAttentionSignal(only)) return;
+    if (onlyId && onlyId === state.lastSentinelSoundEventId) return;
 
-      // Visual Toast Notification
-      const icon = isBull ? "🟢" : isBear ? "🔴" : "⚡";
-      const tag = isBull ? "BULLISH SENTINEL" : isBear ? "BEARISH SENTINEL" : "SENTINEL SIGNAL";
-      const scoreTxt = s.score != null ? ` · Score ${s.score}` : "";
-      showToast(`${tag}: ${s.type || "Signal"}${scoreTxt}`, icon);
-    });
+    const cat = (only.category || "").toUpperCase();
+    const bias = (only.bias || "").toUpperCase();
+    const isBull = cat.includes("BULL") || bias === "LONG";
+    const isBear = !isBull && (cat.includes("BEAR") || bias === "SHORT");
+    if (!isBull && !isBear) return;
+
+    const now = Date.now();
+    if ((now - (state.lastSentinelSoundTime || 0)) < 2000) return;
+
+    state.lastSentinelSoundTime = now;
+    state.lastSentinelSoundEventId = onlyId;
+    if (isBull) playSentinelBullishSound();
+    else playSentinelBearishSound();
+
+    const icon = isBull ? "🟢" : "🔴";
+    const tag = isBull ? "BULLISH SENTINEL" : "BEARISH SENTINEL";
+    const scoreTxt = only.score != null ? ` · Score ${only.score}` : "";
+    showToast(`${tag}: ${only.type || "Signal"}${scoreTxt}`, icon);
   }
 
   async function pollSentinelSignals() {
@@ -6613,6 +6661,10 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ symbol: state.symbol, window: state.window }),
         });
+        clearPendingSentinelSounds();
+        // Force a silent reseed for the newly selected index so history never floods.
+        if (state.sentinelInitialized) delete state.sentinelInitialized[state.symbol];
+        if (state.seenSentinelSignals) delete state.seenSentinelSignals[state.symbol];
         showToast(`Index switched to ${state.symbol}`);
         refreshAll();
         pollSentinelSignals();
