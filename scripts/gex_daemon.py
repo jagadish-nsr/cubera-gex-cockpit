@@ -12,7 +12,6 @@ Architecture:
 import os
 import sys
 import time
-import pickle
 import logging
 from datetime import datetime, timezone
 
@@ -113,21 +112,20 @@ def run_daemon(ignore_session: bool = False):
                     failed_count += 1
                     continue  # skip this index for this round; try the next one
 
-                # Atomic write via temp file + os.replace
+                # Unique temp per writer so a second publisher cannot steal .pkl.tmp
+                from app.latest_snap import write_latest_snap
+
                 snap_path = _snap_path(symbol)
-                tmp_file = snap_path + ".tmp"
                 fetched_at = datetime.now(timezone.utc)
-                with open(tmp_file, "wb") as f:
-                    pickle.dump(
-                        {
-                            "data": dashboard_data,   # DashboardData object
-                            "symbol": symbol,
-                            "window": window,
-                            "fetched_at": fetched_at,
-                        },
-                        f,
-                    )
-                os.replace(tmp_file, snap_path)
+                write_latest_snap(
+                    snap_path,
+                    {
+                        "data": dashboard_data,
+                        "symbol": symbol,
+                        "window": window,
+                        "fetched_at": fetched_at,
+                    },
+                )
 
                 elapsed = time.time() - t0
                 log.info("Fetched & saved %s (%s) in %.2fs", symbol, window, elapsed)

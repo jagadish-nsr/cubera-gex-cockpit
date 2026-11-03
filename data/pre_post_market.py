@@ -631,6 +631,10 @@ def get_pre_market_state(
     today_str = now_ist.strftime("%Y-%m-%d")
     ckey = (symbol.upper(), today_str)
 
+    # Never call _apply_missed_open while holding _CACHE_LOCK: that helper takes
+    # the same non-reentrant lock, and a same-thread wait stalls the event loop
+    # (watchdog restart 2026-11-03 09:15:46 IST).
+    fresh_cached: dict | None = None
     with _CACHE_LOCK:
         cached = _PRE_MARKET_CACHE.get(symbol.upper())
         if cached and cached.get("date") == today_str and not force_refresh:
@@ -658,7 +662,9 @@ def get_pre_market_state(
             if (time.time() - cached.get("_polled_at", 0)) < 2.8:
                 phase_now, _, _ = get_current_session_phase(now_ist)
                 if not (cached.get("is_morning_briefing") and phase_now != "PRE_MARKET_SETUP"):
-                    return _apply_missed_open(cached, symbol, now_ist)
+                    fresh_cached = cached
+    if fresh_cached is not None:
+        return _apply_missed_open(fresh_cached, symbol, now_ist)
 
     # Check persistent DB if not in memory
     if not force_refresh:
@@ -829,15 +835,18 @@ def get_pre_market_state(
                 ensure_pre_market_poller(symbol)
             except Exception:
                 pass
+        apply_state: dict | None = None
         with _CACHE_LOCK:
             existing = _PRE_MARKET_CACHE.get(symbol.upper())
             if existing and existing.get("date") == today_str:
                 existing["phase_code"] = phase_code
                 existing["phase_label"] = phase_label
                 existing["is_pre_market"] = phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY")
-                return _apply_missed_open(existing, symbol, now_ist)
-            _PRE_MARKET_CACHE[symbol.upper()] = state
-        return _apply_missed_open(state, symbol, now_ist)
+                apply_state = existing
+            else:
+                _PRE_MARKET_CACHE[symbol.upper()] = state
+                apply_state = state
+        return _apply_missed_open(apply_state, symbol, now_ist)
 
     if phase_code == "PRE_MARKET_ENTRY":
         state["status_text"] = (

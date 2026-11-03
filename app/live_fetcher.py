@@ -14,9 +14,7 @@ process-global store. Successful pulls are also written to
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
-import pickle
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -153,18 +151,17 @@ def _persist_pickle(symbol: str, window: str | None, data) -> None:
     if any(k in src for k in ("demo", "synthetic", "mock", "test")):
         return
     try:
-        _SNAP_DIR.mkdir(parents=True, exist_ok=True)
-        snap_path = _SNAP_DIR / f"latest_snap_{symbol.upper()}.pkl"
-        tmp_path = str(snap_path) + ".tmp"
-        payload = {
-            "data": data,
-            "symbol": symbol.upper(),
-            "window": window,
-            "fetched_at": datetime.now(timezone.utc),
-        }
-        with open(tmp_path, "wb") as f:
-            pickle.dump(payload, f)
-        os.replace(tmp_path, snap_path)
+        from app.latest_snap import snap_path_for, write_latest_snap
+
+        write_latest_snap(
+            snap_path_for(symbol, _SNAP_DIR),
+            {
+                "data": data,
+                "symbol": symbol.upper(),
+                "window": window,
+                "fetched_at": datetime.now(timezone.utc),
+            },
+        )
     except Exception as exc:
         event(
             "chain.persist_failed",
