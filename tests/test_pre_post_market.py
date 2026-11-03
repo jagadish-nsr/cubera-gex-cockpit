@@ -352,6 +352,85 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertIn("day print", state["status_text"])
         self.assertIn("did not record", state["status_text"])
 
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.pre_post_market.ensure_pre_market_poller")
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_cached_missed_open_does_not_deadlock(
+        self, mock_snap, mock_fetch, _persist, _poller, _save,
+    ):
+        """HTTP path used to call _apply_missed_open while holding _CACHE_LOCK.
+
+        That helper takes the same non-reentrant lock. Same-thread wait stalled
+        the event loop on 2026-11-03 at 09:15:46 IST.
+        """
+        import threading
+
+        from data import pre_post_market as ppm
+        import app.spot_ticker as ticker
+
+        ppm._PRE_MARKET_CACHE.clear()
+        day = "2026-11-03"
+        ppm._PRE_MARKET_CACHE["NIFTY"] = {
+            "date": day,
+            "is_discovered": False,
+            "is_morning_briefing": False,
+            "call_wall": 23700.0,
+            "put_wall": 23700.0,
+            "gamma_flip": 23710.0,
+            "net_gex": 0.0,
+            "_polled_at": __import__("time").time(),
+        }
+        mock_snap.return_value = {
+            "spot": 23440.8,
+            "prev_close": 23440.8,
+            "open": 0.0,
+            "call_wall": 23700.0,
+            "put_wall": 23700.0,
+            "gamma_flip": 23710.0,
+            # Prior session so that session's spot is yesterday's close.
+            "as_of": "2026-11-02T10:00:00+00:00",
+        }
+        ticker._STORE["NIFTY"] = {
+            "ohlc": {
+                "open": 23560.0,
+                "ltp": 23580.0,
+                "prev_close": 23440.8,
+                "as_of": "2026-11-03 09:16:00",
+            }
+        }
+        result: list[dict] = []
+        error: list[BaseException] = []
+
+        def reader() -> None:
+            try:
+                result.append(
+                    get_pre_market_state(
+                        "NIFTY",
+                        force_refresh=False,
+                        now=datetime(2026, 11, 3, 9, 16, tzinfo=IST),
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+
+        try:
+            thread = threading.Thread(target=reader)
+            thread.start()
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive(), "get_pre_market_state held the cache lock")
+            self.assertEqual(error, [])
+            self.assertTrue(result)
+            self.assertTrue(result[0]["is_discovered"])
+            self.assertEqual(result[0]["discovered_spot"], 23560.0)
+            self.assertEqual(result[0]["prev_close"], 23440.8)
+            self.assertEqual(result[0]["open_source"], "day-print")
+            mock_fetch.assert_not_called()
+        finally:
+            ticker._STORE.pop("NIFTY", None)
+            ppm._PRE_MARKET_CACHE.clear()
+
     def test_classify_opening_gap_regimes(self):
         # 1. Call Wall test
         cw_res = classify_opening_gap(gap_pts=50.0, gap_pct=0.22, spot=22700.0, call_wall=22700.0, put_wall=22400.0)
