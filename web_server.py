@@ -2319,6 +2319,11 @@ async def get_cockpit_data(
         gamma_blast = evaluate_dashboard_gamma_blast(dash, sym)
         try:
             if gamma_blast.get("is_expiry"):
+                # Walls ride with the score so the minute tape is self-contained.
+                levels = getattr(dash, "levels", None)
+                gamma_blast = dict(gamma_blast)
+                gamma_blast["call_wall"] = float(getattr(levels, "call_wall", 0.0) or 0.0) or None
+                gamma_blast["put_wall"] = float(getattr(levels, "put_wall", 0.0) or 0.0) or None
                 journal_blast_read(sym, spot, gamma_blast, getattr(dash, "fetched_at", None))
         except Exception as journal_exc:
             log.debug("gamma blast score journal: %s", journal_exc)

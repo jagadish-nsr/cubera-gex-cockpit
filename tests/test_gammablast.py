@@ -152,21 +152,54 @@ def test_expired_near_book_names_no_wall():
     assert "17,000" not in res["description"]
 
 
-def test_score_journal_writes_a_change_once(tmp_path, monkeypatch):
+def test_score_journal_writes_once_per_minute(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     import app.gammablast as gb
     monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path)
     gb._score_written.clear()
     fetched = datetime(2026, 11, 3, 9, 30, tzinfo=timezone.utc)  # 15:00 IST
-    result = {"score": 59, "state": "COILING", "primary_strike": 23700}
+    result = {
+        "score": 59, "state": "COILING", "primary_strike": 23700,
+        "badge": "GAMMA BLAST: COILING / IMMINENT", "call_wall": 23750,
+        "put_wall": 23650, "in_blast_window": True,
+    }
     assert gb.journal_blast_read("NIFTY", 23720.0, result, fetched) is True
-    assert gb.journal_blast_read("NIFTY", 23720.0, result, fetched) is False
+    # Same minute + changed score still dedupes — one row per minute for the trajectory grid
+    assert gb.journal_blast_read("NIFTY", 23720.0, dict(result, score=62), fetched) is False
     changed = dict(result, score=62, state="TRIGGERED")
     assert gb.journal_blast_read("BANKNIFTY", 54000.0, changed, fetched) is True
     nifty = (tmp_path / "NIFTY" / "2026-11-03.csv").read_text()
     bank = (tmp_path / "BANKNIFTY" / "2026-11-03.csv").read_text()
     assert nifty.count("\n") == 2  # header + one row
+    header = nifty.splitlines()[0]
+    assert "call_wall" in header and "badge" in header
     assert bank.splitlines()[1].split(",")[3] == "BANKNIFTY"
+    # Next IST minute writes again (trajectory, not only on change)
+    next_min = datetime(2026, 11, 3, 9, 31, tzinfo=timezone.utc)
+    assert gb.journal_blast_read("NIFTY", 23725.0, result, next_min) is True
+    assert (tmp_path / "NIFTY" / "2026-11-03.csv").read_text().count("\n") == 3
+
+
+def test_journal_blast_from_dashboard_skips_non_expiry(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from unittest.mock import MagicMock
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path)
+    gb._score_written.clear()
+    dash = MagicMock()
+    dash.levels.spot = 22800.0
+    dash.levels.call_wall = 23000.0
+    dash.levels.put_wall = 22600.0
+    dash.levels.flip = 22800.0
+    dash.levels.magnet = 22800.0
+    dash.levels.total_net_gex = 0.0
+    dash.view.regime = "POSITIVE"
+    dash.dte_now = 3.5
+    dash.expiries = []
+    dash.oi_strikes = []
+    dash.fetched_at = datetime(2026, 11, 3, 8, 0, tzinfo=timezone.utc)
+    assert gb.journal_blast_from_dashboard(dash, "NIFTY") is False
+    assert not (tmp_path / "NIFTY").exists()
 
 
 def test_evaluate_dashboard_gamma_blast_non_expiry():

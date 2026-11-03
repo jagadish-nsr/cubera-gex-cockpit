@@ -111,9 +111,15 @@ def _is_expiry_day(data) -> bool:
 
 def _save_blast(data) -> int:
     """Write this pull's per-strike rows to the 1-min gamma-blast journal, routed to the feed's own
-    tree (Dhan -> gamma_blast_dhan/<SYMBOL>/). Returns the strike count (0 on demo)."""
+    tree (Dhan -> gamma_blast_dhan/<SYMBOL>/). Also journals the blast score for the minute
+    (headless — does not depend on a cockpit tab being open). Returns the strike count (0 on demo)."""
     from app.timeseries import write_gamma_blast
     rows = write_gamma_blast(data)
+    try:
+        from app.gammablast import journal_blast_from_dashboard
+        journal_blast_from_dashboard(data, getattr(data, "symbol", "NIFTY"))
+    except Exception:  # noqa: BLE001 - score tape must not block the strike tape
+        pass
     if not rows:
         return 0
     if rows[0].get("spot_stale"):
@@ -221,10 +227,11 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol,
                        directory=oistrikes_dir_for(data.source))
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
-    # On the Dhan feed, top up any 1-min OI gap (late start / missed stretch) from Dhan history —
-    # a no-op when a 1-min capture is already caught up (see maybe_backfill_oi's gap check).
+    # On the Dhan feed, top up any 1-min OI gap from Dhan history — but NEVER inside the
+    # expiry blast window: backfill stretches a pull past 60s and punches holes in the
+    # 1-min gamma-blast tape (see 2026-11-03 gaps). Catch up after the F&O close instead.
     bf_tag = ""
-    if str(data.source or "").lower().startswith("dhan"):
+    if str(data.source or "").lower().startswith("dhan") and not _in_blast_window(ist):
         try:
             from app.oi_backfill import maybe_backfill_oi
             r = maybe_backfill_oi(data.symbol, row["date_ist"], log=lambda *a: None)
