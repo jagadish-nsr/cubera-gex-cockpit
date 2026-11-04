@@ -722,3 +722,111 @@ def test_background_persist_keeps_the_queued_database(tmp_path, monkeypatch):
     assert rs.get_recommendation_record("TEST_BOUND_DB_PATH") is None
     with rs._BoundDbPath(queued):
         assert rs.get_recommendation_record("TEST_BOUND_DB_PATH") is not None
+
+
+def test_recommendations_history_chronological_order_by_trigger_time():
+    """Verify that get_recommendation_history orders strictly by triggered_at DESC.
+
+    A morning setup (09:20) that remained active until 15:39 must NOT be placed ahead
+    of an afternoon setup (13:45) that closed early (14:00).
+    """
+    # 1. Early morning trade that stayed active until EOD (last_appeared = 15:39:59)
+    rs.save_or_update_recommendation({
+        "rec_id": "REC_MORNING_ALL_DAY",
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23200.0,
+        "option_symbol": "NIFTY 23200 CE",
+        "play_type": "ATM Momentum",
+        "play_badge": "MOMENTUM",
+        "triggered_at": "2026-11-04 09:20:00",
+        "initial_spot": 23180.0,
+        "initial_ltp": 90.0,
+        "quality_score": 85,
+        "conviction_tier": "MEDIUM",
+        "target_1": 130.0,
+        "target_2": 160.0,
+        "stop_loss": 70.0,
+        "spot_invalidation": 23100.0,
+        "spot_invalidation_text": "Breach",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "VWAP test",
+        "rationale": "Morning momentum",
+        "catalyst_tags": [],
+        "status": "ACTIVE",
+    })
+    with rs._WRITE_LOCK, rs._get_write_conn() as conn:
+        conn.execute("UPDATE recommendation_records SET last_appeared = '2026-11-04 15:39:59' WHERE rec_id = 'REC_MORNING_ALL_DAY'")
+        conn.commit()
+
+    # 2. Midday trade (11:30) that hit target at 12:00
+    rs.save_or_update_recommendation({
+        "rec_id": "REC_MIDDAY_TARGET",
+        "symbol": "NIFTY",
+        "side": "PE",
+        "strike": 23150.0,
+        "option_symbol": "NIFTY 23150 PE",
+        "play_type": "Structure",
+        "play_badge": "STRUCTURE",
+        "triggered_at": "2026-11-04 11:30:00",
+        "initial_spot": 23170.0,
+        "initial_ltp": 85.0,
+        "quality_score": 88,
+        "conviction_tier": "HIGH",
+        "target_1": 125.0,
+        "target_2": 155.0,
+        "stop_loss": 65.0,
+        "spot_invalidation": 23220.0,
+        "spot_invalidation_text": "Breach",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Structure break",
+        "rationale": "Midday fade",
+        "catalyst_tags": [],
+        "status": "TGT1_HIT",
+    })
+    with rs._WRITE_LOCK, rs._get_write_conn() as conn:
+        conn.execute("UPDATE recommendation_records SET last_appeared = '2026-11-04 12:00:00', outcome_ts = '2026-11-04 12:00:00' WHERE rec_id = 'REC_MIDDAY_TARGET'")
+        conn.commit()
+
+    # 3. Afternoon trade (14:15) that hit target at 14:30
+    rs.save_or_update_recommendation({
+        "rec_id": "REC_AFTERNOON_TARGET",
+        "symbol": "NIFTY",
+        "side": "CE",
+        "strike": 23300.0,
+        "option_symbol": "NIFTY 23300 CE",
+        "play_type": "Breakout",
+        "play_badge": "STRIKE BREAK",
+        "triggered_at": "2026-11-04 14:15:00",
+        "initial_spot": 23280.0,
+        "initial_ltp": 95.0,
+        "quality_score": 90,
+        "conviction_tier": "HIGH",
+        "target_1": 140.0,
+        "target_2": 170.0,
+        "stop_loss": 75.0,
+        "spot_invalidation": 23220.0,
+        "spot_invalidation_text": "Breach",
+        "risk_reward_ratio": "1 : 2.5",
+        "entry_trigger": "Strike break",
+        "rationale": "Afternoon breakout",
+        "catalyst_tags": [],
+        "status": "TGT1_HIT",
+    })
+    with rs._WRITE_LOCK, rs._get_write_conn() as conn:
+        conn.execute("UPDATE recommendation_records SET last_appeared = '2026-11-04 14:30:00', outcome_ts = '2026-11-04 14:30:00' WHERE rec_id = 'REC_AFTERNOON_TARGET'")
+        conn.commit()
+
+    # Query history
+    history = rs.get_recommendation_history(symbol="NIFTY", session_date="2026-11-04")
+    rec_ids = [r["rec_id"] for r in history]
+
+    # Must be ordered strictly by triggered_at DESC:
+    # 1st: REC_AFTERNOON_TARGET (14:15)
+    # 2nd: REC_MIDDAY_TARGET (11:30)
+    # 3rd: REC_MORNING_ALL_DAY (09:20)
+    assert rec_ids == [
+        "REC_AFTERNOON_TARGET",
+        "REC_MIDDAY_TARGET",
+        "REC_MORNING_ALL_DAY",
+    ], f"Unexpected order: {rec_ids}"

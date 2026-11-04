@@ -4368,8 +4368,13 @@
 
       const isResolved = st !== "ACTIVE";
       const hasLiveLtp = Number(r.current_ltp) > 0 && Number(r.current_ltp) !== Number(r.initial_ltp);
-      const trigTime = r.triggered_at ? (r.triggered_at.length > 11 ? r.triggered_at.substring(11, 19) : r.triggered_at) : "—";
-      const lastTime = r.last_appeared ? (r.last_appeared.length > 11 ? r.last_appeared.substring(11, 19) : r.last_appeared) : trigTime;
+      const trigRaw = r.triggered_at ? String(r.triggered_at) : "";
+      const trigTime = trigRaw.length > 11 ? trigRaw.substring(11, 19) : (trigRaw || "—");
+      const trigDate = trigRaw.length >= 10 ? trigRaw.substring(0, 10) : "";
+
+      const lastRaw = r.last_appeared ? String(r.last_appeared) : (r.triggered_at ? String(r.triggered_at) : "");
+      const lastTime = lastRaw.length > 11 ? lastRaw.substring(11, 19) : (lastRaw || trigTime);
+      const lastDate = lastRaw.length >= 10 ? lastRaw.substring(0, 10) : trigDate;
 
       const c = r.full_card || r;
       const ltp = Number(c.current_ltp || r.current_ltp || r.initial_ltp || 0).toFixed(1);
@@ -4485,8 +4490,14 @@
           <td style="text-align:center">
             <span id="rec-hist-chevron-${r.rec_id}" style="color:var(--spark);font-size:0.76rem;font-weight:800">${isExpanded ? "▲" : "▼"}</span>
           </td>
-          <td style="font-family:var(--mono);color:var(--ink-mute)" title="${r.triggered_at}">${trigTime}</td>
-          <td style="font-family:var(--mono);color:var(--ink-mute)" title="${r.last_appeared}">${lastTime}</td>
+          <td style="font-family:var(--mono)" title="${trigRaw}">
+            <div style="font-weight:600;color:var(--ink)">${trigTime}</div>
+            ${trigDate ? `<div style="font-size:0.65rem;color:var(--ink-mute)">${trigDate}</div>` : ""}
+          </td>
+          <td style="font-family:var(--mono)" title="${lastRaw}">
+            <div style="font-weight:600;color:var(--ink)">${lastTime}</div>
+            ${lastDate ? `<div style="font-size:0.65rem;color:var(--ink-mute)">${lastDate}</div>` : ""}
+          </td>
           <td>
             <div style="display:flex;align-items:center;gap:6px">
               <span style="background:${sideBg};color:${sideColor};border:1px solid ${sideBorder};padding:1px 5px;border-radius:3px;font-weight:800;font-size:0.68rem">${sideLabel}</span>

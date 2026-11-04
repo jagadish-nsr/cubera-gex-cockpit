@@ -26,9 +26,12 @@ def test_sensex_expiry_does_not_pull_nifty_or_banknifty(monkeypatch):
         )
 
     monkeypatch.setattr(blast, "load_dashboard", load)
-    monkeypatch.setattr(blast, "build_strike_rows", lambda data: [{"strike": 1}])
     written = []
-    monkeypatch.setattr(blast, "append_strike_rows", lambda *a, **k: written.append(k.get("symbol") or a))
+    monkeypatch.setattr(
+        "app.timeseries.write_gamma_blast",
+        lambda data: (written.append(data.symbol) or [{"strike": 1, "spot": 80000.0, "parity_spot": 80000.0}]),
+    )
+    monkeypatch.setattr("scripts.log_timeseries._blast_already_running", lambda: False)
 
     messages = blast.capture_symbols()
     assert seen == ["NIFTY", "BANKNIFTY", "SENSEX"]

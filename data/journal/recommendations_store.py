@@ -578,7 +578,7 @@ def get_recommendation_history(
         elif st in ("resolved", "closed"):
             query += " AND status != 'ACTIVE'"
 
-    query += " ORDER BY COALESCE(last_appeared, outcome_ts, triggered_at) DESC, triggered_at DESC LIMIT ?"
+    query += " ORDER BY triggered_at DESC, COALESCE(last_appeared, outcome_ts) DESC LIMIT ?"
     params.append(max(10, min(500, int(limit))))
 
     with _get_read_conn() as conn:

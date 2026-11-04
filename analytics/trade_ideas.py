@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -32,6 +33,8 @@ from typing import Any, Sequence
 
 import config
 from analytics.directional_bias import BIAS_MILD, BIAS_QUIET, BIAS_RATIO_LO, BIAS_STRONG
+
+log = logging.getLogger(__name__)
 
 # Deduplication cache for WebSocket option strike subscriptions: (symbol, strike)
 _SUBSCRIBED_REC_STRIKES: set[tuple[str, float]] = set()
