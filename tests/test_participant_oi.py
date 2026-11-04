@@ -172,6 +172,43 @@ def test_backfill_caches_available_days_and_is_idempotent(tmp_path, monkeypatch)
                         fetch_fn=fake_fetch, parse_fn=parse_participant_oi) == []
 
 
+def test_backfill_fills_the_hole_capture_latest_leaves(tmp_path, monkeypatch):
+    """Newest-only capture keeps a gap when a later day publishes first.
+
+    That is what stuck the overnight card on 2026-10-30 after 2–3 Nov.
+    """
+    monkeypatch.setattr(poi, "PARTICIPANT_DIR", tmp_path / "participant_oi")
+    served = {
+        date(2026, 11, 2): SAMPLE,
+        date(2026, 11, 3): SAMPLE,
+    }
+
+    def fake_fetch(d):
+        return served.get(d)
+
+    # First evening only saw the older day; later the newer day is published.
+    first = poi.capture_latest(
+        "2026-11-02", fetch_fn=fake_fetch, parse_fn=parse_participant_oi,
+    )
+    assert first and first[0] == "2026-11-02"
+    second = poi.capture_latest(
+        "2026-11-03", fetch_fn=fake_fetch, parse_fn=parse_participant_oi,
+    )
+    assert second and second[0] == "2026-11-03"
+    # If 02 was never cached (missed evening), newest-only still leaves the hole
+    # unless we wipe 02 — simulate a journal that only has 03:
+    (tmp_path / "participant_oi" / "2026-11-02.csv").unlink()
+    assert poi.available_days() == ["2026-11-03"]
+    filled = poi.backfill(
+        n_days=3,
+        today_ist="2026-11-03",
+        fetch_fn=fake_fetch,
+        parse_fn=parse_participant_oi,
+    )
+    assert filled == ["2026-11-02"]
+    assert poi.available_days() == ["2026-11-02", "2026-11-03"]
+
+
 def test_net_calls_puts():
     v = {"opt_call_long": 100, "opt_call_short": 250,   # net short calls (bearish)
          "opt_put_long": 900, "opt_put_short": 400}     # net long puts (bearish)
