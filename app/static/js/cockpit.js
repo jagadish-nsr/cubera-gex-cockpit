@@ -105,6 +105,429 @@
     return shown;
   }
 
+  /** Generic playbook thesis keyed to classify_opening_gap (matches favored_play in code). */
+  const PREMARKET_PLAYBOOKS = {
+    CALL_WALL_BREACH_SQUEEZE: {
+      title: "Open above the call-gamma strike",
+      play: "WATCH HOLD ABOVE CALL STRIKE",
+      reading: "The indicative open is through the call-gamma strike. That is a location on the book, not proof that dealers must buy futures.",
+      steps: [
+        "After 09:15, watch the first 3-minute candle relative to the call-gamma strike.",
+        "A hold above the strike with supportive tape can justify a defined-risk call structure — you confirm.",
+        "Invalidation: a close back below the call-gamma strike. Do not fade just because the label says squeeze.",
+      ],
+      caution: "No auto-execution. Do not sell naked calls because price is through the strike.",
+    },
+    SHORT_GAMMA_WALL_TEST: {
+      title: "Open at the call-gamma strike",
+      play: "WATCH THE CALL STRIKE",
+      reading: "The open is touching the call-gamma concentration. A touch is not a squeeze and not a ceiling.",
+      steps: [
+        "Watch whether the first continuous prints hold or reject at the call-gamma strike.",
+        "Do not invent a fade or a breakout until the hold/fail is clear.",
+        "Invalidation: a clean reclaim or a clean reject — size only after that print.",
+      ],
+      caution: "Map the strike first. No forced structure from the open alone.",
+    },
+    PUT_WALL_BREAKDOWN_CASCADE: {
+      title: "Open below the put-gamma strike",
+      play: "WATCH HOLD BELOW PUT STRIKE",
+      reading: "The indicative open is through the put-gamma strike. That is a location, not a cascade that must continue.",
+      steps: [
+        "After 09:15, watch the first 3-minute candle relative to the put-gamma strike.",
+        "A hold below the strike with supportive tape can justify a defined-risk put structure — you confirm.",
+        "Invalidation: a close back above the put-gamma strike.",
+      ],
+      caution: "Never sell naked puts. Do not buy the dip blindly under the strike.",
+    },
+    PUT_WALL_BREAKDOWN_TEST: {
+      title: "Open at the put-gamma strike",
+      play: "WATCH THE PUT STRIKE",
+      reading: "The open is touching the put-gamma concentration. A touch is not a floor that dealers will defend.",
+      steps: [
+        "Watch hold versus reclaim at the put-gamma strike in the first minutes after 09:15.",
+        "Do not invent a bounce or a breakdown until that print is clear.",
+        "Invalidation: a clean reclaim above the strike, or a clean extension below it.",
+      ],
+      caution: "Map the strike first. No forced structure from the open alone.",
+    },
+    GAP_UP_INTO_POS_GAMMA: {
+      title: "Gap up above the call−put balance",
+      play: "MAP ONLY — NO FADE",
+      reading: "A large gap with spot above the flip on a call-heavy book is a location. It is not a reason to fade back to the prior close.",
+      steps: [
+        "Do not sell the gap or buy puts for a fill just because the open is large.",
+        "Map distance to the call-gamma and put-gamma strikes; wait for a later hold/fail trigger.",
+        "If the gap stays unfilled, fighting it with put momentum is what the score path penalizes.",
+      ],
+      caution: "No fade from this regime alone. You confirm any later structure.",
+    },
+    GAP_UP_RUNAWAY: {
+      title: "Large gap up inside the walls",
+      play: "WATCH THE GAP",
+      reading: "Gap ≥ 0.40% with the open still under the call-gamma strike. The gap is a print, not a dealer chase.",
+      steps: [
+        "Watch whether the first continuous prints hold the open or fill toward prior close.",
+        "Defined-risk call structures only if the open holds; you confirm.",
+        "Invalidation: a reclaim of the prior close that fills the gap with expanding tape against the open.",
+      ],
+      caution: "Do not invent a 200-point expansion from the open label alone.",
+    },
+    GAP_DOWN_INTO_POS_GAMMA: {
+      title: "Gap down while still above the balance",
+      play: "MAP ONLY — NO BOUNCE",
+      reading: "A large gap down with spot still above the flip is a location. It is not an automatic bounce to the prior close.",
+      steps: [
+        "Do not buy the gap for a fill just because the book is call-heavy.",
+        "Map the put-gamma strike and wait for a later hold/fail trigger.",
+        "If the gap stays unfilled, fighting it with call momentum is what the score path penalizes.",
+      ],
+      caution: "No bounce from this regime alone. You confirm any later structure.",
+    },
+    GAP_DOWN_TRAP: {
+      title: "Large gap down inside the walls",
+      play: "WATCH THE GAP",
+      reading: "Gap ≤ −0.40% with the open still above the put-gamma strike. The gap is a print, not a forced liquidation thesis.",
+      steps: [
+        "Watch whether the first continuous prints hold the open or fill toward prior close.",
+        "Defined-risk put structures only if the open holds; you confirm.",
+        "Invalidation: a reclaim of the prior close that fills the gap with expanding tape against the open.",
+      ],
+      caution: "Do not invent a cascade from the open label alone.",
+    },
+    AUCTION_BALANCED: {
+      title: "Flat open",
+      play: "NO BOOK TRADE",
+      reading: "Gap at or under ~0.15%. A flat open between the gamma strikes is a location, not a pin.",
+      steps: [
+        "Let the first 15-minute range form before inventing direction.",
+        "No book-balance trade from the open alone.",
+        "Invalidation: a sustained break of the opening range with expanding volume.",
+      ],
+      caution: "Momentum follow-through is not assumed on a flat open.",
+    },
+    MODERATE_DRIFT: {
+      title: "Moderate opening gap",
+      play: "MAP ONLY",
+      reading: "Gap between ~0.15% and 0.40% inside the walls. Mild drift, not institutional urgency.",
+      steps: [
+        "Map the open versus flip and walls; wait for VWAP/tape alignment after 09:20.",
+        "Do not force a structure from the open label alone.",
+        "Invalidation: a later breach of the nearer gamma strike against your working thesis.",
+      ],
+      caution: "Map only until a clearer trigger prints.",
+    },
+  };
+
+  const PREMARKET_PLAYBOOK_MORNING = {
+    title: "Prior-session book (no open yet)",
+    play: "MAP ONLY",
+    reading: "Before the 09:08 print, the card shows yesterday’s sealed walls and flip. There is no indicative open to trade.",
+    steps: [
+      "Read call-gamma, put-gamma, and flip distances from the prior close.",
+      "Do not invent a gap trade before discovery.",
+      "At ~09:08 the regime playbook replaces this card once the open locks.",
+    ],
+    caution: "Dhan stays dark for the open until the auction window. No auto-execution.",
+  };
+
+  const PREMARKET_PLAYBOOK_AWAITING = {
+    title: "Awaiting indicative open",
+    play: "SETUP ONLY",
+    reading: "The cash auction has started or is matching, but the indicative open is not locked yet.",
+    steps: [
+      "Watch for discovery at ~09:08 (Dhan day-open, or LTP after 09:08 if open is still 0).",
+      "Keep the prior-session walls as context only until is_discovered is true.",
+      "Do not stage a structure on a guessed open.",
+    ],
+    caution: "No trade from an undiscovered open.",
+  };
+
+  /** Live-bound specifics: same regimes, filled from pm open/walls/flip/gap. */
+  const PREMARKET_PLAYBOOK_SPECIFICS = {
+    CALL_WALL_BREACH_SQUEEZE: {
+      reading: (c) =>
+        `Open ${c.openTxt} is through CW ${c.cwTxt} (${c.distCw}). Flip ${c.flipTxt} (${c.distFlip}). Location on the book — not a dealer squeeze.`,
+      steps: (c) => [
+        `After 09:15, watch the first 3-minute candle vs CW ${c.cwTxt}.`,
+        `A hold above ${c.cwTxt} with supportive tape can justify a defined-risk call structure — you confirm.`,
+        `Invalidation: a close back below ${c.cwTxt}. Do not fade because the label says squeeze.`,
+      ],
+      structure: (c) =>
+        `Candidate only after hold above ${c.cwTxt}: defined-risk call structure. Short strike (if any) beyond the call concentration, never on the magnet. Lot and max loss before stage.`,
+      invalidation: (c) => `Close back below CW ${c.cwTxt}.`,
+    },
+    SHORT_GAMMA_WALL_TEST: {
+      reading: (c) =>
+        `Open ${c.openTxt} is at CW ${c.cwTxt} (${c.distCw}). Flip ${c.flipTxt}. A touch is not a squeeze and not a ceiling.`,
+      steps: (c) => [
+        `Watch whether the first continuous prints hold or reject at ${c.cwTxt}.`,
+        `Do not invent a fade or a breakout until that hold/fail is clear.`,
+        `Size only after a clean reclaim above or reject below ${c.cwTxt}.`,
+      ],
+      structure: (c) => `No structure from the touch alone. Map ${c.cwTxt} first; stage only after hold/fail.`,
+      invalidation: (c) => `Clean reclaim above or reject below CW ${c.cwTxt}.`,
+    },
+    PUT_WALL_BREAKDOWN_CASCADE: {
+      reading: (c) =>
+        `Open ${c.openTxt} is through PW ${c.pwTxt} (${c.distPw}). Flip ${c.flipTxt} (${c.distFlip}). Location — not a cascade that must continue.`,
+      steps: (c) => [
+        `After 09:15, watch the first 3-minute candle vs PW ${c.pwTxt}.`,
+        `A hold below ${c.pwTxt} with supportive tape can justify a defined-risk put structure — you confirm.`,
+        `Invalidation: a close back above ${c.pwTxt}.`,
+      ],
+      structure: (c) =>
+        `Candidate only after hold below ${c.pwTxt}: defined-risk put structure. Never sell naked puts. Lot and max loss before stage.`,
+      invalidation: (c) => `Close back above PW ${c.pwTxt}.`,
+    },
+    PUT_WALL_BREAKDOWN_TEST: {
+      reading: (c) =>
+        `Open ${c.openTxt} is at PW ${c.pwTxt} (${c.distPw}). Flip ${c.flipTxt}. A touch is not a floor dealers will defend.`,
+      steps: (c) => [
+        `Watch hold versus reclaim at ${c.pwTxt} in the first minutes after 09:15.`,
+        `Do not invent a bounce or a breakdown until that print is clear.`,
+        `Invalidation: clean reclaim above ${c.pwTxt}, or clean extension below it.`,
+      ],
+      structure: (c) => `No structure from the touch alone. Map ${c.pwTxt} first; stage only after hold/fail.`,
+      invalidation: (c) => `Clean reclaim above or extension below PW ${c.pwTxt}.`,
+    },
+    GAP_UP_INTO_POS_GAMMA: {
+      reading: (c) =>
+        `Open ${c.openTxt} is ${c.gapTxt} from prior ${c.prevTxt}, above flip ${c.flipTxt} (${c.distFlip}). CW ${c.cwTxt}, PW ${c.pwTxt}. Location only — not a fade.`,
+      steps: (c) => [
+        `Do not sell the gap or buy puts for a fill back to ${c.prevTxt}.`,
+        `Map CW ${c.cwTxt} (${c.distCw}) and PW ${c.pwTxt} (${c.distPw}); wait for a later hold/fail.`,
+        `If the gap stays unfilled, fighting it with put momentum is what the score path penalizes.`,
+      ],
+      structure: (c) =>
+        `No structure from this regime. Any later defined-risk idea uses CW ${c.cwTxt} / PW ${c.pwTxt} as map, not as a fade target to ${c.prevTxt}.`,
+      invalidation: (c) =>
+        `A later clean hold/fail at CW ${c.cwTxt} or PW ${c.pwTxt} — not a reclaim of ${c.prevTxt} alone.`,
+    },
+    GAP_UP_RUNAWAY: {
+      reading: (c) =>
+        `Open ${c.openTxt} is ${c.gapTxt} from prior ${c.prevTxt}, still under CW ${c.cwTxt} (${c.distCw}). Gap is a print, not a dealer chase.`,
+      steps: (c) => [
+        `Watch whether the first continuous prints hold ${c.openTxt} or fill toward ${c.prevTxt}.`,
+        `Defined-risk call structures only if the open holds — you confirm.`,
+        `Invalidation: a reclaim of ${c.prevTxt} that fills the gap with expanding tape against the open.`,
+      ],
+      structure: (c) =>
+        `Candidate only if ${c.openTxt} holds: defined-risk call structure. Cap expectations vs CW ${c.cwTxt}; do not invent a runaway from the label.`,
+      invalidation: (c) => `Reclaim of prior close ${c.prevTxt} that fills the gap against the open.`,
+    },
+    GAP_DOWN_INTO_POS_GAMMA: {
+      reading: (c) =>
+        `Open ${c.openTxt} is ${c.gapTxt} from prior ${c.prevTxt}, still above flip ${c.flipTxt} (${c.distFlip}). CW ${c.cwTxt}, PW ${c.pwTxt}. Not an automatic bounce.`,
+      steps: (c) => [
+        `Do not buy the gap for a fill back to ${c.prevTxt} just because the book is call-heavy.`,
+        `Map PW ${c.pwTxt} (${c.distPw}); wait for a later hold/fail.`,
+        `If the gap stays unfilled, fighting it with call momentum is what the score path penalizes.`,
+      ],
+      structure: (c) =>
+        `No structure from this regime. Any later idea uses PW ${c.pwTxt} / flip ${c.flipTxt} as map, not as a bounce target to ${c.prevTxt}.`,
+      invalidation: (c) =>
+        `A later clean hold/fail at PW ${c.pwTxt} or CW ${c.cwTxt} — not a reclaim of ${c.prevTxt} alone.`,
+    },
+    GAP_DOWN_TRAP: {
+      reading: (c) =>
+        `Open ${c.openTxt} is ${c.gapTxt} from prior ${c.prevTxt}, still above PW ${c.pwTxt} (${c.distPw}). Gap is a print, not a forced liquidation.`,
+      steps: (c) => [
+        `Watch whether the first continuous prints hold ${c.openTxt} or fill toward ${c.prevTxt}.`,
+        `Defined-risk put structures only if the open holds — you confirm.`,
+        `Invalidation: a reclaim of ${c.prevTxt} that fills the gap with expanding tape against the open.`,
+      ],
+      structure: (c) =>
+        `Candidate only if ${c.openTxt} holds: defined-risk put structure. Floor map is PW ${c.pwTxt}; do not invent a cascade from the label.`,
+      invalidation: (c) => `Reclaim of prior close ${c.prevTxt} that fills the gap against the open.`,
+    },
+    AUCTION_BALANCED: {
+      reading: (c) =>
+        `Open ${c.openTxt} is flat (${c.gapTxt}) vs prior ${c.prevTxt}. CW ${c.cwTxt}, PW ${c.pwTxt}, flip ${c.flipTxt}. Location, not a pin.`,
+      steps: (c) => [
+        `Let the first 15-minute range form around ${c.openTxt} before inventing direction.`,
+        `No book-balance trade from the open alone.`,
+        `Invalidation: a sustained break of the opening range with expanding volume toward CW ${c.cwTxt} or PW ${c.pwTxt}.`,
+      ],
+      structure: (c) => `No structure from the flat open. Wait for an opening-range break relative to ${c.openTxt}.`,
+      invalidation: (c) => `Sustained opening-range break with expanding volume away from ${c.openTxt}.`,
+    },
+    MODERATE_DRIFT: {
+      reading: (c) =>
+        `Open ${c.openTxt} is a moderate gap (${c.gapTxt}) from ${c.prevTxt}. CW ${c.cwTxt}, PW ${c.pwTxt}, flip ${c.flipTxt}. Mild drift, not urgency.`,
+      steps: (c) => [
+        `Map ${c.openTxt} vs flip ${c.flipTxt} (${c.distFlip}); wait for VWAP/tape alignment after 09:20.`,
+        `Do not force a structure from the open label alone.`,
+        `Invalidation: a later breach of the nearer gamma strike (${c.cwTxt} / ${c.pwTxt}) against your working thesis.`,
+      ],
+      structure: (c) => `Map only until a clearer trigger. Nearest walls: CW ${c.cwTxt}, PW ${c.pwTxt}.`,
+      invalidation: (c) => `Breach of nearer gamma strike (CW ${c.cwTxt} or PW ${c.pwTxt}) against the thesis.`,
+    },
+    MORNING: {
+      reading: (c) =>
+        `Prior close ${c.prevTxt}. Sealed book: CW ${c.cwTxt}, PW ${c.pwTxt}, flip ${c.flipTxt}. No indicative open yet.`,
+      steps: (c) => [
+        `Read distances from prior close ${c.prevTxt} to CW ${c.cwTxt} and PW ${c.pwTxt}.`,
+        `Do not invent a gap trade before discovery.`,
+        `At ~09:08 the regime-specific map replaces this once the open locks.`,
+      ],
+      structure: () => "No structure before discovery.",
+      invalidation: () => "N/A until the indicative open locks.",
+    },
+    AWAITING: {
+      reading: (c) =>
+        `Auction in progress. Prior close ${c.prevTxt}; sealed CW ${c.cwTxt}, PW ${c.pwTxt}, flip ${c.flipTxt}. Open not locked.`,
+      steps: (c) => [
+        `Watch for discovery at ~09:08 (Dhan day-open, or LTP after 09:08 if open is still 0).`,
+        `Keep CW ${c.cwTxt} / PW ${c.pwTxt} as context only until is_discovered is true.`,
+        `Do not stage a structure on a guessed open.`,
+      ],
+      structure: () => "No structure on an undiscovered open.",
+      invalidation: () => "N/A until discovery.",
+    },
+  };
+
+  function _pmInr(v) {
+    const n = Number(v || 0);
+    return n > 0
+      ? `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 0 })}`
+      : "unavailable";
+  }
+
+  function _pmDist(from, to, label) {
+    const a = Number(from || 0);
+    const b = Number(to || 0);
+    if (!(a > 0 && b > 0)) return `n/a vs ${label}`;
+    const d = a - b;
+    return `${d >= 0 ? "+" : ""}${d.toFixed(0)} pts vs ${label}`;
+  }
+
+  function playbookCtx(pm, discovered) {
+    const open = discovered ? Number(pm && pm.discovered_spot || 0) : 0;
+    const prev = Number(pm && pm.prev_close || 0);
+    const cw = Number(pm && pm.call_wall || 0);
+    const pw = Number(pm && pm.put_wall || 0);
+    const flip = Number(pm && pm.gamma_flip || 0);
+    const gapPts = discovered ? Number(pm && pm.gap_pts || 0) : 0;
+    const gapPct = discovered ? Number(pm && pm.gap_pct || 0) : 0;
+    const sign = gapPts >= 0 ? "+" : "";
+    return {
+      discovered: Boolean(discovered),
+      open,
+      prev,
+      cw,
+      pw,
+      flip,
+      openTxt: open > 0 ? _pmInr(open) : "—",
+      prevTxt: prev > 0 ? _pmInr(prev) : "—",
+      cwTxt: _pmInr(cw),
+      pwTxt: _pmInr(pw),
+      flipTxt: _pmInr(flip),
+      gapTxt: discovered
+        ? `${sign}${gapPts.toFixed(1)} pts (${sign}${gapPct.toFixed(2)}%)`
+        : "awaiting discovery",
+      distCw: _pmDist(open || prev, cw, "CW"),
+      distPw: _pmDist(open || prev, pw, "PW"),
+      distFlip: _pmDist(open || prev, flip, "flip"),
+    };
+  }
+
+  function _pmCall(x, ctx, fallback) {
+    if (typeof x === "function") return x(ctx);
+    if (x != null) return x;
+    return fallback;
+  }
+
+  function preMarketPlaybookFor(pm, discovered) {
+    if (!discovered) {
+      if (pm && pm.is_morning_briefing) return PREMARKET_PLAYBOOK_MORNING;
+      return PREMARKET_PLAYBOOK_AWAITING;
+    }
+    const key = String((pm && pm.gap_regime) || "").toUpperCase();
+    return PREMARKET_PLAYBOOKS[key] || {
+      title: key || "Opening map",
+      play: (pm && pm.favored_play) || "MAP ONLY",
+      reading: (pm && (pm.regime_briefing || pm.briefing)) || "Locate the open on the book. Confirm before any structure.",
+      steps: [
+        "Read the favored play on the card.",
+        "Confirm any structure yourself — the app does not auto-execute.",
+      ],
+      caution: "Decision support only.",
+    };
+  }
+
+  function preMarketSpecificsFor(pm, discovered, ctx) {
+    let key;
+    if (!discovered) {
+      key = pm && pm.is_morning_briefing ? "MORNING" : "AWAITING";
+    } else {
+      key = String((pm && pm.gap_regime) || "").toUpperCase();
+    }
+    const spec = PREMARKET_PLAYBOOK_SPECIFICS[key];
+    if (!spec) {
+      return {
+        reading: discovered
+          ? `Open ${ctx.openTxt}, gap ${ctx.gapTxt}, CW ${ctx.cwTxt}, PW ${ctx.pwTxt}, flip ${ctx.flipTxt}.`
+          : `Prior ${ctx.prevTxt}; CW ${ctx.cwTxt}, PW ${ctx.pwTxt}, flip ${ctx.flipTxt}.`,
+        steps: ["Use the generic thesis above with these live levels.", "You confirm any structure."],
+        structure: "Map only until a clearer trigger.",
+        invalidation: "Confirm against the live walls before sizing.",
+      };
+    }
+    return {
+      reading: _pmCall(spec.reading, ctx, ""),
+      steps: _pmCall(spec.steps, ctx, []) || [],
+      structure: _pmCall(spec.structure, ctx, ""),
+      invalidation: _pmCall(spec.invalidation, ctx, ""),
+    };
+  }
+
+  function renderPreMarketPlaybookHtml(pm, discovered, { openAttr = "", marginTop = "10px" } = {}) {
+    const book = preMarketPlaybookFor(pm, discovered);
+    const ctx = playbookCtx(pm, discovered);
+    const spec = preMarketSpecificsFor(pm, discovered, ctx);
+    const regimeKey = discovered ? String(pm.gap_regime || "MAP") : (pm.is_morning_briefing ? "MORNING" : "AWAITING");
+    const genericSteps = (book.steps || []).map((s) => `<li style="margin:0 0 4px 0">${s}</li>`).join("");
+    const specificSteps = (spec.steps || []).map((s) => `<li style="margin:0 0 4px 0">${s}</li>`).join("");
+    const mapStrip = `
+      <div style="display:flex;flex-wrap:wrap;gap:6px 12px;margin:0 0 8px;font-size:0.7rem;font-family:var(--mono);color:var(--ink-mute)">
+        ${discovered ? `<span>Open <b style="color:var(--ink)">${ctx.openTxt}</b></span>
+        <span>Gap <b style="color:var(--ink)">${ctx.gapTxt}</b></span>` : `<span>Prior <b style="color:var(--ink)">${ctx.prevTxt}</b></span>`}
+        <span>CW <b style="color:var(--ink)">${ctx.cwTxt}</b></span>
+        <span>PW <b style="color:var(--ink)">${ctx.pwTxt}</b></span>
+        <span>Flip <b style="color:var(--ink)">${ctx.flipTxt}</b></span>
+      </div>`;
+    return `
+      <details class="collapsible-matrix pm-playbook" data-regime="${regimeKey}" ontoggle="window._pmPlaybookOpen = this.open" style="margin:${marginTop} 0 10px 0;background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)" ${openAttr}>
+        <summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;list-style:none;user-select:none;outline:none">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span class="matrix-chevron" style="color:var(--spark);font-size:0.72rem;display:inline-block;transition:transform 0.2s">▼</span>
+            <span style="font-size:0.72rem;font-weight:750;color:var(--spark);text-transform:uppercase">Playbook</span>
+            <span style="font-size:0.72rem;font-weight:700;color:var(--ink)">${book.title}</span>
+            <span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">${regimeKey}</span>
+          </div>
+          <span style="font-size:0.7rem;color:var(--spark);font-weight:700">${book.play}</span>
+        </summary>
+        <div style="margin-top:10px;font-size:0.78rem;line-height:1.55;color:var(--ink)">
+          <div style="margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line)">
+            <b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem;letter-spacing:0.04em">Generic thesis</b>
+            <div style="margin-top:6px;margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Reading</b><div>${book.reading}</div></div>
+            <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Steps</b><ol style="margin:4px 0 0 18px;padding:0">${genericSteps}</ol></div>
+            <div style="font-size:0.74rem;color:var(--warn)">${book.caution}</div>
+          </div>
+          <div>
+            <b style="color:var(--spark);text-transform:uppercase;font-size:0.64rem;letter-spacing:0.04em">Today’s map</b>
+            ${mapStrip}
+            <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Reading</b><div>${spec.reading}</div></div>
+            <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Steps</b><ol style="margin:4px 0 0 18px;padding:0">${specificSteps}</ol></div>
+            <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure</b><div>${spec.structure}</div></div>
+            <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Invalidation</b><div>${spec.invalidation}</div></div>
+            <div style="font-size:0.74rem;color:var(--warn);border-top:1px solid var(--line);padding-top:8px">${book.caution}</div>
+          </div>
+        </div>
+      </details>`;
+  }
+
   // -------------------------------------------------------------------------
   // Web Audio Synthesizer & Auto-Unlock on First User Interaction
   // -------------------------------------------------------------------------
@@ -1987,6 +2410,15 @@
             atEl.textContent = oiShown ? `OI ${oiShown}` : "OI time unavailable";
           }
           else atEl.textContent = "09:08 IST Discovery";
+        }
+
+        const playbookSlot = document.getElementById("pm-playbook-slot");
+        if (playbookSlot) {
+          const wasOpen = Boolean(window._pmPlaybookOpen);
+          playbookSlot.innerHTML = renderPreMarketPlaybookHtml(pm, discovered, {
+            openAttr: wasOpen ? "open" : "",
+            marginTop: "0",
+          });
         }
 
         // Straddle badge
@@ -6760,6 +7192,10 @@
           <div style="font-size:0.8rem;line-height:1.5;color:var(--ink);background:var(--surface-2);padding:8px 12px;border-radius:6px;border:1px solid var(--line);margin-top:8px">
             ${pm.regime_briefing || pm.briefing || "Prior-session gamma strikes. The open is a print on the book, not a fade."}
           </div>
+          ${renderPreMarketPlaybookHtml(pm, !morning && Boolean(pm.is_discovered), {
+            openAttr: window._pmPlaybookOpen ? "open" : "",
+            marginTop: "10px",
+          })}
           ${shocksTableHtml}
         `;
       }
