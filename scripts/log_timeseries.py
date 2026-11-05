@@ -369,6 +369,21 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
                 if _ist_now() < due[sym]:
                     still = True
                     continue
+                # A due minute that is already more than a few seconds late was
+                # slipped by a slow sibling or a restart. Record it before the pull.
+                late_s = (_ist_now() - due[sym]).total_seconds()
+                if late_s > 5.0:
+                    from app.obs import event as _event
+                    _event(
+                        "blast.minute_skipped",
+                        level="WARNING",
+                        ok=False,
+                        workflow="timeseries.blast",
+                        symbol=sym,
+                        duration_ms=round(late_s * 1000.0, 1),
+                        message=f"blast minute due {due[sym]:%H:%M:%S} started {late_s:.1f}s late",
+                    )
+                t0 = _time.time()
                 try:
                     if sym != primary:
                         msg = blast_once(symbol=sym)
@@ -377,10 +392,32 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
                             skipped.add(sym)
                         else:
                             still = True
+                        if "empty" in (msg or "").lower() or "no contracts" in (msg or "").lower():
+                            from app.obs import event as _event
+                            _event(
+                                "blast.empty_chain",
+                                level="WARNING",
+                                ok=False,
+                                workflow="timeseries.blast",
+                                symbol=sym,
+                                duration_ms=round((_time.time() - t0) * 1000.0, 1),
+                                message=(msg or "")[:400],
+                            )
                     else:
                         msg, pulled = capture_once(min_gap=4.0, symbol=sym if symbol else None)
                         _print(msg)
                         _note_capture(msg, pulled)
+                        if "published book" in (msg or "") or "no contracts" in (msg or "").lower():
+                            from app.obs import event as _event
+                            _event(
+                                "blast.empty_chain",
+                                level="WARNING",
+                                ok=False,
+                                workflow="timeseries.blast",
+                                symbol=sym,
+                                duration_ms=round((_time.time() - t0) * 1000.0, 1),
+                                message=(msg or "")[:400],
+                            )
                         if _is_expiry_day(pulled):
                             still = True
                         else:
@@ -388,6 +425,17 @@ def _run_blast_window(symbol: str | None, not_today: set[str] | None = None) -> 
                 except Exception as e:  # noqa: BLE001 - one bad pull must not stop the window
                     _print(f"{ist:%H:%M} IST  blast capture FAILED (kept looping): {e}")
                     _note_capture("", error=e)
+                    if "no contracts" in str(e).lower() or "empty" in str(e).lower():
+                        from app.obs import event as _event
+                        _event(
+                            "blast.empty_chain",
+                            level="WARNING",
+                            ok=False,
+                            workflow="timeseries.blast",
+                            symbol=sym,
+                            duration_ms=round((_time.time() - t0) * 1000.0, 1),
+                            error=str(e),
+                        )
                     if sym == primary:
                         still = True
                     else:

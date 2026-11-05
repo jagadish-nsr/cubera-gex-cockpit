@@ -203,6 +203,7 @@ def test_classifier_continuation_bull():
         vwap_sigma_2=24535.0,
         vwap_lower_1=24490.0,
         vwap_lower_2=24475.0,
+        oi_fresh=True,
     )
     context.update_bar(bar)
     sig = engine.evaluate_bar(bar, context)
@@ -210,6 +211,83 @@ def test_classifier_continuation_bull():
     assert sig is not None
     assert sig.type == "CONTINUATION_BULL"
     assert sig.bias == "LONG"
+
+
+def test_continuation_skips_when_futures_oi_is_frozen():
+    """A flat OI reprint is not a positioning tape (2026-11-05 all-day freeze)."""
+    engine = SignalClassifierEngine()
+    context = MarketContext()
+    t0 = datetime(2026, 11, 5, 7, 0, tzinfo=timezone.utc)
+    bar = Bar(
+        instrument_id="NIFTY-FUT",
+        timeframe="1m",
+        start_ts=t0,
+        open=24500.0,
+        high=24530.0,
+        low=24495.0,
+        close=24528.0,
+        volume_units=40000,
+        volume_lots=615.0,
+        buy_vol_est=30000.0,
+        sell_vol_est=10000.0,
+        delta=20000.0,
+        delta_ratio=0.50,
+        delta_quality=1.0,
+        cvd=20000.0,
+        vwap=24505.0,
+        vwap_sigma_1=24520.0,
+        vwap_sigma_2=24535.0,
+        vwap_lower_1=24490.0,
+        vwap_lower_2=24475.0,
+        oi=13_481_715,
+        delta_oi=0,
+        oi_fresh=False,
+    )
+    context.update_bar(bar)
+    assert engine.evaluate_bar(bar, context) is None
+
+
+def test_aggregator_marks_oi_stale_after_five_flat_bars():
+    agg = BarAggregator("NIFTY-FUT", timeframe="1m")
+    t0 = datetime(2026, 11, 5, 3, 45, tzinfo=timezone.utc)
+    bars = []
+    for i in range(7):
+        ts = t0 + timedelta(minutes=i)
+        # One tick to open the minute, one in the next minute to finalize.
+        agg.add_tick(24500.0 + i, ts, volume_delta=100, oi=13_481_715)
+        done = agg.add_tick(24501.0 + i, ts + timedelta(minutes=1), volume_delta=100, oi=13_481_715)
+        if done is not None:
+            bars.append(done)
+    assert len(bars) >= 5
+    assert bars[0].oi_fresh is True
+    assert bars[3].oi_fresh is True
+    assert bars[4].oi_fresh is False
+    assert bars[-1].oi_fresh is False
+
+
+def test_micro_continuation_needs_a_gamma_strike():
+    """Floor-68 micro CONTINUATION floods without a wall gate (2026-11-05)."""
+    engine = SignalClassifierEngine()
+    context = MarketContext()
+    context.call_wall = 24600.0
+    context.put_wall = 24400.0
+    burst = {
+        "instrument_id": "NIFTY-FUT",
+        "timestamp": datetime(2026, 11, 5, 8, 0, tzinfo=timezone.utc),
+        "volume_15s": 2000,
+        "delta_15s": 1500,
+        "delta_ratio_15s": 0.55,
+        "latest_price": 24550.0,
+        "depth_imbalance": 0.3,
+    }
+    assert engine.evaluate_micro_burst(burst, context) is None
+
+    burst_at_wall = dict(burst, latest_price=24605.0)
+    sig = engine.evaluate_micro_burst(burst_at_wall, context)
+    assert sig is not None
+    assert sig.type == "CONTINUATION_BULL"
+    assert sig.score >= 70
+    assert sig.trigger_speed == "MICRO_BURST"
 
 
 def test_classifier_exhaustion_up_and_down_categories():

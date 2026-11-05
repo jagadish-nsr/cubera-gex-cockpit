@@ -115,8 +115,14 @@ class SignalClassifierEngine:
 
         # -------------------------------------------------------------------
         # 2. CONTINUATION (High-volume impulse in direction of delta)
+        #     Requires a live OI tape. A flat futures OI reprint is not buildup.
         # -------------------------------------------------------------------
-        elif rvol >= 1.5 and bar.delta_ratio >= 0.25 and close_pos >= 0.70:
+        elif (
+            getattr(bar, "oi_fresh", True)
+            and rvol >= 1.5
+            and bar.delta_ratio >= 0.25
+            and close_pos >= 0.70
+        ):
             if "ABOVE_VWAP" in tags or "ABOVE_ORB_HIGH" in tags:
                 sig_type = "CONTINUATION_BULL"
                 category = "BULLISH"
@@ -129,7 +135,12 @@ class SignalClassifierEngine:
                 )
                 gex_alignment = "COUNTER_TREND" if "NEAR_CALL_WALL" in tags else "NEUTRAL"
 
-        elif rvol >= 1.5 and bar.delta_ratio <= -0.25 and close_pos <= 0.30:
+        elif (
+            getattr(bar, "oi_fresh", True)
+            and rvol >= 1.5
+            and bar.delta_ratio <= -0.25
+            and close_pos <= 0.30
+        ):
             if "BELOW_VWAP" in tags or "BELOW_ORB_LOW" in tags:
                 sig_type = "CONTINUATION_BEAR"
                 category = "BEARISH"
@@ -285,30 +296,40 @@ class SignalClassifierEngine:
         bias = "NEUTRAL"
         base_score = 65
 
-        if delta_ratio >= 0.40:
+        # Micro sweeps are not bar continuations. On 2026-11-05 Nifty journaled
+        # 133 CONTINUATION_BULL at score 68 from this path. Only keep a micro
+        # print when it sits on a named gamma strike, and score it into the
+        # tape band (≥ 70) so the floor-68 flood cannot return.
+        if delta_ratio >= 0.40 and near_call_wall:
             sig_type = "CONTINUATION_BULL"
             category = "BULLISH"
             bias = "LONG"
-            base_score = 68
+            base_score = 75
             invalidation = cur_px - min_buf
-            where = f" Print is at the call-gamma strike ({context.call_wall:,.0f}). That is a location, not a ceiling." if near_call_wall else ""
-            insight = f"⚡ Buyer sweep (+{burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}).{where}"
+            insight = (
+                f"⚡ Buyer sweep (+{burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}). "
+                f"Print is at the call-gamma strike ({context.call_wall:,.0f}). "
+                "That is a location, not a ceiling."
+            )
 
-        elif delta_ratio <= -0.40:
+        elif delta_ratio <= -0.40 and near_put_wall:
             sig_type = "CONTINUATION_BEAR"
             category = "BEARISH"
             bias = "SHORT"
-            base_score = 68
+            base_score = 75
             invalidation = cur_px + min_buf
-            where = f" Print is at the put-gamma strike ({context.put_wall:,.0f}). That is a location, not a floor." if near_put_wall else ""
-            insight = f"⚡ Seller sweep ({burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}).{where}"
+            insight = (
+                f"⚡ Seller sweep ({burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}). "
+                f"Print is at the put-gamma strike ({context.put_wall:,.0f}). "
+                "That is a location, not a floor."
+            )
 
         if not sig_type:
             return None
 
-        # Check cooldown
+        # Check cooldown (stricter for micro: 5 completed bars)
         last_seen = self.last_signal_bar_idx.get(sig_type, -100)
-        if (self.bar_counter - last_seen) < 2:
+        if (self.bar_counter - last_seen) < 5:
             return None
         self.last_signal_bar_idx[sig_type] = self.bar_counter
 
@@ -343,5 +364,5 @@ class SignalClassifierEngine:
             trigger_speed="MICRO_BURST",
             rule_set_version="v2.1",
             status="NEW",
-            gex_alignment="CONFIRMED_AT_WALL" if (near_call_wall or near_put_wall) else "NEUTRAL",
+            gex_alignment="CONFIRMED_AT_WALL",
         )

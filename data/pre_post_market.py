@@ -631,10 +631,13 @@ def get_pre_market_state(
     today_str = now_ist.strftime("%Y-%m-%d")
     ckey = (symbol.upper(), today_str)
 
-    # Never call _apply_missed_open while holding _CACHE_LOCK: that helper takes
-    # the same non-reentrant lock, and a same-thread wait stalls the event loop
-    # (watchdog restart 2026-11-03 09:15:46 IST).
+    # Never call _apply_missed_open or update_gap_fill_status while holding
+    # _CACHE_LOCK: both take the same non-reentrant lock (and the latter does
+    # SQLite I/O). Same-thread wait stalled the event loop on 2026-11-03 and
+    # again on 2026-11-05 at 09:13–09:14 IST.
     fresh_cached: dict | None = None
+    gap_fill_to_persist: str | None = None
+    discovered_cached: dict | None = None
     with _CACHE_LOCK:
         cached = _PRE_MARKET_CACHE.get(symbol.upper())
         if cached and cached.get("date") == today_str and not force_refresh:
@@ -650,19 +653,23 @@ def get_pre_market_state(
                         g_pts = float(cached.get("gap_pts") or 0.0)
                         if g_pts > 0 and cur_low > 0 and cur_low <= p_c:
                             cached["gap_fill_status"] = "FILLED"
-                            update_gap_fill_status(symbol.upper(), "FILLED", today_str)
+                            gap_fill_to_persist = "FILLED"
                         elif g_pts < 0 and cur_high > 0 and cur_high >= p_c:
                             cached["gap_fill_status"] = "FILLED"
-                            update_gap_fill_status(symbol.upper(), "FILLED", today_str)
+                            gap_fill_to_persist = "FILLED"
                     except Exception:
                         pass
-                return cached
+                discovered_cached = cached
             # If discovery in progress but checked less than 2.8s ago, return cached.
             # A morning-briefing stub must not outlive 09:00, when the cash auction starts.
-            if (time.time() - cached.get("_polled_at", 0)) < 2.8:
+            elif (time.time() - cached.get("_polled_at", 0)) < 2.8:
                 phase_now, _, _ = get_current_session_phase(now_ist)
                 if not (cached.get("is_morning_briefing") and phase_now != "PRE_MARKET_SETUP"):
                     fresh_cached = cached
+    if discovered_cached is not None:
+        if gap_fill_to_persist is not None:
+            update_gap_fill_status(symbol.upper(), gap_fill_to_persist, today_str)
+        return discovered_cached
     if fresh_cached is not None:
         return _apply_missed_open(fresh_cached, symbol, now_ist)
 

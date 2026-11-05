@@ -431,6 +431,71 @@ class TestPrePostMarket(unittest.TestCase):
             ticker._STORE.pop("NIFTY", None)
             ppm._PRE_MARKET_CACHE.clear()
 
+    @patch("data.pre_post_market.update_gap_fill_status")
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.dhan_live.fetch_index_ohlc")
+    def test_gap_fill_persist_does_not_deadlock(self, mock_fetch, _persist, mock_update):
+        """Discovered path used to call update_gap_fill_status under _CACHE_LOCK.
+
+        That helper takes the same lock and writes SQLite. Same-thread wait
+        stalled the event loop on 2026-11-05 at 09:13 and 09:14 IST.
+        """
+        import threading
+
+        from data import pre_post_market as ppm
+        import app.spot_ticker as ticker
+
+        ppm._PRE_MARKET_CACHE.clear()
+        day = "2026-11-05"
+        ppm._PRE_MARKET_CACHE["NIFTY"] = {
+            "date": day,
+            "is_discovered": True,
+            "gap_fill_status": "UNFILLED",
+            "discovered_spot": 24359.0,
+            "prev_close": 23810.85,
+            "gap_pts": 548.15,
+            "is_morning_briefing": False,
+            "_polled_at": __import__("time").time(),
+        }
+        ticker._STORE["NIFTY"] = {
+            "ohlc": {
+                "open": 24359.0,
+                "high": 24400.0,
+                "low": 23800.0,  # traded through prior close → gap filled
+                "ltp": 24380.0,
+                "prev_close": 23810.85,
+                "as_of": "2026-11-05 09:20:00",
+            }
+        }
+        result: list[dict] = []
+        error: list[BaseException] = []
+
+        def reader() -> None:
+            try:
+                result.append(
+                    get_pre_market_state(
+                        "NIFTY",
+                        force_refresh=False,
+                        now=datetime(2026, 11, 5, 9, 20, tzinfo=IST),
+                    )
+                )
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+
+        try:
+            thread = threading.Thread(target=reader)
+            thread.start()
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive(), "gap-fill path held the cache lock")
+            self.assertEqual(error, [])
+            self.assertTrue(result)
+            self.assertEqual(result[0]["gap_fill_status"], "FILLED")
+            mock_update.assert_called_once_with("NIFTY", "FILLED", day)
+            mock_fetch.assert_not_called()
+        finally:
+            ticker._STORE.pop("NIFTY", None)
+            ppm._PRE_MARKET_CACHE.clear()
+
     def test_classify_opening_gap_regimes(self):
         # 1. Call Wall test
         cw_res = classify_opening_gap(gap_pts=50.0, gap_pct=0.22, spot=22700.0, call_wall=22700.0, put_wall=22400.0)

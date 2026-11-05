@@ -92,6 +92,11 @@ class BarAggregator:
         self.last_tick_direction: int = 1  # 1 for buy, -1 for sell (tick rule default)
         self.bar_oi: int = 0
         self.prev_bar_oi: int = 0
+        # Consecutive completed bars whose OI did not move. The Dhan futures
+        # socket can reprint one OI all day; continuation must not treat that
+        # as a live positioning tape (2026-11-05: one OI value on all three).
+        self._oi_flat_bars: int = 0
+        self._OI_FLAT_BARS = 5
 
         # Sub-minute rolling micro-burst detector (15-second window)
         self.rolling_ticks: deque = deque()
@@ -231,6 +236,11 @@ class BarAggregator:
 
         delta_ratio = delta / self.bar_volume if self.bar_volume > 0 else 0.0
         delta_oi = self.bar_oi - self.prev_bar_oi if self.prev_bar_oi > 0 else 0
+        if self.prev_bar_oi > 0 and self.bar_oi == self.prev_bar_oi:
+            self._oi_flat_bars += 1
+        else:
+            self._oi_flat_bars = 0
+        oi_fresh = self._oi_flat_bars < self._OI_FLAT_BARS
         avg_depth = sum(self.bar_depth_imbalances) / max(1, len(self.bar_depth_imbalances)) if self.bar_depth_imbalances else 0.0
 
         bar = Bar(
@@ -256,7 +266,7 @@ class BarAggregator:
             vwap_lower_2=dn2,
             oi=self.bar_oi,
             delta_oi=delta_oi,
-            oi_fresh=True,
+            oi_fresh=oi_fresh,
             incomplete=False,
             depth_imbalance=round(avg_depth, 4),
         )
