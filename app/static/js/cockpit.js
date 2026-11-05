@@ -3594,7 +3594,7 @@
     const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
-    const nowTs = Date.now() / 1000;
+    const nowTs = state.replayMode && Number.isFinite(state.replayAsOf) ? state.replayAsOf : Date.now() / 1000;
 
     const isClosed = dash.is_market_open === false || dash.market_state === "CLOSED";
     const isPreBell = Boolean(dash.is_pre_bell_ephemeral);
@@ -3612,9 +3612,6 @@
       return match ? match[1] : "";
     };
     const snapAsOf = String(dash.snapshot_as_of || "").trim();
-    const snapNote = snapAsOf && hmsOf(snapAsOf) !== hmsOf(timeStr)
-      ? ` · GEX snapshot ${snapAsOf}`
-      : "";
     const geo = classifyTapeZone(spot, cw, pw, step);
     const zone = geo.zone;
     const nearFlip = flip > 0 && Math.abs(spot - flip) <= step;
@@ -3641,21 +3638,88 @@
     const snapClause = snapAsOf && hmsOf(snapAsOf) !== hmsOf(timeStr)
       ? `The gamma snapshot is from ${snapAsOf}.`
       : "";
-    const sit = "The index can still rise, fall, or simply sit. Sitting is the quiet loss, because the premium ticks away while you wait.";
     const say = (...parts) => parts.map((p) => String(p || "").trim()).filter(Boolean).join(" ");
-    const voice = (scenario, badge, theme, headline, outcome, drivers, risk) => pack({
-      scenario,
-      badge,
-      theme,
-      headline,
-      meaning: "",
-      outcome,
-      drivers,
-      risk,
-      body: outcome,
-      action: risk,
-      diagnostics: drivers,
-    });
+    const signalLabel = (s) => String((s && s.type) || "SIGNAL").replace(/_/g, " ");
+    const signalSide = (s) => {
+      if (!s) return "";
+      const cat = String(s.category || "").toUpperCase();
+      if (cat === "BULLISH") return "CALL";
+      if (cat === "BEARISH") return "PUT";
+      return "";
+    };
+    const DECISIVE = {
+      BELOW_MAGNET: 1, ABOVE_MAGNET: 1, BELOW_PUT_WALL: 1,
+      ABOVE_CALL_WALL: 1, TEST_PUT: 1, TEST_CALL: 1,
+    };
+    const MIDDLE = { TEST_MAGNET: 1, PINNED: 1, UNSITUATED: 1, UNKNOWN: 1 };
+    const gradeConfidence = (stance, z, signal, sessionClosed) => {
+      const reasons = [];
+      const decisive = !sessionClosed && Boolean(DECISIVE[z]);
+      const fresh = Boolean(signal);
+      const side = signalSide(signal);
+      const agrees = (stance === "CALL WATCH" && side === "CALL")
+        || (stance === "PUT WATCH" && side === "PUT");
+      let bits = 0;
+      if (decisive) {
+        bits += 1;
+        reasons.push(`Zone ${String(z).replace(/_/g, " ")} is decisive.`);
+      } else {
+        reasons.push(sessionClosed
+          ? "Session is closed — no live trade window."
+          : "Zone is not decisive.");
+      }
+      if (fresh) {
+        bits += 1;
+        reasons.push(`Fresh orderflow print ≥${TAPE_SIGNAL_MIN_SCORE}: ${signalLabel(signal)}.`);
+      } else {
+        reasons.push(`No fresh orderflow print ≥${TAPE_SIGNAL_MIN_SCORE}.`);
+      }
+      if ((stance === "CALL WATCH" || stance === "PUT WATCH") && agrees) {
+        bits += 1;
+        reasons.push(`${signalLabel(signal)} agrees with ${stance}.`);
+      } else if (stance === "CALL WATCH" || stance === "PUT WATCH") {
+        reasons.push(`Orderflow does not agree with ${stance}.`);
+      } else if (MIDDLE[z] || sessionClosed) {
+        reasons.push("Middle map or off-hours — agreement bit is off.");
+      } else {
+        reasons.push("STAY OUT — agreement bit is off.");
+      }
+      let grade;
+      if (stance === "STAY OUT") grade = (bits >= 2 || decisive) ? "MED" : "LOW";
+      else if (bits >= 3) grade = "HIGH";
+      else if (bits >= 2 || decisive) grade = "MED";
+      else grade = "LOW";
+      return { grade, reasons };
+    };
+    const riskLine = (trigger, kill, watch) => {
+      const stop = watch ? " Stop beyond the wall, never at the magnet." : "";
+      return `Trigger: ${trigger} Kill: ${kill}.${stop}`.replace(/\.\./g, ".");
+    };
+    const voice = ({
+      scenario, badge, theme, headline, stance, confidence, where, drivers, trigger, kill, confReasons,
+    }) => {
+      const watch = stance === "CALL WATCH" || stance === "PUT WATCH";
+      const outcome = `${stance} · Confidence ${confidence}. ${where}`.trim();
+      const driversFull = say(drivers, (confReasons || []).join(" "));
+      const risk = riskLine(trigger, kill, watch);
+      return pack({
+        scenario,
+        badge: `${badge} · ${confidence}`,
+        theme,
+        headline,
+        meaning: "",
+        stance,
+        confidence,
+        trigger,
+        kill,
+        outcome,
+        drivers: driversFull,
+        risk,
+        body: outcome,
+        action: risk,
+        diagnostics: driversFull,
+      });
+    };
 
     if (isMorning) {
       const pm = dash.pre_market || {};
@@ -3669,176 +3733,232 @@
       const extras = [`Open interest is as of ${oi}.`];
       if (fii && fii !== "—") extras.push(`FII bias is ${fii}.`);
       if (cvdTxt !== "—") extras.push(`Yesterday's futures delta was ${cvdTxt}.`);
-      const outcome = staleBook
-        ? "Do not buy a call or a put off this snapshot. The saved book is not yesterday's close, so the close number is withheld. Premium paid on a withheld close is a guess."
-        : "Do not buy a call or a put yet. This is yesterday's book, and options do not open until 09:15. You would be paying premium on a map that can change at the bell.";
-      return voice(
-        "MORNING_BRIEFING",
-        "🌅 YESTERDAY'S BOOK",
-        "alert-tape-spark",
-        "Before the open",
-        outcome,
-        say(brief, `Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, extras.join(" ")),
-        "Cash auction starts at 09:00 and the opening price prints near 09:08. Wait for that print before you treat a gap as real. A gap can reverse, and the option still needs a move large enough to cover what you paid.",
-      );
+      const where = staleBook
+        ? "Yesterday's book is withheld — the saved snapshot is not the last close."
+        : "This is yesterday's book. Options do not open until 09:15.";
+      const graded = gradeConfidence("STAY OUT", zone, null, true);
+      return voice({
+        scenario: "MORNING_BRIEFING",
+        badge: "🌅 YESTERDAY'S BOOK",
+        theme: "alert-tape-spark",
+        headline: "Before the open",
+        stance: "STAY OUT",
+        confidence: graded.grade,
+        where,
+        drivers: say(brief, `Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, extras.join(" ")),
+        trigger: "Cash auction at 09:00; opening print near 09:08, then options at 09:15.",
+        kill: "Any fill before 09:15 is a guess",
+        confReasons: graded.reasons,
+      });
     }
 
     if (isPreBell) {
       const discovered = Boolean(dash.pre_market && dash.pre_market.is_discovered);
-      return voice(
-        "PRE_OPEN_SETUP",
-        discovered ? "🔔 OPENING PRICE IN" : "🔔 PRE-OPEN",
-        "alert-tape-warn",
-        "Pre-open auction",
-        "Stay out of a call and stay out of a put until 09:15. The auction is still running on yesterday's walls, and a fill now is premium paid on a map the open can rewrite.",
-        say(
+      const graded = gradeConfidence("STAY OUT", zone, null, true);
+      return voice({
+        scenario: "PRE_OPEN_SETUP",
+        badge: discovered ? "🔔 OPENING PRICE IN" : "🔔 PRE-OPEN",
+        theme: "alert-tape-warn",
+        headline: "Pre-open auction",
+        stance: "STAY OUT",
+        confidence: graded.grade,
+        where: "Auction still runs on yesterday's walls; options open at 09:15.",
+        drivers: say(
           `The auction runs from 09:00 to 09:15. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`,
           flipLine,
           `The opening price prints near 09:08. Price on the screen is ${tapeInr(spot)}.`,
           bookLine,
           snapClause,
         ),
-        discovered
-          ? "Compare the 09:08 price with these walls, and still wait for options to open at 09:15."
-          : "Wait for the 09:08 print before you treat a gap as real. The option you buy still needs a move large enough to cover the premium.",
-      );
+        trigger: discovered
+          ? "Compare the 09:08 print with these walls, then wait for 09:15."
+          : "Wait for the 09:08 print, then options at 09:15.",
+        kill: "Any fill before 09:15 is a guess",
+        confReasons: graded.reasons,
+      });
     }
 
     if (isClosed) {
-      return voice(
-        "MARKET_CLOSED",
-        "🌙 SESSION CLOSED",
-        "alert-tape-spark",
-        "Session closed",
-        "Do not buy a new option off this screen. Cash closed at 15:30, and this is the last snapshot. A long option held overnight can gap against you while the premium keeps decaying.",
-        say(`Price is ${tapeInr(spot)}. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, snapClause),
-        "Use these strikes to plan the next session. A new buy waits for the next open.",
-      );
+      const graded = gradeConfidence("STAY OUT", zone, null, true);
+      return voice({
+        scenario: "MARKET_CLOSED",
+        badge: "🌙 SESSION CLOSED",
+        theme: "alert-tape-spark",
+        headline: "Session closed",
+        stance: "STAY OUT",
+        confidence: graded.grade,
+        where: "Cash closed at 15:30. This is the last snapshot.",
+        drivers: say(`Price is ${tapeInr(spot)}. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, snapClause),
+        trigger: "Next session open. Plan against these walls overnight.",
+        kill: "A new overnight buy can gap against you while premium decays",
+        confReasons: graded.reasons,
+      });
     }
 
     const pts = String(Math.round(geo.through_pts || 0));
     const magnet = tapeInr(geo.magnet || cw || pw);
-    const zoneCopy = {
+    const sigSide = signalSide(sig);
+    const zoneMeta = {
       BELOW_MAGNET: {
         scenario: "BELOW_SUPPORT",
         badge: "📉 BELOW THE CLUSTER",
         theme: "alert-tape-stop",
         headline: "Price is under the only big gamma strike",
-        outcome: `Stay out of a call. The only big gamma strike is up at ${magnet}, ${pts} points above price. A call needs the index to climb back there, and this print does not give you that climb. If the fall continues, the call can end up worth nothing.`,
-        drivers: say("Calls and puts are piled on that one strike.", bookLine, flipLine, breadthLine, sit),
-        risk: `If you already hold a call, exit the idea while price stays below ${magnet}. Wait until price is back above that strike before you pay for a rise.`,
+        stance: "STAY OUT",
+        where: `The only big gamma strike is up at ${magnet}, ${pts} points above price.`,
+        drivers: say("Calls and puts are piled on that one strike.", bookLine, flipLine, breadthLine),
+        trigger: `Reclaim above ${magnet}.`,
+        kill: `Still below ${magnet}`,
       },
       ABOVE_MAGNET: {
         scenario: "ABOVE_RESISTANCE",
         badge: "🔥 ABOVE THE CLUSTER",
         theme: "alert-tape-spark",
         headline: "Price is over the only big gamma strike",
-        outcome: `Stay out of a put that needs price to fall back to ${magnet}. Price is ${pts} points above that only big gamma strike. A put bought here still needs a fall large enough to cover the premium.`,
-        drivers: say("Calls and puts share that one strike.", bookLine, flipLine, breadthLine, sit),
-        risk: `A call bought above ${magnet} still needs a further rise to pay for itself. Treat the strike as back in play only when price is within one strike of it again.`,
+        stance: "STAY OUT",
+        where: `Price is ${pts} points above the only big gamma strike at ${magnet}.`,
+        drivers: say("Calls and puts share that one strike.", bookLine, flipLine, breadthLine),
+        trigger: `Pull back within one strike of ${magnet}.`,
+        kill: `Further extension away from ${magnet} without tape`,
       },
       TEST_MAGNET: {
         scenario: "TEST_MAGNET",
         badge: "⚖️ ONE STRIKE",
         theme: "alert-tape-warn",
         headline: "Call and put gamma share one strike",
-        outcome: `Stay out of a call and stay out of a put. Call gamma and put gamma sit on one strike, ${magnet}, so there is no range to trade. While you wait for the strikes to split, the premium ticks away.`,
-        drivers: say(bookLine, flipLine, breadthLine, sit),
-        risk: "Wait until the call strike and the put strike separate. Until then you are paying to wait.",
+        stance: "STAY OUT",
+        where: `Call gamma and put gamma sit on one strike, ${magnet}, so there is no range.`,
+        drivers: say(bookLine, flipLine, breadthLine),
+        trigger: "Wait until the call strike and the put strike separate.",
+        kill: "Sitting on the one-strike map",
       },
       BELOW_PUT_WALL: {
         scenario: "BELOW_SUPPORT",
         badge: "📉 UNDER PUT WALL",
         theme: "alert-tape-stop",
         headline: "Put wall is behind price",
-        outcome: `Do not buy a call as a dip. The put wall at ${tapeInr(pw)} is already ${pts} points above price, so it is not holding the market up. If the fall continues, the call premium can go to zero.`,
-        drivers: say(`The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
-        risk: `A call you already hold is on the wrong side of ${tapeInr(pw)}. A new put is late: the break you would be buying has already happened, and you still pay full premium.`,
+        stance: "STAY OUT",
+        where: `The put wall at ${tapeInr(pw)} is already ${pts} points above price.`,
+        drivers: say(`The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine),
+        trigger: `Reclaim above ${tapeInr(pw)}.`,
+        kill: `Still below ${tapeInr(pw)}`,
       },
       ABOVE_CALL_WALL: {
         scenario: "ABOVE_RESISTANCE",
         badge: "🔥 OVER CALL WALL",
         theme: "alert-tape-spark",
         headline: "Call wall is behind price",
-        outcome: `Do not buy a put expecting price to fall back to ${tapeInr(cw)}. Price is ${pts} points above that call wall, so the strike is already behind you.`,
+        stance: "STAY OUT",
+        where: `Price is ${pts} points above the call wall at ${tapeInr(cw)}.`,
         drivers: say(`The put wall is ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
-        risk: `A put here needs a fall back through ${tapeInr(cw)}, or the premium decays while you wait. A call bought after the break still needs a further rise big enough to pay for that premium.`,
+        trigger: `Pull back within one strike of ${tapeInr(cw)}.`,
+        kill: `Further extension above ${tapeInr(cw)} without tape`,
       },
       TEST_PUT: {
         scenario: "TEST_PUT",
         badge: "🚨 TESTING PUT WALL",
         theme: "alert-tape-stop",
         headline: "Price is at the put wall",
-        outcome: `Price is at the put wall at ${tapeInr(pw)}. A put bought here still needs a further fall to cover the premium. A call you already hold is on the side being tested, and a further fall can take that premium to zero.`,
-        drivers: say(`Price is within one strike of ${tapeInr(pw)}. The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
-        risk: `If you already hold a call, exit it when price goes more than one strike below ${tapeInr(pw)}. Buying a put only because price reached the strike still needs the index to fall far enough to cover what you paid.`,
+        stance: sigSide === "PUT" ? "PUT WATCH" : "STAY OUT",
+        where: `Price is at the put wall ${tapeInr(pw)}.`,
+        drivers: say(`Price is within one strike of ${tapeInr(pw)}. The call wall is ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine),
+        trigger: sigSide === "PUT"
+          ? `Hold below ${tapeInr(pw)} with tape agreement.`
+          : `A put only stays in play after a hold below ${tapeInr(pw)} with tape agreement.`,
+        kill: `Reclaim above ${tapeInr(pw)}`,
       },
       TEST_CALL: {
         scenario: "TEST_CALL",
         badge: "🔥 TESTING CALL WALL",
         theme: "alert-tape-spark",
         headline: "Price is at the call wall",
-        outcome: `Stay out of a call for now. Price has reached the call wall at ${tapeInr(cw)}. You would be paying for a further rise, and reaching the strike does not give you that rise. If price turns down, the premium is the loss.`,
+        stance: sigSide === "CALL" ? "CALL WATCH" : "STAY OUT",
+        where: `Price is at the call wall ${tapeInr(cw)}.`,
         drivers: say(`Price is within one strike of ${tapeInr(cw)}. The put wall is ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
-        risk: `A call only stays in play after price holds above ${tapeInr(cw)} for 5 minutes and the orderflow tape agrees. If it fails there, exit. A put bought into that high still needs the index to fall back through the strike far enough to cover what you paid.`,
+        trigger: sigSide === "CALL"
+          ? `5-minute hold above ${tapeInr(cw)} with tape agreement.`
+          : `A call only stays in play after a 5-minute hold above ${tapeInr(cw)} with tape agreement.`,
+        kill: `Fail back below ${tapeInr(cw)}`,
       },
       PINNED: {
         scenario: "SIDEWAYS_CHOP",
         badge: "⚖️ BETWEEN WALLS",
         theme: "alert-tape-warn",
         headline: "Price is between the walls",
-        outcome: `Do not buy a call near ${tapeInr(cw)} or a put near ${tapeInr(pw)} just because price is in the middle. While it stays between the walls, the premium you paid ticks away.`,
-        drivers: say(`Price sits between the put wall at ${tapeInr(pw)} and the call wall at ${tapeInr(cw)}.`, flipLine, bookLine, breadthLine, sit),
-        risk: `A call needs price to clear ${tapeInr(cw)}. A put needs price to clear ${tapeInr(pw)}. Until one of those happens, you are paying to wait.`,
+        stance: "STAY OUT",
+        where: `Price sits between the put wall ${tapeInr(pw)} and the call wall ${tapeInr(cw)}.`,
+        drivers: say(flipLine, bookLine, breadthLine),
+        trigger: `Clear ${tapeInr(cw)} for a call watch, or clear ${tapeInr(pw)} for a put watch.`,
+        kill: "Sitting between the walls",
       },
       UNSITUATED: {
         scenario: "UNSITUATED",
         badge: "⚖️ WALLS UNCLEAR",
         theme: "alert-tape-warn",
         headline: "No clean range around price",
-        outcome: "Stay out of a call and stay out of a put that depend on a wall. The call strike and the put strike do not form a range around price, so there is no level here that pays for the premium.",
+        stance: "STAY OUT",
+        where: "The call strike and the put strike do not form a range around price.",
         drivers: say(`Price is ${tapeInr(spot)}. Call wall ${tapeInr(cw)}. Put wall ${tapeInr(pw)}.`, flipLine, bookLine, breadthLine),
-        risk: "Wait until the strikes line up. Until then the orderflow tape is the only read, and a premium paid on an unclear map can go to zero while you wait.",
+        trigger: "Wait until the strikes line up. Until then the orderflow tape is the only read.",
+        kill: "Premium paid on an unclear map",
       },
     };
-    const base = Object.assign({}, zoneCopy[zone] || zoneCopy.UNSITUATED);
+    const base = Object.assign({}, zoneMeta[zone] || zoneMeta.UNSITUATED);
+
+    if (sig && MIDDLE[zone]) {
+      if (sigSide === "CALL") {
+        base.stance = "CALL WATCH";
+        base.trigger = `Hold the bullish tape idea; clear ${tapeInr(cw)} if walls are split.`;
+      } else if (sigSide === "PUT") {
+        base.stance = "PUT WATCH";
+        base.trigger = `Hold the bearish tape idea; clear ${tapeInr(pw)} if walls are split.`;
+      }
+    }
 
     if (sig) {
-      const insight = String(sig.insight_text || String(sig.type || "SIGNAL").replace(/_/g, " ")).replace(/\.+$/, "").trim();
-      const play = String(sig.actionable_play || "").trim().replace(/\.+$/, "");
+      const insight = String(sig.insight_text || signalLabel(sig)).replace(/\.+$/, "").trim();
       const inval = Number(sig.invalidation_level || 0);
       const cat = String(sig.category || "").toUpperCase();
       let theme = base.theme;
       if (cat === "BULLISH") theme = "alert-tape-go";
       else if (cat === "BEARISH") theme = "alert-tape-stop";
       else if (cat === "CAUTION") theme = "alert-tape-warn";
-      const sigName = String(sig.type || "SIGNAL").replace(/_/g, " ");
       let drivers = base.drivers;
       if (insight) drivers = `The orderflow tape just printed: ${insight}. ${drivers}`;
-      let risk = base.risk;
-      if (inval > 0) risk = `That tape idea is finished if price gets back through ${tapeInr(inval)}. ${risk}`;
-      if (play && risk.toLowerCase().indexOf(play.toLowerCase()) < 0) risk = `${risk} ${play}.`;
+      if ((base.stance === "CALL WATCH" && sigSide === "PUT")
+        || (base.stance === "PUT WATCH" && sigSide === "CALL")) {
+        base.stance = "STAY OUT";
+      }
+      let kill = base.kill;
+      if (inval > 0) kill = `Price gets back through ${tapeInr(inval)}`;
       base.scenario = "TAPE_" + String(sig.type || "SIGNAL");
-      base.badge = `📡 ${sigName} · ${base.badge.split(" ").slice(1).join(" ")}`;
+      base.badge = `📡 ${signalLabel(sig)} · ${base.badge.split(" ").slice(1).join(" ")}`;
       base.theme = theme;
       base.drivers = drivers;
-      base.risk = risk;
+      base.kill = kill;
     }
+
+    const stance = base.stance;
+    const graded = gradeConfidence(stance, zone, sig, false);
 
     if (isExpiryBlast) {
       base.badge = `⚡ EXPIRY BLAST ${blastScore} · ${base.badge}`;
       base.drivers = `It is expiry day, and the blast score is ${blastScore} out of 100. That is a parity watch: it checks whether call and put prices still line up. It does not pay for a call or a put. ${base.drivers}`;
     }
 
-    return voice(
-      base.scenario,
-      base.badge,
-      base.theme,
-      base.headline,
-      base.outcome,
-      base.drivers,
-      base.risk,
-    );
+    return voice({
+      scenario: base.scenario,
+      badge: base.badge,
+      theme: base.theme,
+      headline: base.headline,
+      stance,
+      confidence: graded.grade,
+      where: base.where,
+      drivers: base.drivers,
+      trigger: base.trigger,
+      kill: base.kill,
+      confReasons: graded.reasons,
+    });
   }
 
   function updateMarketAlertTape(dash) {
@@ -3923,6 +4043,8 @@
             scenario: alert.scenario,
             badge: alert.badge,
             headline: alert.badge,
+            stance: alert.stance,
+            confidence: alert.confidence,
             outcome: alert.outcome,
             drivers: alert.drivers,
             risk: alert.risk,

@@ -1,4 +1,4 @@
-"""Geometry-first alert tape: walls, Sentinel overlay, no sector-trend trigger."""
+"""Geometry-first alert tape: stance, confidence, trigger, kill."""
 
 from datetime import datetime, timezone, timedelta
 
@@ -32,7 +32,7 @@ def test_two_strike_corridor_stays_between_the_walls():
     assert classify_zone(22620, 23000, 22600, 50)["zone"] == "TEST_PUT"
 
 
-def test_put_wall_outcome_names_the_put():
+def test_put_wall_without_tape_stays_out():
     alert = evaluate_market_alert(
         {
             "spot": 22600,
@@ -51,8 +51,47 @@ def test_put_wall_outcome_names_the_put():
         }
     )
     assert alert["zone"] == "TEST_PUT"
-    assert alert["outcome"].startswith("Price is at the put wall")
-    assert "Stay out of a call" not in alert["outcome"]
+    assert alert["stance"] == "STAY OUT"
+    assert alert["confidence"] in ("MED", "LOW")
+    assert "put wall" in alert["outcome"].lower()
+    assert "22,600" in alert["trigger"] or "22,600" in alert["kill"]
+    assert "Trigger:" in alert["risk"]
+    assert "Kill:" in alert["risk"]
+
+
+def test_put_wall_with_bearish_tape_is_put_watch():
+    now = datetime(2026, 10, 23, 12, 30, tzinfo=IST).timestamp()
+    alert = evaluate_market_alert(
+        {
+            "spot": 22600,
+            "strike_step": 50,
+            "is_market_open": True,
+            "market_state": "OPEN",
+            "as_of_time": "12:30:00 IST",
+            "kpis": {
+                "call_wall": {"val": 23000},
+                "put_wall": {"val": 22600},
+                "gamma_flip": {"val": 22550},
+                "regime": {"val": "POSITIVE"},
+            },
+            "orderflow_alerts": [
+                {
+                    "type": "CONTINUATION_BEAR",
+                    "category": "BEARISH",
+                    "score": 82,
+                    "status": "NEW",
+                    "ts": now - 20,
+                    "insight_text": "Seller sweep 2400 units.",
+                    "invalidation_level": 22650,
+                }
+            ],
+        },
+        now_ts=now,
+    )
+    assert alert["stance"] == "PUT WATCH"
+    assert alert["confidence"] in ("HIGH", "MED")
+    assert "22,650" in alert["risk"]
+    assert "Stop beyond the wall" in alert["risk"]
 
 
 def test_pick_fresh_signal_ignores_stale_and_failed():
@@ -90,8 +129,10 @@ def test_heavy_sector_red_does_not_print_downtrend_when_below_magnet():
         now_ts=now,
     )
     assert alert["scenario"] == "BELOW_SUPPORT"
-    assert "Stay out of a call" in alert["outcome"]
+    assert alert["stance"] == "STAY OUT"
+    assert alert["confidence"] == "MED"
     assert "72" in alert["outcome"]
+    assert "22,500" in alert["trigger"]
     assert "DOWNTREND" not in alert["badge"]
     assert "institutional selling" not in alert["drivers"].lower()
     assert "1 up and 13 down" in alert["drivers"]
@@ -133,6 +174,7 @@ def test_fresh_sentinel_overlays_geometry():
     )
     assert alert["scenario"] == "TAPE_CONTINUATION_BEAR"
     assert alert["zone"] == "PINNED"
+    assert alert["stance"] == "PUT WATCH"
     assert "CONTINUATION BEAR" in alert["badge"]
     assert alert["headline"] == "Price is between the walls"
     assert "Seller sweep" in alert["drivers"]
@@ -140,6 +182,7 @@ def test_fresh_sentinel_overlays_geometry():
     assert "gets back through" in alert["risk"]
     assert "STRONG DOWNTREND" not in alert["headline"]
     assert "Call-heavy: calls hold more gamma." in alert["drivers"]
+    assert alert["confidence"] in ("HIGH", "MED", "LOW")
 
 
 def test_morning_briefing_names_prior_session_book():
@@ -170,7 +213,10 @@ def test_morning_briefing_names_prior_session_book():
         }
     )
     assert alert["scenario"] == "MORNING_BRIEFING"
+    assert alert["stance"] == "STAY OUT"
+    assert alert["confidence"] == "LOW"
     assert "yesterday's book" in alert["outcome"].lower()
+    assert "09:15" in alert["outcome"] or "09:15" in alert["trigger"]
     assert "22,600" in alert["drivers"]
     assert "12-10-2026 15:35:00 IST" in alert["drivers"]
     assert "Put-heavy: puts hold more gamma." in alert["drivers"]
@@ -197,8 +243,9 @@ def test_pre_open_auction_copy_unchanged_at_0900():
     }
     pre = evaluate_market_alert(base)
     assert pre["scenario"] == "PRE_OPEN_SETUP"
-    assert "09:15" in pre["outcome"]
-    assert "09:08" in pre["drivers"]
+    assert pre["stance"] == "STAY OUT"
+    assert "09:15" in pre["outcome"] or "09:15" in pre["trigger"]
+    assert "09:08" in pre["drivers"] or "09:08" in pre["trigger"]
 
 
 def test_pre_open_and_closed_short_circuit():
@@ -218,8 +265,10 @@ def test_pre_open_and_closed_short_circuit():
     assert pre["scenario"] == "PRE_OPEN_SETUP"
     closed = evaluate_market_alert({**base, "is_market_open": False, "market_state": "CLOSED"})
     assert closed["scenario"] == "MARKET_CLOSED"
+    assert closed["stance"] == "STAY OUT"
     assert "15:30" in closed["outcome"]
     assert "last snapshot" in closed["outcome"].lower()
+    assert "next" in closed["trigger"].lower()
 
 
 def test_expiry_blast_is_overlay_not_flip_accelerator():
@@ -243,9 +292,63 @@ def test_expiry_blast_is_overlay_not_flip_accelerator():
         now_ts=now,
     )
     assert alert["zone"] == "PINNED"
+    assert alert["stance"] == "STAY OUT"
     assert "EXPIRY BLAST" in alert["badge"]
     assert "parity watch" in alert["drivers"]
     assert "Put-heavy: puts hold more gamma." in alert["drivers"]
     assert "Call-heavy" not in alert["drivers"]
     assert "BIG MOVE COMING" not in alert["badge"]
     assert "short-gamma hedging" not in alert["body"]
+
+
+def test_call_wall_watch_needs_bullish_tape():
+    now = datetime(2026, 10, 23, 12, 30, tzinfo=IST).timestamp()
+    bare = evaluate_market_alert(
+        {
+            "spot": 22700,
+            "strike_step": 50,
+            "is_market_open": True,
+            "as_of_time": "12:30:00 IST",
+            "kpis": {
+                "call_wall": {"val": 22700},
+                "put_wall": {"val": 22300},
+                "gamma_flip": {"val": 22400},
+                "regime": {"val": "POSITIVE"},
+            },
+            "orderflow_alerts": [],
+        },
+        now_ts=now,
+    )
+    assert bare["zone"] == "TEST_CALL"
+    assert bare["stance"] == "STAY OUT"
+    assert "5-minute hold" in bare["trigger"]
+
+    with_tape = evaluate_market_alert(
+        {
+            "spot": 22700,
+            "strike_step": 50,
+            "is_market_open": True,
+            "as_of_time": "12:30:00 IST",
+            "kpis": {
+                "call_wall": {"val": 22700},
+                "put_wall": {"val": 22300},
+                "gamma_flip": {"val": 22400},
+                "regime": {"val": "POSITIVE"},
+            },
+            "orderflow_alerts": [
+                {
+                    "type": "CONTINUATION_BULL",
+                    "category": "BULLISH",
+                    "score": 80,
+                    "status": "NEW",
+                    "ts": now - 15,
+                    "insight_text": "Buyer continuation.",
+                    "invalidation_level": 22640,
+                }
+            ],
+        },
+        now_ts=now,
+    )
+    assert with_tape["stance"] == "CALL WATCH"
+    assert with_tape["confidence"] in ("HIGH", "MED")
+    assert "22,640" in with_tape["risk"]

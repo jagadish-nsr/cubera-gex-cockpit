@@ -4704,6 +4704,8 @@ async def log_market_alert(payload: dict = Body(...)):
     outcome = str(payload.get("outcome") or payload.get("body") or "").strip()
     drivers = str(payload.get("drivers") or payload.get("diagnostics") or "").strip()
     risk = str(payload.get("risk") or payload.get("action_advice") or "").strip()
+    stance = str(payload.get("stance") or "").strip()
+    confidence = str(payload.get("confidence") or "").strip()
     now_ist = _get_ist_now()
 
     from commentary.models import CommentaryEntry, to_ist
@@ -4726,7 +4728,14 @@ async def log_market_alert(payload: dict = Body(...)):
         headline=str(badge),
         body=full_body,
         tags=["MARKET_STATE_ALERT", scenario],
-        facts={"scenario": scenario, "badge": badge, "ttl_minutes": 30, "diagnostics": drivers},
+        facts={
+            "scenario": scenario,
+            "badge": badge,
+            "ttl_minutes": 30,
+            "diagnostics": drivers,
+            "stance": stance,
+            "confidence": confidence,
+        },
     )
 
     try:

@@ -1,9 +1,9 @@
-"""Alert tape: geometry-first session read + optional Sentinel overlay.
+"""Alert tape: geometry-first stance + confidence for a naked option buyer.
 
 Walls are OI/gamma concentration under an unvalidated India dealer-sign model.
 This module never claims a proven dealer hedge book. Sector breadth is diagnostics
-only — not a trend trigger. Each state is one plain sentence, the levels, and
-one next step.
+only — not a trend trigger. Each print opens with STAY OUT / CALL WATCH / PUT WATCH,
+a HIGH/MED/LOW grade, a concrete trigger, and a kill level. No named buy strike.
 """
 
 from __future__ import annotations
@@ -232,6 +232,91 @@ def _signal_label(sig: dict) -> str:
     return raw
 
 
+DECISIVE_ZONES = frozenset({
+    "BELOW_MAGNET",
+    "ABOVE_MAGNET",
+    "BELOW_PUT_WALL",
+    "ABOVE_CALL_WALL",
+    "TEST_PUT",
+    "TEST_CALL",
+})
+MIDDLE_ZONES = frozenset({"TEST_MAGNET", "PINNED", "UNSITUATED", "UNKNOWN"})
+
+
+def _signal_side(sig: dict | None) -> str:
+    """Return CALL, PUT, or '' from a fresh Sentinel category."""
+    if not sig:
+        return ""
+    cat = str(sig.get("category") or "").upper()
+    if cat == "BULLISH":
+        return "CALL"
+    if cat == "BEARISH":
+        return "PUT"
+    return ""
+
+
+def _grade_confidence(
+    *,
+    stance: str,
+    zone: str,
+    sig: dict | None,
+    session_closed: bool,
+) -> tuple[str, list[str]]:
+    """Return (HIGH|MED|LOW, reason lines). STAY OUT cannot be HIGH."""
+    reasons: list[str] = []
+    decisive = (not session_closed) and zone in DECISIVE_ZONES
+    fresh = bool(sig)
+    side = _signal_side(sig)
+    agrees = (
+        (stance == "CALL WATCH" and side == "CALL")
+        or (stance == "PUT WATCH" and side == "PUT")
+    )
+
+    bits = 0
+    if decisive:
+        bits += 1
+        reasons.append(f"Zone {zone.replace('_', ' ').title()} is decisive.")
+    else:
+        reasons.append(
+            "Zone is not decisive."
+            if not session_closed
+            else "Session is closed — no live trade window."
+        )
+
+    if fresh:
+        bits += 1
+        reasons.append(
+            f"Fresh orderflow print ≥{SIGNAL_MIN_SCORE}: {_signal_label(sig)}."
+        )
+    else:
+        reasons.append(f"No fresh orderflow print ≥{SIGNAL_MIN_SCORE}.")
+
+    if stance in ("CALL WATCH", "PUT WATCH") and agrees:
+        bits += 1
+        reasons.append(f"{_signal_label(sig)} agrees with {stance}.")
+    elif stance in ("CALL WATCH", "PUT WATCH"):
+        reasons.append(f"Orderflow does not agree with {stance}.")
+    elif zone in MIDDLE_ZONES or session_closed:
+        reasons.append("Middle map or off-hours — agreement bit is off.")
+    else:
+        reasons.append("STAY OUT — agreement bit is off.")
+
+    if stance == "STAY OUT":
+        grade = "MED" if bits >= 2 or decisive else "LOW"
+    elif bits >= 3:
+        grade = "HIGH"
+    elif bits >= 2 or decisive:
+        grade = "MED"
+    else:
+        grade = "LOW"
+    return grade, reasons
+
+
+def _risk_line(trigger: str, kill: str, *, watch: bool) -> str:
+    stop = " Stop beyond the wall, never at the magnet." if watch else ""
+    return f"Trigger: {trigger} Kill: {kill}.{stop}".replace("..", ".")
+
+
 def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | None:
     """Compose one alert-tape message from cockpit payload fields."""
     if not dash:
@@ -274,10 +359,6 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     snap_clause = ""
     if snap_as_of and _hms(snap_as_of) != _hms(time_str):
         snap_clause = f"The gamma snapshot is from {snap_as_of}."
-    sit = (
-        "The index can still rise, fall, or simply sit. "
-        "Sitting is the quiet loss, because the premium ticks away while you wait."
-    )
 
     def pack(**kwargs) -> dict:
         out = {
@@ -290,19 +371,42 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         out.update(kwargs)
         return out
 
-    def _voice(scenario, badge, theme, headline, outcome, drivers, risk):
+    def _voice(
+        scenario,
+        badge,
+        theme,
+        headline,
+        *,
+        stance: str,
+        confidence: str,
+        where: str,
+        drivers: str,
+        trigger: str,
+        kill: str,
+        conf_reasons: list[str] | None = None,
+    ):
+        watch = stance in ("CALL WATCH", "PUT WATCH")
+        outcome = f"{stance} · Confidence {confidence}. {where}".strip()
+        reason_bits = " ".join(conf_reasons or [])
+        drivers_full = _say(drivers, reason_bits)
+        risk = _risk_line(trigger, kill, watch=watch)
+        badge_out = f"{badge} · {confidence}"
         return pack(
             scenario=scenario,
-            badge=badge,
+            badge=badge_out,
             theme=theme,
             headline=headline,
             meaning="",
+            stance=stance,
+            confidence=confidence,
+            trigger=trigger,
+            kill=kill,
             outcome=outcome,
-            drivers=drivers,
+            drivers=drivers_full,
             risk=risk,
             body=outcome,
             action=risk,
-            diagnostics=drivers,
+            diagnostics=drivers_full,
         )
 
     if is_morning:
@@ -326,236 +430,244 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         if cvd_txt != "—":
             extras.append(f"Yesterday's futures delta was {cvd_txt}.")
         if stale_book:
-            outcome = (
-                "Do not buy a call or a put off this snapshot. The saved book is not yesterday's close, "
-                "so the close number is withheld. Premium paid on a withheld close is a guess."
+            where = (
+                "Yesterday's book is withheld — the saved snapshot is not the last close."
             )
         else:
-            outcome = (
-                "Do not buy a call or a put yet. This is yesterday's book, and options do not open until 09:15. "
-                "You would be paying premium on a map that can change at the bell."
-            )
+            where = "This is yesterday's book. Options do not open until 09:15."
+        conf, reasons = _grade_confidence(
+            stance="STAY OUT", zone=zone, sig=None, session_closed=True,
+        )
         return _voice(
             "MORNING_BRIEFING",
             "🌅 YESTERDAY'S BOOK",
             "alert-tape-spark",
             "Before the open",
-            outcome,
-            _say(brief, f"Call wall {_inr(cw)}. Put wall {_inr(pw)}.", flip_line, book, *extras),
-            "Cash auction starts at 09:00 and the opening price prints near 09:08. "
-            "Wait for that print before you treat a gap as real. A gap can reverse, "
-            "and the option still needs a move large enough to cover what you paid.",
+            stance="STAY OUT",
+            confidence=conf,
+            where=where,
+            drivers=_say(brief, f"Call wall {_inr(cw)}. Put wall {_inr(pw)}.", flip_line, book, *extras),
+            trigger="Cash auction at 09:00; opening print near 09:08, then options at 09:15.",
+            kill="Any fill before 09:15 is a guess",
+            conf_reasons=reasons,
         )
 
     if is_pre_bell:
         discovered = bool((dash.get("pre_market") or {}).get("is_discovered"))
+        conf, reasons = _grade_confidence(
+            stance="STAY OUT", zone=zone, sig=None, session_closed=True,
+        )
         return _voice(
             "PRE_OPEN_SETUP",
             "🔔 OPENING PRICE IN" if discovered else "🔔 PRE-OPEN",
             "alert-tape-warn",
             "Pre-open auction",
-            "Stay out of a call and stay out of a put until 09:15. The auction is still running on yesterday's walls, "
-            "and a fill now is premium paid on a map the open can rewrite.",
-            _say(
+            stance="STAY OUT",
+            confidence=conf,
+            where=(
+                "Auction still runs on yesterday's walls; options open at 09:15."
+            ),
+            drivers=_say(
                 f"The auction runs from 09:00 to 09:15. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
                 flip_line,
                 f"The opening price prints near 09:08. Price on the screen is {_inr(spot)}.",
                 book,
                 snap_clause,
             ),
-            "Compare the 09:08 price with these walls, and still wait for options to open at 09:15."
-            if discovered
-            else "Wait for the 09:08 print before you treat a gap as real. The option you buy still needs a move large enough to cover the premium.",
+            trigger=(
+                "Compare the 09:08 print with these walls, then wait for 09:15."
+                if discovered
+                else "Wait for the 09:08 print, then options at 09:15."
+            ),
+            kill="Any fill before 09:15 is a guess",
+            conf_reasons=reasons,
         )
 
     if is_closed:
+        conf, reasons = _grade_confidence(
+            stance="STAY OUT", zone=zone, sig=None, session_closed=True,
+        )
         return _voice(
             "MARKET_CLOSED",
             "🌙 SESSION CLOSED",
             "alert-tape-spark",
             "Session closed",
-            "Do not buy a new option off this screen. Cash closed at 15:30, and this is the last snapshot. "
-            "A long option held overnight can gap against you while the premium keeps decaying.",
-            _say(
+            stance="STAY OUT",
+            confidence=conf,
+            where="Cash closed at 15:30. This is the last snapshot.",
+            drivers=_say(
                 f"Price is {_inr(spot)}. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
                 flip_line,
                 book,
                 snap_clause,
             ),
-            "Use these strikes to plan the next session. A new buy waits for the next open.",
+            trigger="Next session open. Plan against these walls overnight.",
+            kill="A new overnight buy can gap against you while premium decays",
+            conf_reasons=reasons,
         )
 
     pts = f"{geo['through_pts']:.0f}"
-    magnet = _inr(geo.get("magnet") or cw or pw)
-    zone_copy = {
+    magnet_raw = float(geo.get("magnet") or cw or pw or 0.0)
+    magnet = _inr(magnet_raw)
+    sig_side = _signal_side(sig)
+
+    zone_meta = {
         "BELOW_MAGNET": {
             "scenario": "BELOW_SUPPORT",
             "badge": "📉 BELOW THE CLUSTER",
             "theme": "alert-tape-stop",
             "headline": "Price is under the only big gamma strike",
-            "outcome": (
-                f"Stay out of a call. The only big gamma strike is up at {magnet}, {pts} points above price. "
-                "A call needs the index to climb back there, and this print does not give you that climb. "
-                "If the fall continues, the call can end up worth nothing."
+            "stance": "STAY OUT",
+            "where": (
+                f"The only big gamma strike is up at {magnet}, {pts} points above price."
             ),
             "drivers": _say(
                 "Calls and puts are piled on that one strike.",
-                book, flip_line, breadth_line, sit,
+                book, flip_line, breadth_line,
             ),
-            "risk": (
-                f"If you already hold a call, exit the idea while price stays below {magnet}. "
-                "Wait until price is back above that strike before you pay for a rise."
-            ),
+            "trigger": f"Reclaim above {magnet}.",
+            "kill": f"Still below {magnet}",
         },
         "ABOVE_MAGNET": {
             "scenario": "ABOVE_RESISTANCE",
             "badge": "🔥 ABOVE THE CLUSTER",
             "theme": "alert-tape-spark",
             "headline": "Price is over the only big gamma strike",
-            "outcome": (
-                f"Stay out of a put that needs price to fall back to {magnet}. "
-                f"Price is {pts} points above that only big gamma strike. "
-                "A put bought here still needs a fall large enough to cover the premium."
+            "stance": "STAY OUT",
+            "where": (
+                f"Price is {pts} points above the only big gamma strike at {magnet}."
             ),
-            "drivers": _say("Calls and puts share that one strike.", book, flip_line, breadth_line, sit),
-            "risk": (
-                f"A call bought above {magnet} still needs a further rise to pay for itself. "
-                "Treat the strike as back in play only when price is within one strike of it again."
-            ),
+            "drivers": _say("Calls and puts share that one strike.", book, flip_line, breadth_line),
+            "trigger": f"Pull back within one strike of {magnet}.",
+            "kill": f"Further extension away from {magnet} without tape",
         },
         "TEST_MAGNET": {
             "scenario": "TEST_MAGNET",
             "badge": "⚖️ ONE STRIKE",
             "theme": "alert-tape-warn",
             "headline": "Call and put gamma share one strike",
-            "outcome": (
-                f"Stay out of a call and stay out of a put. Call gamma and put gamma sit on one strike, {magnet}, "
-                "so there is no range to trade. While you wait for the strikes to split, the premium ticks away."
+            "stance": "STAY OUT",
+            "where": (
+                f"Call gamma and put gamma sit on one strike, {magnet}, so there is no range."
             ),
-            "drivers": _say(book, flip_line, breadth_line, sit),
-            "risk": "Wait until the call strike and the put strike separate. Until then you are paying to wait.",
+            "drivers": _say(book, flip_line, breadth_line),
+            "trigger": "Wait until the call strike and the put strike separate.",
+            "kill": "Sitting on the one-strike map",
         },
         "BELOW_PUT_WALL": {
             "scenario": "BELOW_SUPPORT",
             "badge": "📉 UNDER PUT WALL",
             "theme": "alert-tape-stop",
             "headline": "Put wall is behind price",
-            "outcome": (
-                f"Do not buy a call as a dip. The put wall at {_inr(pw)} is already {pts} points above price, "
-                "so it is not holding the market up. If the fall continues, the call premium can go to zero."
+            "stance": "STAY OUT",
+            "where": (
+                f"The put wall at {_inr(pw)} is already {pts} points above price."
             ),
-            "drivers": _say(f"The call wall is {_inr(cw)}.", flip_line, book, breadth_line, sit),
-            "risk": (
-                f"A call you already hold is on the wrong side of {_inr(pw)}. "
-                "A new put is late: the break you would be buying has already happened, and you still pay full premium."
-            ),
+            "drivers": _say(f"The call wall is {_inr(cw)}.", flip_line, book, breadth_line),
+            "trigger": f"Reclaim above {_inr(pw)}.",
+            "kill": f"Still below {_inr(pw)}",
         },
         "ABOVE_CALL_WALL": {
             "scenario": "ABOVE_RESISTANCE",
             "badge": "🔥 OVER CALL WALL",
             "theme": "alert-tape-spark",
             "headline": "Call wall is behind price",
-            "outcome": (
-                f"Do not buy a put expecting price to fall back to {_inr(cw)}. "
-                f"Price is {pts} points above that call wall, so the strike is already behind you."
+            "stance": "STAY OUT",
+            "where": (
+                f"Price is {pts} points above the call wall at {_inr(cw)}."
             ),
             "drivers": _say(f"The put wall is {_inr(pw)}.", flip_line, book, breadth_line),
-            "risk": (
-                f"A put here needs a fall back through {_inr(cw)}, or the premium decays while you wait. "
-                "A call bought after the break still needs a further rise big enough to pay for that premium."
-            ),
+            "trigger": f"Pull back within one strike of {_inr(cw)}.",
+            "kill": f"Further extension above {_inr(cw)} without tape",
         },
         "TEST_PUT": {
             "scenario": "TEST_PUT",
             "badge": "🚨 TESTING PUT WALL",
             "theme": "alert-tape-stop",
             "headline": "Price is at the put wall",
-            "outcome": (
-                f"Price is at the put wall at {_inr(pw)}. "
-                "A put bought here still needs a further fall to cover the premium. "
-                "A call you already hold is on the side being tested, and a further fall can take that premium to zero."
-            ),
+            "stance": "PUT WATCH" if sig_side == "PUT" else "STAY OUT",
+            "where": f"Price is at the put wall {_inr(pw)}.",
             "drivers": _say(
                 f"Price is within one strike of {_inr(pw)}. The call wall is {_inr(cw)}.",
-                flip_line, book, breadth_line, sit,
+                flip_line, book, breadth_line,
             ),
-            "risk": (
-                f"If you already hold a call, exit it when price goes more than one strike below {_inr(pw)}. "
-                "Buying a put only because price reached the strike still needs the index to fall far enough to cover what you paid."
+            "trigger": (
+                f"Hold below {_inr(pw)} with tape agreement."
+                if sig_side == "PUT"
+                else f"A put only stays in play after a hold below {_inr(pw)} with tape agreement."
             ),
+            "kill": f"Reclaim above {_inr(pw)}",
         },
         "TEST_CALL": {
             "scenario": "TEST_CALL",
             "badge": "🔥 TESTING CALL WALL",
             "theme": "alert-tape-spark",
             "headline": "Price is at the call wall",
-            "outcome": (
-                f"Stay out of a call for now. Price has reached the call wall at {_inr(cw)}. "
-                "You would be paying for a further rise, and reaching the strike does not give you that rise. "
-                "If price turns down, the premium is the loss."
-            ),
+            "stance": "CALL WATCH" if sig_side == "CALL" else "STAY OUT",
+            "where": f"Price is at the call wall {_inr(cw)}.",
             "drivers": _say(
                 f"Price is within one strike of {_inr(cw)}. The put wall is {_inr(pw)}.",
                 flip_line, book, breadth_line,
             ),
-            "risk": (
-                f"A call only stays in play after price holds above {_inr(cw)} for 5 minutes and the orderflow tape agrees. "
-                "If it fails there, exit. A put bought into that high still needs the index to fall back through the strike "
-                "far enough to cover what you paid."
+            "trigger": (
+                f"5-minute hold above {_inr(cw)} with tape agreement."
+                if sig_side == "CALL"
+                else f"A call only stays in play after a 5-minute hold above {_inr(cw)} with tape agreement."
             ),
+            "kill": f"Fail back below {_inr(cw)}",
         },
         "PINNED": {
             "scenario": "SIDEWAYS_CHOP",
             "badge": "⚖️ BETWEEN WALLS",
             "theme": "alert-tape-warn",
             "headline": "Price is between the walls",
-            "outcome": (
-                f"Do not buy a call near {_inr(cw)} or a put near {_inr(pw)} just because price is in the middle. "
-                "While it stays between the walls, the premium you paid ticks away."
+            "stance": "STAY OUT",
+            "where": (
+                f"Price sits between the put wall {_inr(pw)} and the call wall {_inr(cw)}."
             ),
-            "drivers": _say(
-                f"Price sits between the put wall at {_inr(pw)} and the call wall at {_inr(cw)}.",
-                flip_line, book, breadth_line, sit,
-            ),
-            "risk": (
-                f"A call needs price to clear {_inr(cw)}. A put needs price to clear {_inr(pw)}. "
-                "Until one of those happens, you are paying to wait."
-            ),
+            "drivers": _say(flip_line, book, breadth_line),
+            "trigger": f"Clear {_inr(cw)} for a call watch, or clear {_inr(pw)} for a put watch.",
+            "kill": "Sitting between the walls",
         },
         "UNSITUATED": {
             "scenario": "UNSITUATED",
             "badge": "⚖️ WALLS UNCLEAR",
             "theme": "alert-tape-warn",
             "headline": "No clean range around price",
-            "outcome": (
-                "Stay out of a call and stay out of a put that depend on a wall. "
-                "The call strike and the put strike do not form a range around price, "
-                "so there is no level here that pays for the premium."
-            ),
+            "stance": "STAY OUT",
+            "where": "The call strike and the put strike do not form a range around price.",
             "drivers": _say(
                 f"Price is {_inr(spot)}. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
                 flip_line, book, breadth_line,
             ),
-            "risk": (
-                "Wait until the strikes line up. Until then the orderflow tape is the only read, "
-                "and a premium paid on an unclear map can go to zero while you wait."
-            ),
+            "trigger": "Wait until the strikes line up. Until then the orderflow tape is the only read.",
+            "kill": "Premium paid on an unclear map",
         },
         "UNKNOWN": {
             "scenario": "UNSITUATED",
             "badge": "⚖️ NO PRICE",
             "theme": "alert-tape-warn",
             "headline": "Waiting for a live quote",
-            "outcome": "Wait for a live price. There is nothing to buy until the tape can place the index against the walls.",
+            "stance": "STAY OUT",
+            "where": "No live price against the walls.",
             "drivers": "The walls may be on the screen, but price is missing.",
-            "risk": "A premium paid without a live price is a guess.",
+            "trigger": "Wait for a live price.",
+            "kill": "A premium paid without a live price is a guess",
         },
     }
-    base = dict(zone_copy.get(zone) or zone_copy["UNSITUATED"])
+    base = dict(zone_meta.get(zone) or zone_meta["UNSITUATED"])
+
+    # Fresh signal on a middle zone: upgrade matching side to WATCH; mismatch stays out.
+    if sig and zone in MIDDLE_ZONES:
+        if sig_side == "CALL":
+            base["stance"] = "CALL WATCH"
+            base["trigger"] = f"Hold the bullish tape idea; clear {_inr(cw)} if walls are split."
+        elif sig_side == "PUT":
+            base["stance"] = "PUT WATCH"
+            base["trigger"] = f"Hold the bearish tape idea; clear {_inr(pw)} if walls are split."
 
     if sig:
         insight = str(sig.get("insight_text") or _signal_label(sig)).strip().rstrip(".")
-        play = str(sig.get("actionable_play") or "").strip().rstrip(".")
         inval = _f(sig.get("invalidation_level"))
         cat = str(sig.get("category") or "").upper()
         theme = base["theme"]
@@ -568,18 +680,27 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         drivers = base["drivers"]
         if insight:
             drivers = f"The orderflow tape just printed: {insight}. {drivers}"
-        risk = base["risk"]
+        # Mismatch: keep STAY OUT even on a test wall.
+        if (
+            (base["stance"] == "CALL WATCH" and sig_side == "PUT")
+            or (base["stance"] == "PUT WATCH" and sig_side == "CALL")
+        ):
+            base["stance"] = "STAY OUT"
+        kill = base["kill"]
         if inval > 0:
-            risk = f"That tape idea is finished if price gets back through {_inr(inval)}. {risk}"
-        if play and play.lower() not in risk.lower():
-            risk = f"{risk} {play}."
+            kill = f"Price gets back through {_inr(inval)}"
         base.update(
             scenario="TAPE_" + str(sig.get("type") or "SIGNAL"),
             badge=f"📡 {_signal_label(sig)} · {base['badge'].split(' ', 1)[-1]}",
             theme=theme,
             drivers=drivers,
-            risk=risk,
+            kill=kill,
         )
+
+    stance = base["stance"]
+    conf, reasons = _grade_confidence(
+        stance=stance, zone=zone, sig=sig, session_closed=False,
+    )
 
     if is_expiry_blast:
         base["badge"] = f"⚡ EXPIRY BLAST {blast_score} · " + str(base.get("badge") or "")
@@ -595,7 +716,11 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         base["badge"],
         base["theme"],
         base["headline"],
-        base["outcome"],
-        base["drivers"],
-        base["risk"],
+        stance=stance,
+        confidence=conf,
+        where=base["where"],
+        drivers=base["drivers"],
+        trigger=base["trigger"],
+        kill=base["kill"],
+        conf_reasons=reasons,
     )
