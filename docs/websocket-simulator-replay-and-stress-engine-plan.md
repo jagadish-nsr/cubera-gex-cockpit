@@ -81,7 +81,7 @@ The live browser socket is already coalesced. `web_server.websocket_telemetry` s
 
 ## 5. The one live append
 
-`sync_live_session` in `sentinel/feed/live.py` calls `clear_sentinel_data` before it rewrites the instrument. The next successful sync drops the prior day. The completed minute already exists in memory when `BarAggregator` finalizes it: price, volume, estimated delta, CVD, VWAP, depth imbalance, and any signal.
+`sync_live_session` in `sentinel/feed/live.py` retains prior sessions in `sentinel.db` and only age-purges (60d/180d/365d). The completed minute already exists in memory when `BarAggregator` finalizes it: price, volume, estimated delta, CVD, VWAP, depth imbalance, and any signal.
 
 On that finalize, append the bar and its signals to `data/journal/sentinel/<SYMBOL>/<YYYY-MM-DD>.parquet`. One row per completed minute. No tick. No rewrite of `sentinel.db`. If the process restarts and finalizes the same minute again, the append replaces that minute’s row. It does not duplicate it.
 

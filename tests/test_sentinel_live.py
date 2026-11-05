@@ -180,10 +180,10 @@ class TestSentinelLive(unittest.TestCase):
         ])
         mgr = LiveSentinelManager()
         with patch("sentinel.feed.live.datetime", clock), \
-                patch("sentinel.feed.live.clear_sentinel_data") as wipe:
+                patch("sentinel.feed.live.purge_old_sentinel_data") as age_purge:
             ok = mgr.sync_live_session("TEST-FUT", "TEST", call_wall=22600.0, put_wall=22400.0, force=True)
         self.assertTrue(ok)
-        wipe.assert_not_called()
+        age_purge.assert_not_called()
 
         bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
         by_minute = {_minute_floor(b.start_ts): b for b in bars}
@@ -203,8 +203,10 @@ class TestSentinelLive(unittest.TestCase):
     @patch("data.holidays.is_trading_day", return_value=True)
     @patch("data.dhan.nearest_futures")
     @patch("data.dhan.fetch_futures_intraday")
-    def test_day_rollover_still_clears_previous_session(self, mock_fetch, mock_nearest, _trading):
+    def test_day_rollover_retains_previous_session(self, mock_fetch, mock_nearest, _trading):
+        """New session sync must keep prior-day bars/signals; live reads stay isolated."""
         session_now, clock = self._session_clock()
+        # Inside the 60-day 1m retention window so age-purge must not delete it.
         stale_ts = (session_now - timedelta(days=10)).replace(hour=15, minute=20, second=0, microsecond=0)
         save_bar(self._bar(stale_ts, close=21000.0, delta=50.0))
         save_signal(SentinelSignal(
@@ -233,14 +235,25 @@ class TestSentinelLive(unittest.TestCase):
             "volume": 5000, "oi": 1000000, "timestamp": int(bar_ts.timestamp()),
         }])
         mgr = LiveSentinelManager()
-        with patch("sentinel.feed.live.datetime", clock):
+        with patch("sentinel.feed.live.datetime", clock), \
+                patch("sentinel.feed.live.purge_old_sentinel_data", return_value={"bars_1m": 0}) as age_purge:
             ok = mgr.sync_live_session("TEST-FUT", "TEST", force=True)
         self.assertTrue(ok)
-        signals = list_recent_signals("TEST-FUT", limit=20)
-        self.assertNotIn("sig_previous_session", [s.event_id for s in signals])
-        bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
+        age_purge.assert_called_once()
+
+        # Ledger retains the prior session for audits / session reports.
+        all_signals = list_recent_signals("TEST-FUT", limit=20, session_only=False)
+        self.assertIn("sig_previous_session", [s.event_id for s in all_signals])
+        bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=False, _auto_populate=False)
         self.assertTrue(any(b.close == 22508.0 for b in bars))
-        self.assertFalse(any(b.close == 21000.0 for b in bars))
+        self.assertTrue(any(b.close == 21000.0 for b in bars))
+
+        # Live tape must not show yesterday's signal as if it fired today.
+        live_signals = list_recent_signals("TEST-FUT", limit=20, session_only=True)
+        self.assertNotIn("sig_previous_session", [s.event_id for s in live_signals])
+        live_bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=True, _auto_populate=False)
+        self.assertTrue(any(b.close == 22508.0 for b in live_bars))
+        self.assertFalse(any(b.close == 21000.0 for b in live_bars))
 
     def test_on_tick_advances_bar(self):
         mgr = LiveSentinelManager()

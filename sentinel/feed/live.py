@@ -29,7 +29,7 @@ from sentinel.storage.db import (
     list_recent_bars,
     list_recent_signals,
     list_recent_outcomes,
-    clear_sentinel_data,
+    purge_old_sentinel_data,
 )
 
 log = logging.getLogger(__name__)
@@ -147,7 +147,9 @@ class LiveSentinelManager:
             try:
                 # A reload mid-session must not delete live sweeps. Those rows
                 # are intra-bar prints; a 1m Dhan candle cannot recreate them.
-                # Purge only when the stored tape is a previous session.
+                # Day rollover must not wipe prior sessions either — audits need
+                # them. Age-based purge keeps the ledger bounded; session_only
+                # reads keep today's tape isolated from yesterday.
                 stored = list_recent_bars(
                     instrument_id, timeframe="1m", limit=800,
                     session_only=False, _auto_populate=False,
@@ -156,15 +158,15 @@ class LiveSentinelManager:
                 rollover = bool(needs_day_rollover and stored_day and stored_day != target_date_str)
                 kept_by_minute: dict[datetime, Bar] = {}
                 if rollover:
-                    clear_sentinel_data(instrument_id)
+                    pruned = purge_old_sentinel_data()
                     log.info(
-                        "Sentinel day rollover for %s: cleared session %s before %s sync",
-                        instrument_id, stored_day, target_date_str,
+                        "Sentinel day rollover for %s: retained session %s, "
+                        "syncing %s (age-purge %s)",
+                        instrument_id, stored_day, target_date_str, pruned,
                     )
-                else:
-                    for existing in stored:
-                        if _session_day(existing.start_ts) == target_date_str:
-                            kept_by_minute[_minute_floor(existing.start_ts)] = existing
+                for existing in stored:
+                    if _session_day(existing.start_ts) == target_date_str:
+                        kept_by_minute[_minute_floor(existing.start_ts)] = existing
 
                 # Sort by timestamp
                 df = df.sort_values("timestamp").reset_index(drop=True)

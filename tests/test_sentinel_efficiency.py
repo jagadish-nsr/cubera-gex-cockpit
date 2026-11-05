@@ -135,6 +135,7 @@ def test_purge_old_sentinel_data():
     """Verify retention purge function executes successfully."""
     res = purge_old_sentinel_data(bars_1m_days=9999, bars_5m_days=9999, signals_days=9999)
     assert "bars_1m" in res
+    assert "bars_other" in res
     assert "bars_5m" in res
     assert "signals" in res
     assert "outcomes" in res

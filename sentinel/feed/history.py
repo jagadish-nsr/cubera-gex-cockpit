@@ -33,7 +33,6 @@ from sentinel.storage.db import (
     list_recent_signals,
     save_signal,
     ensure_sentinel_schema,
-    clear_sentinel_data,
 )
 from sentinel.engine.aggregator import SessionVWAPTracker, aggregate_bars
 
@@ -115,7 +114,7 @@ def _load_from_eod_snapshot(
                     log.debug("Preserving today's authentic session bars for %s instead of wiping with CSV", instrument_id)
                     return True
 
-                clear_sentinel_data(instrument_id)
+                # Upsert this CSV day only. Prior sessions stay in sentinel.db.
                 vwap_tracker = SessionVWAPTracker()
                 cum_cvd = 0.0
                 lot_size = 20 if "SENSEX" in sym else (30 if "BANKNIFTY" in sym else 65)
@@ -231,7 +230,7 @@ def _load_from_eod_snapshot(
             if existing and (existing[-1].start_ts.date() == session_close_ts.date() or existing[-1].start_ts.date() == datetime.now(IST).date()):
                 return True
 
-            clear_sentinel_data(instrument_id)
+            # Single EOD bar upsert — do not wipe prior session rows.
             vol = 0
 
             # OHLC from the stored snapshot. Volume stays 0: this bar is not a print.

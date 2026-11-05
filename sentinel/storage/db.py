@@ -366,21 +366,105 @@ def list_recent_bars(
         conn.close()
 
 
-def list_recent_signals(instrument_id: str | None = None, limit: int = 50) -> list[SentinelSignal]:
-    """Retrieve recent signals, newest first."""
+def _session_date_for_query(
+    conn: sqlite3.Connection,
+    instrument_id: str | None,
+    *,
+    ts_column: str = "start_ts",
+    table: str = "sentinel_bars",
+) -> str | None:
+    """Active or newest completed session date (IST), or None if empty."""
+    now_ist = datetime.now(IST)
+    now_max = (now_ist + timedelta(minutes=2)).isoformat()
+    today_str = now_ist.strftime("%Y-%m-%d")
+    m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+    m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
+    try:
+        from data.holidays import is_trading_day
+        is_today_trading = is_trading_day(now_ist.date())
+    except Exception:
+        is_today_trading = now_ist.weekday() < 5
+    is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
+
+    id_clause = "instrument_id = ? AND " if instrument_id else ""
+    id_args: tuple = (instrument_id,) if instrument_id else ()
+
+    if is_active_market_day:
+        today_exists = conn.execute(
+            f"SELECT 1 FROM {table} WHERE {id_clause}{ts_column} LIKE ? AND {ts_column} <= ? LIMIT 1",
+            (*id_args, f"{today_str}%", now_max),
+        ).fetchone()
+        if today_exists:
+            return today_str
+        is_test_db = (_DB_PATH.name != "sentinel.db")
+        if is_test_db:
+            latest_row = conn.execute(
+                f"SELECT substr({ts_column}, 1, 10) AS dt FROM {table} "
+                f"WHERE {id_clause}{ts_column} <= ? ORDER BY {ts_column} DESC LIMIT 1",
+                (*id_args, now_max),
+            ).fetchone()
+            return latest_row["dt"] if latest_row and latest_row["dt"] else today_str
+        return today_str
+
+    latest_row = conn.execute(
+        f"SELECT substr({ts_column}, 1, 10) AS dt FROM {table} "
+        f"WHERE {id_clause}{ts_column} <= ? ORDER BY {ts_column} DESC LIMIT 1",
+        (*id_args, now_max),
+    ).fetchone()
+    return latest_row["dt"] if latest_row and latest_row["dt"] else None
+
+
+def list_recent_signals(
+    instrument_id: str | None = None,
+    limit: int = 50,
+    session_only: bool = True,
+) -> list[SentinelSignal]:
+    """Retrieve recent signals, newest first.
+
+    session_only=True (default) isolates to the active / newest completed
+    session so a multi-day ledger cannot bleed into the live tape.
+    """
     conn = _get_read_conn()
     try:
-        if instrument_id:
+        now_max = (datetime.now(IST) + timedelta(minutes=2)).isoformat()
+        if session_only:
+            # Prefer bars for the session date so a quiet open (bars, no
+            # signals yet) does not fall back to yesterday's signal tape.
+            target_date = _session_date_for_query(
+                conn, instrument_id,
+                ts_column="start_ts", table="sentinel_bars",
+            )
+            if not target_date:
+                target_date = _session_date_for_query(
+                    conn, instrument_id,
+                    ts_column="bar_start_ts", table="sentinel_signals",
+                )
+            if not target_date:
+                rows = []
+            elif instrument_id:
+                rows = conn.execute("""
+                    SELECT * FROM sentinel_signals
+                    WHERE instrument_id = ? AND bar_start_ts LIKE ? AND bar_start_ts <= ?
+                    ORDER BY bar_start_ts DESC LIMIT ?
+                """, (instrument_id, f"{target_date}%", now_max, limit)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT * FROM sentinel_signals
+                    WHERE bar_start_ts LIKE ? AND bar_start_ts <= ?
+                    ORDER BY bar_start_ts DESC LIMIT ?
+                """, (f"{target_date}%", now_max, limit)).fetchall()
+        elif instrument_id:
             rows = conn.execute("""
                 SELECT * FROM sentinel_signals
-                WHERE instrument_id = ?
+                WHERE instrument_id = ? AND bar_start_ts <= ?
                 ORDER BY bar_start_ts DESC LIMIT ?
-            """, (instrument_id, limit)).fetchall()
+            """, (instrument_id, now_max, limit)).fetchall()
         else:
             rows = conn.execute("""
                 SELECT * FROM sentinel_signals
+                WHERE bar_start_ts <= ?
                 ORDER BY bar_start_ts DESC LIMIT ?
-            """, (limit,)).fetchall()
+            """, (now_max, limit)).fetchall()
 
         signals = []
         for r in rows:
@@ -517,14 +601,24 @@ def purge_old_sentinel_data(
 ) -> dict[str, int]:
     """Purge historical sentinel data older than retention limits.
 
+    Defaults match docs/signal-efficiency-guide.md:
+      1m (and other non-5m TFs) → 60d; 5m → 180d; signals → 365d.
+    Outcomes orphaned by signal purge are removed.
+
     Returns dict with count of deleted rows per category:
-      {'bars_1m': int, 'bars_5m': int, 'signals': int, 'outcomes': int}
+      {'bars_1m': int, 'bars_other': int, 'bars_5m': int, 'signals': int, 'outcomes': int}
     """
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
             c1 = conn.execute(
                 "DELETE FROM sentinel_bars WHERE timeframe = '1m' AND start_ts < date('now', ?)",
+                (f"-{bars_1m_days} days",),
+            ).rowcount
+            # 3m / 15m and any other non-5m aggregate share the 1m window.
+            c_other = conn.execute(
+                "DELETE FROM sentinel_bars WHERE timeframe NOT IN ('1m', '5m') "
+                "AND start_ts < date('now', ?)",
                 (f"-{bars_1m_days} days",),
             ).rowcount
             c2 = conn.execute(
@@ -541,6 +635,7 @@ def purge_old_sentinel_data(
             conn.commit()
             return {
                 "bars_1m": c1,
+                "bars_other": c_other,
                 "bars_5m": c2,
                 "signals": c3,
                 "outcomes": c4,
