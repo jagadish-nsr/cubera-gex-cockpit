@@ -42,8 +42,11 @@ ${ts} 9-15 * * 1-5 ${dir}/run_timeseries.sh
 ${morning} 9 * * 1-5 ${dir}/run_logger.sh
 ${afternoon} 15 * * 1-5 ${dir}/run_logger.sh
 # ${label} participant OI and futures bhavcopy, Mon-Fri
+# 18:00 often lands the prior session (NSE late). 21:00 retries same-day.
 ${eod} 18 * * 1-5 ${dir}/run_participant_oi.sh
 ${eod} 18 * * 1-5 ${dir}/run_futures_buildup.sh
+${eod} 21 * * 1-5 ${dir}/run_participant_oi.sh
+${eod} 21 * * 1-5 ${dir}/run_futures_buildup.sh
 EOF
 }
 
