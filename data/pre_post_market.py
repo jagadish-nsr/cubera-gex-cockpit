@@ -40,6 +40,9 @@ _POST_MARKET_CACHE: dict[str, dict] = {}    # symbol -> post-market state dict
 _CHIME_TRIGGERED_DAYS: set[tuple[str, str]] = set()  # (symbol, "YYYY-MM-DD")
 _CACHE_LOCK = threading.Lock()
 _PM_THREADS: dict[str, threading.Thread] = {}
+_POST_THREADS: dict[str, threading.Thread] = {}
+_POST_POLL_START_MIN = 15 * 60 + 30
+_POST_POLL_END_MIN = 16 * 60 + 10
 
 
 def _get_db_conn() -> sqlite3.Connection:
@@ -448,7 +451,17 @@ def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
     cw_val = float(state.get("call_wall") or 0.0)
     pw_val = float(state.get("put_wall") or 0.0)
     flip_val = float(state.get("gamma_flip") or 0.0)
-    net_gex_val = float(state.get("net_gex") or 0.0)
+    raw_net = state.get("net_gex")
+    if raw_net is None:
+        try:
+            from data.market_snapshot import get_snapshot
+            raw_net = (get_snapshot(symbol) or {}).get("net_gex")
+        except Exception:
+            raw_net = None
+    try:
+        net_gex_val = float(raw_net) if raw_net is not None else None
+    except (TypeError, ValueError):
+        net_gex_val = None
     gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
     state["is_discovered"] = True
     state["discovered_spot"] = disc_spot
@@ -751,10 +764,21 @@ def get_pre_market_state(
         prev_close_val = reference_close or session_spot
     session_day = clock["snapshot_session"] if clock else None
     expected_day = clock["expected_session"] if clock else None
-    cw_val = float(snap.get("call_wall") or 0.0)
-    pw_val = float(snap.get("put_wall") or 0.0)
-    flip_val = float(snap.get("gamma_flip") or 0.0)
-    net_gex_val = float(snap.get("net_gex") or 0.0)
+    # A stale/poisoned book must not drive walls or the book sign either.
+    if phase_code == "PRE_MARKET_SETUP" and not book_ok:
+        cw_val = 0.0
+        pw_val = 0.0
+        flip_val = 0.0
+        net_gex_raw = None
+    else:
+        cw_val = float(snap.get("call_wall") or 0.0)
+        pw_val = float(snap.get("put_wall") or 0.0)
+        flip_val = float(snap.get("gamma_flip") or 0.0)
+        net_gex_raw = snap.get("net_gex")
+    try:
+        net_gex_val = float(net_gex_raw) if net_gex_raw is not None else None
+    except (TypeError, ValueError):
+        net_gex_val = None
 
     # Extract institutional FII positioning
     fii_bias = "NEUTRAL"
@@ -797,6 +821,7 @@ def get_pre_market_state(
         "call_wall": cw_val,
         "put_wall": pw_val,
         "gamma_flip": flip_val,
+        "net_gex": net_gex_val,
         "fii_bias": fii_bias,
         "fii_net_fut": fii_net_fut,
         "prior_session_cvd": prior_cvd,
@@ -867,22 +892,34 @@ def get_pre_market_state(
         if ohlc:
             open_px = float(ohlc.get("open") or 0.0)
             prev_close = float(ohlc.get("prev_close") or ohlc.get("close") or fallback_spot)
-            ltp = float(ohlc.get("ltp") or open_px or fallback_spot)
+            ltp = float(ohlc.get("ltp") or 0.0)
             as_of = str(ohlc.get("as_of") or "")
 
-            # Equilibrium is considered discovered when open > 0 and (either diff > 0.01 or time >= 09:08)
-            # or in regular market hours when market opened
+            # Dhan day OHLC open often stays 0 through the cash auction. After
+            # 09:08 the index LTP is the indicative/matched print we can lock.
             now_mins = now_ist.hour * 60 + now_ist.minute
-            is_disc = (open_px > 0 and (abs(open_px - prev_close) > 0.01 or now_mins >= 9 * 60 + 8))
+            if open_px > 0:
+                print_px = open_px
+                open_source = "dhan-open"
+            elif now_mins >= 9 * 60 + 8 and ltp > 0:
+                print_px = ltp
+                open_source = "dhan-ltp"
+            else:
+                print_px = 0.0
+                open_source = ""
+            is_disc = (
+                print_px > 0
+                and (abs(print_px - prev_close) > 0.01 or now_mins >= 9 * 60 + 8)
+            )
 
             if is_disc:
-                disc_spot = round(open_px, 2)
+                disc_spot = round(print_px, 2)
                 p_close = round(prev_close, 2)
                 gap_pts = round(disc_spot - p_close, 2)
                 gap_pct = round((gap_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0
 
-                high_px = float(ohlc.get("high") or ltp)
-                low_px = float(ohlc.get("low") or ltp)
+                high_px = float(ohlc.get("high") or ltp or print_px)
+                low_px = float(ohlc.get("low") or ltp or print_px)
                 if gap_pts > 0:
                     is_filled = (low_px <= p_close)
                 elif gap_pts < 0:
@@ -904,6 +941,7 @@ def get_pre_market_state(
                 state["regime_color"] = gap_cls.get("color", "")
                 state["regime_briefing"] = gap_cls.get("briefing", "")
                 state["discovered_at"] = as_of[-8:] if len(as_of) >= 8 else now_ist.strftime("%H:%M:%S")
+                state["open_source"] = open_source
                 state["status_text"] = (
                     f"Equilibrium Discovered: ₹{disc_spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%)"
                 )
@@ -917,6 +955,10 @@ def get_pre_market_state(
                 save_pre_market_state(symbol.upper(), state)
             else:
                 state["status_text"] = "Awaiting Equilibrium Auction Matching (09:08)..."
+                if phase_code == "PRE_MARKET_ENTRY":
+                    state["regime_badge"] = "PRE-OPEN COLLECTION"
+                elif phase_code == "PRE_MARKET_DISCOVERY":
+                    state["regime_badge"] = "EQUILIBRIUM DISCOVERY"
     except Exception as e:
         log.debug(f"Pre-market poll failed for {symbol}: {e}")
 
@@ -957,6 +999,50 @@ def _pre_market_loop(symbol: str) -> None:
         except Exception as exc:
             log.debug("pre-market poller %s: %s", symbol, exc)
         time.sleep(3.0)
+
+
+def post_market_poller_asleep(now: datetime | None = None) -> bool:
+    """True outside 15:30–16:10 IST on a trading day."""
+    now_ist = now or datetime.now(IST)
+    try:
+        from data.holidays import is_trading_day
+        trading = is_trading_day(now_ist.date())
+    except Exception:
+        trading = now_ist.weekday() < 5
+    if not trading:
+        return True
+    mins = now_ist.hour * 60 + now_ist.minute
+    return mins < _POST_POLL_START_MIN or mins >= _POST_POLL_END_MIN
+
+
+def ensure_post_market_poller(symbol: str = "NIFTY") -> None:
+    """One daemon per index: settle ingest 15:30–16:10 IST."""
+    sym = symbol.upper().strip()
+    with _CACHE_LOCK:
+        t = _POST_THREADS.get(sym)
+        if t is not None and t.is_alive():
+            return
+        t = threading.Thread(target=_post_market_loop, args=(sym,), daemon=True, name=f"post-{sym}")
+        _POST_THREADS[sym] = t
+        t.start()
+
+
+def ensure_post_market_pollers() -> None:
+    for s in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        ensure_post_market_poller(s)
+
+
+def _post_market_loop(symbol: str) -> None:
+    while True:
+        now = datetime.now(IST)
+        if post_market_poller_asleep(now):
+            time.sleep(30.0)
+            continue
+        try:
+            get_post_market_state(symbol, force_refresh=True, now=now)
+        except Exception as exc:
+            log.debug("post-market poller %s: %s", symbol, exc)
+        time.sleep(30.0)
 
 
 def attach_pre_market_shocks(state: dict, contracts_df: Any = None, dte_days: float | None = None, atm_iv: float | None = None) -> dict:
@@ -1032,21 +1118,25 @@ def acknowledge_pre_market_chime(symbol: str = "NIFTY") -> None:
             cached["should_play_chime"] = False
 
 
-def _book_label(net_gex: float) -> str:
+def _book_label(net_gex: float | None) -> str:
     """Call-heavy only when call-gamma magnitude exceeds put-gamma magnitude."""
+    if net_gex is None:
+        return "book sign unavailable"
     if net_gex > 0:
         return "call-heavy"
     if net_gex < 0:
         return "put-heavy"
-    return "book sign unavailable"
+    return "balanced"
 
 
-def _book_sentence(net_gex: float) -> str:
+def _book_sentence(net_gex: float | None) -> str:
+    if net_gex is None:
+        return ""
     if net_gex > 0:
         return "Call gamma is larger than put gamma. "
     if net_gex < 0:
         return "Put gamma is larger than call gamma. "
-    return ""
+    return "Call and put gamma magnitudes are equal. "
 
 
 def settle_vs_gamma_strikes(
@@ -1094,12 +1184,13 @@ def classify_opening_gap(
     call_wall: float = 0.0,
     put_wall: float = 0.0,
     flip: float = 0.0,
-    net_gex: float = 0.0,
+    net_gex: float | None = None,
 ) -> dict:
     """Locate the opening print on the book.
 
     The flip argument is a price. Spot above that price is a location.
     Call-heavy is net_gex > 0 only. A strike is not a floor.
+    Missing net_gex is unavailable; exact 0 is balanced.
     """
     above_balance = flip > 0 and spot >= flip
     book = _book_label(net_gex)
@@ -1504,10 +1595,17 @@ def get_post_market_state(
                 "institutional_wrap": persisted.get("institutional_wrap") or "",
             }, symbol)
 
+    t_min = now_ist.hour * 60 + now_ist.minute
+    from data.holidays import is_holiday
+    is_trading_day_today = (not is_holiday(now_ist.date())) and (now_ist.weekday() < 5)
+    is_post = (t_min >= 15 * 60 + 30) or (not is_trading_day_today)
+
     with _CACHE_LOCK:
         cached = _POST_MARKET_CACHE.get(symbol.upper())
         if cached and cached.get("date") == today_str and not force_refresh:
-            return cached
+            # A daytime unsettled stub must not block settle after 15:30.
+            if not (is_post and not cached.get("post_market_settled")):
+                return cached
 
     from data.market_snapshot import (
         format_ist_stamp,
@@ -1520,12 +1618,6 @@ def get_post_market_state(
     snap_prev_close = float(snap.get("prev_close") or 0.0)
     book_day = snapshot_session_date(snap)
     fallback_spot = snap_spot if snap_spot > 0 else snap_prev_close
-
-    # In continuous or pre-market hours on trading days, post-market is not yet reached
-    t_min = now_ist.hour * 60 + now_ist.minute
-    from data.holidays import is_holiday
-    is_trading_day_today = (not is_holiday(now_ist.date())) and (now_ist.weekday() < 5)
-    is_post = (t_min >= 15 * 60 + 30) or (not is_trading_day_today)
 
     if not is_post:
         state = {

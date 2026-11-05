@@ -270,3 +270,76 @@ def test_format_ist_stamp_and_offmarket_clock():
     blank = offmarket_book_clock({"spot": 22753.2, "as_of": ""}, now)
     assert blank["matches_last_session"] is False
     assert blank["stamp"] == ""
+
+
+def test_offhours_save_refuses_future_session_stamp(tmp_path, monkeypatch):
+    """A 06:30 sync must not restamp yesterday's sealed book as today."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "seal.db")
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: False)
+    monkeypatch.setattr(
+        "data.market_snapshot.last_completed_session_date",
+        lambda now=None: date(2026, 11, 4),
+    )
+    save_snapshot(
+        symbol="NIFTY",
+        spot=23960.6,
+        prev_close=23810.85,
+        call_wall=24000.0,
+        put_wall=23600.0,
+        gamma_flip=23664.0,
+        net_gex=9.5e10,
+        as_of="2026-11-04T10:10:20+00:00",
+        source="session-close",
+    )
+    save_snapshot(
+        symbol="NIFTY",
+        spot=24344.2,
+        call_wall=24500.0,
+        put_wall=24300.0,
+        gamma_flip=24006.0,
+        net_gex=2.2e11,
+        as_of="2026-11-05T01:00:05+00:00",
+        source="lkgs-store",
+    )
+    snap = get_snapshot("NIFTY")
+    assert snap["as_of"] == "2026-11-04T10:10:20+00:00"
+    assert snap["spot"] == 23960.6
+    assert snap["call_wall"] == 24000.0
+    assert snap["put_wall"] == 23600.0
+
+
+def test_lkgs_store_skips_sqlite_when_market_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "lkgs.db")
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: False)
+    save_snapshot(
+        symbol="NIFTY",
+        spot=23960.6,
+        call_wall=24000.0,
+        put_wall=23600.0,
+        as_of="2026-11-04T10:10:20+00:00",
+        source="session-close",
+    )
+
+    class _Lv:
+        spot = 24344.2
+        call_wall = 24500.0
+        put_wall = 24300.0
+        flip = 24006.0
+        gamma_flip = 24006.0
+        max_pain = 24100.0
+        total_net_gex = 1.0
+        vix = None
+
+    class _Dash:
+        levels = _Lv()
+        source = "dhan-live"
+
+    from resilience.lkgs import LKGSManager
+
+    mgr = LKGSManager()
+    mgr.store("NIFTY", _Dash(), fetched_at=datetime(2026, 11, 5, 1, 0, 5, tzinfo=timezone.utc))
+    snap = get_snapshot("NIFTY")
+    assert snap["spot"] == 23960.6
+    assert snap["call_wall"] == 24000.0
+    assert snap["as_of"] == "2026-11-04T10:10:20+00:00"
+    assert mgr._registry["NIFTY"].data.levels.spot == 24344.2

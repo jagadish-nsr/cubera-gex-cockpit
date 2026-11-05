@@ -1964,9 +1964,17 @@
         if (playEl) playEl.textContent = discovered ? (pm.favored_play || "—") : "Setup only · no open yet";
         const badgeEl = document.getElementById("pm-regime-badge");
         if (badgeEl) {
-          badgeEl.textContent = discovered
-            ? (pm.regime_badge || "PRE-MARKET DISCOVERY")
-            : (pm.is_morning_briefing ? (pm.regime_badge || "PRIOR-SESSION BOOK") : "PRE-OPEN SETUP");
+          if (discovered) {
+            badgeEl.textContent = pm.regime_badge || "PRE-MARKET DISCOVERY";
+          } else if (pm.is_morning_briefing) {
+            badgeEl.textContent = pm.regime_badge || "PRIOR-SESSION BOOK";
+          } else if (pm.phase_code === "PRE_MARKET_DISCOVERY") {
+            badgeEl.textContent = pm.regime_badge || "EQUILIBRIUM DISCOVERY";
+          } else if (pm.phase_code === "PRE_MARKET_ENTRY") {
+            badgeEl.textContent = pm.regime_badge || "PRE-OPEN COLLECTION";
+          } else {
+            badgeEl.textContent = pm.regime_badge || pm.phase_label || "AWAITING OPEN";
+          }
           if (pm.regime_color) badgeEl.style.color = pm.regime_color;
         }
         const briefingEl = document.getElementById("pm-briefing-text");

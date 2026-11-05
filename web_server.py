@@ -232,8 +232,9 @@ async def _start_ingest_lanes():
         warmup_all()
 
     def _premarket():
-        from data.pre_post_market import ensure_pre_market_pollers
+        from data.pre_post_market import ensure_pre_market_pollers, ensure_post_market_pollers
         ensure_pre_market_pollers()
+        ensure_post_market_pollers()
 
     def _dhan():
         from app.dhan_sync import on_published, start_scheduler

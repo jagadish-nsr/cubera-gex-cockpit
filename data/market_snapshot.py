@@ -98,6 +98,24 @@ def save_snapshot(
     init_db()
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Off-hours must not restamp the registry as a future calendar day. A 06:30
+    # sync that writes as_of=today makes matches_last_session fail against
+    # yesterday's sealed close.
+    try:
+        import config
+        market_open = config.is_market_open()
+    except Exception:
+        market_open = True
+    if not market_open and as_of:
+        incoming_day = snapshot_session_date({"as_of": as_of})
+        expected_day = last_completed_session_date()
+        if incoming_day is not None and incoming_day > expected_day:
+            log.warning(
+                "%s refusing off-hours snapshot write as_of=%s (after last session %s)",
+                sym, as_of, expected_day,
+            )
+            return
+
     with _LOCK, _get_connection() as conn:
         existing = conn.execute("SELECT * FROM session_snapshots WHERE symbol = ?", (sym,)).fetchone()
         ex = dict(existing) if existing else {}

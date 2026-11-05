@@ -47,6 +47,12 @@ class LKGSManager:
                 self._prev_spot[sym] = float(spot)
             log.debug("LKGS[%s]: Stored new valid snapshot as of %s", sym, ts.isoformat())
             try:
+                # Off-hours loads (06:30 sync, token save) refresh memory/pickle only.
+                # Writing session_snapshots here restamps as_of as today and poisons
+                # the prior-session book the morning briefing reads.
+                import config
+                if not config.is_market_open():
+                    return
                 data_src = str(getattr(data, "source", "") or "").lower()
                 if not any(k in data_src for k in ("demo", "synthetic", "mock", "test")):
                     from data.market_snapshot import save_snapshot
