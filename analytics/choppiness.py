@@ -205,36 +205,73 @@ def _state(chop: float | None, efficiency: float | None) -> str:
     return "mixed"
 
 
-def _headline(state: str) -> str:
-    return {
-        "choppy": "Choppy",
-        "directional": "Directional",
-        "mixed": "Mixed",
-        "not_ready": "Not ready",
-    }.get(state, "Not ready")
+def _kept(efficiency: float) -> str:
+    pct = efficiency * 100.0
+    if abs(pct - round(pct)) < 0.05:
+        return f"{pct:.0f}%"
+    return f"{pct:.1f}%"
 
 
-def _line(state: str, chop: float | None, efficiency: float | None, crosses: int | None,
+def _headline(state: str, chop: float | None, efficiency: float | None) -> str:
+    """One plain sentence. The chop number stays in the line, not in this title."""
+    if state == "choppy":
+        return "Price is boxed in"
+    if state == "directional":
+        return "Price is pushing one way"
+    if state != "mixed":
+        return "Not enough bars yet"
+    eff_lo = efficiency is not None and efficiency < EFF_CHOPPY
+    eff_hi = efficiency is not None and efficiency > EFF_DIRECTIONAL
+    chop_hi = chop is not None and chop > CHOP_HIGH
+    chop_lo = chop is not None and chop < CHOP_LOW
+    if eff_lo and not chop_hi and not chop_lo:
+        return "Last half hour wandered"
+    if (eff_lo and chop_lo) or (eff_hi and chop_hi):
+        return "The two windows disagree"
+    return "No clean shape"
+
+
+def _line(chop: float | None, efficiency: float | None, crosses: int | None,
           n_5m: int, n_1m: int) -> str:
     parts = []
     if chop is None:
-        parts.append(f"Five-minute chop needs {CHOP_BARS + 1} bars and has {n_5m}.")
+        parts.append(f"The five-minute read needs {CHOP_BARS + 1} bars and has {n_5m}.")
+    elif chop > CHOP_HIGH:
+        parts.append(
+            f"The last {CHOP_BARS} five-minute bars are boxed in a range (chop {chop:.1f} of 100)."
+        )
+    elif chop < CHOP_LOW:
+        parts.append(
+            f"The last {CHOP_BARS} five-minute bars kept extending the move (chop {chop:.1f} of 100)."
+        )
     else:
-        parts.append(f"Five-minute chop {chop:.1f} over {CHOP_BARS} bars.")
+        parts.append(
+            f"The last {CHOP_BARS} five-minute bars are neither a box nor a clean push "
+            f"(chop {chop:.1f} of 100)."
+        )
     if efficiency is None:
-        parts.append(f"One-minute path efficiency needs {EFF_MIN_BARS} bars and has {n_1m}.")
+        parts.append(f"The one-minute read needs {EFF_MIN_BARS} closes and has {n_1m}.")
+    elif efficiency < EFF_CHOPPY:
+        parts.append(
+            f"Over the last {n_1m} minutes price kept only {_kept(efficiency)} of the distance it walked."
+        )
+    elif efficiency > EFF_DIRECTIONAL:
+        parts.append(
+            f"Over the last {n_1m} minutes price kept {_kept(efficiency)} of the distance it walked."
+        )
     else:
-        parts.append(f"Path efficiency {efficiency:.2f} over {n_1m} one-minute bars.")
+        parts.append(
+            f"Over the last {n_1m} minutes price kept {_kept(efficiency)} of the distance it walked, "
+            "between a wander and a push."
+        )
     if crosses is None:
-        parts.append("VWAP crosses unavailable.")
+        parts.append("VWAP side is unavailable.")
+    elif crosses == 0:
+        parts.append("The close stayed on one side of VWAP.")
+    elif crosses == 1:
+        parts.append("The close crossed VWAP once.")
     else:
-        parts.append(f"{crosses} VWAP crosses.")
-    if state == "choppy":
-        parts.append("The path is boxed.")
-    elif state == "directional":
-        parts.append("The path is a push.")
-    elif state == "mixed" and chop is not None and efficiency is not None:
-        parts.append("The windows do not share one shape.")
+        parts.append(f"The close crossed VWAP {crosses} times.")
     return " ".join(parts)
 
 
@@ -248,8 +285,8 @@ def compute_choppiness_meter(bars_1m: list[Any] | None, bars_5m: list[Any] | Non
     state = _state(chop, efficiency)
     return {
         "state": state,
-        "headline": _headline(state),
-        "line": _line(state, chop, efficiency, crosses, len(five), n_1m),
+        "headline": _headline(state, chop, efficiency),
+        "line": _line(chop, efficiency, crosses, len(five), n_1m),
         "chop": None if chop is None else round(chop, 1),
         "efficiency": None if efficiency is None else round(efficiency, 2),
         "vwap_crosses": crosses,

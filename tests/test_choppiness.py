@@ -88,6 +88,17 @@ def test_meter_calls_a_boxed_path_choppy_and_a_push_directional():
     assert directional["efficiency"] == 1.0
 
 
+def test_a_middle_chop_and_a_wander_is_said_in_plain_words():
+    from analytics.choppiness import _headline, _line
+    assert _headline("mixed", 56.4, 0.12) == "Last half hour wandered"
+    line = _line(56.4, 0.12, 0, 15, 30)
+    assert "neither a box nor a clean push" in line
+    assert "chop 56.4 of 100" in line
+    assert "kept only 12%" in line
+    assert "one side of VWAP" in line
+    assert "do not share" not in line
+
+
 def test_meter_is_mixed_when_the_windows_disagree_and_quiet_when_empty():
     one = [{"close": 100.0 + i, "high": 101.0 + i, "low": 100.0 + i, "vwap": 100.0} for i in range(30)]
     mixed = compute_choppiness_meter(one, bars_5m=_flat_chop_bars())

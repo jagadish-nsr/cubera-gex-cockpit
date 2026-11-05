@@ -2636,7 +2636,7 @@ async def get_cockpit_data(
         }
         payload["choppiness"] = {
             "state": "not_ready",
-            "headline": "Not ready",
+            "headline": "Not enough bars yet",
             "line": "The one-minute bars could not be read.",
         }
     try:

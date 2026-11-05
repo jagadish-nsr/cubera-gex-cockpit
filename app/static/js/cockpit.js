@@ -2220,10 +2220,7 @@
     if (overnight) overnight.textContent = flow.overnight_line || "";
     if (live) live.textContent = flow.live_line || "";
     if (card) card.classList.toggle("alert-on", Boolean(flow.alert));
-    if (chopHead) {
-      const value = chop.chop == null ? "" : ` ${Number(chop.chop).toFixed(1)}`;
-      chopHead.textContent = `${chop.headline || "—"}${value}`;
-    }
+    if (chopHead) chopHead.textContent = chop.headline || "—";
     if (chopLine) chopLine.textContent = chop.line || "";
   }
 
