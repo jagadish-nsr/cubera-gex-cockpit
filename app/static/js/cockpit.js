@@ -3509,14 +3509,19 @@
       if (dist > step) return { zone: "ABOVE_MAGNET", through_pts: spot - mag, step, magnet: mag };
       return { zone: "TEST_MAGNET", through_pts: Math.abs(dist), step, magnet: mag };
     }
-    if (pw > 0 && spot <= pw - step) return { zone: "BELOW_PUT_WALL", through_pts: pw - spot, step };
-    if (cw > 0 && spot >= cw + step) return { zone: "ABOVE_CALL_WALL", through_pts: spot - cw, step };
-    if (cw > pw && pw > 0 && (cw - pw) <= 2 * step && spot > pw && spot < cw) {
+    const oriented = cw > pw && pw > 0;
+    const crossed = pw > cw && cw > 0;
+    if (!crossed && pw > 0 && spot <= pw - step) return { zone: "BELOW_PUT_WALL", through_pts: pw - spot, step };
+    if (!crossed && cw > 0 && spot >= cw + step) return { zone: "ABOVE_CALL_WALL", through_pts: spot - cw, step };
+    if (oriented && (cw - pw) <= 2 * step && spot > pw && spot < cw) {
       return { zone: "PINNED", through_pts: 0, step };
     }
-    if (pw > 0 && Math.abs(spot - pw) <= step) return { zone: "TEST_PUT", through_pts: Math.abs(spot - pw), step };
-    if (cw > 0 && Math.abs(spot - cw) <= step) return { zone: "TEST_CALL", through_pts: Math.abs(spot - cw), step };
-    if (pw > 0 && cw > pw && pw < spot && spot < cw) return { zone: "PINNED", through_pts: 0, step };
+    let nearPut = pw > 0 && Math.abs(spot - pw) <= step;
+    const nearCall = cw > 0 && Math.abs(spot - cw) <= step;
+    if (nearPut && nearCall && Math.abs(spot - cw) < Math.abs(spot - pw)) nearPut = false;
+    if (nearPut) return { zone: "TEST_PUT", through_pts: Math.abs(spot - pw), step };
+    if (nearCall) return { zone: "TEST_CALL", through_pts: Math.abs(spot - cw), step };
+    if (oriented && spot > pw && spot < cw) return { zone: "PINNED", through_pts: 0, step };
     return { zone: "UNSITUATED", through_pts: 0, step };
   }
 
@@ -3904,6 +3909,10 @@
       },
     };
     const base = Object.assign({}, zoneMeta[zone] || zoneMeta.UNSITUATED);
+    if (zone === "UNSITUATED" && pw > cw && cw > 0) {
+      base.headline = "Put wall is above the call wall";
+      base.where = `The put wall ${tapeInr(pw)} sits above the call wall ${tapeInr(cw)}, so they do not form a range.`;
+    }
 
     if (sig && MIDDLE[zone]) {
       if (sigSide === "CALL") {

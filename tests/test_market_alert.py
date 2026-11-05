@@ -32,6 +32,53 @@ def test_two_strike_corridor_stays_between_the_walls():
     assert classify_zone(22620, 23000, 22600, 50)["zone"] == "TEST_PUT"
 
 
+def test_crossed_walls_do_not_invent_a_breach():
+    # Put wall above the call wall is not a corridor. A touch still names that wall.
+    assert classify_zone(22750, 22500, 23000, 50)["zone"] == "UNSITUATED"
+    assert classify_zone(22700, 22500, 23000, 50)["zone"] == "UNSITUATED"
+    assert classify_zone(22500, 22500, 23000, 50)["zone"] == "TEST_CALL"
+    assert classify_zone(22520, 22500, 23000, 50)["zone"] == "TEST_CALL"
+    assert classify_zone(23000, 22500, 23000, 50)["zone"] == "TEST_PUT"
+    assert classify_zone(22980, 22500, 23000, 50)["zone"] == "TEST_PUT"
+    assert classify_zone(22400, 22500, 23000, 50)["zone"] == "UNSITUATED"
+    assert classify_zone(23100, 22500, 23000, 50)["zone"] == "UNSITUATED"
+    # Equidistant is not the case: the nearer wall wins.
+    assert classify_zone(22630, 22600, 22680, 50)["zone"] == "TEST_CALL"
+
+
+def test_lone_wall_still_names_a_breach():
+    assert classify_zone(22800, 22700, 0, 50)["zone"] == "ABOVE_CALL_WALL"
+    assert classify_zone(22700, 22700, 0, 50)["zone"] == "TEST_CALL"
+    assert classify_zone(22400, 22700, 0, 50)["zone"] == "UNSITUATED"
+    assert classify_zone(22500, 0, 22600, 50)["zone"] == "BELOW_PUT_WALL"
+    assert classify_zone(22600, 0, 22600, 50)["zone"] == "TEST_PUT"
+    assert classify_zone(22800, 0, 22600, 50)["zone"] == "UNSITUATED"
+
+
+def test_crossed_walls_say_the_map_is_not_a_range():
+    alert = evaluate_market_alert(
+        {
+            "spot": 22700,
+            "strike_step": 50,
+            "is_market_open": True,
+            "market_state": "OPEN",
+            "as_of_time": "12:30:00 IST",
+            "kpis": {
+                "call_wall": {"val": 22500},
+                "put_wall": {"val": 23000},
+                "gamma_flip": {"val": 22600},
+                "regime": {"val": "NEGATIVE"},
+            },
+            "orderflow_alerts": [],
+        }
+    )
+    assert alert["zone"] == "UNSITUATED"
+    assert alert["stance"] == "STAY OUT"
+    assert "do not form a range" in alert["outcome"]
+    assert "23,000" in alert["outcome"]
+    assert "22,500" in alert["outcome"]
+
+
 def test_put_wall_without_tape_stays_out():
     alert = evaluate_market_alert(
         {

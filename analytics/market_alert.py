@@ -94,14 +94,19 @@ def classify_zone(
             "magnet": mag,
         }
 
-    if pw > 0 and spot <= pw - step:
+    # A corridor exists only when the put wall is below the call wall.
+    # Crossed walls (put above call) are not a range: name a wall price is
+    # actually touching, otherwise leave the map unclear.
+    oriented = cw > pw > 0
+    crossed = pw > cw > 0
+    if not crossed and pw > 0 and spot <= pw - step:
         return {
             "zone": "BELOW_PUT_WALL",
             "label": "Below put-wall concentration",
             "through_pts": pw - spot,
             "step": step,
         }
-    if cw > 0 and spot >= cw + step:
+    if not crossed and cw > 0 and spot >= cw + step:
         return {
             "zone": "ABOVE_CALL_WALL",
             "label": "Above call-wall concentration",
@@ -110,28 +115,32 @@ def classify_zone(
         }
     # Two listed strikes leave no interior that is clear of both walls.
     # A one-point wiggle around the midpoint would otherwise flip the headline.
-    if cw > pw > 0 and (cw - pw) <= (2 * step) and pw < spot < cw:
+    if oriented and (cw - pw) <= (2 * step) and pw < spot < cw:
         return {
             "zone": "PINNED",
             "label": "Between wall concentrations",
             "through_pts": 0.0,
             "step": step,
         }
-    if pw > 0 and abs(spot - pw) <= step:
+    near_put = pw > 0 and abs(spot - pw) <= step
+    near_call = cw > 0 and abs(spot - cw) <= step
+    if near_put and near_call and abs(spot - cw) < abs(spot - pw):
+        near_put = False
+    if near_put:
         return {
             "zone": "TEST_PUT",
             "label": "Testing put-wall concentration",
             "through_pts": abs(spot - pw),
             "step": step,
         }
-    if cw > 0 and abs(spot - cw) <= step:
+    if near_call:
         return {
             "zone": "TEST_CALL",
             "label": "Testing call-wall concentration",
             "through_pts": abs(spot - cw),
             "step": step,
         }
-    if pw > 0 and cw > pw and pw < spot < cw:
+    if oriented and pw < spot < cw:
         return {
             "zone": "PINNED",
             "label": "Between wall concentrations",
@@ -140,7 +149,11 @@ def classify_zone(
         }
     return {
         "zone": "UNSITUATED",
-        "label": "Walls not a clean corridor",
+        "label": (
+            "Put wall above the call wall"
+            if crossed
+            else "Walls not a clean corridor"
+        ),
         "through_pts": 0.0,
         "step": step,
     }
@@ -656,6 +669,11 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         },
     }
     base = dict(zone_meta.get(zone) or zone_meta["UNSITUATED"])
+    if zone == "UNSITUATED" and pw > cw > 0:
+        base["headline"] = "Put wall is above the call wall"
+        base["where"] = (
+            f"The put wall {_inr(pw)} sits above the call wall {_inr(cw)}, so they do not form a range."
+        )
 
     # Fresh signal on a middle zone: upgrade matching side to WATCH; mismatch stays out.
     if sig and zone in MIDDLE_ZONES:
