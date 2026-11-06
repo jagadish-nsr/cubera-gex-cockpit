@@ -4769,10 +4769,12 @@
     const sessionSel = document.getElementById("sentinel-rec-session-select");
     const sessionVal = sessionSel ? sessionSel.value : "today";
 
+    const symSel = document.getElementById("sentinel-rec-symbol-select");
+    let sym = symSel ? symSel.value : "CURRENT";
+    if (sym === "CURRENT") sym = state.symbol || "NIFTY";
+
     const statusSel = document.getElementById("sentinel-rec-status-select");
     const statusVal = statusSel ? statusSel.value : "ALL";
-
-    const sym = state.symbol || "NIFTY";
 
     try {
       const url = `/api/recommendations/sentinel?symbol=${encodeURIComponent(sym)}&session=${encodeURIComponent(sessionVal)}&status=${encodeURIComponent(statusVal)}&limit=100`;
@@ -8416,6 +8418,11 @@
     setInterval(() => {
       if (state.activeTab === "tab-sentinel") loadSentinelTape();
     }, 10000);
+    setInterval(() => {
+      if (state.activeTab === "tab-recommendations") {
+        loadRecommendations();
+      }
+    }, 8000);
     setInterval(pollSentinelSignals, 8000);
     pollSentinelSignals();
     setInterval(() => {

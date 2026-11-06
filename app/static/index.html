@@ -1474,6 +1474,20 @@
                     <option value="all">All Sessions</option>
                   </select>
                 </div>
+                <!-- Symbol Filter -->
+                <div style="display:flex;align-items:center;gap:4px">
+                  <label for="sentinel-rec-symbol-select"
+                    style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Symbol:</label>
+                  <select id="sentinel-rec-symbol-select" class="form-control"
+                    style="font-size:0.72rem;padding:3px 8px;width:115px"
+                    onchange="window.loadSentinelRecommendations()">
+                    <option value="CURRENT" selected>Current Symbol</option>
+                    <option value="ALL">All Symbols</option>
+                    <option value="NIFTY">NIFTY</option>
+                    <option value="BANKNIFTY">BANKNIFTY</option>
+                    <option value="SENSEX">SENSEX</option>
+                  </select>
+                </div>
                 <!-- Status Filter -->
                 <div style="display:flex;align-items:center;gap:4px">
                   <label for="sentinel-rec-status-select"
