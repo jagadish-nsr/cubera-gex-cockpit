@@ -163,6 +163,11 @@ def filter_expiry_window(contracts, window: str, ref: date,
             raise ValueError(f"unknown expiry window {window!r}; valid: {sorted(VALID_WINDOWS)}")
 
     exp = contracts["expiry"]
+    # If broker data has not yet rolled over after an expiry (e.g. pre-market next morning),
+    # clamp ref to the newest available expiry so valid contracts are not dropped.
+    if not exp.empty and exp.max() < ref:
+        ref = exp.max()
+
     if is_iso_date:
         mask = exp == target_date
     elif window == "all":

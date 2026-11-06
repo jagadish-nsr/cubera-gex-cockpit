@@ -180,25 +180,26 @@ class TestSentinelLive(unittest.TestCase):
         ])
         mgr = LiveSentinelManager()
         with patch("sentinel.feed.live.datetime", clock), \
+                patch("sentinel.storage.db.datetime", clock), \
                 patch("sentinel.feed.live.purge_old_sentinel_data") as age_purge:
             ok = mgr.sync_live_session("TEST-FUT", "TEST", call_wall=22600.0, put_wall=22400.0, force=True)
-        self.assertTrue(ok)
-        age_purge.assert_not_called()
+            self.assertTrue(ok)
+            age_purge.assert_not_called()
 
-        bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
-        by_minute = {_minute_floor(b.start_ts): b for b in bars}
-        kept = by_minute[_minute_floor(kept_ts)]
-        self.assertEqual(kept.close, 22555.0)
-        self.assertEqual(kept.delta, 7777.0)
-        gap = by_minute[_minute_floor(gap_ts)]
-        self.assertEqual(gap.close, 22566.0)
+            bars = list_recent_bars("TEST-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
+            by_minute = {_minute_floor(b.start_ts): b for b in bars}
+            kept = by_minute[_minute_floor(kept_ts)]
+            self.assertEqual(kept.close, 22555.0)
+            self.assertEqual(kept.delta, 7777.0)
+            gap = by_minute[_minute_floor(gap_ts)]
+            self.assertEqual(gap.close, 22566.0)
 
-        signals = list_recent_signals("TEST-FUT", limit=20)
-        self.assertIn(sweep.event_id, [s.event_id for s in signals])
-        outcomes = list_recent_outcomes("TEST-FUT", limit=20)
-        self.assertIn(sweep.event_id, [o.event_id for o in outcomes])
-        kept_outcome = next(o for o in outcomes if o.event_id == sweep.event_id)
-        self.assertEqual(kept_outcome.mfe_pts, 12.5)
+            signals = list_recent_signals("TEST-FUT", limit=20)
+            self.assertIn(sweep.event_id, [s.event_id for s in signals])
+            outcomes = list_recent_outcomes("TEST-FUT", limit=20)
+            self.assertIn(sweep.event_id, [o.event_id for o in outcomes])
+            kept_outcome = next(o for o in outcomes if o.event_id == sweep.event_id)
+            self.assertEqual(kept_outcome.mfe_pts, 12.5)
 
     @patch("data.holidays.is_trading_day", return_value=True)
     @patch("data.dhan.nearest_futures")
@@ -236,24 +237,25 @@ class TestSentinelLive(unittest.TestCase):
         }])
         mgr = LiveSentinelManager()
         with patch("sentinel.feed.live.datetime", clock), \
+                patch("sentinel.storage.db.datetime", clock), \
                 patch("sentinel.feed.live.purge_old_sentinel_data", return_value={"bars_1m": 0}) as age_purge:
             ok = mgr.sync_live_session("TEST-FUT", "TEST", force=True)
-        self.assertTrue(ok)
-        age_purge.assert_called_once()
+            self.assertTrue(ok)
+            age_purge.assert_called_once()
 
-        # Ledger retains the prior session for audits / session reports.
-        all_signals = list_recent_signals("TEST-FUT", limit=20, session_only=False)
-        self.assertIn("sig_previous_session", [s.event_id for s in all_signals])
-        bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=False, _auto_populate=False)
-        self.assertTrue(any(b.close == 22508.0 for b in bars))
-        self.assertTrue(any(b.close == 21000.0 for b in bars))
+            # Ledger retains the prior session for audits / session reports.
+            all_signals = list_recent_signals("TEST-FUT", limit=20, session_only=False)
+            self.assertIn("sig_previous_session", [s.event_id for s in all_signals])
+            bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=False, _auto_populate=False)
+            self.assertTrue(any(b.close == 22508.0 for b in bars))
+            self.assertTrue(any(b.close == 21000.0 for b in bars))
 
-        # Live tape must not show yesterday's signal as if it fired today.
-        live_signals = list_recent_signals("TEST-FUT", limit=20, session_only=True)
-        self.assertNotIn("sig_previous_session", [s.event_id for s in live_signals])
-        live_bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=True, _auto_populate=False)
-        self.assertTrue(any(b.close == 22508.0 for b in live_bars))
-        self.assertFalse(any(b.close == 21000.0 for b in live_bars))
+            # Live tape must not show yesterday's signal as if it fired today.
+            live_signals = list_recent_signals("TEST-FUT", limit=20, session_only=True)
+            self.assertNotIn("sig_previous_session", [s.event_id for s in live_signals])
+            live_bars = list_recent_bars("TEST-FUT", "1m", limit=20, session_only=True, _auto_populate=False)
+            self.assertTrue(any(b.close == 22508.0 for b in live_bars))
+            self.assertFalse(any(b.close == 21000.0 for b in live_bars))
 
     def test_on_tick_advances_bar(self):
         mgr = LiveSentinelManager()

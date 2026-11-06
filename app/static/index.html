@@ -1450,6 +1450,98 @@
             </div>
           </div>
 
+          <!-- Sentinel OrderFlow Signal-Based Recommendations Section -->
+          <div style="margin-bottom:32px;margin-top:8px">
+            <div
+              style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+              <div>
+                <h3 style="font-size:1.15rem;font-weight:850;margin:0;display:flex;align-items:center;gap:8px">
+                  <span>⚡ Sentinel OrderFlow Signal Recommendations</span>
+                  <span id="sentinel-rec-count-badge"
+                    style="font-size:0.72rem;background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.3);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0 Setups</span>
+                </h3>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option trades triggered by real-time OrderFlow tape signals with Target Engine spot-calibrated repricing</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <!-- Session Filter -->
+                <div style="display:flex;align-items:center;gap:4px">
+                  <label for="sentinel-rec-session-select"
+                    style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Session:</label>
+                  <select id="sentinel-rec-session-select" class="form-control"
+                    style="font-size:0.72rem;padding:3px 8px;width:125px"
+                    onchange="window.loadSentinelRecommendations()">
+                    <option value="today" selected>Today's Session</option>
+                    <option value="all">All Sessions</option>
+                  </select>
+                </div>
+                <!-- Status Filter -->
+                <div style="display:flex;align-items:center;gap:4px">
+                  <label for="sentinel-rec-status-select"
+                    style="font-size:0.70rem;color:var(--ink-mute);font-weight:700">Status:</label>
+                  <select id="sentinel-rec-status-select" class="form-control"
+                    style="font-size:0.72rem;padding:3px 8px;width:125px"
+                    onchange="window.loadSentinelRecommendations()">
+                    <option value="ALL" selected>All Statuses</option>
+                    <option value="ACTIVE">⚡ Active Only</option>
+                    <option value="TARGET_HIT">🎯 Target Hit</option>
+                    <option value="SL_HIT">⛔ Stop Loss Hit</option>
+                  </select>
+                </div>
+                <!-- Refresh Button -->
+                <button class="btn btn-secondary" onclick="window.loadSentinelRecommendations()"
+                  style="font-size:0.72rem;padding:3px 10px;display:flex;align-items:center;gap:4px"
+                  title="Refresh Sentinel recommendations">
+                  <span>🔄</span> Refresh
+                </button>
+              </div>
+            </div>
+
+            <!-- Daily Performance & Success Criteria Scorecard Strip -->
+            <div
+              style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎯 OrderFlow Recommendations Success Criteria &amp; Performance</span>
+                <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● Paper Trade Sync Active</span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:10px;font-size:0.76rem">
+                <div><span style="color:var(--ink-mute);display:block">Total Trades</span><b id="sentinel-kpi-total">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Active Setups</span><b id="sentinel-kpi-active" style="color:var(--spark)">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="sentinel-kpi-winrate" style="color:var(--go)">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="sentinel-kpi-slrate" style="color:var(--stop)">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Realized P&amp;L (₹)</span><b id="sentinel-kpi-pnl" style="color:var(--ink)">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Realized R:R</span><b id="sentinel-kpi-rr" style="color:var(--spark)">—</b></div>
+              </div>
+            </div>
+
+            <!-- Sentinel Recommendations Table Container -->
+            <div class="table-responsive"
+              style="border:1px solid var(--line);border-radius:8px;background:var(--surface-2);overflow-x:auto">
+              <table class="table table-hover"
+                style="width:100%;font-size:0.74rem;margin-bottom:0;border-collapse:collapse">
+                <thead>
+                  <tr
+                    style="border-bottom:1px solid var(--line);background:var(--surface-3);color:var(--ink-mute);text-align:left">
+                    <th style="width:100px">Triggered</th>
+                    <th style="width:140px">Signal &amp; Bias</th>
+                    <th style="width:130px">Option Strike</th>
+                    <th style="width:170px">Cash Spot (Entry / Inval / Tgt)</th>
+                    <th style="width:90px">Option Entry</th>
+                    <th style="width:150px">Targets &amp; SL</th>
+                    <th style="width:120px">Current LTP / MTM</th>
+                    <th style="width:110px">Signals</th>
+                    <th style="width:110px;text-align:center">Status</th>
+                    <th style="width:110px;text-align:right">Paper Trade</th>
+                  </tr>
+                </thead>
+                <tbody id="sentinel-rec-tbody">
+                  <tr>
+                    <td colspan="10" style="text-align:center;padding:24px;color:var(--ink-mute)">Loading Sentinel recommendations...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- Trade Recommendation History & Intraday Lifecycle Audit -->
           <div style="margin-bottom:36px;margin-top:12px">
             <div

@@ -4734,6 +4734,7 @@
         renderClusterList("tactical-ce-container", [], "CE", false);
         renderClusterList("tactical-pe-container", [], "PE", false);
         loadRecommendationHistory();
+        loadSentinelRecommendations();
         return;
       }
       if (noticeContainer) noticeContainer.innerHTML = "";
@@ -4750,11 +4751,162 @@
       renderClusterList("tactical-ce-container", data.tactical_tier ? data.tactical_tier.ce_clusters : [], "CE", data.ce_tactical_active);
       renderClusterList("tactical-pe-container", data.tactical_tier ? data.tactical_tier.pe_clusters : [], "PE", data.pe_tactical_active);
 
-      // Also render recommendation history table
+      // Also render recommendation history table & Sentinel recommendations
       loadRecommendationHistory();
+      loadSentinelRecommendations();
     } catch (e) {
       console.error("Error loading recommendations:", e);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sentinel OrderFlow Signal-Based Recommendations
+  // ---------------------------------------------------------------------------
+  async function loadSentinelRecommendations() {
+    const tbody = document.getElementById("sentinel-rec-tbody");
+    if (!tbody) return;
+
+    const sessionSel = document.getElementById("sentinel-rec-session-select");
+    const sessionVal = sessionSel ? sessionSel.value : "today";
+
+    const statusSel = document.getElementById("sentinel-rec-status-select");
+    const statusVal = statusSel ? statusSel.value : "ALL";
+
+    const sym = state.symbol || "NIFTY";
+
+    try {
+      const url = `/api/recommendations/sentinel?symbol=${encodeURIComponent(sym)}&session=${encodeURIComponent(sessionVal)}&status=${encodeURIComponent(statusVal)}&limit=100`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderSentinelRecommendations(data);
+    } catch (err) {
+      console.warn("Failed to load sentinel recommendations:", err);
+      if (tbody) {
+        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--stop)">Failed to load Sentinel recommendations. Click Refresh to retry.</td></tr>`;
+      }
+    }
+  }
+  window.loadSentinelRecommendations = loadSentinelRecommendations;
+
+  function renderSentinelRecommendations(data) {
+    const tbody = document.getElementById("sentinel-rec-tbody");
+    if (!tbody) return;
+
+    const recs = (data && data.recommendations) || [];
+    const metrics = (data && data.metrics) || {};
+
+    // Update count badge
+    const badgeEl = document.getElementById("sentinel-rec-count-badge");
+    if (badgeEl) badgeEl.textContent = `${recs.length} Setups`;
+
+    // Update KPI strip
+    const setTxt = (id, txt) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = txt;
+    };
+    setTxt("sentinel-kpi-total", metrics.total_trades !== undefined ? metrics.total_trades : "0");
+    setTxt("sentinel-kpi-active", metrics.active_trades !== undefined ? metrics.active_trades : "0");
+    setTxt("sentinel-kpi-winrate", metrics.resolved_trades > 0 ? `${metrics.win_rate_pct}% (${metrics.target_hits}/${metrics.resolved_trades})` : "—");
+    const slPct = metrics.resolved_trades > 0 ? Math.round((metrics.sl_hits / metrics.resolved_trades) * 100) : 0;
+    setTxt("sentinel-kpi-slrate", metrics.resolved_trades > 0 ? `${slPct}% (${metrics.sl_hits}/${metrics.resolved_trades})` : "—");
+
+    const pnlEl = document.getElementById("sentinel-kpi-pnl");
+    if (pnlEl) {
+      const pnl = metrics.realized_pnl_inr || 0;
+      pnlEl.textContent = `₹${pnl >= 0 ? "+" : ""}${Math.round(pnl).toLocaleString()}`;
+      pnlEl.style.color = pnl >= 0 ? "var(--go)" : "var(--stop)";
+    }
+    setTxt("sentinel-kpi-rr", metrics.realized_rr ? `1 : ${metrics.realized_rr}` : "—");
+
+    if (recs.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--ink-mute)">No OrderFlow recommendations recorded for this session.</td></tr>`;
+      return;
+    }
+
+    let html = "";
+    recs.forEach((r) => {
+      const dt = r.triggered_at || "";
+      const trigDate = dt.substring(0, 10);
+      const trigTime = dt.substring(11, 19) || dt;
+      const isCall = (r.side || "").toUpperCase() === "CE";
+      const biasCls = isCall
+        ? "color:var(--go);background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3)"
+        : "color:var(--stop);background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3)";
+
+      // Contributing signals
+      const sigs = r.contributing_signals || [];
+      const primarySig = sigs.length > 0 ? sigs[0] : {};
+      const sigType = primarySig.signal_type || (isCall ? "CONT_BULL" : "CONT_BEAR");
+      const activeCount = sigs.filter((s) => s.status === "ACTIVE").length;
+
+      // Status badge
+      let stBadge = "";
+      if (r.status === "ACTIVE") {
+        stBadge = `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem"><span class="pulse-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--spark)"></span>ACTIVE</span>`;
+      } else if (r.status === "TARGET_HIT") {
+        stBadge = `<span style="background:rgba(34,197,94,.15);color:var(--go);border:1px solid rgba(34,197,94,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">🎯 TARGET HIT</span>`;
+      } else if (r.status === "SL_HIT") {
+        stBadge = `<span style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">⛔ SL HIT</span>`;
+      } else {
+        stBadge = `<span style="background:var(--surface-3);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-size:0.70rem">${r.status || "CLOSED"}</span>`;
+      }
+
+      // LTP & MTM
+      const entryPx = Number(r.option_entry || 0);
+      const currPx = Number(r.current_ltp || entryPx);
+      const exitPx = r.exit_price ? Number(r.exit_price) : null;
+      const dispPx = exitPx !== null ? exitPx : currPx;
+      const pts = Number(r.pnl_pts !== undefined ? r.pnl_pts : dispPx - entryPx);
+      const pct = Number(r.pnl_pct !== undefined ? r.pnl_pct : entryPx > 0 ? (pts / entryPx) * 100 : 0);
+      const pnlCol = pts >= 0 ? "var(--go)" : "var(--stop)";
+
+      const ptTag = r.paper_trade_id
+        ? `<span style="font-family:var(--mono);font-size:0.68rem;color:var(--spark)" title="${r.paper_trade_id}">${r.paper_trade_id.substring(0, 13)}…</span>`
+        : `<span style="color:var(--ink-mute)">—</span>`;
+
+      html += `
+        <tr style="border-bottom:1px solid var(--line);vertical-align:middle">
+          <td>
+            <span style="font-family:var(--mono);font-weight:700;color:var(--ink)">${trigTime}</span><br>
+            <span style="font-size:0.66rem;color:var(--ink-mute);font-family:var(--mono)">${trigDate}</span>
+          </td>
+          <td>
+            <span style="font-weight:750;color:var(--ink);display:block;font-size:0.72rem">${sigType}</span>
+            <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.66rem;font-weight:750;${biasCls}">${isCall ? "🟢 LONG" : "🔴 SHORT"}</span>
+          </td>
+          <td>
+            <b style="font-size:0.78rem">${r.symbol} ${Math.round(r.strike)} ${r.side}</b>
+          </td>
+          <td>
+            <span style="color:var(--ink)">Entry: ₹${Number(r.spot_entry || 0).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})}</span><br>
+            <span style="font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono)">Inval: ₹${Number(r.spot_invalidation || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} | Tgt: ₹${Number(r.spot_target || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})}</span>
+          </td>
+          <td>
+            <b style="font-family:var(--mono)">₹${entryPx.toFixed(1)}</b>
+          </td>
+          <td>
+            <span style="color:var(--go);font-family:var(--mono);font-weight:700">🎯 Tgt: ₹${Number(r.option_target || 0).toFixed(1)}</span><br>
+            <span style="color:var(--stop);font-family:var(--mono);font-size:0.68rem">⛔ SL: ₹${Number(r.option_sl || 0).toFixed(1)}</span>
+          </td>
+          <td>
+            <span style="font-family:var(--mono);font-weight:750">₹${dispPx.toFixed(1)}</span><br>
+            <span style="font-family:var(--mono);font-size:0.68rem;font-weight:750;color:${pnlCol}">${pts >= 0 ? "+" : ""}${pts.toFixed(1)} (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)</span>
+          </td>
+          <td>
+            <span style="font-family:var(--mono);font-size:0.70rem">${sigs.length} sig (${activeCount} act)</span>
+          </td>
+          <td style="text-align:center">
+            ${stBadge}
+          </td>
+          <td style="text-align:right">
+            ${ptTag}
+          </td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = html;
   }
 
   // ---------------------------------------------------------------------------

@@ -69,7 +69,7 @@ def test_load_from_eod_snapshot_from_market_snapshot_db():
             res = _load_from_eod_snapshot(test_inst, "TEST-EOD-DB")
             assert res is True
 
-        bars = list_recent_bars(test_inst, timeframe="1m", limit=5, _auto_populate=False)
+        bars = list_recent_bars(test_inst, timeframe="1m", limit=5, session_only=False, _auto_populate=False)
         assert len(bars) > 0
         assert bars[-1].close == 22888.0
         assert bars[-1].open == 22800.0

@@ -379,6 +379,11 @@ class LiveSentinelManager:
                     micro_sig = classifier.evaluate_micro_burst(burst, ctx)
                     if micro_sig:
                         save_signal(micro_sig)
+                        try:
+                            from analytics.sentinel_recommendations import on_sentinel_signal
+                            on_sentinel_signal(micro_sig, current_spot=float(ltp))
+                        except Exception as e_sig_rec:
+                            log.debug("Sentinel micro rec error: %s", e_sig_rec)
 
             if completed_bar is not None:
                 save_bar(completed_bar)
@@ -392,6 +397,11 @@ class LiveSentinelManager:
                         sig = classifier.evaluate_bar(completed_bar, ctx)
                         if sig:
                             save_signal(sig)
+                            try:
+                                from analytics.sentinel_recommendations import on_sentinel_signal
+                                on_sentinel_signal(sig, current_spot=float(ltp))
+                            except Exception as e_sig_rec:
+                                log.debug("Sentinel bar rec error: %s", e_sig_rec)
 
                 # Update outcomes of recent signals with subsequent bars
                 try:
@@ -407,6 +417,14 @@ class LiveSentinelManager:
                         if sub_bars:
                             upd_o = evaluate_signal_outcomes(s, sub_bars, call_wall=cw or 0.0, put_wall=pw or 0.0)
                             save_outcome(upd_o)
+
+                    # Evaluate Sentinel trade recommendations lifecycle
+                    from analytics.sentinel_recommendations import evaluate_sentinel_recommendations_lifecycle
+                    evaluate_sentinel_recommendations_lifecycle(
+                        symbol=symbol,
+                        current_spot=float(ltp),
+                        bars_1m=bars_eval,
+                    )
                 except Exception as err:
                     log.debug("Failed evaluating live tick outcomes for %s: %s", instrument_id, err)
 

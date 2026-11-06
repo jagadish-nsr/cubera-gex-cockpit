@@ -201,6 +201,37 @@ def ensure_schema() -> None:
             holding_time_minutes REAL,
             market_hour_of_day INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS sentinel_trade_recommendations (
+            rec_id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            strike REAL NOT NULL,
+            side TEXT NOT NULL,
+            option_symbol TEXT NOT NULL,
+            triggered_at TEXT NOT NULL,
+            status TEXT DEFAULT 'ACTIVE',
+            spot_entry REAL NOT NULL,
+            spot_target REAL NOT NULL,
+            spot_invalidation REAL NOT NULL,
+            option_entry REAL NOT NULL,
+            option_target REAL NOT NULL,
+            option_sl REAL NOT NULL,
+            current_ltp REAL DEFAULT 0.0,
+            current_spot REAL DEFAULT 0.0,
+            pnl_pts REAL DEFAULT 0.0,
+            pnl_pct REAL DEFAULT 0.0,
+            paper_trade_id TEXT,
+            contributing_signals_json TEXT NOT NULL,
+            outcome_ts TEXT,
+            exit_price REAL,
+            exit_reason TEXT,
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sentinel_rec_sym_status ON sentinel_trade_recommendations(symbol, status);
+        CREATE INDEX IF NOT EXISTS idx_sentinel_rec_triggered ON sentinel_trade_recommendations(triggered_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_sentinel_rec_strike ON sentinel_trade_recommendations(symbol, strike, side, status);
         """)
 
         # Schema evolution: Ensure trajectory & peak conviction columns exist
@@ -797,7 +828,7 @@ def resolve_live_option_ltp(
     invalidation is a separate check and does not use this value.
     """
     book = options_ltp_map or {}
-    for key in (option_symbol, f"{strike}_{side}"):
+    for key in (option_symbol, f"{strike}_{side}", f"{int(strike)}_{side}", f"{symbol}_{int(strike)}_{side}"):
         if not key:
             continue
         try:
@@ -1104,3 +1135,201 @@ def summarize_effectiveness(rows: list[dict] | None) -> dict:
         "has_samples": total > 0,
         "by_strategy": items,
     }
+
+
+# ===========================================================================
+# Sentinel OrderFlow Signal-Based Recommendations Store
+# ===========================================================================
+
+def save_or_update_sentinel_recommendation(rec: dict) -> None:
+    """Save or update a Sentinel signal-based trade recommendation."""
+    ensure_schema()
+    now_ts = _now_ist_str()
+    sig_json = rec.get("contributing_signals_json")
+    if isinstance(sig_json, (list, dict)):
+        sig_json = json.dumps(sig_json)
+    elif not sig_json:
+        sig_json = "[]"
+
+    with _WRITE_LOCK, _get_write_conn() as conn:
+        conn.execute("""
+            INSERT INTO sentinel_trade_recommendations (
+                rec_id, symbol, strike, side, option_symbol, triggered_at,
+                status, spot_entry, spot_target, spot_invalidation,
+                option_entry, option_target, option_sl, current_ltp,
+                current_spot, pnl_pts, pnl_pct, paper_trade_id,
+                contributing_signals_json, outcome_ts, exit_price, exit_reason,
+                created_at, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(rec_id) DO UPDATE SET
+                status = excluded.status,
+                spot_target = excluded.spot_target,
+                spot_invalidation = excluded.spot_invalidation,
+                option_target = excluded.option_target,
+                option_sl = excluded.option_sl,
+                current_ltp = excluded.current_ltp,
+                current_spot = excluded.current_spot,
+                pnl_pts = excluded.pnl_pts,
+                pnl_pct = excluded.pnl_pct,
+                paper_trade_id = COALESCE(excluded.paper_trade_id, sentinel_trade_recommendations.paper_trade_id),
+                contributing_signals_json = excluded.contributing_signals_json,
+                outcome_ts = COALESCE(excluded.outcome_ts, sentinel_trade_recommendations.outcome_ts),
+                exit_price = COALESCE(excluded.exit_price, sentinel_trade_recommendations.exit_price),
+                exit_reason = COALESCE(excluded.exit_reason, sentinel_trade_recommendations.exit_reason),
+                updated_at = excluded.updated_at
+        """, (
+            rec["rec_id"],
+            rec["symbol"].upper(),
+            float(rec["strike"]),
+            rec["side"].upper(),
+            rec.get("option_symbol", ""),
+            rec.get("triggered_at", now_ts),
+            rec.get("status", "ACTIVE"),
+            float(rec.get("spot_entry", 0.0)),
+            float(rec.get("spot_target", 0.0)),
+            float(rec.get("spot_invalidation", 0.0)),
+            float(rec.get("option_entry", 0.0)),
+            float(rec.get("option_target", 0.0)),
+            float(rec.get("option_sl", 0.0)),
+            float(rec.get("current_ltp", 0.0)),
+            float(rec.get("current_spot", 0.0)),
+            float(rec.get("pnl_pts", 0.0)),
+            float(rec.get("pnl_pct", 0.0)),
+            rec.get("paper_trade_id"),
+            sig_json,
+            rec.get("outcome_ts"),
+            float(rec["exit_price"]) if rec.get("exit_price") is not None else None,
+            rec.get("exit_reason"),
+            rec.get("created_at", now_ts),
+            now_ts,
+        ))
+        conn.commit()
+
+
+def get_active_sentinel_recommendation(symbol: str, strike: float, side: str) -> dict | None:
+    """Retrieve currently ACTIVE recommendation for a specific strike & side."""
+    ensure_schema()
+    try:
+        with _get_read_conn() as conn:
+            row = conn.execute("""
+                SELECT * FROM sentinel_trade_recommendations
+                WHERE symbol = ? AND strike = ? AND side = ? AND status = 'ACTIVE'
+                ORDER BY triggered_at DESC LIMIT 1
+            """, (symbol.upper(), float(strike), side.upper())).fetchone()
+            if row:
+                res = dict(row)
+                try:
+                    res["contributing_signals"] = json.loads(res.get("contributing_signals_json") or "[]")
+                except Exception:
+                    res["contributing_signals"] = []
+                return res
+            return None
+    except Exception as e:
+        log.warning(f"Error fetching active sentinel recommendation: {e}")
+        return None
+
+
+def list_active_sentinel_recommendations(symbol: str | None = None) -> list[dict]:
+    """Retrieve all currently ACTIVE Sentinel recommendations."""
+    ensure_schema()
+    try:
+        with _get_read_conn() as conn:
+            if symbol and symbol.upper() != "ALL":
+                rows = conn.execute("""
+                    SELECT * FROM sentinel_trade_recommendations
+                    WHERE symbol = ? AND status = 'ACTIVE'
+                    ORDER BY triggered_at DESC
+                """, (symbol.upper(),)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT * FROM sentinel_trade_recommendations
+                    WHERE status = 'ACTIVE'
+                    ORDER BY triggered_at DESC
+                """).fetchall()
+
+            res = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["contributing_signals"] = json.loads(d.get("contributing_signals_json") or "[]")
+                except Exception:
+                    d["contributing_signals"] = []
+                res.append(d)
+            return res
+    except Exception as e:
+        log.warning(f"Error listing active sentinel recommendations: {e}")
+        return []
+
+
+def list_sentinel_recommendations(
+    symbol: str | None = None,
+    session_date: str = "today",
+    status: str = "ALL",
+    limit: int = 100,
+) -> list[dict]:
+    """List Sentinel trade recommendations ordered by triggered_at DESC."""
+    ensure_schema()
+    try:
+        with _get_read_conn() as conn:
+            query = "SELECT * FROM sentinel_trade_recommendations WHERE 1=1"
+            params: list[Any] = []
+
+            if symbol and symbol.upper() != "ALL":
+                query += " AND symbol = ?"
+                params.append(symbol.upper())
+
+            if session_date == "today":
+                today_str = datetime.now(IST).strftime("%Y-%m-%d")
+                query += " AND substr(triggered_at, 1, 10) = ?"
+                params.append(today_str)
+            elif session_date and session_date.upper() != "ALL":
+                query += " AND substr(triggered_at, 1, 10) = ?"
+                params.append(session_date)
+
+            if status and status.upper() != "ALL":
+                st = status.upper()
+                if st == "ACTIVE":
+                    query += " AND status = 'ACTIVE'"
+                elif st in ("TARGET_HIT", "TGT_HIT"):
+                    query += " AND status = 'TARGET_HIT'"
+                elif st in ("SL_HIT", "STOP_HIT"):
+                    query += " AND status = 'SL_HIT'"
+                elif st == "CLOSED":
+                    query += " AND status != 'ACTIVE'"
+
+            query += " ORDER BY triggered_at DESC, created_at DESC LIMIT ?"
+            params.append(limit)
+
+            rows = conn.execute(query, params).fetchall()
+            res = []
+            for r in rows:
+                d = dict(r)
+                try:
+                    d["contributing_signals"] = json.loads(d.get("contributing_signals_json") or "[]")
+                except Exception:
+                    d["contributing_signals"] = []
+                res.append(d)
+            return res
+    except Exception as e:
+        log.warning(f"Error listing sentinel recommendations: {e}")
+        return []
+
+
+def update_sentinel_recommendation_status(
+    rec_id: str,
+    status: str,
+    exit_price: float | None = None,
+    exit_reason: str | None = None,
+    outcome_ts: str | None = None,
+) -> None:
+    """Transition Sentinel recommendation to terminal status (TARGET_HIT, SL_HIT, INVALIDATED)."""
+    ensure_schema()
+    now_ts = outcome_ts or _now_ist_str()
+    with _WRITE_LOCK, _get_write_conn() as conn:
+        conn.execute("""
+            UPDATE sentinel_trade_recommendations
+            SET status = ?, exit_price = ?, exit_reason = ?, outcome_ts = ?, updated_at = ?
+            WHERE rec_id = ?
+        """, (status, exit_price, exit_reason, now_ts, now_ts, rec_id))
+        conn.commit()
+

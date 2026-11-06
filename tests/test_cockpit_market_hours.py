@@ -90,15 +90,15 @@ def test_gex_daemon_pauses_when_market_closed():
     from scripts.gex_daemon import run_daemon
     import time
 
-    with patch("config.is_market_open", return_value=False):
-        with patch("scripts.gex_daemon.load_dashboard") as mock_load:
-            # Let it run one iteration and then raise an exception to exit cleanly
-            with patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")):
-                try:
-                    run_daemon(ignore_session=False)
-                except KeyboardInterrupt:
-                    pass
-                assert not mock_load.called
+    with patch("importlib.reload"), \
+         patch("config.is_market_open", return_value=False), \
+         patch("scripts.gex_daemon.load_dashboard") as mock_load, \
+         patch("time.sleep", side_effect=KeyboardInterrupt("stop loop")):
+        try:
+            run_daemon(ignore_session=False)
+        except KeyboardInterrupt:
+            pass
+        assert not mock_load.called
 
 
 def test_compile_quote_does_not_invent_futures():

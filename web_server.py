@@ -3422,6 +3422,38 @@ async def get_recommendations_history_endpoint(
     }
 
 
+@app.get("/api/recommendations/sentinel")
+async def get_sentinel_recommendations_endpoint(
+    symbol: Optional[str] = None,
+    session: Optional[str] = "today",
+    status: Optional[str] = "ALL",
+    limit: Optional[int] = 100,
+):
+    """Retrieve Sentinel OrderFlow signal-based trade recommendations and daily success metrics."""
+    from analytics.sentinel_recommendations import get_sentinel_daily_metrics
+    from data.journal import recommendations_store as rec_store
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    query_sym = None if sym in ("ALL", "ANY") else sym
+    sess_date = session or "today"
+
+    recs = rec_store.list_sentinel_recommendations(
+        symbol=query_sym,
+        session_date=sess_date,
+        status=status or "ALL",
+        limit=limit or 100,
+    )
+    metrics = get_sentinel_daily_metrics(symbol=query_sym, session_date=sess_date)
+
+    return {
+        "symbol": sym,
+        "session": sess_date,
+        "status_filter": status,
+        "metrics": metrics,
+        "recommendations": recs,
+    }
+
+
 @app.get("/api/recommendations/alerts")
 async def recommendation_alerts():
     """Unacknowledged pin lifecycle events: target, stop, or invalidation."""
