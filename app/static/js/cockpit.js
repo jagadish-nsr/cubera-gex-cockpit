@@ -4791,16 +4791,41 @@
   }
   window.loadSentinelRecommendations = loadSentinelRecommendations;
 
+  // Client mirror of auto-paper so polling/render cannot uncheck mid-click.
+  window._sentinelAutoPaper = window._sentinelAutoPaper || false;
+  window._sentinelAutoPaperToggleInFlight = false;
+
+  function _applySentinelAutoPaperUI(enabled) {
+    const on = !!enabled;
+    window._sentinelAutoPaper = on;
+    const autoEl = document.getElementById("sentinel-auto-paper-toggle");
+    if (autoEl) autoEl.checked = on;
+    const paperBadge = document.getElementById("sentinel-paper-mode-badge");
+    if (paperBadge) {
+      paperBadge.textContent = on ? "Paper: auto-open" : "Paper: confirm";
+      paperBadge.style.color = on ? "var(--go)" : "var(--ink-mute)";
+    }
+  }
+
   window.toggleSentinelAutoPaper = async function (enabled) {
+    const next = !!enabled;
+    const prev = !!window._sentinelAutoPaper;
+    window._sentinelAutoPaperToggleInFlight = true;
+    _applySentinelAutoPaperUI(next);
     try {
-      await fetch("/api/recommendations/sentinel/auto-paper", {
+      const res = await fetch("/api/recommendations/sentinel/auto-paper", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: !!enabled }),
+        body: JSON.stringify({ enabled: next }),
       });
-      loadSentinelRecommendations();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      _applySentinelAutoPaperUI(data.auto_paper !== undefined ? !!data.auto_paper : next);
     } catch (err) {
       console.warn("Failed to toggle auto-paper:", err);
+      _applySentinelAutoPaperUI(prev);
+    } finally {
+      window._sentinelAutoPaperToggleInFlight = false;
     }
   };
 
@@ -4832,14 +4857,13 @@
     window._cachedSentinelRecData = data;
     const recs = (data && data.recommendations) || [];
     const metrics = (data && data.metrics) || {};
-    const autoPaper = !!(data && data.auto_paper);
 
-    const autoEl = document.getElementById("sentinel-auto-paper-toggle");
-    if (autoEl) autoEl.checked = autoPaper;
-    const paperBadge = document.getElementById("sentinel-paper-mode-badge");
-    if (paperBadge) {
-      paperBadge.textContent = autoPaper ? "Paper: auto-open" : "Paper: confirm";
-      paperBadge.style.color = autoPaper ? "var(--go)" : "var(--ink-mute)";
+    // Sync checkbox from server only when the user is not mid-toggle.
+    if (!window._sentinelAutoPaperToggleInFlight) {
+      const serverAuto = (data && typeof data.auto_paper === "boolean")
+        ? data.auto_paper
+        : !!(metrics && metrics.auto_paper);
+      _applySentinelAutoPaperUI(serverAuto);
     }
     const contractEl = document.getElementById("sentinel-contract-strip");
     if (contractEl && metrics.contract) {

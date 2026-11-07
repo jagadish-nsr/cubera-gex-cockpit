@@ -1467,9 +1467,10 @@
                 <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option setups from live OrderFlow ticks. Target on touch; stop = spot invalidation on completed 5m cash close. Paper opens only on confirm (or auto-paper).</span>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-                <label style="font-size:0.70rem;color:var(--ink-mute);font-weight:700;display:flex;align-items:center;gap:4px"
+                <label style="font-size:0.70rem;color:var(--ink-mute);font-weight:700;display:flex;align-items:center;gap:4px;cursor:pointer"
                   title="When off (default), paper trades open only after Confirm">
                   <input type="checkbox" id="sentinel-auto-paper-toggle"
+                    onclick="event.stopPropagation()"
                     onchange="window.toggleSentinelAutoPaper(this.checked)"> Auto-paper
                 </label>
                 <!-- Session Filter -->
@@ -2953,7 +2954,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.50"></script>
+  <script src="/static/js/cockpit.js?v=6.51"></script>
 </body>
 
 </html>
