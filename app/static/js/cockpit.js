@@ -4791,15 +4791,17 @@
   }
   window.loadSentinelRecommendations = loadSentinelRecommendations;
 
-  // Client mirror of auto-paper so polling/render cannot uncheck mid-click.
+  // Checkbox is owned by the client after first hydrate. List polling must not
+  // overwrite it (stale GETs / missing auto_paper were unchecking on every refresh).
   window._sentinelAutoPaper = window._sentinelAutoPaper || false;
-  window._sentinelAutoPaperToggleInFlight = false;
+  window._sentinelAutoPaperHydrated = window._sentinelAutoPaperHydrated || false;
 
   function _applySentinelAutoPaperUI(enabled) {
     const on = !!enabled;
     window._sentinelAutoPaper = on;
+    window._sentinelAutoPaperHydrated = true;
     const autoEl = document.getElementById("sentinel-auto-paper-toggle");
-    if (autoEl) autoEl.checked = on;
+    if (autoEl && autoEl.checked !== on) autoEl.checked = on;
     const paperBadge = document.getElementById("sentinel-paper-mode-badge");
     if (paperBadge) {
       paperBadge.textContent = on ? "Paper: auto-open" : "Paper: confirm";
@@ -4810,7 +4812,7 @@
   window.toggleSentinelAutoPaper = async function (enabled) {
     const next = !!enabled;
     const prev = !!window._sentinelAutoPaper;
-    window._sentinelAutoPaperToggleInFlight = true;
+    // Keep the native checkbox state the user just clicked; only revert on API failure.
     _applySentinelAutoPaperUI(next);
     try {
       const res = await fetch("/api/recommendations/sentinel/auto-paper", {
@@ -4819,13 +4821,16 @@
         body: JSON.stringify({ enabled: next }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      _applySentinelAutoPaperUI(data.auto_paper !== undefined ? !!data.auto_paper : next);
+      if (!res.ok) throw new Error(data.error || data.detail || `HTTP ${res.status}`);
+      _applySentinelAutoPaperUI(typeof data.auto_paper === "boolean" ? data.auto_paper : next);
     } catch (err) {
       console.warn("Failed to toggle auto-paper:", err);
       _applySentinelAutoPaperUI(prev);
-    } finally {
-      window._sentinelAutoPaperToggleInFlight = false;
+      const paperBadge = document.getElementById("sentinel-paper-mode-badge");
+      if (paperBadge) {
+        paperBadge.textContent = "Paper: toggle failed — restart server?";
+        paperBadge.style.color = "var(--stop)";
+      }
     }
   };
 
@@ -4858,12 +4863,11 @@
     const recs = (data && data.recommendations) || [];
     const metrics = (data && data.metrics) || {};
 
-    // Sync checkbox from server only when the user is not mid-toggle.
-    if (!window._sentinelAutoPaperToggleInFlight) {
-      const serverAuto = (data && typeof data.auto_paper === "boolean")
-        ? data.auto_paper
-        : !!(metrics && metrics.auto_paper);
-      _applySentinelAutoPaperUI(serverAuto);
+    // Hydrate once from server; later polls must not fight the user's click.
+    if (!window._sentinelAutoPaperHydrated && data && typeof data.auto_paper === "boolean") {
+      _applySentinelAutoPaperUI(data.auto_paper);
+    } else if (window._sentinelAutoPaperHydrated) {
+      _applySentinelAutoPaperUI(window._sentinelAutoPaper);
     }
     const contractEl = document.getElementById("sentinel-contract-strip");
     if (contractEl && metrics.contract) {
