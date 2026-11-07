@@ -1074,7 +1074,7 @@ class TestOffMarketPersistence:
         assert "market_open" in data
 
     def test_documentation_endpoints(self):
-        """Verify documentation REST API and rendered HTML endpoints for all 12 guides."""
+        """Verify documentation REST API and rendered HTML endpoints for all mapped guides."""
         from web_server import DOCS_MAP
 
         # 1. /api/docs/list
@@ -1082,7 +1082,8 @@ class TestOffMarketPersistence:
         assert status == 200
         data = json.loads(content)
         assert "guides" in data
-        assert len(data["guides"]) == 12
+        assert len(data["guides"]) == len(DOCS_MAP)
+        assert any(g.get("id") == "gamma_blast_scoring_guide" for g in data["guides"])
 
         # 2. /api/docs/{guide_id}
         status, _, content = asyncio.run(asgi_request("GET", "/api/docs/user_guide"))
@@ -1114,10 +1115,11 @@ class TestOffMarketPersistence:
         assert "Target Engine" in html
 
     def test_all_docs_files_exist_on_disk(self):
-        """Verify all 12 markdown source manuals mapped in DOCS_MAP exist on disk and have content."""
+        """Verify all markdown source manuals mapped in DOCS_MAP exist on disk and have content."""
         from web_server import DOCS_MAP, ROOT_DIR
 
-        assert len(DOCS_MAP) == 12
+        assert "gamma_blast_scoring_guide" in DOCS_MAP
+        assert len(DOCS_MAP) >= 13
         for doc_id, info in DOCS_MAP.items():
             doc_file = ROOT_DIR / info["file"]
             assert doc_file.exists(), f"Missing docs markdown file: {info['file']} for {doc_id}"

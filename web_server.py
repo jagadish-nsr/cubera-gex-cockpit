@@ -6186,6 +6186,11 @@ DOCS_MAP = {
         "file": "docs/gamma-blast-research.md",
         "badge": "Indian Market Mode (SCSP)",
     },
+    "gamma_blast_scoring_guide": {
+        "title": "⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade",
+        "file": "docs/gamma-blast-scoring-guide.md",
+        "badge": "Expiry Blast Score (Map + Risk)",
+    },
     "participant_guide": {
         "title": "🧭 Participant Open Interest & Institutional Drift",
         "file": "docs/participant-oi.md",

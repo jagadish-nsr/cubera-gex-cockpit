@@ -965,6 +965,20 @@ body {
   white-space: nowrap;
 }
 
+#tab-cockpit .gamma-blast-guide-link {
+  margin-left: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--spark);
+  text-decoration: none;
+}
+
+#tab-cockpit .gamma-blast-guide-link:hover {
+  text-decoration: underline;
+}
+
 #tab-cockpit .gamma-blast-score {
   flex: 0 0 auto;
   margin-left: auto;
