@@ -32,39 +32,35 @@ def _now_ist_str() -> str:
 
 
 def _resolve_symbol(instrument_id: str) -> str:
-    """Normalize instrument id to base cash symbol e.g. 'NIFTY-FUT' -> 'NIFTY'."""
-    clean = str(instrument_id or "NIFTY").upper()
+    """Normalize instrument id to base cash symbol e.g. 'NIFTY-FUT' -> 'NIFTY'.
+
+    Zero-Fabrication Contract:
+    Only returns symbols registered in config.INDICES ('NIFTY', 'BANKNIFTY', 'SENSEX').
+    Refuses FINNIFTY or unknown symbols to prevent orphaned contracts with fabricated parameters.
+    """
+    clean = str(instrument_id or "").upper().strip()
     for suffix in ("-FUT", "_FUT", "-INDEX", "_INDEX"):
         if clean.endswith(suffix):
             clean = clean[:-len(suffix)]
-    return clean if clean in ("NIFTY", "BANKNIFTY", "SENSEX", "FINNIFTY") else "NIFTY"
+    return clean if clean in config.INDICES else ""
 
 
 def _get_strike_step(symbol: str) -> int:
-    """Return index strike step (50 for NIFTY, 100 for SENSEX/BANKNIFTY)."""
+    """Return index strike step strictly from config. Never guess or fabricate."""
     idx = config.get_index(symbol)
     step = int(getattr(idx, "strike_step", 0) or 0)
     if step <= 0:
-        step = 50 if symbol == "NIFTY" else 100
+        raise ValueError(f"No authentic strike step configured for index {symbol}")
     return step
 
 
 def _get_lot_size(symbol: str) -> int:
-    """Return index contract lot size from config."""
-    try:
-        idx = config.get_index(symbol)
-        lot = int(getattr(idx, "lot_size", 0) or 0)
-        if lot > 0:
-            return lot
-    except Exception:
-        pass
-    if symbol == "NIFTY":
-        return 75
-    if symbol == "BANKNIFTY":
-        return 15
-    if symbol == "SENSEX":
-        return 10
-    return 50
+    """Return index contract lot size strictly from config. Never invent lot sizes."""
+    idx = config.get_index(symbol)
+    lot = int(getattr(idx, "lot_size", 0) or 0)
+    if lot <= 0:
+        raise ValueError(f"No authentic lot size configured for index {symbol}")
+    return lot
 
 
 def _round_strike(price: float, step: int) -> float:
@@ -77,11 +73,15 @@ def _resolve_option_entry_ltp(
     symbol: str,
     strike: float,
     side: str,
-    spot: float,
     opt_sym: str = "",
     options_ltp_map: dict | None = None,
-) -> float:
-    """Resolve live option premium from ticks, chain map, or robust Black-Scholes estimate."""
+) -> float | None:
+    """Resolve live option premium from live tick book, WebSocket cache, or chain map.
+
+    Zero-Fabrication Contract:
+    Never invent an option premium from Black-Scholes or artificial delta when market data
+    is unavailable. If no authentic quote exists, returns None.
+    """
     # 1. Check live memory / chain map
     book = options_ltp_map or {}
     for k in (opt_sym, f"{strike}_{side}", f"{int(strike)}_{side}", f"{symbol}_{int(strike)}_{side}"):
@@ -97,16 +97,7 @@ def _resolve_option_entry_ltp(
     if ltp is not None and ltp > 0:
         return round(float(ltp), 2)
 
-    # 2. Approximate Black-Scholes pricing fallback
-    from analytics.trade_ideas import _approx_bs_price_and_delta
-    approx_px, _ = _approx_bs_price_and_delta(
-        spot=spot,
-        strike=strike,
-        is_call=(side.upper() == "CE"),
-        dte_days=3.0,
-        iv=0.135,
-    )
-    return round(float(approx_px), 2)
+    return None
 
 
 def on_sentinel_signal(
@@ -129,6 +120,10 @@ def on_sentinel_signal(
         return None  # No directional trade for neutral signals
 
     symbol = _resolve_symbol(signal.instrument_id)
+    if not symbol or symbol not in config.INDICES:
+        log.warning("Unsupported or unconfigured index symbol %r for Sentinel recommendation", signal.instrument_id)
+        return None
+
     step = _get_strike_step(symbol)
     side = "CE" if bias == "LONG" else "PE"
 
@@ -141,18 +136,23 @@ def on_sentinel_signal(
             spot = float(q.get("spot") or 0.0)
         except Exception:
             pass
-    if spot <= 0:
-        spot = 24500.0 if symbol == "NIFTY" else (52000.0 if symbol == "BANKNIFTY" else 81000.0)
+
+    # Zero-Fabrication Contract: Refuse signal when spot is missing, non-positive, or placeholder
+    if spot <= 0 or config.chain_spot_is_placeholder(symbol, spot):
+        log.warning(
+            "Sentinel recommendation refused: invalid or placeholder spot %.2f for %s",
+            spot, symbol,
+        )
+        return None
 
     atm_strike = _round_strike(spot, step)
 
     # 2. Derive Spot Targets and Invalidation on Cash Index
-    default_risk = 25.0 if symbol == "NIFTY" else (50.0 if symbol == "BANKNIFTY" else 75.0)
     inval_level = float(signal.invalidation_level or 0.0)
     if inval_level <= 0 or (bias == "LONG" and inval_level >= spot) or (bias == "SHORT" and inval_level <= spot):
-        spot_inval = round(spot - default_risk if bias == "LONG" else spot + default_risk, 2)
-    else:
-        spot_inval = round(inval_level, 2)
+        log.warning("Sentinel recommendation refused: invalid signal invalidation %.2f for %s", inval_level, symbol)
+        return None
+    spot_inval = round(inval_level, 2)
 
     target_pts = float(signal.target_1_pts or 0.0)
     if target_pts <= 0:
@@ -163,7 +163,13 @@ def on_sentinel_signal(
 
     # 3. Resolve Option Contract & Entry Premium
     opt_sym = f"{symbol} {expiry_tag + ' ' if expiry_tag else ''}{int(atm_strike)} {side}"
-    entry_ltp = _resolve_option_entry_ltp(symbol, atm_strike, side, spot, opt_sym, options_ltp_map)
+    entry_ltp = _resolve_option_entry_ltp(symbol, atm_strike, side, opt_sym, options_ltp_map)
+    if entry_ltp is None or entry_ltp <= 0:
+        log.warning(
+            "Sentinel recommendation refused: no authentic live option quote available for %s %d %s",
+            symbol, int(atm_strike), side,
+        )
+        return None
 
     # 4. Target Engine Repricing (Spot -> Option)
     from analytics.trade_ideas import _reprice_trade_idea_targets
@@ -220,7 +226,11 @@ def on_sentinel_signal(
         else:
             max_spot_target = min(s["spot_target"] for s in active_sigs)
 
-        # SL remains active; retain most conservative/protective stop
+        # SL Policy for Stacked Long Option Positions:
+        # For option buyers, max(active_sls) acts as a protective/trailing stop floor
+        # (a higher premium floor curtails maximum adverse loss). If an elevated signal
+        # is later invalidated on a 5m close, the invalidation fallback mechanism restores
+        # the wider stop of the remaining active signals.
         active_sls = [s["option_sl"] for s in active_sigs if s.get("option_sl", 0) > 0]
         eff_sl = max(active_sls) if active_sls else existing.get("option_sl", sl_opt)
 
@@ -429,21 +439,25 @@ def evaluate_sentinel_recommendations_lifecycle(
         spot_inval = float(rec["spot_invalidation"])
         pt_id = rec.get("paper_trade_id")
 
-        curr_ltp = _resolve_option_entry_ltp(symbol, strike, side, current_spot, opt_sym, options_ltp_map)
-        pnl_pts = round(curr_ltp - opt_entry, 2)
+        curr_ltp = _resolve_option_entry_ltp(symbol, strike, side, opt_sym, options_ltp_map)
+        has_live_ltp = (curr_ltp is not None and curr_ltp > 0)
+        disp_ltp = curr_ltp if has_live_ltp else opt_entry
+        pnl_pts = round(disp_ltp - opt_entry, 2)
         pnl_pct = round((pnl_pts / opt_entry) * 100.0, 1) if opt_entry > 0 else 0.0
 
         # Update telemetry
-        rec["current_ltp"] = curr_ltp
+        rec["current_ltp"] = disp_ltp
         rec["current_spot"] = current_spot
         rec["pnl_pts"] = pnl_pts
         rec["pnl_pct"] = pnl_pct
 
         # ------------------------------------------------------------------
         # Check TARGET HIT on TOUCH (Requirement 6)
+        # Target hit occurs on touch of either option target (requires authentic live LTP)
+        # or equivalent Cash Index spot target.
         # ------------------------------------------------------------------
         target_hit = False
-        if opt_target > 0 and curr_ltp >= opt_target:
+        if has_live_ltp and opt_target > 0 and curr_ltp >= opt_target:
             target_hit = True
         elif side == "CE" and spot_target > 0 and current_spot >= spot_target:
             target_hit = True
@@ -451,7 +465,7 @@ def evaluate_sentinel_recommendations_lifecycle(
             target_hit = True
 
         if target_hit:
-            exit_px = max(curr_ltp, opt_target)
+            exit_px = max(curr_ltp, opt_target) if has_live_ltp else opt_target
             rec_store.update_sentinel_recommendation_status(
                 rec_id=rec_id,
                 status="TARGET_HIT",
@@ -521,7 +535,7 @@ def evaluate_sentinel_recommendations_lifecycle(
                 log.info("Signal invalidated for %s. Fallback target set to %.1f", rec_id, new_opt_target)
 
         if sl_hit:
-            exit_px = min(curr_ltp, opt_sl)
+            exit_px = curr_ltp if has_live_ltp else opt_sl
             rec_store.update_sentinel_recommendation_status(
                 rec_id=rec_id,
                 status="SL_HIT",

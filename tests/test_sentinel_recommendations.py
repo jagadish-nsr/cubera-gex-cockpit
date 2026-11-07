@@ -41,6 +41,15 @@ def isolate_databases(tmp_path, monkeypatch):
 
     rec_store.ensure_schema()
     journal_store.ensure_schema()
+
+    # Provide deterministic test quotes for option contracts unless overridden in options_ltp_map
+    orig_resolver = rec_store.resolve_live_option_ltp
+    def _mock_resolve_ltp(symbol, strike, side, opt_sym, options_ltp_map):
+        res = orig_resolver(symbol, strike, side, opt_sym, options_ltp_map)
+        if res is not None and res > 0:
+            return res
+        return 150.0  # authentic test option premium
+    monkeypatch.setattr(rec_store, "resolve_live_option_ltp", _mock_resolve_ltp)
     yield
 
 
@@ -181,26 +190,26 @@ def test_invalidation_fallback_to_next_highest_active_target():
     """Requirement 8: If max-target signal is invalidated on a 5m close, fallback to next highest target."""
     t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
 
-    # Signal 1: Conservative target (Tgt: 24550, Inval: 24470)
+    # Signal 1: Conservative target (Tgt: 24560, Inval: 24470)
     sig1 = _make_signal(
         event_id="sig_low_tgt",
-        entry=24500.0,
+        entry=24510.0,
         inval=24470.0,
-        target_pts=50.0,  # 24550
+        target_pts=50.0,  # 24560
         ts=t0,
     )
-    rec = sr.on_sentinel_signal(sig1, current_spot=24500.0)
+    rec = sr.on_sentinel_signal(sig1, current_spot=24510.0)
     opt_tgt_sig1 = rec["option_target"]
 
-    # Signal 2: Aggressive target with tight invalidation (Tgt: 24600, Inval: 24490)
+    # Signal 2: Aggressive target with tight invalidation (Tgt: 24605, Inval: 24490)
     sig2 = _make_signal(
         event_id="sig_high_tgt",
-        entry=24510.0,
+        entry=24515.0,
         inval=24490.0,
-        target_pts=90.0,  # 24600 (MAX target)
+        target_pts=90.0,  # 24605 (MAX target)
         ts=t0 + timedelta(minutes=1),
     )
-    rec = sr.on_sentinel_signal(sig2, current_spot=24510.0)
+    rec = sr.on_sentinel_signal(sig2, current_spot=24515.0)
     opt_tgt_sig2 = rec["option_target"]
     assert opt_tgt_sig2 > opt_tgt_sig1
 
@@ -248,13 +257,13 @@ def test_invalidation_fallback_to_next_highest_active_target():
 
     # Effective option target fell back to sig1's target
     assert updated_rec["option_target"] == opt_tgt_sig1
-    assert updated_rec["spot_target"] == 24550.0
+    assert updated_rec["spot_target"] == 24560.0
 
 
 def test_target_hit_on_touch():
     """Requirement 6: Target Hit triggers immediately on TOUCH of target price."""
-    sig = _make_signal(entry=24500.0, inval=24475.0, target_pts=50.0)
-    rec = sr.on_sentinel_signal(sig, current_spot=24500.0)
+    sig = _make_signal(entry=24510.0, inval=24475.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
     pt_id = rec["paper_trade_id"]
     tgt_px = rec["option_target"]
 
@@ -283,8 +292,8 @@ def test_target_hit_on_touch():
 def test_stop_loss_only_on_5m_candle_close_wicks_ignored():
     """Requirement 6: Stop Loss does NOT trigger on intra-bar wick dip, ONLY on 5m candle close."""
     t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
-    sig = _make_signal(entry=24500.0, inval=24470.0, target_pts=50.0, ts=t0)
-    rec = sr.on_sentinel_signal(sig, current_spot=24500.0)
+    sig = _make_signal(entry=24510.0, inval=24470.0, target_pts=50.0, ts=t0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
     sl_px = rec["option_sl"]
 
     # 1. Intra-bar wick dip below SL price (e.g. tick at sl_px - 10.0)
@@ -349,8 +358,8 @@ def test_stop_loss_only_on_5m_candle_close_wicks_ignored():
 def test_daily_metrics_computation():
     """Requirement 7: Verify daily metrics (Win rate %, PnL ₹, trades count, R:R)."""
     # Create 1 winning recommendation (Target Hit)
-    sig_win = _make_signal(event_id="sig_w1", entry=24500.0, inval=24475.0, target_pts=50.0)
-    rec_win = sr.on_sentinel_signal(sig_win, current_spot=24500.0)
+    sig_win = _make_signal(event_id="sig_w1", entry=24510.0, inval=24475.0, target_pts=50.0)
+    rec_win = sr.on_sentinel_signal(sig_win, current_spot=24510.0)
     sr.evaluate_sentinel_recommendations_lifecycle(
         symbol="NIFTY",
         current_spot=24560.0,
@@ -408,8 +417,8 @@ async def test_api_sentinel_recommendations_endpoint():
     """Verify GET /api/recommendations/sentinel endpoint returns list & metrics via ASGI."""
     from web_server import app
 
-    sig = _make_signal(event_id="sig_api_1", entry=24500.0, inval=24475.0, target_pts=50.0)
-    sr.on_sentinel_signal(sig, current_spot=24500.0)
+    sig = _make_signal(event_id="sig_api_1", entry=24510.0, inval=24475.0, target_pts=50.0)
+    sr.on_sentinel_signal(sig, current_spot=24510.0)
 
     clean_path = "/api/recommendations/sentinel"
     query_str = b"symbol=NIFTY&session=today&status=ALL"
@@ -464,45 +473,51 @@ def test_signal_save_event_triggers_recommendation_engine(tmp_path, monkeypatch)
     monkeypatch.setattr(sentinel_db, "_DB_PATH", sentinel_test_db)
     sentinel_db.ensure_sentinel_schema()
 
-    # 1. Save an initial LONG signal -> should trigger recommendation engine automatically
-    sig1 = _make_signal(
-        event_id="sig_evt_01",
-        inst="NIFTY-FUT",
-        bias="LONG",
-        sig_type="CONTINUATION_BULL",
-        entry=24508.0,
-        inval=24480.0,
-        target_pts=45.0,
-    )
-    sentinel_db.save_signal(sig1)
+    # Opt in to recommendation listener and mock market open
+    monkeypatch.setattr("config.is_market_open", lambda: True)
+    sentinel_db.enable_recommendation_listener()
+    try:
+        # 1. Save an initial LONG signal -> should trigger recommendation engine automatically
+        sig1 = _make_signal(
+            event_id="sig_evt_01",
+            inst="NIFTY-FUT",
+            bias="LONG",
+            sig_type="CONTINUATION_BULL",
+            entry=24508.0,
+            inval=24480.0,
+            target_pts=45.0,
+        )
+        sentinel_db.save_signal(sig1)
 
-    rec1 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
-    assert rec1 is not None
-    assert rec1["status"] == "ACTIVE"
-    assert rec1["strike"] == 24500.0
-    assert rec1["side"] == "CE"
-    assert rec1["spot_entry"] == 24508.0
-    assert rec1["latest_signal_type"] == "CONTINUATION_BULL"
-    assert len(rec1["contributing_signals"]) == 1
+        rec1 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
+        assert rec1 is not None
+        assert rec1["status"] == "ACTIVE"
+        assert rec1["strike"] == 24500.0
+        assert rec1["side"] == "CE"
+        assert rec1["spot_entry"] == 24508.0
+        assert rec1["latest_signal_type"] == "CONTINUATION_BULL"
+        assert len(rec1["contributing_signals"]) == 1
 
-    # 2. Save a subsequent signal on the same strike with higher target
-    sig2 = _make_signal(
-        event_id="sig_evt_02",
-        inst="NIFTY-FUT",
-        bias="LONG",
-        sig_type="ABSORPTION_BULL",
-        entry=24512.0,
-        inval=24490.0,
-        target_pts=80.0,  # Elevated target
-    )
-    sentinel_db.save_signal(sig2)
+        # 2. Save a subsequent signal on the same strike with higher target
+        sig2 = _make_signal(
+            event_id="sig_evt_02",
+            inst="NIFTY-FUT",
+            bias="LONG",
+            sig_type="ABSORPTION_BULL",
+            entry=24512.0,
+            inval=24490.0,
+            target_pts=80.0,  # Elevated target
+        )
+        sentinel_db.save_signal(sig2)
 
-    rec2 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
-    assert rec2 is not None
-    assert rec2["rec_id"] == rec1["rec_id"]  # Single active entry per strike preserved
-    assert len(rec2["contributing_signals"]) == 2
-    assert rec2["latest_signal_type"] == "ABSORPTION_BULL"
-    assert rec2["spot_target"] == 24512.0 + 80.0  # Elevated max target
+        rec2 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
+        assert rec2 is not None
+        assert rec2["rec_id"] == rec1["rec_id"]  # Single active entry per strike preserved
+        assert len(rec2["contributing_signals"]) == 2
+        assert rec2["latest_signal_type"] == "ABSORPTION_BULL"
+        assert rec2["spot_target"] == 24512.0 + 80.0  # Elevated max target
+    finally:
+        sentinel_db.disable_recommendation_listener()
 
 
 def test_custom_signal_listener_registration():
@@ -526,6 +541,69 @@ def test_custom_signal_listener_registration():
     # After unregistering, listener should not be called
     sentinel_db.dispatch_signal_event(sig)
     assert len(received) == 1
+
+
+def test_zero_fabrication_missing_or_placeholder_spot_refused():
+    """Ship Blocker 2: Missing spot or placeholder spot must REFUSE recommendation generation."""
+    # 1. Spot is zero/blank
+    sig_zero = _make_signal(entry=0.0, inval=0.0)
+    assert sr.on_sentinel_signal(sig_zero, current_spot=0.0) is None
+
+    # 2. NIFTY display placeholder 24500.0 is refused
+    sig_placeholder = _make_signal(entry=24500.0, inval=24470.0)
+    assert sr.on_sentinel_signal(sig_placeholder, current_spot=24500.0) is None
+
+    # 3. SENSEX display placeholder 73000.0 is refused
+    sig_sensex_ph = _make_signal(inst="SENSEX-FUT", entry=73000.0, inval=72900.0)
+    assert sr.on_sentinel_signal(sig_sensex_ph, current_spot=73000.0) is None
+
+    # Verify zero recommendations or paper trades were recorded
+    assert len(rec_store.list_active_sentinel_recommendations("NIFTY")) == 0
+    assert len(rec_store.list_active_sentinel_recommendations("SENSEX")) == 0
+
+
+def test_zero_fabrication_missing_live_premium_refused(monkeypatch):
+    """Ship Blocker 3: Missing live option quote must REFUSE recommendation, never invent Black-Scholes."""
+    # Force option resolver to return None (no live quote)
+    monkeypatch.setattr(rec_store, "resolve_live_option_ltp", lambda *args, **kwargs: None)
+
+    sig = _make_signal(entry=24515.0, inval=24480.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24515.0, options_ltp_map={})
+    assert rec is None  # Refused! No fabricated BS premium!
+    assert len(rec_store.list_active_sentinel_recommendations("NIFTY")) == 0
+
+
+def test_unsupported_finnifty_symbol_refused():
+    """Correctness Gap: FINNIFTY is not in config.INDICES and must be cleanly refused."""
+    sig_fin = _make_signal(inst="FINNIFTY-FUT", entry=23000.0, inval=22950.0)
+    rec = sr.on_sentinel_signal(sig_fin, current_spot=23000.0)
+    assert rec is None
+
+
+def test_market_closed_and_opt_in_gate_blocks_save_signal_trade_creation(tmp_path, monkeypatch):
+    """Ship Blocker 4: Non-live save_signal (history, demo, market closed) must NOT open paper trades."""
+    from sentinel.storage import db as sentinel_db
+
+    sentinel_test_db = tmp_path / "test_sentinel_closed.db"
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", sentinel_test_db)
+    sentinel_db.ensure_sentinel_schema()
+
+    sig = _make_signal(event_id="sig_off_hours", entry=24512.0, inval=24480.0)
+
+    # 1. When listener is NOT enabled (default for history, demo, session sync):
+    sentinel_db.disable_recommendation_listener()
+    monkeypatch.setattr("config.is_market_open", lambda: True)
+    sentinel_db.save_signal(sig)
+    assert rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE") is None
+
+    # 2. When listener is enabled but market is CLOSED:
+    sentinel_db.enable_recommendation_listener()
+    monkeypatch.setattr("config.is_market_open", lambda: False)
+    sentinel_db.save_signal(sig)
+    assert rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE") is None
+
+    sentinel_db.disable_recommendation_listener()
+
 
 
 

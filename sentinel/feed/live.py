@@ -63,6 +63,10 @@ class LiveSentinelManager:
         self._prev_cum_vol: dict[str, int] = {}
         self._last_tick_time: dict[str, float] = {}
 
+        # Opt in to reactive trade recommendations during live feed execution
+        from sentinel.storage.db import enable_recommendation_listener
+        enable_recommendation_listener()
+
     @staticmethod
     def _normalize_tick_time(ltt: int | None, now_ist: datetime) -> datetime:
         """Normalize Dhan LTT timestamp by subtracting the 19,800s IST offset if present."""
@@ -378,12 +382,8 @@ class LiveSentinelManager:
                 if ctx and classifier:
                     micro_sig = classifier.evaluate_micro_burst(burst, ctx)
                     if micro_sig:
+                        micro_sig.entry_price = float(ltp)
                         save_signal(micro_sig)
-                        try:
-                            from analytics.sentinel_recommendations import on_sentinel_signal
-                            on_sentinel_signal(micro_sig, current_spot=float(ltp))
-                        except Exception as e_sig_rec:
-                            log.debug("Sentinel micro rec error: %s", e_sig_rec)
 
             if completed_bar is not None:
                 save_bar(completed_bar)
@@ -396,12 +396,8 @@ class LiveSentinelManager:
                     if classifier:
                         sig = classifier.evaluate_bar(completed_bar, ctx)
                         if sig:
+                            sig.entry_price = float(ltp)
                             save_signal(sig)
-                            try:
-                                from analytics.sentinel_recommendations import on_sentinel_signal
-                                on_sentinel_signal(sig, current_spot=float(ltp))
-                            except Exception as e_sig_rec:
-                                log.debug("Sentinel bar rec error: %s", e_sig_rec)
 
                 # Update outcomes of recent signals with subsequent bars
                 try:

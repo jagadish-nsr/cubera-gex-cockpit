@@ -194,6 +194,7 @@ def save_bar(bar: Bar) -> None:
 
 
 _SIGNAL_LISTENERS: list[Callable[[SentinelSignal], Any]] = []
+_RECOMMENDATIONS_ENABLED: bool = False
 
 
 def register_signal_listener(listener: Callable[[SentinelSignal], Any]) -> None:
@@ -218,16 +219,43 @@ def dispatch_signal_event(sig: SentinelSignal) -> None:
 
 
 def _default_recommendation_handler(sig: SentinelSignal) -> None:
-    """Reactive event handler: orderflow signal generation triggers trade recommendation engine."""
+    """Reactive event handler: orderflow signal generation triggers trade recommendation engine.
+
+    Gated strictly on live market hours and explicit live feed opt-in to prevent historical
+    replays, demo feeds, or session backfill syncs from minting trade recommendations or
+    auto-opening paper trades.
+    """
+    if not _RECOMMENDATIONS_ENABLED:
+        return
     try:
+        import config
+        if not config.is_market_open():
+            log.debug("Market closed. Skipping reactive recommendation trigger for %s", getattr(sig, "event_id", ""))
+            return
         from analytics.sentinel_recommendations import on_sentinel_signal
         on_sentinel_signal(sig)
     except Exception as e:
         log.debug("Auto-trigger recommendation engine error for %s: %s", getattr(sig, "event_id", ""), e)
 
 
-# Automatically hook the recommendation engine into signal generation
-register_signal_listener(_default_recommendation_handler)
+def enable_recommendation_listener() -> None:
+    """Explicit opt-in: enable reactive trade recommendations from the live feed."""
+    global _RECOMMENDATIONS_ENABLED
+    _RECOMMENDATIONS_ENABLED = True
+    if _default_recommendation_handler not in _SIGNAL_LISTENERS:
+        register_signal_listener(_default_recommendation_handler)
+
+
+def disable_recommendation_listener() -> None:
+    """Disable reactive trade recommendations."""
+    global _RECOMMENDATIONS_ENABLED
+    _RECOMMENDATIONS_ENABLED = False
+    unregister_signal_listener(_default_recommendation_handler)
+
+
+def is_recommendation_listener_enabled() -> bool:
+    """Check if reactive recommendation listener is currently active."""
+    return _RECOMMENDATIONS_ENABLED
 
 
 def save_signal(sig: SentinelSignal) -> None:
