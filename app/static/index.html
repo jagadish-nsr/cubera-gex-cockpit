@@ -1464,9 +1464,14 @@
                   <span id="sentinel-rec-count-badge"
                     style="font-size:0.72rem;background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.3);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0 Setups</span>
                 </h3>
-                <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option trades triggered by real-time OrderFlow tape signals with Target Engine spot-calibrated repricing</span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option setups from live OrderFlow ticks. Target on touch; stop = spot invalidation on completed 5m cash close. Paper opens only on confirm (or auto-paper).</span>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <label style="font-size:0.70rem;color:var(--ink-mute);font-weight:700;display:flex;align-items:center;gap:4px"
+                  title="When off (default), paper trades open only after Confirm">
+                  <input type="checkbox" id="sentinel-auto-paper-toggle"
+                    onchange="window.toggleSentinelAutoPaper(this.checked)"> Auto-paper
+                </label>
                 <!-- Session Filter -->
                 <div style="display:flex;align-items:center;gap:4px">
                   <label for="sentinel-rec-session-select"
@@ -1502,7 +1507,7 @@
                     <option value="ALL" selected>All Statuses</option>
                     <option value="ACTIVE">⚡ Active Only</option>
                     <option value="TARGET_HIT">🎯 Target Hit</option>
-                    <option value="SL_HIT">⛔ Stop Loss Hit</option>
+                    <option value="SPOT_INVAL">⛔ Spot Inval</option>
                   </select>
                 </div>
                 <!-- Refresh Button -->
@@ -1518,14 +1523,18 @@
             <div
               style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-                <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🎯 OrderFlow Recommendations Success Criteria &amp; Performance</span>
-                <span style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">● Paper Trade Sync Active</span>
+                <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">OrderFlow Recommendations — Contract &amp; Performance</span>
+                <span id="sentinel-paper-mode-badge" style="font-size:0.70rem;color:var(--ink-mute);font-family:var(--mono)">Paper: confirm</span>
+              </div>
+              <div id="sentinel-contract-strip"
+                style="font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono);margin-bottom:8px;line-height:1.45">
+                Target = touch · Stop = SPOT_INVAL on 5m cash close · Opt SL = display only · Live ticks only
               </div>
               <div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:10px;font-size:0.76rem">
-                <div><span style="color:var(--ink-mute);display:block">Total Trades</span><b id="sentinel-kpi-total">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Total Setups</span><b id="sentinel-kpi-total">—</b></div>
                 <div><span style="color:var(--ink-mute);display:block">Active Setups</span><b id="sentinel-kpi-active" style="color:var(--spark)">—</b></div>
                 <div><span style="color:var(--ink-mute);display:block">Target Hit Rate</span><b id="sentinel-kpi-winrate" style="color:var(--go)">—</b></div>
-                <div><span style="color:var(--ink-mute);display:block">Stop Loss Rate</span><b id="sentinel-kpi-slrate" style="color:var(--stop)">—</b></div>
+                <div><span style="color:var(--ink-mute);display:block">Spot Inval Rate</span><b id="sentinel-kpi-slrate" style="color:var(--stop)">—</b></div>
                 <div><span style="color:var(--ink-mute);display:block">Realized P&amp;L (₹)</span><b id="sentinel-kpi-pnl" style="color:var(--ink)">—</b></div>
                 <div><span style="color:var(--ink-mute);display:block">Realized R:R</span><b id="sentinel-kpi-rr" style="color:var(--spark)">—</b></div>
               </div>
@@ -1544,11 +1553,11 @@
                     <th style="width:130px">Option Strike</th>
                     <th style="width:170px">Cash Spot (Entry / Inval / Tgt)</th>
                     <th style="width:90px">Option Entry</th>
-                    <th style="width:150px">Targets &amp; SL</th>
+                    <th style="width:150px">Opt Tgt / Opt SL*</th>
                     <th style="width:120px">Current LTP / MTM</th>
                     <th style="width:110px">Signals</th>
                     <th style="width:110px;text-align:center">Status</th>
-                    <th style="width:110px;text-align:right">Paper Trade</th>
+                    <th style="width:120px;text-align:right">Paper</th>
                   </tr>
                 </thead>
                 <tbody id="sentinel-rec-tbody">

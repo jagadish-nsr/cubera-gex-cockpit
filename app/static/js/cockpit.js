@@ -4791,18 +4791,65 @@
   }
   window.loadSentinelRecommendations = loadSentinelRecommendations;
 
+  window.toggleSentinelAutoPaper = async function (enabled) {
+    try {
+      await fetch("/api/recommendations/sentinel/auto-paper", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !!enabled }),
+      });
+      loadSentinelRecommendations();
+    } catch (err) {
+      console.warn("Failed to toggle auto-paper:", err);
+    }
+  };
+
+  window.confirmSentinelPaper = async function (recId) {
+    if (!recId) return;
+    try {
+      const res = await fetch(`/api/recommendations/sentinel/${encodeURIComponent(recId)}/confirm-paper`, {
+        method: "POST",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      loadSentinelRecommendations();
+    } catch (err) {
+      console.warn("Failed to confirm paper trade:", err);
+    }
+  };
+
+  window._expandedSentinelRecs = window._expandedSentinelRecs || new Set();
+  window.toggleSentinelRecExpand = function (recId) {
+    if (!recId) return;
+    if (window._expandedSentinelRecs.has(recId)) window._expandedSentinelRecs.delete(recId);
+    else window._expandedSentinelRecs.add(recId);
+    if (window._cachedSentinelRecData) renderSentinelRecommendations(window._cachedSentinelRecData);
+  };
+
   function renderSentinelRecommendations(data) {
     const tbody = document.getElementById("sentinel-rec-tbody");
     if (!tbody) return;
 
+    window._cachedSentinelRecData = data;
     const recs = (data && data.recommendations) || [];
     const metrics = (data && data.metrics) || {};
+    const autoPaper = !!(data && data.auto_paper);
 
-    // Update count badge
+    const autoEl = document.getElementById("sentinel-auto-paper-toggle");
+    if (autoEl) autoEl.checked = autoPaper;
+    const paperBadge = document.getElementById("sentinel-paper-mode-badge");
+    if (paperBadge) {
+      paperBadge.textContent = autoPaper ? "Paper: auto-open" : "Paper: confirm";
+      paperBadge.style.color = autoPaper ? "var(--go)" : "var(--ink-mute)";
+    }
+    const contractEl = document.getElementById("sentinel-contract-strip");
+    if (contractEl && metrics.contract) {
+      const c = metrics.contract;
+      contractEl.textContent = `Target = ${c.target} · Stop = ${c.stop} · Paper = ${c.paper}`;
+    }
+
     const badgeEl = document.getElementById("sentinel-rec-count-badge");
     if (badgeEl) badgeEl.textContent = `${recs.length} Setups`;
 
-    // Update KPI strip
     const setTxt = (id, txt) => {
       const el = document.getElementById(id);
       if (el) el.textContent = txt;
@@ -4836,27 +4883,25 @@
         ? "color:var(--go);background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3)"
         : "color:var(--stop);background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3)";
 
-      // Contributing signals
       const sigs = r.contributing_signals || [];
       const primarySig = sigs.length > 0 ? sigs[0] : {};
       const latestSig = sigs.length > 0 ? sigs[sigs.length - 1] : {};
       const sigType = r.latest_signal_type || latestSig.signal_type || primarySig.signal_type || (isCall ? "CONT_BULL" : "CONT_BEAR");
       const activeCount = sigs.filter((s) => s.status === "ACTIVE").length;
       const latestTime = (r.latest_signal_at || latestSig.triggered_at || "").substring(11, 19);
+      const expanded = window._expandedSentinelRecs.has(r.rec_id);
 
-      // Status badge
       let stBadge = "";
       if (r.status === "ACTIVE") {
         stBadge = `<span style="display:inline-flex;align-items:center;gap:4px;background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem"><span class="pulse-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--spark)"></span>ACTIVE</span>`;
       } else if (r.status === "TARGET_HIT") {
-        stBadge = `<span style="background:rgba(34,197,94,.15);color:var(--go);border:1px solid rgba(34,197,94,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">🎯 TARGET HIT</span>`;
-      } else if (r.status === "SL_HIT") {
-        stBadge = `<span style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">⛔ SL HIT</span>`;
+        stBadge = `<span style="background:rgba(34,197,94,.15);color:var(--go);border:1px solid rgba(34,197,94,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">TARGET HIT</span>`;
+      } else if (r.status === "SPOT_INVAL" || r.status === "SL_HIT") {
+        stBadge = `<span style="background:rgba(239,68,68,.15);color:var(--stop);border:1px solid rgba(239,68,68,.35);padding:2px 8px;border-radius:10px;font-weight:750;font-size:0.70rem">SPOT INVAL</span>`;
       } else {
         stBadge = `<span style="background:var(--surface-3);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-size:0.70rem">${r.status || "CLOSED"}</span>`;
       }
 
-      // LTP & MTM
       const entryPx = Number(r.option_entry || 0);
       const currPx = Number(r.current_ltp || entryPx);
       const exitPx = r.exit_price ? Number(r.exit_price) : null;
@@ -4864,10 +4909,21 @@
       const pts = Number(r.pnl_pts !== undefined ? r.pnl_pts : dispPx - entryPx);
       const pct = Number(r.pnl_pct !== undefined ? r.pnl_pct : entryPx > 0 ? (pts / entryPx) * 100 : 0);
       const pnlCol = pts >= 0 ? "var(--go)" : "var(--stop)";
+      const expiryTag = r.expiry || "";
+      const dteTag = r.dte_days != null ? `DTE ${Number(r.dte_days).toFixed(1)}` : "";
+      const ivTag = r.atm_iv != null ? `IV ${(Number(r.atm_iv) * 100).toFixed(1)}%` : "";
 
       const ptTag = r.paper_trade_id
         ? `<span style="font-family:var(--mono);font-size:0.68rem;color:var(--spark)" title="${r.paper_trade_id}">${r.paper_trade_id.substring(0, 13)}…</span>`
-        : `<span style="color:var(--ink-mute)">—</span>`;
+        : (r.status === "ACTIVE"
+          ? `<button class="btn btn-secondary" style="font-size:0.66rem;padding:2px 6px" onclick="window.confirmSentinelPaper('${r.rec_id}')">Confirm</button>`
+          : `<span style="color:var(--ink-mute)">—</span>`);
+
+      const stackDetail = expanded && sigs.length
+        ? `<tr style="background:var(--surface-3)"><td colspan="10" style="padding:8px 12px;font-size:0.68rem;font-family:var(--mono);color:var(--ink-mute)">${
+            sigs.map((s) => `${s.triggered_at || ""} · ${s.signal_type || ""} · score ${s.score || "—"} · spot tgt ${s.spot_target || "—"} · inval ${s.spot_invalidation || "—"} · ${s.status || ""}`).join("<br>")
+          }</td></tr>`
+        : "";
 
       html += `
         <tr style="border-bottom:1px solid var(--line);vertical-align:middle">
@@ -4879,12 +4935,13 @@
           <td>
             <span style="font-weight:750;color:var(--ink);display:block;font-size:0.72rem">${sigType}</span>
             <div style="display:flex;align-items:center;gap:4px;margin-top:2px">
-              <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.66rem;font-weight:750;${biasCls}">${isCall ? "🟢 LONG" : "🔴 SHORT"}</span>
-              ${sigs.length > 1 ? `<span style="font-size:0.64rem;padding:1px 4px;border-radius:3px;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.3)" title="${sigs.length} signals contributing to max target">${sigs.length} stacked</span>` : ""}
+              <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.66rem;font-weight:750;${biasCls}">${isCall ? "LONG" : "SHORT"}</span>
+              ${sigs.length > 1 ? `<button style="font-size:0.64rem;padding:1px 4px;border-radius:3px;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.3);cursor:pointer" onclick="window.toggleSentinelRecExpand('${r.rec_id}')">${sigs.length} stacked</button>` : ""}
             </div>
           </td>
           <td>
             <b style="font-size:0.78rem">${r.symbol} ${Math.round(r.strike)} ${r.side}</b>
+            ${expiryTag ? `<div style="font-size:0.64rem;color:var(--ink-mute);font-family:var(--mono)">${expiryTag}${dteTag ? " · " + dteTag : ""}${ivTag ? " · " + ivTag : ""}</div>` : ""}
           </td>
           <td>
             <span style="color:var(--ink)">Entry: ₹${Number(r.spot_entry || 0).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span><br>
@@ -4894,8 +4951,8 @@
             <b style="font-family:var(--mono)">₹${entryPx.toFixed(1)}</b>
           </td>
           <td>
-            <span style="color:var(--go);font-family:var(--mono);font-weight:700">🎯 Tgt: ₹${Number(r.option_target || 0).toFixed(1)}</span><br>
-            <span style="color:var(--stop);font-family:var(--mono);font-size:0.68rem">⛔ SL: ₹${Number(r.option_sl || 0).toFixed(1)}</span>
+            <span style="color:var(--go);font-family:var(--mono);font-weight:700">Tgt: ₹${Number(r.option_target || 0).toFixed(1)}</span><br>
+            <span style="color:var(--ink-mute);font-family:var(--mono);font-size:0.68rem" title="Display only — stop is spot invalidation on 5m close">Opt SL*: ₹${Number(r.option_sl || 0).toFixed(1)}</span>
           </td>
           <td>
             <span style="font-family:var(--mono);font-weight:750">₹${dispPx.toFixed(1)}</span><br>
@@ -4911,6 +4968,7 @@
             ${ptTag}
           </td>
         </tr>
+        ${stackDetail}
       `;
     });
 

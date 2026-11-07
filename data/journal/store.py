@@ -361,6 +361,31 @@ def get_trade(trade_id: str) -> PaperTrade | None:
         conn.close()
 
 
+def append_trade_note(trade_id: str, note: str) -> None:
+    """Append a timestamped note to an existing paper trade (stack / level sync)."""
+    if not trade_id or not note:
+        return
+    stamp = _now_ist()
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            row = conn.execute(
+                "SELECT notes FROM paper_trades WHERE trade_id = ?", (trade_id,)
+            ).fetchone()
+            if row is None:
+                return
+            prev = (row["notes"] or "").strip()
+            line = f"[{stamp}] {note}"
+            merged = f"{prev}\n{line}" if prev else line
+            conn.execute(
+                "UPDATE paper_trades SET notes = ? WHERE trade_id = ?",
+                (merged, trade_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
 def list_open_trades(symbol: str | None = None) -> list[PaperTrade]:
     """Return all OPEN trades, optionally filtered by symbol."""
     conn = _get_read_conn()

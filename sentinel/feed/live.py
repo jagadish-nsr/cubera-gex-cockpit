@@ -62,10 +62,16 @@ class LiveSentinelManager:
         self._sync_requested_at: dict[str, float] = {}
         self._prev_cum_vol: dict[str, int] = {}
         self._last_tick_time: dict[str, float] = {}
+        # Armed only on the first live tick — never from __init__ or session sync.
+        self._recommendations_armed = False
 
-        # Opt in to reactive trade recommendations during live feed execution
+    def _arm_recommendations_if_needed(self) -> None:
+        """Enable reactive recommendations only after a live futures tick arrives."""
+        if self._recommendations_armed:
+            return
         from sentinel.storage.db import enable_recommendation_listener
         enable_recommendation_listener()
+        self._recommendations_armed = True
 
     @staticmethod
     def _normalize_tick_time(ltt: int | None, now_ist: datetime) -> datetime:
@@ -284,7 +290,8 @@ class LiveSentinelManager:
                     ctx.update_bar(bar)
                     sig = classifier.evaluate_bar(bar, ctx)
                     if sig:
-                        save_signal(sig)
+                        # Sync/backfill must not mint recommendations or paper trades.
+                        save_signal(sig, emit_recommendations=False)
                         signals_generated.append(sig)
 
                 # Evaluate outcomes for signals generated across the session bars
@@ -347,6 +354,8 @@ class LiveSentinelManager:
             # in sqlite. Ticks must start one session sync, off this thread.
             self._schedule_session_sync(instrument_id, symbol)
             return
+
+        self._arm_recommendations_if_needed()
 
         now_ist = datetime.now(IST)
         ltt = pkt.get("ltt")

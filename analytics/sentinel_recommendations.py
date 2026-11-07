@@ -1,24 +1,24 @@
 """analytics/sentinel_recommendations.py — OrderFlow Sentinel Trade Recommendations.
 
-Implements the OrderFlow Sentinel Trade Recommendation Pipeline:
-1. Generates ATM option trade recommendations upon Sentinel directional signal trigger.
-2. Derives equivalent Cash Index spot entry, invalidation, and targets.
-3. Reprices entry, targets, and SL using Target Engine (Black-76 + IV forecasting).
-4. Enforces strict single-entry-per-strike constraint while active.
-5. Multi-signal dynamic max target and invalidation fallback stack.
-6. Execution lifecycle: Target Hit on TOUCH; Stop Loss Hit ONLY on completed 5-min candle CLOSE.
-7. Automated paper trade creation and daily success metrics tracking.
+Reactive pipeline (live ticks only):
+1. ATM option recommendation on a directional Sentinel signal.
+2. Cash-index spot entry / invalidation / target from the signal (no invented levels).
+3. Target Engine reprice using live DTE + ATM IV (refuse when IV is missing).
+4. One active row per (symbol, strike, side); stack raises max target and protective spot inval.
+5. Target hit on TOUCH (option or spot). Stop = SPOT_INVAL on completed 5-min cash close.
+6. Paper trades open only when auto-paper is enabled or the user confirms.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import math
-from datetime import datetime, timedelta, timezone
+import threading
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Sequence
 
 import config
+from data.expiry import next_monthly_expiry, next_weekly_expiry
 from data.journal import recommendations_store as rec_store
 from data.journal import store as journal_store
 from sentinel.models import Bar, SentinelSignal
@@ -26,27 +26,68 @@ from sentinel.models import Bar, SentinelSignal
 log = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# Signal quality: micro-noise below this score does not open a setup.
+MIN_SIGNAL_SCORE = 65
+_ALLOWED_TYPE_PREFIXES = (
+    "CONTINUATION_",
+    "ABSORPTION_",
+    "EXHAUSTION_",
+    "TRAPPED_",
+)
+
+_AUTO_PAPER = False
+_AUTO_PAPER_LOCK = threading.Lock()
+
+_REFUSAL_COUNTS: dict[str, int] = {}
+_REFUSAL_LOCK = threading.Lock()
+
 
 def _now_ist_str() -> str:
     return datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _resolve_symbol(instrument_id: str) -> str:
-    """Normalize instrument id to base cash symbol e.g. 'NIFTY-FUT' -> 'NIFTY'.
+def _today_ist() -> date:
+    return datetime.now(IST).date()
 
-    Zero-Fabrication Contract:
-    Only returns symbols registered in config.INDICES ('NIFTY', 'BANKNIFTY', 'SENSEX').
-    Refuses FINNIFTY or unknown symbols to prevent orphaned contracts with fabricated parameters.
-    """
+
+def _note_refusal(reason: str) -> None:
+    with _REFUSAL_LOCK:
+        _REFUSAL_COUNTS[reason] = int(_REFUSAL_COUNTS.get(reason, 0)) + 1
+
+
+def get_refusal_metrics() -> dict[str, int]:
+    with _REFUSAL_LOCK:
+        return dict(_REFUSAL_COUNTS)
+
+
+def reset_refusal_metrics() -> None:
+    with _REFUSAL_LOCK:
+        _REFUSAL_COUNTS.clear()
+
+
+def is_auto_paper_enabled() -> bool:
+    with _AUTO_PAPER_LOCK:
+        return bool(_AUTO_PAPER)
+
+
+def set_auto_paper_enabled(enabled: bool) -> bool:
+    """Paper trades open automatically only when this is True (default False)."""
+    global _AUTO_PAPER
+    with _AUTO_PAPER_LOCK:
+        _AUTO_PAPER = bool(enabled)
+        return _AUTO_PAPER
+
+
+def _resolve_symbol(instrument_id: str) -> str:
+    """Only NIFTY / BANKNIFTY / SENSEX. Unknown symbols are refused."""
     clean = str(instrument_id or "").upper().strip()
     for suffix in ("-FUT", "_FUT", "-INDEX", "_INDEX"):
         if clean.endswith(suffix):
-            clean = clean[:-len(suffix)]
+            clean = clean[: -len(suffix)]
     return clean if clean in config.INDICES else ""
 
 
 def _get_strike_step(symbol: str) -> int:
-    """Return index strike step strictly from config. Never guess or fabricate."""
     idx = config.get_index(symbol)
     step = int(getattr(idx, "strike_step", 0) or 0)
     if step <= 0:
@@ -55,7 +96,6 @@ def _get_strike_step(symbol: str) -> int:
 
 
 def _get_lot_size(symbol: str) -> int:
-    """Return index contract lot size strictly from config. Never invent lot sizes."""
     idx = config.get_index(symbol)
     lot = int(getattr(idx, "lot_size", 0) or 0)
     if lot <= 0:
@@ -65,8 +105,74 @@ def _get_lot_size(symbol: str) -> int:
 
 def _round_strike(price: float, step: int) -> float:
     if step <= 0:
-        step = 50
+        raise ValueError("strike step must be positive")
     return float(round(price / step) * step)
+
+
+def _signal_passes_quality(signal: SentinelSignal) -> bool:
+    score = int(getattr(signal, "score", 0) or 0)
+    if score < MIN_SIGNAL_SCORE:
+        return False
+    sig_type = str(getattr(signal, "type", "") or "").upper()
+    return any(sig_type.startswith(p) for p in _ALLOWED_TYPE_PREFIXES)
+
+
+def _resolve_contract_context(symbol: str) -> dict[str, Any] | None:
+    """Nearest listed expiry, live DTE, and ATM IV. Returns None when IV is missing."""
+    idx = config.get_index(symbol)
+    today = _today_ist()
+    exchange = str(getattr(idx, "exchange", "NSE") or "NSE")
+    if bool(getattr(idx, "has_weekly", True)):
+        exp = next_weekly_expiry(today, exchange)
+    else:
+        exp = next_monthly_expiry(today, exchange)
+
+    dte_days = float(max(0, (exp - today).days)) + 0.25
+    atm_iv: float | None = None
+    expiry_iso = exp.isoformat()
+
+    try:
+        from app.live_fetcher import latest as chain_latest
+
+        pack = chain_latest(symbol, "current_week") or {}
+        dash = pack.get("data")
+        if dash is not None:
+            levels = getattr(dash, "levels", None)
+            raw_iv = getattr(levels, "atm_iv", None) if levels is not None else None
+            if raw_iv is None:
+                raw_iv = getattr(dash, "atm_iv", None)
+            try:
+                iv = float(raw_iv) if raw_iv is not None else 0.0
+            except (TypeError, ValueError):
+                iv = 0.0
+            if iv > 0.05:
+                atm_iv = iv
+            raw_dte = getattr(dash, "dte_now", None)
+            if raw_dte is not None:
+                try:
+                    dte_days = max(0.0, float(raw_dte))
+                except (TypeError, ValueError):
+                    pass
+            nearest = getattr(dash, "nearest_expiry", None) or getattr(dash, "expiry", None)
+            if nearest:
+                expiry_iso = str(nearest)[:10]
+    except Exception:
+        pass
+
+    if atm_iv is None or atm_iv <= 0.05:
+        return None
+
+    try:
+        exp_tag = datetime.strptime(expiry_iso[:10], "%Y-%m-%d").strftime("%d%b%Y").upper()
+    except Exception:
+        exp_tag = expiry_iso
+
+    return {
+        "expiry": expiry_iso[:10],
+        "expiry_tag": exp_tag,
+        "dte_days": float(dte_days),
+        "atm_iv": float(atm_iv),
+    }
 
 
 def _resolve_option_entry_ltp(
@@ -76,13 +182,7 @@ def _resolve_option_entry_ltp(
     opt_sym: str = "",
     options_ltp_map: dict | None = None,
 ) -> float | None:
-    """Resolve live option premium from live tick book, WebSocket cache, or chain map.
-
-    Zero-Fabrication Contract:
-    Never invent an option premium from Black-Scholes or artificial delta when market data
-    is unavailable. If no authentic quote exists, returns None.
-    """
-    # 1. Check live memory / chain map
+    """Live premium only. Never invent Black-Scholes."""
     book = options_ltp_map or {}
     for k in (opt_sym, f"{strike}_{side}", f"{int(strike)}_{side}", f"{symbol}_{int(strike)}_{side}"):
         if k in book:
@@ -96,8 +196,95 @@ def _resolve_option_entry_ltp(
     ltp = rec_store.resolve_live_option_ltp(symbol, strike, side, opt_sym, options_ltp_map)
     if ltp is not None and ltp > 0:
         return round(float(ltp), 2)
-
     return None
+
+
+def _protective_spot_inval(side: str, active_sigs: list[dict]) -> float | None:
+    """Most protective cash invalidation among active contributing signals."""
+    vals = [float(s.get("spot_invalidation") or 0.0) for s in active_sigs if float(s.get("spot_invalidation") or 0.0) > 0]
+    if not vals:
+        return None
+    # CE long: invalidation below spot — higher level is tighter/protective.
+    # PE long put: invalidation above spot — lower level is tighter/protective.
+    return max(vals) if side == "CE" else min(vals)
+
+
+def _stack_option_sl(active_sigs: list[dict], fallback: float) -> float:
+    """Higher premium floor is the tighter stop for a long option."""
+    sls = [float(s.get("option_sl") or 0.0) for s in active_sigs if float(s.get("option_sl") or 0.0) > 0]
+    return max(sls) if sls else float(fallback)
+
+
+def _stable_rec_id(symbol: str, strike: float, side: str, session_day: str | None = None) -> str:
+    day = session_day or _today_ist().strftime("%Y%m%d")
+    return f"srec_{day}_{symbol}_{int(strike)}_{side.upper()}"
+
+
+def _open_or_skip_paper(
+    *,
+    symbol: str,
+    side: str,
+    strike: float,
+    entry_ltp: float,
+    expiry_tag: str,
+    spot: float,
+    spot_target: float,
+    spot_inval: float,
+    opt_target: float,
+    opt_sl: float,
+    signal: SentinelSignal,
+    lot_size: int,
+    force: bool = False,
+) -> str | None:
+    if not force and not is_auto_paper_enabled():
+        return None
+    try:
+        legs = [{
+            "action": "BUY",
+            "type": side,
+            "strike": float(strike),
+            "ltp": float(entry_ltp),
+            "expiry": expiry_tag or "",
+        }]
+        pt = journal_store.open_trade(
+            symbol=symbol,
+            strategy_name=f"Sentinel {signal.type} {int(strike)}{side}",
+            legs=legs,
+            entry_spot=spot,
+            entry_levels={
+                "spot": spot,
+                "spot_target": spot_target,
+                "spot_invalidation": spot_inval,
+                "option_target": opt_target,
+                "option_sl": opt_sl,
+            },
+            entry_regime={
+                "signal_type": signal.type,
+                "bias": signal.bias,
+                "score": getattr(signal, "score", 0),
+                "rvol": getattr(signal, "rvol_tod", 1.0),
+            },
+            entry_net_premium=-entry_ltp,
+            lot_size=lot_size,
+            notes=(
+                f"Sentinel {signal.event_id}. Tgt: {opt_target}, SpotInval: {spot_inval}, "
+                f"OptSL(display): {opt_sl}"
+            ),
+            exit_by="SENTINEL_ENGINE",
+        )
+        return pt.trade_id
+    except Exception as err:
+        log.warning("Could not open paper trade for sentinel setup: %s", err)
+        return None
+
+
+def _sync_paper_notes(pt_id: str | None, note: str) -> None:
+    if not pt_id:
+        return
+    try:
+        journal_store.append_trade_note(pt_id, note)
+    except Exception:
+        pass
 
 
 def on_sentinel_signal(
@@ -105,29 +292,31 @@ def on_sentinel_signal(
     current_spot: float | None = None,
     options_ltp_map: dict | None = None,
     expiry_tag: str = "",
+    open_paper: bool | None = None,
 ) -> dict | None:
-    """Process an incoming SentinelSignal and generate or link a trade recommendation.
-
-    Requirements:
-    1. ATM option recommendation at trigger time.
-    2. Spot invalidation and targets on Cash Index.
-    3. Target Engine repriced entry, targets, and SL.
-    7. Automated paper trade opening.
-    8. Single active entry per strike: if already active, elevate target to MAX.
-    """
+    """Generate or stack a Sentinel recommendation. Paper opens only when allowed."""
     bias = str(signal.bias or "").upper()
     if bias not in ("LONG", "SHORT"):
-        return None  # No directional trade for neutral signals
+        _note_refusal("non_directional")
+        return None
+
+    if not _signal_passes_quality(signal):
+        _note_refusal("low_score_or_type")
+        log.info(
+            "Sentinel recommendation refused: score/type gate (%s score=%s)",
+            getattr(signal, "type", ""), getattr(signal, "score", 0),
+        )
+        return None
 
     symbol = _resolve_symbol(signal.instrument_id)
-    if not symbol or symbol not in config.INDICES:
-        log.warning("Unsupported or unconfigured index symbol %r for Sentinel recommendation", signal.instrument_id)
+    if not symbol:
+        _note_refusal("unsupported_symbol")
+        log.warning("Unsupported index symbol %r for Sentinel recommendation", signal.instrument_id)
         return None
 
     step = _get_strike_step(symbol)
     side = "CE" if bias == "LONG" else "PE"
 
-    # 1. Resolve Cash Spot & ATM Strike
     spot = float(current_spot if current_spot and current_spot > 0 else (signal.entry_price or 0.0))
     if spot <= 0:
         try:
@@ -137,41 +326,46 @@ def on_sentinel_signal(
         except Exception:
             pass
 
-    # Zero-Fabrication Contract: Refuse signal when spot is missing, non-positive, or placeholder
     if spot <= 0 or config.chain_spot_is_placeholder(symbol, spot):
-        log.warning(
-            "Sentinel recommendation refused: invalid or placeholder spot %.2f for %s",
-            spot, symbol,
-        )
+        _note_refusal("placeholder_or_missing_spot")
+        log.warning("Sentinel recommendation refused: invalid/placeholder spot %.2f for %s", spot, symbol)
         return None
 
     atm_strike = _round_strike(spot, step)
 
-    # 2. Derive Spot Targets and Invalidation on Cash Index
     inval_level = float(signal.invalidation_level or 0.0)
     if inval_level <= 0 or (bias == "LONG" and inval_level >= spot) or (bias == "SHORT" and inval_level <= spot):
+        _note_refusal("bad_invalidation")
         log.warning("Sentinel recommendation refused: invalid signal invalidation %.2f for %s", inval_level, symbol)
         return None
     spot_inval = round(inval_level, 2)
 
     target_pts = float(signal.target_1_pts or 0.0)
     if target_pts <= 0:
-        target_pts = max(35.0, abs(spot - spot_inval) * 1.5)
+        _note_refusal("missing_target_pts")
+        log.warning("Sentinel recommendation refused: missing target_1_pts for %s", signal.event_id)
+        return None
 
     spot_target = round(spot + target_pts if bias == "LONG" else spot - target_pts, 2)
     spot_target_2 = round(spot + (target_pts * 1.6) if bias == "LONG" else spot - (target_pts * 1.6), 2)
 
-    # 3. Resolve Option Contract & Entry Premium
-    opt_sym = f"{symbol} {expiry_tag + ' ' if expiry_tag else ''}{int(atm_strike)} {side}"
+    ctx = _resolve_contract_context(symbol)
+    if ctx is None:
+        _note_refusal("missing_atm_iv")
+        log.warning("Sentinel recommendation refused: no live ATM IV for %s", symbol)
+        return None
+
+    resolved_expiry = expiry_tag or str(ctx["expiry_tag"])
+    opt_sym = f"{symbol} {resolved_expiry} {int(atm_strike)} {side}"
     entry_ltp = _resolve_option_entry_ltp(symbol, atm_strike, side, opt_sym, options_ltp_map)
     if entry_ltp is None or entry_ltp <= 0:
+        _note_refusal("missing_option_ltp")
         log.warning(
-            "Sentinel recommendation refused: no authentic live option quote available for %s %d %s",
+            "Sentinel recommendation refused: no live option quote for %s %d %s",
             symbol, int(atm_strike), side,
         )
         return None
 
-    # 4. Target Engine Repricing (Spot -> Option)
     from analytics.trade_ideas import _reprice_trade_idea_targets
     sl_opt, tgt1_opt, tgt2_opt, p_t1, p_sl, net_ev, rr_str, _ = _reprice_trade_idea_targets(
         side=side,
@@ -181,8 +375,8 @@ def on_sentinel_signal(
         inval_spot=spot_inval,
         tgt1_spot=spot_target,
         tgt2_spot=spot_target_2,
-        dte_days=3.0,
-        atm_iv=0.135,
+        dte_days=float(ctx["dte_days"]),
+        atm_iv=float(ctx["atm_iv"]),
         horizon_minutes=45,
         step=step,
     )
@@ -192,6 +386,7 @@ def on_sentinel_signal(
         if hasattr(signal.bar_start_ts, "strftime")
         else str(signal.bar_start_ts)
     )
+    session_day = trig_ts[:10].replace("-", "") if len(trig_ts) >= 10 else _today_ist().strftime("%Y%m%d")
 
     sig_summary = {
         "signal_id": signal.event_id,
@@ -208,33 +403,25 @@ def on_sentinel_signal(
         "status": "ACTIVE",
     }
 
-    # 5. Requirement 8: Single active entry per strike price
     existing = rec_store.get_active_sentinel_recommendation(symbol, atm_strike, side)
     if existing:
         contributing = existing.get("contributing_signals") or []
-        # Prevent exact duplicate signal ID registration
         if any(s.get("signal_id") == signal.event_id for s in contributing):
             return existing
 
         contributing.append(sig_summary)
         active_sigs = [s for s in contributing if s.get("status") == "ACTIVE"]
-
-        # Dynamic MAX target across all active signals for this strike
-        max_opt_target = max(s["option_target"] for s in active_sigs)
+        max_opt_target = max(float(s["option_target"]) for s in active_sigs)
         if bias == "LONG":
-            max_spot_target = max(s["spot_target"] for s in active_sigs)
+            max_spot_target = max(float(s["spot_target"]) for s in active_sigs)
         else:
-            max_spot_target = min(s["spot_target"] for s in active_sigs)
+            max_spot_target = min(float(s["spot_target"]) for s in active_sigs)
 
-        # SL Policy for Stacked Long Option Positions:
-        # For option buyers, max(active_sls) acts as a protective/trailing stop floor
-        # (a higher premium floor curtails maximum adverse loss). If an elevated signal
-        # is later invalidated on a 5m close, the invalidation fallback mechanism restores
-        # the wider stop of the remaining active signals.
-        active_sls = [s["option_sl"] for s in active_sigs if s.get("option_sl", 0) > 0]
-        eff_sl = max(active_sls) if active_sls else existing.get("option_sl", sl_opt)
+        eff_sl = _stack_option_sl(active_sigs, sl_opt)
+        eff_spot_inval = _protective_spot_inval(side, active_sigs) or spot_inval
 
         existing["spot_target"] = max_spot_target
+        existing["spot_invalidation"] = eff_spot_inval
         existing["option_target"] = max_opt_target
         existing["option_sl"] = eff_sl
         existing["contributing_signals"] = contributing
@@ -243,56 +430,39 @@ def on_sentinel_signal(
         existing["current_ltp"] = entry_ltp
         existing["latest_signal_at"] = trig_ts
         existing["latest_signal_type"] = signal.type
+        existing["expiry"] = resolved_expiry
+        existing["dte_days"] = float(ctx["dte_days"])
+        existing["atm_iv"] = float(ctx["atm_iv"])
 
         rec_store.save_or_update_sentinel_recommendation(existing)
+        _sync_paper_notes(
+            existing.get("paper_trade_id"),
+            f"Stacked {signal.event_id}: tgt={max_opt_target}, spot_inval={eff_spot_inval}, opt_sl={eff_sl}",
+        )
         log.info(
-            "Linked signal %s to active strike %s %s. Updated max target to %.1f (spot %.1f)",
-            signal.event_id, atm_strike, side, max_opt_target, max_spot_target,
+            "Linked signal %s to %s %s. Max tgt %.1f spot_inval %.1f",
+            signal.event_id, atm_strike, side, max_opt_target, eff_spot_inval,
         )
         return existing
 
-    # 6. No active entry for this strike -> Create New Recommendation
-    rec_id = f"srec_{datetime.now(IST).strftime('%Y%m%d_%H%M%S')}_{symbol}_{int(atm_strike)}_{side}"
+    rec_id = _stable_rec_id(symbol, atm_strike, side, session_day)
     lot_size = _get_lot_size(symbol)
-
-    # Auto-create Paper Trade (Requirement 7)
-    pt_id = None
-    try:
-        legs = [{
-            "action": "BUY",
-            "type": side,
-            "strike": float(atm_strike),
-            "ltp": float(entry_ltp),
-            "expiry": expiry_tag or "",
-        }]
-        levels_snap = {
-            "spot": spot,
-            "spot_target": spot_target,
-            "spot_invalidation": spot_inval,
-            "option_target": tgt1_opt,
-            "option_sl": sl_opt,
-        }
-        regime_snap = {
-            "signal_type": signal.type,
-            "bias": bias,
-            "score": getattr(signal, "score", 0),
-            "rvol": getattr(signal, "rvol_tod", 1.0),
-        }
-        pt = journal_store.open_trade(
-            symbol=symbol,
-            strategy_name=f"Sentinel {signal.type} {int(atm_strike)}{side}",
-            legs=legs,
-            entry_spot=spot,
-            entry_levels=levels_snap,
-            entry_regime=regime_snap,
-            entry_net_premium=-entry_ltp,
-            lot_size=lot_size,
-            notes=f"Auto-generated from Sentinel {signal.event_id}. Tgt: {tgt1_opt}, SL: {sl_opt}",
-            exit_by="SENTINEL_ENGINE",
-        )
-        pt_id = pt.trade_id
-    except Exception as err:
-        log.warning("Could not auto-open paper trade for sentinel rec %s: %s", rec_id, err)
+    force_paper = bool(open_paper) if open_paper is not None else False
+    pt_id = _open_or_skip_paper(
+        symbol=symbol,
+        side=side,
+        strike=atm_strike,
+        entry_ltp=entry_ltp,
+        expiry_tag=resolved_expiry,
+        spot=spot,
+        spot_target=spot_target,
+        spot_inval=spot_inval,
+        opt_target=tgt1_opt,
+        opt_sl=sl_opt,
+        signal=signal,
+        lot_size=lot_size,
+        force=force_paper,
+    )
 
     rec_data = {
         "rec_id": rec_id,
@@ -319,14 +489,64 @@ def on_sentinel_signal(
         "exit_reason": None,
         "latest_signal_at": trig_ts,
         "latest_signal_type": signal.type,
+        "expiry": resolved_expiry,
+        "dte_days": float(ctx["dte_days"]),
+        "atm_iv": float(ctx["atm_iv"]),
+        "p_touch_target_1": float(p_t1),
+        "p_touch_sl": float(p_sl),
+        "net_ev_pts": float(net_ev),
+        "risk_reward_ratio": str(rr_str),
     }
 
     rec_store.save_or_update_sentinel_recommendation(rec_data)
     log.info(
-        "Opened Sentinel Trade Recommendation %s: %s %d %s (Spot: %.1f, Tgt: %.1f, SL: %.1f, Opt Entry: %.1f)",
-        rec_id, symbol, int(atm_strike), side, spot, spot_target, spot_inval, entry_ltp,
+        "Opened Sentinel recommendation %s: %s %d %s spot=%.1f tgt=%.1f inval=%.1f entry=%.1f paper=%s",
+        rec_id, symbol, int(atm_strike), side, spot, spot_target, spot_inval, entry_ltp, pt_id or "pending",
     )
     return rec_data
+
+
+def confirm_paper_trade(rec_id: str) -> dict | None:
+    """Explicit user confirm: open a paper trade for an ACTIVE recommendation without one."""
+    ensure = rec_store.list_sentinel_recommendations(status="ACTIVE", limit=500)
+    rec = next((r for r in ensure if r.get("rec_id") == rec_id), None)
+    if rec is None:
+        rows = rec_store.list_sentinel_recommendations(status="ALL", limit=500)
+        rec = next((r for r in rows if r.get("rec_id") == rec_id), None)
+    if rec is None:
+        return None
+    if rec.get("paper_trade_id"):
+        return rec
+    if str(rec.get("status") or "").upper() != "ACTIVE":
+        return None
+
+    class _Sig:
+        event_id = f"confirm_{rec_id}"
+        type = rec.get("latest_signal_type") or "CONTINUATION"
+        bias = "LONG" if rec.get("side") == "CE" else "SHORT"
+        score = 0
+        rvol_tod = 1.0
+
+    pt_id = _open_or_skip_paper(
+        symbol=str(rec["symbol"]),
+        side=str(rec["side"]),
+        strike=float(rec["strike"]),
+        entry_ltp=float(rec["option_entry"]),
+        expiry_tag=str(rec.get("expiry") or ""),
+        spot=float(rec["spot_entry"]),
+        spot_target=float(rec["spot_target"]),
+        spot_inval=float(rec["spot_invalidation"]),
+        opt_target=float(rec["option_target"]),
+        opt_sl=float(rec["option_sl"]),
+        signal=_Sig(),  # type: ignore[arg-type]
+        lot_size=_get_lot_size(str(rec["symbol"])),
+        force=True,
+    )
+    if not pt_id:
+        return None
+    rec["paper_trade_id"] = pt_id
+    rec_store.save_or_update_sentinel_recommendation(rec)
+    return rec
 
 
 def _get_closed_5m_candles(
@@ -334,7 +554,7 @@ def _get_closed_5m_candles(
     bars_1m: Sequence[Bar] | None = None,
     after_ts_str: str = "",
 ) -> list[Bar]:
-    """Return completed, closed 5-minute candles strictly closed after after_ts_str."""
+    """Completed 5-minute candles strictly closed after after_ts_str."""
     closed: list[Bar] = []
     after_dt = None
     if after_ts_str:
@@ -347,57 +567,67 @@ def _get_closed_5m_candles(
 
     if bars_5m:
         for b5 in sorted(bars_5m, key=lambda b: b.start_ts):
-            if getattr(b5, "incomplete", False):
+            end_ts = b5.start_ts + timedelta(minutes=5)
+            if after_dt and end_ts <= after_dt:
                 continue
-            close_ts = b5.start_ts + timedelta(minutes=5)
-            if after_dt is None or close_ts > after_dt:
+            if not getattr(b5, "incomplete", False):
                 closed.append(b5)
         return closed
 
-    # Bucket 1m bars into 5m candles if explicit 5m bars not passed
-    if bars_1m:
-        from collections import defaultdict
-        buckets: dict[datetime, list[Bar]] = defaultdict(list)
-        for b in sorted(bars_1m, key=lambda b: b.start_ts):
-            dt = b.start_ts
-            bucket_min = (dt.minute // 5) * 5
-            b_ts = dt.replace(minute=bucket_min, second=0, microsecond=0)
-            buckets[b_ts].append(b)
+    if not bars_1m:
+        return []
 
-        sorted_buckets = sorted(buckets.items(), key=lambda x: x[0])
-        for idx, (b_ts, b_list) in enumerate(sorted_buckets):
-            # Closed if subsequent bucket started or full 5 1m bars present
-            is_closed = (idx < len(sorted_buckets) - 1) or (len(b_list) >= 5)
-            if not is_closed:
-                continue
-            close_ts = b_ts + timedelta(minutes=5)
-            if after_dt is None or close_ts > after_dt:
-                inst = b_list[0].instrument_id
-                closed.append(Bar(
-                    instrument_id=inst,
-                    timeframe="5m",
-                    start_ts=b_ts,
-                    open=b_list[0].open,
-                    high=max(x.high for x in b_list),
-                    low=min(x.low for x in b_list),
-                    close=b_list[-1].close,
-                    volume_units=sum(x.volume_units for x in b_list),
-                    volume_lots=round(sum(x.volume_units for x in b_list) / 65.0, 1),
-                    buy_vol_est=sum(x.buy_vol_est for x in b_list),
-                    sell_vol_est=sum(x.sell_vol_est for x in b_list),
-                    delta=sum(x.delta for x in b_list),
-                    delta_ratio=0.0,
-                    delta_quality=1.0,
-                    cvd=b_list[-1].cvd,
-                    vwap=b_list[-1].vwap,
-                    vwap_sigma_1=b_list[-1].vwap_sigma_1,
-                    vwap_sigma_2=b_list[-1].vwap_sigma_2,
-                    vwap_lower_1=b_list[-1].vwap_lower_1,
-                    vwap_lower_2=b_list[-1].vwap_lower_2,
-                    oi=b_list[-1].oi,
-                    delta_oi=0,
-                ))
+    buckets: dict[datetime, list[Bar]] = {}
+    for b in bars_1m:
+        ts = b.start_ts
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=IST)
+        floored = ts.replace(minute=(ts.minute // 5) * 5, second=0, microsecond=0)
+        buckets.setdefault(floored, []).append(b)
 
+    now_ist = datetime.now(IST)
+    for start in sorted(buckets):
+        end = start + timedelta(minutes=5)
+        if end > now_ist:
+            continue
+        if after_dt and end <= after_dt:
+            continue
+        group = sorted(buckets[start], key=lambda x: x.start_ts)
+        if len(group) < 3:
+            continue
+        o = float(group[0].open)
+        h = max(float(g.high) for g in group)
+        l = min(float(g.low) for g in group)
+        c = float(group[-1].close)
+        closed.append(
+            Bar(
+                instrument_id=group[0].instrument_id,
+                timeframe="5m",
+                start_ts=start,
+                open=o,
+                high=h,
+                low=l,
+                close=c,
+                volume_units=sum(float(g.volume_units or 0) for g in group),
+                volume_lots=sum(float(getattr(g, "volume_lots", 0) or 0) for g in group),
+                buy_vol_est=0.0,
+                sell_vol_est=0.0,
+                delta=sum(float(g.delta or 0) for g in group),
+                delta_ratio=0.0,
+                delta_quality=1.0,
+                cvd=float(group[-1].cvd or 0),
+                vwap=float(group[-1].vwap or c),
+                vwap_sigma_1=0.0,
+                vwap_sigma_2=0.0,
+                vwap_lower_1=0.0,
+                vwap_lower_2=0.0,
+                oi=0,
+                delta_oi=0,
+                oi_fresh=False,
+                incomplete=False,
+                depth_imbalance=0.0,
+            )
+        )
     return closed
 
 
@@ -408,18 +638,14 @@ def evaluate_sentinel_recommendations_lifecycle(
     bars_5m: Sequence[Bar] | None = None,
     bars_1m: Sequence[Bar] | None = None,
 ) -> list[dict]:
-    """Check active Sentinel recommendations against live price and 5m closed candles.
-
-    Execution Criteria (Req 6 & 8):
-    - TARGET HIT: On TOUCH of Option Target or Spot Target.
-    - STOP LOSS HIT: ONLY on completed 5-min candle CLOSE below SL.
-    - FALLBACK TARGET: When the signal providing the max target is invalidated on a
-      5-min candle close, target falls back to the max target of remaining active signals.
-    """
+    """Lifecycle: target on touch; spot invalidation stop on completed 5m cash close."""
     if current_spot <= 0:
         return []
 
     symbol = _resolve_symbol(symbol)
+    if not symbol:
+        return []
+
     active_recs = rec_store.list_active_sentinel_recommendations(symbol)
     if not active_recs:
         return []
@@ -440,22 +666,16 @@ def evaluate_sentinel_recommendations_lifecycle(
         pt_id = rec.get("paper_trade_id")
 
         curr_ltp = _resolve_option_entry_ltp(symbol, strike, side, opt_sym, options_ltp_map)
-        has_live_ltp = (curr_ltp is not None and curr_ltp > 0)
+        has_live_ltp = curr_ltp is not None and curr_ltp > 0
         disp_ltp = curr_ltp if has_live_ltp else opt_entry
         pnl_pts = round(disp_ltp - opt_entry, 2)
         pnl_pct = round((pnl_pts / opt_entry) * 100.0, 1) if opt_entry > 0 else 0.0
 
-        # Update telemetry
         rec["current_ltp"] = disp_ltp
         rec["current_spot"] = current_spot
         rec["pnl_pts"] = pnl_pts
         rec["pnl_pct"] = pnl_pct
 
-        # ------------------------------------------------------------------
-        # Check TARGET HIT on TOUCH (Requirement 6)
-        # Target hit occurs on touch of either option target (requires authentic live LTP)
-        # or equivalent Cash Index spot target.
-        # ------------------------------------------------------------------
         target_hit = False
         if has_live_ltp and opt_target > 0 and curr_ltp >= opt_target:
             target_hit = True
@@ -478,27 +698,21 @@ def evaluate_sentinel_recommendations_lifecycle(
                     journal_store.close_trade(pt_id, exit_net_premium=-exit_px, exit_reason="TARGET")
                 except Exception as e_close:
                     log.warning("Could not close paper trade %s on TARGET_HIT: %s", pt_id, e_close)
-
             events_fired.append({
                 "rec_id": rec_id,
                 "status": "TARGET_HIT",
                 "exit_price": exit_px,
-                "message": f"🎯 Target Hit at ₹{exit_px:.1f} (+{pnl_pct:+.1f}%)",
+                "message": f"Target hit at ₹{exit_px:.1f} (+{pnl_pct:+.1f}%)",
             })
             continue
 
-        # ------------------------------------------------------------------
-        # Check Signal Invalidation & SL Hit on 5-MIN CANDLE CLOSE (Req 6 & 8)
-        # ------------------------------------------------------------------
         closed_5m = _get_closed_5m_candles(bars_5m, bars_1m, rec.get("triggered_at", ""))
         contributing = rec.get("contributing_signals") or []
-        sl_hit = False
-        target_adjusted = False
+        spot_inval_hit = False
+        levels_adjusted = False
 
         for c5 in closed_5m:
             c_close = float(c5.close)
-
-            # 1. Invalidate any individual contributing signals whose invalidation is breached on 5m close
             for s in contributing:
                 if s.get("status") != "ACTIVE":
                     continue
@@ -506,75 +720,102 @@ def evaluate_sentinel_recommendations_lifecycle(
                 is_inv = (side == "CE" and c_close < s_inval) or (side == "PE" and c_close > s_inval)
                 if is_inv:
                     s["status"] = "INVALIDATED"
-                    s["invalidated_at"] = c5.start_ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(c5.start_ts, "strftime") else str(c5.start_ts)
-                    target_adjusted = True
+                    s["invalidated_at"] = (
+                        c5.start_ts.strftime("%Y-%m-%d %H:%M:%S")
+                        if hasattr(c5.start_ts, "strftime") else str(c5.start_ts)
+                    )
+                    levels_adjusted = True
 
-            # 2. Check if the strike recommendation Stop Loss is breached on 5m close
-            is_strike_sl = (side == "CE" and c_close < spot_inval) or (side == "PE" and c_close > spot_inval)
             active_remaining = [s for s in contributing if s.get("status") == "ACTIVE"]
-
-            if is_strike_sl or (contributing and not active_remaining):
-                sl_hit = True
+            # Full stop only when every contributing signal is gone, or the close
+            # breaches the protective inval of *remaining* signals (after fallback).
+            if contributing and not active_remaining:
+                spot_inval_hit = True
                 break
+            if active_remaining:
+                eff_inval = _protective_spot_inval(side, active_remaining)
+                if eff_inval is None:
+                    continue
+                is_strike_inval = (
+                    (side == "CE" and c_close < eff_inval)
+                    or (side == "PE" and c_close > eff_inval)
+                )
+                if is_strike_inval:
+                    for s in active_remaining:
+                        s["status"] = "INVALIDATED"
+                        s["invalidated_at"] = (
+                            c5.start_ts.strftime("%Y-%m-%d %H:%M:%S")
+                            if hasattr(c5.start_ts, "strftime") else str(c5.start_ts)
+                        )
+                    spot_inval_hit = True
+                    break
 
-        # If individual signal(s) got invalidated, fallback to MAX target of remaining active signals (Req 8)
-        if target_adjusted and not sl_hit:
+        if levels_adjusted and not spot_inval_hit:
             active_remaining = [s for s in contributing if s.get("status") == "ACTIVE"]
             if active_remaining:
-                new_opt_target = max(s["option_target"] for s in active_remaining)
+                new_opt_target = max(float(s["option_target"]) for s in active_remaining)
                 if side == "CE":
-                    new_spot_target = max(s["spot_target"] for s in active_remaining)
+                    new_spot_target = max(float(s["spot_target"]) for s in active_remaining)
                 else:
-                    new_spot_target = min(s["spot_target"] for s in active_remaining)
+                    new_spot_target = min(float(s["spot_target"]) for s in active_remaining)
+                new_spot_inval = _protective_spot_inval(side, active_remaining) or spot_inval
+                new_opt_sl = _stack_option_sl(active_remaining, opt_sl)
 
                 rec["option_target"] = new_opt_target
                 rec["spot_target"] = new_spot_target
+                rec["spot_invalidation"] = new_spot_inval
+                rec["option_sl"] = new_opt_sl
                 rec["contributing_signals"] = contributing
                 rec["contributing_signals_json"] = json.dumps(contributing)
                 rec_store.save_or_update_sentinel_recommendation(rec)
-                log.info("Signal invalidated for %s. Fallback target set to %.1f", rec_id, new_opt_target)
+                _sync_paper_notes(
+                    pt_id,
+                    f"Fallback after signal inval: tgt={new_opt_target}, spot_inval={new_spot_inval}",
+                )
+                spot_inval = new_spot_inval
+                log.info(
+                    "Signal invalidated for %s. Fallback tgt=%.1f spot_inval=%.1f",
+                    rec_id, new_opt_target, new_spot_inval,
+                )
 
-        if sl_hit:
-            exit_px = curr_ltp if has_live_ltp else opt_sl
+        if spot_inval_hit:
+            exit_px = curr_ltp if has_live_ltp else (opt_sl if opt_sl > 0 else opt_entry)
             rec_store.update_sentinel_recommendation_status(
                 rec_id=rec_id,
-                status="SL_HIT",
+                status="SPOT_INVAL",
                 exit_price=exit_px,
-                exit_reason="STOP",
+                exit_reason="SPOT_INVAL",
                 outcome_ts=now_ts,
             )
             if pt_id:
                 try:
-                    journal_store.close_trade(pt_id, exit_net_premium=-exit_px, exit_reason="STOP")
+                    journal_store.close_trade(pt_id, exit_net_premium=-exit_px, exit_reason="SPOT_INVAL")
                 except Exception as e_close:
-                    log.warning("Could not close paper trade %s on SL_HIT: %s", pt_id, e_close)
-
+                    log.warning("Could not close paper trade %s on SPOT_INVAL: %s", pt_id, e_close)
             events_fired.append({
                 "rec_id": rec_id,
-                "status": "SL_HIT",
+                "status": "SPOT_INVAL",
                 "exit_price": exit_px,
-                "message": f"⛔ Stop Loss Hit on 5m Close at ₹{exit_px:.1f} ({pnl_pct:+.1f}%)",
+                "message": f"Spot invalidation on 5m close at ₹{exit_px:.1f} ({pnl_pct:+.1f}%)",
             })
             continue
 
-        # If still active, persist fresh live LTP and PnL
         rec_store.save_or_update_sentinel_recommendation(rec)
 
     return events_fired
 
 
 def get_sentinel_daily_metrics(symbol: str | None = None, session_date: str = "today") -> dict:
-    """Calculate and return daily success metrics (Req 7)."""
+    """Daily success metrics for the Sentinel recommendation book."""
     recs = rec_store.list_sentinel_recommendations(symbol=symbol, session_date=session_date, status="ALL", limit=500)
     total_trades = len(recs)
     active_count = sum(1 for r in recs if r.get("status") == "ACTIVE")
     tgt_hits = sum(1 for r in recs if r.get("status") == "TARGET_HIT")
-    sl_hits = sum(1 for r in recs if r.get("status") == "SL_HIT")
-    resolved = tgt_hits + sl_hits
-
+    # SPOT_INVAL is the stop; SL_HIT kept for legacy rows.
+    stop_hits = sum(1 for r in recs if r.get("status") in ("SPOT_INVAL", "SL_HIT"))
+    resolved = tgt_hits + stop_hits
     win_rate = round((tgt_hits / resolved) * 100.0, 1) if resolved > 0 else 0.0
 
-    # Net Realized INR from paper trades
     realized_inr = 0.0
     wins_inr = 0.0
     losses_inr = 0.0
@@ -583,13 +824,12 @@ def get_sentinel_daily_metrics(symbol: str | None = None, session_date: str = "t
 
     for r in recs:
         status = r.get("status")
-        if status not in ("TARGET_HIT", "SL_HIT"):
+        if status not in ("TARGET_HIT", "SPOT_INVAL", "SL_HIT"):
             continue
 
         entry_px = float(r.get("option_entry") or 0.0)
         exit_px = float(r.get("exit_price") or entry_px)
         lot = _get_lot_size(r.get("symbol", "NIFTY"))
-
         pt_id = r.get("paper_trade_id")
         pt = journal_store.get_trade(pt_id) if pt_id else None
 
@@ -597,7 +837,7 @@ def get_sentinel_daily_metrics(symbol: str | None = None, session_date: str = "t
             pnl_val = float(pt.net_realized_pnl)
         else:
             gross = (exit_px - entry_px) * lot
-            costs = 40.0 + (1.0 * lot)  # ₹40 brokerage + 1pt round-trip slip
+            costs = 40.0 + (1.0 * lot)
             pnl_val = gross - costs
 
         realized_inr += pnl_val
@@ -621,11 +861,19 @@ def get_sentinel_daily_metrics(symbol: str | None = None, session_date: str = "t
         "active_trades": active_count,
         "resolved_trades": resolved,
         "target_hits": tgt_hits,
-        "sl_hits": sl_hits,
+        "sl_hits": stop_hits,
+        "spot_inval_hits": stop_hits,
         "win_rate_pct": win_rate,
         "realized_pnl_inr": round(realized_inr, 2),
         "realized_rr": realized_rr,
         "profit_factor": profit_factor,
         "avg_win_pts": avg_win_pts,
         "avg_loss_pts": avg_loss_pts,
+        "auto_paper": is_auto_paper_enabled(),
+        "refusals": get_refusal_metrics(),
+        "contract": {
+            "target": "touch (option LTP or cash spot target)",
+            "stop": "SPOT_INVAL on completed 5m cash close",
+            "paper": "confirm or auto-paper toggle",
+        },
     }

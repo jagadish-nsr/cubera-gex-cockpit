@@ -258,8 +258,12 @@ def is_recommendation_listener_enabled() -> bool:
     return _RECOMMENDATIONS_ENABLED
 
 
-def save_signal(sig: SentinelSignal) -> None:
-    """Save an emitted SentinelSignal and notify reactive listeners."""
+def save_signal(sig: SentinelSignal, *, emit_recommendations: bool = True) -> None:
+    """Save an emitted SentinelSignal.
+
+    emit_recommendations=False for session sync / history backfill so those paths
+    persist the tape without minting trade recommendations or paper trades.
+    """
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
@@ -290,8 +294,8 @@ def save_signal(sig: SentinelSignal) -> None:
         finally:
             conn.close()
 
-    # Reactive trigger: Signal generation event fires recommendation engine & listeners
-    dispatch_signal_event(sig)
+    if emit_recommendations:
+        dispatch_signal_event(sig)
 
 
 def list_recent_bars(

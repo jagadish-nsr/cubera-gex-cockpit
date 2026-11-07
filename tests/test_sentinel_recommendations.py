@@ -3,22 +3,20 @@
 Verifies:
 1. ATM option strike resolution and directional bias mapping (LONG -> CE, SHORT -> PE).
 2. Equivalent spot levels on Cash Index (spot entry, invalidation, targets).
-3. Target Engine Black-76 repricing for option entry, target, and stop loss.
-4. Single active entry per strike: second signal for the same strike does not duplicate,
-   stacks contributing signals, and elevates target to MAX.
-5. Dynamic fallback: invalidating the max-target signal on a 5m close causes the target
-   to fall back to the next highest active signal target.
+3. Target Engine Black-76 repricing with live DTE/IV (tests stub contract context).
+4. Single active entry per strike: stacks contributing signals, elevates target,
+   and keeps protective spot invalidation.
+5. Dynamic fallback: invalidating the max-target signal on a 5m close falls back.
 6. Execution triggers:
    - Target Hit on TOUCH.
-   - Stop Loss Hit ONLY on completed 5-minute candle CLOSE (wicks do not stop out).
-7. Automatic paper trade creation and closure, plus daily success metrics computation.
+   - SPOT_INVAL only on completed 5-minute cash CLOSE (wicks do not stop out).
+7. Paper trades open only when auto-paper is enabled (or confirm); metrics + refusals.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
@@ -42,7 +40,20 @@ def isolate_databases(tmp_path, monkeypatch):
     rec_store.ensure_schema()
     journal_store.ensure_schema()
 
-    # Provide deterministic test quotes for option contracts unless overridden in options_ltp_map
+    # Tests that expect paper trades enable auto-paper; production default is off.
+    sr.set_auto_paper_enabled(True)
+    sr.reset_refusal_metrics()
+    monkeypatch.setattr(
+        sr,
+        "_resolve_contract_context",
+        lambda symbol: {
+            "expiry": "2026-11-10",
+            "expiry_tag": "10NOV2026",
+            "dte_days": 3.0,
+            "atm_iv": 0.135,
+        },
+    )
+
     orig_resolver = rec_store.resolve_live_option_ltp
     def _mock_resolve_ltp(symbol, strike, side, opt_sym, options_ltp_map):
         res = orig_resolver(symbol, strike, side, opt_sym, options_ltp_map)
@@ -51,6 +62,8 @@ def isolate_databases(tmp_path, monkeypatch):
         return 150.0  # authentic test option premium
     monkeypatch.setattr(rec_store, "resolve_live_option_ltp", _mock_resolve_ltp)
     yield
+    sr.set_auto_paper_enabled(False)
+    sr.reset_refusal_metrics()
 
 
 def _make_signal(
@@ -255,9 +268,10 @@ def test_invalidation_fallback_to_next_highest_active_target():
     s2 = next(s for s in contrib if s["signal_id"] == "sig_high_tgt")
     assert s2["status"] == "INVALIDATED"
 
-    # Effective option target fell back to sig1's target
+    # Effective option target fell back to sig1's target; protective spot inval falls back too
     assert updated_rec["option_target"] == opt_tgt_sig1
     assert updated_rec["spot_target"] == 24560.0
+    assert updated_rec["spot_invalidation"] == 24470.0
 
 
 def test_target_hit_on_touch():
@@ -289,28 +303,26 @@ def test_target_hit_on_touch():
     assert pt_after.net_realized_pnl > 0
 
 
-def test_stop_loss_only_on_5m_candle_close_wicks_ignored():
-    """Requirement 6: Stop Loss does NOT trigger on intra-bar wick dip, ONLY on 5m candle close."""
+def test_spot_inval_only_on_5m_candle_close_wicks_ignored():
+    """Stop = SPOT_INVAL on completed 5m cash close. Option SL wicks do not stop out."""
     t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
     sig = _make_signal(entry=24510.0, inval=24470.0, target_pts=50.0, ts=t0)
     rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
     sl_px = rec["option_sl"]
 
-    # 1. Intra-bar wick dip below SL price (e.g. tick at sl_px - 10.0)
-    # BUT without a completed 5-minute candle closing below SL
+    # 1. Intra-bar wick: spot and option below levels, but no completed 5m close
     events_wick = sr.evaluate_sentinel_recommendations_lifecycle(
         symbol="NIFTY",
-        current_spot=24465.0,  # spot dipped
-        options_ltp_map={"24500_CE": sl_px - 10.0},  # option wicked below SL
-        bars_5m=[],  # no 5m closed bar yet
+        current_spot=24465.0,
+        options_ltp_map={"24500_CE": sl_px - 10.0},
+        bars_5m=[],
     )
-    # MUST NOT STOP OUT ON WICK!
     assert len(events_wick) == 0
     rec_check = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
     assert rec_check is not None
     assert rec_check["status"] == "ACTIVE"
 
-    # 2. Now a completed 5-minute candle closes below SL
+    # 2. Completed 5-minute candle closes beyond spot invalidation
     bar_5m_sl = Bar(
         instrument_id="NIFTY",
         timeframe="5m",
@@ -341,18 +353,16 @@ def test_stop_loss_only_on_5m_candle_close_wicks_ignored():
         bars_5m=[bar_5m_sl],
     )
 
-    # MUST STOP OUT ON 5-MIN CANDLE CLOSE!
     assert len(events_close) == 1
-    assert events_close[0]["status"] == "SL_HIT"
+    assert events_close[0]["status"] == "SPOT_INVAL"
 
     rec_after = rec_store.list_sentinel_recommendations("NIFTY", status="ALL")[0]
-    assert rec_after["status"] == "SL_HIT"
-    assert rec_after["exit_reason"] == "STOP"
+    assert rec_after["status"] == "SPOT_INVAL"
+    assert rec_after["exit_reason"] == "SPOT_INVAL"
 
-    # Paper trade closed as STOP
     pt_after = journal_store.get_trade(rec["paper_trade_id"])
     assert pt_after.status == "CLOSED"
-    assert pt_after.exit_reason == "STOP"
+    assert pt_after.exit_reason == "SPOT_INVAL"
 
 
 def test_daily_metrics_computation():
@@ -605,5 +615,73 @@ def test_market_closed_and_opt_in_gate_blocks_save_signal_trade_creation(tmp_pat
     sentinel_db.disable_recommendation_listener()
 
 
+def test_sync_save_signal_does_not_mint_even_when_listener_armed(tmp_path, monkeypatch):
+    """Session sync must pass emit_recommendations=False so backfill never mints setups."""
+    from sentinel.storage import db as sentinel_db
+
+    sentinel_test_db = tmp_path / "test_sentinel_sync.db"
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", sentinel_test_db)
+    sentinel_db.ensure_sentinel_schema()
+    monkeypatch.setattr("config.is_market_open", lambda: True)
+    sentinel_db.enable_recommendation_listener()
+    try:
+        sig = _make_signal(event_id="sig_sync_01", entry=24512.0, inval=24480.0)
+        sentinel_db.save_signal(sig, emit_recommendations=False)
+        assert rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE") is None
+    finally:
+        sentinel_db.disable_recommendation_listener()
+
+
+def test_auto_paper_default_off_and_confirm_opens():
+    """Paper trades stay pending until confirm (or auto-paper)."""
+    sr.set_auto_paper_enabled(False)
+    sig = _make_signal(event_id="sig_paper_off", entry=24512.0, inval=24480.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24512.0)
+    assert rec is not None
+    assert rec["paper_trade_id"] is None
+
+    confirmed = sr.confirm_paper_trade(rec["rec_id"])
+    assert confirmed is not None
+    assert confirmed["paper_trade_id"] is not None
+    pt = journal_store.get_trade(confirmed["paper_trade_id"])
+    assert pt is not None and pt.status == "OPEN"
+
+
+def test_quality_gate_and_missing_target_refused():
+    """Low score / missing target_1_pts must refuse and increment refusal metrics."""
+    sr.reset_refusal_metrics()
+    low = _make_signal(event_id="sig_low", entry=24512.0, inval=24480.0, score=40)
+    assert sr.on_sentinel_signal(low, current_spot=24512.0) is None
+
+    no_tgt = _make_signal(event_id="sig_notgt", entry=24512.0, inval=24480.0, target_pts=0.0)
+    assert sr.on_sentinel_signal(no_tgt, current_spot=24512.0) is None
+
+    refusals = sr.get_refusal_metrics()
+    assert refusals.get("low_score_or_type", 0) >= 1
+    assert refusals.get("missing_target_pts", 0) >= 1
+
+
+def test_stack_raises_protective_spot_invalidation():
+    """CE stack keeps the higher (tighter) spot invalidation among active signals."""
+    t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
+    sig1 = _make_signal(event_id="sig_prot1", entry=24510.0, inval=24470.0, target_pts=40.0, ts=t0)
+    sr.on_sentinel_signal(sig1, current_spot=24510.0)
+    sig2 = _make_signal(
+        event_id="sig_prot2", entry=24515.0, inval=24490.0, target_pts=50.0,
+        ts=t0 + timedelta(minutes=2),
+    )
+    rec = sr.on_sentinel_signal(sig2, current_spot=24515.0)
+    assert rec["spot_invalidation"] == 24490.0
+
+
+def test_stable_rec_id_is_session_symbol_strike_side():
+    sig = _make_signal(event_id="sig_id1", entry=24512.0, inval=24480.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24512.0)
+    assert rec["rec_id"].startswith("srec_")
+    assert "NIFTY" in rec["rec_id"]
+    assert "24500" in rec["rec_id"]
+    assert rec["rec_id"].endswith("_CE")
+    assert rec.get("expiry")
+    assert rec.get("atm_iv") == 0.135
 
 

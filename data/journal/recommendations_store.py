@@ -249,6 +249,13 @@ def ensure_schema() -> None:
         for col_name, col_type in (
             ("latest_signal_at", "TEXT"),
             ("latest_signal_type", "TEXT"),
+            ("expiry", "TEXT"),
+            ("dte_days", "REAL"),
+            ("atm_iv", "REAL"),
+            ("p_touch_target_1", "REAL"),
+            ("p_touch_sl", "REAL"),
+            ("net_ev_pts", "REAL"),
+            ("risk_reward_ratio", "TEXT"),
         ):
             try:
                 conn.execute(f"ALTER TABLE sentinel_trade_recommendations ADD COLUMN {col_name} {col_type}")
@@ -1169,8 +1176,10 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
                 option_entry, option_target, option_sl, current_ltp,
                 current_spot, pnl_pts, pnl_pct, paper_trade_id,
                 contributing_signals_json, outcome_ts, exit_price, exit_reason,
-                created_at, updated_at, latest_signal_at, latest_signal_type
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                created_at, updated_at, latest_signal_at, latest_signal_type,
+                expiry, dte_days, atm_iv, p_touch_target_1, p_touch_sl,
+                net_ev_pts, risk_reward_ratio
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(rec_id) DO UPDATE SET
                 status = excluded.status,
                 spot_target = excluded.spot_target,
@@ -1188,7 +1197,14 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
                 exit_reason = COALESCE(excluded.exit_reason, sentinel_trade_recommendations.exit_reason),
                 updated_at = excluded.updated_at,
                 latest_signal_at = COALESCE(excluded.latest_signal_at, sentinel_trade_recommendations.latest_signal_at),
-                latest_signal_type = COALESCE(excluded.latest_signal_type, sentinel_trade_recommendations.latest_signal_type)
+                latest_signal_type = COALESCE(excluded.latest_signal_type, sentinel_trade_recommendations.latest_signal_type),
+                expiry = COALESCE(excluded.expiry, sentinel_trade_recommendations.expiry),
+                dte_days = COALESCE(excluded.dte_days, sentinel_trade_recommendations.dte_days),
+                atm_iv = COALESCE(excluded.atm_iv, sentinel_trade_recommendations.atm_iv),
+                p_touch_target_1 = COALESCE(excluded.p_touch_target_1, sentinel_trade_recommendations.p_touch_target_1),
+                p_touch_sl = COALESCE(excluded.p_touch_sl, sentinel_trade_recommendations.p_touch_sl),
+                net_ev_pts = COALESCE(excluded.net_ev_pts, sentinel_trade_recommendations.net_ev_pts),
+                risk_reward_ratio = COALESCE(excluded.risk_reward_ratio, sentinel_trade_recommendations.risk_reward_ratio)
         """, (
             rec["rec_id"],
             rec["symbol"].upper(),
@@ -1216,6 +1232,13 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
             now_ts,
             rec.get("latest_signal_at", rec.get("triggered_at", now_ts)),
             rec.get("latest_signal_type", ""),
+            rec.get("expiry"),
+            float(rec["dte_days"]) if rec.get("dte_days") is not None else None,
+            float(rec["atm_iv"]) if rec.get("atm_iv") is not None else None,
+            float(rec["p_touch_target_1"]) if rec.get("p_touch_target_1") is not None else None,
+            float(rec["p_touch_sl"]) if rec.get("p_touch_sl") is not None else None,
+            float(rec["net_ev_pts"]) if rec.get("net_ev_pts") is not None else None,
+            rec.get("risk_reward_ratio"),
         ))
         conn.commit()
 
@@ -1306,8 +1329,9 @@ def list_sentinel_recommendations(
                     query += " AND status = 'ACTIVE'"
                 elif st in ("TARGET_HIT", "TGT_HIT"):
                     query += " AND status = 'TARGET_HIT'"
-                elif st in ("SL_HIT", "STOP_HIT"):
-                    query += " AND status = 'SL_HIT'"
+                elif st in ("SPOT_INVAL", "SL_HIT", "STOP_HIT"):
+                    # SPOT_INVAL is current stop; SL_HIT kept for legacy rows.
+                    query += " AND status IN ('SPOT_INVAL', 'SL_HIT')"
                 elif st == "CLOSED":
                     query += " AND status != 'ACTIVE'"
 

@@ -3430,7 +3430,10 @@ async def get_sentinel_recommendations_endpoint(
     limit: Optional[int] = 100,
 ):
     """Retrieve Sentinel OrderFlow signal-based trade recommendations and daily success metrics."""
-    from analytics.sentinel_recommendations import get_sentinel_daily_metrics
+    from analytics.sentinel_recommendations import (
+        get_sentinel_daily_metrics,
+        is_auto_paper_enabled,
+    )
     from data.journal import recommendations_store as rec_store
 
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
@@ -3449,9 +3452,31 @@ async def get_sentinel_recommendations_endpoint(
         "symbol": sym,
         "session": sess_date,
         "status_filter": status,
+        "auto_paper": is_auto_paper_enabled(),
         "metrics": metrics,
         "recommendations": recs,
     }
+
+
+@app.post("/api/recommendations/sentinel/auto-paper")
+async def set_sentinel_auto_paper(payload: dict = Body(...)):
+    """Toggle automatic paper-trade open on new Sentinel recommendations (default off)."""
+    from analytics.sentinel_recommendations import set_auto_paper_enabled, is_auto_paper_enabled
+
+    enabled = bool(payload.get("enabled", False))
+    set_auto_paper_enabled(enabled)
+    return {"ok": True, "auto_paper": is_auto_paper_enabled()}
+
+
+@app.post("/api/recommendations/sentinel/{rec_id}/confirm-paper")
+async def confirm_sentinel_paper_trade(rec_id: str):
+    """Explicit user confirm: open a paper trade for an ACTIVE Sentinel recommendation."""
+    from analytics.sentinel_recommendations import confirm_paper_trade
+
+    rec = confirm_paper_trade(rec_id)
+    if rec is None:
+        return JSONResponse({"ok": False, "error": "recommendation not found or not confirmable"}, status_code=404)
+    return {"ok": True, "recommendation": rec}
 
 
 @app.get("/api/recommendations/alerts")

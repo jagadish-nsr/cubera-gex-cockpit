@@ -216,3 +216,12 @@ The **Sentinel Tape** interface incorporates institutional desk controls:
 * All tick packets and constructed bars are committed to `sentinel_db.db` via WAL journaling.
 * Dual feed pipeline: Connects directly to **Dhan Live Binary Feed** (`sentinel/feed/live.py`) with automatic fallback to **Synthetic Demo Feed** (`sentinel/feed/demo.py`) during off-market hours.
 * Epoch timestamps are converted to strict Indian Standard Time (IST), with automatic validation guards filtering out any future-dated tick anomalies.
+
+---
+
+## 5. Signal → Trade Recommendation
+
+When a live futures tick arms the recommendation listener (market hours only), qualifying
+directional signals can open an ATM option setup. Session sync and history backfill do not.
+
+Contract and field meanings: see [`sentinel-recommendation-field-guide.md`](./sentinel-recommendation-field-guide.md).
