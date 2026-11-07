@@ -1342,6 +1342,11 @@ body {
   position: relative;
 }
 
+.rec-card.is-expanded {
+  border-color: var(--spark);
+  box-shadow: 0 0 16px rgba(56, 189, 248, 0.14);
+}
+
 .rec-card:hover {
   border-color: var(--line-strong);
   box-shadow: var(--shadow);

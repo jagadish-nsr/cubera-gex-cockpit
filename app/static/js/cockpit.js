@@ -5487,6 +5487,9 @@
       if (best.latch_state === "TARGET_HIT") cardClass += " event-tgt";
       if (best.latch_state === "INVALIDATED") cardClass += " event-sl";
 
+      if (!window._expandedRecCards) window._expandedRecCards = new Set();
+      const isExpanded = window._expandedRecCards.has(best.rec_id);
+      if (isExpanded) cardClass += " is-expanded";
       card.className = cardClass;
       card.id = `rec-card-${best.rec_id}`;
 
@@ -5621,107 +5624,141 @@
             ? `<span style="font-size:0.68rem;background:rgba(239,68,68,.15);color:var(--stop);padding:2px 7px;border-radius:4px;border:1px solid rgba(239,68,68,.3);font-weight:750">🛑 INVALIDATED</span>`
             : "";
 
+      const sideColor = String(best.side).toUpperCase() === "CE" ? "var(--go)" : "var(--stop)";
+      const ltpNum = Number(best.current_ltp || best.entry_ltp || 0);
+      const t1Num = Number(best.target_1 || 0);
+      const slNum = Number(best.stop_loss || 0);
+      const invalNum = Number(best.spot_invalidation || 0);
+      const tags = Array.isArray(best.catalyst_tags) ? best.catalyst_tags : [];
+      const multiNote = (cluster.ideas && cluster.ideas.length > 1)
+        ? `<span style="font-size:0.64rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.3);padding:1px 5px;border-radius:3px;font-weight:750">${cluster.ideas.length} strats</span>`
+        : "";
+
       card.innerHTML = `
-        ${confHeaderHtml}
-        <div class="rec-header-row">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-            <span class="rec-counter-chip" 
-                  data-latch-state="${best.latch_state}" 
-                  data-first-active="${best.first_active_ts}" 
-                  data-last-active="${best.last_active_ts}">
+        <!-- Mini Card (default) — same pattern as Cockpit watchlist -->
+        <div class="cockpit-card-mini-header" onclick="window.toggleRecCardDetails('${best.rec_id}')" title="Click to expand/collapse full strategy details">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <span class="rec-counter-chip"
+                  data-latch-state="${best.latch_state}"
+                  data-first-active="${best.first_active_ts}"
+                  data-last-active="${best.last_active_ts}"
+                  style="font-size:0.68rem;padding:2px 6px">
               ${best.active_label}
             </span>
-            ${stateBadgeHtml}
-            <span style="font-size:0.75rem;font-weight:750;color:${best.conviction_color}">
-              Score ${best.quality_score}/100 (${best.conviction_label})
-            </span>
+            <b class="rec-symbol ${best.side.toLowerCase()}" style="color:${sideColor};font-size:0.88rem">${best.option_symbol}</b>
+            <span style="font-size:0.68rem;background:var(--surface-3);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:750">${best.play_badge}</span>
+            ${multiNote}
           </div>
-          <div>
-            <span class="rec-badge-new">NEW CYCLE</span>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:${best.conviction_color || "var(--spark)"}">${best.quality_score}/100</b></span>
+            <span id="rec-card-chevron-${best.rec_id}" style="font-size:0.72rem;color:var(--spark);font-weight:700">${isExpanded ? "▲" : "▼"}</span>
           </div>
         </div>
 
-        <div class="rec-symbol-row">
-          <span class="rec-symbol ${best.side.toLowerCase()}">${best.option_symbol}</span>
-          <span style="font-size:0.75rem;font-weight:750;color:var(--spark)">${best.play_badge}</span>
-          <span style="font-size:0.75rem;color:var(--ink-mute)">R:R ${best.risk_reward_ratio}</span>
+        <div class="cockpit-card-mini-strip" onclick="window.toggleRecCardDetails('${best.rec_id}')" title="Click to view full card details">
+          <span>LTP: <b id="rec-ltp-${best.rec_id}" style="color:var(--ink)">₹${ltpNum.toFixed(1)}</b></span>
+          <span>T1: <b id="rec-t1-${best.rec_id}" style="color:var(--go)">₹${t1Num.toFixed(1)}</b></span>
+          <span>SL: <b id="rec-sl-${best.rec_id}" style="color:var(--stop)">₹${slNum.toFixed(1)}</b></span>
+          ${invalNum > 0 ? `<span>Inval: <b style="color:var(--stop)">₹${invalNum.toFixed(0)}</b></span>` : ""}
+          <span>R:R <b style="color:var(--spark)">${best.risk_reward_ratio}</b></span>
         </div>
 
-        <div class="rec-ltp-block">
-          <span id="rec-ltp-${best.rec_id}" class="rec-ltp-large" style="color:var(--ink)">₹${best.current_ltp.toFixed(1)}</span>
-          <span id="rec-live-badge-${best.rec_id}" style="font-size:0.72rem;background:var(--spark-bg);color:${best.is_ws_live ? "var(--spark)" : "var(--ink-mute)"};padding:2px 6px;border-radius:4px;font-family:var(--mono);font-weight:700">${best.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM"}</span>
-          <span style="font-size:0.72rem;background:var(--surface-2);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${best.entry_ltp.toFixed(1)}</span>
-          <span id="rec-mtm-${best.rec_id}" style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${best.pnl_pts >= 0 ? "var(--go)" : "var(--stop)"}">
-            MTM: ${best.pnl_pts >= 0 ? "+" : ""}₹${best.pnl_pts.toFixed(1)} (${best.pnl_pct >= 0 ? "+" : ""}${best.pnl_pct.toFixed(1)}%)
+        <div class="cockpit-card-mini-actions">
+          <span id="rec-card-toggle-text-${best.rec_id}" onclick="window.toggleRecCardDetails('${best.rec_id}')" style="font-size:0.72rem;font-weight:750;color:var(--spark);cursor:pointer;display:inline-flex;align-items:center;gap:4px">
+            ${isExpanded ? "▲ Hide Full Details" : "▼ View Full Card Details"}
           </span>
-          <span id="rec-t1-${best.rec_id}" style="font-size:0.72rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${best.target_1.toFixed(1)}</span>
-          <span id="rec-sl-${best.rec_id}" style="font-size:0.72rem;background:rgba(239,68,68,.1);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${best.stop_loss.toFixed(1)}</span>
+          <div style="display:flex;gap:6px">
+            <button class="btn ${bmBtnType}" onclick="event.stopPropagation();window.toggleBookmark('${best.rec_id}')" style="font-size:0.70rem;padding:3px 7px">${bmText}</button>
+            <button class="btn btn-primary" onclick="event.stopPropagation();window.executePaperTrade('${best.rec_id}', '${best.option_symbol}', ${best.strike}, '${best.side}', ${ltpNum}, ${best.pos_size.suggested_lots})" style="font-size:0.70rem;padding:3px 9px">⚡ Execute</button>
+          </div>
         </div>
 
-        <!-- Position Sizing Outlay Strip -->
-        <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:7px 12px;margin:8px 0;font-size:0.75rem;display:flex;justify-content:space-between">
-          <span>📦 <b>${best.pos_size.suggested_lots} Lots</b> (${best.pos_size.total_quantity} Qty) · Outlay: <b>₹${best.pos_size.capital_outlay_inr.toLocaleString("en-IN")}</b> (${best.pos_size.portfolio_pct.toFixed(1)}% Port)</span>
-          <span style="color:var(--ink-mute)">${best.pos_size.sizing_rationale}</span>
-        </div>
+        <!-- Full Card Details (expanded on click) -->
+        <div id="rec-card-full-${best.rec_id}" class="cockpit-card-full-body" style="display:${isExpanded ? "block" : "none"}">
+          ${confHeaderHtml}
+          <div class="rec-header-row">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              ${stateBadgeHtml}
+              <span style="font-size:0.75rem;font-weight:750;color:${best.conviction_color}">
+                Score ${best.quality_score}/100 (${best.conviction_label})
+              </span>
+            </div>
+            <div>
+              <span class="rec-badge-new">NEW CYCLE</span>
+            </div>
+          </div>
 
-        <!-- Trigger & Invalidation Box -->
-        <div style="background:rgba(0,0,0,0.25);border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin:8px 0;font-size:0.78rem">
-          <div><b>⚡ Trigger:</b> ${best.entry_trigger}</div>
-          <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center">
-            <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${best.spot_invalidation.toLocaleString("en-IN")} — ${best.spot_invalidation_text}${spotTargetBesideInval(best)}</span>
-            <span style="font-size:0.7rem;font-weight:750;color:${best.inval_breached ? "var(--stop)" : "var(--go)"}">
-              ${best.inval_breached ? `🛑 INVALIDATED (-${Math.abs(best.inval_buffer).toFixed(0)} pts)` : `🟢 Active (+${best.inval_buffer.toFixed(0)} pts buffer)`}
+          <div class="rec-ltp-block">
+            <span class="rec-ltp-large" style="color:var(--ink)">₹${ltpNum.toFixed(1)}</span>
+            <span id="rec-live-badge-${best.rec_id}" style="font-size:0.72rem;background:var(--spark-bg);color:${best.is_ws_live ? "var(--spark)" : "var(--ink-mute)"};padding:2px 6px;border-radius:4px;font-family:var(--mono);font-weight:700">${best.is_ws_live ? "⚡ WS 0ms" : "⚡ MTM"}</span>
+            <span style="font-size:0.72rem;background:var(--surface-2);color:var(--ink-mute);padding:2px 6px;border-radius:4px;font-family:var(--mono)">Entry: ₹${Number(best.entry_ltp || ltpNum).toFixed(1)}</span>
+            <span id="rec-mtm-${best.rec_id}" style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${best.pnl_pts >= 0 ? "var(--go)" : "var(--stop)"}">
+              MTM: ${best.pnl_pts >= 0 ? "+" : ""}₹${Number(best.pnl_pts || 0).toFixed(1)} (${best.pnl_pct >= 0 ? "+" : ""}${Number(best.pnl_pct || 0).toFixed(1)}%)
             </span>
+            <span style="font-size:0.72rem;background:rgba(34,197,94,.1);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${t1Num.toFixed(1)}</span>
+            <span style="font-size:0.72rem;background:rgba(239,68,68,.1);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${slNum.toFixed(1)}</span>
           </div>
-        </div>
 
-        <!-- Key Levels 4-Grid -->
-        <div class="rec-levels-grid">
-          <div class="rec-lvl-item">
-            <small>Spot Inval / SL</small>
-            <b style="color:var(--stop)">₹${best.spot_invalidation.toLocaleString("en-IN")}</b>
-            <span style="font-size:0.68rem;color:var(--stop)">Max Risk -₹${best.pos_size.max_risk_inr.toLocaleString("en-IN")}</span>
+          <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:7px 12px;margin:8px 0;font-size:0.75rem;display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px">
+            <span>📦 <b>${best.pos_size.suggested_lots} Lots</b> (${best.pos_size.total_quantity} Qty) · Outlay: <b>₹${best.pos_size.capital_outlay_inr.toLocaleString("en-IN")}</b> (${best.pos_size.portfolio_pct.toFixed(1)}% Port)</span>
+            <span style="color:var(--ink-mute)">${best.pos_size.sizing_rationale}</span>
           </div>
-          <div class="rec-lvl-item">
-            <small>Target 1</small>
-            <b id="rec-t1-grid-${best.rec_id}" style="color:var(--go)">₹${best.target_1.toFixed(1)}</b>
-            <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_1_pnl_inr.toLocaleString("en-IN")}</span>
+
+          <div style="background:rgba(0,0,0,0.25);border:1px solid var(--line);border-radius:6px;padding:9px 12px;margin:8px 0;font-size:0.78rem">
+            <div><b>⚡ Trigger:</b> ${best.entry_trigger}</div>
+            <div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--line);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+              <span style="color:var(--stop)"><b>🛑 Spot Invalidation:</b> ₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : "—"} — ${best.spot_invalidation_text || ""}${spotTargetBesideInval(best)}</span>
+              <span style="font-size:0.7rem;font-weight:750;color:${best.inval_breached ? "var(--stop)" : "var(--go)"}">
+                ${best.inval_breached ? `🛑 INVALIDATED (-${Math.abs(best.inval_buffer || 0).toFixed(0)} pts)` : `🟢 Active (+${Number(best.inval_buffer || 0).toFixed(0)} pts buffer)`}
+              </span>
+            </div>
           </div>
-          <div class="rec-lvl-item">
-            <small>Target 2</small>
-            <b id="rec-t2-grid-${best.rec_id}" style="color:var(--go)">₹${best.target_2.toFixed(1)}</b>
-            <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_2_pnl_inr.toLocaleString("en-IN")}</span>
+
+          <div class="rec-levels-grid">
+            <div class="rec-lvl-item">
+              <small>Spot Inval / SL</small>
+              <b style="color:var(--stop)">₹${invalNum > 0 ? invalNum.toLocaleString("en-IN") : slNum.toFixed(1)}</b>
+              <span style="font-size:0.68rem;color:var(--stop)">Max Risk -₹${best.pos_size.max_risk_inr.toLocaleString("en-IN")}</span>
+            </div>
+            <div class="rec-lvl-item">
+              <small>Target 1</small>
+              <b id="rec-t1-grid-${best.rec_id}" style="color:var(--go)">₹${t1Num.toFixed(1)}</b>
+              <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_1_pnl_inr.toLocaleString("en-IN")}</span>
+            </div>
+            <div class="rec-lvl-item">
+              <small>Target 2</small>
+              <b id="rec-t2-grid-${best.rec_id}" style="color:var(--go)">₹${Number(best.target_2 || 0).toFixed(1)}</b>
+              <span style="font-size:0.68rem;color:var(--go)">+₹${best.pos_size.target_2_pnl_inr.toLocaleString("en-IN")}</span>
+            </div>
+            <div class="rec-lvl-item">
+              <small>Risk : Reward</small>
+              <b style="color:var(--spark)">${best.risk_reward_ratio}</b>
+              <span style="font-size:0.68rem;color:var(--ink-mute)">Quality ${best.quality_score}/100</span>
+            </div>
           </div>
-          <div class="rec-lvl-item">
-            <small>Risk : Reward</small>
-            <b style="color:var(--spark)">${best.risk_reward_ratio}</b>
-            <span style="font-size:0.68rem;color:var(--ink-mute)">Quality ${best.quality_score}/100</span>
+
+          ${spreadBoxHtml}
+
+          <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-2);padding:5px 10px;border-radius:4px;margin:6px 0">
+            <span>P(T1): <b style="color:var(--go)">${Math.round((best.p_touch_target_1 || 0.65) * 100)}%</b> · P(SL): <b style="color:var(--stop)">${Math.round((best.p_touch_sl || 0.35) * 100)}%</b></span>
+            <span>EV: <b style="color:${(best.net_ev_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(best.net_ev_pts || 0) >= 0 ? "+" : ""}${Number(best.net_ev_pts || 0).toFixed(1)} pts</b> · Δ ~${Number(best.delta_approx || 0.50).toFixed(2)}</span>
           </div>
-        </div>
 
-        ${spreadBoxHtml}
+          <div style="font-size:0.78rem;color:var(--ink-mute);margin:8px 0">${best.rationale || ""}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
+            ${extraTagsHtml}
+            ${tags.map((t) => `<span style="font-size:0.68rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 7px;border-radius:4px;border:1px solid var(--line)">${t}</span>`).join("")}
+          </div>
 
-        <!-- Probabilities & Delta Strip -->
-        <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-2);padding:5px 10px;border-radius:4px;margin:6px 0">
-          <span>P(T1): <b style="color:var(--go)">${Math.round((best.p_touch_target_1 || 0.65) * 100)}%</b> · P(SL): <b style="color:var(--stop)">${Math.round((best.p_touch_sl || 0.35) * 100)}%</b></span>
-          <span>EV: <b style="color:${(best.net_ev_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(best.net_ev_pts || 0) >= 0 ? "+" : ""}${(best.net_ev_pts || 0).toFixed(1)} pts</b> · Δ ~${(best.delta_approx || 0.50).toFixed(2)}</span>
-        </div>
+          ${trajectoryHtml}
 
-        <!-- Rationale & Tags -->
-        <div style="font-size:0.78rem;color:var(--ink-mute);margin:8px 0">${best.rationale}</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0">
-          ${extraTagsHtml}
-          ${best.catalyst_tags.map((t) => `<span style="font-size:0.68rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 7px;border-radius:4px;border:1px solid var(--line)">${t}</span>`).join("")}
-        </div>
-
-        ${trajectoryHtml}
-
-        <!-- Action Controls -->
-        <div class="rec-actions">
-          <button class="btn ${bmBtnType}" style="flex:1" onclick="window.toggleBookmark('${best.rec_id}')">${bmText}</button>
-          <button class="btn btn-primary" style="flex:2.5" onclick="window.executePaperTrade('${best.rec_id}', '${best.option_symbol}', ${best.strike}, '${best.side}', ${best.current_ltp}, ${best.pos_size.suggested_lots})">
-            📝 Paper-Trade ${best.pos_size.suggested_lots} Lots (₹${best.pos_size.capital_outlay_inr.toLocaleString("en-IN")})
-          </button>
+          <div class="rec-actions">
+            <button class="btn btn-secondary" style="flex:1" onclick="window.toggleRecCardDetails('${best.rec_id}')">▲ Collapse Card</button>
+            <button class="btn ${bmBtnType}" style="flex:1" onclick="window.toggleBookmark('${best.rec_id}')">${bmText}</button>
+            <button class="btn btn-primary" style="flex:2" onclick="window.executePaperTrade('${best.rec_id}', '${best.option_symbol}', ${best.strike}, '${best.side}', ${ltpNum}, ${best.pos_size.suggested_lots})">
+              📝 Paper-Trade ${best.pos_size.suggested_lots} Lots (₹${best.pos_size.capital_outlay_inr.toLocaleString("en-IN")})
+            </button>
+          </div>
         </div>
       `;
       container.appendChild(card);
@@ -7758,6 +7795,28 @@
       window._expandedCockpitCards.add(recId);
       if (fullEl) fullEl.style.display = "block";
       if (toggleTxt) toggleTxt.innerHTML = "▲ Collapse Details";
+      if (chevron) chevron.textContent = "▲";
+      if (cardEl) cardEl.classList.add("is-expanded");
+    }
+  };
+
+  window.toggleRecCardDetails = function (recId) {
+    if (!window._expandedRecCards) window._expandedRecCards = new Set();
+    const fullEl = document.getElementById(`rec-card-full-${recId}`);
+    const toggleTxt = document.getElementById(`rec-card-toggle-text-${recId}`);
+    const cardEl = document.getElementById(`rec-card-${recId}`);
+    const chevron = document.getElementById(`rec-card-chevron-${recId}`);
+
+    if (window._expandedRecCards.has(recId)) {
+      window._expandedRecCards.delete(recId);
+      if (fullEl) fullEl.style.display = "none";
+      if (toggleTxt) toggleTxt.innerHTML = "▼ View Full Card Details";
+      if (chevron) chevron.textContent = "▼";
+      if (cardEl) cardEl.classList.remove("is-expanded");
+    } else {
+      window._expandedRecCards.add(recId);
+      if (fullEl) fullEl.style.display = "block";
+      if (toggleTxt) toggleTxt.innerHTML = "▲ Hide Full Details";
       if (chevron) chevron.textContent = "▲";
       if (cardEl) cardEl.classList.add("is-expanded");
     }

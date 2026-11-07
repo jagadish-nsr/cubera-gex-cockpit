@@ -467,6 +467,8 @@ async def test_api_sentinel_recommendations_endpoint():
     assert data["symbol"] == "NIFTY"
     assert "metrics" in data
     assert "recommendations" in data
+    assert "auto_paper" in data
+    assert isinstance(data["auto_paper"], bool)
     assert len(data["recommendations"]) >= 1
     rec = data["recommendations"][0]
     assert rec["symbol"] == "NIFTY"
@@ -683,5 +685,241 @@ def test_stable_rec_id_is_session_symbol_strike_side():
     assert rec["rec_id"].endswith("_CE")
     assert rec.get("expiry")
     assert rec.get("atm_iv") == 0.135
+
+
+def test_missing_atm_iv_refused(monkeypatch):
+    """No live ATM IV → refuse; never invent a default vol."""
+    sr.reset_refusal_metrics()
+    monkeypatch.setattr(sr, "_resolve_contract_context", lambda symbol: None)
+    sig = _make_signal(event_id="sig_no_iv", entry=24512.0, inval=24480.0, target_pts=50.0)
+    assert sr.on_sentinel_signal(sig, current_spot=24512.0) is None
+    assert sr.get_refusal_metrics().get("missing_atm_iv", 0) >= 1
+    assert len(rec_store.list_active_sentinel_recommendations("NIFTY")) == 0
+
+
+def test_bad_invalidation_side_refused():
+    """LONG invalidation at/above spot (or SHORT at/below) must refuse."""
+    sr.reset_refusal_metrics()
+    long_bad = _make_signal(event_id="sig_bad_long", bias="LONG", entry=24512.0, inval=24520.0, target_pts=40.0)
+    assert sr.on_sentinel_signal(long_bad, current_spot=24512.0) is None
+
+    short_bad = _make_signal(
+        event_id="sig_bad_short", bias="SHORT", sig_type="ABSORPTION_BEAR",
+        entry=24512.0, inval=24490.0, target_pts=40.0,
+    )
+    assert sr.on_sentinel_signal(short_bad, current_spot=24512.0) is None
+    assert sr.get_refusal_metrics().get("bad_invalidation", 0) >= 2
+
+
+def test_pe_spot_inval_on_5m_close_above_invalidation():
+    """SHORT/PE stop fires when a completed 5m cash close is above spot invalidation."""
+    t0 = datetime.now(IST).replace(hour=10, minute=0, second=0, microsecond=0)
+    sig = _make_signal(
+        event_id="sig_pe_inval",
+        bias="SHORT",
+        sig_type="ABSORPTION_BEAR",
+        entry=24538.0,
+        inval=24570.0,
+        target_pts=60.0,
+        ts=t0,
+    )
+    rec = sr.on_sentinel_signal(sig, current_spot=24538.0)
+    assert rec is not None and rec["side"] == "PE"
+
+    bar_5m = Bar(
+        instrument_id="NIFTY",
+        timeframe="5m",
+        start_ts=t0,
+        open=24540.0,
+        high=24580.0,
+        low=24530.0,
+        close=24575.0,  # above inval 24570
+        volume_units=12000,
+        volume_lots=180.0,
+        buy_vol_est=7000.0,
+        sell_vol_est=5000.0,
+        delta=2000.0,
+        delta_ratio=0.2,
+        delta_quality=1.0,
+        cvd=2000.0,
+        vwap=24550.0,
+        vwap_sigma_1=24580.0,
+        vwap_sigma_2=24610.0,
+        vwap_lower_1=24520.0,
+        vwap_lower_2=24490.0,
+    )
+    events = sr.evaluate_sentinel_recommendations_lifecycle(
+        symbol="NIFTY",
+        current_spot=24575.0,
+        options_ltp_map={f"{int(rec['strike'])}_PE": float(rec["option_entry"]) - 5.0},
+        bars_5m=[bar_5m],
+    )
+    assert len(events) == 1
+    assert events[0]["status"] == "SPOT_INVAL"
+
+
+def test_spot_inval_without_live_ltp_still_closes(monkeypatch):
+    """SPOT_INVAL must resolve even when the live option quote is missing at stop time."""
+    t0 = datetime.now(IST).replace(hour=9, minute=45, second=0, microsecond=0)
+    sig = _make_signal(event_id="sig_no_ltp_stop", entry=24510.0, inval=24470.0, target_pts=50.0, ts=t0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
+    assert rec is not None
+
+    monkeypatch.setattr(sr, "_resolve_option_entry_ltp", lambda *a, **k: None)
+    bar_5m = Bar(
+        instrument_id="NIFTY",
+        timeframe="5m",
+        start_ts=t0,
+        open=24500.0,
+        high=24505.0,
+        low=24460.0,
+        close=24465.0,
+        volume_units=10000,
+        volume_lots=150.0,
+        buy_vol_est=3000.0,
+        sell_vol_est=7000.0,
+        delta=-4000.0,
+        delta_ratio=-0.4,
+        delta_quality=1.0,
+        cvd=-4000.0,
+        vwap=24490.0,
+        vwap_sigma_1=24520.0,
+        vwap_sigma_2=24550.0,
+        vwap_lower_1=24470.0,
+        vwap_lower_2=24440.0,
+    )
+    events = sr.evaluate_sentinel_recommendations_lifecycle(
+        symbol="NIFTY",
+        current_spot=24465.0,
+        options_ltp_map={},
+        bars_5m=[bar_5m],
+    )
+    assert len(events) == 1
+    assert events[0]["status"] == "SPOT_INVAL"
+    assert events[0]["exit_price"] > 0
+
+
+def test_metrics_count_legacy_sl_hit_with_spot_inval():
+    """Daily metrics treat legacy SL_HIT rows as stops alongside SPOT_INVAL."""
+    t0 = datetime.now(IST).replace(hour=11, minute=0, second=0, microsecond=0)
+    sig = _make_signal(event_id="sig_legacy_metrics", entry=24510.0, inval=24475.0, target_pts=50.0, ts=t0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
+    assert rec is not None
+    rec_store.update_sentinel_recommendation_status(
+        rec_id=rec["rec_id"],
+        status="SL_HIT",
+        exit_price=float(rec["option_sl"]),
+        exit_reason="STOP",
+        outcome_ts=t0.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    metrics = sr.get_sentinel_daily_metrics("NIFTY", session_date="today")
+    assert metrics["sl_hits"] >= 1
+    assert metrics["spot_inval_hits"] == metrics["sl_hits"]
+    assert metrics["resolved_trades"] >= 1
+
+
+def test_stack_appends_paper_trade_note():
+    """Stacking a second signal appends a level-sync note on the linked paper trade."""
+    t0 = datetime.now(IST).replace(hour=9, minute=20, second=0, microsecond=0)
+    sig1 = _make_signal(event_id="sig_note1", entry=24510.0, inval=24470.0, target_pts=40.0, ts=t0)
+    rec1 = sr.on_sentinel_signal(sig1, current_spot=24510.0)
+    pt_id = rec1["paper_trade_id"]
+    assert pt_id
+
+    sig2 = _make_signal(
+        event_id="sig_note2", entry=24515.0, inval=24490.0, target_pts=80.0,
+        ts=t0 + timedelta(minutes=2),
+    )
+    sr.on_sentinel_signal(sig2, current_spot=24515.0)
+    pt = journal_store.get_trade(pt_id)
+    assert pt is not None
+    assert "Stacked" in (pt.notes or "")
+    assert "sig_note2" in (pt.notes or "")
+
+
+def test_live_manager_arms_listener_only_via_arm_helper(tmp_path, monkeypatch):
+    """LiveSentinelManager must not enable recommendations in __init__; only via arm helper."""
+    from sentinel.feed.live import LiveSentinelManager
+    from sentinel.storage import db as sentinel_db
+
+    sentinel_test_db = tmp_path / "test_sentinel_arm.db"
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", sentinel_test_db)
+    sentinel_db.ensure_sentinel_schema()
+    sentinel_db.disable_recommendation_listener()
+
+    mgr = LiveSentinelManager()
+    assert mgr._recommendations_armed is False
+    assert sentinel_db.is_recommendation_listener_enabled() is False
+
+    mgr._arm_recommendations_if_needed()
+    assert mgr._recommendations_armed is True
+    assert sentinel_db.is_recommendation_listener_enabled() is True
+
+    sentinel_db.disable_recommendation_listener()
+
+
+@pytest.mark.anyio
+async def test_api_auto_paper_and_confirm_paper_endpoints():
+    """POST /auto-paper and /confirm-paper round-trip through the web API."""
+    from tests.test_web_server_endpoints import asgi_request
+
+    sr.set_auto_paper_enabled(False)
+    sig = _make_signal(event_id="sig_api_paper", entry=24512.0, inval=24480.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24512.0)
+    assert rec is not None
+    assert rec.get("paper_trade_id") is None
+
+    status, _, body = await asgi_request(
+        "POST",
+        "/api/recommendations/sentinel/auto-paper",
+        body={"enabled": True},
+    )
+    assert status == 200
+    payload = json.loads(body.decode())
+    assert payload["ok"] is True
+    assert payload["auto_paper"] is True
+
+    status, _, body = await asgi_request("GET", "/api/recommendations/sentinel?symbol=NIFTY&session=today")
+    assert status == 200
+    listing = json.loads(body.decode())
+    assert listing.get("auto_paper") is True
+
+    # Confirm path: force a pending-paper row then confirm via API
+    sr.set_auto_paper_enabled(False)
+    sig2 = _make_signal(
+        event_id="sig_api_confirm",
+        entry=24612.0,
+        inval=24580.0,
+        target_pts=40.0,
+    )
+    rec2 = sr.on_sentinel_signal(sig2, current_spot=24612.0)
+    assert rec2 is not None
+    assert rec2.get("paper_trade_id") is None
+
+    status, _, body = await asgi_request(
+        "POST",
+        f"/api/recommendations/sentinel/{rec2['rec_id']}/confirm-paper",
+    )
+    assert status == 200
+    confirmed = json.loads(body.decode())
+    assert confirmed["ok"] is True
+    assert confirmed["recommendation"]["paper_trade_id"]
+
+    # Reset for other tests
+    sr.set_auto_paper_enabled(True)
+
+
+def test_trade_recommendations_mini_card_markup_present():
+    """Trade Recommendations tab ships the same mini→expand card pattern as Cockpit."""
+    from pathlib import Path
+
+    js = Path(__file__).resolve().parents[1] / "app" / "static" / "js" / "cockpit.js"
+    text = js.read_text(encoding="utf-8")
+    assert "toggleRecCardDetails" in text
+    assert "rec-card-full-" in text
+    assert "cockpit-card-mini-header" in text
+    assert "View Full Card Details" in text
+    html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    assert "cockpit.js?v=6.53" in html
 
 

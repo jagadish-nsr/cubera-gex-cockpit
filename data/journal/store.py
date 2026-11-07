@@ -369,12 +369,13 @@ def append_trade_note(trade_id: str, note: str) -> None:
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
+            # Write connections do not set sqlite3.Row; use positional access.
             row = conn.execute(
                 "SELECT notes FROM paper_trades WHERE trade_id = ?", (trade_id,)
             ).fetchone()
             if row is None:
                 return
-            prev = (row["notes"] or "").strip()
+            prev = (row[0] or "").strip()
             line = f"[{stamp}] {note}"
             merged = f"{prev}\n{line}" if prev else line
             conn.execute(
