@@ -108,6 +108,55 @@ def second_weekly_expiry(ref: date, exchange: str = "NSE") -> date:
     return next_weekly_expiry(w1 + timedelta(days=1), exchange)
 
 
+def next_n_weekly_expiries(ref: date, n: int = 4, exchange: str = "NSE") -> list[date]:
+    """Next ``n`` weekly expiries on or after ``ref``, holiday-adjusted.
+
+    Used by the multi-expiry OI/volume study (Nifty Tuesday / Sensex Thursday).
+    Does not invent weeklies for monthly-only underlyings — callers must gate on
+    ``Index.has_weekly`` before calling.
+    """
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    out: list[date] = []
+    cursor = ref
+    for _ in range(n):
+        exp = next_weekly_expiry(cursor, exchange)
+        out.append(exp)
+        cursor = exp + timedelta(days=1)
+    return out
+
+
+def pick_next_weeklies_from_vendor(
+    vendor_isos: list[str],
+    ref: date,
+    n: int = 4,
+    *,
+    exchange: str = "NSE",
+) -> list[date]:
+    """First ``n`` vendor expiries on/after ``ref``, cross-checked vs calendar weeklies.
+
+    Vendor ``/expirylist`` is the listing truth near the front (weeklies). Far
+    dates include monthlies/LEAPs — we only take the first ``n`` on/after ``ref``
+    and warn (via return mismatch) if they disagree with ``next_n_weekly_expiries``.
+    """
+    if n < 1:
+        raise ValueError(f"n must be >= 1, got {n}")
+    vendor_dates: list[date] = []
+    for raw in vendor_isos:
+        try:
+            d = date.fromisoformat(str(raw)[:10])
+        except (TypeError, ValueError):
+            continue
+        if d >= ref:
+            vendor_dates.append(d)
+    picked = vendor_dates[:n]
+    calendar = next_n_weekly_expiries(ref, n, exchange)
+    if picked and picked != calendar[: len(picked)]:
+        # Prefer vendor listing when present; calendar is the expected shape check.
+        return picked
+    return calendar if not picked else picked
+
+
 def describe_window(window: str, ref: date, exchange: str = "NSE",
                     has_weekly: bool = True) -> str:
     """Return a human-readable string describing the active expiry window.
@@ -177,14 +226,28 @@ def filter_expiry_window(contracts, window: str, ref: date,
     elif window == "current_week":
         target = (next_weekly_expiry(ref, exchange) if has_weekly
                   else next_monthly_expiry(ref, exchange))
+        if not exp.empty and (target not in exp.values):
+            future_exp = exp[exp >= ref]
+            if not future_exp.empty:
+                target = future_exp.min()
         mask = exp == target
     elif window == "next_week":
         target = (second_weekly_expiry(ref, exchange) if has_weekly
                   else second_monthly_expiry(ref, exchange))
+        if not exp.empty and (target not in exp.values):
+            future_exp = sorted(exp[exp >= ref].unique())
+            if len(future_exp) > 1:
+                target = future_exp[1]
+            elif len(future_exp) == 1:
+                target = future_exp[0]
         mask = exp == target
     elif window == "weekly":
         end = (next_weekly_expiry(ref, exchange) if has_weekly
                else next_monthly_expiry(ref, exchange))
+        if not exp.empty and (exp <= end).sum() == 0:
+            future_exp = exp[exp >= ref]
+            if not future_exp.empty:
+                end = future_exp.min()
         mask = (exp >= ref) & (exp <= end)
     elif window in ("monthly", "0dte_to_next_monthly"):
         mask = (exp >= ref) & (exp <= next_monthly_expiry(ref, exchange))

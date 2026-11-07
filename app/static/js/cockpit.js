@@ -4839,8 +4839,10 @@
       // Contributing signals
       const sigs = r.contributing_signals || [];
       const primarySig = sigs.length > 0 ? sigs[0] : {};
-      const sigType = primarySig.signal_type || (isCall ? "CONT_BULL" : "CONT_BEAR");
+      const latestSig = sigs.length > 0 ? sigs[sigs.length - 1] : {};
+      const sigType = r.latest_signal_type || latestSig.signal_type || primarySig.signal_type || (isCall ? "CONT_BULL" : "CONT_BEAR");
       const activeCount = sigs.filter((s) => s.status === "ACTIVE").length;
+      const latestTime = (r.latest_signal_at || latestSig.triggered_at || "").substring(11, 19);
 
       // Status badge
       let stBadge = "";
@@ -4872,17 +4874,21 @@
           <td>
             <span style="font-family:var(--mono);font-weight:700;color:var(--ink)">${trigTime}</span><br>
             <span style="font-size:0.66rem;color:var(--ink-mute);font-family:var(--mono)">${trigDate}</span>
+            ${latestTime && latestTime !== trigTime ? `<div style="font-size:0.64rem;color:var(--spark);font-family:var(--mono);margin-top:2px" title="Latest contributing signal trigger time">⚡ ${latestTime}</div>` : ""}
           </td>
           <td>
             <span style="font-weight:750;color:var(--ink);display:block;font-size:0.72rem">${sigType}</span>
-            <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.66rem;font-weight:750;${biasCls}">${isCall ? "🟢 LONG" : "🔴 SHORT"}</span>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:2px">
+              <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:0.66rem;font-weight:750;${biasCls}">${isCall ? "🟢 LONG" : "🔴 SHORT"}</span>
+              ${sigs.length > 1 ? `<span style="font-size:0.64rem;padding:1px 4px;border-radius:3px;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.3)" title="${sigs.length} signals contributing to max target">${sigs.length} stacked</span>` : ""}
+            </div>
           </td>
           <td>
             <b style="font-size:0.78rem">${r.symbol} ${Math.round(r.strike)} ${r.side}</b>
           </td>
           <td>
-            <span style="color:var(--ink)">Entry: ₹${Number(r.spot_entry || 0).toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1})}</span><br>
-            <span style="font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono)">Inval: ₹${Number(r.spot_invalidation || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} | Tgt: ₹${Number(r.spot_target || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})}</span>
+            <span style="color:var(--ink)">Entry: ₹${Number(r.spot_entry || 0).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span><br>
+            <span style="font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono)">Inval: ₹${Number(r.spot_invalidation || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} | Tgt: ₹${Number(r.spot_target || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
           </td>
           <td>
             <b style="font-family:var(--mono)">₹${entryPx.toFixed(1)}</b>
@@ -5280,7 +5286,7 @@
                   <span style="font-size:0.72rem;font-weight:750;font-family:var(--mono);color:${Number(r.pnl_pts) >= 0 ? "var(--go)" : "var(--stop)"}">
                     ${isResolved ? "Realized" : "MTM"} PnL: ${Number(r.pnl_pts) >= 0 ? "+" : ""}₹${Number(r.pnl_pts).toFixed(1)} (${Number(r.pnl_pts) >= 0 ? "+" : ""}${Number(r.pnl_pct || 0).toFixed(1)}%)
                   </span>` : ""
-                }
+        }
                 <span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T1: ₹${t1}</span>
                 ${Number(t2) > 0 ? `<span style="font-size:0.70rem;background:rgba(34,197,94,.12);color:var(--go);padding:2px 6px;border-radius:4px;font-family:var(--mono)">T2: ₹${t2}</span>` : ""}
                 <span style="font-size:0.70rem;background:rgba(239,68,68,.12);color:var(--stop);padding:2px 6px;border-radius:4px;font-family:var(--mono)">SL: ₹${sl}</span>
@@ -7475,9 +7481,9 @@
             ${pm.regime_briefing || pm.briefing || "Prior-session gamma strikes. The open is a print on the book, not a fade."}
           </div>
           ${renderPreMarketPlaybookHtml(pm, !morning && Boolean(pm.is_discovered), {
-            openAttr: window._pmPlaybookOpen ? "open" : "",
-            marginTop: "10px",
-          })}
+          openAttr: window._pmPlaybookOpen ? "open" : "",
+          marginTop: "10px",
+        })}
           ${shocksTableHtml}
         `;
       }

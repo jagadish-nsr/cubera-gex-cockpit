@@ -16,7 +16,7 @@ import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -193,8 +193,45 @@ def save_bar(bar: Bar) -> None:
             conn.close()
 
 
+_SIGNAL_LISTENERS: list[Callable[[SentinelSignal], Any]] = []
+
+
+def register_signal_listener(listener: Callable[[SentinelSignal], Any]) -> None:
+    """Register a callback to be invoked whenever an orderflow signal is generated/saved."""
+    if listener not in _SIGNAL_LISTENERS:
+        _SIGNAL_LISTENERS.append(listener)
+
+
+def unregister_signal_listener(listener: Callable[[SentinelSignal], Any]) -> None:
+    """Unregister a signal listener."""
+    if listener in _SIGNAL_LISTENERS:
+        _SIGNAL_LISTENERS.remove(listener)
+
+
+def dispatch_signal_event(sig: SentinelSignal) -> None:
+    """Dispatch newly generated signal to all registered reactive listeners."""
+    for fn in list(_SIGNAL_LISTENERS):
+        try:
+            fn(sig)
+        except Exception as e:
+            log.warning("Signal listener error in %s: %s", getattr(fn, "__name__", fn), e, exc_info=True)
+
+
+def _default_recommendation_handler(sig: SentinelSignal) -> None:
+    """Reactive event handler: orderflow signal generation triggers trade recommendation engine."""
+    try:
+        from analytics.sentinel_recommendations import on_sentinel_signal
+        on_sentinel_signal(sig)
+    except Exception as e:
+        log.debug("Auto-trigger recommendation engine error for %s: %s", getattr(sig, "event_id", ""), e)
+
+
+# Automatically hook the recommendation engine into signal generation
+register_signal_listener(_default_recommendation_handler)
+
+
 def save_signal(sig: SentinelSignal) -> None:
-    """Save an emitted SentinelSignal."""
+    """Save an emitted SentinelSignal and notify reactive listeners."""
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
@@ -224,6 +261,9 @@ def save_signal(sig: SentinelSignal) -> None:
             conn.commit()
         finally:
             conn.close()
+
+    # Reactive trigger: Signal generation event fires recommendation engine & listeners
+    dispatch_signal_event(sig)
 
 
 def list_recent_bars(

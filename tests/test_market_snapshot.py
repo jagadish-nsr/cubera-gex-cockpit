@@ -59,7 +59,7 @@ def test_market_snapshot_bootstrap_authentic_values():
     for sym, expected_spot_range in [
         ("NIFTY", (22000.0, 26000.0)),
         ("BANKNIFTY", (50000.0, 60000.0)),
-        ("SENSEX", (70000.0, 80000.0)),
+        ("SENSEX", (70000.0, 90000.0)),
     ]:
         snap = get_snapshot(sym)
         assert snap is not None

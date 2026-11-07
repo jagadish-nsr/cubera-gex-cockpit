@@ -137,7 +137,7 @@ def test_short_signal_creates_put_option():
 
 def test_single_active_entry_per_strike_and_target_max():
     """Requirement 8: Only 1 active entry per strike. Target elevated to MAX across active signals."""
-    t0 = datetime(2026, 11, 6, 9, 30, tzinfo=IST)
+    t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
     sig1 = _make_signal(
         event_id="sig_s1",
         entry=24505.0,
@@ -179,7 +179,7 @@ def test_single_active_entry_per_strike_and_target_max():
 
 def test_invalidation_fallback_to_next_highest_active_target():
     """Requirement 8: If max-target signal is invalidated on a 5m close, fallback to next highest target."""
-    t0 = datetime(2026, 11, 6, 9, 30, tzinfo=IST)
+    t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
 
     # Signal 1: Conservative target (Tgt: 24550, Inval: 24470)
     sig1 = _make_signal(
@@ -282,7 +282,7 @@ def test_target_hit_on_touch():
 
 def test_stop_loss_only_on_5m_candle_close_wicks_ignored():
     """Requirement 6: Stop Loss does NOT trigger on intra-bar wick dip, ONLY on 5m candle close."""
-    t0 = datetime(2026, 11, 6, 9, 30, tzinfo=IST)
+    t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)
     sig = _make_signal(entry=24500.0, inval=24470.0, target_pts=50.0, ts=t0)
     rec = sr.on_sentinel_signal(sig, current_spot=24500.0)
     sl_px = rec["option_sl"]
@@ -454,5 +454,78 @@ async def test_api_sentinel_recommendations_endpoint():
     assert rec["strike"] == 24500.0
     assert rec["side"] == "CE"
     assert rec["status"] == "ACTIVE"
+
+
+def test_signal_save_event_triggers_recommendation_engine(tmp_path, monkeypatch):
+    """Verify that saving an orderflow signal immediately event-triggers the recommendation engine."""
+    from sentinel.storage import db as sentinel_db
+
+    sentinel_test_db = tmp_path / "test_sentinel.db"
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", sentinel_test_db)
+    sentinel_db.ensure_sentinel_schema()
+
+    # 1. Save an initial LONG signal -> should trigger recommendation engine automatically
+    sig1 = _make_signal(
+        event_id="sig_evt_01",
+        inst="NIFTY-FUT",
+        bias="LONG",
+        sig_type="CONTINUATION_BULL",
+        entry=24508.0,
+        inval=24480.0,
+        target_pts=45.0,
+    )
+    sentinel_db.save_signal(sig1)
+
+    rec1 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
+    assert rec1 is not None
+    assert rec1["status"] == "ACTIVE"
+    assert rec1["strike"] == 24500.0
+    assert rec1["side"] == "CE"
+    assert rec1["spot_entry"] == 24508.0
+    assert rec1["latest_signal_type"] == "CONTINUATION_BULL"
+    assert len(rec1["contributing_signals"]) == 1
+
+    # 2. Save a subsequent signal on the same strike with higher target
+    sig2 = _make_signal(
+        event_id="sig_evt_02",
+        inst="NIFTY-FUT",
+        bias="LONG",
+        sig_type="ABSORPTION_BULL",
+        entry=24512.0,
+        inval=24490.0,
+        target_pts=80.0,  # Elevated target
+    )
+    sentinel_db.save_signal(sig2)
+
+    rec2 = rec_store.get_active_sentinel_recommendation("NIFTY", 24500.0, "CE")
+    assert rec2 is not None
+    assert rec2["rec_id"] == rec1["rec_id"]  # Single active entry per strike preserved
+    assert len(rec2["contributing_signals"]) == 2
+    assert rec2["latest_signal_type"] == "ABSORPTION_BULL"
+    assert rec2["spot_target"] == 24512.0 + 80.0  # Elevated max target
+
+
+def test_custom_signal_listener_registration():
+    """Verify custom signal listener can register, receive events, and unregister cleanly."""
+    from sentinel.storage import db as sentinel_db
+
+    received: list[SentinelSignal] = []
+
+    def custom_listener(sig: SentinelSignal):
+        received.append(sig)
+
+    sentinel_db.register_signal_listener(custom_listener)
+    try:
+        sig = _make_signal(event_id="sig_listener_test")
+        sentinel_db.dispatch_signal_event(sig)
+        assert len(received) == 1
+        assert received[0].event_id == "sig_listener_test"
+    finally:
+        sentinel_db.unregister_signal_listener(custom_listener)
+
+    # After unregistering, listener should not be called
+    sentinel_db.dispatch_signal_event(sig)
+    assert len(received) == 1
+
 
 

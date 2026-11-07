@@ -245,6 +245,16 @@ def ensure_schema() -> None:
             except sqlite3.OperationalError:
                 pass
 
+        # Evolution for sentinel_trade_recommendations
+        for col_name, col_type in (
+            ("latest_signal_at", "TEXT"),
+            ("latest_signal_type", "TEXT"),
+        ):
+            try:
+                conn.execute(f"ALTER TABLE sentinel_trade_recommendations ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass
+
         # Indexes follow the ALTER. An existing table does not gain columns from
         # CREATE TABLE IF NOT EXISTS, so indexing them inside the script above
         # aborts before the columns are added.
@@ -1159,8 +1169,8 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
                 option_entry, option_target, option_sl, current_ltp,
                 current_spot, pnl_pts, pnl_pct, paper_trade_id,
                 contributing_signals_json, outcome_ts, exit_price, exit_reason,
-                created_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                created_at, updated_at, latest_signal_at, latest_signal_type
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(rec_id) DO UPDATE SET
                 status = excluded.status,
                 spot_target = excluded.spot_target,
@@ -1176,7 +1186,9 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
                 outcome_ts = COALESCE(excluded.outcome_ts, sentinel_trade_recommendations.outcome_ts),
                 exit_price = COALESCE(excluded.exit_price, sentinel_trade_recommendations.exit_price),
                 exit_reason = COALESCE(excluded.exit_reason, sentinel_trade_recommendations.exit_reason),
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                latest_signal_at = COALESCE(excluded.latest_signal_at, sentinel_trade_recommendations.latest_signal_at),
+                latest_signal_type = COALESCE(excluded.latest_signal_type, sentinel_trade_recommendations.latest_signal_type)
         """, (
             rec["rec_id"],
             rec["symbol"].upper(),
@@ -1202,6 +1214,8 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
             rec.get("exit_reason"),
             rec.get("created_at", now_ts),
             now_ts,
+            rec.get("latest_signal_at", rec.get("triggered_at", now_ts)),
+            rec.get("latest_signal_type", ""),
         ))
         conn.commit()
 

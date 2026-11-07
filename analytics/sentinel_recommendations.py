@@ -135,7 +135,14 @@ def on_sentinel_signal(
     # 1. Resolve Cash Spot & ATM Strike
     spot = float(current_spot if current_spot and current_spot > 0 else (signal.entry_price or 0.0))
     if spot <= 0:
-        spot = 24500.0 if symbol == "NIFTY" else 52000.0
+        try:
+            from app.spot_ticker import latest_quote
+            q = latest_quote(symbol) or {}
+            spot = float(q.get("spot") or 0.0)
+        except Exception:
+            pass
+    if spot <= 0:
+        spot = 24500.0 if symbol == "NIFTY" else (52000.0 if symbol == "BANKNIFTY" else 81000.0)
 
     atm_strike = _round_strike(spot, step)
 
@@ -224,6 +231,8 @@ def on_sentinel_signal(
         existing["contributing_signals_json"] = json.dumps(contributing)
         existing["current_spot"] = spot
         existing["current_ltp"] = entry_ltp
+        existing["latest_signal_at"] = trig_ts
+        existing["latest_signal_type"] = signal.type
 
         rec_store.save_or_update_sentinel_recommendation(existing)
         log.info(
@@ -298,6 +307,8 @@ def on_sentinel_signal(
         "outcome_ts": None,
         "exit_price": None,
         "exit_reason": None,
+        "latest_signal_at": trig_ts,
+        "latest_signal_type": signal.type,
     }
 
     rec_store.save_or_update_sentinel_recommendation(rec_data)

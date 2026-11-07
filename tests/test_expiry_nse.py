@@ -13,7 +13,9 @@ from data.expiry import (
     filter_expiry_window,
     last_weekday_of_month,
     next_monthly_expiry,
+    next_n_weekly_expiries,
     next_weekly_expiry,
+    pick_next_weeklies_from_vendor,
 )
 
 
@@ -101,4 +103,31 @@ def test_holiday_expiry_moves_to_the_previous_trading_day(monkeypatch):
     rolled = next_weekly_expiry(date(2026, 10, 26), "NSE")
     assert rolled == date(2026, 10, 26)  # Monday, the trading day before
     assert rolled.weekday() == 0
+
+
+def test_next_n_weekly_expiries_walks_four_nifty_tuesdays():
+    ref = date(2026, 11, 7)  # Saturday
+    got = next_n_weekly_expiries(ref, 4, "NSE")
+    assert len(got) == 4
+    assert got[0] == next_weekly_expiry(ref, "NSE")
+    assert got[1] == next_weekly_expiry(got[0] + timedelta(days=1), "NSE")
+    assert all(a < b for a, b in zip(got, got[1:]))
+
+
+def test_next_n_weekly_expiries_sensex_thursdays():
+    ref = date(2026, 11, 7)
+    got = next_n_weekly_expiries(ref, 4, "BSE")
+    assert len(got) == 4
+    assert all(d.weekday() == 3 for d in got)  # Thursday when no holiday roll
+
+
+def test_pick_next_weeklies_prefers_vendor_front():
+    ref = date(2026, 11, 7)
+    vendor = [
+        "2026-11-09", "2026-11-17", "2026-11-23", "2026-12-01",
+        "2026-12-08", "2026-12-29", "2027-06-29",
+    ]
+    got = pick_next_weeklies_from_vendor(vendor, ref, 4, exchange="NSE")
+    assert got == [date(2026, 11, 9), date(2026, 11, 17),
+                   date(2026, 11, 23), date(2026, 12, 1)]
 
