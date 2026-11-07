@@ -411,6 +411,7 @@ Background reading on a US GEX write-up. Not the production convention:
 ---
 
 ## 🔗 Related Technical Documentation
+- [⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)
 - [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
 - [🎯 Target Engine — Scenario & Repricing Suite Technical Guide](/?view=target_engine_guide)
 - [🔬 Options Analytics & Microstructure Intelligence Guide (IOAS v3.0)](/?view=options_analytics_guide)

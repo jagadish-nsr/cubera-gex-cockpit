@@ -56,6 +56,10 @@ Access any of the specialized technical guides directly in your browser or click
 11. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
     - Book balance, expiry-day premium crossover, and the research record. Production uses one convention, `short_call_short_put`. Who hedges is unmeasured.
 
+12. **[⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)**
+    - How the cockpit blast score is built (expiry gate, 13:00 window, covering tape, proximity, regime) versus the research true-vs-fake grade after a strike cross.
+    - Risk-only use in recommendations (de-size / annotate) — not a CE/PE direction input.
+
 ---
 
 ## 🖥️ The 11 Dedicated Cockpit Tabs

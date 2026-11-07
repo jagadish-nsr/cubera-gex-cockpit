@@ -411,4 +411,5 @@ The Target Engine serves as the core quantitative pricing nucleus across four ot
 - [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
 - [🧭 Participant Open Interest Guide](/?view=participant_guide)
 - [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)
 - [📘 Master Cockpit User Guide](/?view=user_guide)

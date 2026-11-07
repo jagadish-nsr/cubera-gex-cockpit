@@ -306,10 +306,12 @@ If the card says ACTIVE with no covering tape, that is a bug relative to §2.4
 
 ---
 
-## Related files
+## 🔗 Related Technical Documentation
 
-- `app/gammablast.py` — all scoring and journals  
-- `tests/test_gammablast.py` — hand-checkable gates and covering cases  
-- `docs/gamma-blast-score.md` — research true-vs-fake narrative and rejected features  
-- `docs/gamma-blast-research.md` — broader research notes  
-- `app/blast_risk.py` — recommendation size multipliers from live state  
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
+- [📘 Master Cockpit User Guide](/?view=user_guide)
+- [🎯 Options Recommendation Strategies & Alpha Playbook](/?view=options_strategies_guide)
+- [📊 Quantitative Calculations & Formulas Reference](/?view=data_dictionary)
+
+Code / research notes (repo paths, not in-app guides): `app/gammablast.py`,
+`tests/test_gammablast.py`, `docs/gamma-blast-score.md`, `app/blast_risk.py`.

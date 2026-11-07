@@ -111,3 +111,8 @@ the session points and reads the wall ahead from the current snapshot.
 - **Sign-free staying-power grade, NOT a direction call.** Whether the pivot resolves up
   or down still depends on the unvalidated India dealer sign (see CLAUDE.md landmine).
   This grades *how hard a break, once it happens, is likely to run* — you confirm.
+
+## 🔗 Related Technical Documentation
+- [⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)
+  (current-code live card formula + this true-vs-fake grade in one place)
+- [🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)
