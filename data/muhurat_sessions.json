@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "note": "Year-switch: (1) add the new year to data/holidays.py NSE_HOLIDAY_NAMES including Diwali (Laxmi Pujan), (2) fetch/cache that year's NSE holiday JSON, (3) leave sessions empty to auto-arm from Laxmi Pujan / Muhurat holiday names with default_hours on whatever day it falls (weekday or weekend), (4) after the NSE CMTR circular, pin verified hours here. Laxmi Pujan stays is_holiday for expiry roll-back; this file only opens the special live window.",
+  "default_hours": {
+    "briefing": "13:00",
+    "preopen": "14:05",
+    "discovery": "14:12",
+    "open": "14:20",
+    "cash_close": "15:30",
+    "fno_close": "15:40",
+    "post_close": "16:00"
+  },
+  "auto_from_holiday_name_markers": [
+    "laxmi pujan",
+    "lakshmi pujan",
+    "muhurat trading",
+    "diwali muhurat"
+  ],
+  "sessions": [
+    {
+      "date": "2025-10-21",
+      "label": "Diwali Muhurat Trading",
+      "circular": null,
+      "verified": false
+    },
+    {
+      "date": "2026-11-08",
+      "label": "Diwali Muhurat Trading",
+      "circular": "NSE CMTR 149/2026 (19 Oct 2026)",
+      "verified": true,
+      "briefing": "13:00",
+      "preopen": "14:05",
+      "discovery": "14:12",
+      "open": "14:20",
+      "cash_close": "15:30",
+      "fno_close": "15:40",
+      "post_close": "16:00"
+    },
+    {
+      "date": "2027-10-28",
+      "label": "Diwali Muhurat Trading",
+      "circular": null,
+      "verified": false
+    }
+  ]
+}

@@ -4725,27 +4725,106 @@ async def get_scorecard(symbol: Optional[str] = None):
     }
 
 
+def _ops_hm(mins: int) -> str:
+    return f"{mins // 60:02d}:{mins % 60:02d}"
+
+
+def _ops_parse_hm(text: str) -> int:
+    h, m = text.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _ops_window_status(now_min: int, start: str, end: str, *, closed_day: bool = False) -> str:
+    """ACTIVE / COMPLETED / UPCOMING from IST minutes. Overnight windows wrap past midnight."""
+    if closed_day:
+        return "CLOSED"
+    sa, sb = _ops_parse_hm(start), _ops_parse_hm(end)
+    if sa < sb:
+        if now_min < sa:
+            return "UPCOMING"
+        if now_min < sb:
+            return "ACTIVE"
+        return "COMPLETED"
+    # Wrap (e.g. 16:00–09:00): active from start through midnight to end.
+    if now_min >= sa or now_min < sb:
+        return "ACTIVE"
+    return "UPCOMING"
+
+
+def build_ops_timeline_windows(now_ist: datetime) -> tuple[str, str, list[dict]]:
+    """Session-clock ops track. Regular day keeps 11 windows; Muhurat uses its short clock."""
+    from data.session_calendar import clock_for, is_live_session_day, is_muhurat_session
+
+    today = now_ist.date()
+    now_min = now_ist.hour * 60 + now_ist.minute
+    clock = clock_for(today)
+    closed_day = not is_live_session_day(today)
+
+    if is_muhurat_session(today):
+        # Contiguous Muhurat day — no regular 09:xx windows (those never open today).
+        specs = [
+            ("w1", "Muhurat Prior-Session Briefing",
+             _ops_hm(clock.briefing_min), _ops_hm(clock.preopen_min)),
+            ("w2", "Muhurat Pre-Open Order Collection",
+             _ops_hm(clock.preopen_min), _ops_hm(clock.discovery_min)),
+            ("w3", "Muhurat Equilibrium Discovery",
+             _ops_hm(clock.discovery_min), _ops_hm(clock.open_min)),
+            ("w4", "Muhurat Opening Drive",
+             _ops_hm(clock.open_min), _ops_hm(clock.open_min + 20)),
+            ("w5", "Muhurat Live Continuous",
+             _ops_hm(clock.open_min + 20), _ops_hm(clock.cash_close_min - 15)),
+            ("w6", "Muhurat Closing Settlement",
+             _ops_hm(clock.cash_close_min - 15), _ops_hm(clock.cash_close_min)),
+            ("w7", "CAS Auction & F&O Close",
+             _ops_hm(clock.cash_close_min), _ops_hm(clock.fno_close_min)),
+            ("w8", "Post-Close Settlement",
+             _ops_hm(clock.fno_close_min), _ops_hm(clock.post_close_min)),
+            ("w9", "EOD / Night",
+             _ops_hm(clock.post_close_min), _ops_hm(clock.briefing_min)),
+        ]
+        title = f"Muhurat Session Windows · {clock.label}"
+        kind = "muhurat"
+    else:
+        # Regular weekday 11-window track. w10 covers CAS + post (15:30–16:00).
+        specs = [
+            ("w1", "Pre-Market Order Collection", "09:00", "09:08"),
+            ("w2", "Equilibrium Discovery", "09:08", "09:15"),
+            ("w3", "Opening Bell & Volatility Squeeze", "09:15", "09:30"),
+            ("w4", "Initial Balance / Strike Formation", "09:30", "10:15"),
+            ("w5", "Morning Institutional Trend Leg", "10:15", "11:30"),
+            ("w6", "European Pre-Open / Lunch Chop", "11:30", "13:00"),
+            ("w7", "European Open Vol Cross", "13:00", "14:00"),
+            ("w8", "Gamma Scalp / Power Hour", "14:00", "15:00"),
+            ("w9", "Closing Settlement / MTM Lock", "15:00", "15:30"),
+            ("w10", "CAS Auction & Post-Close", "15:30", "16:00"),
+            ("w11", "EOD Reconciliation & Night WAL", "16:00", "09:00"),
+        ]
+        title = (
+            "Indian Market 11-Window Execution Timeline · Closed"
+            if closed_day
+            else "Indian Market 11-Window Execution Timeline"
+        )
+        kind = "closed" if closed_day else "regular"
+
+    windows = []
+    for wid, name, start, end in specs:
+        windows.append({
+            "id": wid,
+            "name": name,
+            "range": f"{start} – {end}",
+            "start": start,
+            "end": end,
+            "status": _ops_window_status(now_min, start, end, closed_day=closed_day),
+        })
+    return title, kind, windows
+
+
 @app.get("/api/ops-calendar")
 async def get_ops_calendar(symbol: Optional[str] = None):
-    """Ops & Calendar Tab: Token status, Circuit breaker, 11 Indian market timeline windows, Holidays."""
+    """Ops & Calendar Tab: Token status, Circuit breaker, session timeline windows, Holidays."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     now_ist = _get_ist_now()
-    curr_time_str = now_ist.strftime("%H:%M:%S")
-
-    # 11 Indian Market Windows
-    windows = [
-        {"id": "w1", "name": "Pre-Market Order Collection", "range": "09:00 – 09:08", "start": "09:00", "end": "09:08", "status": "COMPLETED"},
-        {"id": "w2", "name": "Equilibrium Discovery", "range": "09:08 – 09:15", "start": "09:08", "end": "09:15", "status": "COMPLETED"},
-        {"id": "w3", "name": "Opening Bell & Volatility Squeeze", "range": "09:15 – 09:30", "start": "09:15", "end": "09:30", "status": "COMPLETED"},
-        {"id": "w4", "name": "Initial Balance / Strike Formation", "range": "09:30 – 10:15", "start": "09:30", "end": "10:15", "status": "COMPLETED"},
-        {"id": "w5", "name": "Morning Institutional Trend Leg", "range": "10:15 – 11:30", "start": "10:15", "end": "11:30", "status": "COMPLETED"},
-        {"id": "w6", "name": "European Pre-Open / Lunch Chop", "range": "11:30 – 13:00", "start": "11:30", "end": "13:00", "status": "COMPLETED"},
-        {"id": "w7", "name": "European Open Vol Cross", "range": "13:00 – 14:00", "start": "13:00", "end": "14:00", "status": "COMPLETED"},
-        {"id": "w8", "name": "Gamma Scalp / Power Hour", "range": "14:00 – 15:00", "start": "14:00", "end": "15:00", "status": "ACTIVE"},
-        {"id": "w9", "name": "Closing Settlement / MTM Lock", "range": "15:00 – 15:30", "start": "15:00", "end": "15:30", "status": "UPCOMING"},
-        {"id": "w10", "name": "CAS Post-Market Auction", "range": "15:40 – 16:00", "start": "15:40", "end": "16:00", "status": "UPCOMING"},
-        {"id": "w11", "name": "EOD Reconciliation & Night WAL", "range": "16:00 – 09:00", "start": "16:00", "end": "09:00", "status": "UPCOMING"},
-    ]
+    title, session_kind, windows = build_ops_timeline_windows(now_ist)
 
     return {
         "symbol": sym,
@@ -4756,6 +4835,8 @@ async def get_ops_calendar(symbol: Optional[str] = None):
             "cache_entries": 128,
             "sqlite_wal_mb": 2.4,
         },
+        "timeline_title": title,
+        "session_kind": session_kind,
         "timeline_windows": windows,
         "upcoming_expiries": [
             {"date": "2026-10-15", "index": "NIFTY", "type": "Weekly", "days_left": 0},

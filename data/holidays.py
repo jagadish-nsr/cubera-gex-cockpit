@@ -77,8 +77,9 @@ NSE_HOLIDAY_NAMES: dict[str, str] = {
     "2026-09-14": "Milad-un-Nabi (Id-e-Milad)",
     "2026-10-02": "Mahatma Gandhi Jayanti",
     "2026-10-20": "Dussehra / Vijayadashami",
-    # Laxmi Pujan stays a holiday for expiry roll-back. Live Muhurat hours for
-    # 2026-11-08 are in data/session_calendar.MUHURAT_SESSIONS (14:20–15:40 IST).
+    # Laxmi Pujan stays a holiday for expiry roll-back. Live Muhurat hours are
+    # resolved by data/session_calendar.py from data/muhurat_sessions.json +
+    # these holiday names (any calendar day). Pin verified hours after the NSE circular.
     "2026-11-08": "Diwali (Laxmi Pujan)",
     "2026-11-10": "Diwali Balipratipada",
     "2026-11-24": "Guru Nanak Jayanti",
@@ -239,6 +240,51 @@ def roll_back_to_trading_day(d: date) -> date:
     while not is_trading_day(d):
         d -= timedelta(days=1)
     return d
+
+
+# Names that mark a Muhurat / Laxmi-Pujan special session day (any calendar day).
+MUHURAT_HOLIDAY_NAME_MARKERS: tuple[str, ...] = (
+    "laxmi pujan",
+    "lakshmi pujan",
+    "muhurat trading",
+    "diwali muhurat",
+)
+
+
+def _name_matches_markers(name: str, markers: tuple[str, ...] | list[str]) -> bool:
+    low = (name or "").casefold()
+    return any(m.casefold() in low for m in markers)
+
+
+def muhurat_holiday_candidates(
+    year: int,
+    markers: tuple[str, ...] | list[str] | None = None,
+) -> dict[date, str]:
+    """Holiday dates for ``year`` whose names mark Muhurat / Laxmi Pujan.
+
+    Merges the loaded NSE/cache names with ``NSE_HOLIDAY_NAMES`` so a year that
+    was pre-configured in the static dictionary still arms before the first fetch.
+    """
+    marks = tuple(markers) if markers is not None else MUHURAT_HOLIDAY_NAME_MARKERS
+    _load_or_fetch(year)
+    names = dict(_calendar_names_cache.get(year, {}))
+    out: dict[date, str] = {}
+    for d, name in names.items():
+        if d.year == year and _name_matches_markers(name, marks):
+            out[d] = name
+    for iso, name in NSE_HOLIDAY_NAMES.items():
+        try:
+            d = date.fromisoformat(iso)
+        except ValueError:
+            continue
+        if d.year == year and _name_matches_markers(name, marks):
+            out.setdefault(d, name)
+    return out
+
+
+def laxmi_pujan_dates(year: int) -> list[date]:
+    """Sorted Laxmi Pujan / Muhurat holiday dates for ``year`` (expiry stays holiday)."""
+    return sorted(muhurat_holiday_candidates(year))
 
 
 def near_month_futures_expiry(ref: date = None, exchange: str = "NSE") -> date:

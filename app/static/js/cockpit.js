@@ -7465,8 +7465,12 @@
       document.getElementById("ops-cache-entries").textContent = `${data.resilience.cache_entries} Keys`;
       document.getElementById("ops-wal-size").textContent = `${data.resilience.sqlite_wal_mb} MB`;
 
-      // 11-Window Timeline Track
+      // Session timeline track (11 regular windows, or Muhurat clock windows)
       const track = document.getElementById("timeline-track-container");
+      const titleEl = document.getElementById("ops-timeline-title");
+      if (titleEl && data.timeline_title) {
+        titleEl.textContent = data.timeline_title;
+      }
       if (track && data.timeline_windows) {
         track.innerHTML = "";
         data.timeline_windows.forEach((w) => {
@@ -7475,6 +7479,7 @@
           let badgeHtml = "";
           if (w.status === "ACTIVE") badgeHtml = '<span class="badge-active">● ACTIVE</span>';
           else if (w.status === "COMPLETED") badgeHtml = '<span class="badge-done">✓ COMPLETED</span>';
+          else if (w.status === "CLOSED") badgeHtml = '<span class="badge-upcoming">CLOSED</span>';
           else badgeHtml = '<span class="badge-upcoming">UPCOMING</span>';
 
           node.innerHTML = `

@@ -820,12 +820,15 @@ def test_paper_structure_refuses_when_a_leg_has_no_last_price(monkeypatch):
 
 
 def test_ops_calendar_timeline_windows():
-    """Verify GET /api/ops-calendar returns the 11-window Indian market timeline."""
+    """Verify GET /api/ops-calendar returns a clock-aware session timeline."""
     status, headers, content = asyncio.run(asgi_request("GET", "/api/ops-calendar"))
     assert status == 200
     data = json.loads(content)
     assert "timeline_windows" in data
-    assert len(data["timeline_windows"]) == 11
+    assert len(data["timeline_windows"]) >= 9
+    assert data["timeline_windows"][0]["status"] in {"ACTIVE", "COMPLETED", "UPCOMING", "CLOSED"}
+    assert "timeline_title" in data
+    assert "session_kind" in data
     assert "resilience" in data
 
 

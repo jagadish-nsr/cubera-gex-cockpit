@@ -59,11 +59,11 @@ $(block "${PROD_DIR}" '3,18,33,48' 23 3 3 prod)
 # prod gamma-blast option ticks from 12:55 IST, Mon-Fri (waits for the 13:00 freeze).
 # The script skips an index whose nearest expiry is not today and stops at the F&O close.
 55 12 * * 1-5 ${PROD_DIR}/run_blast_ticks.sh
-# Muhurat special session (Sunday afternoon). Launchers no-op unless today is listed
-# in data/session_calendar.MUHURAT_SESSIONS (2026-11-08: 14:20–15:40 IST).
-*/5 14-15 * * 0 ${DEV_DIR}/run_muhurat_collect.sh
-*/5 14-15 * * 0 ${PROD_DIR}/run_muhurat_collect.sh
-10 14 * * 0 ${PROD_DIR}/run_muhurat_big_money.sh
+# Muhurat special session (any calendar day Laxmi Pujan falls on — weekday or
+# weekend). Launchers no-op unless is_muhurat_session() — see muhurat_sessions.json.
+*/5 14-15 * * * ${DEV_DIR}/run_muhurat_collect.sh
+*/5 14-15 * * * ${PROD_DIR}/run_muhurat_collect.sh
+10 14 * * * ${PROD_DIR}/run_muhurat_big_money.sh
 # END cubera-gex data collection
 EOF
 )"
