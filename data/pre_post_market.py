@@ -1040,17 +1040,18 @@ def _pre_market_loop(symbol: str) -> None:
 
 
 def post_market_poller_asleep(now: datetime | None = None) -> bool:
-    """True outside 15:30–16:10 IST on a trading day."""
+    """True outside cash-close→post window on a live session day (regular or Muhurat)."""
     now_ist = now or datetime.now(IST)
-    try:
-        from data.holidays import is_trading_day
-        trading = is_trading_day(now_ist.date())
-    except Exception:
-        trading = now_ist.weekday() < 5
-    if not trading:
+    from data.session_calendar import clock_for, is_live_session_day
+
+    if not is_live_session_day(now_ist.date()):
         return True
+    clock = clock_for(now_ist.date())
     mins = now_ist.hour * 60 + now_ist.minute
-    return mins < _POST_POLL_START_MIN or mins >= _POST_POLL_END_MIN
+    # Regular: 15:30–16:10. Same span from cash close through post_close+10 on Muhurat.
+    start = clock.cash_close_min
+    end = clock.post_close_min + 10
+    return mins < start or mins >= end
 
 
 def ensure_post_market_poller(symbol: str = "NIFTY") -> None:
@@ -1634,9 +1635,11 @@ def get_post_market_state(
             }, symbol)
 
     t_min = now_ist.hour * 60 + now_ist.minute
-    from data.holidays import is_holiday
-    is_trading_day_today = (not is_holiday(now_ist.date())) and (now_ist.weekday() < 5)
-    is_post = (t_min >= 15 * 60 + 30) or (not is_trading_day_today)
+    # Laxmi Pujan stays is_holiday for expiry roll-back; Muhurat is still a live day.
+    from data.session_calendar import clock_for, is_live_session_day
+    clock = clock_for(now_ist.date())
+    is_live_today = is_live_session_day(now_ist.date())
+    is_post = (t_min >= clock.cash_close_min) or (not is_live_today)
 
     with _CACHE_LOCK:
         cached = _POST_MARKET_CACHE.get(symbol.upper())

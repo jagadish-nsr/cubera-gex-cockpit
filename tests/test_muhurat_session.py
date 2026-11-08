@@ -4,7 +4,11 @@ from datetime import date, datetime, timedelta, timezone
 
 import config
 from data.holidays import is_holiday, is_trading_day
-from data.pre_post_market import get_current_session_phase
+from data.pre_post_market import (
+    get_current_session_phase,
+    get_post_market_state,
+    post_market_poller_asleep,
+)
 from data.session_calendar import (
     clock_for,
     is_live_session_day,
@@ -76,3 +80,15 @@ def test_schedule_badge_names_muhurat_not_weekend_closed():
     morning = compute_session_schedule_info(_dt(10, 0))
     assert morning["is_market_open"] is False
     assert "MUHURAT" in morning["phase_badge"] or "Muhurat" in morning["exec_phase_countdown"]
+
+
+def test_post_market_not_forced_during_muhurat_live():
+    """Laxmi Pujan is_holiday must not flip the post-market card on during live."""
+    from data import pre_post_market as ppm
+
+    ppm._POST_MARKET_CACHE.clear()
+    live = get_post_market_state("NIFTY", force_refresh=True, now=_dt(14, 30))
+    assert live["is_post_market"] is False
+    assert post_market_poller_asleep(_dt(14, 30)) is True
+    assert post_market_poller_asleep(_dt(15, 45)) is False
+    assert post_market_poller_asleep(_dt(16, 15)) is True
