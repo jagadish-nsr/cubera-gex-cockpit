@@ -133,10 +133,13 @@ def test_schedule_badge_names_muhurat_not_weekend_closed():
     assert info["is_market_open"] is True
     assert info["session_kind"] == "muhurat"
     assert "MUHURAT" in info["phase_badge"]
+    assert info.get("holiday_name") and "Muhurat" in info["holiday_name"]
 
     morning = compute_session_schedule_info(_dt(10, 0))
     assert morning["is_market_open"] is False
     assert "MUHURAT" in morning["phase_badge"] or "Muhurat" in morning["exec_phase_countdown"]
+    assert "HOLIDAY ·" not in morning["phase_badge"]
+    assert "WEEKEND ·" not in morning["phase_badge"]
 
 
 def test_post_market_not_forced_during_muhurat_live():

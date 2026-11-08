@@ -351,12 +351,17 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
 
     time_str = _display_clock(str(dash.get("as_of_time") or ""), now_ts)
     snap_as_of = str(dash.get("snapshot_as_of") or "").strip()
-    is_pre_bell = bool(dash.get("is_pre_bell_ephemeral"))
-    is_morning = (
-        str(dash.get("session_phase") or "") == "PRE_MARKET_SETUP"
-        or bool(dash.get("is_morning_briefing"))
+    phase = str(dash.get("session_phase") or "")
+    sched = dash.get("session_schedule") or {}
+    is_muhurat = str(sched.get("session_kind") or "") == "muhurat"
+    is_pre_bell = bool(dash.get("is_pre_bell_ephemeral")) or phase in (
+        "PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY",
     )
+    is_morning = phase == "PRE_MARKET_SETUP" or bool(dash.get("is_morning_briefing"))
     is_closed = dash.get("is_market_open") is False or str(dash.get("market_state") or "") == "CLOSED"
+    open_hm = "14:20" if is_muhurat else "09:15"
+    pre_hm = "14:05" if is_muhurat else "09:00"
+    disc_hm = "14:12" if is_muhurat else "09:08"
     geo = classify_zone(spot, cw, pw, step)
     zone = geo["zone"]
     near_flip = flip > 0 and abs(spot - flip) <= step
@@ -447,7 +452,9 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
                 "Yesterday's book is withheld — the saved snapshot is not the last close."
             )
         else:
-            where = "This is yesterday's book. Options do not open until 09:15."
+            where = (
+                f"This is yesterday's book. Options do not open until {open_hm}."
+            )
         conf, reasons = _grade_confidence(
             stance="STAY OUT", zone=zone, sig=None, session_closed=True,
         )
@@ -460,8 +467,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             confidence=conf,
             where=where,
             drivers=_say(brief, f"Call wall {_inr(cw)}. Put wall {_inr(pw)}.", flip_line, book, *extras),
-            trigger="Cash auction at 09:00; opening print near 09:08, then options at 09:15.",
-            kill="Any fill before 09:15 is a guess",
+            trigger=(
+                f"Cash auction at {pre_hm}; opening print near {disc_hm}, then options at {open_hm}."
+            ),
+            kill=f"Any fill before {open_hm} is a guess",
             conf_reasons=reasons,
         )
 
@@ -478,21 +487,21 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             stance="STAY OUT",
             confidence=conf,
             where=(
-                "Auction still runs on yesterday's walls; options open at 09:15."
+                f"Auction still runs on yesterday's walls; options open at {open_hm}."
             ),
             drivers=_say(
-                f"The auction runs from 09:00 to 09:15. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
+                f"The auction runs from {pre_hm} to {open_hm}. Call wall {_inr(cw)}. Put wall {_inr(pw)}.",
                 flip_line,
-                f"The opening price prints near 09:08. Price on the screen is {_inr(spot)}.",
+                f"The opening price prints near {disc_hm}. Price on the screen is {_inr(spot)}.",
                 book,
                 snap_clause,
             ),
             trigger=(
-                "Compare the 09:08 print with these walls, then wait for 09:15."
+                f"Compare the {disc_hm} print with these walls, then wait for {open_hm}."
                 if discovered
-                else "Wait for the 09:08 print, then options at 09:15."
+                else f"Wait for the {disc_hm} print, then options at {open_hm}."
             ),
-            kill="Any fill before 09:15 is a guess",
+            kill=f"Any fill before {open_hm} is a guess",
             conf_reasons=reasons,
         )
 

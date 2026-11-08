@@ -113,6 +113,7 @@ from sentinel.feed.demo import seed_sentinel_demo_if_needed
 from analytics.strike_ladder import compute_strike_ladder, get_sidebar_active_expiries, is_expiry_crossed
 from analytics.iv_skew import skew_25delta
 from analytics.directional_bias import BIAS_MILD, compute_directional_bias, BiasResult
+from analytics.direction_confluence import compute_direction_confluence, confluence_to_dict
 
 from app.obs import configure, event, gauge, install
 
@@ -306,10 +307,22 @@ def _is_pre_bell_ephemeral(
     sess_phase: str | None = None,
     pm_st: dict | None = None,
 ) -> bool:
+    """True in the pre-open / early-open window for today's session clock.
+
+    Regular weekdays: 08:45–09:22 IST. Muhurat (any calendar day, incl. weekend):
+    15 minutes before pre-open through open+7 — same span as the pre-market poller.
+    """
     now_ist = now_ist or _get_ist_now()
+    from data.session_calendar import clock_for, is_muhurat_session
+
+    now_m = now_ist.hour * 60 + now_ist.minute
+    if is_muhurat_session(now_ist.date()):
+        clock = clock_for(now_ist.date())
+        start = max(0, clock.preopen_min - 15)
+        end = clock.open_min + 7
+        return start <= now_m <= end
     if now_ist.weekday() >= 5:
         return False
-    now_m = now_ist.hour * 60 + now_ist.minute
     # Clock-only: 08:45–09:22 IST. Do not require PRE_MARKET phase — at 09:15
     # the session is already REGULAR_SESSION and the card must still drop at 09:22.
     return 8 * 60 + 45 <= now_m <= 9 * 60 + 22
@@ -1631,6 +1644,12 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
 
     is_live = config.is_market_open(now_ist)
     h_name = get_holiday_name(today) if not is_trading_day(today) else None
+    # Laxmi Pujan stays a holiday for expiry roll-back; surface Muhurat so the UI
+    # does not read as a full closed holiday on a live special session.
+    if is_muhurat and h_name:
+        h_name = f"{h_name} · Muhurat trading"
+    elif is_muhurat:
+        h_name = "Muhurat trading"
 
     if not is_today_live:
         if h_name:
@@ -1863,8 +1882,21 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     is_live = config.is_market_open()
     is_morning_briefing = sess_phase == "PRE_MARKET_SETUP"
+    is_muhurat_day = sched.get("session_kind") == "muhurat"
+    is_pre_session = sess_phase in (
+        "PRE_MARKET_SETUP", "PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY",
+    )
     feed_mode = "LIVE_WEBSOCKET" if is_live else "OFFLINE_AUTOSWITCH"
-    if is_morning_briefing:
+    if is_muhurat_day and is_pre_session and not is_live:
+        session_title = "Muhurat pre-open · prior-session book"
+        feed_badge = "🪔 Muhurat pre-open"
+        feed_source = "Session Snapshot"
+        pollers_status = "Pre-open poller"
+        feed_subtext = (
+            "Laxmi Pujan holiday for expiry roll-back; Muhurat live window arms at the bell. "
+            "Walls/flip are the prior session until continuous trade."
+        )
+    elif is_morning_briefing:
         session_title = "Morning briefing · prior-session book"
         feed_badge = "🌅 Prior-session book"
         feed_source = "Session Snapshot"
@@ -2683,6 +2715,52 @@ async def get_cockpit_data(
             "state": "not_ready",
             "headline": "Not enough bars yet",
             "line": "The one-minute bars could not be read.",
+        }
+    try:
+        skew_for_conf = None
+        contracts = getattr(dash, "contracts", None)
+        if contracts is not None and spot > 0:
+            try:
+                skew_for_conf = skew_25delta(contracts, spot).get("skew_25d")
+            except Exception:
+                skew_for_conf = None
+        pos = payload.get("positioning_flow") or {}
+        mb = payload.get("market_breadth") or {}
+        in_pos = getattr(dash.view, "in_positive_zone", None) if getattr(dash, "view", None) else None
+        cw_conf = None if expired_book else float(getattr(dash.levels, "call_wall", 0) or 0) or None
+        pw_conf = None if expired_book else float(getattr(dash.levels, "put_wall", 0) or 0) or None
+        conf = compute_direction_confluence(
+            spot=spot,
+            call_wall=cw_conf,
+            put_wall=pw_conf,
+            flip=flip_val,
+            in_positive_zone=in_pos,
+            regime=str(getattr(dash.view, "regime", None) or kpis.get("regime", {}).get("val") or ""),
+            pcr=pcr_val,
+            bias_score=float(bias_res.score),
+            max_pain=mp_val,
+            skew_25d=skew_for_conf,
+            india_vix=getattr(dash, "india_vix", None),
+            advances=mb.get("advances"),
+            declines=mb.get("declines"),
+            breadth_ratio=mb.get("ratio"),
+            overnight_state=pos.get("overnight_state"),
+            live_label=pos.get("live_label"),
+        )
+        payload["direction_confluence"] = confluence_to_dict(conf)
+    except Exception as exc:
+        log.debug("direction confluence: %s", exc)
+        payload["direction_confluence"] = {
+            "verdict": "NO READ",
+            "color": "var(--spark)",
+            "headline": "Confluence unavailable.",
+            "up_count": 0,
+            "down_count": 0,
+            "flat_count": 0,
+            "na_count": 0,
+            "net_votes": 0,
+            "agreement_pct": 0.0,
+            "cells": [],
         }
     try:
         payload["market_alert"] = evaluate_market_alert(payload)

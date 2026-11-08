@@ -136,6 +136,10 @@ def test_get_cockpit_data_levels_and_tape():
     assert data["kpis"]["gamma_flip"]["val"] > 0
     assert "max_pain" in data["kpis"]
     assert "directional_bias" in data["kpis"]
+    assert "direction_confluence" in data
+    assert "verdict" in data["direction_confluence"]
+    assert "cells" in data["direction_confluence"]
+    assert len(data["direction_confluence"]["cells"]) >= 8
     assert "gamma_blast" in data
     assert "participant_holdings" in data
     assert "dealer_sign_hint" not in data["participant_holdings"]
@@ -213,6 +217,10 @@ def test_pre_bell_flag_window():
     assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 9, 23, tzinfo=ist), "REGULAR_SESSION", {})
     assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 10, 0, tzinfo=ist), "REGULAR_SESSION", {})
     assert not _is_pre_bell_ephemeral(datetime(2026, 10, 23, 16, 30, tzinfo=ist), "OFF_HOURS", {})
+    # Muhurat Sunday uses the afternoon clock — not the weekday gate.
+    assert _is_pre_bell_ephemeral(datetime(2026, 11, 8, 14, 5, tzinfo=ist), "PRE_MARKET_ENTRY", {})
+    assert _is_pre_bell_ephemeral(datetime(2026, 11, 8, 14, 20, tzinfo=ist), "REGULAR_SESSION", {})
+    assert not _is_pre_bell_ephemeral(datetime(2026, 11, 8, 14, 30, tzinfo=ist), "REGULAR_SESSION", {})
 
 
 def test_pcr_headline_is_the_full_expiry_and_the_band_is_the_caption():
