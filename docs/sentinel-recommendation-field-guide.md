@@ -37,10 +37,10 @@ Refusals are counted in metrics under `refusals`.
 
 ## Paper trades
 
-Default: **off**. Open with the Confirm button, or enable Auto-paper for the session.
+Default: **on**. Each new setup opens a paper trade automatically. Toggle Auto-paper off to require Confirm instead.
 Stack updates append notes on the linked paper trade; they do not invent a second trade.
 
 ## Contract strip
 
-UI shows: target = touch · stop = SPOT_INVAL on 5m cash close · paper = confirm or auto-paper.
+UI shows: target = touch · stop = SPOT_INVAL on 5m cash close · paper = auto-paper on by default.
 Expiry tag, DTE, and ATM IV are stored on each row when available.

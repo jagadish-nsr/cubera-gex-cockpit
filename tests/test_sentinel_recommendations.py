@@ -10,7 +10,7 @@ Verifies:
 6. Execution triggers:
    - Target Hit on TOUCH.
    - SPOT_INVAL only on completed 5-minute cash CLOSE (wicks do not stop out).
-7. Paper trades open only when auto-paper is enabled (or confirm); metrics + refusals.
+7. Paper trades open by default (auto-paper on); confirm still works when toggled off.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def isolate_databases(tmp_path, monkeypatch):
     rec_store.ensure_schema()
     journal_store.ensure_schema()
 
-    # Tests that expect paper trades enable auto-paper; production default is off.
+    # Match production default (auto-paper on) and keep refusal counters clean.
     sr.set_auto_paper_enabled(True)
     sr.reset_refusal_metrics()
     monkeypatch.setattr(
@@ -62,7 +62,7 @@ def isolate_databases(tmp_path, monkeypatch):
         return 150.0  # authentic test option premium
     monkeypatch.setattr(rec_store, "resolve_live_option_ltp", _mock_resolve_ltp)
     yield
-    sr.set_auto_paper_enabled(False)
+    sr.set_auto_paper_enabled(True)
     sr.reset_refusal_metrics()
 
 
@@ -634,11 +634,18 @@ def test_sync_save_signal_does_not_mint_even_when_listener_armed(tmp_path, monke
         sentinel_db.disable_recommendation_listener()
 
 
-def test_auto_paper_default_off_and_confirm_opens():
-    """Paper trades stay pending until confirm (or auto-paper)."""
+def test_auto_paper_defaults_on_and_confirm_when_off():
+    """Default auto-paper opens a trade; with auto-paper off, Confirm still opens one."""
+    # Fresh module default should be on (fixture also sets True).
+    assert sr.is_auto_paper_enabled() is True
+    sig_on = _make_signal(event_id="sig_paper_on", entry=24512.0, inval=24480.0, target_pts=50.0)
+    rec_on = sr.on_sentinel_signal(sig_on, current_spot=24512.0)
+    assert rec_on is not None
+    assert rec_on["paper_trade_id"] is not None
+
     sr.set_auto_paper_enabled(False)
-    sig = _make_signal(event_id="sig_paper_off", entry=24512.0, inval=24480.0, target_pts=50.0)
-    rec = sr.on_sentinel_signal(sig, current_spot=24512.0)
+    sig = _make_signal(event_id="sig_paper_off", entry=24612.0, inval=24580.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24612.0)
     assert rec is not None
     assert rec["paper_trade_id"] is None
 
@@ -647,6 +654,7 @@ def test_auto_paper_default_off_and_confirm_opens():
     assert confirmed["paper_trade_id"] is not None
     pt = journal_store.get_trade(confirmed["paper_trade_id"])
     assert pt is not None and pt.status == "OPEN"
+    sr.set_auto_paper_enabled(True)
 
 
 def test_quality_gate_and_missing_target_refused():
@@ -920,6 +928,6 @@ def test_trade_recommendations_mini_card_markup_present():
     assert "cockpit-card-mini-header" in text
     assert "View Full Card Details" in text
     html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    assert "cockpit.js?v=6.53" in html
+    assert "cockpit.js?v=6.54" in html
 
 

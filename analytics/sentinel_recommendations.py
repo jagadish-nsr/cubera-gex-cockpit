@@ -6,7 +6,7 @@ Reactive pipeline (live ticks only):
 3. Target Engine reprice using live DTE + ATM IV (refuse when IV is missing).
 4. One active row per (symbol, strike, side); stack raises max target and protective spot inval.
 5. Target hit on TOUCH (option or spot). Stop = SPOT_INVAL on completed 5-min cash close.
-6. Paper trades open only when auto-paper is enabled or the user confirms.
+6. Paper trades open automatically by default; can be turned off or confirmed manually.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ _ALLOWED_TYPE_PREFIXES = (
     "TRAPPED_",
 )
 
-_AUTO_PAPER = False
+_AUTO_PAPER = True  # default on: open paper when a setup is minted
 _AUTO_PAPER_LOCK = threading.Lock()
 
 _REFUSAL_COUNTS: dict[str, int] = {}
@@ -71,7 +71,7 @@ def is_auto_paper_enabled() -> bool:
 
 
 def set_auto_paper_enabled(enabled: bool) -> bool:
-    """Paper trades open automatically only when this is True (default False)."""
+    """Paper trades open automatically when this is True (default True)."""
     global _AUTO_PAPER
     with _AUTO_PAPER_LOCK:
         _AUTO_PAPER = bool(enabled)
@@ -874,6 +874,6 @@ def get_sentinel_daily_metrics(symbol: str | None = None, session_date: str = "t
         "contract": {
             "target": "touch (option LTP or cash spot target)",
             "stop": "SPOT_INVAL on completed 5m cash close",
-            "paper": "confirm or auto-paper toggle",
+            "paper": "auto-paper on by default (confirm if toggled off)",
         },
     }

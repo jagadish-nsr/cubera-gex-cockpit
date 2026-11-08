@@ -3505,7 +3505,7 @@ async def get_sentinel_recommendations_endpoint(
 
 @app.post("/api/recommendations/sentinel/auto-paper")
 async def set_sentinel_auto_paper(payload: dict = Body(...)):
-    """Toggle automatic paper-trade open on new Sentinel recommendations (default off)."""
+    """Toggle automatic paper-trade open on new Sentinel recommendations (default on)."""
     from analytics.sentinel_recommendations import set_auto_paper_enabled, is_auto_paper_enabled
 
     enabled = bool(payload.get("enabled", False))

@@ -1464,12 +1464,12 @@
                   <span id="sentinel-rec-count-badge"
                     style="font-size:0.72rem;background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.3);padding:2px 8px;border-radius:12px;font-family:var(--mono)">0 Setups</span>
                 </h3>
-                <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option setups from live OrderFlow ticks. Target on touch; stop = spot invalidation on completed 5m cash close. Paper opens only on confirm (or auto-paper).</span>
+                <span style="font-size:0.72rem;color:var(--ink-mute)">ATM option setups from live OrderFlow ticks. Target on touch; stop = spot invalidation on completed 5m cash close. Paper opens automatically (toggle off to require Confirm).</span>
               </div>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                 <label style="font-size:0.70rem;color:var(--ink-mute);font-weight:700;display:flex;align-items:center;gap:4px;cursor:pointer"
-                  title="When off (default), paper trades open only after Confirm">
-                  <input type="checkbox" id="sentinel-auto-paper-toggle"
+                  title="When on (default), each new setup opens a paper trade automatically">
+                  <input type="checkbox" id="sentinel-auto-paper-toggle" checked
                     onclick="event.stopPropagation()"
                     onchange="window.toggleSentinelAutoPaper(this.checked)"> Auto-paper
                 </label>
@@ -1525,7 +1525,7 @@
               style="background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px">
               <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
                 <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">OrderFlow Recommendations — Contract &amp; Performance</span>
-                <span id="sentinel-paper-mode-badge" style="font-size:0.70rem;color:var(--ink-mute);font-family:var(--mono)">Paper: confirm</span>
+                <span id="sentinel-paper-mode-badge" style="font-size:0.70rem;color:var(--go);font-family:var(--mono)">Paper: auto-open</span>
               </div>
               <div id="sentinel-contract-strip"
                 style="font-size:0.68rem;color:var(--ink-mute);font-family:var(--mono);margin-bottom:8px;line-height:1.45">
@@ -2954,7 +2954,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.53"></script>
+  <script src="/static/js/cockpit.js?v=6.54"></script>
 </body>
 
 </html>

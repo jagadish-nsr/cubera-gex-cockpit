@@ -4793,7 +4793,9 @@
 
   // Checkbox is owned by the client after first hydrate. List polling must not
   // overwrite it (stale GETs / missing auto_paper were unchecking on every refresh).
-  window._sentinelAutoPaper = window._sentinelAutoPaper || false;
+  window._sentinelAutoPaper = (window._sentinelAutoPaper !== undefined)
+    ? !!window._sentinelAutoPaper
+    : true;
   window._sentinelAutoPaperHydrated = window._sentinelAutoPaperHydrated || false;
 
   function _applySentinelAutoPaperUI(enabled) {
