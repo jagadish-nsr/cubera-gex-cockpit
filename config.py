@@ -248,10 +248,14 @@ RISK_FREE_FALLBACK = None
 def is_market_open(now: datetime | None = None, include_fno_extended: bool = True) -> bool:
     """Return True if currently during live Indian market trading hours.
 
-    By default, include_fno_extended=True enforces FnO trading hours (09:15 AM to 03:40 PM IST).
-    If include_fno_extended=False, checks continuous cash trading (09:15 AM to 03:30 PM IST).
+    Regular weekdays: FnO 09:15–15:40 IST (or cash to 15:30 when
+    include_fno_extended=False). Muhurat days (see data.session_calendar)
+    open on their listed window even when the date is a Sunday or a
+    Laxmi-Pujan holiday for expiry roll-back.
     """
     from datetime import datetime, timezone, timedelta
+    from data.session_calendar import clock_for, is_muhurat_session
+
     ist = timezone(timedelta(hours=5, minutes=30))
     if now is None:
         now = datetime.now(ist)
@@ -260,10 +264,17 @@ def is_market_open(now: datetime | None = None, include_fno_extended: bool = Tru
     else:
         now = now.astimezone(ist)
 
+    clock = clock_for(now.date())
+    t_min = now.hour * 60 + now.minute
+    close_min = clock.fno_close_min if include_fno_extended else clock.cash_close_min
+
+    if is_muhurat_session(now.date()):
+        return clock.open_min <= t_min < close_min
+
     if now.weekday() >= 5:  # Saturday or Sunday
         return False
 
-    # Check NSE F&O trading holiday calendar
+    # Check NSE F&O trading holiday calendar (Muhurat dates already handled)
     try:
         from data.holidays import is_holiday
         if is_holiday(now.date()):
@@ -271,6 +282,4 @@ def is_market_open(now: datetime | None = None, include_fno_extended: bool = Tru
     except Exception:
         pass
 
-    t_min = now.hour * 60 + now.minute
-    close_min = FNO_CLOSE_MIN if include_fno_extended else CASH_CLOSE_MIN
-    return MARKET_OPEN_MIN <= t_min < close_min
+    return clock.open_min <= t_min < close_min

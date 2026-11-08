@@ -77,6 +77,8 @@ NSE_HOLIDAY_NAMES: dict[str, str] = {
     "2026-09-14": "Milad-un-Nabi (Id-e-Milad)",
     "2026-10-02": "Mahatma Gandhi Jayanti",
     "2026-10-20": "Dussehra / Vijayadashami",
+    # Laxmi Pujan stays a holiday for expiry roll-back. Live Muhurat hours for
+    # 2026-11-08 are in data/session_calendar.MUHURAT_SESSIONS (14:20–15:40 IST).
     "2026-11-08": "Diwali (Laxmi Pujan)",
     "2026-11-10": "Diwali Balipratipada",
     "2026-11-24": "Guru Nanak Jayanti",

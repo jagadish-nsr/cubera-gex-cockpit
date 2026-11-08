@@ -374,16 +374,13 @@ _MORNING_BRIEFING_MIN = 6 * 60 + 30
 
 
 def _cash_open_has_passed(now: datetime) -> bool:
-    """True once today's cash session has started. The auction poll owns the time before 09:15."""
-    if now.weekday() >= 5:
+    """True once today's continuous session has started. Auction poll owns pre-open."""
+    from data.session_calendar import clock_for, is_live_session_day
+
+    if not is_live_session_day(now.date()):
         return False
-    try:
-        from data.holidays import is_trading_day
-        if not is_trading_day(now.date()):
-            return False
-    except Exception:
-        pass
-    return now.hour * 60 + now.minute >= 9 * 60 + 15
+    clock = clock_for(now.date())
+    return now.hour * 60 + now.minute >= clock.open_min
 
 
 def _prints_for_opening_gap(symbol: str, now: datetime) -> tuple[float, float] | None:
@@ -491,12 +488,26 @@ def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
 
 
 def pre_market_poller_asleep(now: datetime | None = None) -> bool:
-    """True outside 08:50–09:22 IST on a weekday. The morning briefing does not wake this poller."""
+    """True outside the session's pre-open poll window. Briefing does not wake this poller."""
+    from data.session_calendar import clock_for, is_live_session_day
+
     now_ist = now or datetime.now(IST)
-    if now_ist.weekday() >= 5:
+    if not is_live_session_day(now_ist.date()):
         return True
+    clock = clock_for(now_ist.date())
+    # Regular: 08:50–09:22. Muhurat: 15 min before pre-open through open+7.
+    poll_start = (
+        _PM_POLL_START_MIN
+        if clock.kind == "regular"
+        else max(0, clock.preopen_min - 15)
+    )
+    poll_end = (
+        _PM_POLL_END_MIN
+        if clock.kind == "regular"
+        else clock.open_min + 7
+    )
     t_min = now_ist.hour * 60 + now_ist.minute
-    return t_min < _PM_POLL_START_MIN or t_min >= _PM_POLL_END_MIN
+    return t_min < poll_start or t_min >= poll_end
 
 
 def prior_close_book_line(
@@ -573,23 +584,19 @@ def stamp_morning_briefing(state: dict) -> dict:
 def get_current_session_phase(now: datetime | None = None) -> tuple[str, str, int]:
     """Return (phase_code, phase_label, minutes_until_next) for current IST time.
 
-    Phase codes:
-    - 'PRE_MARKET_SETUP' (06:30 - 09:00) local prior-session book, no broker poll
-    - 'PRE_MARKET_ENTRY' (09:00 - 09:07:30)
-    - 'PRE_MARKET_DISCOVERY' (09:07:30 - 09:15:00)
-    - 'REGULAR_SESSION' (09:15:00 - 15:30:00)
-    - 'CAS_AND_FNO_EXTENDED' (15:30:00 - 15:40:00)
-    - 'POST_MARKET_SETTLEMENT' (15:40:00 - 16:00:00)
-    - 'OFF_HOURS' (before 06:30, after 16:00, or weekends/holidays)
+    Phase codes (regular clock shown; Muhurat shifts the same codes to 14:05–15:40):
+    - 'PRE_MARKET_SETUP' local prior-session book, no broker poll
+    - 'PRE_MARKET_ENTRY' pre-open order collection
+    - 'PRE_MARKET_DISCOVERY' equilibrium discovery until continuous open
+    - 'REGULAR_SESSION' continuous session to cash close
+    - 'CAS_AND_FNO_EXTENDED' cash CAS / F&O extension to fno close
+    - 'POST_MARKET_SETTLEMENT' post-close settlement
+    - 'OFF_HOURS' before briefing, after post-close, or non-session days
     """
-    try:
-        from data.holidays import is_trading_day
-    except Exception:
-        def is_trading_day(d):
-            return d.weekday() < 5
+    from data.session_calendar import clock_for, is_live_session_day
 
     now_ist = now or datetime.now(IST)
-    if not is_trading_day(now_ist.date()):
+    if not is_live_session_day(now_ist.date()):
         try:
             from data.holidays import get_holiday_name
             h_name = get_holiday_name(now_ist.date())
@@ -603,30 +610,61 @@ def get_current_session_phase(now: datetime | None = None) -> tuple[str, str, in
             label = "Exchange Closed (Holiday)"
         return ("OFF_HOURS", label, 0)
 
+    clock = clock_for(now_ist.date())
     t_min = now_ist.hour * 60 + now_ist.minute
     t_sec = now_ist.second
+    tag = "Muhurat " if clock.kind == "muhurat" else ""
 
-    if t_min < _MORNING_BRIEFING_MIN:
-        mins_left = _MORNING_BRIEFING_MIN - t_min
+    def _hm(mins: int) -> str:
+        return f"{mins // 60:02d}:{mins % 60:02d}"
+
+    if t_min < clock.briefing_min:
+        mins_left = clock.briefing_min - t_min
+        if clock.kind == "muhurat":
+            return ("OFF_HOURS", f"{clock.label} briefing at {_hm(clock.briefing_min)}", mins_left)
         return ("OFF_HOURS", "Morning briefing at 06:30", mins_left)
-    elif t_min < 9 * 60:
-        mins_left = 9 * 60 - t_min
-        return ("PRE_MARKET_SETUP", "Prior-session book (06:30–09:00)", mins_left)
-    elif t_min < 9 * 60 + 7 or (t_min == 9 * 60 + 7 and t_sec < 30):
-        # 09:00:00 to 09:07:29
-        return ("PRE_MARKET_ENTRY", "Pre-Open Order Collection (09:00–09:08)", 9 * 60 + 8 - t_min)
-    elif t_min < 9 * 60 + 15:
-        # 09:07:30 to 09:14:59
-        return ("PRE_MARKET_DISCOVERY", "Pre-Open Equilibrium Discovery Active", 9 * 60 + 15 - t_min)
-    elif t_min < 15 * 60 + 30:
-        # 09:15:00 to 15:30:00
-        return ("REGULAR_SESSION", "Live Regular Market Session", 15 * 60 + 30 - t_min)
-    elif t_min < 15 * 60 + 40:
-        # 15:30:00 to 15:40:00
-        return ("CAS_AND_FNO_EXTENDED", "Cash CAS Auction & F&O Session (to 15:40)", 15 * 60 + 40 - t_min)
-    elif t_min < 16 * 60:
-        # 15:40:00 to 16:00:00
-        return ("POST_MARKET_SETTLEMENT", "Post-Close Settlement Session", 16 * 60 - t_min)
+    elif t_min < clock.preopen_min:
+        mins_left = clock.preopen_min - t_min
+        return (
+            "PRE_MARKET_SETUP",
+            f"{tag}Prior-session book ({_hm(clock.briefing_min)}–{_hm(clock.preopen_min)})",
+            mins_left,
+        )
+    elif clock.kind == "regular" and (
+        t_min < clock.discovery_min or (t_min == clock.discovery_min and t_sec < 30)
+    ):
+        return (
+            "PRE_MARKET_ENTRY",
+            f"Pre-Open Order Collection ({_hm(clock.preopen_min)}–{_hm(clock.discovery_min + 1)})",
+            clock.discovery_min + 1 - t_min,
+        )
+    elif clock.kind == "muhurat" and t_min < clock.discovery_min:
+        return (
+            "PRE_MARKET_ENTRY",
+            f"Muhurat Pre-Open Order Collection ({_hm(clock.preopen_min)}–{_hm(clock.discovery_min)})",
+            clock.discovery_min - t_min,
+        )
+    elif t_min < clock.open_min:
+        return (
+            "PRE_MARKET_DISCOVERY",
+            f"{tag}Pre-Open Equilibrium Discovery Active",
+            clock.open_min - t_min,
+        )
+    elif t_min < clock.cash_close_min:
+        label = (
+            f"{tag}Live Market Session"
+            if clock.kind == "muhurat"
+            else "Live Regular Market Session"
+        )
+        return ("REGULAR_SESSION", label, clock.cash_close_min - t_min)
+    elif t_min < clock.fno_close_min:
+        return (
+            "CAS_AND_FNO_EXTENDED",
+            f"{tag}Cash CAS Auction & F&O Session (to {_hm(clock.fno_close_min)})",
+            clock.fno_close_min - t_min,
+        )
+    elif t_min < clock.post_close_min:
+        return ("POST_MARKET_SETTLEMENT", "Post-Close Settlement Session", clock.post_close_min - t_min)
     else:
         return ("OFF_HOURS", "Market Closed", 0)
 

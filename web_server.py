@@ -1578,7 +1578,8 @@ def _parity_payload(contracts_df, spot: float) -> dict:
 def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
     """Compute accurate market session phase, next event countdown, and reopening status."""
     from datetime import datetime, timezone, timedelta
-    from data.holidays import is_trading_day
+    from data.holidays import is_trading_day, get_holiday_name
+    from data.session_calendar import clock_for, is_live_session_day, is_muhurat_session
 
     ist = timezone(timedelta(hours=5, minutes=30))
     if now_ist is None:
@@ -1588,15 +1589,22 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
 
     today = now_ist.date()
     t_min = now_ist.hour * 60 + now_ist.minute
-    is_today_trading = is_trading_day(today)
+    clock = clock_for(today)
+    is_today_live = is_live_session_day(today)
+    is_muhurat = is_muhurat_session(today)
 
-    # 1. Determine next trading session day & opening datetime (09:15 IST)
-    if is_today_trading and t_min < 9 * 60 + 15:
+    def _hm(mins: int) -> str:
+        return f"{mins // 60:02d}:{mins % 60:02d}"
+
+    # Next continuous-session open (today's remaining open, else next live day).
+    if is_today_live and t_min < clock.open_min:
         target_date = today
+        target_clock = clock
     else:
         target_date = today + timedelta(days=1)
-        while not is_trading_day(target_date):
+        while not is_live_session_day(target_date):
             target_date += timedelta(days=1)
+        target_clock = clock_for(target_date)
 
     days_diff = (target_date - today).days
     day_name = target_date.strftime("%a")
@@ -1608,96 +1616,132 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
         fmt_d = target_date.strftime("%d-%b")
         when_str = f"{day_name} ({fmt_d})"
 
-    open_dt = datetime(target_date.year, target_date.month, target_date.day, 9, 15, tzinfo=ist)
-    pre_dt = datetime(target_date.year, target_date.month, target_date.day, 9, 0, tzinfo=ist)
+    open_dt = datetime(
+        target_date.year, target_date.month, target_date.day,
+        target_clock.open_min // 60, target_clock.open_min % 60, tzinfo=ist,
+    )
+    pre_dt = datetime(
+        target_date.year, target_date.month, target_date.day,
+        target_clock.preopen_min // 60, target_clock.preopen_min % 60, tzinfo=ist,
+    )
     secs_to_open = max(0, int((open_dt - now_ist).total_seconds()))
     hours_open = secs_to_open // 3600
     mins_open = (secs_to_open % 3600) // 60
+    reopen_clock = f"{when_str} {_hm(target_clock.open_min)} IST"
 
-    # 2. Check if currently inside trading hours (09:15 - 15:40)
-    is_live = is_today_trading and (9 * 60 + 15 <= t_min < 15 * 60 + 40)
+    is_live = config.is_market_open(now_ist)
+    h_name = get_holiday_name(today) if not is_trading_day(today) else None
 
-    h_name = None
-    if not is_today_trading:
-        try:
-            from data.holidays import get_holiday_name
-            h_name = get_holiday_name(today)
-        except Exception:
-            h_name = None
+    if not is_today_live:
         if h_name:
-            phase_badge = f"🏖️ HOLIDAY · {h_name.upper()}"
+            phase_badge = f"HOLIDAY · {h_name.upper()}"
             phase_title = f"Exchange Holiday · {h_name}"
-            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
         elif today.weekday() >= 5:
             phase_badge = "WEEKEND · CLOSED"
             phase_title = "Market Closed (Weekend)"
-            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
         else:
             phase_badge = "MARKET CLOSED"
             phase_title = "Market Closed (Holiday)"
-            exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
-    elif t_min < 6 * 60 + 30:
+        exec_phase_countdown = f"Reopens {reopen_clock}"
+    elif is_muhurat and t_min < clock.briefing_min:
+        phase_badge = f"MUHURAT TODAY · {clock.label.upper()}"
+        phase_title = clock.label
+        exec_phase_countdown = (
+            f"Muhurat briefing {_hm(clock.briefing_min)} · "
+            f"Pre-open {_hm(clock.preopen_min)} · Bell {_hm(clock.open_min)}"
+        )
+    elif t_min < clock.briefing_min:
         phase_badge = "OVERNIGHT (Briefing 06:30)"
         phase_title = "Overnight"
-        secs_to_pre = max(0, int((pre_dt - now_ist).total_seconds()))
-        h_pre, m_pre = secs_to_pre // 3600, (secs_to_pre % 3600) // 60
-        exec_phase_countdown = f"Morning briefing at 06:30 · Pre-open in {h_pre}h {m_pre}m"
-    elif t_min < 9 * 60:
-        phase_badge = "MORNING BRIEFING (06:30–09:00)"
+        exec_phase_countdown = f"Morning briefing at 06:30 · Pre-open {_hm(clock.preopen_min)}"
+    elif t_min < clock.preopen_min:
+        phase_badge = (
+            f"MUHURAT BRIEFING ({_hm(clock.briefing_min)}–{_hm(clock.preopen_min)})"
+            if is_muhurat
+            else f"MORNING BRIEFING ({_hm(clock.briefing_min)}–{_hm(clock.preopen_min)})"
+        )
         phase_title = "Prior-session book"
         secs_to_pre = max(0, int((pre_dt - now_ist).total_seconds()))
         h_pre, m_pre = secs_to_pre // 3600, (secs_to_pre % 3600) // 60
-        exec_phase_countdown = f"Cash pre-open in {h_pre}h {m_pre}m · Book is the previous session"
-    elif t_min < 9 * 60 + 8:
-        phase_badge = "PRE-OPEN ORDER ENTRY (09:00–09:08)"
-        phase_title = "Pre-Open Auction"
-        rem_m = 9 * 60 + 8 - t_min
-        exec_phase_countdown = f"Equilibrium Discovery in {rem_m}m · Bell 09:15"
-    elif t_min < 9 * 60 + 15:
-        phase_badge = "EQUILIBRIUM DISCOVERY (09:08–09:15)"
-        phase_title = "Pre-Open Equilibrium"
-        rem_m = 9 * 60 + 15 - t_min
-        exec_phase_countdown = f"Opening Bell in {rem_m}m (09:15 IST)"
-    elif t_min < 9 * 60 + 45:
+        exec_phase_countdown = (
+            f"Muhurat pre-open in {h_pre}h {m_pre}m · Book is the previous session"
+            if is_muhurat
+            else f"Cash pre-open in {h_pre}h {m_pre}m · Book is the previous session"
+        )
+    elif t_min < clock.open_min:
+        # Regular entry ends 09:08; Muhurat entry ends at discovery_min (14:12).
+        entry_end = clock.discovery_min if is_muhurat else clock.discovery_min + 1
+        if t_min < entry_end:
+            phase_badge = (
+                f"MUHURAT PRE-OPEN ({_hm(clock.preopen_min)}–{_hm(clock.discovery_min)})"
+                if is_muhurat
+                else f"PRE-OPEN ORDER ENTRY ({_hm(clock.preopen_min)}–{_hm(entry_end)})"
+            )
+            phase_title = "Pre-Open Auction"
+            rem_m = max(0, entry_end - t_min)
+            exec_phase_countdown = (
+                f"Equilibrium Discovery in {rem_m}m · Bell {_hm(clock.open_min)}"
+            )
+        else:
+            phase_badge = (
+                f"MUHURAT DISCOVERY ({_hm(clock.discovery_min)}–{_hm(clock.open_min)})"
+                if is_muhurat
+                else f"EQUILIBRIUM DISCOVERY (09:08–{_hm(clock.open_min)})"
+            )
+            phase_title = "Pre-Open Equilibrium"
+            rem_m = clock.open_min - t_min
+            exec_phase_countdown = f"Opening Bell in {rem_m}m ({_hm(clock.open_min)} IST)"
+    elif is_muhurat and t_min < clock.cash_close_min:
+        phase_badge = f"MUHURAT LIVE ({_hm(clock.open_min)}–{_hm(clock.cash_close_min)})"
+        phase_title = clock.label
+        rem_m = clock.cash_close_min - t_min
+        exec_phase_countdown = f"Cash Session Closes in {rem_m}m ({_hm(clock.cash_close_min)} IST)"
+    elif not is_muhurat and t_min < 9 * 60 + 45:
         phase_badge = "INITIAL DRIVE (09:15–09:45)"
         phase_title = "Initial Balance Range"
         rem_m = 9 * 60 + 45 - t_min
         exec_phase_countdown = f"Initial Balance Lock in {rem_m}m"
-    elif t_min < 11 * 60 + 30:
+    elif not is_muhurat and t_min < 11 * 60 + 30:
         phase_badge = "MORNING TREND (09:45–11:30)"
         phase_title = "Morning Volatility Drive"
         rem_m = 11 * 60 + 30 - t_min
         h, m = rem_m // 60, rem_m % 60
         exec_phase_countdown = f"Midday Consolidation in {h}h {m}m" if h > 0 else f"Midday in {m}m"
-    elif t_min < 13 * 60 + 30:
+    elif not is_muhurat and t_min < 13 * 60 + 30:
         phase_badge = "MIDDAY CONSOLIDATION (11:30–13:30)"
         phase_title = "Midday Range Drift"
         rem_m = 13 * 60 + 30 - t_min
         h, m = rem_m // 60, rem_m % 60
         exec_phase_countdown = f"Afternoon Session in {h}h {m}m" if h > 0 else f"Afternoon in {m}m"
-    elif t_min < 14 * 60 + 30:
+    elif not is_muhurat and t_min < 14 * 60 + 30:
         phase_badge = "AFTERNOON EXPANSION (13:30–14:30)"
         phase_title = "European Open Expansion"
         rem_m = 14 * 60 + 30 - t_min
         exec_phase_countdown = f"Power Hour in {rem_m}m (14:30 IST)"
-    elif t_min < 15 * 60 + 30:
-        phase_badge = "POWER HOUR (14:30–15:30)"
-        phase_title = "Power Hour Settlement"
-        rem_m = 15 * 60 + 30 - t_min
-        exec_phase_countdown = f"Cash Session Closes in {rem_m}m (15:30 IST)"
-    elif t_min < 15 * 60 + 40:
-        phase_badge = "CAS AUCTION & F&O CLOSE (15:30–15:40)"
+    elif t_min < clock.cash_close_min:
+        phase_badge = (
+            f"POWER HOUR (14:30–{_hm(clock.cash_close_min)})"
+            if not is_muhurat
+            else f"MUHURAT LIVE ({_hm(clock.open_min)}–{_hm(clock.cash_close_min)})"
+        )
+        phase_title = "Power Hour Settlement" if not is_muhurat else clock.label
+        rem_m = clock.cash_close_min - t_min
+        exec_phase_countdown = f"Cash Session Closes in {rem_m}m ({_hm(clock.cash_close_min)} IST)"
+    elif t_min < clock.fno_close_min:
+        phase_badge = (
+            f"CAS AUCTION & F&O CLOSE ({_hm(clock.cash_close_min)}–{_hm(clock.fno_close_min)})"
+        )
         phase_title = "Closing Auction Session"
-        rem_m = 15 * 60 + 40 - t_min
-        exec_phase_countdown = f"F&O Session Closes in {rem_m}m (15:40 IST)"
-    elif t_min < 16 * 60:
-        phase_badge = "POST-CLOSE SETTLEMENT (15:40–16:00)"
+        rem_m = clock.fno_close_min - t_min
+        exec_phase_countdown = f"F&O Session Closes in {rem_m}m ({_hm(clock.fno_close_min)} IST)"
+    elif t_min < clock.post_close_min:
+        phase_badge = f"POST-CLOSE SETTLEMENT ({_hm(clock.fno_close_min)}–{_hm(clock.post_close_min)})"
         phase_title = "Post-Market Settlement"
-        exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
+        exec_phase_countdown = f"Reopens {reopen_clock}"
     else:
         phase_badge = "MARKET CLOSED (EOD)"
         phase_title = "Market Closed (EOD)"
-        exec_phase_countdown = f"Reopens {when_str} 09:15 IST"
+        exec_phase_countdown = f"Reopens {reopen_clock}"
 
     return {
         "is_market_open": is_live,
@@ -1708,6 +1752,7 @@ def compute_session_schedule_info(now_ist: Optional[datetime] = None) -> dict:
         "hours_until_open": hours_open,
         "mins_until_open": mins_open,
         "holiday_name": h_name,
+        "session_kind": clock.kind,
     }
 
 

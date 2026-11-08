@@ -17,7 +17,7 @@ if [[ ! -d "${PROD_DIR}" ]]; then
     exit 1
 fi
 
-for launcher in run_timeseries.sh run_logger.sh run_participant_oi.sh run_futures_buildup.sh run_big_money.sh; do
+for launcher in run_timeseries.sh run_logger.sh run_participant_oi.sh run_futures_buildup.sh run_big_money.sh run_muhurat_collect.sh run_muhurat_big_money.sh; do
     if [[ ! -x "${DEV_DIR}/${launcher}" ]]; then
         echo "Missing launcher: ${DEV_DIR}/${launcher}" >&2
         exit 1
@@ -59,6 +59,11 @@ $(block "${PROD_DIR}" '3,18,33,48' 23 3 3 prod)
 # prod gamma-blast option ticks from 12:55 IST, Mon-Fri (waits for the 13:00 freeze).
 # The script skips an index whose nearest expiry is not today and stops at the F&O close.
 55 12 * * 1-5 ${PROD_DIR}/run_blast_ticks.sh
+# Muhurat special session (Sunday afternoon). Launchers no-op unless today is listed
+# in data/session_calendar.MUHURAT_SESSIONS (2026-11-08: 14:20–15:40 IST).
+*/5 14-15 * * 0 ${DEV_DIR}/run_muhurat_collect.sh
+*/5 14-15 * * 0 ${PROD_DIR}/run_muhurat_collect.sh
+10 14 * * 0 ${PROD_DIR}/run_muhurat_big_money.sh
 # END cubera-gex data collection
 EOF
 )"
@@ -73,6 +78,8 @@ filtered="$(printf '%s\n' "${current}" | awk '
     /run_participant_oi\.sh/ { next }
     /run_futures_buildup\.sh/ { next }
     /run_big_money\.sh/ { next }
+    /run_muhurat_collect\.sh/ { next }
+    /run_muhurat_big_money\.sh/ { next }
     /run_blast_ticks\.sh/ { next }
     /Indian-GEX Automated Data Collection/ { next }
     /Timeseries snapshots:/ { next }

@@ -34,9 +34,6 @@ from app.big_money import IST                          # noqa: E402
 from app.big_money_live import Collector               # noqa: E402
 import config                                           # noqa: E402
 
-OPEN_MIN, CLOSE_MIN = config.MARKET_OPEN_MIN, config.FNO_CLOSE_MIN   # 09:15–15:40 (F&O, from 2026-08-03)
-
-
 _LOGF = None            # optional file handle mirroring _print (for the scheduled task's log)
 
 
@@ -58,19 +55,22 @@ def _fmt(ev) -> str:
 
 
 def _market_window():
-    """Today's (open_epoch, close_epoch) in true epochs, or None on a weekend or exchange holiday."""
+    """Today's (open_epoch, close_epoch), or None when no continuous session runs."""
+    from data.session_calendar import clock_for, is_live_session_day
+
     now = datetime.now(IST)
-    if now.weekday() >= 5:
+    if not is_live_session_day(now.date()):
         return None
-    try:
-        from data.holidays import is_holiday
-        if is_holiday(now.date()):
-            return None
-    except Exception:
-        pass
-    o = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    c = now.replace(hour=CLOSE_MIN // 60, minute=CLOSE_MIN % 60, second=0, microsecond=0)
-    return o.timestamp(), c.timestamp()
+    clock = clock_for(now.date())
+    o = now.replace(
+        hour=clock.open_min // 60, minute=clock.open_min % 60,
+        second=0, microsecond=0,
+    )
+    c = now.replace(
+        hour=clock.fno_close_min // 60, minute=clock.fno_close_min % 60,
+        second=0, microsecond=0,
+    )
+    return o.timestamp(), c.timestamp(), clock
 
 
 def main() -> None:
@@ -99,22 +99,30 @@ def main() -> None:
     bf = {s: args.burst_floor for s in symbols} if args.burst_floor is not None else None
 
     stop_at = None
+    session_label = ""
     if args.market_hours:
         win = _market_window()
         if win is None:
-            _print("Weekend — market closed. Nothing to collect.")
-            shutdown(ok=True, message="weekend")
+            _print("No live session today (weekend / holiday). Nothing to collect.")
+            shutdown(ok=True, message="no session")
             return
-        open_e, stop_at = win
+        open_e, stop_at, clock = win
+        session_label = (
+            f"{clock.open_min // 60:02d}:{clock.open_min % 60:02d}"
+            f"–{clock.fno_close_min // 60:02d}:{clock.fno_close_min % 60:02d} IST"
+        )
         now = time.time()
         if now >= stop_at:
-            _print("Past 15:30 IST — market closed for today. Nothing to collect.")
+            _print(f"Past {clock.fno_close_min // 60:02d}:{clock.fno_close_min % 60:02d} IST — "
+                   "session over. Nothing to collect.")
             shutdown(ok=True, message="session over")
             return
         if now < open_e:
             wait = open_e - now
-            _print(f"Waiting {wait/60:.0f} min for 09:15 IST open "
-                   f"(now {datetime.now(IST):%H:%M} IST) …")
+            _print(
+                f"Waiting {wait/60:.0f} min for {clock.open_min // 60:02d}:{clock.open_min % 60:02d} IST "
+                f"{clock.label} open (now {datetime.now(IST):%H:%M} IST) …"
+            )
             time.sleep(wait)
     elif args.seconds:
         stop_at = time.time() + args.seconds
@@ -122,7 +130,7 @@ def main() -> None:
     col = Collector(symbols=symbols, save_raw=not args.dry_run, persist_events=not args.dry_run,
                     print_floor=pf, burst_floor=bf, on_event=lambda ev: _print(_fmt(ev)))
     _print(f"  mode: {'DRY-RUN (no writes)' if args.dry_run else 'LIVE → raw + events'}"
-           f"{'  · stop at 15:30 IST' if args.market_hours else ''}"
+           f"{('  · stop at ' + session_label) if args.market_hours else ''}"
            f"{'  · floors print=%s burst=%s' % (args.print_floor, args.burst_floor) if (pf or bf) else ''}")
     col.start()
 

@@ -315,14 +315,19 @@ def list_recent_bars(
     now_ist = datetime.now(IST)
     now_max = (now_ist + timedelta(minutes=2)).isoformat()
     today_str = now_ist.strftime("%Y-%m-%d")
-    m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
-    m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
     try:
-        from data.holidays import is_trading_day
-        is_today_trading = is_trading_day(now_ist.date())
+        from data.session_calendar import clock_for, is_live_session_day
+        clock = clock_for(now_ist.date())
+        is_today_trading = is_live_session_day(now_ist.date())
+        t_min = now_ist.hour * 60 + now_ist.minute
+        is_active_market_day = is_today_trading and (
+            clock.briefing_min <= t_min <= clock.post_close_min + 15
+        )
     except Exception:
         is_today_trading = now_ist.weekday() < 5
-    is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
+        m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+        m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
+        is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
 
     try:
         if session_only:
@@ -449,14 +454,19 @@ def _session_date_for_query(
     now_ist = datetime.now(IST)
     now_max = (now_ist + timedelta(minutes=2)).isoformat()
     today_str = now_ist.strftime("%Y-%m-%d")
-    m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
-    m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
     try:
-        from data.holidays import is_trading_day
-        is_today_trading = is_trading_day(now_ist.date())
+        from data.session_calendar import clock_for, is_live_session_day
+        clock = clock_for(now_ist.date())
+        is_today_trading = is_live_session_day(now_ist.date())
+        t_min = now_ist.hour * 60 + now_ist.minute
+        is_active_market_day = is_today_trading and (
+            clock.briefing_min <= t_min <= clock.post_close_min + 15
+        )
     except Exception:
         is_today_trading = now_ist.weekday() < 5
-    is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
+        m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+        m_close = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
+        is_active_market_day = is_today_trading and (m_open <= now_ist <= m_close)
 
     id_clause = "instrument_id = ? AND " if instrument_id else ""
     id_args: tuple = (instrument_id,) if instrument_id else ()

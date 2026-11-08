@@ -107,15 +107,24 @@ class LiveSentinelManager:
         """
         now_epoch = time.time()
 
-        # Determine target trading date (today if active market day after 09:00, or latest completed trading session)
+        # Target today once the session briefing window has begun (09:00 regular /
+        # 13:00 Muhurat); otherwise the latest completed regular trading day.
         now_ist = datetime.now(IST)
-        m_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
         try:
-            from data.holidays import is_trading_day, roll_back_to_trading_day
-            if is_trading_day(now_ist.date()) and now_ist >= m_open:
+            from data.holidays import roll_back_to_trading_day
+            from data.session_calendar import clock_for, is_live_session_day
+            clock = clock_for(now_ist.date())
+            briefing = now_ist.replace(
+                hour=clock.briefing_min // 60,
+                minute=clock.briefing_min % 60,
+                second=0, microsecond=0,
+            )
+            if is_live_session_day(now_ist.date()) and now_ist >= briefing:
                 target_date = now_ist.date()
             else:
-                target_date = roll_back_to_trading_day(now_ist.date() - timedelta(days=1) if now_ist < m_open else now_ist.date())
+                target_date = roll_back_to_trading_day(
+                    now_ist.date() - timedelta(days=1) if now_ist < briefing else now_ist.date()
+                )
         except Exception:
             target_date = now_ist.date()
         target_date_str = target_date.strftime("%Y-%m-%d")
