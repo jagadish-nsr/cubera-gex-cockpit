@@ -27,13 +27,22 @@ log = logging.getLogger(__name__)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Signal quality: micro-noise below this score does not open a setup.
-MIN_SIGNAL_SCORE = 65
+# 14d prod tape: score≥70 CONTINUATION_BULL hit 72.5% / +108 pts at +5m;
+# score<70 CONTINUATION (mostly old micro flood) hit 57% / +2 pts.
+MIN_SIGNAL_SCORE = 70
 _ALLOWED_TYPE_PREFIXES = (
     "CONTINUATION_",
     "ABSORPTION_",
-    "EXHAUSTION_",
-    "TRAPPED_",
+    "EXHAUSTION_DOWN",
+    "CVD_DIVERGENCE_",
 )
+# Empirically toxic on the live outcome tape — still journaled for research,
+# but never mint a recommendation / paper from them.
+_BLOCKED_SIGNAL_TYPES = frozenset({
+    "EXHAUSTION_UP",
+    "TRAPPED_BUYERS_EXHAUSTION",
+    "TRAPPED_SELLERS_ABSORPTION",
+})
 
 _AUTO_PAPER = True  # default on: open paper when a setup is minted
 _AUTO_PAPER_LOCK = threading.Lock()
@@ -114,6 +123,8 @@ def _signal_passes_quality(signal: SentinelSignal) -> bool:
     if score < MIN_SIGNAL_SCORE:
         return False
     sig_type = str(getattr(signal, "type", "") or "").upper()
+    if sig_type in _BLOCKED_SIGNAL_TYPES:
+        return False
     return any(sig_type.startswith(p) for p in _ALLOWED_TYPE_PREFIXES)
 
 

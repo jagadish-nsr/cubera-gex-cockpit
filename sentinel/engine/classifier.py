@@ -14,7 +14,7 @@ Implements Sentinel §7.5:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from sentinel.models import Bar, SentinelSignal
@@ -24,6 +24,62 @@ from sentinel.engine.rvol import compute_tod_rvol
 log = logging.getLogger(__name__)
 
 COOLDOWN_BARS = 3
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _suppress_continuation_near_magnet(
+    bar: Bar,
+    tags: list[str],
+    context: MarketContext,
+) -> bool:
+    """True when 0-DTE afternoon continuation into the magnet should not mint.
+
+    Leaves room for CVD / absorption. Outside expiry afternoon the gate is off;
+    NEAR_MAGNET still marks COUNTER_TREND when a continuation is allowed.
+    """
+    if "NEAR_MAGNET" not in tags:
+        return False
+    ts = bar.start_ts
+    ist = ts.astimezone(_IST) if ts.tzinfo is not None else ts.replace(tzinfo=_IST)
+    mins = ist.hour * 60 + ist.minute
+    try:
+        import config
+        fno_close = int(getattr(config, "FNO_CLOSE_MIN", 15 * 60 + 40))
+    except Exception:
+        fno_close = 15 * 60 + 40
+    if not (13 * 60 <= mins < fno_close):
+        return False
+    try:
+        import config
+        from data.session_flags import is_expiry_day
+
+        sym = context.symbol or config.index_key(bar.instrument_id)
+        return bool(is_expiry_day(sym, ist.strftime("%Y-%m-%d")))
+    except Exception:
+        return False
+
+
+def _suppress_continuation_choppy(context: MarketContext) -> bool:
+    """True when the path-shape meter says the tape is boxed (Dreiss ≥ 61.8)."""
+    return bool(getattr(context, "chop_high", False))
+
+
+def _continuation_score_penalty(tags: list[str], gex_alignment: str, score: int) -> int:
+    """Down-rank boxed / counter-trend continuation so it stays below the rec floor.
+
+    9 Nov: CONTINUATION_BULL avg score 93 with 8% WR — RVol/Δ bonuses loved the
+    strong close into the pin. COUNTER_TREND or INSIDE_ORB → penalize and cap 69
+    (MIN_SIGNAL_SCORE is 70). ORB breakout continuations keep their full stack.
+    """
+    boxed = "INSIDE_ORB" in tags
+    counter = gex_alignment == "COUNTER_TREND"
+    if counter:
+        score -= 20
+    if boxed:
+        score -= 15
+    if counter or boxed:
+        score = min(score, 69)
+    return max(0, min(100, score))
 
 
 class SignalClassifierEngine:
@@ -75,95 +131,121 @@ class SignalClassifierEngine:
         gex_alignment = "NEUTRAL"
 
         # -------------------------------------------------------------------
-        # 1. ABSORPTION — tape only. A gamma strike is a location, not a floor.
+        # 1. ABSORPTION — only at a named gamma strike.
+        #     14d prod tape: TRAPPED_BUYERS without a wall was 17% hit / −52 pts
+        #     at +5m. VWAP-2σ / day-extreme alone is not a fade.
         # -------------------------------------------------------------------
-        if rvol >= 1.4 and bar.delta_ratio > 0.18 and (close_pos <= 0.45 or upper_wick >= 0.40):
-            if "NEAR_CALL_WALL" in tags or "ABOVE_VWAP_2SIGMA" in tags or "AT_DAY_HIGH" in tags:
-                sig_type = "ABSORPTION_BEAR" if "NEAR_CALL_WALL" in tags else "TRAPPED_BUYERS_EXHAUSTION"
-                category = "BEARISH"
-                bias = "SHORT"
-                base_score = 65
-                invalidation = bar.high + vol_buffer
-                where = (
-                    f" at the call-gamma strike ({context.call_wall:,.0f})"
-                    if "NEAR_CALL_WALL" in tags else ""
-                )
-                insight = (
-                    f"Aggressive buying was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
-                    f"depth imbalance {bar.depth_imbalance:+.2f}){where}. "
-                    "The wick is tape. The strike is not a ceiling."
-                )
-                gex_alignment = "CONFIRMED_AT_WALL" if "NEAR_CALL_WALL" in tags else "NEUTRAL"
+        if (
+            rvol >= 1.4
+            and bar.delta_ratio > 0.18
+            and (close_pos <= 0.45 or upper_wick >= 0.40)
+            and "NEAR_CALL_WALL" in tags
+        ):
+            sig_type = "ABSORPTION_BEAR"
+            category = "BEARISH"
+            bias = "SHORT"
+            base_score = 65
+            invalidation = bar.high + vol_buffer
+            insight = (
+                f"Aggressive buying was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
+                f"depth imbalance {bar.depth_imbalance:+.2f}) "
+                f"at the call-gamma strike ({context.call_wall:,.0f}). "
+                "The wick is tape. The strike is not a ceiling."
+            )
+            gex_alignment = "CONFIRMED_AT_WALL"
 
-        elif rvol >= 1.4 and bar.delta_ratio < -0.18 and (close_pos >= 0.55 or lower_wick >= 0.40):
-            if "NEAR_PUT_WALL" in tags or "BELOW_VWAP_2SIGMA" in tags or "AT_DAY_LOW" in tags:
-                sig_type = "ABSORPTION_BULL" if "NEAR_PUT_WALL" in tags else "TRAPPED_SELLERS_ABSORPTION"
-                category = "BULLISH"
-                bias = "LONG"
-                base_score = 65
-                invalidation = bar.low - vol_buffer
-                where = (
-                    f" at the put-gamma strike ({context.put_wall:,.0f})"
-                    if "NEAR_PUT_WALL" in tags else ""
-                )
-                insight = (
-                    f"Aggressive selling was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
-                    f"depth imbalance {bar.depth_imbalance:+.2f}){where}. "
-                    "The wick is tape. The strike is not a floor."
-                )
-                gex_alignment = "CONFIRMED_AT_WALL" if "NEAR_PUT_WALL" in tags else "NEUTRAL"
+        elif (
+            rvol >= 1.4
+            and bar.delta_ratio < -0.18
+            and (close_pos >= 0.55 or lower_wick >= 0.40)
+            and "NEAR_PUT_WALL" in tags
+        ):
+            sig_type = "ABSORPTION_BULL"
+            category = "BULLISH"
+            bias = "LONG"
+            base_score = 65
+            invalidation = bar.low - vol_buffer
+            insight = (
+                f"Aggressive selling was absorbed (Δ {bar.delta:+,.0f}, {rvol:.1f}x vol, "
+                f"depth imbalance {bar.depth_imbalance:+.2f}) "
+                f"at the put-gamma strike ({context.put_wall:,.0f}). "
+                "The wick is tape. The strike is not a floor."
+            )
+            gex_alignment = "CONFIRMED_AT_WALL"
 
         # -------------------------------------------------------------------
         # 2. CONTINUATION (High-volume impulse in direction of delta)
         #     Requires a live OI tape. A flat futures OI reprint is not buildup.
+        #     On 0-DTE afternoon near the magnet, skip so CVD/absorption can fire.
         # -------------------------------------------------------------------
         elif (
             getattr(bar, "oi_fresh", True)
             and rvol >= 1.5
             and bar.delta_ratio >= 0.25
             and close_pos >= 0.70
+            and ("ABOVE_VWAP" in tags or "ABOVE_ORB_HIGH" in tags)
+            and not _suppress_continuation_near_magnet(bar, tags, context)
+            and not _suppress_continuation_choppy(context)
         ):
-            if "ABOVE_VWAP" in tags or "ABOVE_ORB_HIGH" in tags:
-                sig_type = "CONTINUATION_BULL"
-                category = "BULLISH"
-                bias = "LONG"
-                base_score = 62
-                invalidation = bar.low - vol_buffer
-                insight = (
-                    f"Strong buyer continuation: {rvol:.1f}x norm volume, delta ratio {bar.delta_ratio:+.2f}, "
-                    f"firm close near high above VWAP."
-                )
-                gex_alignment = "COUNTER_TREND" if "NEAR_CALL_WALL" in tags else "NEUTRAL"
+            sig_type = "CONTINUATION_BULL"
+            category = "BULLISH"
+            bias = "LONG"
+            base_score = 62
+            invalidation = bar.low - vol_buffer
+            insight = (
+                f"Strong buyer continuation: {rvol:.1f}x norm volume, delta ratio {bar.delta_ratio:+.2f}, "
+                f"firm close near high above VWAP."
+            )
+            gex_alignment = (
+                "COUNTER_TREND"
+                if ("NEAR_CALL_WALL" in tags or "NEAR_MAGNET" in tags)
+                else "NEUTRAL"
+            )
 
         elif (
             getattr(bar, "oi_fresh", True)
             and rvol >= 1.5
             and bar.delta_ratio <= -0.25
             and close_pos <= 0.30
+            and ("BELOW_VWAP" in tags or "BELOW_ORB_LOW" in tags)
+            and not _suppress_continuation_near_magnet(bar, tags, context)
+            and not _suppress_continuation_choppy(context)
         ):
-            if "BELOW_VWAP" in tags or "BELOW_ORB_LOW" in tags:
-                sig_type = "CONTINUATION_BEAR"
-                category = "BEARISH"
-                bias = "SHORT"
-                base_score = 62
-                invalidation = bar.high + vol_buffer
-                insight = (
-                    f"Strong seller continuation: {rvol:.1f}x norm volume, delta ratio {bar.delta_ratio:+.2f}, "
-                    f"firm close near low below VWAP."
-                )
-                gex_alignment = "COUNTER_TREND" if "NEAR_PUT_WALL" in tags else "NEUTRAL"
+            sig_type = "CONTINUATION_BEAR"
+            category = "BEARISH"
+            bias = "SHORT"
+            base_score = 62
+            invalidation = bar.high + vol_buffer
+            insight = (
+                f"Strong seller continuation: {rvol:.1f}x norm volume, delta ratio {bar.delta_ratio:+.2f}, "
+                f"firm close near low below VWAP."
+            )
+            gex_alignment = (
+                "COUNTER_TREND"
+                if ("NEAR_PUT_WALL" in tags or "NEAR_MAGNET" in tags)
+                else "NEUTRAL"
+            )
 
         # -------------------------------------------------------------------
         # 3. EXHAUSTION (Volume climax with immediate rejection)
+        #     EXHAUSTION_UP without a call wall was 9% hit / −133 pts at +5m on
+        #     the 14d prod tape (mostly trend-day Sensex). Keep the fade only
+        #     when the print is at the call-gamma strike. EXHAUSTION_DOWN held
+        #     +153 pts at +5m and stays open.
         # -------------------------------------------------------------------
         elif rvol >= 2.2:
-            if close_pos <= 0.35 and upper_wick >= 0.40:
+            if close_pos <= 0.35 and upper_wick >= 0.40 and "NEAR_CALL_WALL" in tags:
                 sig_type = "EXHAUSTION_UP"
                 category = "BEARISH"
                 bias = "SHORT"
                 base_score = 64
                 invalidation = bar.high + vol_buffer
-                insight = f"Buying climax: {rvol:.1f}x volume with a long upper tail. That is tape, not a ceiling."
+                gex_alignment = "CONFIRMED_AT_WALL"
+                insight = (
+                    f"Buying climax: {rvol:.1f}x volume with a long upper tail "
+                    f"at the call-gamma strike ({context.call_wall:,.0f}). "
+                    "That is tape, not a ceiling."
+                )
             elif close_pos >= 0.65 and lower_wick >= 0.40:
                 sig_type = "EXHAUSTION_DOWN"
                 category = "BULLISH"
@@ -216,6 +298,9 @@ class SignalClassifierEngine:
             score += 10
         if abs(getattr(bar, "depth_imbalance", 0.0)) >= 0.20:
             score += 8
+
+        if sig_type.startswith("CONTINUATION"):
+            score = _continuation_score_penalty(tags, gex_alignment, score)
 
         final_score = min(100, max(0, score))
         confidence = "HIGH" if final_score >= 70 else "MEDIUM" if final_score >= 50 else "LOW"

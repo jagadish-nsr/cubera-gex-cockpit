@@ -205,6 +205,69 @@ def grade_blast(cover_frac: float, prem_exp: float | None,
     return {"score": score, "grade": grade, "ignition": ignition, "thrust": thrust, "path": path}
 
 
+def secondary_sustain_grade(
+    *,
+    cover_frac: float,
+    cover_known: bool,
+    pin_geometry: bool = False,
+    prem_exp: float | None = None,
+    wall_ratio: float | None = None,
+    wall_frac: float | None = None,
+) -> dict | None:
+    """Research true-vs-fake grade as a *secondary* read on the live card.
+
+    Does not replace the location/covering dashboard score. Collapsed walls
+    (call == put) force an intact-wall path block so pin days grade FAKE/WEAK
+    even when the location score is ACTIVE. None until cover tape exists.
+    """
+    if not cover_known:
+        return None
+    wr, wf = wall_ratio, wall_frac
+    if pin_geometry:
+        # Shared strike = no clear path ahead; treat as a large intact wall.
+        wr = max(float(wr or 0.0), 3.0)
+        wf = 0.0 if wf is None else float(wf)
+    graded = grade_blast(cover_frac, prem_exp, wr, wf)
+    if pin_geometry:
+        # Location score may still be ACTIVE; sustain read must not say TRUE.
+        graded = dict(graded)
+        graded["grade"] = "FAKE-leaning (pin/cap)"
+        graded["path"] = 0.0
+        graded["score"] = min(int(graded["score"]), 34)
+    return graded
+
+
+def _wall_ahead_from_book(
+    oi_strikes: list,
+    primary: float,
+    side: str,
+    step: float,
+) -> tuple[float | None, float | None]:
+    """Same-side OI at the next listed strike vs primary (live path component)."""
+    if not oi_strikes or primary <= 0 or step <= 0:
+        return None, None
+    ahead_k = primary + step if side == "call" else primary - step
+    by_k: dict[float, dict] = {}
+    for row in oi_strikes:
+        try:
+            by_k[float(row["strike"])] = row
+        except (KeyError, TypeError, ValueError):
+            continue
+    prim = by_k.get(float(primary))
+    ahead = by_k.get(float(ahead_k))
+    if not prim or not ahead:
+        return None, None
+    key = f"{side}_oi"
+    try:
+        oi_p = float(prim.get(key) or 0.0)
+        oi_a = float(ahead.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return None, None
+    if oi_p <= 0 or oi_a <= 0:
+        return None, None
+    return oi_a / oi_p, None  # drift unknown on a single snapshot
+
+
 def _seq_ends(seq, key):
     """First and last non-null value of ``key`` across a time-ordered list of dicts."""
     vals = [s.get(key) for s in seq
@@ -399,7 +462,34 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     magnet = float(getattr(levels, "magnet", 0.0) or 0.0)
     net_gex = float(getattr(levels, "total_net_gex", 0.0) or 0.0)
     regime = str(getattr(getattr(dash, "view", None), "regime", "NEUTRAL") or "NEUTRAL").upper()
-    oi_strikes = getattr(dash, "oi_strikes", None) or []
+    oi_strikes = list(getattr(dash, "oi_strikes", None) or [])
+    # Prefer the 10s nearest-expiry blast lane for covering/premium when it is live —
+    # the full-window chain is minutes-old fuel on a 0-DTE afternoon.
+    try:
+        from app.blast_ticker import latest as _blast_lane
+
+        lane = _blast_lane(symbol)
+    except Exception:
+        lane = None
+    if lane:
+        by_k = {
+            float(r["strike"]): dict(r)
+            for r in oi_strikes
+            if r.get("strike") is not None
+        }
+        for k, cell in lane.items():
+            try:
+                strike = float(k)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(cell, dict):
+                continue
+            row = by_k.get(strike, {"strike": strike})
+            for fld in ("call_oi", "put_oi", "call_ltp", "put_ltp"):
+                if cell.get(fld) is not None:
+                    row[fld] = cell[fld]
+            by_k[strike] = row
+        oi_strikes = list(by_k.values())
 
     # 1. IST Datetime & Session Window
     fetched_at = getattr(dash, "fetched_at", None)
@@ -579,9 +669,40 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
 
     score = max(12, min(96, raw_score))
 
+    # Collapsed walls (call == put) are pin/compress geometry — same score math,
+    # different badge so ACTIVE is not read as an expansion cue.
+    pin_geometry = (
+        call_wall > 0
+        and put_wall > 0
+        and abs(call_wall - put_wall) < 1e-6
+    )
+
+    # Secondary research grade (sustain vs pin). Location score stays primary.
+    wall_ratio, wall_frac = None, None
+    if primary_strike and cover_side:
+        wall_ratio, wall_frac = _wall_ahead_from_book(
+            oi_strikes, float(primary_strike), cover_side, step,
+        )
+    sustain = secondary_sustain_grade(
+        cover_frac=cover_frac,
+        cover_known=cover_known,
+        pin_geometry=pin_geometry,
+        prem_exp=None,  # LTP history not in the short-window OI tape yet
+        wall_ratio=wall_ratio,
+        wall_frac=wall_frac,
+    )
+    sustain_score = None if sustain is None else sustain.get("score")
+    sustain_grade = None if sustain is None else sustain.get("grade")
+
     if score >= 60:
         state = "TRIGGERED"
-        if cw_breach or spot > (call_wall + put_wall) / 2:
+        if pin_geometry:
+            badge = "GAMMA PIN: COMPRESS"
+            desc = (
+                f"Call and put gamma concentrate at ₹{call_wall:,.0f}. "
+                "That is a location and concentration map, not an expansion cue."
+            )
+        elif cw_breach or spot > (call_wall + put_wall) / 2:
             badge = "GAMMA BLAST: ACTIVE"
             desc = f"Spot is through the call-gamma strike at ₹{call_wall:,.0f}. That is a location on the book, not a measured hedge."
         else:
@@ -589,13 +710,26 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             desc = f"Spot is through the put-gamma strike at ₹{put_wall:,.0f}. That is a location on the book, not a measured hedge."
     elif score >= 35:
         state = "COILING"
-        badge = "GAMMA BLAST: COILING / IMMINENT"
-        target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
-        desc = f"Spot is within {abs(spot - (primary_strike or spot)):.0f} pts of the {target_name}. Nearness is a map, not a coil that must break."
+        if pin_geometry:
+            badge = "GAMMA PIN: COILING"
+            desc = (
+                f"Spot is within {abs(spot - call_wall):.0f} pts of the shared "
+                f"₹{call_wall:,.0f} gamma strike. Nearness is a map, not a coil that must break."
+            )
+        else:
+            badge = "GAMMA BLAST: COILING / IMMINENT"
+            target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
+            desc = f"Spot is within {abs(spot - (primary_strike or spot)):.0f} pts of the {target_name}. Nearness is a map, not a coil that must break."
     else:
         state = "NO_TRIGGER"
         badge = "GAMMA BLAST: INACTIVE"
         desc = f"No blast trigger. Put-gamma strike {put_wall:,.0f}, call-gamma strike {call_wall:,.0f}. Concentration is a map, not a pin."
+
+    if sustain_grade and state == "TRIGGERED":
+        desc = (
+            f"{desc} Sustain read: {sustain_grade} "
+            f"(research grade {sustain_score}/100 — not a direction call)."
+        )
 
     return {
         "state": state,
@@ -605,6 +739,9 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         "is_expiry": True,
         "in_blast_window": in_blast_window,
         "primary_strike": primary_strike,
+        "sustain_score": sustain_score,
+        "sustain_grade": sustain_grade,
+        "pin_geometry": pin_geometry,
     }
 
 

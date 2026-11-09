@@ -36,6 +36,70 @@ log = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
+# Tape completeness: a hole ≥ this many minutes forces a broker resync (rate-limited).
+_GAP_RESYNC_MINUTES = 3
+_GAP_RESYNC_COOLDOWN_SEC = 300.0
+
+
+def resolve_gex_levels_for_symbol(symbol: str) -> dict[str, float | None]:
+    """Best-effort walls/flip/magnet from the latest published book.
+
+    Prefers ``latest_snap_{SYM}.pkl`` (has magnet). Falls back to the session
+    snapshot SQLite row for walls/flip. Never invents levels.
+    """
+    try:
+        import config
+        sym = config.index_key(symbol)
+    except Exception:
+        sym = (symbol or "NIFTY").upper().replace("-FUT", "")
+
+    out: dict[str, float | None] = {
+        "call_wall": None,
+        "put_wall": None,
+        "flip": None,
+        "magnet": None,
+    }
+
+    def _pos(v: Any) -> float | None:
+        try:
+            f = float(v)
+            return f if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        from pathlib import Path
+        import pickle
+
+        path = Path(f"data/journal/latest_snap_{sym}.pkl")
+        if path.exists():
+            with open(path, "rb") as fh:
+                cached = pickle.load(fh)
+            data = cached.get("data") if isinstance(cached, dict) else cached
+            lv = getattr(data, "levels", None)
+            if lv is not None:
+                out["call_wall"] = _pos(getattr(lv, "call_wall", None))
+                out["put_wall"] = _pos(getattr(lv, "put_wall", None))
+                out["flip"] = _pos(getattr(lv, "flip", None))
+                out["magnet"] = _pos(getattr(lv, "magnet", None))
+    except Exception:
+        log.debug("resolve_gex_levels: latest_snap read failed for %s", sym, exc_info=True)
+
+    try:
+        from data.market_snapshot import get_snapshot
+
+        snap = get_snapshot(sym) or {}
+        if out["call_wall"] is None:
+            out["call_wall"] = _pos(snap.get("call_wall"))
+        if out["put_wall"] is None:
+            out["put_wall"] = _pos(snap.get("put_wall"))
+        if out["flip"] is None:
+            out["flip"] = _pos(snap.get("gamma_flip"))
+    except Exception:
+        log.debug("resolve_gex_levels: snapshot read failed for %s", sym, exc_info=True)
+
+    return out
+
 
 def _as_ist(ts: datetime) -> datetime:
     if ts.tzinfo is None:
@@ -51,6 +115,26 @@ def _minute_floor(ts: datetime) -> datetime:
     return _as_ist(ts).replace(second=0, microsecond=0)
 
 
+def largest_1m_gap_minutes(bars: list[Bar], now_ist: datetime | None = None) -> int:
+    """Largest hole between consecutive session 1m bars (and trailing hole to now).
+
+    Returns 0 when fewer than two bars. Used by the Sensex/Nifty gap watchdog.
+    """
+    if not bars:
+        return 0
+    ordered = sorted((_minute_floor(b.start_ts) for b in bars))
+    largest = 0
+    for a, b in zip(ordered, ordered[1:]):
+        gap = int((b - a).total_seconds() // 60) - 1
+        if gap > largest:
+            largest = gap
+    if now_ist is not None:
+        trailing = int((_minute_floor(now_ist) - ordered[-1]).total_seconds() // 60) - 1
+        if trailing > largest:
+            largest = trailing
+    return max(0, largest)
+
+
 class LiveSentinelManager:
     """Manages real-time intraday synchronization and live WebSocket tick aggregation."""
 
@@ -64,6 +148,9 @@ class LiveSentinelManager:
         self._last_tick_time: dict[str, float] = {}
         # Armed only on the first live tick — never from __init__ or session sync.
         self._recommendations_armed = False
+        # Last known GEX levels per symbol (survives until MarketContext exists).
+        self._pending_gex: dict[str, dict[str, float | None]] = {}
+        self._gap_resync_at: dict[str, float] = {}
 
     def _arm_recommendations_if_needed(self) -> None:
         """Enable reactive recommendations only after a live futures tick arrives."""
@@ -92,12 +179,53 @@ class LiveSentinelManager:
             return now_ist
         return dt
 
+    def update_gex_levels(
+        self,
+        symbol: str,
+        call_wall: float | None = None,
+        put_wall: float | None = None,
+        flip: float | None = None,
+        magnet: float | None = None,
+    ) -> None:
+        """Push current GEX levels into the live MarketContext (and pending stash)."""
+        try:
+            import config
+            sym = config.index_key(symbol)
+        except Exception:
+            sym = (symbol or "NIFTY").upper().replace("-FUT", "")
+        instrument_id = f"{sym}-FUT"
+        payload = {
+            "call_wall": call_wall,
+            "put_wall": put_wall,
+            "flip": flip,
+            "magnet": magnet,
+            "symbol": sym,
+        }
+        with _LOCK:
+            prev = dict(self._pending_gex.get(sym) or {})
+            for k, v in payload.items():
+                if v is not None:
+                    prev[k] = v
+            self._pending_gex[sym] = prev
+            ctx = self._contexts.get(instrument_id)
+            if ctx is not None:
+                ctx.symbol = sym
+                ctx.set_gex_levels(
+                    call_wall=prev.get("call_wall"),
+                    put_wall=prev.get("put_wall"),
+                    flip=prev.get("flip"),
+                    magnet=prev.get("magnet"),
+                    symbol=sym,
+                )
+
     def sync_live_session(
         self,
         instrument_id: str,
         symbol: str,
         call_wall: float | None = None,
         put_wall: float | None = None,
+        flip: float | None = None,
+        magnet: float | None = None,
         force: bool = False,
     ) -> bool:
         """Sync real 1-minute futures bars from Dhan API for today's session.
@@ -106,6 +234,23 @@ class LiveSentinelManager:
         and runs the SignalClassifierEngine to generate real signals.
         """
         now_epoch = time.time()
+
+        # Fill missing walls from the last published book / pending push.
+        try:
+            import config
+            sym_key = config.index_key(symbol)
+        except Exception:
+            sym_key = (symbol or "NIFTY").upper().replace("-FUT", "")
+        pending = dict(self._pending_gex.get(sym_key) or {})
+        resolved = resolve_gex_levels_for_symbol(sym_key)
+        if call_wall is None:
+            call_wall = pending.get("call_wall") or resolved.get("call_wall")
+        if put_wall is None:
+            put_wall = pending.get("put_wall") or resolved.get("put_wall")
+        if flip is None:
+            flip = pending.get("flip") or resolved.get("flip")
+        if magnet is None:
+            magnet = pending.get("magnet") or resolved.get("magnet")
 
         # Target today once the session briefing window has begun (09:00 regular /
         # 13:00 Muhurat); otherwise the latest completed regular trading day.
@@ -201,7 +346,7 @@ class LiveSentinelManager:
                 n_kept = 0
                 n_written = 0
 
-                # Context
+                # Context — walls/flip/magnet from args, pending push, or published book
                 day_high = float(df["high"].max())
                 day_low = float(df["low"].min())
                 ctx = MarketContext(
@@ -209,8 +354,18 @@ class LiveSentinelManager:
                     day_low=day_low,
                     call_wall=call_wall,
                     put_wall=put_wall,
+                    gamma_flip=flip,
+                    magnet=magnet,
+                    symbol=sym_key,
                 )
                 self._contexts[instrument_id] = ctx
+                self._pending_gex[sym_key] = {
+                    "call_wall": call_wall,
+                    "put_wall": put_wall,
+                    "flip": flip,
+                    "magnet": magnet,
+                    "symbol": sym_key,
+                }
 
                 classifier = SignalClassifierEngine()
                 self._classifiers[instrument_id] = classifier
@@ -297,6 +452,7 @@ class LiveSentinelManager:
                     n_written += 1
 
                     ctx.update_bar(bar)
+                    ctx.refresh_chop(bars_to_save)
                     sig = classifier.evaluate_bar(bar, ctx)
                     if sig:
                         # Sync/backfill must not mint recommendations or paper trades.
@@ -408,8 +564,13 @@ class LiveSentinelManager:
 
                 # Update context
                 ctx = self._contexts.get(instrument_id)
+                bars_eval = list_recent_bars(
+                    instrument_id, timeframe="1m", limit=120,
+                    session_only=True, _auto_populate=False,
+                )
                 if ctx:
                     ctx.update_bar(completed_bar)
+                    ctx.refresh_chop(bars_eval)
                     classifier = self._classifiers.get(instrument_id)
                     if classifier:
                         sig = classifier.evaluate_bar(completed_bar, ctx)
@@ -417,13 +578,22 @@ class LiveSentinelManager:
                             sig.entry_price = float(ltp)
                             save_signal(sig)
 
+                # Fail loud on tape holes (Sensex dropped 106 bars on 9 Nov).
+                try:
+                    gap = largest_1m_gap_minutes(bars_eval, now_ist=tick_dt)
+                    if gap >= _GAP_RESYNC_MINUTES:
+                        log.warning(
+                            "Sentinel 1m tape gap on %s: largest hole %d min "
+                            "(threshold %d) — scheduling broker resync",
+                            instrument_id, gap, _GAP_RESYNC_MINUTES,
+                        )
+                        self._schedule_gap_resync(instrument_id, symbol)
+                except Exception:
+                    log.debug("gap watchdog failed for %s", instrument_id, exc_info=True)
+
                 # Update outcomes of recent signals with subsequent bars
                 try:
                     recent_sigs = list_recent_signals(instrument_id, limit=30)
-                    bars_eval = list_recent_bars(
-                        instrument_id, timeframe="1m", limit=120,
-                        session_only=True, _auto_populate=False,
-                    )
                     cw = ctx.call_wall if ctx else 0.0
                     pw = ctx.put_wall if ctx else 0.0
                     for s in recent_sigs:
@@ -457,6 +627,37 @@ class LiveSentinelManager:
                 except Exception:
                     pass
 
+    def _schedule_gap_resync(self, instrument_id: str, symbol: str) -> None:
+        """Force a live session sync after a detected 1m tape hole (rate-limited)."""
+        now = time.time()
+        with _LOCK:
+            last = self._gap_resync_at.get(instrument_id, 0.0)
+            if (now - last) < _GAP_RESYNC_COOLDOWN_SEC:
+                return
+            self._gap_resync_at[instrument_id] = now
+
+        def _run() -> None:
+            try:
+                levels = resolve_gex_levels_for_symbol(symbol)
+                ok = self.sync_live_session(
+                    instrument_id,
+                    symbol,
+                    call_wall=levels.get("call_wall"),
+                    put_wall=levels.get("put_wall"),
+                    flip=levels.get("flip"),
+                    magnet=levels.get("magnet"),
+                    force=True,
+                )
+                log.warning(
+                    "Sentinel gap resync for %s finished ok=%s", instrument_id, ok,
+                )
+            except Exception:
+                log.exception("Sentinel gap resync failed for %s", instrument_id)
+
+        threading.Thread(
+            target=_run, name=f"sentinel-gap-resync-{symbol}", daemon=True,
+        ).start()
+
     def _schedule_session_sync(self, instrument_id: str, symbol: str) -> None:
         """Start one intraday sync when the live aggregator is missing.
 
@@ -474,7 +675,15 @@ class LiveSentinelManager:
 
         def _run() -> None:
             try:
-                self.sync_live_session(instrument_id, symbol)
+                levels = resolve_gex_levels_for_symbol(symbol)
+                self.sync_live_session(
+                    instrument_id,
+                    symbol,
+                    call_wall=levels.get("call_wall"),
+                    put_wall=levels.get("put_wall"),
+                    flip=levels.get("flip"),
+                    magnet=levels.get("magnet"),
+                )
             except Exception:
                 log.exception("Background sentinel sync failed for %s", instrument_id)
 
@@ -485,6 +694,35 @@ class LiveSentinelManager:
 
 # Global singleton manager
 _live_manager = LiveSentinelManager()
+
+
+def update_sentinel_gex_levels(
+    symbol: str,
+    call_wall: float | None = None,
+    put_wall: float | None = None,
+    flip: float | None = None,
+    magnet: float | None = None,
+) -> None:
+    """Public updater: keep live OrderFlow context on the current GEX book."""
+    _live_manager.update_gex_levels(
+        symbol,
+        call_wall=call_wall,
+        put_wall=put_wall,
+        flip=flip,
+        magnet=magnet,
+    )
+
+
+def push_gex_from_published_book(symbol: str) -> None:
+    """Resolve walls from the just-published book and push into Sentinel."""
+    levels = resolve_gex_levels_for_symbol(symbol)
+    update_sentinel_gex_levels(
+        symbol,
+        call_wall=levels.get("call_wall"),
+        put_wall=levels.get("put_wall"),
+        flip=levels.get("flip"),
+        magnet=levels.get("magnet"),
+    )
 
 
 def evaluate_active_sentinel_outcomes(
@@ -513,6 +751,8 @@ def sync_live_sentinel_if_needed(
     symbol: str = "NIFTY",
     call_wall: float | None = None,
     put_wall: float | None = None,
+    flip: float | None = None,
+    magnet: float | None = None,
     force: bool = False,
 ) -> bool:
     """Public helper to ensure real intraday bars are synced for Sentinel."""
@@ -521,6 +761,8 @@ def sync_live_sentinel_if_needed(
         symbol=symbol,
         call_wall=call_wall,
         put_wall=put_wall,
+        flip=flip,
+        magnet=magnet,
         force=force,
     )
 

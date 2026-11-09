@@ -240,13 +240,28 @@ async def _start_ingest_lanes():
     def _dhan():
         from app.dhan_sync import on_published, start_scheduler
         on_published(_drop_dash_cache)
+        on_published(_push_sentinel_gex)
         start_scheduler()
+
+    def _blast_lane():
+        """10s nearest-expiry ladder on 0-DTE — covering fuel for the blast card."""
+        from datetime import datetime as _dt
+
+        from data.session_flags import is_expiry_day
+
+        today = _dt.now(IST).strftime("%Y-%m-%d")
+        from app.blast_ticker import ensure as ensure_blast_lane
+
+        for sym, idx in config.INDICES.items():
+            if is_expiry_day(sym, today):
+                ensure_blast_lane(sym, band_pts=idx.band_pts, interval_s=10.0)
 
     _run_lane("admin.monitor", _admin)
     _run_lane("spot.warmup", _spot)
     _run_lane("premarket", _premarket)
     _run_lane("dhan.sync", _dhan)
     _run_lane("rec.publisher", _ensure_rec_publisher)
+    _run_lane("blast.lane", _blast_lane)
     if not config.is_market_open():
         return
     window = _ACTIVE_STATE.get("window") or "current_week"
@@ -515,6 +530,15 @@ def _drop_dash_cache(symbol: str) -> None:
     sym = (symbol or "").upper()
     for key in [k for k in _DASH_MEM_CACHE if isinstance(k, tuple) and k and k[0] == sym]:
         _DASH_MEM_CACHE.pop(key, None)
+
+
+def _push_sentinel_gex(symbol: str) -> None:
+    """Keep OrderFlow MarketContext on the just-published walls/flip/magnet."""
+    try:
+        from sentinel.feed.live import push_gex_from_published_book
+        push_gex_from_published_book(symbol)
+    except Exception:
+        log.debug("sentinel GEX push failed for %s", symbol, exc_info=True)
 
 
 _CHAIN_INTERVAL_S = 30
@@ -4022,15 +4046,23 @@ async def reseed_sentinel_tape(payload: dict = Body(...)):
 
     inst_id = f"{sym}-FUT"
     dash = await _aload_active_dashboard(sym)
-    cw = float(getattr(getattr(dash, "levels", None), "call_wall", 0.0) or 0.0)
-    pw = float(getattr(getattr(dash, "levels", None), "put_wall", 0.0) or 0.0)
+    lv = getattr(dash, "levels", None)
+    cw = float(getattr(lv, "call_wall", 0.0) or 0.0) or None
+    pw = float(getattr(lv, "put_wall", 0.0) or 0.0) or None
+    flip = float(getattr(lv, "flip", 0.0) or 0.0) or None
+    magnet = float(getattr(lv, "magnet", 0.0) or 0.0) or None
+    try:
+        from sentinel.feed.live import update_sentinel_gex_levels
+        update_sentinel_gex_levels(sym, call_wall=cw, put_wall=pw, flip=flip, magnet=magnet)
+    except Exception:
+        log.debug("reseed GEX push failed for %s", sym, exc_info=True)
 
     if action == "sync_live":
         try:
             from sentinel.feed.live import sync_live_sentinel_if_needed
             synced = await asyncio.to_thread(
                 sync_live_sentinel_if_needed, inst_id,
-                symbol=sym, call_wall=cw, put_wall=pw, force=True,
+                symbol=sym, call_wall=cw, put_wall=pw, flip=flip, magnet=magnet, force=True,
             )
             if synced:
                 return {"status": "ok", "message": f"Synced live broker feed for {sym}"}
@@ -6283,7 +6315,34 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     (q.get("rec_id"), q.get("ltp"), q.get("target_1"), q.get("stop_loss"))
                     for q in rec_quotes
                 )
-                sig = (round(spot, 1), None if fut is None else round(fut, 1), int(cw or 0), int(pw or 0), opt_sig)
+                # Expiry-day blast edge: wall breach + live CE/PE parity from the Full tick tape.
+                wall_event = None
+                prev_spot = getattr(websocket_telemetry, "_prev_spot", {}).get(sym)
+                if prev_spot is not None:
+                    if cw and prev_spot < cw <= spot:
+                        wall_event = "call_wall_cross"
+                    elif pw and prev_spot > pw >= spot:
+                        wall_event = "put_wall_cross"
+                if not hasattr(websocket_telemetry, "_prev_spot"):
+                    websocket_telemetry._prev_spot = {}
+                websocket_telemetry._prev_spot[sym] = spot
+                blast_live = None
+                try:
+                    from app.blast_ticks import live_state as _blast_live_state
+                    blast_live = _blast_live_state(sym)
+                except Exception:
+                    blast_live = None
+                cross_ep = (blast_live or {}).get("last_cross", {}) or {}
+                cross_sig = cross_ep.get("epoch") if isinstance(cross_ep, dict) else None
+                sig = (
+                    round(spot, 1),
+                    None if fut is None else round(fut, 1),
+                    int(cw or 0),
+                    int(pw or 0),
+                    opt_sig,
+                    wall_event,
+                    cross_sig,
+                )
                 if sig == last_sig and (now_t - last_send) < _WS_HEARTBEAT_S:
                     await asyncio.sleep(_WS_LIVE_SLEEP_S)
                     continue
@@ -6303,6 +6362,8 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                     "feed_mode": "LIVE_WEBSOCKET",
                     "latest_bar": latest_bar_dict,
                     "rec_quotes": rec_quotes,
+                    "wall_event": wall_event,
+                    "blast_live": blast_live,
                 }
                 await asyncio.wait_for(websocket.send_json(tick_payload), timeout=1.0)
                 last_sig = sig

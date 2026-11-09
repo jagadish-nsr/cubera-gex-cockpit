@@ -671,6 +671,33 @@ def test_quality_gate_and_missing_target_refused():
     assert refusals.get("missing_target_pts", 0) >= 1
 
 
+def test_quality_gate_allows_cvd_and_blocks_toxic_types():
+    """CVD bull is the best 14d type — must mint. EXHAUSTION_UP / TRAPPED must not."""
+    sr.reset_refusal_metrics()
+    cvd = _make_signal(
+        event_id="sig_cvd",
+        sig_type="CVD_DIVERGENCE_BULL",
+        entry=24512.0,
+        inval=24480.0,
+        score=78,
+    )
+    assert sr.on_sentinel_signal(cvd, current_spot=24512.0) is not None
+
+    toxic = _make_signal(
+        event_id="sig_tox",
+        bias="SHORT",
+        sig_type="EXHAUSTION_UP",
+        entry=24540.0,
+        inval=24580.0,
+        score=87,
+    )
+    assert sr.on_sentinel_signal(toxic, current_spot=24540.0) is None
+    assert sr.get_refusal_metrics().get("low_score_or_type", 0) >= 1
+
+    mid = _make_signal(event_id="sig_mid", entry=24512.0, inval=24480.0, score=68)
+    assert sr.on_sentinel_signal(mid, current_spot=24512.0) is None
+
+
 def test_stack_raises_protective_spot_invalidation():
     """CE stack keeps the higher (tighter) spot invalidation among active signals."""
     t0 = datetime.now(IST).replace(hour=9, minute=30, second=0, microsecond=0)

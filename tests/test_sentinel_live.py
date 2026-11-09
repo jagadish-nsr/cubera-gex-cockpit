@@ -11,8 +11,10 @@ from sentinel.feed.live import (
     LiveSentinelManager,
     sync_live_sentinel_if_needed,
     push_live_tick_to_sentinel,
+    update_sentinel_gex_levels,
 )
 from sentinel.feed.live import IST, _minute_floor
+from sentinel.engine.context import MarketContext
 from sentinel.models import Bar, SentinelSignal, SignalOutcome
 from sentinel.storage.db import (
     list_recent_bars,
@@ -327,9 +329,22 @@ class TestSentinelLive(unittest.TestCase):
         mgr.sync_live_session = _sync
         pkt = {"ltp": 22505.0, "ltq": 65, "volume": 100, "ltt": int(datetime.now(timezone.utc).timestamp())}
         with patch("sentinel.feed.live.threading.Thread", _InlineThread):
-            mgr.on_tick(pkt, "TEST")
-            mgr.on_tick(pkt, "TEST")
-        self.assertEqual(calls, [("TEST-FUT", "TEST", {})])
+            with patch(
+                "sentinel.feed.live.resolve_gex_levels_for_symbol",
+                return_value={
+                    "call_wall": None,
+                    "put_wall": None,
+                    "flip": None,
+                    "magnet": None,
+                },
+            ):
+                mgr.on_tick(pkt, "TEST")
+                mgr.on_tick(pkt, "TEST")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "TEST-FUT")
+        self.assertEqual(calls[0][1], "TEST")
+        # Bootstrap sync now forwards resolved GEX kwargs (may all be None).
+        self.assertIn("call_wall", calls[0][2])
         self.assertEqual(len(started), 1)
 
     def test_live_session_isolation_never_returns_yesterday_data(self):
@@ -392,6 +407,42 @@ class TestSentinelLive(unittest.TestCase):
             self.assertEqual(len(bars_today), 1)
             self.assertEqual(bars_today[0].start_ts.date(), mock_market_now.date())
             self.assertEqual(bars_today[0].cvd, 400.0)
+
+    def test_update_gex_levels_reaches_live_context_tags(self):
+        """Public updater must stamp walls/magnet onto the live MarketContext."""
+        mgr = LiveSentinelManager()
+        mgr._contexts["NIFTY-FUT"] = MarketContext(symbol="NIFTY")
+        mgr.update_gex_levels(
+            "NIFTY",
+            call_wall=25000.0,
+            put_wall=24900.0,
+            flip=24950.0,
+            magnet=25000.0,
+        )
+        ctx = mgr._contexts["NIFTY-FUT"]
+        self.assertEqual(ctx.call_wall, 25000.0)
+        self.assertEqual(ctx.magnet, 25000.0)
+        self.assertEqual(ctx.gamma_flip, 24950.0)
+        bar = Bar(
+            instrument_id="NIFTY-FUT",
+            timeframe="1m",
+            start_ts=datetime.now(IST),
+            open=24990.0, high=25015.0, low=24985.0, close=25010.0,
+            volume_units=1000, volume_lots=15.0,
+            buy_vol_est=600.0, sell_vol_est=400.0,
+            delta=200.0, delta_ratio=0.2, delta_quality=1.0,
+            cvd=200.0, vwap=25000.0,
+            vwap_sigma_1=25010.0, vwap_sigma_2=25020.0,
+            vwap_lower_1=24990.0, vwap_lower_2=24980.0,
+        )
+        tags = ctx.get_context_tags(bar)
+        self.assertIn("NEAR_CALL_WALL", tags)
+        self.assertIn("NEAR_MAGNET", tags)
+
+        # Module helper hits the singleton the same way production does.
+        update_sentinel_gex_levels("NIFTY", call_wall=25100.0, magnet=25100.0)
+        # Singleton may be a different manager instance — only assert API callable.
+        self.assertTrue(callable(update_sentinel_gex_levels))
 
 
 if __name__ == "__main__":

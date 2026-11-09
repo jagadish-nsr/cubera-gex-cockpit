@@ -307,3 +307,48 @@ def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
     assert res["state"] == "NO_TRIGGER"
     assert res["score"] < 35
 
+
+def test_pin_badge_when_call_and_put_walls_equal():
+    """Collapsed walls keep TRIGGERED score math but badge as PIN/COMPRESS."""
+    from datetime import datetime
+    reset_strike_oi_history()
+    first = _breach_dash(100_000.0, 80_000.0, datetime(2026, 11, 9, 8, 0))
+    first.levels.call_wall = 25000.0
+    first.levels.put_wall = 25000.0
+    first.levels.spot = 25005.0
+    first.oi_strikes = [{"strike": 25000.0, "call_oi": 100_000.0, "call_doi": 80_000.0, "put_oi": 1.0}]
+    evaluate_dashboard_gamma_blast(first, "NIFTY")
+    second = _breach_dash(75_000.0, 55_000.0, datetime(2026, 11, 9, 8, 10))
+    second.levels.call_wall = 25000.0
+    second.levels.put_wall = 25000.0
+    second.levels.spot = 25005.0
+    second.oi_strikes = [{"strike": 25000.0, "call_oi": 75_000.0, "call_doi": 55_000.0, "put_oi": 1.0}]
+    res = evaluate_dashboard_gamma_blast(second, "NIFTY")
+    assert res["state"] == "TRIGGERED"
+    assert res["score"] >= 60
+    assert res["badge"] == "GAMMA PIN: COMPRESS"
+    assert "concentration" in res["description"].lower()
+    assert "expansion" in res["description"].lower()
+    assert "defend" not in res["description"].lower()
+    # Secondary sustain grade must flag pin path even while location score is ACTIVE
+    assert res.get("pin_geometry") is True
+    assert res.get("sustain_grade") is not None
+    assert "FAKE" in res["sustain_grade"] or "WEAK" in res["sustain_grade"]
+    assert "Sustain read" in res["description"]
+
+
+def test_secondary_sustain_grade_pin_forces_fake_path():
+    from app.gammablast import secondary_sustain_grade
+
+    # Covering fuel alone would lean TRUE; pin geometry blocks the path.
+    clear = secondary_sustain_grade(
+        cover_frac=-0.30, cover_known=True, pin_geometry=False, prem_exp=0.10,
+    )
+    pinned = secondary_sustain_grade(
+        cover_frac=-0.30, cover_known=True, pin_geometry=True, prem_exp=0.10,
+    )
+    assert clear is not None and pinned is not None
+    assert clear["score"] > pinned["score"]
+    assert "FAKE" in pinned["grade"] or "WEAK" in pinned["grade"]
+    assert secondary_sustain_grade(cover_frac=-0.1, cover_known=False) is None
+
