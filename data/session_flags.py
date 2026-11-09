@@ -26,7 +26,12 @@ def _expiry_cache(symbol: str):
 
 
 def is_expiry_day(symbol: str, day: str) -> bool:
-    """True when ``day`` is a 0-DTE expiry. Feature-cache dte first, then the weekly calendar."""
+    """True when ``day`` is a 0-DTE expiry for that index.
+
+    Feature-cache dte first. Calendar fallback is index-specific: Nifty /
+    Sensex weeklies (holiday-rolled), Bank Nifty monthly only. Never use a
+    Nifty weekly check for Bank Nifty — ``"NIFTY" in "BANKNIFTY"`` is true.
+    """
     if not day:
         return False
     alld, expd = _expiry_cache(symbol)
@@ -34,9 +39,15 @@ def is_expiry_day(symbol: str, day: str) -> bool:
         return str(day) in expd
     try:
         from datetime import datetime
-        from data.expiry import next_weekly_expiry
+
+        import config
+        from data.expiry import next_monthly_expiry, next_weekly_expiry
+
         dd = datetime.strptime(str(day), "%Y-%m-%d").date()
-        return next_weekly_expiry(dd) == dd
+        idx = config.INDICES[config.index_key(symbol)]
+        if not idx.has_weekly:
+            return next_monthly_expiry(dd, idx.exchange) == dd
+        return next_weekly_expiry(dd, idx.exchange) == dd
     except Exception:  # noqa: BLE001
         return False
 

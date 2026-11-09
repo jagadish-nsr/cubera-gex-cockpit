@@ -78,6 +78,13 @@ def test_last_completed_session_is_the_previous_trading_day_before_the_close():
     assert last_completed_session_date(datetime(2026, 10, 25, 18, 0, tzinfo=_IST)) == date(2026, 10, 23)
 
 
+def test_last_completed_session_counts_muhurat():
+    # Monday 9 Nov morning: last close is Muhurat Sunday 8 Nov, not Friday 6 Nov.
+    assert last_completed_session_date(datetime(2026, 11, 9, 7, 30, tzinfo=_IST)) == date(2026, 11, 8)
+    # After Muhurat cash close, that session is the completed one.
+    assert last_completed_session_date(datetime(2026, 11, 8, 15, 40, tzinfo=_IST)) == date(2026, 11, 8)
+
+
 def test_closing_print_keeps_the_stored_previous_close(tmp_path, monkeypatch):
     monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
     save_snapshot(

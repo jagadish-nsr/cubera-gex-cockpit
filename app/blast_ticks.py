@@ -64,6 +64,47 @@ def set_contracts(bset: dict) -> dict[int, dict]:
 
 _LOCK_TTL = 90.0            # a lock older than this (no flush) = the writer is dead → takeable
 
+# Live parity map for the cockpit / telemetry (updated on every Full tick).
+# Keyed by symbol → {strike, call_ltp, put_ltp, implied, side, last_cross, epoch}.
+_LIVE: dict[str, dict] = {}
+_LIVE_LOCK = threading.Lock()
+
+
+def live_state(symbol: str) -> dict | None:
+    """Latest in-memory anchor parity for ``symbol``, or None until both legs print."""
+    with _LIVE_LOCK:
+        row = _LIVE.get((symbol or "").upper())
+        return dict(row) if row else None
+
+
+def _publish_live(symbol: str, strike: float, call_ltp: float, put_ltp: float, epoch: int) -> None:
+    """Update the live map and stamp a crossover the moment (call−put) flips sign."""
+    implied = float(strike) + float(call_ltp) - float(put_ltp)
+    diff = float(call_ltp) - float(put_ltp)
+    side = "call_rich" if diff > 0 else ("put_rich" if diff < 0 else "at_cross")
+    sym = (symbol or "").upper()
+    with _LIVE_LOCK:
+        prev = _LIVE.get(sym) or {}
+        last_cross = prev.get("last_cross")
+        if prev.get("side") in ("call_rich", "put_rich") and side in ("call_rich", "put_rich") and side != prev["side"]:
+            last_cross = {
+                "epoch": epoch,
+                "from": prev["side"],
+                "to": side,
+                "strike": float(strike),
+                "implied": implied,
+            }
+        _LIVE[sym] = {
+            "symbol": sym,
+            "strike": float(strike),
+            "call_ltp": float(call_ltp),
+            "put_ltp": float(put_ltp),
+            "implied": implied,
+            "side": side,
+            "last_cross": last_cross,
+            "epoch": epoch,
+        }
+
 
 def _lock_path(symbol: str, day: str):
     return RAW_DIR / symbol / f"{day}.lock"
@@ -312,6 +353,33 @@ class BlastTickCollector:
                     self.status.last_tick_epoch = epoch
                     self.status.n_ticks += 1
                     self.status.per_side[c["side"]] = self.status.per_side.get(c["side"], 0) + 1
+                    # Live parity / crossover for the cockpit (anchor CE+PE only).
+                    if c.get("role", "anchor") == "anchor":
+                        implied = self.implied_from_anchor()
+                        if implied is not None:
+                            anchors = [x for x in self.contracts.values() if x.get("role") == "anchor"]
+                            call = next((x for x in anchors if x.get("side") == "CE"), None)
+                            put = next((x for x in anchors if x.get("side") == "PE"), None)
+                            if call and put:
+                                cl = self.last_ltp.get(int(call["security_id"]))
+                                pl = self.last_ltp.get(int(put["security_id"]))
+                                if cl is not None and pl is not None:
+                                    prev = live_state(c["symbol"])
+                                    _publish_live(c["symbol"], float(call["strike"]), float(cl), float(pl), epoch)
+                                    now_live = live_state(c["symbol"]) or {}
+                                    if (now_live.get("last_cross") and (
+                                        not prev or prev.get("last_cross") != now_live.get("last_cross")
+                                    )):
+                                        try:
+                                            from app.obs import event
+                                            event(
+                                                "blast_ticks.crossover",
+                                                workflow="blast_ticks",
+                                                symbol=c["symbol"],
+                                                **(now_live.get("last_cross") or {}),
+                                            )
+                                        except Exception:
+                                            pass
                     dt = datetime.fromtimestamp(epoch, IST)
                     self._add(c["symbol"], dt.strftime("%Y-%m-%d"), tick_row(tick, c, epoch))
                     self._flush()

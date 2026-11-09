@@ -6,16 +6,20 @@ Architecture
 One persistent background thread opens a single Dhan v2 WebSocket (``wss://api-feed.dhan.co``)
 and subscribes to:
   • Index spot underlyings  → IDX_I segment  (NIFTY:13, BANKNIFTY:25, SENSEX:51) — Quote tier
-  • Near-month index futures → NSE_FNO / BSE_FNO               — Quote tier (gives OHLC + LTQ + OI)
+  • Near-month index futures → NSE_FNO / BSE_FNO               — Full tier (LTP + LTQ + OHLC + OI)
 
-Every decoded ``Quote`` packet is written directly into ``app.spot_ticker._STORE`` via
+Quote packets do **not** carry OI on Dhan v2 (OI lives on Full code 8 / OI-only code 5).
+Subscribing futures at Quote left Sentinel ``oi_fresh=False`` after five flat bars and
+blocked CONTINUATION signals — seen live on Fri 2026-11-06 and Muhurat 2026-11-08.
+
+Every decoded packet is written into ``app.spot_ticker._STORE`` via
 ``spot_ticker.push_ws_tick()``.  The REST poller in ``spot_ticker._loop`` keeps running as the
 *fallback*: when the socket is live the REST value is just a background warmup; when the socket
 drops the REST value stays fresh.
 
 Data flow (outside → in)
 ────────────────────────
-  Exchange → wss (binary Quote packet) → decode_packet() → push_ws_tick()
+  Exchange → wss (binary Quote/Full/OI) → _decode_packet() → push_ws_tick()
                                                                ↓
                                               _STORE[symbol]["ohlc"]  ← spot fields (IDX_I ticks)
                                               _STORE[symbol]["fut"]   ← futures price/OI (FNO ticks)
@@ -57,9 +61,14 @@ from datetime import datetime, timedelta, timezone
 # ── Dhan WebSocket constants ────────────────────────────────────────────────────────────────────
 _FEED_URL = "wss://api-feed.dhan.co"
 _SUB_QUOTE = 17                        # v2 subscribe code for Quote tier (LTP + LTQ + OHLC)
-_RESP_QUOTE = 4                        # v2 receive code for a Quote packet
+_SUB_FULL = 21                         # v2 subscribe code for Full tier (adds OI + depth)
 _RESP_TICKER = 2                       # v2 receive code for a Ticker packet (LTP only)
+_RESP_QUOTE = 4                        # v2 receive code for a Quote packet
+_RESP_OI = 5                           # v2 receive code for an OI-only packet
+_RESP_FULL = 8                         # v2 receive code for a Full packet
 _HEADER_LEN = 8                        # bytes in the fixed header
+_DEPTH_OFF = 62                        # Full packet: depth level 1 starts here
+_DEPTH_LEVEL = 20
 
 # Index spot security IDs on IDX_I segment
 _SPOT_SCRIPS: dict[str, int] = {
@@ -132,32 +141,62 @@ def subscribe_options(symbol: str, strikes, expiry_iso: str | None = None) -> li
 
 # ── Packet decoder (same binary layout as data/dhan_feed.decode_packet) ─────────────────────────
 
-def _decode_quote(frame: bytes) -> dict | None:
-    """Decode a Dhan v2 Quote (code 4) or Ticker (code 2) binary packet.
-    Returns a plain dict or None if the frame is too short/malformed."""
+def _decode_packet(frame: bytes) -> dict | None:
+    """Decode a Dhan v2 Ticker / Quote / OI / Full binary packet.
+
+    Offsets match ``data.dhan_feed.decode_packet`` (locked by tests/test_dhan_feed.py).
+    Quote has no OI; Full carries OI at offset 34; OI-only (code 5) carries OI at offset 8.
+    """
     if not frame or len(frame) < _HEADER_LEN:
         return None
     code = frame[0]
-    if code not in (_RESP_TICKER, _RESP_QUOTE):
+    if code not in (_RESP_TICKER, _RESP_QUOTE, _RESP_OI, _RESP_FULL):
         return None
     try:
         sec = struct.unpack_from("<I", frame, 4)[0]
         out: dict = {"code": code, "security_id": sec}
-        if len(frame) >= 12:
-            out["ltp"] = struct.unpack_from("<f", frame, 8)[0]
-            out["ltq"] = struct.unpack_from("<h", frame, 12)[0]
-            out["ltt"] = struct.unpack_from("<i", frame, 14)[0]
-            out["atp"] = struct.unpack_from("<f", frame, 18)[0]
-            out["volume"] = struct.unpack_from("<i", frame, 22)[0]
-            out["sell_qty"] = struct.unpack_from("<i", frame, 26)[0]
-            out["buy_qty"] = struct.unpack_from("<i", frame, 30)[0]
-            tot_depth = out["buy_qty"] + out["sell_qty"]
-            out["depth_imbalance"] = round((out["buy_qty"] - out["sell_qty"]) / max(1, tot_depth), 4) if tot_depth > 0 else 0.0
+
+        if code == _RESP_OI:
+            if len(frame) >= 12:
+                out["oi"] = struct.unpack_from("<i", frame, 8)[0]
+            return out
+
+        if len(frame) < 12:
+            return out
+        out["ltp"] = struct.unpack_from("<f", frame, 8)[0]
+
+        if code == _RESP_TICKER:
+            return out
+
+        if len(frame) < 34:
+            return out
+        out["ltq"] = struct.unpack_from("<h", frame, 12)[0]
+        out["ltt"] = struct.unpack_from("<i", frame, 14)[0]
+        out["atp"] = struct.unpack_from("<f", frame, 18)[0]
+        out["volume"] = struct.unpack_from("<i", frame, 22)[0]
+        out["sell_qty"] = struct.unpack_from("<i", frame, 26)[0]
+        out["buy_qty"] = struct.unpack_from("<i", frame, 30)[0]
+        tot_depth = out["buy_qty"] + out["sell_qty"]
+        out["depth_imbalance"] = (
+            round((out["buy_qty"] - out["sell_qty"]) / max(1, tot_depth), 4) if tot_depth > 0 else 0.0
+        )
+
+        if code == _RESP_QUOTE and len(frame) >= 50:
             # OHLC: open @34, close(prev_close) @38, high @42, low @46
             out["open"], out["prev_close"], out["high"], out["low"] = struct.unpack_from("<4f", frame, 34)
+        elif code == _RESP_FULL and len(frame) >= 62:
+            out["oi"] = struct.unpack_from("<i", frame, 34)[0]
+            out["open"], out["prev_close"], out["high"], out["low"] = struct.unpack_from("<4f", frame, 46)
+            if len(frame) >= _DEPTH_OFF + _DEPTH_LEVEL:
+                out["bid"] = struct.unpack_from("<f", frame, _DEPTH_OFF + 12)[0]
+                out["ask"] = struct.unpack_from("<f", frame, _DEPTH_OFF + 16)[0]
         return out
     except struct.error:
         return None
+
+
+# Back-compat alias for any caller/test still using the old name.
+_decode_quote = _decode_packet
 
 
 # ── Futures contract resolver ────────────────────────────────────────────────────────────────────
@@ -268,14 +307,14 @@ def _handle_spot_tick(pkt: dict, spot_ids: dict[str, int]) -> None:
 
 
 def _handle_fut_tick(pkt: dict, fut_map: dict[int, dict]) -> None:
-    """Push a near-futures tick into spot_ticker._STORE."""
+    """Push a near-futures tick into spot_ticker._STORE.
+
+    Full packets carry LTP + OI. OI-only packets (code 5) update OI on the
+    last known LTP so Sentinel's aggregator keeps ``oi_fresh`` true.
+    """
     import app.spot_ticker as _st
 
     sec = pkt["security_id"]
-    ltp = pkt.get("ltp")
-    if ltp is None or ltp <= 0:
-        return
-
     info = fut_map.get(sec)
     if info is None:
         return
@@ -284,8 +323,31 @@ def _handle_fut_tick(pkt: dict, fut_map: dict[int, dict]) -> None:
     existing_rec = _st._STORE.get(sym) or {}
     existing_ohlc = existing_rec.get("ohlc") or {}
     existing_fut = existing_rec.get("fut") or {}
-    spot = existing_ohlc.get("ltp") or ltp
 
+    ltp = pkt.get("ltp")
+    oi_only = pkt.get("code") == _RESP_OI or (ltp is None or ltp <= 0)
+    if oi_only:
+        oi = pkt.get("oi")
+        if not oi:
+            return
+        ltp = existing_fut.get("price")
+        if ltp is None or ltp <= 0:
+            return
+        fut = dict(existing_fut)
+        fut["oi"] = oi
+        fut["symbol"] = sym
+        fut["expiry"] = info["expiry"]
+        _st.push_ws_tick(sym, fut=fut)
+        _STATUS["ws_symbol_ticks"][f"{sym}-FUT"] = _STATUS["ws_symbol_ticks"].get(f"{sym}-FUT", 0) + 1
+        _STATUS["last_tick_epoch"] = int(time.time())
+        try:
+            from sentinel.feed.live import push_live_tick_to_sentinel
+            push_live_tick_to_sentinel({**pkt, "ltp": ltp, "oi": oi}, sym)
+        except Exception:
+            pass
+        return
+
+    spot = existing_ohlc.get("ltp") or ltp
     fut_open = pkt.get("open") or existing_fut.get("open") or ltp
     chg = (ltp - fut_open) if fut_open else 0.0
 
@@ -378,12 +440,32 @@ def _run(symbols: tuple[str, ...]) -> None:
             _STOP.wait(5)
             continue
 
+        # Spots / VIX / options stay on Quote. Futures need Full so OI updates
+        # reach Sentinel (Quote never carries OI on this feed).
+        fut_sec_set = set(fut_map.keys())
+        fut_instr = [it for it in all_instr if int(it["SecurityId"]) in fut_sec_set]
+        with _OPT_MAP_LOCK:
+            opt_instr = [{"ExchangeSegment": c["segment"], "SecurityId": str(sid)}
+                         for sid, c in _OPT_MAP.items()]
+        quote_instr = (
+            [{"ExchangeSegment": _IDX_SEG, "SecurityId": str(sid)}
+             for sid in list(spot_ids.values()) + [_VIX_SCRIP]]
+            + opt_instr
+        )
+
         try:
-            ws.send(json.dumps({
-                "RequestCode": _SUB_QUOTE,
-                "InstrumentCount": len(all_instr),
-                "InstrumentList": all_instr,
-            }))
+            if quote_instr:
+                ws.send(json.dumps({
+                    "RequestCode": _SUB_QUOTE,
+                    "InstrumentCount": len(quote_instr),
+                    "InstrumentList": quote_instr,
+                }))
+            if fut_instr:
+                ws.send(json.dumps({
+                    "RequestCode": _SUB_FULL,
+                    "InstrumentCount": len(fut_instr),
+                    "InstrumentList": fut_instr,
+                }))
         except Exception as e:  # noqa: BLE001
             _STATUS["ws_error"] = f"subscribe: {type(e).__name__}"
             _STATUS["ws_connected"] = False
@@ -435,17 +517,19 @@ def _run(symbols: tuple[str, ...]) -> None:
                 if not isinstance(frame, (bytes, bytearray)) or len(frame) < _HEADER_LEN:
                     continue
 
-                pkt = _decode_quote(bytes(frame))
+                pkt = _decode_packet(bytes(frame))
                 if pkt is None:
                     continue
 
                 sec = pkt.get("security_id", 0)
                 if sec in spot_sec_set:
-                    _handle_spot_tick(pkt, spot_ids)
+                    if pkt.get("ltp"):
+                        _handle_spot_tick(pkt, spot_ids)
                 elif sec in fut_map:
                     _handle_fut_tick(pkt, fut_map)
                 elif sec in _OPT_MAP:
-                    _handle_opt_tick(pkt, _OPT_MAP[sec])
+                    if pkt.get("ltp"):
+                        _handle_opt_tick(pkt, _OPT_MAP[sec])
 
         except Exception:  # noqa: BLE001
             pass

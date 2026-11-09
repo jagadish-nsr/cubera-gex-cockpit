@@ -67,6 +67,21 @@ def test_archive_round_trip(tmp_path, monkeypatch):
     assert load_blast_ticks("NIFTY", "2099-01-01") is None    # absent day → None
 
 
+def test_live_state_publishes_parity_and_crossover():
+    import app.blast_ticks as bt
+    bt._LIVE.clear()
+    bt._publish_live("NIFTY", 25000.0, 80.0, 120.0, 1000)  # put_rich
+    s1 = bt.live_state("NIFTY")
+    assert s1["side"] == "put_rich" and abs(s1["implied"] - 24960.0) < 0.01
+    assert s1["last_cross"] is None
+    bt._publish_live("NIFTY", 25000.0, 130.0, 90.0, 1001)  # flips to call_rich
+    s2 = bt.live_state("NIFTY")
+    assert s2["side"] == "call_rich"
+    assert s2["last_cross"]["from"] == "put_rich" and s2["last_cross"]["to"] == "call_rich"
+    assert s2["last_cross"]["epoch"] == 1001
+    bt._LIVE.clear()
+
+
 def test_roll_uses_each_index_step():
     # Nifty 50. Spot through 23,750 adds 23,800, the strike the 3 Nov run settled on.
     assert config.strike_step_for("NIFTY") == 50

@@ -232,11 +232,12 @@ def as_of_datetime(value) -> datetime | None:
 def last_completed_session_date(now: datetime | None = None) -> date:
     """The session whose close is the off-market spot.
 
-    At or after 15:30 IST on a trading day, that session is today. Before
-    the cash close, and on weekends and holidays, it is the previous
-    trading day.
+    At or after 15:30 IST on a live session day, that session is today.
+    Before the cash close, and on weekends / non-session holidays, it is
+    the previous live session — including Muhurat (Laxmi Pujan holiday for
+    expiry, but a real F&O window).
     """
-    from data.holidays import is_trading_day
+    from data.session_calendar import is_live_session_day
 
     if now is None:
         now = datetime.now(_IST)
@@ -245,10 +246,10 @@ def last_completed_session_date(now: datetime | None = None) -> date:
     else:
         now = now.astimezone(_IST)
     minutes = now.hour * 60 + now.minute
-    if is_trading_day(now.date()) and minutes >= _CASH_CLOSE_MINUTES:
+    if is_live_session_day(now.date()) and minutes >= _CASH_CLOSE_MINUTES:
         return now.date()
     day = now.date() - timedelta(days=1)
-    while not is_trading_day(day):
+    while not is_live_session_day(day):
         day -= timedelta(days=1)
     return day
 

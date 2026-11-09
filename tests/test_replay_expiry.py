@@ -39,6 +39,24 @@ def test_is_expiry_day_none_is_false():
     assert rp.is_expiry_day("NIFTY", "") is False
 
 
+def test_is_expiry_day_is_index_specific_on_holiday_roll(monkeypatch):
+    """Tue Balipratipada 2026-11-10 → Nifty weekly rolls to Mon 9 Nov.
+
+    Bank Nifty is monthly-only (Nov 23). Sensex weeklies are Thursday.
+    """
+    import pandas as pd
+
+    monkeypatch.setattr(
+        "app.intraday_features.load_features",
+        lambda store="NIFTY": pd.DataFrame({"day": [], "dte": []}),
+    )
+    rp._expiry_cache.cache_clear()
+    assert rp.is_expiry_day("NIFTY", "2026-11-09") is True
+    assert rp.is_expiry_day("BANKNIFTY", "2026-11-09") is False
+    assert rp.is_expiry_day("SENSEX", "2026-11-09") is False
+    rp._expiry_cache.cache_clear()
+
+
 def test_label_frame_true_vs_fake():
     """TRUE = a 0-DTE afternoon crossing reached a sustaining score (k_true set); FAKE = all pinned;
     morning-only / non-expiry crossings are excluded from the tag."""

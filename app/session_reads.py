@@ -30,10 +30,16 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def previous_session_date(session: date) -> date:
-    """The NSE session before ``session``, skipping weekends and holidays."""
-    from data.holidays import is_trading_day
+    """The live session before ``session``.
+
+    Uses ``is_live_session_day`` so a Muhurat trading window (Laxmi Pujan
+    holiday for expiry, but a real F&O session) counts as the prior day.
+    ``is_trading_day`` alone would skip Muhurat and leave Monday overnight
+    journals looking stale.
+    """
+    from data.session_calendar import is_live_session_day
     day = session - timedelta(days=1)
-    while not is_trading_day(day):
+    while not is_live_session_day(day):
         day -= timedelta(days=1)
     return day
 

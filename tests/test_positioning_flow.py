@@ -163,3 +163,9 @@ def test_previous_session_skips_the_gandhi_jayanti_weekend():
     # 2026-10-02 is an NSE holiday (Friday). Monday 5 Oct looks back to Thursday 1 Oct.
     assert previous_session_date(date(2026, 10, 5)) == date(2026, 10, 1)
     assert previous_session_date(date(2026, 10, 26)) == date(2026, 10, 23)
+
+
+def test_previous_session_counts_muhurat_as_live():
+    # 2026-11-08 Muhurat is a Laxmi Pujan holiday for expiry but a live F&O session.
+    # Monday 9 Nov must look back to Muhurat, not Friday 6 Nov.
+    assert previous_session_date(date(2026, 11, 9)) == date(2026, 11, 8)

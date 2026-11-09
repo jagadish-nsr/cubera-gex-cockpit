@@ -156,9 +156,18 @@ def main() -> None:
             _print(f"Past {close_hm} IST — session over. Nothing to capture.")
             shutdown(ok=True, message="session over")
             return
+        # Pre-warm the Full WS ~45s before the freeze so the first ATM print
+        # after 13:00 is not burned on connect/handshake latency.
         wait = freeze_dt.timestamp() - time.time()
-        if wait > 0:
-            _print(f"Waiting {wait/60:.0f} min for the {args.freeze} freeze (now {now:%H:%M} IST) …")
+        warm_s = 45.0
+        if wait > warm_s:
+            _print(
+                f"Waiting {(wait - warm_s) / 60:.0f} min, then pre-warming WS "
+                f"{warm_s:.0f}s before the {args.freeze} freeze (now {now:%H:%M} IST) …"
+            )
+            time.sleep(wait - warm_s)
+        elif wait > 0:
+            _print(f"Waiting {wait:.0f}s for the {args.freeze} freeze (now {now:%H:%M} IST) …")
             time.sleep(wait)
 
     today = datetime.now(IST).strftime("%Y-%m-%d")

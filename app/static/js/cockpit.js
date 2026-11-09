@@ -1733,6 +1733,18 @@
     if (state.lastCockpitDash && state.lastCockpitDash.gamma_blast) {
       syncGammaBlastAudio(state.lastCockpitDash.gamma_blast, tick.spot);
     }
+    // Sub-second wall / premium-cross edges from the live tick tape (expiry afternoon).
+    if (tick.wall_event === "call_wall_cross") {
+      showToast(`Spot through call wall ${Number(tick.call_wall || 0).toLocaleString("en-IN")}`, "⚡");
+    } else if (tick.wall_event === "put_wall_cross") {
+      showToast(`Spot through put wall ${Number(tick.put_wall || 0).toLocaleString("en-IN")}`, "⚡");
+    }
+    const cross = tick.blast_live && tick.blast_live.last_cross;
+    if (cross && cross.epoch && cross.epoch !== state._lastBlastCrossEpoch) {
+      state._lastBlastCrossEpoch = cross.epoch;
+      const dir = cross.to === "call_rich" ? "up through" : "down through";
+      showToast(`Anchor parity crossed ${dir} ${Number(cross.strike || 0).toLocaleString("en-IN")}`, "⚡");
+    }
   }
 
   function paintRecLiveQuotes(quotes) {
@@ -2127,6 +2139,61 @@
     }
   }
 
+  function renderDirectionConfluence(pack) {
+    const verdictEl = document.getElementById("confluence-verdict");
+    const headlineEl = document.getElementById("confluence-headline");
+    const tallyEl = document.getElementById("confluence-tally");
+    const gridEl = document.getElementById("confluence-grid");
+    if (!verdictEl || !gridEl) return;
+
+    const conf = pack || {};
+    const cells = Array.isArray(conf.cells) ? conf.cells : [];
+    const verdict = conf.verdict || "NO READ";
+    verdictEl.textContent = verdict;
+    verdictEl.style.color = conf.color || "var(--spark)";
+    if (headlineEl) {
+      headlineEl.textContent = conf.headline
+        || "Bias, regime, PCR, flip, walls, skew, VIX, breadth, max pain, and futures positioning — all vote. Lean board, not a predictor.";
+    }
+    if (tallyEl) {
+      const up = Number(conf.up_count || 0);
+      const down = Number(conf.down_count || 0);
+      const flat = Number(conf.flat_count || 0);
+      const agree = conf.agreement_pct != null ? ` · ${Number(conf.agreement_pct).toFixed(0)}% agree` : "";
+      tallyEl.innerHTML = `
+        <span class="cf-up">${up} UP</span>
+        <span class="cf-down">${down} DOWN</span>
+        <span class="cf-flat">${flat} flat${agree}</span>
+      `;
+    }
+
+    if (!cells.length) {
+      gridEl.innerHTML = `<div class="cf-cell lean-na"><span class="cf-label">Waiting</span><span class="cf-lean">—</span><span class="cf-detail">Confluence inputs still loading.</span></div>`;
+      return;
+    }
+
+    gridEl.innerHTML = cells.map((cell) => {
+      const lean = String(cell.lean || "NA").toUpperCase();
+      const cls = lean === "UP" ? "lean-up"
+        : lean === "DOWN" ? "lean-down"
+          : lean === "FLAT" ? "lean-flat"
+            : "lean-na";
+      const strength = Math.max(0, Math.min(1, Number(cell.strength) || 0));
+      const alpha = lean === "UP" || lean === "DOWN"
+        ? (0.10 + strength * 0.22).toFixed(3)
+        : "";
+      const style = alpha ? `style="--cf-alpha:${alpha}"` : "";
+      const leanTxt = lean === "NA" ? "—" : lean;
+      const detail = String(cell.detail || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const label = String(cell.label || cell.key || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return `<div class="cf-cell ${cls}" ${style} title="${detail}">
+        <span class="cf-label">${label}</span>
+        <span class="cf-lean">${leanTxt}</span>
+        <span class="cf-detail">${detail}</span>
+      </div>`;
+    }).join("");
+  }
+
   function renderBookStructure(pack) {
     const bucketEl = document.getElementById("book-structure-bucket");
     const playEl = document.getElementById("book-structure-playbook");
@@ -2329,6 +2396,7 @@
         }
       }
       renderBookStructure(data.structures);
+      renderDirectionConfluence(data.direction_confluence);
 
       if (data.market_breadth) {
         const mb = data.market_breadth;
