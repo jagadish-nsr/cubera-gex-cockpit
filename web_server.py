@@ -7738,6 +7738,11 @@ DOCS_MAP = {
         "file": "docs/session-commentary-guide.md",
         "badge": "Narrative Engine v1.0",
     },
+    "decisive_go_playbook": {
+        "title": "🎯 Decisive GO — Trader Playbook",
+        "file": "docs/decisive-go-playbook.md",
+        "badge": "FIRE / SCOUT / HOLD Operator Guide",
+    },
 }
 
 
