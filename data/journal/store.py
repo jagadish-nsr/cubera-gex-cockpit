@@ -28,6 +28,8 @@ Schema (paper_trades):
   exit_reason       TEXT               — "MANUAL" | "TARGET" | "STOP" | "FORCED_DATE"
   notes             TEXT
   lot_size          INTEGER            — snapshot of lot size at entry
+  strategy_type     TEXT               — NAKED_LONG | NAKED_SHORT | VERTICAL | …
+  go_decision_json  TEXT               — immutable Decisive GO snapshot at stage (optional)
 """
 
 from __future__ import annotations
@@ -84,6 +86,8 @@ class PaperTrade:
     notes: str
     lot_size: int
     exit_by: str = ""
+    strategy_type: str = ""
+    go_decision_json: str = ""
 
 
 def _now_ist() -> str:
@@ -134,15 +138,36 @@ def _get_write_conn() -> sqlite3.Connection:
             exit_by           TEXT NOT NULL DEFAULT ''
         )
     """)
-    try:
-        conn.execute("ALTER TABLE paper_trades ADD COLUMN exit_by TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # already present
+    for col_sql in (
+        "ALTER TABLE paper_trades ADD COLUMN exit_by TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE paper_trades ADD COLUMN strategy_type TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE paper_trades ADD COLUMN go_decision_json TEXT NOT NULL DEFAULT ''",
+    ):
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # already present
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS go_skips (
+            skip_id       TEXT PRIMARY KEY,
+            decision_id   TEXT NOT NULL,
+            symbol        TEXT NOT NULL,
+            mode          TEXT NOT NULL,
+            state         TEXT NOT NULL,
+            score         REAL,
+            strategy_key  TEXT,
+            skipped_at    TEXT NOT NULL,
+            decision_json TEXT NOT NULL
+        )
+    """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_pt_status ON paper_trades (status)
     """)
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_pt_symbol ON paper_trades (symbol, entry_ts DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_go_skips_sym ON go_skips (symbol, skipped_at DESC)
     """)
     conn.commit()
     return conn
@@ -214,11 +239,14 @@ def open_trade(
     slippage_pts: float = DEFAULT_SLIPPAGE_PTS_PER_LEG,
     notes: str = "",
     exit_by: str = "",
+    strategy_type: str = "",
+    go_decision: dict | None = None,
 ) -> PaperTrade:
     """Log a new paper trade as OPEN. Returns the PaperTrade with its assigned trade_id.
 
     entry_net_premium: positive = credit (short spread), negative = debit (long spread).
     entry_levels / entry_regime: pass dataclass.__dict__ or asdict() — stored immutably.
+    go_decision: optional Decisive GO snapshot; frozen at stage (never rewritten).
     """
     uid = uuid.uuid4().hex[:4].upper()
     ts = _now_ist()
@@ -228,6 +256,9 @@ def open_trade(
     # Entry-side slippage charged at open (half the round-trip cost)
     entry_slip = slip / 2.0
     brok = brokerage_per_order  # one order to open
+    go_json = ""
+    if go_decision is not None:
+        go_json = json.dumps(_safe_json_dict(go_decision), default=str)
 
     trade = PaperTrade(
         trade_id=trade_id,
@@ -250,6 +281,8 @@ def open_trade(
         notes=notes,
         lot_size=lot_size,
         exit_by=exit_by,
+        strategy_type=strategy_type or "",
+        go_decision_json=go_json,
     )
 
     _write_trade(trade)
@@ -347,6 +380,8 @@ def _row_to_trade(row: sqlite3.Row) -> PaperTrade:
         notes=row["notes"] or "",
         lot_size=row["lot_size"],
         exit_by=dict(row).get("exit_by") or "",
+        strategy_type=dict(row).get("strategy_type") or "",
+        go_decision_json=dict(row).get("go_decision_json") or "",
     )
 
 
@@ -450,8 +485,9 @@ def _write_trade(trade: PaperTrade) -> None:
                     legs_json, entry_spot, entry_levels_json, entry_regime_json,
                     entry_net_premium, exit_net_premium, gross_pnl,
                     brokerage_cost, slippage_cost, net_realized_pnl,
-                    exit_reason, notes, lot_size, exit_by
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    exit_reason, notes, lot_size, exit_by,
+                    strategy_type, go_decision_json
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 trade.trade_id, trade.symbol, trade.strategy_name, trade.status,
                 trade.entry_ts, trade.exit_ts,
@@ -462,7 +498,40 @@ def _write_trade(trade: PaperTrade) -> None:
                 trade.entry_net_premium, trade.exit_net_premium, trade.gross_pnl,
                 trade.brokerage_cost, trade.slippage_cost, trade.net_realized_pnl,
                 trade.exit_reason, trade.notes, trade.lot_size, trade.exit_by,
+                trade.strategy_type or "", trade.go_decision_json or "",
             ))
             conn.commit()
         finally:
             conn.close()
+
+
+def record_go_skip(decision: dict) -> str:
+    """Persist an immutable Skip-FIRE record for process / opportunity review."""
+    ensure_schema()
+    skip_id = f"gs_{uuid.uuid4().hex[:10]}"
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO go_skips (
+                    skip_id, decision_id, symbol, mode, state, score,
+                    strategy_key, skipped_at, decision_json
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    skip_id,
+                    str(decision.get("id") or ""),
+                    str(decision.get("symbol") or "").upper(),
+                    str(decision.get("mode") or ""),
+                    str(decision.get("state") or ""),
+                    float(decision.get("score") or 0),
+                    str(decision.get("strategy_key") or ""),
+                    _now_ist(),
+                    json.dumps(_safe_json_dict(decision), default=str),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return skip_id

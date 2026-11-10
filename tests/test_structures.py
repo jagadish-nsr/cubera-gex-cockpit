@@ -71,7 +71,8 @@ def test_expiry_blast_active_overrides_note_and_keeps_shorts_off_magnet():
     assert "ACTIVE" in cands[0].expiry_note
     assert "dealers" not in cands[0].expiry_note.lower()
     for cs in cands:
-        for action, _right, strike in (cs.legs or []):
+        for leg in (cs.legs or []):
+            action, _right, strike = leg[0], leg[1], leg[2]
             if action == "SELL":
                 assert int(strike) != 24050
 
@@ -156,4 +157,62 @@ def test_sensex_structure_borrows_nifty_concentration(monkeypatch):
     tag = structure_vol_regime(_Bundle(symbol="SENSEX", proxy_symbol="NIFTY", proxy_vanna=12.0))
     assert tag == "calm"
     assert seen == {"store": "NIFTY", "value": 12.0}
+
+
+def test_calendar_when_front_iv_rich():
+    from structures.suggest import suggest_structures
+
+    L = _Levels(spot=23800, call_wall=24000, put_wall=23600)
+    cands = suggest_structures(
+        L, "calm", lot_size=65, strike_step=50,
+        near_atm_iv=0.16, next_atm_iv=0.13,
+    )
+    assert len(cands) >= 2
+    term = next((c for c in cands if "calendar" in c.name.lower() or "diagonal" in c.name.lower()), None)
+    assert term is not None
+    assert any(len(leg) == 4 and leg[3] == "near" for leg in term.legs)
+    assert any(len(leg) == 4 and leg[3] == "next" for leg in term.legs)
+    sells = [leg for leg in term.legs if leg[0] == "SELL"]
+    assert sells and sells[0][3] == "near"
+
+
+def test_diagonal_with_bullish_bias():
+    from structures.suggest import suggest_structures
+
+    L = _Levels(spot=23800, call_wall=24000, put_wall=23600)
+    cands = suggest_structures(
+        L, "calm", lot_size=65, strike_step=50,
+        bias_score=1.5, near_atm_iv=0.18, next_atm_iv=0.14,
+    )
+    term = next((c for c in cands if "diagonal" in c.name.lower()), None)
+    assert term is not None
+    assert term.legs[0][0] == "SELL" and term.legs[0][3] == "near"
+    assert term.legs[1][0] == "BUY" and term.legs[1][3] == "next"
+
+
+def test_no_calendar_when_term_flat():
+    from structures.suggest import suggest_structures
+
+    L = _Levels(spot=23800, call_wall=24000, put_wall=23600)
+    cands = suggest_structures(
+        L, "calm", lot_size=65, strike_step=50,
+        near_atm_iv=0.14, next_atm_iv=0.139,
+    )
+    assert not any("calendar" in c.name.lower() or "diagonal" in c.name.lower() for c in cands)
+
+
+def test_calendar_short_nudge_off_magnet_atm():
+    from structures.suggest import suggest_structures
+
+    L = _Levels(spot=25400, call_wall=25600, put_wall=25200)
+    L.magnet = 25400  # ATM == magnet
+    cands = suggest_structures(
+        L, "calm", lot_size=65, strike_step=50,
+        near_atm_iv=0.20, next_atm_iv=0.15,
+    )
+    term = next(c for c in cands if "calendar" in c.name.lower() or "diagonal" in c.name.lower())
+    shorts = [leg for leg in term.legs if leg[0] == "SELL"]
+    assert shorts
+    assert int(shorts[0][2]) != 25400
+    assert shorts[0][3] == "near"
 

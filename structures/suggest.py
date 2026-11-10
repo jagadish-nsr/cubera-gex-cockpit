@@ -66,8 +66,16 @@ def suggest_structures(
     sentinel_signals: list[Any] | None = None,
     strike_step: int = 50,
     blast: dict | None = None,
+    near_atm_iv: float | None = None,
+    next_atm_iv: float | None = None,
+    prefer_term: bool = False,
 ) -> list[CandidateStructure]:
-    """Return 1-2 candidate structures: primary + optional alternate structure."""
+    """Return 1-2 candidate structures: primary + optional alternate structure.
+
+    When ``prefer_term`` or front IV is rich vs next (near > next by ≥1 vol pt),
+    a calendar/diagonal candidate may replace the alternate. Legs may be 4-tuples
+    ``(action, type, strike, expiry_tag)`` with expiry_tag in {near, next}.
+    """
     from app.blast_risk import blast_risk_adjust
 
     spot = float(getattr(levels, "spot", 0.0) or 0.0)
@@ -81,6 +89,27 @@ def suggest_structures(
         bias_score=bias_score, strike_step=strike_step,
         blast_primary=blast_adj.get("primary_strike"),
     )
+    term_alt = _term_structure_candidate(
+        levels,
+        vol_regime,
+        lot_size=lot_size,
+        spread_width=spread_width,
+        strike_step=strike_step,
+        nearest_expiry=nearest_expiry,
+        bias_score=bias_score,
+        near_atm_iv=near_atm_iv,
+        next_atm_iv=next_atm_iv,
+        prefer_term=prefer_term,
+    )
+    if term_alt is not None and candidates:
+        # Keep primary; swap/append term structure as alternate (or sole alt)
+        if len(candidates) == 1:
+            candidates.append(term_alt)
+        else:
+            candidates[1] = term_alt
+        if prefer_term:
+            # Promote calendar/diagonal to primary when explicitly preferred
+            candidates = [term_alt] + [c for c in candidates if c is not term_alt][:1]
     if is_expiry_day:
         note = _expiry_note(vol_regime, blast_adj)
         for cs in candidates:
@@ -139,6 +168,118 @@ def _expiry_note(vol_regime, blast_adj: dict | None = None) -> str:
 def _beyond(wall: float, step: int, side: int) -> int:
     """One listed strike outside the gamma concentration. side +1 is above, -1 is below."""
     return _round_strike(wall, step) + side * step
+
+
+def _term_structure_candidate(
+    levels,
+    vol_regime,
+    *,
+    lot_size: int,
+    spread_width: int,
+    strike_step: int,
+    nearest_expiry=None,
+    bias_score: float | None,
+    near_atm_iv: float | None,
+    next_atm_iv: float | None,
+    prefer_term: bool,
+) -> CandidateStructure | None:
+    """Calendar / diagonal when front week is rich vs next (near IV > next IV).
+
+    IV args are decimals (0.14) or percent (>1.5). Threshold: ≥1.0 vol point.
+    Not a forecast — term map only. Short never on the magnet.
+    """
+    if near_atm_iv is None or next_atm_iv is None:
+        return None
+    near = float(near_atm_iv)
+    nxt = float(next_atm_iv)
+    if near > 1.5:
+        near /= 100.0
+    if nxt > 1.5:
+        nxt /= 100.0
+    # Front rich (typical for weeklies): near > next → classic calendar
+    edge_pts = (near - nxt) * 100.0
+    if edge_pts < 1.0 and not prefer_term:
+        return None
+    if edge_pts < 0.25 and prefer_term:
+        return None
+
+    step = int(strike_step) if int(strike_step) > 0 else 50
+    spot = float(getattr(levels, "spot", 0) or 0)
+    if spot <= 0:
+        return None
+    atm = _round_strike(spot, step)
+    magnet = getattr(levels, "magnet", None)
+    cw = _round_strike(getattr(levels, "call_wall", atm) or atm, step)
+    exit_by = "manage near-week theta; exit near leg ≥1 day before its expiry" + (
+        f" ({nearest_expiry})" if nearest_expiry else ""
+    )
+    risk_def = f"debit-defined · lot {lot_size}"
+
+    # Mild lean → diagonal (OTM near short); else ATM calendar
+    lean_up = bias_score is not None and float(bias_score) > 0.8
+    lean_dn = bias_score is not None and float(bias_score) < -0.8
+    if vol_regime == "wild" and edge_pts >= 1.5:
+        # Reverse-ish: long near gamma when wild + very rich front is rare; skip
+        return None
+
+    if lean_up:
+        near_k = _nudge_short_off_magnet(atm + step, magnet, step, +1)
+        near_k = _nudge_short_off_magnet(near_k, cw, step, +1)
+        next_k = atm
+        legs = [
+            ("SELL", "C", near_k, "near"),
+            ("BUY", "C", next_k, "next"),
+        ]
+        name = "Call diagonal (sell near / buy next)"
+        rationale = (
+            f"Front ATM IV rich vs next by ~{edge_pts:.1f} vol pts. "
+            f"Sell near {near_k:,} CE, buy next {next_k:,} CE. "
+            f"Term map only — not a pin forecast. You confirm."
+        )
+    elif lean_dn:
+        near_k = _nudge_short_off_magnet(atm - step, magnet, step, -1)
+        legs = [
+            ("SELL", "P", near_k, "near"),
+            ("BUY", "P", atm, "next"),
+        ]
+        name = "Put diagonal (sell near / buy next)"
+        rationale = (
+            f"Front ATM IV rich vs next by ~{edge_pts:.1f} vol pts. "
+            f"Sell near {near_k:,} PE, buy next {atm:,} PE. "
+            f"Term map only — not a pin forecast. You confirm."
+        )
+    else:
+        legs = [
+            ("SELL", "C", atm, "near"),
+            ("BUY", "C", atm, "next"),
+        ]
+        # Nudge short off magnet
+        if magnet is not None and _round_strike(float(magnet), step) == atm:
+            near_k = atm + step
+            legs = [
+                ("SELL", "C", near_k, "near"),
+                ("BUY", "C", atm, "next"),
+            ]
+            name = "Call diagonal (magnet-safe)"
+            rationale = (
+                f"Front rich ~{edge_pts:.1f} vol pts; ATM sits on magnet — "
+                f"short near {near_k:,} CE, long next {atm:,} CE."
+            )
+        else:
+            name = "Call calendar (sell near / buy next)"
+            rationale = (
+                f"Front ATM IV rich vs next by ~{edge_pts:.1f} vol pts "
+                f"(near {near * 100:.1f}% / next {nxt * 100:.1f}%). "
+                f"Same-strike {atm:,} CE calendar. Term map only. You confirm."
+            )
+
+    return CandidateStructure(
+        name=name,
+        legs=legs,
+        rationale=rationale,
+        risk_note=f"{risk_def}. Max loss ≈ debit paid (calendar) until assignment risk on short near.",
+        exit_by=exit_by,
+    )
 
 
 def _nudge_short_off_magnet(short_k: int, magnet: float | None, step: int, side: int) -> int:

@@ -167,3 +167,106 @@ def skew_25delta(
         "near_expiry":    str(near_exp),
         "next_expiry":    str(next_exp) if next_exp is not None else None,
     }
+
+
+def smile_by_delta(
+    contracts_df,
+    spot: float,
+    *,
+    deltas: tuple[float, ...] = (0.10, 0.25),
+) -> dict:
+    """Wing IV smile beyond 25Δ: 10Δ / 25Δ / ATM for calls and puts on near expiry.
+
+    IVs returned as percent points for UI. Missing wings stay None — no fill.
+    """
+    empty = {
+        "near_expiry": None,
+        "atm_iv_pct": None,
+        "points": [],
+        "skew_10d_pct": None,
+        "skew_25d_pct": None,
+        "note": "insufficient data",
+    }
+    base = skew_25delta(contracts_df, spot)
+    if base.get("skew_label") == "insufficient data" and base.get("near_atm_iv") is None:
+        return empty
+
+    try:
+        import pandas as pd  # noqa: F401
+    except ImportError:
+        return empty
+    if contracts_df is None or getattr(contracts_df, "empty", True):
+        return empty
+
+    df = contracts_df.copy()
+    if not {"expiry", "type", "iv", "strike"}.issubset(df.columns):
+        return empty
+    df["type"] = df["type"].str.upper()
+    df = df.dropna(subset=["iv"])
+    df = df[df["iv"] > 0]
+    expiries = sorted(df["expiry"].unique())
+    if not expiries:
+        return empty
+    near_exp = expiries[0]
+    near_df = df[df["expiry"] == near_exp]
+    near_calls = near_df[near_df["type"].str.startswith("C")]
+    near_puts = near_df[near_df["type"].str.startswith("P")]
+
+    def _iv_pct(row: dict | None) -> float | None:
+        if not row:
+            return None
+        v = float(row["iv"])
+        if not math.isfinite(v) or v <= 0:
+            return None
+        return round(v * 100.0, 2) if v < 1.5 else round(v, 2)
+
+    atm = base.get("near_atm_iv")
+    atm_pct = None
+    if atm is not None and math.isfinite(float(atm)):
+        atm_pct = round(float(atm) * 100.0, 2) if float(atm) < 1.5 else round(float(atm), 2)
+
+    points: list[dict] = []
+    # OTM put wing → ATM → OTM call wing (by delta magnitude)
+    for d in sorted(deltas, reverse=True):
+        put_row = _nearest_delta_strike(near_puts, target_delta=float(d), spot=spot)
+        points.append({
+            "side": "PE",
+            "delta": float(d),
+            "strike": float(put_row["strike"]) if put_row else None,
+            "iv_pct": _iv_pct(put_row),
+        })
+    points.append({
+        "side": "ATM",
+        "delta": 0.50,
+        "strike": None,
+        "iv_pct": atm_pct,
+    })
+    for d in sorted(deltas):
+        call_row = _nearest_delta_strike(near_calls, target_delta=float(d), spot=spot)
+        points.append({
+            "side": "CE",
+            "delta": float(d),
+            "strike": float(call_row["strike"]) if call_row else None,
+            "iv_pct": _iv_pct(call_row),
+        })
+
+    def _skew_pct(put_iv, call_iv) -> float | None:
+        if put_iv is None or call_iv is None:
+            return None
+        return round(float(put_iv) - float(call_iv), 2)
+
+    put_10 = next((p["iv_pct"] for p in points if p["side"] == "PE" and p["delta"] == 0.10), None)
+    call_10 = next((p["iv_pct"] for p in points if p["side"] == "CE" and p["delta"] == 0.10), None)
+    put_25 = next((p["iv_pct"] for p in points if p["side"] == "PE" and p["delta"] == 0.25), None)
+    call_25 = next((p["iv_pct"] for p in points if p["side"] == "CE" and p["delta"] == 0.25), None)
+
+    return {
+        "near_expiry": str(near_exp),
+        "atm_iv_pct": atm_pct,
+        "points": points,
+        "skew_10d_pct": _skew_pct(put_10, call_10),
+        "skew_25d_pct": _skew_pct(put_25, call_25),
+        "skew_label": base.get("skew_label"),
+        "term_label": base.get("term_label"),
+        "note": "chain delta smile · not a dealer-defense claim",
+    }

@@ -320,3 +320,39 @@ def test_open_trade_exit_by_and_custom_costs():
     assert retrieved.exit_by == "Thursday 15:00"
     assert retrieved.brokerage_cost == 35.0
     assert retrieved.slippage_cost == 65.0
+
+
+def test_open_trade_stores_go_decision_snapshot():
+    from data.journal.store import open_trade, get_trade, record_go_skip
+    import json
+
+    go = {
+        "id": "dec-1",
+        "state": "FIRE",
+        "mode": "directional",
+        "symbol": "NIFTY",
+        "score": 82,
+        "strategy_key": "CONTINUATION_BULL",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500}],
+    }
+    trade = open_trade(
+        symbol="NIFTY",
+        strategy_name="CONTINUATION_BULL",
+        legs=_LEGS_DEBIT,
+        entry_spot=24550.0,
+        entry_levels=_LEVELS_SNAP,
+        entry_regime=_REGIME_SNAP,
+        entry_net_premium=-20.0,
+        lot_size=LOT,
+        strategy_type="NAKED_LONG",
+        go_decision=go,
+    )
+    retrieved = get_trade(trade.trade_id)
+    assert retrieved is not None
+    assert retrieved.strategy_type == "NAKED_LONG"
+    snap = json.loads(retrieved.go_decision_json)
+    assert snap["id"] == "dec-1"
+    assert snap["state"] == "FIRE"
+
+    skip_id = record_go_skip(go)
+    assert skip_id.startswith("gs_")

@@ -8,7 +8,7 @@
   <meta name="description"
     content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.30">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.38">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function () {
@@ -263,7 +263,7 @@
               <path d="M11.5 1.5L3.5 11H10L8.5 18.5L16.5 9H10L11.5 1.5Z" stroke="currentColor" stroke-width="1.5"
                 stroke-linejoin="round" fill="currentColor" fill-opacity="0.15" />
             </svg>
-            <span>Trade Recommendations</span>
+            <span>GO Desk</span>
           </button>
 
           <!-- 3. Sentinel Tape -->
@@ -584,7 +584,53 @@
             </div>
           </div>
 
-          <div class="cockpit-tape-row">
+          <!-- Decisive GO firing lane (Phase 0) — additive; does not replace existing tabs -->
+          <section id="go-firing-lane" class="go-firing-lane" aria-label="Decisive GO">
+            <div class="go-lane-toolbar">
+              <div class="go-mode-group" role="group" aria-label="Trading mode">
+                <span class="go-lane-label">Mode</span>
+                <button type="button" class="go-mode-btn" data-go-mode="directional" aria-pressed="true">Directional</button>
+                <button type="button" class="go-mode-btn" data-go-mode="structure" aria-pressed="false">Structure</button>
+                <button type="button" class="go-mode-btn" data-go-mode="writer" aria-pressed="false">Writer</button>
+              </div>
+              <div class="go-delta-group" id="go-delta-group" role="group" aria-label="Delta preference">
+                <span class="go-lane-label">δ</span>
+                <button type="button" class="go-delta-btn" data-go-delta="0.50" aria-pressed="true">0.50</button>
+                <button type="button" class="go-delta-btn" data-go-delta="0.35" aria-pressed="false">0.35</button>
+                <button type="button" class="go-delta-btn" data-go-delta="0.25" aria-pressed="false">0.25</button>
+              </div>
+              <button type="button" class="btn btn-secondary" id="go-refresh-btn" style="margin-left:auto;font-size:0.72rem">Refresh GO</button>
+            </div>
+            <div id="go-posture-strip" class="go-posture-strip go-state-hold" aria-live="polite">
+              <span id="go-state-pill" class="go-state-pill">HOLD</span>
+              <span id="go-posture-thesis" class="go-posture-thesis">Waiting for Decisive GO…</span>
+              <span id="go-posture-levels" class="go-posture-levels"></span>
+            </div>
+            <div id="go-ritual-chips" class="go-ritual-chips" role="group" aria-label="Session ritual">
+              <button type="button" class="go-ritual-chip" data-ritual="prebell">Pre-bell</button>
+              <button type="button" class="go-ritual-chip" data-ritual="firstblock">First block</button>
+              <button type="button" class="go-ritual-chip" data-ritual="eod">EOD review</button>
+              <span class="go-muted" style="font-size:0.68rem;margin-left:4px">optional · does not block FIRE</span>
+              <label class="go-muted" style="font-size:0.68rem;margin-left:auto;display:flex;align-items:center;gap:4px">
+                <input type="checkbox" id="go-fire-webhook-toggle"> FIRE webhook
+              </label>
+            </div>
+            <div id="go-alerts-strip" class="go-alerts-strip" aria-live="polite"></div>
+            <div id="go-digest" class="go-digest" aria-live="polite">
+              <div class="go-digest-head">
+                <span class="go-lane-label">15m digest</span>
+                <span id="go-digest-summary" class="go-digest-summary">Loading…</span>
+                <button type="button" class="btn btn-secondary" id="go-digest-toggle-raw" style="margin-left:auto;font-size:0.68rem">Show raw tapes</button>
+              </div>
+              <div id="go-digest-bites" class="go-digest-bites"></div>
+            </div>
+            <div id="go-open-panel" class="go-open-panel" aria-label="Open staged GOs"></div>
+            <div id="go-primary-card" class="go-primary-card">
+              <div class="go-muted">Loading firing lane…</div>
+            </div>
+          </section>
+
+          <div class="cockpit-tape-row is-raw-collapsed" id="cockpit-tape-row">
             <div id="cockpit-alert-tape" class="alert-tape alert-tape-warn">
               <div class="alert-tape-anchor-left">
                 <span class="alert-live-pulse-dot"></span>
@@ -1367,7 +1413,21 @@
             </div>
           </div>
 
-          <!-- Higher Conviction (Grade A+) Section: Strict 2-Column Side-by-Side CE / PE -->
+          <!-- Decisive GO Desk — single ranked feed (primary CTA) -->
+          <div class="go-desk-panel" style="margin-bottom:22px">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+              <h3 style="font-size:1.15rem;font-weight:850;margin:0">Decisive GO Desk</h3>
+              <span style="font-size:0.72rem;color:var(--ink-mute)">One ranked feed · Sentinel + Trade Ideas merged · Why on expand</span>
+            </div>
+            <div id="go-desk-eff-strip" class="go-muted" style="margin-bottom:8px;font-size:0.72rem">Efficiency ledger: —</div>
+            <div id="go-desk-feed" class="go-desk-feed"></div>
+          </div>
+
+          <!-- Legacy CE/PE clusters (detail) — kept under details; primary CTA is GO Desk -->
+          <details id="legacy-rec-clusters" style="margin-bottom:28px">
+            <summary style="cursor:pointer;font-size:0.85rem;font-weight:750;color:var(--ink-mute);margin-bottom:10px">
+              Legacy CE/PE cluster detail (Trade Ideas columns)
+            </summary>
           <div style="margin-bottom:28px">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
               <h3 style="font-size:1.15rem;font-weight:850;margin:0">⚡ Higher Conviction Recommendations (Score &gt; 85
@@ -1454,7 +1514,7 @@
             </div>
           </div>
 
-          <!-- Sentinel OrderFlow Signal-Based Recommendations Section -->
+          <!-- Sentinel OrderFlow Signal-Based Recommendations Section (legacy detail under GO Desk) -->
           <div style="margin-bottom:32px;margin-top:8px">
             <div
               style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
@@ -1569,6 +1629,7 @@
               </table>
             </div>
           </div>
+          </details>
 
           <!-- Trade Recommendation History & Intraday Lifecycle Audit -->
           <div style="margin-bottom:36px;margin-top:12px">
@@ -2015,6 +2076,62 @@
 
         <!-- Tab 5: 🎯 Signal Efficiency -->
         <div id="tab-efficiency" class="tab-pane">
+          <!-- Decisive GO Scorecard (additive above Sentinel efficiency) -->
+          <section id="go-scorecard" class="go-scorecard" aria-label="Decisive GO scorecard">
+            <div class="go-scorecard-head">
+              <h3>Decisive GO Scorecard</h3>
+              <span class="go-muted" id="go-scorecard-sub">Staged FIRE / SCOUT ledger · taken vs skipped</span>
+              <button type="button" class="btn btn-secondary" id="go-scorecard-refresh" style="margin-left:auto;font-size:0.72rem">Refresh</button>
+            </div>
+            <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr);margin-bottom:10px">
+              <div class="kpi-card"><small>Emits</small><b id="go-sc-emit">—</b><span>FIRE/SCOUT recorded</span></div>
+              <div class="kpi-card go"><small>Staged</small><b id="go-sc-stage">—</b><span>Taken into journal</span></div>
+              <div class="kpi-card stop"><small>Skipped</small><b id="go-sc-skip">—</b><span>FIRE passed over</span></div>
+              <div class="kpi-card"><small>Edge MFE/MAE</small><b id="go-sc-edge">—</b><span>Open+closed avg</span></div>
+              <div class="kpi-card purple"><small>Emit→stage</small><b id="go-sc-latency">—</b><span>Median seconds</span></div>
+            </div>
+            <div class="go-scorecard-grid">
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">By mode</div>
+                <table class="go-legs" id="go-sc-mode-table"><thead><tr><th>Mode</th><th>Emit</th><th>Stage</th><th>Skip</th><th>FIRE</th></tr></thead><tbody></tbody></table>
+              </div>
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">FIRE templates (session slice)</div>
+                <table class="go-legs" id="go-sc-bt-table"><thead><tr><th>Template</th><th>FIRE</th><th>Staged</th><th>Edge</th></tr></thead><tbody></tbody></table>
+              </div>
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">Process / DSS health</div>
+                <div id="go-sc-process" class="go-muted" style="font-size:0.78rem;line-height:1.5">—</div>
+                <div id="go-sc-open" style="margin-top:8px"></div>
+              </div>
+            </div>
+            <div class="go-scorecard-grid" style="margin-top:12px">
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">Writer portfolio (margin proxy)</div>
+                <table class="go-legs" id="go-sc-writer-table"><thead><tr><th>Index</th><th>State</th><th>IV−RV</th><th>Margin</th></tr></thead><tbody></tbody></table>
+                <div id="go-sc-writer-sum" class="go-muted" style="font-size:0.72rem;margin-top:4px"></div>
+              </div>
+              <div style="grid-column: span 2">
+                <div class="go-muted" style="margin-bottom:4px">Top strategies</div>
+                <table class="go-legs" id="go-sc-strat-table"><thead><tr><th>Strategy</th><th>Emits</th></tr></thead><tbody></tbody></table>
+              </div>
+            </div>
+            <div class="go-scorecard-grid" style="margin-top:12px">
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">Time-of-day (IST hour)</div>
+                <table class="go-legs" id="go-sc-hour-table"><thead><tr><th>Hour</th><th>Emit</th><th>FIRE</th><th>Stage</th><th>Skip</th></tr></thead><tbody></tbody></table>
+              </div>
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">Day of week</div>
+                <table class="go-legs" id="go-sc-dow-table"><thead><tr><th>DOW</th><th>Emit</th><th>FIRE</th><th>Stage</th><th>Skip</th></tr></thead><tbody></tbody></table>
+              </div>
+              <div>
+                <div class="go-muted" style="margin-bottom:4px">Lunch-chop cohort</div>
+                <div id="go-sc-lunch" class="go-muted" style="font-size:0.78rem;line-height:1.5">—</div>
+              </div>
+            </div>
+          </section>
+
           <!-- Header & Period Filter Controls Bar -->
           <div
             style="display:flex;justify-content:space-between;align-items:center;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin-bottom:14px;flex-wrap:wrap;gap:12px">
@@ -2954,7 +3071,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.54"></script>
+  <script src="/static/js/cockpit.js?v=6.60"></script>
 </body>
 
 </html>

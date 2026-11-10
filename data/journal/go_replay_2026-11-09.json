@@ -1,0 +1,833 @@
+{
+  "session": "2026-11-09",
+  "symbol": "NIFTY",
+  "lot_size": 65,
+  "note": "PIT: idea scores from history \u2264 bar; LTPs from OI snapshot; no highest_score lookahead. Forward MFE/MAE measurement-only.",
+  "bars": 8,
+  "fire": 5,
+  "scout": 3,
+  "hold": 0,
+  "outcomes": [
+    {
+      "time_ist": "09:21",
+      "spot": 24933.3,
+      "regime": "NEGATIVE",
+      "vol_bucket_pit": "mid",
+      "walls": {
+        "pw": 24900.0,
+        "cw": 25000.0,
+        "flip": 24938.6,
+        "magnet": 25000.0
+      },
+      "pcr": 1.115,
+      "sentinel": {
+        "type": null,
+        "score": 0,
+        "category": null
+      },
+      "ideas_n": 5,
+      "primary": {
+        "mode": "directional",
+        "state": "SCOUT",
+        "score": 66.2,
+        "strategy": "VANNA-CHARM",
+        "size": "SCOUT",
+        "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+        "legs": [
+          "BUY PE 24900.0 @98.3"
+        ],
+        "risk": {
+          "credit_or_debit": -98.3,
+          "max_loss_inr": 6390.0
+        },
+        "soft": [],
+        "hard": [],
+        "evidence_pass": 3,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "SCOUT",
+          "score": 66.2,
+          "strategy": "VANNA-CHARM",
+          "size": "SCOUT",
+          "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+          "legs": [
+            "BUY PE 24900.0 @98.3"
+          ],
+          "risk": {
+            "credit_or_debit": -98.3,
+            "max_loss_inr": 6390.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 70.8,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [],
+          "hard": [
+            "no_structure"
+          ],
+          "evidence_pass": 4,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "HOLD",
+          "score": 61.2,
+          "strategy": "WRITE_OTM",
+          "size": "SCOUT",
+          "thesis": "Not calm |GEX| \u2014 new naked shorts suppressed.",
+          "legs": [
+            "SELL CE 25050.0 @50.7",
+            "SELL PE 24850.0 @78.2"
+          ],
+          "risk": {
+            "credit_or_debit": 128.87,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        }
+      },
+      "forward": null
+    },
+    {
+      "time_ist": "10:02",
+      "spot": 24927.0,
+      "regime": "POSITIVE",
+      "vol_bucket_pit": "mid",
+      "walls": {
+        "pw": 24900.0,
+        "cw": 25000.0,
+        "flip": 24902.3,
+        "magnet": 25000.0
+      },
+      "pcr": 0.953,
+      "sentinel": {
+        "type": null,
+        "score": 0,
+        "category": null
+      },
+      "ideas_n": 5,
+      "primary": {
+        "mode": "directional",
+        "state": "SCOUT",
+        "score": 66.2,
+        "strategy": "VANNA-CHARM",
+        "size": "SCOUT",
+        "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+        "legs": [
+          "BUY PE 24900.0 @59.7"
+        ],
+        "risk": {
+          "credit_or_debit": -59.72,
+          "max_loss_inr": 3882.0
+        },
+        "soft": [],
+        "hard": [],
+        "evidence_pass": 3,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "SCOUT",
+          "score": 66.2,
+          "strategy": "VANNA-CHARM",
+          "size": "SCOUT",
+          "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+          "legs": [
+            "BUY PE 24900.0 @59.7"
+          ],
+          "risk": {
+            "credit_or_debit": -59.72,
+            "max_loss_inr": 3882.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 70.8,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [],
+          "hard": [
+            "no_structure"
+          ],
+          "evidence_pass": 4,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "HOLD",
+          "score": 61.2,
+          "strategy": "WRITE_OTM",
+          "size": "SCOUT",
+          "thesis": "Not calm |GEX| \u2014 new naked shorts suppressed.",
+          "legs": [
+            "SELL CE 25050.0 @63.4",
+            "SELL PE 24850.0 @41.9"
+          ],
+          "risk": {
+            "credit_or_debit": 105.30000000000001,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        }
+      },
+      "forward": null
+    },
+    {
+      "time_ist": "10:43",
+      "spot": 24858.4,
+      "regime": "NEGATIVE",
+      "vol_bucket_pit": "mid",
+      "walls": {
+        "pw": 24900.0,
+        "cw": 24900.0,
+        "flip": 24884.3,
+        "magnet": 24900.0
+      },
+      "pcr": 0.922,
+      "sentinel": {
+        "type": null,
+        "score": 0,
+        "category": null
+      },
+      "ideas_n": 5,
+      "primary": {
+        "mode": "directional",
+        "state": "SCOUT",
+        "score": 66.2,
+        "strategy": "VANNA-CHARM",
+        "size": "SCOUT",
+        "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+        "legs": [
+          "BUY PE 24900.0 @59.7"
+        ],
+        "risk": {
+          "credit_or_debit": -59.72,
+          "max_loss_inr": 3882.0
+        },
+        "soft": [],
+        "hard": [],
+        "evidence_pass": 3,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "SCOUT",
+          "score": 66.2,
+          "strategy": "VANNA-CHARM",
+          "size": "SCOUT",
+          "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin.",
+          "legs": [
+            "BUY PE 24900.0 @59.7"
+          ],
+          "risk": {
+            "credit_or_debit": -59.72,
+            "max_loss_inr": 3882.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 70.8,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [],
+          "hard": [
+            "no_structure"
+          ],
+          "evidence_pass": 4,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "HOLD",
+          "score": 61.2,
+          "strategy": "WRITE_OTM",
+          "size": "SCOUT",
+          "thesis": "Not calm |GEX| \u2014 new naked shorts suppressed.",
+          "legs": [
+            "SELL CE 24950.0 @105.5",
+            "SELL PE 24850.0 @41.9"
+          ],
+          "risk": {
+            "credit_or_debit": 147.41,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        }
+      },
+      "forward": null
+    },
+    {
+      "time_ist": "11:34",
+      "spot": 24975.4,
+      "regime": "POSITIVE",
+      "vol_bucket_pit": "calm",
+      "walls": {
+        "pw": 25000.0,
+        "cw": 25000.0,
+        "flip": 24890.9,
+        "magnet": 25000.0
+      },
+      "pcr": 1.001,
+      "sentinel": {
+        "type": "CONTINUATION_BULL",
+        "score": 95,
+        "category": "BULLISH"
+      },
+      "ideas_n": 1,
+      "primary": {
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 97.2,
+        "strategy": "VANNA-CHARM",
+        "size": "HALF",
+        "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin. [BLAST ACTIVE 71: size\u00d70",
+        "legs": [
+          "BUY CE 24950.0 @105.6"
+        ],
+        "risk": {
+          "credit_or_debit": -105.6,
+          "max_loss_inr": 6864.0
+        },
+        "soft": [
+          "lunch_chop"
+        ],
+        "hard": [],
+        "evidence_pass": 6,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "FIRE",
+          "score": 97.2,
+          "strategy": "VANNA-CHARM",
+          "size": "HALF",
+          "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin. [BLAST ACTIVE 71: size\u00d70",
+          "legs": [
+            "BUY CE 24950.0 @105.6"
+          ],
+          "risk": {
+            "credit_or_debit": -105.6,
+            "max_loss_inr": 6864.0
+          },
+          "soft": [
+            "lunch_chop"
+          ],
+          "hard": [],
+          "evidence_pass": 6,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 79.0,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 missing_contracts, missing_risk, no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [
+            "spot_outside_corridor"
+          ],
+          "hard": [
+            "missing_contracts",
+            "missing_risk",
+            "no_structure"
+          ],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "FIRE",
+          "score": 79.5,
+          "strategy": "WRITE_OTM",
+          "size": "FULL",
+          "thesis": "Write beyond walls when calm.",
+          "legs": [
+            "SELL CE 25050.0 @61.1",
+            "SELL PE 24950.0 @48.1"
+          ],
+          "risk": {
+            "credit_or_debit": 109.27,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        }
+      },
+      "forward": {
+        "entry": -105.6,
+        "mfe": 42.65,
+        "mae": 51.35,
+        "trail_armed": true,
+        "status": "TRAIL_STOP"
+      }
+    },
+    {
+      "time_ist": "12:15",
+      "spot": 24934.9,
+      "regime": "POSITIVE",
+      "vol_bucket_pit": "mid",
+      "walls": {
+        "pw": 24900.0,
+        "cw": 25000.0,
+        "flip": 24919.0,
+        "magnet": 25000.0
+      },
+      "pcr": 0.937,
+      "sentinel": {
+        "type": "CONTINUATION_BULL",
+        "score": 95,
+        "category": "BULLISH"
+      },
+      "ideas_n": 1,
+      "primary": {
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 97.2,
+        "strategy": "VANNA-CHARM",
+        "size": "HALF",
+        "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin. [BLAST ACTIVE 71: size\u00d70",
+        "legs": [
+          "BUY CE 24950.0 @148.2"
+        ],
+        "risk": {
+          "credit_or_debit": -148.25,
+          "max_loss_inr": 9636.0
+        },
+        "soft": [
+          "lunch_chop"
+        ],
+        "hard": [],
+        "evidence_pass": 6,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "FIRE",
+          "score": 97.2,
+          "strategy": "VANNA-CHARM",
+          "size": "HALF",
+          "thesis": "Charm decay while spot sits between the gamma strikes. The corridor is a map, not a dealer pin. [BLAST ACTIVE 71: size\u00d70",
+          "legs": [
+            "BUY CE 24950.0 @148.2"
+          ],
+          "risk": {
+            "credit_or_debit": -148.25,
+            "max_loss_inr": 9636.0
+          },
+          "soft": [
+            "lunch_chop"
+          ],
+          "hard": [],
+          "evidence_pass": 6,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 64.8,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [],
+          "hard": [
+            "no_structure"
+          ],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "HOLD",
+          "score": 53.2,
+          "strategy": "WRITE_OTM",
+          "size": "SCOUT",
+          "thesis": "Not calm |GEX| \u2014 new naked shorts suppressed.",
+          "legs": [
+            "SELL CE 25050.0 @85.9",
+            "SELL PE 24850.0 @16.2"
+          ],
+          "risk": {
+            "credit_or_debit": 102.15,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 2,
+          "evidence_n": 5
+        }
+      },
+      "forward": {
+        "entry": -148.25,
+        "mfe": 0.0,
+        "mae": 122.92,
+        "trail_armed": false,
+        "status": "OPEN"
+      }
+    },
+    {
+      "time_ist": "13:17",
+      "spot": 24856.5,
+      "regime": "NEGATIVE",
+      "vol_bucket_pit": "calm",
+      "walls": {
+        "pw": 24900.0,
+        "cw": 24900.0,
+        "flip": 24904.5,
+        "magnet": 24900.0
+      },
+      "pcr": 0.884,
+      "sentinel": {
+        "type": "CONTINUATION_BEAR",
+        "score": 70,
+        "category": "BEARISH"
+      },
+      "ideas_n": 1,
+      "primary": {
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 82.8,
+        "strategy": "ICEBERG_FADE",
+        "size": "HALF",
+        "thesis": "Passive limit sellers absorbing aggressive retail buying at 24,911. High R:R rotation back toward Session VWAP (24,874).",
+        "legs": [
+          "BUY PE 24850.0 @27.4"
+        ],
+        "risk": {
+          "credit_or_debit": -27.4,
+          "max_loss_inr": 1781.0
+        },
+        "soft": [
+          "lunch_chop"
+        ],
+        "hard": [],
+        "evidence_pass": 5,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "FIRE",
+          "score": 82.8,
+          "strategy": "ICEBERG_FADE",
+          "size": "HALF",
+          "thesis": "Passive limit sellers absorbing aggressive retail buying at 24,911. High R:R rotation back toward Session VWAP (24,874).",
+          "legs": [
+            "BUY PE 24850.0 @27.4"
+          ],
+          "risk": {
+            "credit_or_debit": -27.4,
+            "max_loss_inr": 1781.0
+          },
+          "soft": [
+            "lunch_chop"
+          ],
+          "hard": [],
+          "evidence_pass": 5,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 79.0,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 missing_contracts, missing_risk, no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [
+            "spot_outside_corridor"
+          ],
+          "hard": [
+            "missing_contracts",
+            "missing_risk",
+            "no_structure"
+          ],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "FIRE",
+          "score": 79.5,
+          "strategy": "WRITE_OTM",
+          "size": "FULL",
+          "thesis": "Write beyond walls when calm.",
+          "legs": [
+            "SELL CE 24950.0 @50.3",
+            "SELL PE 24850.0 @27.4"
+          ],
+          "risk": {
+            "credit_or_debit": 77.67,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        }
+      },
+      "forward": {
+        "entry": -27.4,
+        "mfe": 19.63,
+        "mae": 3.25,
+        "trail_armed": true,
+        "status": "TRAIL_STOP"
+      }
+    },
+    {
+      "time_ist": "14:14",
+      "spot": 24992.9,
+      "regime": "POSITIVE",
+      "vol_bucket_pit": "wild",
+      "walls": {
+        "pw": 25000.0,
+        "cw": 25000.0,
+        "flip": 24817.4,
+        "magnet": 25000.0
+      },
+      "pcr": 1.082,
+      "sentinel": {
+        "type": "CONTINUATION_BULL",
+        "score": 95,
+        "category": "BULLISH"
+      },
+      "ideas_n": 1,
+      "primary": {
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 98.0,
+        "strategy": "STRIKE_BREAK",
+        "size": "FULL",
+        "thesis": "Convex idea only if price holds beyond the call-gamma strike (25,050). A breach is a location on the book, not a measure",
+        "legs": [
+          "BUY CE 25050.0 @14.8"
+        ],
+        "risk": {
+          "credit_or_debit": -14.82,
+          "max_loss_inr": 963.0
+        },
+        "soft": [],
+        "hard": [],
+        "evidence_pass": 6,
+        "evidence_n": 6
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "FIRE",
+          "score": 98.0,
+          "strategy": "STRIKE_BREAK",
+          "size": "FULL",
+          "thesis": "Convex idea only if price holds beyond the call-gamma strike (25,050). A breach is a location on the book, not a measure",
+          "legs": [
+            "BUY CE 25050.0 @14.8"
+          ],
+          "risk": {
+            "credit_or_debit": -14.82,
+            "max_loss_inr": 963.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 6,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "FIRE",
+          "score": 94.0,
+          "strategy": "LONG_STRANGLE_(BUY_PREMIUM,_EITHER_WAY)",
+          "size": "FULL",
+          "thesis": "Absolute GEX is in the low-concentration bucket, which has meant wider swings. Direction is not a forecast. Buy the put-",
+          "legs": [
+            "BUY CE 25000.0 @25.7",
+            "BUY PE 25000.0 @84.4"
+          ],
+          "risk": {
+            "credit_or_debit": -110.11,
+            "max_loss_inr": 7157.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 4,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "HOLD",
+          "score": 53.2,
+          "strategy": "WRITE_OTM",
+          "size": "SCOUT",
+          "thesis": "Not calm |GEX| \u2014 new naked shorts suppressed.",
+          "legs": [
+            "SELL CE 25050.0 @14.8",
+            "SELL PE 24950.0 @51.6"
+          ],
+          "risk": {
+            "credit_or_debit": 66.4,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 2,
+          "evidence_n": 5
+        }
+      },
+      "forward": {
+        "entry": -14.82,
+        "mfe": 44.6,
+        "mae": 0.0,
+        "trail_armed": true,
+        "status": "OPEN"
+      }
+    },
+    {
+      "time_ist": "15:19",
+      "spot": 25003.65,
+      "regime": "POSITIVE",
+      "vol_bucket_pit": "calm",
+      "walls": {
+        "pw": 25150.0,
+        "cw": 25000.0,
+        "flip": 24939.5,
+        "magnet": 25000.0
+      },
+      "pcr": 1.048,
+      "sentinel": {
+        "type": "CVD_DIVERGENCE_BEAR",
+        "score": 68,
+        "category": "BEARISH"
+      },
+      "ideas_n": 1,
+      "primary": {
+        "mode": "writer",
+        "state": "FIRE",
+        "score": 87.5,
+        "strategy": "WRITE_OTM",
+        "size": "FULL",
+        "thesis": "Write beyond walls when calm.",
+        "legs": [
+          "SELL CE 25050.0 @20.4",
+          "SELL PE 25100.0 @81.7"
+        ],
+        "risk": {
+          "credit_or_debit": 102.17,
+          "margin_est_inr": 130000.0
+        },
+        "soft": [],
+        "hard": [],
+        "evidence_pass": 4,
+        "evidence_n": 5
+      },
+      "by_mode": {
+        "directional": {
+          "mode": "directional",
+          "state": "FIRE",
+          "score": 85.5,
+          "strategy": "VOL_DISPERSION",
+          "size": "FULL",
+          "thesis": "Long gamma downside vehicle capitalizing on volatility regime shifts. In compressed markets, sudden put buying triggers ",
+          "legs": [
+            "BUY PE 24850.0 @0.9"
+          ],
+          "risk": {
+            "credit_or_debit": -0.93,
+            "max_loss_inr": 60.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 5,
+          "evidence_n": 6
+        },
+        "structure": {
+          "mode": "structure",
+          "state": "HOLD",
+          "score": 79.0,
+          "strategy": "NO_TRADE",
+          "size": "SCOUT",
+          "thesis": "HOLD \u2014 missing_contracts, missing_risk, no_structure. Absolute GEX mid \u2014 wait.",
+          "legs": [],
+          "risk": {},
+          "soft": [
+            "spot_outside_corridor"
+          ],
+          "hard": [
+            "missing_contracts",
+            "missing_risk",
+            "no_structure"
+          ],
+          "evidence_pass": 3,
+          "evidence_n": 5
+        },
+        "writer": {
+          "mode": "writer",
+          "state": "FIRE",
+          "score": 87.5,
+          "strategy": "WRITE_OTM",
+          "size": "FULL",
+          "thesis": "Write beyond walls when calm.",
+          "legs": [
+            "SELL CE 25050.0 @20.4",
+            "SELL PE 25100.0 @81.7"
+          ],
+          "risk": {
+            "credit_or_debit": 102.17,
+            "margin_est_inr": 130000.0
+          },
+          "soft": [],
+          "hard": [],
+          "evidence_pass": 4,
+          "evidence_n": 5
+        }
+      },
+      "forward": null
+    }
+  ]
+}

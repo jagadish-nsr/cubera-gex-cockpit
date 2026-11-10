@@ -3301,6 +3301,1218 @@ async def get_recommendations(
     }
 
 
+# ---------------------------------------------------------------------------
+# Decisive GO desk (Phase 0 firing lane)
+# ---------------------------------------------------------------------------
+_GO_PREFS: dict[str, Any] = {
+    "mode": "directional",
+    "delta_pref": 0.50,
+    "webhook_url": "",
+    "fire_webhook": False,
+    "trail_pct": 0.30,
+}
+_GO_LAST_FIRE_NOTIFY: dict[str, str] = {}  # fingerprint → decision_id
+
+
+def _go_fire_fingerprint(decision: dict) -> str:
+    return "|".join([
+        str(decision.get("symbol") or ""),
+        str(decision.get("mode") or ""),
+        str(decision.get("state") or ""),
+        str(decision.get("strategy_key") or ""),
+        str(round(float(decision.get("score") or 0))),
+    ])
+
+
+def _go_format_fire_message(decision: dict) -> str:
+    evidence = decision.get("evidence") or []
+    top = []
+    for e in evidence[:5]:
+        mark = "PASS" if e.get("pass") else "FAIL"
+        top.append(f"· {e.get('label') or e.get('factor')}: {e.get('value')} [{mark}]")
+    legs = decision.get("contracts") or []
+    leg_s = " · ".join(
+        f"{c.get('action')} {c.get('opt_type')} {c.get('strike')}"
+        + (f" @{c.get('ltp')}" if c.get("ltp") is not None else "")
+        for c in legs[:6]
+    ) or "—"
+    ctx = decision.get("context") or {}
+    return "\n".join([
+        f"FIRE {decision.get('score')} · {decision.get('symbol')} · {decision.get('mode')}",
+        f"{decision.get('strategy_key')} · {decision.get('enter_rule')} · size {decision.get('size_tier')}",
+        f"Legs: {leg_s}",
+        f"Thesis: {decision.get('thesis') or ''}",
+        f"OI {ctx.get('oi_ts') or '—'} · lot {ctx.get('lot_size') or '—'}",
+        "Why:",
+        *top,
+        "(Cubera GO — stage only; confirm at broker)",
+    ])
+
+
+def _go_maybe_notify_fire(decision: dict) -> dict | None:
+    """POST webhook for FIRE only when prefs enabled; dedupe by fingerprint."""
+    if not _GO_PREFS.get("fire_webhook"):
+        return None
+    url = str(_GO_PREFS.get("webhook_url") or "").strip()
+    if not url or not url.startswith("http"):
+        return None
+    if str(decision.get("state") or "") != "FIRE":
+        return None
+    fp = _go_fire_fingerprint(decision)
+    if _GO_LAST_FIRE_NOTIFY.get(fp) == str(decision.get("id") or ""):
+        return None
+    # Also skip if same fingerprint notified recently (refresh churn)
+    if fp in _GO_LAST_FIRE_NOTIFY:
+        return {"status": "deduped", "fingerprint": fp}
+    text = _go_format_fire_message(decision)
+    body: dict[str, Any]
+    # Telegram bot API style vs generic JSON webhook
+    if "api.telegram.org" in url:
+        body = {"text": text}
+    else:
+        body = {"text": text, "content": text, "decision": {
+            "id": decision.get("id"),
+            "state": decision.get("state"),
+            "score": decision.get("score"),
+            "symbol": decision.get("symbol"),
+            "mode": decision.get("mode"),
+            "strategy_key": decision.get("strategy_key"),
+        }}
+    try:
+        import requests
+        resp = requests.post(url, json=body, timeout=4)
+        _GO_LAST_FIRE_NOTIFY[fp] = str(decision.get("id") or "")
+        return {"status": "sent", "http": resp.status_code, "fingerprint": fp}
+    except Exception as exc:
+        log.warning("go FIRE webhook failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+
+
+def _go_position_alerts(sym: str, dash=None) -> list[dict]:
+    """Alerts for open staged GOs: trail stop, % credit taken, wall proximity."""
+    from data.journal import go_efficiency as go_eff
+    from analytics.go_desk import evaluate_trail
+
+    alerts: list[dict] = []
+    opens = go_eff.list_open(sym)
+    if not opens:
+        return alerts
+    levels = getattr(dash, "levels", None) if dash is not None else None
+    spot = float(getattr(levels, "spot", 0) or 0) if levels else 0.0
+    cw = float(getattr(levels, "call_wall", 0) or 0) if levels else 0.0
+    pw = float(getattr(levels, "put_wall", 0) or 0) if levels else 0.0
+
+    for row in opens:
+        did = row["decision_id"]
+        mode = row.get("mode")
+        entry = row.get("entry_premium")
+        mark = row.get("mark_premium")
+        if mode == "directional" and entry is not None and mark is not None:
+            trail = evaluate_trail(entry_ltp=abs(float(entry)), mark_ltp=abs(float(mark)))
+            if row.get("trail_armed") or trail.get("armed"):
+                stop = row.get("trail_stop") or trail.get("trail_stop")
+                if stop is not None and abs(float(mark)) <= float(stop):
+                    alerts.append({
+                        "severity": "high",
+                        "kind": "trail_stop",
+                        "decision_id": did,
+                        "message": f"Trail stop hit · mark {abs(float(mark)):.1f} ≤ stop {float(stop):.1f}",
+                    })
+                elif trail.get("armed") and not row.get("trail_armed"):
+                    alerts.append({
+                        "severity": "info",
+                        "kind": "trail_arm",
+                        "decision_id": did,
+                        "message": f"Trail ready to arm · +{trail.get('pnl_pct')}% premium",
+                    })
+        if mode in ("structure", "writer") and entry is not None and float(entry) > 0 and mark is not None:
+            # credit structures: pnl = entry - mark
+            pnl = float(entry) - float(mark)
+            pct = 100.0 * pnl / float(entry) if entry else 0
+            if pct >= 50:
+                alerts.append({
+                    "severity": "medium",
+                    "kind": "credit_50pct",
+                    "decision_id": did,
+                    "message": f"~{pct:.0f}% of credit captured (MFE path) — consider flatten",
+                })
+        if spot and (cw or pw) and mode in ("writer", "structure"):
+            # wall proximity: within 1 step of short strikes from strategy_key only — use entry spot delta
+            if pw and spot <= pw * 1.002:
+                alerts.append({
+                    "severity": "high",
+                    "kind": "wall_threat",
+                    "decision_id": did,
+                    "message": f"Spot {spot:.0f} near/through put wall {pw:.0f}",
+                })
+            if cw and spot >= cw * 0.998:
+                alerts.append({
+                    "severity": "high",
+                    "kind": "wall_threat",
+                    "decision_id": did,
+                    "message": f"Spot {spot:.0f} near/through call wall {cw:.0f}",
+                })
+        if row.get("mfe") is not None and row.get("mae") is not None:
+            if float(row["mae"] or 0) > 0 and float(row["mfe"] or 0) / float(row["mae"]) < 0.5 and float(row["mae"]) >= 10:
+                alerts.append({
+                    "severity": "medium",
+                    "kind": "mae_heavy",
+                    "decision_id": did,
+                    "message": f"MAE {row['mae']} > MFE {row['mfe']} — review invalidation",
+                })
+    # de-dupe by kind+decision+message
+    seen = set()
+    out = []
+    for a in alerts:
+        k = (a["kind"], a["decision_id"], a["message"])
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(a)
+    return out
+
+
+async def _go_refresh_open_marks(sym: str, dash) -> int:
+    """Reprice open staged GOs from live chain LTPs. Returns update count."""
+    from data.journal import go_efficiency as go_eff
+
+    contracts_df = getattr(dash, "contracts", None)
+    if contracts_df is None:
+        return 0
+    spot = float(getattr(getattr(dash, "levels", None), "spot", 0) or 0) or None
+    updated = 0
+    for row in go_eff.list_open(sym, include_decision=True):
+        legs = (row.get("decision") or {}).get("contracts") or []
+        if not legs:
+            continue
+        net = 0.0
+        priced = 0
+        for leg in legs:
+            opt = str(leg.get("opt_type") or "CE")
+            strike = float(leg.get("strike") or 0)
+            px = _chain_leg_ltp(contracts_df, strike, opt)
+            if px is None:
+                continue
+            priced += 1
+            if str(leg.get("action")).upper() == "SELL":
+                net += float(px)
+            else:
+                net -= float(px)
+        if priced == 0:
+            continue
+        go_eff.mark_open(
+            row["decision_id"],
+            mark_premium=round(net, 2),
+            mark_spot=spot,
+        )
+        updated += 1
+    return updated
+
+
+
+def _go_collect_ideas(batch) -> list:
+    if batch is None:
+        return []
+    ideas = []
+    for attr in (
+        "higher_ce_recommendations",
+        "higher_pe_recommendations",
+        "lower_ce_recommendations",
+        "lower_pe_recommendations",
+        "tactical_ce_recommendations",
+        "tactical_pe_recommendations",
+        "ce_recommendations",
+        "pe_recommendations",
+    ):
+        ideas.extend(list(getattr(batch, attr, None) or []))
+    # de-dupe by rec_id
+    seen = set()
+    out = []
+    for idea in ideas:
+        rid = getattr(idea, "rec_id", None) or id(idea)
+        if rid in seen:
+            continue
+        seen.add(rid)
+        out.append(idea)
+    return out
+
+
+def _go_sentinel_context(sym: str) -> dict:
+    """Best recent Sentinel signal + bullish/bearish lean for GO evidence."""
+    inst_id = f"{sym}-FUT"
+    try:
+        sigs = list_recent_signals(inst_id, limit=20) or []
+    except Exception:
+        sigs = []
+    if not sigs:
+        return {
+            "score": 0.0,
+            "type": None,
+            "category": None,
+            "cvd_aligned": None,
+            "range_ok": None,
+            "tape_ok": True,
+        }
+    best = max(sigs, key=lambda s: float(getattr(s, "score", 0) or 0))
+    score = float(getattr(best, "score", 0) or 0)
+    typ = str(getattr(best, "type", "") or "")
+    cat = str(getattr(best, "category", "") or "")
+    range_ok = any(
+        "ABSORPTION" in str(getattr(s, "type", "")).upper()
+        or "EXHAUSTION" in str(getattr(s, "type", "")).upper()
+        for s in sigs
+        if float(getattr(s, "score", 0) or 0) >= 65
+    )
+    break_ok = any(
+        "CONTINUATION" in str(getattr(s, "type", "")).upper()
+        or "BREAK" in str(getattr(s, "type", "")).upper()
+        for s in sigs
+        if float(getattr(s, "score", 0) or 0) >= 70
+    )
+    return {
+        "score": score,
+        "type": typ or None,
+        "category": cat or None,
+        "cvd_aligned": cat in ("BULLISH", "BEARISH") and score >= 65,
+        "range_ok": bool(range_ok) if not break_ok else False,
+        "tape_ok": not break_ok,  # writer: continuation through levels is bad
+        "break_ok": bool(break_ok),
+    }
+
+
+def _go_lunch_chop_now() -> bool:
+    now = _get_ist_now()
+    mins = now.hour * 60 + now.minute
+    return (11 * 60) <= mins < (13 * 60 + 30)
+
+
+def _go_mtf_leans(sym: str, dash=None) -> dict[str, str]:
+    """Best-effort 1m/5m/15m leans for soft multi-TF boost.
+
+    Uses direction_confluence net lean as 5m proxy; recent sentinel category as 1m;
+    bias / breadth as 15m proxy when available. Missing → NA (no homework UI).
+    """
+    leans = {"1m": "NA", "5m": "NA", "15m": "NA"}
+    tape = _go_sentinel_context(sym)
+    cat = str(tape.get("category") or "").upper()
+    if cat == "BULLISH":
+        leans["1m"] = "UP"
+    elif cat == "BEARISH":
+        leans["1m"] = "DOWN"
+    try:
+        if dash is not None:
+            from analytics.direction_confluence import compute_direction_confluence
+            lvl = getattr(dash, "levels", None)
+            conf = compute_direction_confluence(
+                spot=getattr(lvl, "spot", None),
+                call_wall=getattr(lvl, "call_wall", None),
+                put_wall=getattr(lvl, "put_wall", None),
+                flip=getattr(lvl, "flip", None),
+                regime=getattr(lvl, "regime", None),
+                pcr=getattr(lvl, "pcr", None),
+                india_vix=getattr(dash, "india_vix", None),
+            )
+            up = int(getattr(conf, "up_count", 0) or 0)
+            down = int(getattr(conf, "down_count", 0) or 0)
+            net = up - down
+            if net >= 2:
+                leans["5m"] = "UP"
+            elif net <= -2:
+                leans["5m"] = "DOWN"
+            elif net != 0:
+                leans["5m"] = "UP" if net > 0 else "DOWN"
+            agr = float(getattr(conf, "agreement_pct", 0) or 0)
+            if agr >= 60 and net > 0:
+                leans["15m"] = "UP"
+            elif agr >= 60 and net < 0:
+                leans["15m"] = "DOWN"
+    except Exception:
+        pass
+    return leans
+
+
+def _go_unusual_at_strike(dash, strike: float) -> dict | None:
+    """Flag unusual OI/volume near a candidate strike from chain frame."""
+    from analytics.go_desk import unusual_oi_volume_flag
+    import pandas as pd
+
+    df = getattr(dash, "contracts", None)
+    if df is None or strike is None:
+        return None
+    try:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return None
+        # Prefer rows near strike
+        if "strike" not in df.columns:
+            return None
+        band = df[(df["strike"] - float(strike)).abs() <= 1e-6]
+        if band.empty:
+            band = df.iloc[0:0]
+        oi_col = "oi" if "oi" in df.columns else ("open_interest" if "open_interest" in df.columns else None)
+        vol_col = "volume" if "volume" in df.columns else None
+        if oi_col is None and vol_col is None:
+            return None
+        oi_all = [float(x) for x in df[oi_col].dropna().tolist()] if oi_col else []
+        vol_all = [float(x) for x in df[vol_col].dropna().tolist()] if vol_col else []
+        oi_all_sorted = sorted(oi_all)
+        vol_all_sorted = sorted(vol_all)
+        med_oi = oi_all_sorted[len(oi_all_sorted) // 2] if oi_all_sorted else None
+        med_vol = vol_all_sorted[len(vol_all_sorted) // 2] if vol_all_sorted else None
+        oi_v = float(band[oi_col].sum()) if oi_col and not band.empty else None
+        vol_v = float(band[vol_col].sum()) if vol_col and not band.empty else None
+        return unusual_oi_volume_flag(
+            strike=float(strike),
+            oi=oi_v,
+            volume=vol_v,
+            median_oi=med_oi,
+            median_vol=med_vol,
+        )
+    except Exception:
+        return None
+
+
+def _go_iv_rv(dash, sym: str) -> tuple[float | None, float | None]:
+    """ATM IV from chain; RV from recent timeseries spots when available.
+
+    RV uses close-to-close on recent session spots from ``app.timeseries.load_day``.
+    Missing RV leaves the evidence factor optional (does not hard-block FIRE).
+    Returns percent points for evidence readability.
+    """
+    iv = _extract_active_atm_iv(dash)
+    if iv is not None and float(iv) > 1.5:  # likely already percent
+        iv_pct = round(float(iv), 2)
+    elif iv is not None:
+        iv_pct = round(float(iv) * 100.0, 2)
+    else:
+        iv_pct = None
+
+    rv_pct = None
+    try:
+        from app.timeseries import available_days, load_day
+        from target_engine.realized_vol import compute_close_to_close_rv
+
+        days = available_days(sym) or []
+        closes: list[float] = []
+        for day in list(reversed(days))[:8]:
+            df = load_day(day, sym)
+            if df is None or getattr(df, "empty", True):
+                continue
+            col = "spot" if "spot" in df.columns else None
+            if col is None:
+                continue
+            vals = [float(x) for x in df[col].dropna().tolist() if float(x) > 0]
+            if vals:
+                closes.append(vals[-1])
+        if len(closes) >= 5:
+            rv = float(compute_close_to_close_rv(closes[-10:], trading_periods_per_year=252.0))
+            rv_pct = round(rv * 100.0, 2)
+    except Exception:
+        rv_pct = None
+    return iv_pct, rv_pct
+
+
+async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float):
+    """Build one GoDecision from live dashboard + recommendation batch + Sentinel."""
+    from analytics.go_desk import (
+        build_directional_decision,
+        build_structure_decision,
+        build_writer_decision,
+    )
+    from structures.suggest import suggest_structures
+    from app.intraday_features import structure_vol_regime
+
+    idx = config.get_index(sym)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+    levels = getattr(dash, "levels", None)
+    if levels is None:
+        raise HTTPException(status_code=503, detail="Levels unavailable for GO desk.")
+
+    batch = _latest_rec_batch(sym, win)
+    ideas = _go_collect_ideas(batch)
+    oi_ts = getattr(levels, "oi_timestamp", None)
+    oi_ts_s = oi_ts.isoformat() if hasattr(oi_ts, "isoformat") else (str(oi_ts) if oi_ts else None)
+    oi_stale = bool(getattr(levels, "oi_stale", False))
+    tape = _go_sentinel_context(sym)
+    lunch_chop = _go_lunch_chop_now()
+
+    vol = "mid"
+    try:
+        vol = structure_vol_regime(dash) or "mid"
+    except Exception:
+        vol = "mid"
+
+    blast_safe = True
+    blast_tag = None
+    try:
+        from app.gammablast import evaluate_dashboard_gamma_blast
+        blast = evaluate_dashboard_gamma_blast(dash, sym) or {}
+        if blast.get("active"):
+            blast_safe = False
+            blast_tag = "ACTIVE"
+        elif blast.get("coiling"):
+            blast_tag = "COILING"
+    except Exception:
+        pass
+
+    mode = (mode or "directional").lower()
+    if mode not in ("directional", "structure", "writer"):
+        mode = "directional"
+
+    if mode == "structure":
+        from analytics.iv_skew import skew_25delta
+
+        contracts_df = getattr(dash, "contracts", None)
+        spot_f = float(getattr(levels, "spot", 0) or 0)
+        skew = skew_25delta(contracts_df, spot_f) if contracts_df is not None and spot_f > 0 else {}
+        near_iv = skew.get("near_atm_iv")
+        next_iv = skew.get("next_atm_iv")
+        bias = None
+        try:
+            bias = float(getattr(batch, "directional_bias_score", 0) or 0) if batch else None
+        except Exception:
+            bias = None
+        cands = suggest_structures(
+            levels,
+            vol,
+            lot_size=int(idx.lot_size),
+            spread_width=int(idx.strike_step) * 2,
+            strike_step=int(idx.strike_step),
+            blast={"active": not blast_safe, "coiling": blast_tag == "COILING"} if blast_tag else None,
+            sentinel_signals=None,
+            bias_score=bias,
+            near_atm_iv=near_iv,
+            next_atm_iv=next_iv,
+        )
+        # Prefer term structure candidate when front is clearly rich
+        primary = cands[0] if cands else None
+        if near_iv is not None and next_iv is not None:
+            n = float(near_iv)
+            x = float(next_iv)
+            if n > 1.5:
+                n /= 100.0
+            if x > 1.5:
+                x /= 100.0
+            if (n - x) * 100.0 >= 1.5:
+                for c in cands:
+                    nm = str(getattr(c, "name", "")).lower()
+                    if "calendar" in nm or "diagonal" in nm:
+                        primary = c
+                        break
+
+        leg_ltps: dict[tuple[str, float], float] = {}
+        leg_ltps_dated: dict[tuple[str, float, str], float] = {}
+        next_df = None
+        needs_next = primary and any(len(leg) > 3 and str(leg[3]) == "next" for leg in (primary.legs or []))
+        if needs_next and idx.has_weekly:
+            try:
+                next_dash = await _aload_active_dashboard(sym, "next_week")
+                next_df = getattr(next_dash, "contracts", None)
+            except Exception as exc:
+                log.debug("go next_week chain: %s", exc)
+        if primary and getattr(primary, "legs", None):
+            for leg in primary.legs:
+                action, typ, strike = leg[0], leg[1], leg[2]
+                exp_tag = str(leg[3]) if len(leg) > 3 else "near"
+                opt = "CE" if str(typ).upper().startswith("C") else "PE"
+                src = next_df if exp_tag == "next" and next_df is not None else contracts_df
+                px = _chain_leg_ltp(src, float(strike), opt)
+                if px is not None:
+                    leg_ltps[(opt, float(strike))] = float(px)
+                    leg_ltps_dated[(opt, float(strike), exp_tag)] = float(px)
+        decision = build_structure_decision(
+            symbol=sym,
+            lot_size=int(idx.lot_size),
+            strike_step=int(idx.strike_step),
+            levels=levels,
+            vol_regime=vol,
+            structure=primary,
+            oi_ts=oi_ts_s,
+            oi_stale=oi_stale,
+            blast_safe=blast_safe,
+            sentinel_range_ok=tape.get("range_ok"),
+            leg_ltps=leg_ltps,
+            leg_ltps_dated=leg_ltps_dated,
+            near_atm_iv=near_iv,
+            next_atm_iv=next_iv,
+        )
+    elif mode == "writer":
+        step = int(idx.strike_step)
+        cw = float(getattr(levels, "call_wall", 0) or 0)
+        pw = float(getattr(levels, "put_wall", 0) or 0)
+        iv, rv = _go_iv_rv(dash, sym)
+        contracts_df = getattr(dash, "contracts", None)
+        sc = (cw + step) if cw else None
+        sp = (pw - step) if pw else None
+        credit_call = _chain_leg_ltp(contracts_df, float(sc), "CE") if sc else None
+        credit_put = _chain_leg_ltp(contracts_df, float(sp), "PE") if sp else None
+        # VERIFY: SPAN proxy — not exchange SPAN. ~₹2k × lot as floor placeholder.
+        margin_est = float(idx.lot_size) * 2000.0
+        if credit_call or credit_put:
+            # Rough add:  short premium × lot × 15 as extra exposure proxy
+            prem = float(credit_call or 0) + float(credit_put or 0)
+            margin_est = max(margin_est, prem * float(idx.lot_size) * 15.0)
+        decision = build_writer_decision(
+            symbol=sym,
+            lot_size=int(idx.lot_size),
+            strike_step=step,
+            levels=levels,
+            vol_regime=vol,
+            iv=iv,
+            rv=rv,
+            oi_ts=oi_ts_s,
+            oi_stale=oi_stale,
+            blast_safe=blast_safe,
+            tape_ok=bool(tape.get("tape_ok", True)),
+            short_call=sc,
+            short_put=sp,
+            credit_call=credit_call,
+            credit_put=credit_put,
+            margin_est_inr=round(margin_est, 0),
+        )
+    else:
+        top = getattr(batch, "top_recommended_side", None) if batch else None
+        bias = float(getattr(batch, "directional_bias_score", 0) or 0) if batch else 0.0
+        idea_score = max((getattr(i, "quality_score", 0) or 0) for i in ideas) if ideas else 0
+        sent_score = float(tape.get("score") or 0)
+        # Prefer live Sentinel score when present; else fall back to idea quality
+        primary_sent = sent_score if sent_score > 0 else float(idea_score)
+        cvd_aligned = tape.get("cvd_aligned")
+        if cvd_aligned is None:
+            cvd_aligned = top in ("CE", "PE", "BOTH") and abs(bias) >= 1.0
+        above_vwap = bias > 0 if bias else (str(tape.get("category") or "") == "BULLISH")
+        mtf_leans = _go_mtf_leans(sym, dash)
+        unusual = None
+        top_idea = max(ideas, key=lambda i: int(getattr(i, "quality_score", 0) or 0)) if ideas else None
+        if top_idea is not None and getattr(top_idea, "strike", None):
+            unusual = _go_unusual_at_strike(dash, float(top_idea.strike))
+        decision = build_directional_decision(
+            symbol=sym,
+            lot_size=int(idx.lot_size),
+            strike_step=int(idx.strike_step),
+            levels=levels,
+            trade_ideas=ideas,
+            sentinel_score=primary_sent,
+            sentinel_type=tape.get("type"),
+            cvd_aligned=bool(cvd_aligned),
+            above_vwap=bool(above_vwap),
+            breadth_aligned=abs(bias) >= 1.5,
+            target_confluence=60.0 if ideas or sent_score >= 65 else 40.0,
+            oi_ts=oi_ts_s,
+            oi_stale=oi_stale,
+            chain_ok=True,
+            lunch_chop=lunch_chop,
+            blast_tag=blast_tag,
+            delta_pref=float(delta_pref or 0.50),
+            mtf_leans=mtf_leans,
+            unusual_strike=unusual,
+        )
+    return decision
+
+
+@app.get("/api/go/decision")
+async def get_go_decision(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    mode: Optional[str] = None,
+    delta_pref: Optional[float] = None,
+):
+    """Primary Decisive GO for the firing lane."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    md = (mode or _GO_PREFS.get("mode") or "directional").lower()
+    dp = float(delta_pref if delta_pref is not None else _GO_PREFS.get("delta_pref") or 0.50)
+    decision = await _compose_go_decision(sym, win, md, dp)
+    payload = decision.to_dict()
+    notify = None
+    if payload.get("state") in ("FIRE", "SCOUT"):
+        try:
+            from data.journal import go_efficiency as go_eff
+            go_eff.record_event("EMIT", payload)
+        except Exception as exc:
+            log.debug("go EMIT ledger: %s", exc)
+        if payload.get("state") == "FIRE":
+            notify = _go_maybe_notify_fire(payload)
+    prefs_out = dict(_GO_PREFS)
+    wu = str(prefs_out.get("webhook_url") or "")
+    if wu:
+        prefs_out["webhook_url"] = wu[:24] + "…" if len(wu) > 24 else wu
+    return {
+        "symbol": sym,
+        "window": win,
+        "prefs": prefs_out,
+        "decision": payload,
+        "notify": notify,
+    }
+
+
+@app.get("/api/go/feed")
+async def get_go_feed(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    mode: Optional[str] = None,
+):
+    """Ranked FIRE/SCOUT feed (Phase 0: primary + structure/writer alternates)."""
+    from analytics.go_desk import rank_feed
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    md = (mode or _GO_PREFS.get("mode") or "directional").lower()
+    dp = float(_GO_PREFS.get("delta_pref") or 0.50)
+    primary = await _compose_go_decision(sym, win, md, dp)
+    feed = [primary]
+    for alt in ("directional", "structure", "writer"):
+        if alt == md:
+            continue
+        try:
+            feed.append(await _compose_go_decision(sym, win, alt, dp))
+        except Exception as exc:
+            log.debug("go feed alt %s: %s", alt, exc)
+    ranked = rank_feed(feed)
+    items = [d.to_dict() for d in ranked]
+    # Ledger only mode-primary FIRE/SCOUT (avoid HOLD spam + alt triple-count)
+    if items and items[0].get("state") in ("FIRE", "SCOUT"):
+        try:
+            from data.journal import go_efficiency as go_eff
+            go_eff.record_event("EMIT", items[0])
+        except Exception as exc:
+            log.debug("go feed EMIT ledger: %s", exc)
+    return {
+        "symbol": sym,
+        "window": win,
+        "mode": md,
+        "items": items,
+    }
+
+
+@app.get("/api/go/efficiency")
+async def get_go_efficiency(symbol: Optional[str] = None, limit: int = 200):
+    from data.journal import go_efficiency as go_eff
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    return {"symbol": sym, **go_eff.summarize(sym, limit=limit)}
+
+
+@app.get("/api/go/open")
+async def get_go_open(symbol: Optional[str] = None, window: Optional[str] = None):
+    """Open staged GOs with MFE/MAE + sticky trail + live per-leg Greeks (G3)."""
+    from analytics.go_desk import GoLeg, net_greeks
+    from data.journal import go_efficiency as go_eff
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    rows = go_eff.list_open(sym, include_decision=True)
+    dash = await _aload_active_dashboard(sym, win)
+    iv, _rv = _go_iv_rv(dash, sym)
+    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    idx = config.get_index(sym)
+    levels = getattr(dash, "levels", None) if dash else None
+    spot_live = float(getattr(levels, "spot", 0) or 0) if levels is not None else 0.0
+
+    for row in rows:
+        row["trail"] = {
+            "armed": bool(row.get("trail_armed")),
+            "trail_stop": row.get("trail_stop"),
+            "mfe": row.get("mfe"),
+            "mae": row.get("mae"),
+        }
+        decision = row.pop("decision", None) or {}
+        contracts_raw = decision.get("contracts") or []
+        contracts = [
+            GoLeg(
+                action=str(c.get("action") or "BUY"),
+                opt_type=str(c.get("opt_type") or "CE"),
+                strike=float(c.get("strike") or 0),
+                ltp=c.get("ltp"),
+            )
+            for c in contracts_raw
+        ]
+        spot = float(row.get("mark_spot") or row.get("entry_spot") or spot_live or 0)
+        if not spot:
+            spot = float((decision.get("context") or {}).get("spot") or 0)
+        lot = int((decision.get("context") or {}).get("lot_size") or idx.lot_size)
+        row["greeks"] = (
+            net_greeks(contracts, spot=spot, lot_size=lot, iv=iv_dec, dte_days=3.0)
+            if contracts and spot > 0 else {}
+        )
+        row["contracts"] = contracts_raw
+        row["strategy_type"] = decision.get("strategy_type") or row.get("strategy_key")
+    return {"symbol": sym, "open": rows, "spot": spot_live or None, "iv_pct": iv}
+
+
+@app.post("/api/go/mark")
+async def post_go_mark(payload: dict = Body(...)):
+    """Update mark premium / spot for a staged GO; refreshes MFE/MAE and trail."""
+    from data.journal import go_efficiency as go_eff
+
+    decision_id = str(payload.get("decision_id") or "")
+    if not decision_id:
+        raise HTTPException(status_code=400, detail="decision_id required")
+    if payload.get("mark_premium") is None:
+        raise HTTPException(status_code=400, detail="mark_premium required")
+    mark_premium = float(payload["mark_premium"])
+    mark_spot = payload.get("mark_spot")
+    mark_spot_f = float(mark_spot) if mark_spot is not None else None
+
+    updated = go_eff.mark_open(
+        decision_id,
+        mark_premium=mark_premium,
+        mark_spot=mark_spot_f,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="No OPEN staged GO for that decision_id")
+    return {"status": "ok", "open": updated}
+
+
+@app.get("/api/go/structure/payoff")
+async def get_go_structure_payoff(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    mode: Optional[str] = None,
+):
+    """Expiry payoff + net/per-leg Greeks + smile + manage actions (all modes)."""
+    from analytics.go_desk import GoLeg, structure_payoff_curve, net_greeks, suggest_manage_actions
+    from analytics.iv_skew import smile_by_delta
+    from data.journal import go_efficiency as go_eff
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    md = (mode or _GO_PREFS.get("mode") or "structure").lower()
+    if md not in ("structure", "writer", "directional"):
+        md = "structure"
+    idx = config.get_index(sym)
+    dp = float(_GO_PREFS.get("delta_pref") or 0.50)
+    decision = (await _compose_go_decision(sym, win, md, dp)).to_dict()
+
+    contracts = [
+        GoLeg(
+            action=str(c.get("action") or "BUY"),
+            opt_type=str(c.get("opt_type") or "CE"),
+            strike=float(c.get("strike") or 0),
+            ltp=c.get("ltp"),
+        )
+        for c in (decision.get("contracts") or [])
+    ]
+    spot = float((decision.get("context") or {}).get("spot") or 0) or None
+    lot = int((decision.get("context") or {}).get("lot_size") or idx.lot_size)
+    curve = structure_payoff_curve(
+        contracts, lot_size=lot, spot=spot, strike_step=float(idx.strike_step),
+    )
+    dash = await _aload_active_dashboard(sym, win)
+    iv, _rv = _go_iv_rv(dash, sym)
+    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    greeks = net_greeks(
+        contracts, spot=float(spot or 0), lot_size=lot, iv=iv_dec, dte_days=3.0,
+    ) if contracts and spot else {}
+    open_row = next(
+        (r for r in go_eff.list_open(sym) if r.get("decision_id") == decision.get("id")),
+        None,
+    )
+    actions = suggest_manage_actions(
+        decision, open_row=open_row, strike_step=float(idx.strike_step),
+    )
+    contracts_df = getattr(dash, "contracts", None)
+    smile = smile_by_delta(contracts_df, float(spot or 0)) if spot and contracts_df is not None else {}
+    return {
+        "symbol": sym,
+        "decision_id": decision.get("id"),
+        "mode": decision.get("mode"),
+        "payoff": curve,
+        "greeks": greeks,
+        "smile": smile,
+        "manage_actions": actions,
+        "risk": decision.get("risk") or {},
+    }
+
+
+@app.get("/api/go/digest")
+async def get_go_digest(
+    symbol: Optional[str] = None,
+    minutes: int = 15,
+):
+    """15m rollup of GO emits + Sentinel + commentary (F1). Raw flood stays collapsed in UI."""
+    from analytics.go_digest import build_signal_digest
+    from commentary.storage.db import get_recent_commentary_entries
+    from data.journal import go_efficiency as go_eff
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    mins = max(1, min(int(minutes or 15), 120))
+    eff = go_eff.summarize(sym, limit=80)
+    go_events = eff.get("recent") or []
+
+    inst_id = f"{sym}-FUT"
+
+    def _sigs():
+        return list_recent_signals(inst_id, limit=40)
+
+    sigs_raw = await asyncio.to_thread(_sigs)
+    signals = []
+    for s in sigs_raw or []:
+        signals.append({
+            "type": getattr(s, "type", None),
+            "bias": getattr(s, "bias", None) or getattr(s, "category", None),
+            "category": getattr(s, "category", None),
+            "insight_text": getattr(s, "insight_text", None),
+            "ts": getattr(s, "bar_start_ts", None),
+            "time": _fmt_bar_stamp(getattr(s, "bar_start_ts", None)),
+        })
+
+    def _com():
+        try:
+            return get_recent_commentary_entries(sym, limit=40) or []
+        except Exception:
+            return []
+
+    com_raw = await asyncio.to_thread(_com)
+    commentary = []
+    for c in com_raw:
+        if isinstance(c, dict):
+            commentary.append(c)
+        else:
+            commentary.append({
+                "headline": getattr(c, "headline", None) or getattr(c, "topic", None),
+                "text": getattr(c, "text", None) or getattr(c, "body", None),
+                "ts": getattr(c, "created_at", None) or getattr(c, "ts", None),
+            })
+
+    digest = build_signal_digest(
+        go_events=go_events,
+        sentinel_signals=signals,
+        commentary=commentary,
+        window_minutes=mins,
+    )
+    return {"symbol": sym, **digest}
+
+
+@app.post("/api/go/action")
+async def post_go_action(payload: dict = Body(...)):
+    """Stage a manage action (trail / adjust / hedge / flatten / roll_wing). No broker send."""
+    from analytics.go_desk import build_manage_legs, suggest_manage_actions
+    from data.journal import go_efficiency as go_eff
+
+    decision = payload.get("decision") or {}
+    action = str(payload.get("action") or "").lower()
+    if not isinstance(decision, dict) or not decision.get("id"):
+        raise HTTPException(status_code=400, detail="decision.id required")
+    if action not in ("trail", "adjust", "hedge", "flatten", "roll_wing"):
+        raise HTTPException(status_code=400, detail="action must be trail|adjust|hedge|flatten|roll_wing")
+
+    sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    idx = config.get_index(sym)
+    open_rows = {r["decision_id"]: r for r in go_eff.list_open(sym)}
+    open_row = open_rows.get(decision.get("id"))
+
+    if action == "trail":
+        # Mark trail intent on open row if present; else journal note via skip-style event
+        if open_row and open_row.get("entry_premium") is not None:
+            from analytics.go_desk import evaluate_trail
+            entry_abs = abs(float(open_row["entry_premium"]))
+            mark_abs = abs(float(open_row.get("mark_premium") or open_row["entry_premium"]))
+            trail = evaluate_trail(entry_ltp=entry_abs, mark_ltp=mark_abs)
+            if trail.get("armed"):
+                updated = go_eff.mark_open(
+                    decision["id"],
+                    mark_premium=float(open_row.get("mark_premium") or open_row["entry_premium"]),
+                    trail=trail,
+                )
+                return {"status": "trail_refreshed", "open": updated, "action": action}
+            return {
+                "status": "trail_pending",
+                "detail": "Not yet +30% — trail not armed",
+                "trail": trail,
+                "action": action,
+            }
+        return {"status": "ok", "action": action, "detail": "No open staged GO — stage first"}
+
+    legs = build_manage_legs(decision, action, strike_step=float(idx.strike_step))
+    if not legs:
+        raise HTTPException(status_code=400, detail=f"No legs built for action {action}")
+
+    # Stage as journal trade (paper) — reverse/hedge legs
+    jlegs = []
+    net = 0.0
+    for leg in legs:
+        action_l = str(leg.get("action") or "BUY").upper()
+        opt = str(leg.get("opt_type") or "CE").upper()
+        strike = float(leg.get("strike") or 0)
+        ltp = float(leg.get("ltp") or 0)
+        if action_l == "SELL":
+            net += ltp
+        else:
+            net -= ltp
+        jlegs.append({
+            "action": action_l,
+            "type": "C" if opt.startswith("C") else "P",
+            "strike": strike,
+            "ltp": ltp,
+        })
+    ctx = decision.get("context") or {}
+    trade = journal_store.open_trade(
+        symbol=sym,
+        strategy_name=f"GO_{action.upper()}",
+        legs=jlegs,
+        entry_spot=float(ctx.get("spot") or 0),
+        entry_levels={
+            "spot": ctx.get("spot"),
+            "call_wall": ctx.get("call_wall"),
+            "put_wall": ctx.get("put_wall"),
+            "flip": ctx.get("flip"),
+            "magnet": ctx.get("magnet"),
+        },
+        entry_regime={
+            "go_state": decision.get("state"),
+            "mode": decision.get("mode"),
+            "manage_action": action,
+            "parent_decision_id": decision.get("id"),
+        },
+        entry_net_premium=round(net, 2),
+        lot_size=int(ctx.get("lot_size") or idx.lot_size),
+        notes=f"Manage {action} from GO {decision.get('id')} · confirm at broker",
+        strategy_type=str(decision.get("strategy_type") or "CUSTOM"),
+        go_decision={**decision, "manage_action": action, "manage_legs": legs},
+    )
+    if action == "flatten" and open_row:
+        go_eff.close_open(decision["id"], status="CLOSED")
+    suggested = suggest_manage_actions(decision, open_row=open_row, strike_step=float(idx.strike_step))
+    return {
+        "status": "staged",
+        "action": action,
+        "trade_id": trade.trade_id,
+        "legs": legs,
+        "manage_actions": suggested,
+    }
+
+
+@app.get("/api/go/writer/risk")
+async def get_go_writer_risk(symbol: Optional[str] = None, window: Optional[str] = None, portfolio: bool = False):
+    """Writer inventory snapshot: open shorts, margin proxy, IV−RV.
+
+    ``portfolio=true`` aggregates NIFTY / BANKNIFTY / SENSEX (Phase 3).
+    """
+    from data.journal import go_efficiency as go_eff
+    from analytics.go_desk import net_greeks, GoLeg
+
+    win = window or _ACTIVE_STATE["window"]
+    symbols = list(config.INDICES.keys()) if portfolio else [(symbol or _ACTIVE_STATE["symbol"]).upper()]
+    books = []
+    margin_sum = 0.0
+    for sym in symbols:
+        try:
+            idx = config.get_index(sym)
+            decision = (await _compose_go_decision(sym, win, "writer", 0.50)).to_dict()
+            opens = [r for r in go_eff.list_open(sym) if r.get("mode") == "writer"]
+            risk = decision.get("risk") or {}
+            margin = float(risk.get("margin_est_inr") or 0)
+            if opens:
+                margin_sum += margin * max(len(opens), 1)
+            else:
+                margin_sum += margin
+            contracts = [
+                GoLeg(str(c.get("action")), str(c.get("opt_type")), float(c.get("strike")), ltp=c.get("ltp"))
+                for c in (decision.get("contracts") or [])
+            ]
+            spot = float((decision.get("context") or {}).get("spot") or 0)
+            dash = await _aload_active_dashboard(sym, win)
+            iv, rv = _go_iv_rv(dash, sym)
+            iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+            greeks = net_greeks(contracts, spot=spot, lot_size=int(idx.lot_size), iv=iv_dec) if contracts and spot else {}
+            books.append({
+                "symbol": sym,
+                "state": decision.get("state"),
+                "score": decision.get("score"),
+                "strategy_key": decision.get("strategy_key"),
+                "contracts": decision.get("contracts") or [],
+                "decision": decision,
+                "open_writer": opens,
+                "margin_est_inr": risk.get("margin_est_inr"),
+                "iv": iv,
+                "rv": rv,
+                "iv_rv": risk.get("iv_rv"),
+                "greeks": greeks,
+                "spot": spot,
+            })
+        except Exception as exc:
+            books.append({"symbol": sym, "error": str(exc)})
+    primary = next((b for b in books if not b.get("error")), books[0] if books else {})
+    return {
+        "symbol": primary.get("symbol"),
+        "portfolio": portfolio,
+        "books": books,
+        "decision": primary.get("decision"),
+
+        "open_writer": primary.get("open_writer") or [],
+        "margin_est_inr": primary.get("margin_est_inr"),
+        "margin_open_sum_proxy": round(margin_sum, 0),
+        "iv": primary.get("iv"),
+        "rv": primary.get("rv"),
+        "iv_rv": primary.get("iv_rv"),
+        "greeks": primary.get("greeks") or {},
+        "note": "Margin is SPAN proxy, not exchange SPAN",
+    }
+
+
+@app.get("/api/go/whatif")
+async def get_go_whatif(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    mode: Optional[str] = None,
+):
+    """Spot-shock what-if on current GO contracts (Black-76)."""
+    from analytics.go_desk import GoLeg, scenario_whatif
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    md = (mode or _GO_PREFS.get("mode") or "structure").lower()
+    decision = (await _compose_go_decision(sym, win, md, float(_GO_PREFS.get("delta_pref") or 0.50))).to_dict()
+    contracts = [
+        GoLeg(str(c.get("action")), str(c.get("opt_type")), float(c.get("strike")), ltp=c.get("ltp"))
+        for c in (decision.get("contracts") or [])
+    ]
+    spot = float((decision.get("context") or {}).get("spot") or 0)
+    lot = int((decision.get("context") or {}).get("lot_size") or config.get_index(sym).lot_size)
+    iv, _rv = _go_iv_rv(await _aload_active_dashboard(sym, win), sym)
+    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    return {
+        "symbol": sym,
+        "mode": decision.get("mode"),
+        "decision_id": decision.get("id"),
+        "whatif": scenario_whatif(contracts, spot=spot, lot_size=lot, iv=iv_dec, dte_days=3.0),
+        "risk": decision.get("risk") or {},
+    }
+
+
+@app.get("/api/go/backtest-slice")
+async def get_go_backtest_slice(symbol: Optional[str] = None, limit: int = 300):
+    """FIRE template slice from efficiency ledger (descriptive, point-in-time marks)."""
+    from data.journal import go_efficiency as go_eff
+    from analytics.go_desk import fire_template_slice
+
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    summary = go_eff.summarize(sym, limit=limit)
+    marked_rows = go_eff.list_marked(sym)
+    slice_ = fire_template_slice(summary.get("recent") or [], marked_rows)
+    return {"symbol": sym, **slice_, "process": summary.get("process") or {}}
+
+
+@app.post("/api/go/prefs")
+async def post_go_prefs(payload: dict = Body(...)):
+    if "mode" in payload and str(payload["mode"]).lower() in ("directional", "structure", "writer"):
+        _GO_PREFS["mode"] = str(payload["mode"]).lower()
+    if "delta_pref" in payload:
+        try:
+            _GO_PREFS["delta_pref"] = float(payload["delta_pref"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="delta_pref must be a number")
+    if "trail_pct" in payload:
+        try:
+            _GO_PREFS["trail_pct"] = float(payload["trail_pct"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="trail_pct must be a number")
+    if "fire_webhook" in payload:
+        _GO_PREFS["fire_webhook"] = bool(payload["fire_webhook"])
+    if "webhook_url" in payload:
+        url = str(payload.get("webhook_url") or "").strip()
+        if url and not url.startswith("http"):
+            raise HTTPException(status_code=400, detail="webhook_url must be http(s)")
+        _GO_PREFS["webhook_url"] = url
+    # Never echo full webhook in logs; return masked
+    prefs = dict(_GO_PREFS)
+    if prefs.get("webhook_url"):
+        prefs["webhook_url"] = prefs["webhook_url"][:24] + "…" if len(prefs["webhook_url"]) > 24 else prefs["webhook_url"]
+    return {"status": "ok", "prefs": prefs}
+
+
+@app.get("/api/go/alerts")
+async def get_go_alerts(symbol: Optional[str] = None, window: Optional[str] = None, refresh: bool = True):
+    """Position-aware alerts for open staged GOs; optionally refresh marks from chain."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    win = window or _ACTIVE_STATE["window"]
+    dash = await _aload_active_dashboard(sym, win)
+    refreshed = 0
+    if refresh:
+        try:
+            refreshed = await _go_refresh_open_marks(sym, dash)
+        except Exception as exc:
+            log.debug("go mark refresh: %s", exc)
+    alerts = _go_position_alerts(sym, dash)
+    from data.journal import go_efficiency as go_eff
+    return {
+        "symbol": sym,
+        "refreshed_marks": refreshed,
+        "alerts": alerts,
+        "open": go_eff.list_open(sym),
+    }
+
+
+@app.post("/api/go/stage")
+async def post_go_stage(payload: dict = Body(...)):
+    """Stage a GoDecision into the paper journal (immutable snapshot)."""
+    decision = payload.get("decision") or {}
+    if not isinstance(decision, dict) or not decision.get("contracts"):
+        raise HTTPException(status_code=400, detail="decision.contracts required")
+    sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    idx = config.get_index(sym)
+    legs = []
+    net = 0.0
+    for leg in decision.get("contracts") or []:
+        action = str(leg.get("action") or "BUY").upper()
+        opt = str(leg.get("opt_type") or "CE").upper()
+        strike = float(leg.get("strike") or 0)
+        ltp = float(leg.get("ltp") or 0)
+        if action == "SELL":
+            net += ltp
+        else:
+            net -= ltp
+        legs.append({
+            "action": action,
+            "type": "C" if opt.startswith("C") else "P",
+            "strike": strike,
+            "ltp": ltp,
+        })
+    ctx = decision.get("context") or {}
+    trade = journal_store.open_trade(
+        symbol=sym,
+        strategy_name=str(decision.get("strategy_key") or "GO"),
+        legs=legs,
+        entry_spot=float(ctx.get("spot") or 0),
+        entry_levels={
+            "spot": ctx.get("spot"),
+            "call_wall": ctx.get("call_wall"),
+            "put_wall": ctx.get("put_wall"),
+            "flip": ctx.get("flip"),
+            "magnet": ctx.get("magnet"),
+        },
+        entry_regime={
+            "go_state": decision.get("state"),
+            "mode": decision.get("mode"),
+            "abs_gex_bucket": ctx.get("abs_gex_bucket"),
+        },
+        entry_net_premium=round(net, 2),
+        lot_size=int(ctx.get("lot_size") or idx.lot_size),
+        notes=f"Staged from Decisive GO · {decision.get('state')} · score {decision.get('score')}",
+        strategy_type=str(decision.get("strategy_type") or ""),
+        go_decision=decision,
+    )
+    try:
+        from data.journal import go_efficiency as go_eff
+        go_eff.record_event("STAGE", decision, trade_id=trade.trade_id)
+    except Exception as exc:
+        log.debug("go STAGE ledger: %s", exc)
+    return {"status": "opened", "trade_id": trade.trade_id}
+
+
+@app.post("/api/go/skip")
+async def post_go_skip(payload: dict = Body(...)):
+    decision = payload.get("decision") or {}
+    if not isinstance(decision, dict) or not decision.get("id"):
+        raise HTTPException(status_code=400, detail="decision.id required")
+    skip_id = journal_store.record_go_skip(decision)
+    try:
+        from data.journal import go_efficiency as go_eff
+        go_eff.record_event("SKIP", decision)
+    except Exception as exc:
+        log.debug("go SKIP ledger: %s", exc)
+    return {"status": "skipped", "skip_id": skip_id}
+
+
 @app.get("/api/recommendations/history")
 async def get_recommendations_history_endpoint(
     symbol: Optional[str] = None,

@@ -22,6 +22,10 @@
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
     lastCockpitDash: null,
+    goMode: localStorage.getItem("cubera_go_mode") || "directional",
+    goDelta: parseFloat(localStorage.getItem("cubera_go_delta") || "0.50"),
+    lastGoDecision: null,
+    goDeskItems: [],
     headerExecRich: false,
     tapeLatch: null,
     lastTapePaintSig: null,
@@ -2303,6 +2307,623 @@
       : '<tr><td colspan="7">No participant file.</td></tr>';
   }
 
+  // --- Decisive GO firing lane (Phase 0) ---------------------------------
+  function syncGoToolbar() {
+    document.querySelectorAll("[data-go-mode]").forEach((btn) => {
+      btn.setAttribute("aria-pressed", btn.getAttribute("data-go-mode") === state.goMode ? "true" : "false");
+    });
+    document.querySelectorAll("[data-go-delta]").forEach((btn) => {
+      btn.setAttribute("aria-pressed", String(parseFloat(btn.getAttribute("data-go-delta"))) === String(state.goDelta) ? "true" : "false");
+    });
+    const deltaGroup = document.getElementById("go-delta-group");
+    if (deltaGroup) deltaGroup.style.display = state.goMode === "directional" ? "" : "none";
+  }
+
+  function renderGoLane(decision) {
+    state.lastGoDecision = decision;
+    const strip = document.getElementById("go-posture-strip");
+    const pill = document.getElementById("go-state-pill");
+    const thesis = document.getElementById("go-posture-thesis");
+    const levels = document.getElementById("go-posture-levels");
+    const card = document.getElementById("go-primary-card");
+    if (!strip || !card || !decision) return;
+
+    const st = decision.state || "HOLD";
+    strip.className = "go-posture-strip go-state-" + String(st).toLowerCase();
+    if (pill) pill.textContent = `${st} ${decision.score != null ? Number(decision.score).toFixed(0) : ""}`.trim();
+    if (thesis) thesis.textContent = `${decision.strategy_key || "—"} · ${decision.thesis || ""}`;
+    const ctx = decision.context || {};
+    if (levels) {
+      levels.textContent = [
+        ctx.spot != null ? `Spot ${Number(ctx.spot).toFixed(0)}` : null,
+        ctx.put_wall != null ? `PW ${Number(ctx.put_wall).toFixed(0)}` : null,
+        ctx.flip != null ? `Flip ${Number(ctx.flip).toFixed(0)}` : null,
+        ctx.call_wall != null ? `CW ${Number(ctx.call_wall).toFixed(0)}` : null,
+        ctx.abs_gex_bucket ? `|GEX| ${ctx.abs_gex_bucket}` : null,
+        ctx.oi_ts ? `OI ${ctx.oi_ts}` : null,
+        ctx.lot_size ? `lot ${ctx.lot_size}` : null,
+      ].filter(Boolean).join(" · ");
+    }
+
+    const legs = decision.contracts || [];
+    const legsHtml = legs.length
+      ? `<table class="go-legs"><thead><tr><th>Action</th><th>Type</th><th>Strike</th><th>Exp</th><th>LTP</th><th>Δ</th></tr></thead><tbody>${
+          legs.map((L) => `<tr><td>${L.action}</td><td>${L.opt_type}</td><td>${L.strike}</td><td>${L.expiry || "—"}</td><td>${L.ltp != null ? "₹" + Number(L.ltp).toFixed(1) : "—"}</td><td>${L.delta_target != null ? Number(L.delta_target).toFixed(2) : "—"}</td></tr>`).join("")
+        }</tbody></table>`
+      : `<div class="go-muted">No contracts — HOLD.</div>`;
+
+    const risk = decision.risk || {};
+    const tgt = decision.targets || {};
+    const inval = decision.invalidation || {};
+    const evidence = decision.evidence || [];
+    const whyRows = evidence.map((e) => {
+      const ok = e.pass ? `<span class="go-pass">PASS</span>` : `<span class="go-fail">FAIL</span>`;
+      const val = typeof e.value === "object" ? JSON.stringify(e.value) : String(e.value);
+      return `<tr><td>${e.label || e.factor}</td><td>${val}</td><td>${e.threshold || ""}</td><td>${ok}</td><td>${e.source_ref || ""}</td></tr>`;
+    }).join("");
+
+    const soft = (decision.soft_flags || []).length
+      ? `<div class="go-muted">Soft flags: ${(decision.soft_flags || []).join(", ")}</div>` : "";
+    const hard = (decision.hard_blocks || []).length
+      ? `<div class="go-muted">Hard blocks: ${(decision.hard_blocks || []).join(", ")}</div>` : "";
+
+    const creditLabel = risk.credit_or_debit == null ? "—"
+      : (Number(risk.credit_or_debit) >= 0
+        ? `+${Number(risk.credit_or_debit).toFixed(1)} cr`
+        : `${Number(risk.credit_or_debit).toFixed(1)} db`);
+    const beLo = risk.breakeven_low != null ? Number(risk.breakeven_low).toFixed(0)
+      : (tgt.breakeven_low != null ? Number(tgt.breakeven_low).toFixed(0) : null);
+    const beHi = risk.breakeven_high != null ? Number(risk.breakeven_high).toFixed(0)
+      : (tgt.breakeven_high != null ? Number(tgt.breakeven_high).toFixed(0) : null);
+    const beLine = (beLo || beHi) ? `${beLo || "—"} / ${beHi || "—"}` : "—";
+    const ivRv = risk.iv_rv != null ? `${Number(risk.iv_rv) >= 0 ? "+" : ""}${Number(risk.iv_rv).toFixed(1)}` : null;
+    const maxLossLabel = risk.max_loss_inr != null
+      ? "₹" + Number(risk.max_loss_inr).toLocaleString("en-IN")
+      : (risk.margin_est_inr != null ? "marg ₹" + Number(risk.margin_est_inr).toLocaleString("en-IN") : "—");
+    const maxProfitLabel = risk.max_profit_inr != null
+      ? "₹" + Number(risk.max_profit_inr).toLocaleString("en-IN") : "—";
+
+    card.innerHTML = `
+      <div class="go-card-head">
+        <span class="go-card-title">${st} · ${decision.strategy_key || "GO"}</span>
+        <span class="go-enter-badge">${decision.enter_rule || ""} · size ${decision.size_tier || ""}</span>
+      </div>
+      ${legsHtml}
+      <div class="go-metrics">
+        <div class="go-metric"><small>Credit / debit</small><b>${creditLabel}</b></div>
+        <div class="go-metric"><small>BEs lo / hi</small><b>${beLine}</b></div>
+        <div class="go-metric"><small>Max loss</small><b>${maxLossLabel}</b></div>
+        <div class="go-metric"><small>Max profit</small><b>${maxProfitLabel}</b></div>
+        <div class="go-metric"><small>T1</small><b>${tgt.t1 != null ? "₹" + Number(tgt.t1).toFixed(1) : "—"}</b></div>
+        <div class="go-metric"><small>T2</small><b>${tgt.t2 != null ? "₹" + Number(tgt.t2).toFixed(1) : "—"}</b></div>
+        <div class="go-metric"><small>Spot inval</small><b>${inval.spot_level != null ? Number(inval.spot_level).toFixed(0) : "—"}</b></div>
+        <div class="go-metric"><small>Trail</small><b>${tgt.trail_rule || "—"}</b></div>
+        <div class="go-metric"><small>EV / touch</small><b>${tgt.ev != null ? Number(tgt.ev).toFixed(1) : "—"} / ${tgt.touch_p != null ? Number(tgt.touch_p).toFixed(2) : "—"}</b></div>
+        ${ivRv != null ? `<div class="go-metric"><small>IV−RV</small><b>${ivRv}</b></div>` : ""}
+        ${risk.margin_est_inr != null ? `<div class="go-metric"><small>Margin (proxy)</small><b>₹${Number(risk.margin_est_inr).toLocaleString("en-IN")}</b></div>` : ""}
+      </div>
+      ${soft}${hard}
+      <div id="go-greeks-line" class="go-greeks-line"></div>
+      <div id="go-payoff-wrap"></div>
+      <div class="go-actions">
+        <button type="button" class="btn btn-primary" id="go-stage-btn">Stage journal</button>
+        <button type="button" class="btn btn-secondary" id="go-skip-btn">Skip FIRE</button>
+      </div>
+      <div id="go-manage-row" class="go-manage-row"></div>
+      <details class="go-why">
+        <summary>Why — evidence pack (double-check)</summary>
+        <table><thead><tr><th>Factor</th><th>Value</th><th>Threshold</th><th>Result</th><th>Source</th></tr></thead>
+        <tbody>${whyRows || "<tr><td colspan='5'>No evidence</td></tr>"}</tbody></table>
+      </details>
+    `;
+
+    const stageBtn = document.getElementById("go-stage-btn");
+    const skipBtn = document.getElementById("go-skip-btn");
+    if (stageBtn) stageBtn.onclick = () => stageGoDecision();
+    if (skipBtn) skipBtn.onclick = () => skipGoDecision();
+    enrichGoManagePanel(decision);
+  }
+
+  function renderGoPayoffSvg(payoff) {
+    const pts = (payoff && payoff.points) || [];
+    if (pts.length < 2) return "";
+    const w = 400, h = 110, pad = 8;
+    const xs = pts.map((p) => p.spot);
+    const ys = pts.map((p) => p.pnl_inr);
+    const xmin = Math.min(...xs), xmax = Math.max(...xs);
+    const ymin = Math.min(...ys, 0), ymax = Math.max(...ys, 0);
+    const xspan = Math.max(xmax - xmin, 1);
+    const yspan = Math.max(ymax - ymin, 1);
+    const xy = (p) => {
+      const x = pad + ((p.spot - xmin) / xspan) * (w - 2 * pad);
+      const y = h - pad - ((p.pnl_inr - ymin) / yspan) * (h - 2 * pad);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    };
+    const poly = pts.map(xy).join(" ");
+    const zeroY = h - pad - ((0 - ymin) / yspan) * (h - 2 * pad);
+    let spotLine = "";
+    if (payoff.spot != null) {
+      const sx = pad + ((Number(payoff.spot) - xmin) / xspan) * (w - 2 * pad);
+      spotLine = `<line x1="${sx}" y1="${pad}" x2="${sx}" y2="${h - pad}" stroke="var(--ink-faint)" stroke-dasharray="3 3"/>`;
+    }
+    return `<svg class="go-payoff-svg" viewBox="0 0 ${w} ${h}" role="img" aria-label="Expiry payoff">
+      <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="var(--line)"/>
+      ${spotLine}
+      <polyline fill="none" stroke="var(--go)" stroke-width="2" points="${poly}"/>
+    </svg>
+    <div class="go-muted" style="font-size:0.68rem">Expiry P&amp;L · min ₹${payoff.min_pnl_inr ?? "—"} · max ₹${payoff.max_pnl_inr ?? "—"}</div>`;
+  }
+
+  function renderGoSmileLine(smile) {
+    if (!smile || !smile.points || !smile.points.length) return "";
+    const pts = smile.points.filter((p) => p.iv_pct != null);
+    if (!pts.length) return "";
+    const cells = pts.map((p) => {
+      const label = p.side === "ATM" ? "ATM" : `${p.side} ${Math.round(p.delta * 100)}Δ`;
+      return `<span class="go-smile-pt"><small>${label}</small><b>${Number(p.iv_pct).toFixed(1)}</b></span>`;
+    }).join("");
+    const sk = [];
+    if (smile.skew_25d_pct != null) sk.push(`25Δ skew ${smile.skew_25d_pct >= 0 ? "+" : ""}${smile.skew_25d_pct}`);
+    if (smile.skew_10d_pct != null) sk.push(`10Δ ${smile.skew_10d_pct >= 0 ? "+" : ""}${smile.skew_10d_pct}`);
+    return `<div class="go-smile-line">${cells}${sk.length ? `<span class="go-muted">${sk.join(" · ")}</span>` : ""}</div>`;
+  }
+
+  function renderGoPerLegGreeks(greeks) {
+    const legs = (greeks && greeks.per_leg) || [];
+    if (!legs.length) return "";
+    return `<table class="go-legs go-greeks-legs"><thead><tr><th>Leg</th><th>Δ</th><th>Γ</th><th>Vega</th><th>Θ</th></tr></thead>
+      <tbody>${legs.map((L) =>
+        `<tr><td>${L.action} ${L.opt_type} ${L.strike}</td><td>${L.delta}</td><td>${L.gamma}</td><td>${L.vega}</td><td>${L.theta}</td></tr>`
+      ).join("")}</tbody></table>`;
+  }
+
+  async function enrichGoManagePanel(decision) {
+    if (!decision) return;
+    const mode = decision.mode || state.goMode;
+    const gEl = document.getElementById("go-greeks-line");
+    const pEl = document.getElementById("go-payoff-wrap");
+    const mEl = document.getElementById("go-manage-row");
+    try {
+      const url = `/api/go/structure/payoff?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(mode)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) return;
+      const net = (data.greeks && data.greeks.net) || {};
+      if (gEl && net.delta != null) {
+        gEl.innerHTML = `Net Δ ${net.delta} · Γ ${net.gamma} · Vega ${net.vega} · Θ ${net.theta}`
+          + (data.greeks.note ? ` · <span class="go-muted">${data.greeks.note}</span>` : "")
+          + renderGoPerLegGreeks(data.greeks)
+          + (mode !== "directional" ? renderGoSmileLine(data.smile) : "");
+      }
+      if (mode === "directional") {
+        if (mEl) {
+          mEl.innerHTML = `
+            <button type="button" class="btn btn-secondary go-manage-btn" data-go-action="trail">Trail</button>
+            <button type="button" class="btn btn-secondary go-manage-btn" data-go-action="flatten">Flatten</button>`;
+          mEl.querySelectorAll(".go-manage-btn").forEach((btn) => {
+            btn.onclick = () => goManageAction(btn.getAttribute("data-go-action"));
+          });
+        }
+        return;
+      }
+      if (pEl) {
+        const payoffSvg = (data.payoff && (data.payoff.points || []).length)
+          ? renderGoPayoffSvg(data.payoff)
+          : "";
+        pEl.innerHTML = payoffSvg + renderGoSmileLine(data.smile);
+        fetch(`/api/go/whatif?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(mode)}`)
+          .then((r) => r.json())
+          .then((wf) => {
+            const rows = (wf.whatif && wf.whatif.scenarios) || [];
+            if (!rows.length || !pEl) return;
+            const mid = rows.filter((s) => Math.abs(s.shock_pct) <= 1.0);
+            pEl.insertAdjacentHTML("beforeend",
+              `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">What-if (Black-76)</div>
+               <table class="go-legs"><thead><tr><th>Shock</th><th>Spot</th><th>P&amp;L ₹</th></tr></thead>
+               <tbody>${mid.map((s) => `<tr><td>${s.shock_pct}%</td><td>${s.spot}</td><td>${s.pnl_inr}</td></tr>`).join("")}</tbody></table>`);
+          }).catch(() => {});
+      }
+      if (mEl) {
+        const acts = data.manage_actions || [];
+        mEl.innerHTML = acts.slice(0, 4).map((a) =>
+          `<button type="button" class="btn btn-secondary go-manage-btn" data-go-action="${a.action}" title="${a.detail || ""}">${a.label}</button>`
+        ).join("");
+        mEl.querySelectorAll(".go-manage-btn").forEach((btn) => {
+          btn.onclick = () => goManageAction(btn.getAttribute("data-go-action"));
+        });
+      }
+    } catch (e) { /* non-fatal */ }
+  }
+
+  async function goManageAction(action) {
+    if (!state.lastGoDecision || !action) return;
+    try {
+      const res = await fetch("/api/go/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: state.lastGoDecision, action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "Manage action failed");
+        return;
+      }
+      if (data.trade_id) showToast(`${action} staged · ${data.trade_id} — confirm at broker`);
+      else showToast(data.detail || data.status || action);
+      if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
+    } catch (e) {
+      showToast("Manage action failed");
+    }
+  }
+
+  function syncGoRitualChips() {
+    const key = `cubera_go_ritual_${new Date().toISOString().slice(0, 10)}`;
+    let done = {};
+    try { done = JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) { done = {}; }
+    document.querySelectorAll(".go-ritual-chip").forEach((btn) => {
+      const id = btn.getAttribute("data-ritual");
+      btn.classList.toggle("is-done", !!done[id]);
+      btn.onclick = () => {
+        done[id] = !done[id];
+        localStorage.setItem(key, JSON.stringify(done));
+        btn.classList.toggle("is-done", !!done[id]);
+      };
+    });
+  }
+
+  async function loadGoDesk() {
+    syncGoToolbar();
+    syncGoRitualChips();
+    syncGoWebhookToggle();
+    syncGoRawTapeToggle();
+    loadGoDigest();
+    loadGoOpenPanel();
+    const sym = (state.symbol || "").toUpperCase();
+    try {
+      const url = `/api/go/decision?symbol=${encodeURIComponent(sym)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode)}&delta_pref=${encodeURIComponent(state.goDelta)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        const card = document.getElementById("go-primary-card");
+        if (card) card.innerHTML = `<div class="go-muted">${data.detail || "GO desk unavailable"}</div>`;
+        return;
+      }
+      if (data.decision) renderGoLane(data.decision);
+      if (data.notify && data.notify.status === "sent") {
+        showToast("FIRE webhook sent");
+      }
+      loadGoAlerts();
+    } catch (err) {
+      const card = document.getElementById("go-primary-card");
+      if (card) card.innerHTML = `<div class="go-muted">GO desk error</div>`;
+    }
+  }
+
+  function syncGoWebhookToggle() {
+    const el = document.getElementById("go-fire-webhook-toggle");
+    if (!el || el._goBound) return;
+    el._goBound = true;
+    const saved = localStorage.getItem("cubera_go_fire_webhook");
+    if (saved === "1") el.checked = true;
+    el.addEventListener("change", () => {
+      localStorage.setItem("cubera_go_fire_webhook", el.checked ? "1" : "0");
+      const url = localStorage.getItem("cubera_go_webhook_url") || "";
+      fetch("/api/go/prefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fire_webhook: !!el.checked, webhook_url: url }),
+      }).catch(() => {});
+      if (el.checked && !url) {
+        const entered = window.prompt("FIRE webhook URL (Telegram bot or generic JSON POST):", "");
+        if (entered) {
+          localStorage.setItem("cubera_go_webhook_url", entered.trim());
+          fetch("/api/go/prefs", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fire_webhook: true, webhook_url: entered.trim() }),
+          }).catch(() => {});
+        } else {
+          el.checked = false;
+          localStorage.setItem("cubera_go_fire_webhook", "0");
+        }
+      }
+    });
+    // push saved prefs on load
+    if (el.checked) {
+      const url = localStorage.getItem("cubera_go_webhook_url") || "";
+      if (url) {
+        fetch("/api/go/prefs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fire_webhook: true, webhook_url: url }),
+        }).catch(() => {});
+      }
+    }
+  }
+
+  async function loadGoAlerts() {
+    const strip = document.getElementById("go-alerts-strip");
+    if (!strip) return;
+    try {
+      const res = await fetch(`/api/go/alerts?symbol=${encodeURIComponent(state.symbol)}&refresh=true`);
+      const data = await res.json();
+      if (!res.ok) return;
+      const alerts = data.alerts || [];
+      if (!alerts.length) {
+        strip.innerHTML = data.refreshed_marks
+          ? `<div class="go-muted">Open marks refreshed (${data.refreshed_marks}) · no alerts</div>`
+          : "";
+        return;
+      }
+      strip.innerHTML = alerts.slice(0, 6).map((a) =>
+        `<div class="go-alert is-${a.severity || "info"}">${a.message}</div>`
+      ).join("");
+    } catch (e) { /* non-fatal */ }
+  }
+
+  async function loadGoDigest() {
+    const sumEl = document.getElementById("go-digest-summary");
+    const bitesEl = document.getElementById("go-digest-bites");
+    if (!sumEl) return;
+    try {
+      const res = await fetch(`/api/go/digest?symbol=${encodeURIComponent(state.symbol)}&minutes=15`);
+      const data = await res.json();
+      if (!res.ok) {
+        sumEl.textContent = "Digest unavailable";
+        return;
+      }
+      sumEl.textContent = data.summary || "Quiet";
+      if (bitesEl) {
+        const bites = data.bites || [];
+        bitesEl.innerHTML = bites.length
+          ? bites.map((b) => `<span class="go-digest-bite">${b}</span>`).join("")
+          : "";
+      }
+    } catch (e) {
+      sumEl.textContent = "Digest unavailable";
+    }
+  }
+
+  async function loadGoOpenPanel() {
+    const root = document.getElementById("go-open-panel");
+    if (!root) return;
+    try {
+      const res = await fetch(`/api/go/open?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}`);
+      const data = await res.json();
+      if (!res.ok) return;
+      const opens = data.open || [];
+      if (!opens.length) {
+        root.innerHTML = "";
+        return;
+      }
+      root.innerHTML = `<div class="go-muted" style="margin-bottom:4px">Open staged · live Greeks</div>` +
+        opens.slice(0, 4).map((o) => {
+          const net = (o.greeks && o.greeks.net) || {};
+          const gLine = net.delta != null
+            ? `Δ ${net.delta} · Γ ${net.gamma} · V ${net.vega} · Θ ${net.theta}`
+            : "Greeks —";
+          const trail = o.trail_armed ? ` · trail ${o.trail_stop}` : "";
+          return `<div class="go-open-row">
+            <span>${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe ?? "—"} / MAE ${o.mae ?? "—"}${trail}</span>
+            <span class="go-open-greeks">${gLine}</span>
+          </div>`;
+        }).join("");
+    } catch (e) { /* non-fatal */ }
+  }
+
+  function syncGoRawTapeToggle() {
+    const btn = document.getElementById("go-digest-toggle-raw");
+    const row = document.getElementById("cockpit-tape-row");
+    if (!btn || !row) return;
+    const key = "cubera_go_show_raw_tapes";
+    const show = localStorage.getItem(key) === "1";
+    row.classList.toggle("is-raw-collapsed", !show);
+    btn.textContent = show ? "Hide raw tapes" : "Show raw tapes";
+    btn.onclick = () => {
+      const next = localStorage.getItem(key) !== "1";
+      localStorage.setItem(key, next ? "1" : "0");
+      row.classList.toggle("is-raw-collapsed", !next);
+      btn.textContent = next ? "Hide raw tapes" : "Show raw tapes";
+    };
+  }
+
+  async function loadGoScorecard() {
+    const root = document.getElementById("go-scorecard");
+    if (!root) return;
+    try {
+      const [effRes, openRes, btRes, wrRes] = await Promise.all([
+        fetch(`/api/go/efficiency?symbol=${encodeURIComponent(state.symbol)}`),
+        fetch(`/api/go/open?symbol=${encodeURIComponent(state.symbol)}`),
+        fetch(`/api/go/backtest-slice?symbol=${encodeURIComponent(state.symbol)}`),
+        fetch(`/api/go/writer/risk?portfolio=true&window=${encodeURIComponent(state.window || "current_week")}`),
+      ]);
+      const eff = await effRes.json();
+      const openPayload = await openRes.json().catch(() => ({ open: [] }));
+      const bt = await btRes.json().catch(() => ({ templates: [] }));
+      const wr = await wrRes.json().catch(() => ({ books: [] }));
+      const c = eff.counts || {};
+      const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+      set("go-sc-emit", String(c.EMIT || 0));
+      set("go-sc-stage", String(c.STAGE || 0));
+      set("go-sc-skip", String(c.SKIP || 0));
+      set("go-sc-edge", eff.edge_ratio != null ? `${eff.edge_ratio}×` : "—");
+      const lat = (eff.process || {}).median_emit_to_stage_sec;
+      set("go-sc-latency", lat != null ? `${lat}s` : "—");
+      const sub = document.getElementById("go-scorecard-sub");
+      if (sub) {
+        sub.textContent = `stage/FIRE ${eff.stage_rate_vs_fire_emit ?? "—"} · skip/FIRE ${eff.skip_rate_vs_fire_emit ?? "—"} · open ${eff.open_positions ?? 0}`;
+      }
+      const modeBody = document.querySelector("#go-sc-mode-table tbody");
+      if (modeBody) {
+        const modes = eff.by_mode || {};
+        const keys = Object.keys(modes);
+        modeBody.innerHTML = keys.length
+          ? keys.map((m) => {
+            const r = modes[m];
+            return `<tr><td>${m}</td><td>${r.EMIT || 0}</td><td>${r.STAGE || 0}</td><td>${r.SKIP || 0}</td><td>${r.FIRE || 0}</td></tr>`;
+          }).join("")
+          : `<tr><td colspan="5">No emits yet</td></tr>`;
+      }
+      const btBody = document.querySelector("#go-sc-bt-table tbody");
+      if (btBody) {
+        const tpls = bt.templates || [];
+        btBody.innerHTML = tpls.length
+          ? tpls.slice(0, 8).map((t) =>
+            `<tr><td>${t.strategy_key}</td><td>${t.emit_fire}</td><td>${t.staged}</td><td>${t.edge_ratio != null ? t.edge_ratio + "×" : "—"}</td></tr>`
+          ).join("")
+          : `<tr><td colspan="4">No FIRE templates yet</td></tr>`;
+      }
+      const stratBody = document.querySelector("#go-sc-strat-table tbody");
+      if (stratBody) {
+        const rows = Object.entries(eff.by_strategy_key || {});
+        stratBody.innerHTML = rows.length
+          ? rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("")
+          : `<tr><td colspan="2">—</td></tr>`;
+      }
+      const wrBody = document.querySelector("#go-sc-writer-table tbody");
+      if (wrBody) {
+        const books = wr.books || [];
+        wrBody.innerHTML = books.length
+          ? books.map((b) => {
+            if (b.error) return `<tr><td>${b.symbol}</td><td colspan="3">${b.error}</td></tr>`;
+            const ivrv = b.iv_rv != null ? `${Number(b.iv_rv) >= 0 ? "+" : ""}${Number(b.iv_rv).toFixed(1)}` : "—";
+            const marg = b.margin_est_inr != null ? `₹${Number(b.margin_est_inr).toLocaleString("en-IN")}` : "—";
+            return `<tr><td>${b.symbol}</td><td>${b.state || "—"}</td><td>${ivrv}</td><td>${marg}</td></tr>`;
+          }).join("")
+          : `<tr><td colspan="4">—</td></tr>`;
+      }
+      const wrSum = document.getElementById("go-sc-writer-sum");
+      if (wrSum) {
+        wrSum.textContent = wr.margin_open_sum_proxy != null
+          ? `Portfolio margin proxy Σ ₹${Number(wr.margin_open_sum_proxy).toLocaleString("en-IN")} · not exchange SPAN`
+          : "";
+      }
+      const procEl = document.getElementById("go-sc-process");
+      if (procEl) {
+        const p = eff.process || {};
+        procEl.innerHTML = [
+          `Evidence complete: <b>${p.evidence_complete_pct != null ? p.evidence_complete_pct + "%" : "—"}</b>`,
+          `Trail armed (open): <b>${p.trail_armed_open ?? 0}</b>`,
+          `Lunch-chop emits: <b>${eff.lunch_emit_count ?? 0}</b>`,
+          `Avg MFE / MAE: <b>${eff.avg_mfe ?? "—"} / ${eff.avg_mae ?? "—"}</b>`,
+          `FIRE templates: <b>${bt.fire_emits ?? 0}</b> emit · <b>${bt.staged ?? 0}</b> staged`,
+        ].join("<br>");
+      }
+      const openEl = document.getElementById("go-sc-open");
+      if (openEl) {
+        const opens = openPayload.open || [];
+        openEl.innerHTML = opens.length
+          ? `<div class="go-muted" style="margin-bottom:4px">Open staged</div>` +
+            opens.slice(0, 8).map((o) => {
+              const net = (o.greeks && o.greeks.net) || {};
+              const g = net.delta != null ? ` · Δ ${net.delta}` : "";
+              return `<div style="font-family:var(--mono);font-size:0.72rem">${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe} / MAE ${o.mae}${o.trail_armed ? " · trail " + o.trail_stop : ""}${g}</div>`;
+            }).join("")
+          : "";
+      }
+      const hourBody = document.querySelector("#go-sc-hour-table tbody");
+      if (hourBody) {
+        const hours = Object.entries(eff.by_hour || {});
+        hourBody.innerHTML = hours.length
+          ? hours.map(([h, r]) =>
+            `<tr><td>${h}</td><td>${r.EMIT || 0}</td><td>${r.FIRE || 0}</td><td>${r.STAGE || 0}</td><td>${r.SKIP || 0}</td></tr>`
+          ).join("")
+          : `<tr><td colspan="5">—</td></tr>`;
+      }
+      const dowBody = document.querySelector("#go-sc-dow-table tbody");
+      if (dowBody) {
+        const dows = Object.entries(eff.by_dow || {});
+        dowBody.innerHTML = dows.length
+          ? dows.map(([d, r]) =>
+            `<tr><td>${d}</td><td>${r.EMIT || 0}</td><td>${r.FIRE || 0}</td><td>${r.STAGE || 0}</td><td>${r.SKIP || 0}</td></tr>`
+          ).join("")
+          : `<tr><td colspan="5">—</td></tr>`;
+      }
+      const lunchEl = document.getElementById("go-sc-lunch");
+      if (lunchEl) {
+        lunchEl.innerHTML = [
+          `Emits with lunch_chop soft-flag: <b>${eff.lunch_emit_count ?? 0}</b>`,
+          `Staged from that cohort: <b>${eff.lunch_stage_count ?? 0}</b>`,
+          `Soft size-down only — does not hard-block FIRE.`,
+        ].join("<br>");
+      }
+    } catch (e) {
+      console.error("GO scorecard", e);
+    }
+  }
+
+  async function stageGoDecision() {
+    if (!state.lastGoDecision) return;
+    try {
+      const res = await fetch("/api/go/stage", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: state.lastGoDecision }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "Stage failed");
+        return;
+      }
+      showToast(`Staged ${data.trade_id} — confirm at broker`);
+      if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
+      loadGoOpenPanel();
+      loadGoDigest();
+    } catch (e) {
+      showToast("Stage failed");
+    }
+  }
+
+  async function skipGoDecision() {
+    if (!state.lastGoDecision) return;
+    try {
+      const res = await fetch("/api/go/skip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: state.lastGoDecision }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.detail || "Skip failed");
+        return;
+      }
+      showToast(`Skipped FIRE · ${data.skip_id}`);
+      if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
+    } catch (e) {
+      showToast("Skip failed");
+    }
+  }
+
+  document.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!(t instanceof HTMLElement)) return;
+    if (t.hasAttribute("data-go-mode")) {
+      state.goMode = t.getAttribute("data-go-mode");
+      localStorage.setItem("cubera_go_mode", state.goMode);
+      fetch("/api/go/prefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: state.goMode }),
+      }).catch(() => {});
+      loadGoDesk();
+      return;
+    }
+    if (t.hasAttribute("data-go-delta")) {
+      state.goDelta = parseFloat(t.getAttribute("data-go-delta"));
+      localStorage.setItem("cubera_go_delta", String(state.goDelta));
+      fetch("/api/go/prefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delta_pref: state.goDelta }),
+      }).catch(() => {});
+      loadGoDesk();
+      return;
+    }
+    if (t.id === "go-refresh-btn") loadGoDesk();
+    if (t.id === "go-scorecard-refresh") loadGoScorecard();
+
+  });
+
   async function loadCockpit() {
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
@@ -2320,6 +2941,7 @@
 
       if (!data.kpis) return;
       state.lastCockpitDash = data;
+      loadGoDesk();
       paintHeaderSession(headerExecFromBook(data), headerCountdown(data), true, marketOpenFrom(data));
       if (state.spot > 0) data.spot = state.spot;
       const valueLine = document.getElementById("value-area-line");
@@ -4738,8 +5360,140 @@
     loadRecommendations();
   };
 
+  function renderGoDeskFeed(items) {
+    const feed = document.getElementById("go-desk-feed");
+    if (!feed) return;
+    const list = Array.isArray(items) ? items : [];
+    if (!list.length) {
+      feed.innerHTML = `<div class="go-muted">No GO items. Refresh after the book loads.</div>`;
+      return;
+    }
+    feed.innerHTML = list.map((d, idx) => {
+      const st = d.state || "HOLD";
+      const cls = st === "FIRE" ? "is-fire" : (st === "SCOUT" ? "is-scout" : "");
+      const legs = (d.contracts || []).map((L) =>
+        `${L.action} ${L.opt_type} ${L.strike}${L.expiry ? " (" + L.expiry + ")" : ""}${L.ltp != null ? " @₹" + Number(L.ltp).toFixed(1) : ""}`
+      ).join(" · ") || "—";
+      const evidence = (d.evidence || []).slice(0, 6).map((e) => {
+        const ok = e.pass ? `<span class="go-pass">PASS</span>` : `<span class="go-fail">FAIL</span>`;
+        const val = typeof e.value === "object" ? JSON.stringify(e.value) : String(e.value);
+        return `<tr><td>${e.label || e.factor}</td><td>${val}</td><td>${e.threshold || ""}</td><td>${ok}</td></tr>`;
+      }).join("");
+      const risk = d.risk || {};
+      const tgt = d.targets || {};
+      const maxLoss = risk.max_loss_inr != null
+        ? `₹${Number(risk.max_loss_inr).toLocaleString("en-IN")}`
+        : (risk.margin_est_inr != null ? `marg ₹${Number(risk.margin_est_inr).toLocaleString("en-IN")}` : "—");
+      const credit = risk.credit_or_debit == null ? "—"
+        : (Number(risk.credit_or_debit) >= 0
+          ? `+${Number(risk.credit_or_debit).toFixed(1)} cr`
+          : `${Number(risk.credit_or_debit).toFixed(1)} db`);
+      const beLo = risk.breakeven_low != null ? Number(risk.breakeven_low).toFixed(0) : null;
+      const beHi = risk.breakeven_high != null ? Number(risk.breakeven_high).toFixed(0) : null;
+      const beLine = (beLo || beHi) ? `${beLo || "—"} / ${beHi || "—"}` : "—";
+      const maxProfit = risk.max_profit_inr != null
+        ? `₹${Number(risk.max_profit_inr).toLocaleString("en-IN")}` : "—";
+      const ivRv = risk.iv_rv != null
+        ? `${Number(risk.iv_rv) >= 0 ? "+" : ""}${Number(risk.iv_rv).toFixed(1)}` : null;
+      return `
+        <article class="go-desk-card ${cls}" data-go-idx="${idx}">
+          <div class="go-card-head">
+            <span class="go-state-pill">${st} ${d.score != null ? Number(d.score).toFixed(0) : ""}</span>
+            <span class="go-card-title">${d.mode || ""} · ${d.strategy_key || ""}</span>
+            <span class="go-enter-badge">${d.enter_rule || ""} · ${d.size_tier || ""}</span>
+          </div>
+          <div class="go-muted">${d.thesis || ""}</div>
+          <div style="font-family:var(--mono);font-size:0.78rem">${legs}</div>
+          <div class="go-metrics">
+            <div class="go-metric"><small>Credit / debit</small><b>${credit}</b></div>
+            <div class="go-metric"><small>BEs lo / hi</small><b>${beLine}</b></div>
+            <div class="go-metric"><small>Max loss / margin</small><b>${maxLoss}</b></div>
+            <div class="go-metric"><small>Max profit</small><b>${maxProfit}</b></div>
+            <div class="go-metric"><small>T1</small><b>${tgt.t1 != null ? "₹" + Number(tgt.t1).toFixed(1) : "—"}</b></div>
+            <div class="go-metric"><small>Spot inval</small><b>${(d.invalidation && d.invalidation.spot_level) != null ? Number(d.invalidation.spot_level).toFixed(0) : "—"}</b></div>
+            ${ivRv != null ? `<div class="go-metric"><small>IV−RV</small><b>${ivRv}</b></div>` : ""}
+            <div class="go-metric"><small>Trail</small><b>${tgt.trail_rule || "—"}</b></div>
+          </div>
+          <div class="go-actions">
+            <button type="button" class="btn btn-primary go-desk-stage" data-go-idx="${idx}">Stage journal</button>
+            <button type="button" class="btn btn-secondary go-desk-skip" data-go-idx="${idx}">Skip FIRE</button>
+          </div>
+          <details class="go-why">
+            <summary>Why — evidence pack</summary>
+            <table><thead><tr><th>Factor</th><th>Value</th><th>Threshold</th><th>Result</th></tr></thead>
+            <tbody>${evidence || "<tr><td colspan='4'>No evidence</td></tr>"}</tbody></table>
+          </details>
+        </article>`;
+    }).join("");
+    state.goDeskItems = list;
+    feed.querySelectorAll(".go-desk-stage").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.getAttribute("data-go-idx") || "-1", 10);
+        const d = state.goDeskItems && state.goDeskItems[i];
+        if (!d) return;
+        state.lastGoDecision = d;
+        stageGoDecision();
+      });
+    });
+    feed.querySelectorAll(".go-desk-skip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const i = parseInt(btn.getAttribute("data-go-idx") || "-1", 10);
+        const d = state.goDeskItems && state.goDeskItems[i];
+        if (!d) return;
+        state.lastGoDecision = d;
+        skipGoDecision();
+      });
+    });
+  }
+
+  async function loadGoDeskFeed() {
+    const feed = document.getElementById("go-desk-feed");
+    if (!feed) return;
+    try {
+      const url = `/api/go/feed?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode || "directional")}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (!res.ok) {
+        feed.innerHTML = `<div class="go-muted">${data.detail || "GO Desk unavailable"}</div>`;
+        return;
+      }
+      renderGoDeskFeed(data.items || []);
+      const effEl = document.getElementById("go-desk-eff-strip");
+      if (effEl) {
+        Promise.all([
+          fetch(`/api/go/efficiency?symbol=${encodeURIComponent(state.symbol)}`).then((r) => r.json()),
+          fetch(`/api/go/open?symbol=${encodeURIComponent(state.symbol)}`).then((r) => r.json()).catch(() => ({ open: [] })),
+        ]).then(([eff, openPayload]) => {
+          const c = eff.counts || {};
+          const openN = eff.open_positions != null ? eff.open_positions : ((openPayload.open || []).length);
+          const proc = eff.process || {};
+          const parts = [
+            `Efficiency · emit ${c.EMIT || 0}`,
+            `staged ${c.STAGE || 0}`,
+            `skipped ${c.SKIP || 0}`,
+          ];
+          if (eff.stage_rate_vs_fire_emit != null) parts.push(`stage/FIRE ${eff.stage_rate_vs_fire_emit}`);
+          if (eff.skip_rate_vs_fire_emit != null) parts.push(`skip/FIRE ${eff.skip_rate_vs_fire_emit}`);
+          if (eff.avg_mfe != null) parts.push(`avg MFE ${eff.avg_mfe}`);
+          if (eff.avg_mae != null) parts.push(`avg MAE ${eff.avg_mae}`);
+          if (eff.edge_ratio != null) parts.push(`edge ${eff.edge_ratio}`);
+          if (proc.median_emit_to_stage_sec != null) parts.push(`emit→stage ${proc.median_emit_to_stage_sec}s`);
+          if (proc.evidence_complete_pct != null) parts.push(`evidence ${proc.evidence_complete_pct}%`);
+          parts.push(`open ${openN}`);
+          const trailed = (openPayload.open || []).filter((o) => o.trail_armed).length;
+          if (trailed) parts.push(`trail armed ${trailed}`);
+          if (eff.lunch_emit_count) parts.push(`lunch emits ${eff.lunch_emit_count}`);
+          effEl.textContent = parts.join(" · ");
+        }).catch(() => {});
+      }
+    } catch (e) {
+      feed.innerHTML = `<div class="go-muted">GO Desk error</div>`;
+    }
+  }
+
   async function loadRecommendations() {
     try {
+      loadGoDeskFeed();
       const res = await fetch(`/api/recommendations?symbol=${state.symbol}&window=${state.window}&capital=${state.capital}&risk=${state.riskPct}`);
       const data = await res.json();
       const lotEl = document.getElementById("hud-lot-size");
@@ -8422,6 +9176,7 @@
         loadSentinelTape();
         break;
       case "tab-efficiency":
+        loadGoScorecard();
         loadSignalEfficiency();
         break;
       case "tab-market-intel":
