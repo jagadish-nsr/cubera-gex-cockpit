@@ -399,7 +399,7 @@ Problems called out in chat / prior analyses, turned into build obligations:
 | B2 | Enter rule explicit | One of the enum values shown as CTA language |
 | B3 | Target Engine SL/T1/T2 on card | Matches repricer; missing → HOLD or hide targets with reason |
 | B4 | Soft corridor size tier | Inside corridor → HALF/SCOUT unless STRIKE_BREAK FIRE |
-| B5 | Trailing rule | After +30% premium (configurable), trail stop updates on 5m close |
+| B5 | Trailing rule | After +30% premium (configurable), stop = max(entry×1.10, peak×(1−25% giveback), prior); TRAIL_STOP settles at the stop (not a gap-through mark). 11 Nov VANNA −₹3.2k was fixed-stop + gap fill. |
 | B6 | Push on FIRE | Optional webhook fires within 2s of decision |
 
 ### Epic C — Structure FIRE (P1)

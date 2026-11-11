@@ -1061,19 +1061,48 @@ def evaluate_trail(
     mark_ltp: float,
     arm_pct: float = 0.30,
     lock_pct_of_entry: float = 0.10,
+    peak_ltp: float | None = None,
+    prior_stop: float | None = None,
+    giveback_pct_from_peak: float = 0.25,
 ) -> dict:
-    """Directional premium trail. Arms after +arm_pct; stop = entry * (1+lock).
+    """Directional premium trail with ratchet (B5).
 
-    Example: entry 72, arm 30% → arm at 93.6; lock 10% → trail stop 79.2 once armed.
+    Arms after +arm_pct from entry. Floor lock = entry*(1+lock). Once armed the
+    stop ratchets with the peak: max(floor, peak*(1−giveback), prior_stop).
+
+    11 Nov Sensex VANNA −₹3.2k: entry ~398, MFE +328 (peak ~726), fixed stop
+    stuck at entry*1.10 (~438) then settled through the stop at ~241. Ratchet +
+    fill-at-stop in ``mark_open`` are the fix.
+
+    Example: entry 72, arm 30% → arm at 93.6; floor lock 10% → 79.2. Peak 120 →
+    stop max(79.2, 120*0.75)=90.
     """
     entry = float(entry_ltp or 0)
     mark = float(mark_ltp or 0)
     if entry <= 0:
-        return {"armed": False, "pnl_pct": None, "trail_stop": None, "reason": "no_entry"}
+        return {
+            "armed": False,
+            "pnl_pct": None,
+            "trail_stop": None,
+            "stopped": False,
+            "reason": "no_entry",
+        }
+    peak = max(entry, mark, float(peak_ltp) if peak_ltp is not None else mark)
     pnl_pct = (mark - entry) / entry
-    armed = pnl_pct >= float(arm_pct)
-    trail_stop = round(entry * (1.0 + float(lock_pct_of_entry)), 2) if armed else None
-    stopped = bool(armed and mark <= float(trail_stop or 0))
+    peak_pnl = (peak - entry) / entry
+    armed = bool(prior_stop is not None) or peak_pnl >= float(arm_pct)
+    floor_stop = entry * (1.0 + float(lock_pct_of_entry))
+    peak_stop = peak * (1.0 - float(giveback_pct_from_peak))
+    trail_stop = None
+    if armed:
+        candidates = [floor_stop, peak_stop]
+        if prior_stop is not None:
+            try:
+                candidates.append(float(prior_stop))
+            except (TypeError, ValueError):
+                pass
+        trail_stop = round(max(candidates), 2)
+    stopped = bool(armed and trail_stop is not None and mark <= float(trail_stop))
     return {
         "armed": armed,
         "pnl_pct": round(pnl_pct * 100.0, 1),
@@ -1081,6 +1110,8 @@ def evaluate_trail(
         "stopped": stopped,
         "arm_pct": arm_pct,
         "lock_pct_of_entry": lock_pct_of_entry,
+        "giveback_pct_from_peak": giveback_pct_from_peak,
+        "peak_ltp": round(peak, 2),
     }
 
 

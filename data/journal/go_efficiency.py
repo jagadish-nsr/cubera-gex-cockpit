@@ -407,10 +407,10 @@ def mark_open(
     mark_spot: float | None = None,
     trail: dict | None = None,
 ) -> dict | None:
-    """Update mark, MFE/MAE, sticky trail for an OPEN staged GO.
+    """Update mark, MFE/MAE, ratcheting trail for an OPEN staged GO.
 
-    Trail stickiness: once armed, ``trail_stop`` stays set even if mark
-    retreats below the arm threshold. Hit → status TRAIL_STOP.
+    Once armed, ``trail_stop`` ratchets with peak premium (never loosens).
+    Hit → status TRAIL_STOP and settle at the stop (not a gap-through mark).
     """
     ensure_schema()
     with _LOCK:
@@ -424,10 +424,11 @@ def mark_open(
             if row is None:
                 return None
             entry = float(row["entry_premium"] or 0)
+            mark_px = float(mark_premium)
             # Signed net (SELL−BUY): long debit negative, short credit positive.
             # Favorable for both = entry − mark (long LTP↑ → mark more negative;
             # short premium↓ → mark smaller credit).
-            pnl = entry - float(mark_premium)
+            pnl = entry - mark_px
             fav = max(pnl, 0.0)
             adv = max(-pnl, 0.0)
             mfe = max(float(row["mfe"] or 0), fav)
@@ -435,28 +436,46 @@ def mark_open(
             trail_armed = int(row["trail_armed"] or 0)
             trail_stop = row["trail_stop"]
             status = row["status"]
+            settle_premium = mark_px
 
-            # Sticky directional trail from abs premiums when not supplied
+            # Ratcheting directional trail from abs premiums when not supplied
             if trail is None and str(row["mode"] or "") == "directional" and entry != 0:
                 from analytics.go_desk import evaluate_trail
 
                 entry_abs = abs(entry)
-                mark_abs = abs(float(mark_premium))
-                fresh = evaluate_trail(entry_ltp=entry_abs, mark_ltp=mark_abs)
+                mark_abs = abs(mark_px)
+                # Peak absolute premium from cumulative MFE (long LTP rose).
+                peak_abs = max(entry_abs + float(mfe), mark_abs)
+                fresh = evaluate_trail(
+                    entry_ltp=entry_abs,
+                    mark_ltp=mark_abs,
+                    peak_ltp=peak_abs,
+                    prior_stop=float(trail_stop) if trail_stop is not None else None,
+                )
                 if trail_armed or fresh.get("armed"):
                     trail_armed = 1
-                    if trail_stop is None and fresh.get("trail_stop") is not None:
-                        trail_stop = float(fresh["trail_stop"])
-                    elif fresh.get("trail_stop") is not None and trail_stop is not None:
-                        # Keep the original lock once armed (sticky)
-                        trail_stop = float(trail_stop)
+                    new_stop = fresh.get("trail_stop")
+                    if new_stop is not None:
+                        # Ratchet up only — never loosen an armed stop.
+                        if trail_stop is None:
+                            trail_stop = float(new_stop)
+                        else:
+                            trail_stop = max(float(trail_stop), float(new_stop))
                     if trail_stop is not None and mark_abs <= float(trail_stop):
                         status = "TRAIL_STOP"
+                        # Fill at stop so a gap-through mark cannot invent a −₹3k loss
+                        # past the designed lock (11 Nov VANNA settled 241 vs stop 438).
+                        if entry < 0:
+                            settle_premium = -abs(float(trail_stop))
+                        else:
+                            settle_premium = abs(float(trail_stop))
                 trail = {
                     "armed": bool(trail_armed),
                     "trail_stop": trail_stop,
                     "stopped": status == "TRAIL_STOP",
                     "pnl_pct": fresh.get("pnl_pct"),
+                    "peak_ltp": fresh.get("peak_ltp"),
+                    "settle_premium": settle_premium if status == "TRAIL_STOP" else None,
                 }
             elif trail:
                 trail_armed = 1 if trail.get("armed") else trail_armed
@@ -466,13 +485,23 @@ def mark_open(
                     trail_stop = float(trail["trail_stop"])
                 if trail.get("armed"):
                     trail_armed = 1
-                    if trail_stop is None and trail.get("trail_stop") is not None:
-                        trail_stop = float(trail["trail_stop"])
+                    if trail.get("trail_stop") is not None:
+                        new_stop = float(trail["trail_stop"])
+                        trail_stop = (
+                            new_stop
+                            if trail_stop is None
+                            else max(float(trail_stop), new_stop)
+                        )
                 if trail.get("stopped"):
                     status = "TRAIL_STOP"
+                    if trail_stop is not None and entry < 0:
+                        settle_premium = -abs(float(trail_stop))
+                    elif trail_stop is not None:
+                        settle_premium = abs(float(trail_stop))
 
             now = _now_ist()
             mark_spot_v = mark_spot if mark_spot is not None else row["mark_spot"]
+            stored_mark = settle_premium if status == "TRAIL_STOP" else mark_px
             conn.execute(
                 """
                 UPDATE go_open SET
@@ -481,7 +510,7 @@ def mark_open(
                 WHERE decision_id = ?
                 """,
                 (
-                    float(mark_premium),
+                    float(stored_mark),
                     mark_spot_v,
                     round(mfe, 2),
                     round(mae, 2),
@@ -494,7 +523,7 @@ def mark_open(
             )
             out: dict[str, Any] = {
                 "decision_id": decision_id,
-                "mark_premium": float(mark_premium),
+                "mark_premium": float(stored_mark),
                 "mfe": round(mfe, 2),
                 "mae": round(mae, 2),
                 "trail_armed": bool(trail_armed),
@@ -504,14 +533,14 @@ def mark_open(
             }
             lot, n_legs = _row_lot_legs(row)
             out["unrealized_pnl_inr"] = unrealized_pnl_inr(
-                entry, float(mark_premium), lot
+                entry, float(stored_mark), lot
             )
             if status == "TRAIL_STOP" and row["net_pnl_inr"] is None:
                 settled = _write_settlement(
                     conn,
                     decision_id=decision_id,
                     entry_premium=entry,
-                    exit_premium=float(mark_premium),
+                    exit_premium=float(settle_premium),
                     exit_spot=float(mark_spot_v) if mark_spot_v is not None else None,
                     exit_reason="TRAIL_STOP",
                     status="TRAIL_STOP",

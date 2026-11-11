@@ -757,7 +757,81 @@ def test_silence_watchdog_schedules_resync_on_stale_ticks(monkeypatch):
         lambda *a, **k: [],
     )
     mgr._poll_silent_instruments()
-    assert called == [("SENSEX-FUT", "SENSEX")]
+    assert ("SENSEX-FUT", "SENSEX") in called
+
+
+def test_silence_watchdog_ignores_historical_hole_when_tip_fresh(monkeypatch):
+    """11 Nov Sensex: mid-window hole + fresh ticks must not spam resync."""
+    import time as _time
+    from types import SimpleNamespace
+    from sentinel.feed.live import LiveSentinelManager
+
+    mgr = LiveSentinelManager()
+    mgr._aggregators["SENSEX-FUT"] = object()
+    mgr._instrument_symbol["SENSEX-FUT"] = "SENSEX"
+    mgr._last_tick_time["SENSEX-FUT"] = _time.time()  # fresh ticks
+    called = []
+    monkeypatch.setattr(mgr, "_session_active_for_silence", lambda: True)
+    monkeypatch.setattr(
+        mgr, "_schedule_gap_resync",
+        lambda iid, sym: called.append((iid, sym)),
+    )
+    # Non-empty bars so poll evaluates trailing gap; force trailing=0.
+    monkeypatch.setattr(
+        "sentinel.feed.live.list_recent_bars",
+        lambda *a, **k: [SimpleNamespace(start_ts=datetime.now(timezone.utc))],
+    )
+    monkeypatch.setattr("sentinel.feed.live.trailing_1m_gap_minutes", lambda *a, **k: 0)
+    monkeypatch.setattr("sentinel.feed.live.largest_1m_gap_minutes", lambda *a, **k: 5)
+    mgr._poll_silent_instruments()
+    assert called == []
+
+
+def test_trailing_1m_gap_minutes_ignores_mid_window_hole():
+    from types import SimpleNamespace
+    from sentinel.feed.live import trailing_1m_gap_minutes, largest_1m_gap_minutes, IST
+
+    now = datetime(2026, 11, 11, 12, 0, tzinfo=IST)
+    bars = []
+    for i in range(10):
+        if i in (3, 4, 5):
+            continue
+        ts = now - timedelta(minutes=9 - i)
+        bars.append(SimpleNamespace(start_ts=ts))
+    assert largest_1m_gap_minutes(bars, now_ist=now) >= 3
+    assert trailing_1m_gap_minutes(bars, now_ist=now) == 0
+
+
+def test_silence_watchdog_heals_when_latest_bar_lags(monkeypatch):
+    """Prod-style death: bars frozen at 10:25 — trailing gap heals even if ticks look fresh."""
+    import time as _time
+    from types import SimpleNamespace
+    from sentinel.feed.live import LiveSentinelManager
+
+    mgr = LiveSentinelManager()
+    # Aggregator map empty (futures path dead) — fixed watch list must still heal.
+    mgr._last_tick_time["NIFTY-FUT"] = _time.time()
+    mgr._instrument_symbol["NIFTY-FUT"] = "NIFTY"
+    called = []
+    monkeypatch.setattr(mgr, "_session_active_for_silence", lambda: True)
+    monkeypatch.setattr(
+        mgr, "_schedule_gap_resync",
+        lambda iid, sym: called.append((iid, sym)),
+    )
+    monkeypatch.setattr(
+        "sentinel.feed.live.list_recent_bars",
+        lambda iid, **k: (
+            [SimpleNamespace(start_ts=datetime(2026, 11, 11, 10, 25))]
+            if iid == "NIFTY-FUT"
+            else []
+        ),
+    )
+    monkeypatch.setattr(
+        "sentinel.feed.live.trailing_1m_gap_minutes",
+        lambda bars, now_ist=None: 10 if bars else 0,
+    )
+    mgr._poll_silent_instruments()
+    assert ("NIFTY-FUT", "NIFTY") in called
 
 
 def test_sync_backfill_marks_oi_stale_after_five_flat(monkeypatch):

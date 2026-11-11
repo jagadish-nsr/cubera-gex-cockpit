@@ -280,36 +280,40 @@ def test_structure_economics_iron_condor():
     assert econ["max_loss_inr"] == (100 - 38) * 65
 
 
-def test_evaluate_trail_arms_and_stops():
+def test_evaluate_trail_arms_ratchets_and_stops():
     from analytics.go_desk import evaluate_trail
 
     cold = evaluate_trail(entry_ltp=72, mark_ltp=80, arm_pct=0.30, lock_pct_of_entry=0.10)
     assert cold["armed"] is False
     assert cold["trail_stop"] is None
 
-    hot = evaluate_trail(entry_ltp=72, mark_ltp=100, arm_pct=0.30, lock_pct_of_entry=0.10)
-    assert hot["armed"] is True
-    assert hot["trail_stop"] == round(72 * 1.10, 2)
-    stopped = evaluate_trail(entry_ltp=72, mark_ltp=75, arm_pct=0.30, lock_pct_of_entry=0.10)
-    # 75 < arm threshold — not armed
-    assert stopped["armed"] is False
-
-    armed_then_hit = evaluate_trail(entry_ltp=72, mark_ltp=100)
-    stop = armed_then_hit["trail_stop"]
-    hit = evaluate_trail(entry_ltp=72, mark_ltp=stop - 1)
-    # Once we'd need stateful trail; evaluate_trail is mark-vs-entry only.
-    # After arm, mark below trail_stop while still above entry*1.3 won't show stopped
-    # unless mark <= trail_stop AND armed. 100 arms; re-eval at 78:
-    below = evaluate_trail(entry_ltp=72, mark_ltp=78)
-    assert below["armed"] is False  # 78/72-1 ≈ 8% < 30%
-    # Arm at 94 (+30%), trail 79.2; mark 79 → stopped
-    at_arm = evaluate_trail(entry_ltp=72, mark_ltp=94)
+    # First arm: floor lock entry*1.10 (peak giveback still below floor)
+    at_arm = evaluate_trail(entry_ltp=72, mark_ltp=94, arm_pct=0.30, lock_pct_of_entry=0.10)
     assert at_arm["armed"] is True
-    assert at_arm["trail_stop"] == round(72 * 1.1, 2)
-    stop_hit = evaluate_trail(entry_ltp=72, mark_ltp=79)
-    # 79 is not yet +30%, so not armed — trail is not sticky in pure function.
-    # Sticky trail lives in go_efficiency.mark_open once armed.
-    assert stop_hit["armed"] is False
+    assert at_arm["trail_stop"] == round(72 * 1.10, 2)
+
+    # Peak 120 → ratchet to max(79.2, 120*0.75)=90
+    hot = evaluate_trail(
+        entry_ltp=72, mark_ltp=120, peak_ltp=120, prior_stop=79.2,
+        giveback_pct_from_peak=0.25,
+    )
+    assert hot["armed"] is True
+    assert hot["trail_stop"] == 90.0
+
+    # prior_stop keeps arm when mark is below the +30% threshold
+    held = evaluate_trail(entry_ltp=72, mark_ltp=85, peak_ltp=120, prior_stop=90.0)
+    assert held["armed"] is True
+    assert held["trail_stop"] == 90.0
+    assert held["stopped"] is True  # 85 <= 90
+
+    # 11 Nov VANNA hand-check: entry 398.3, peak 725.8 → stop ~544.35
+    vanna = evaluate_trail(
+        entry_ltp=398.3, mark_ltp=240.0, peak_ltp=725.8, prior_stop=438.13,
+        giveback_pct_from_peak=0.25,
+    )
+    assert vanna["armed"] is True
+    assert vanna["trail_stop"] == round(max(398.3 * 1.10, 725.8 * 0.75, 438.13), 2)
+    assert vanna["stopped"] is True
 
 
 def test_update_excursion():

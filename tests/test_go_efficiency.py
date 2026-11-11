@@ -131,10 +131,52 @@ def test_sticky_trail_arms_and_stops():
     assert armed["status"] == "OPEN"
     assert armed["mfe"] == 22.0
 
-    # Sticky: drop below trail stop abs 78 < 79.2
+    # Sticky: drop below trail stop abs 78 < 79.2 — settle at stop, not gap mark
     stopped = mark_open("d_arm", mark_premium=-78.0)
     assert stopped["trail_armed"] is True
     assert stopped["status"] == "TRAIL_STOP"
+    assert stopped["mark_premium"] == -round(72 * 1.10, 2)
+
+
+def test_trail_ratchets_and_fills_at_stop_not_gap_through():
+    """11 Nov VANNA: MFE +328 then gap-through stop must not settle at 241."""
+    from data.journal.go_efficiency import record_event, mark_open
+
+    decision = {
+        "id": "d_vanna_trail",
+        "symbol": "SENSEX",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 85,
+        "strategy_key": "VANNA-CHARM",
+        "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 82000, "ltp": 398.3}],
+        "risk": {"credit_or_debit": -398.3},
+        "context": {"spot": 82200, "lot_size": 20},
+    }
+    record_event("STAGE", decision, trade_id="pt_vanna")
+
+    # Arm at +30%
+    armed = mark_open("d_vanna_trail", mark_premium=-(398.3 * 1.30))
+    assert armed["trail_armed"] is True
+    floor = round(398.3 * 1.10, 2)
+    assert armed["trail_stop"] == floor
+
+    # Peak MFE +327.5 → abs peak 725.8; ratchet stop to 725.8*0.75
+    peak_mark = -(398.3 + 327.5)
+    peaked = mark_open("d_vanna_trail", mark_premium=peak_mark)
+    assert peaked["status"] == "OPEN"
+    assert peaked["mfe"] == 327.5
+    ratcheted = round(max(floor, 725.8 * 0.75), 2)
+    assert peaked["trail_stop"] == ratcheted
+
+    # Gap-through to 240 — settle at ratcheted stop, not 240
+    stopped = mark_open("d_vanna_trail", mark_premium=-240.0)
+    assert stopped["status"] == "TRAIL_STOP"
+    assert stopped["mark_premium"] == -ratcheted
+    # Long: entry −398.3 → exit −ratcheted → positive gross
+    assert stopped["gross_pnl_inr"] is not None
+    assert stopped["gross_pnl_inr"] > 0
+    assert stopped["net_pnl_inr"] > 0
 
 
 def test_summarize_process_and_mode_slices():
@@ -288,10 +330,11 @@ def test_trail_stop_auto_settles_pnl():
     mark_open("d_trail_pnl", mark_premium=-94.0)  # arm
     stopped = mark_open("d_trail_pnl", mark_premium=-78.0)
     assert stopped["status"] == "TRAIL_STOP"
-    # entry −72 → exit −78 → gross 6 pts × 65 = 390; net 390 − 40 − 32.5 = 317.5
-    assert stopped["gross_pnl_inr"] == 390.0
-    assert stopped["net_pnl_inr"] == 317.5
+    # Fill at stop 79.2 (not gap mark 78): gross 7.2 × 65 = 468; net 468 − 40 − 32.5 = 395.5
+    assert stopped["mark_premium"] == -79.2
+    assert stopped["gross_pnl_inr"] == 468.0
+    assert stopped["net_pnl_inr"] == 395.5
 
     summary = summarize("NIFTY")
     assert summary["pnl"]["closed_count"] == 1
-    assert summary["pnl"]["net_pnl_inr"] == 317.5
+    assert summary["pnl"]["net_pnl_inr"] == 395.5

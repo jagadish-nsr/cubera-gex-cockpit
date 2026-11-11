@@ -124,7 +124,8 @@ def _minute_floor(ts: datetime) -> datetime:
 def largest_1m_gap_minutes(bars: list[Bar], now_ist: datetime | None = None) -> int:
     """Largest hole between consecutive session 1m bars (and trailing hole to now).
 
-    Returns 0 when fewer than two bars. Used by the Sensex/Nifty gap watchdog.
+    Returns 0 when fewer than two bars. Used by diagnostics; live resync prefers
+    ``trailing_1m_gap_minutes`` so historical holes do not spam broker sync.
     """
     if not bars:
         return 0
@@ -139,6 +140,29 @@ def largest_1m_gap_minutes(bars: list[Bar], now_ist: datetime | None = None) -> 
         if trailing > largest:
             largest = trailing
     return max(0, largest)
+
+
+def trailing_1m_gap_minutes(bars: list[Bar], now_ist: datetime | None = None) -> int:
+    """Minutes since the latest 1m bar floor (how far the tape lags wall clock).
+
+    11 Nov: silence poll used largest mid-window hole while ticks were fresh
+    (tick_age≈0, gap=3) → 39 Sensex resyncs. Heal only when the *latest* bar
+    is stale, or when ticks themselves go quiet.
+    """
+    if not bars:
+        return 0
+    now = _as_ist(now_ist or datetime.now(IST))
+    last = max(_minute_floor(b.start_ts) for b in bars)
+    return max(0, int((_minute_floor(now) - last).total_seconds() // 60) - 1)
+
+
+# Always poll these even if an aggregator was dropped mid-session (prod 11 Nov
+# lost all three -FUT near 10:25; an empty aggregator map must not skip heal).
+_SILENCE_WATCH_INSTRUMENTS: tuple[str, ...] = (
+    "NIFTY-FUT",
+    "BANKNIFTY-FUT",
+    "SENSEX-FUT",
+)
 
 
 class LiveSentinelManager:
@@ -607,12 +631,14 @@ class LiveSentinelManager:
                             sig.entry_price = float(ltp)
                             save_signal(sig)
 
-                # Fail loud on tape holes (Sensex dropped 106 bars on 9 Nov).
+                # Fail loud when the latest bar lags wall clock (trailing hole).
+                # Mid-window historical holes are healed by sync; do not re-fire
+                # on every tick while the tape tip is current (11 Nov Sensex spam).
                 try:
-                    gap = largest_1m_gap_minutes(bars_eval, now_ist=tick_dt)
+                    gap = trailing_1m_gap_minutes(bars_eval, now_ist=tick_dt)
                     if gap >= _GAP_RESYNC_MINUTES:
                         log.warning(
-                            "Sentinel 1m tape gap on %s: largest hole %d min "
+                            "Sentinel 1m tape gap on %s: trailing hole %d min "
                             "(threshold %d) — scheduling broker resync",
                             instrument_id, gap, _GAP_RESYNC_MINUTES,
                         )
@@ -689,14 +715,26 @@ class LiveSentinelManager:
             return (9 * 60 + 15) <= t_min < (15 * 60 + 40) and now.weekday() < 5
 
     def _poll_silent_instruments(self) -> None:
-        """Resync any armed instrument whose ticks or 1m bars went quiet."""
+        """Resync instruments whose ticks went quiet or whose latest 1m bar lags.
+
+        Triggers:
+        - tick silence ≥ ``_TICK_SILENCE_SEC`` (prod 11 Nov death mode — no new
+          bars means the completed-bar gap check never runs);
+        - trailing gap ≥ ``_GAP_RESYNC_MINUTES`` (latest bar behind wall clock).
+
+        Does **not** resync solely because an older hole sits inside the
+        lookback window while ticks and the latest bar are fresh.
+        """
         if not self._session_active_for_silence():
             return
         now = time.time()
         now_ist = datetime.now(IST)
         with _LOCK:
-            instruments = list(self._aggregators.keys()) or list(self._last_tick_time.keys())
-        for instrument_id in instruments:
+            instruments = set(self._aggregators.keys()) | set(self._last_tick_time.keys())
+            instruments.update(_SILENCE_WATCH_INSTRUMENTS)
+            for iid in _SILENCE_WATCH_INSTRUMENTS:
+                self._instrument_symbol.setdefault(iid, iid.replace("-FUT", ""))
+        for instrument_id in sorted(instruments):
             symbol = self._instrument_symbol.get(
                 instrument_id, instrument_id.replace("-FUT", ""),
             )
@@ -706,11 +744,14 @@ class LiveSentinelManager:
                 instrument_id, timeframe="1m", limit=30,
                 session_only=True, _auto_populate=False,
             )
-            gap = largest_1m_gap_minutes(bars, now_ist=now_ist) if bars else 0
-            if silent_sec >= _TICK_SILENCE_SEC or gap >= _GAP_RESYNC_MINUTES:
+            trail_gap = trailing_1m_gap_minutes(bars, now_ist=now_ist) if bars else 0
+            # Boot with today's bars already on disk but no tick yet this process:
+            # trailing_gap heals the prod-style hard stop. Cold start (no bars)
+            # waits for the normal session sync — do not spam.
+            if silent_sec >= _TICK_SILENCE_SEC or trail_gap >= _GAP_RESYNC_MINUTES:
                 log.warning(
-                    "Sentinel silence/gap on %s: tick_age=%.0fs gap=%dm — scheduling resync",
-                    instrument_id, silent_sec, gap,
+                    "Sentinel silence/gap on %s: tick_age=%.0fs trailing_gap=%dm — scheduling resync",
+                    instrument_id, silent_sec, trail_gap,
                 )
                 self._schedule_gap_resync(instrument_id, symbol)
 
