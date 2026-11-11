@@ -408,6 +408,7 @@ def test_classifier_3_bar_cooldown():
             cvd=20000.0, vwap=24505.0,
             vwap_sigma_1=24520.0, vwap_sigma_2=24535.0,
             vwap_lower_1=24490.0, vwap_lower_2=24475.0,
+            oi_fresh=True,  # CONTINUATION requires proven OI move (default is False)
         )
 
     sig1 = engine.evaluate_bar(_make_bull_bar(0), context)

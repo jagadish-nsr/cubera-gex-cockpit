@@ -206,7 +206,7 @@ class SignalClassifierEngine:
         #     On 0-DTE afternoon near the magnet, skip so CVD/absorption can fire.
         # -------------------------------------------------------------------
         elif (
-            getattr(bar, "oi_fresh", True)
+            getattr(bar, "oi_fresh", False)
             and rvol >= 1.5
             and bar.delta_ratio >= 0.25
             and close_pos >= 0.70
@@ -232,7 +232,7 @@ class SignalClassifierEngine:
             )
 
         elif (
-            getattr(bar, "oi_fresh", True)
+            getattr(bar, "oi_fresh", False)
             and rvol >= 1.5
             and bar.delta_ratio <= -0.25
             and close_pos <= 0.30

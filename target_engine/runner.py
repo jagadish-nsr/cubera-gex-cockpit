@@ -51,12 +51,22 @@ def run_target_engine(
 ) -> TargetEngineResult:
     """Execute complete end-to-end Target Engine pipeline on a live dashboard snapshot."""
     dash = dashboard_data
-    spot = float(dash.levels.spot or 0.0) if dash.levels else 25000.0
-    fut = float(getattr(dash.levels, "future_price", None) or spot) if dash.levels else spot
-    atm_iv = float(getattr(dash.levels, "atm_iv", None) or 0.15) if dash.levels else 0.15
-    skew = float(getattr(dash.levels, "skew_25d", None) or 0.0) if dash.levels else 0.0
-    max_pain = float(getattr(dash.levels, "max_pain", 0.0) or 0.0) if dash.levels else None
-    expiry = str(dash.expiries[0]) if dash.expiries else "2026-10-15"
+    if not dash or not dash.levels or not float(getattr(dash.levels, "spot", 0) or 0):
+        raise ValueError("target_engine requires live spot — refusing default 25000")
+    spot = float(dash.levels.spot)
+    fut = float(getattr(dash.levels, "future_price", None) or spot)
+    raw_iv = getattr(dash.levels, "atm_iv", None)
+    try:
+        atm_iv = float(raw_iv) if raw_iv is not None else 0.0
+    except (TypeError, ValueError):
+        atm_iv = 0.0
+    if atm_iv <= 0.05:
+        raise ValueError("target_engine requires live ATM IV — refusing default 0.15")
+    skew = float(getattr(dash.levels, "skew_25d", None) or 0.0)
+    max_pain = float(getattr(dash.levels, "max_pain", 0.0) or 0.0) or None
+    expiry = str(dash.expiries[0]) if dash.expiries else ""
+    if not expiry:
+        raise ValueError("target_engine requires an expiry — refusing hardcoded date")
     contracts_df = dash.contracts if hasattr(dash, "contracts") and isinstance(dash.contracts, pd.DataFrame) else None
 
     # Step 1: Detect structural walls, then prepend cockpit GEX walls so

@@ -343,9 +343,32 @@ def compute_strike_ladder(
                 pass
 
     # 4. Underlying Spot Level Calibration (Targets & Invalidation)
-    atm_iv_base = float(getattr(levels, "atm_iv", None) or 0.14) if levels else 0.14
+    raw_iv = getattr(levels, "atm_iv", None) if levels else None
+    try:
+        atm_iv_base = float(raw_iv) if raw_iv is not None else 0.0
+    except (TypeError, ValueError):
+        atm_iv_base = 0.0
+    if atm_iv_base <= 0.05:
+        # No live ATM IV — empty ladder rather than invent 0.14 vol / sigma_h.
+        return StrikeLadderBundle(
+            symbol=sym,
+            spot=safe_spot,
+            atm_strike=float(atm_strike),
+            expiry=expiry,
+            horizon_minutes=horizon_minutes,
+            lot_size=lot_size,
+            ce_spot_inval=safe_spot,
+            ce_tgt1_spot=safe_spot,
+            ce_tgt2_spot=safe_spot,
+            pe_spot_inval=safe_spot,
+            pe_tgt1_spot=safe_spot,
+            pe_tgt2_spot=safe_spot,
+            rows=[],
+            ws_active_count=0,
+            computed_at=now_dt.strftime("%H:%M:%S"),
+        )
     atm_iv_base = max(0.04, min(0.90, atm_iv_base))
-    
+
     # 1-SD horizon expected move
     sigma_h = max(safe_spot * atm_iv_base * math.sqrt(horizon_minutes / (375.0 * 252.0)), 15.0)
 

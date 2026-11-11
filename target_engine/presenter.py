@@ -54,7 +54,13 @@ def compose_confluence_dial(scenario_set, feature_vector=None) -> Dict[str, Any]
     cw = float(feats.get("F1_call_wall_prox", 0.0) or 0.0)
     pw = float(feats.get("F2_put_wall_prox", 0.0) or 0.0)
     pcr = float(feats.get("F5_pcr_level", 0.0) or 0.0)
-    atm_iv = float(feats.get("F13_atm_iv", 0.14) or 0.14)
+    raw_iv = feats.get("F13_atm_iv")
+    try:
+        atm_iv = float(raw_iv) if raw_iv is not None else None
+    except (TypeError, ValueError):
+        atm_iv = None
+    if atm_iv is None or atm_iv <= 0.05:
+        atm_iv = None  # never invent 0.14
     trend = float(feats.get("F16_intraday_trend", 0.0) or 0.0)
     skew = float(feats.get("F14_skew_change", 0.0) or 0.0)
 
@@ -70,7 +76,10 @@ def compose_confluence_dial(scenario_set, feature_vector=None) -> Dict[str, Any]
             "GEX Alignment": _pct(pw - cw),
             "Sentinel CVD": _pct(trend),
             "OI Shift Flow": _pct(pcr),
-            "IV Skew Context": int(max(0, min(100, round(100.0 - atm_iv * 250.0 + skew * 20.0)))),
+            "IV Skew Context": (
+                None if atm_iv is None
+                else int(max(0, min(100, round(100.0 - atm_iv * 250.0 + skew * 20.0))))
+            ),
         },
     }
 

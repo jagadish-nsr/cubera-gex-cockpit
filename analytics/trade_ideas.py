@@ -194,12 +194,17 @@ def _approx_bs_price_and_delta(
     strike: float,
     is_call: bool,
     dte_days: float = 3.0,
-    iv: float = 0.135,
+    iv: float | None = None,
     r: float = 0.065,
 ) -> tuple[float, float]:
-    """Fast Black-Scholes approximation for delta and option premium if live chain quotes are missing."""
+    """Black-Scholes helper. Unused by idea minting — kept for hand-checks only.
+
+    Requires an explicit IV. Never defaults to 0.135.
+    """
+    if iv is None or float(iv) <= 0.02:
+        raise ValueError("IV required — refusing default 0.135 Black-Scholes fill")
     T = max(dte_days / 365.0, 0.001)
-    sigma = max(iv, 0.05)
+    sigma = max(float(iv), 0.05)
     sqrt_T = math.sqrt(T)
 
     try:
@@ -237,7 +242,7 @@ def _reprice_trade_idea_targets(
     tgt1_spot: float,
     tgt2_spot: float,
     dte_days: float = 3.0,
-    atm_iv: float = 0.14,
+    atm_iv: float | None = None,
     horizon_minutes: int = 45,
     step: int = 50,
 ) -> tuple[float, float, float, float, float, float, str, dict]:
@@ -266,7 +271,9 @@ def _reprice_trade_idea_targets(
             iv_now = None
 
     if iv_now is None or iv_now <= 0.02 or math.isnan(iv_now):
-        iv_now = float(atm_iv if (atm_iv is not None and atm_iv > 0.02) else 0.14)
+        if atm_iv is None or float(atm_iv) <= 0.02:
+            raise ValueError("atm_iv required — refusing default 0.14 for idea reprice")
+        iv_now = float(atm_iv)
 
     # 3. Horizon time decrements
     dt_annual = horizon_minutes / (365.0 * 6.25 * 60.0)
@@ -481,18 +488,13 @@ def _lookup_chain_data(
             except Exception:
                 pass
 
-    # 3. Fallback to Black-Scholes estimate if LTP or Delta is zero
-    if ltp <= 0.0 or delta == 0.0:
-        bs_px, bs_delta = _approx_bs_price_and_delta(spot, strike, is_call)
-        if ltp <= 0.0:
-            ltp = bs_px
-        if delta == 0.0:
-            delta = bs_delta
-    elif not is_ws_live and chain_spot > 0.0 and spot > 0.0 and abs(spot - chain_spot) > 0.05:
-        # Mark-to-market real-time option LTP adjustment using delta and live spot move (0ms latency)
+    # Missing LTP stays missing — never invent Black-Scholes premium/delta into a scored idea.
+    # Delta-MTM only when we already have a real chain/WS print AND a real delta.
+    if ltp > 0.0 and delta != 0.0 and (
+        not is_ws_live and chain_spot > 0.0 and spot > 0.0 and abs(spot - chain_spot) > 0.05
+    ):
         d_spot = spot - chain_spot
-        eff_delta = delta if delta != 0.0 else (0.50 if is_call else -0.50)
-        ltp = round(ltp + (eff_delta * d_spot), 1)
+        ltp = round(ltp + (delta * d_spot), 1)
         if is_call:
             intrinsic = max(0.0, spot - strike)
             ltp = max(ltp, round(intrinsic + 0.5, 1), 0.5)
@@ -500,7 +502,13 @@ def _lookup_chain_data(
             intrinsic = max(0.0, strike - spot)
             ltp = max(ltp, round(intrinsic + 0.5, 1), 0.5)
 
-    return round(ltp, 1), round(delta, 2), oi, doi, is_ws_live
+    return (
+        round(ltp, 1) if ltp > 0.0 else 0.0,
+        round(delta, 2) if delta != 0.0 else 0.0,
+        oi,
+        doi,
+        is_ws_live,
+    )
 
 
 def _select_strike_by_delta_window(
@@ -889,12 +897,9 @@ def _build_spread_alternative(
             if entry and entry[0] > 0:
                 sell_ltp = float(entry[0])
 
-        if sell_ltp <= 0.0:
-            px, _ = _approx_bs_price_and_delta(spot=buy_strike, strike=sell_strike, is_call=is_call, iv=eff_iv)
-            sell_ltp = max(0.5, round(px, 1))
-
-        if sell_ltp >= buy_ltp:
-            sell_ltp = round(buy_ltp * 0.55, 1)
+        if sell_ltp <= 0.0 or sell_ltp >= buy_ltp:
+            # No live sell-leg print (or crossed market) → skip structure; never BS / 0.55× fabricate.
+            return None
 
         net_debit = max(1.0, round(buy_ltp - sell_ltp, 1))
         spread_width = float(step)
@@ -1268,7 +1273,13 @@ def refresh_trade_idea_live_mtm(
     if ltp <= 0 or current_spot <= 0:
         return idea
     greeks = getattr(idea, "greek_attribution", None) or {}
-    atm_iv = float(greeks.get("iv") or greeks.get("sigma") or 0.14)
+    raw_iv = greeks.get("iv") or greeks.get("sigma")
+    try:
+        atm_iv = float(raw_iv) if raw_iv is not None else 0.0
+    except (TypeError, ValueError):
+        atm_iv = 0.0
+    if atm_iv <= 0.02:
+        return idea  # keep prior targets — never invent 0.14 IV for MTM reprice
     dte_days = float(getattr(idea, "dte_now", None) or 3.0)
     try:
         sl, t1, t2, p_t1, p_sl, ev, rr, _g = _reprice_trade_idea_targets(
@@ -1979,7 +1990,7 @@ def _evaluate_ce_strategies(
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
     expiry_tag: str = "",
     dte_days: float = 3.0,
-    atm_iv: float = 0.14,
+    atm_iv: float = 0.0,
     scenario_set: Any | None = None,
     ema_trend: str = "NEUTRAL",
     eff_atr: float = 35.0,
@@ -1997,7 +2008,9 @@ def _evaluate_ce_strategies(
     # CALL CANDIDATE STRATEGIES (7 Plays)
     # =======================================================================
     ce_recs: list[TradeIdea] = []
-    eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
+    if atm_iv is None or float(atm_iv) <= 0.05:
+        return []  # caller must supply live ATM IV — never default 0.14
+    eff_iv = max(0.08, min(0.60, float(atm_iv)))
     trend_tag = f" · 5m Trend: {ema_trend.title()} (EMA 9 vs 21)" if ema_trend != "NEUTRAL" else ""
 
     def _score(play_type: str, leg_doi: float) -> tuple[int, str, str]:
@@ -2414,7 +2427,7 @@ def _evaluate_pe_strategies(
     contracts_map: dict[tuple[str, float], tuple[float, float, float, float]],
     expiry_tag: str = "",
     dte_days: float = 3.0,
-    atm_iv: float = 0.14,
+    atm_iv: float = 0.0,
     scenario_set: Any | None = None,
     ema_trend: str = "NEUTRAL",
     eff_atr: float = 35.0,
@@ -2432,7 +2445,9 @@ def _evaluate_pe_strategies(
     # PUT CANDIDATE STRATEGIES (7 Plays)
     # =======================================================================
     pe_recs: list[TradeIdea] = []
-    eff_iv = max(0.08, min(0.60, atm_iv if atm_iv > 0 else 0.14))
+    if atm_iv is None or float(atm_iv) <= 0.05:
+        return []  # caller must supply live ATM IV — never default 0.14
+    eff_iv = max(0.08, min(0.60, float(atm_iv)))
     trend_tag = f" · 5m Trend: {ema_trend.title()} (EMA 9 vs 21)" if ema_trend != "NEUTRAL" else ""
 
     def _score(play_type: str, leg_doi: float) -> tuple[int, str, str]:
@@ -3022,6 +3037,8 @@ def generate_trade_recommendations(
     min_score: int = 75,
     **kwargs: Any,
 ) -> RecommendationBatch:
+    if latest_bar is None and data is not None:
+        latest_bar = getattr(data, "latest_bar", None)
     """Generates institutional options recommendations for CE and PE, filtering for Score >= min_score (default 75).
 
     Evaluates 7 institutional strategy playbooks per side:
@@ -3068,23 +3085,39 @@ def generate_trade_recommendations(
     if chain_spot <= 0.0:
         chain_spot = spot
     raw_cw = getattr(levels, "call_wall", None) if levels else None
-    call_wall = float(raw_cw if raw_cw is not None else _round_strike(spot + 2 * step, step))
     raw_pw = getattr(levels, "put_wall", None) if levels else None
-    put_wall = float(raw_pw if raw_pw is not None else _round_strike(spot - 2 * step, step))
     raw_flip = getattr(levels, "flip", None) if levels else None
-    flip = float(raw_flip if raw_flip is not None else spot)
+    try:
+        call_wall = float(raw_cw) if raw_cw is not None and float(raw_cw) > 0 else 0.0
+        put_wall = float(raw_pw) if raw_pw is not None and float(raw_pw) > 0 else 0.0
+        flip = float(raw_flip) if raw_flip is not None and float(raw_flip) > 0 else 0.0
+    except (TypeError, ValueError):
+        call_wall = put_wall = flip = 0.0
+    if call_wall <= 0 or put_wall <= 0 or flip <= 0:
+        return _empty_recommendation_batch(
+            symbol,
+            "Missing call wall, put wall, or flip — ideas are not built on invented levels.",
+        )
 
-    # 2. Resolve VWAP & Sigma Envelopes
-    if latest_bar and getattr(latest_bar, "vwap", None) and latest_bar.vwap > 0:
-        session_vwap = float(latest_bar.vwap)
-        raw_vu = getattr(latest_bar, "vwap_sigma_1", None)
-        vwap_upper = float(raw_vu if raw_vu is not None else (session_vwap + step * 0.7))
-        raw_vl = getattr(latest_bar, "vwap_lower_1", None)
-        vwap_lower = float(raw_vl if raw_vl is not None else (session_vwap - step * 0.7))
-    else:
-        session_vwap = spot
-        vwap_upper = spot + step * 0.75
-        vwap_lower = spot - step * 0.75
+    # 2. Resolve VWAP & Sigma Envelopes (require a real bar VWAP — never spot±band)
+    if not (latest_bar and getattr(latest_bar, "vwap", None) and latest_bar.vwap > 0):
+        return _empty_recommendation_batch(
+            symbol,
+            "Missing session VWAP — ideas are not built on a spot proxy envelope.",
+        )
+    session_vwap = float(latest_bar.vwap)
+    raw_vu = getattr(latest_bar, "vwap_sigma_1", None)
+    raw_vl = getattr(latest_bar, "vwap_lower_1", None)
+    try:
+        vwap_upper = float(raw_vu) if raw_vu is not None and float(raw_vu) > 0 else 0.0
+        vwap_lower = float(raw_vl) if raw_vl is not None and float(raw_vl) > 0 else 0.0
+    except (TypeError, ValueError):
+        vwap_upper = vwap_lower = 0.0
+    if vwap_upper <= 0 or vwap_lower <= 0:
+        return _empty_recommendation_batch(
+            symbol,
+            "Missing VWAP sigma bands — ideas are not built on invented envelopes.",
+        )
 
     # 3. Resolve Directional Bias
     raw_score = getattr(bias_result, "score", None) if bias_result else None
@@ -3179,7 +3212,15 @@ def generate_trade_recommendations(
     raw_dte = getattr(data, "dte_now", None) if data else None
     dte_days = float(raw_dte if raw_dte is not None else 3.0)
     raw_iv = getattr(levels, "atm_iv", None) if levels else None
-    atm_iv = float(raw_iv if raw_iv is not None else 0.14)
+    try:
+        atm_iv = float(raw_iv) if raw_iv is not None else 0.0
+    except (TypeError, ValueError):
+        atm_iv = 0.0
+    if atm_iv <= 0.05:
+        return _empty_recommendation_batch(
+            symbol,
+            "Missing ATM IV — ideas are not priced on a default 14% vol.",
+        )
 
     # Extract Target Engine Scenario Set (Dirichlet distribution over Bull, Base, Bear)
     scenario_set = None

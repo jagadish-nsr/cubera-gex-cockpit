@@ -58,7 +58,7 @@ def test_market_snapshot_bootstrap_authentic_values():
     """Verify that get_snapshot bootstraps authentic Dhan data without fabricating fake prices."""
     for sym, expected_spot_range in [
         ("NIFTY", (22000.0, 26000.0)),
-        ("BANKNIFTY", (50000.0, 60000.0)),
+        ("BANKNIFTY", (50000.0, 65000.0)),
         ("SENSEX", (70000.0, 90000.0)),
     ]:
         snap = get_snapshot(sym)

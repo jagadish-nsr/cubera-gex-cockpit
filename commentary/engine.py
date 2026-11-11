@@ -123,10 +123,24 @@ class SessionCommentaryEngine:
         if spot <= 0:
             return []
         prev_close = _verified_prior_close(data, levels, spot)
-        atm_iv = float(getattr(levels, "atm_iv", None) or 0.14)
-        call_wall = float(getattr(levels, "call_wall", None) or (spot + 100))
-        put_wall = float(getattr(levels, "put_wall", None) or (spot - 100))
-        flip = float(getattr(levels, "flip", None) or spot)
+        raw_iv = getattr(levels, "atm_iv", None)
+        try:
+            atm_iv = float(raw_iv) if raw_iv is not None else None
+        except (TypeError, ValueError):
+            atm_iv = None
+        if atm_iv is None or atm_iv <= 0.05:
+            return []  # never invent 0.14 IV into commentary
+        raw_cw = getattr(levels, "call_wall", None)
+        raw_pw = getattr(levels, "put_wall", None)
+        raw_flip = getattr(levels, "flip", None)
+        try:
+            call_wall = float(raw_cw) if raw_cw is not None else 0.0
+            put_wall = float(raw_pw) if raw_pw is not None else 0.0
+            flip = float(raw_flip) if raw_flip is not None else 0.0
+        except (TypeError, ValueError):
+            return []
+        if call_wall <= 0 or put_wall <= 0 or flip <= 0:
+            return []  # never invent walls as spot±100
         max_pain = float(getattr(levels, "max_pain", None) or spot)
         net_gex_sign = int(getattr(levels, "net_gex_sign", 1 if spot >= flip else -1))
 

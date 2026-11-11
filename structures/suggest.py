@@ -203,13 +203,18 @@ def _term_structure_candidate(
     if edge_pts < 0.25 and prefer_term:
         return None
 
-    step = int(strike_step) if int(strike_step) > 0 else 50
+    step = int(strike_step) if int(strike_step) > 0 else 0
+    if step <= 0:
+        return None  # never invent Nifty-50 step for BN/Sensex
     spot = float(getattr(levels, "spot", 0) or 0)
     if spot <= 0:
         return None
     atm = _round_strike(spot, step)
     magnet = getattr(levels, "magnet", None)
-    cw = _round_strike(getattr(levels, "call_wall", atm) or atm, step)
+    raw_cw = getattr(levels, "call_wall", None)
+    if raw_cw is None or float(raw_cw or 0) <= 0:
+        return None  # never invent call_wall = ATM
+    cw = _round_strike(float(raw_cw), step)
     exit_by = "manage near-week theta; exit near leg ≥1 day before its expiry" + (
         f" ({nearest_expiry})" if nearest_expiry else ""
     )
@@ -308,7 +313,9 @@ def _base_structures(
     exit_by = "exit at least 1 trading day before expiry" + (
         f" ({nearest_expiry})" if nearest_expiry else ""
     )
-    step = int(strike_step) if int(strike_step) > 0 else 50
+    step = int(strike_step) if int(strike_step) > 0 else 0
+    if step <= 0:
+        return []  # never invent Nifty-50 step
     cw = _round_strike(levels.call_wall, step)
     pw = _round_strike(levels.put_wall, step)
     magnet = getattr(levels, "magnet", None)

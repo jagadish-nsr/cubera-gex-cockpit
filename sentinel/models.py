@@ -37,7 +37,7 @@ class Bar:
     vwap_lower_2: float            # Lower -2σ band
     oi: int = 0
     delta_oi: int = 0
-    oi_fresh: bool = True
+    oi_fresh: bool = False  # stale until aggregator proves OI moved — never assume fresh
     incomplete: bool = False       # True if bar closed prematurely or dropped ticks
     depth_imbalance: float = 0.0   # (bids - asks) / (bids + asks) from depth book
 

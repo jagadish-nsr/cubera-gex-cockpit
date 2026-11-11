@@ -2877,7 +2877,10 @@ async def get_target_engine(
         p_touch = float(getattr(v, "p_touch_target", 0.65) or 0.65)
         p_close = float(getattr(v, "p_close_beyond", 0.45) or 0.45)
         reason_txt = getattr(v, "reason", "") or "GEX / Volatility Anchor"
-        fc_iv = float(iv_fcs[k].iv_at_horizon) if k in iv_fcs and hasattr(iv_fcs[k], "iv_at_horizon") else 0.14
+        if k in iv_fcs and hasattr(iv_fcs[k], "iv_at_horizon") and iv_fcs[k].iv_at_horizon is not None:
+            fc_iv = round(float(iv_fcs[k].iv_at_horizon), 4)
+        else:
+            fc_iv = None  # never invent 0.14 forecast IV
         targets[k] = {
             "target": round(tgt_val, 1),
             "stop": round(stop_val, 1),
@@ -2887,7 +2890,7 @@ async def get_target_engine(
             "points_away": round(tgt_val - spot, 1),
             "horizon_minutes": getattr(v, "horizon_minutes", horizon_val),
             "reason": reason_txt,
-            "forecast_iv": round(fc_iv, 4),
+            "forecast_iv": fc_iv,
         }
 
     # Symmetrical Dual-Wing Ladder (ATM ± 5 Strikes with full Target / SL repricing)
@@ -3056,10 +3059,11 @@ async def reprice_target_engine(payload: dict = Body(...)):
     T_now = calculate_fractional_t(now_dt, sel_expiry)
     _, T_horizon = calculate_horizon_t(now_dt, tgt_mins, sel_expiry)
 
-    # Strike IV from the listed contract. Ensure realistic floor for Black-76 Greeks stability.
+    # Strike IV / LTP from the listed contract only — never invent 0.135 IV or theo entry.
     raw_atm_iv = _extract_active_atm_iv(dash)
-    fallback_iv = max(0.08, min(0.60, float(raw_atm_iv))) if (raw_atm_iv and float(raw_atm_iv) > 0.05) else 0.135
-    strike_iv = fallback_iv
+    strike_iv = None
+    if raw_atm_iv is not None and float(raw_atm_iv) > 0.05:
+        strike_iv = max(0.08, min(0.60, float(raw_atm_iv)))
     market_ltp = None
     contracts_df = getattr(dash, "contracts", None)
     if contracts_df is not None and not contracts_df.empty:
@@ -3084,7 +3088,8 @@ async def reprice_target_engine(payload: dict = Body(...)):
                 if 0.05 <= parsed_iv <= 0.90:
                     strike_iv = parsed_iv
 
-    strike_iv = max(0.07, min(0.90, strike_iv))
+    if strike_iv is not None:
+        strike_iv = max(0.07, min(0.90, float(strike_iv)))
 
     if strike_iv is None or strike_iv <= 0:
         return {
@@ -3093,9 +3098,16 @@ async def reprice_target_engine(payload: dict = Body(...)):
             "message": "This strike has no implied vol, so the repricer has nothing to price.",
         }
 
+    if market_ltp is None or market_ltp <= 0:
+        return {
+            "error": "market_ltp_unavailable",
+            "contract": f"{sym} {sel_expiry} {int(sel_strike)} {sel_type}",
+            "message": "No live option premium for this strike — theo entry is not used as a fill.",
+        }
+
     p_theo_curr = price(base_fut, sel_strike, T_now, strike_iv, 0.065, sel_type)
     cur_greeks = greeks(base_fut, sel_strike, T_now, strike_iv, 0.065, sel_type)
-    entry_premium = market_ltp if (market_ltp is not None and market_ltp > 0) else p_theo_curr
+    entry_premium = market_ltp
 
     # Volatility shift mapping
     if "Flat" in iv_regime_shock:
@@ -4198,7 +4210,7 @@ async def get_go_open(symbol: Optional[str] = None, window: Optional[str] = None
     rows = go_eff.list_open(sym, include_decision=True)
     dash = await _aload_active_dashboard(sym, win)
     iv, _rv = _go_iv_rv(dash, sym)
-    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
     idx = config.get_index(sym)
     levels = getattr(dash, "levels", None) if dash else None
     spot_live = float(getattr(levels, "spot", 0) or 0) if levels is not None else 0.0
@@ -4227,7 +4239,7 @@ async def get_go_open(symbol: Optional[str] = None, window: Optional[str] = None
         lot = int((decision.get("context") or {}).get("lot_size") or idx.lot_size)
         row["greeks"] = (
             net_greeks(contracts, spot=spot, lot_size=lot, iv=iv_dec, dte_days=3.0)
-            if contracts and spot > 0 else {}
+            if contracts and spot > 0 and iv_dec is not None else {}
         )
         row["contracts"] = contracts_raw
         row["strategy_type"] = decision.get("strategy_type") or row.get("strategy_key")
@@ -4349,10 +4361,10 @@ async def get_go_structure_payoff(
     )
     dash = await _aload_active_dashboard(sym, win)
     iv, _rv = _go_iv_rv(dash, sym)
-    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
     greeks = net_greeks(
         contracts, spot=float(spot or 0), lot_size=lot, iv=iv_dec, dte_days=3.0,
-    ) if contracts and spot else {}
+    ) if contracts and spot and iv_dec is not None else {}
     open_row = next(
         (r for r in go_eff.list_open(sym) if r.get("decision_id") == decision.get("id")),
         None,
@@ -4587,8 +4599,11 @@ async def get_go_writer_risk(symbol: Optional[str] = None, window: Optional[str]
             spot = float((decision.get("context") or {}).get("spot") or 0)
             dash = await _aload_active_dashboard(sym, win)
             iv, rv = _go_iv_rv(dash, sym)
-            iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
-            greeks = net_greeks(contracts, spot=spot, lot_size=int(idx.lot_size), iv=iv_dec) if contracts and spot else {}
+            iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
+            greeks = (
+                net_greeks(contracts, spot=spot, lot_size=int(idx.lot_size), iv=iv_dec)
+                if contracts and spot and iv_dec is not None else {}
+            )
             books.append({
                 "symbol": sym,
                 "state": decision.get("state"),
@@ -4644,7 +4659,15 @@ async def get_go_whatif(
     spot = float((decision.get("context") or {}).get("spot") or 0)
     lot = int((decision.get("context") or {}).get("lot_size") or config.get_index(sym).lot_size)
     iv, _rv = _go_iv_rv(await _aload_active_dashboard(sym, win), sym)
-    iv_dec = (float(iv) / 100.0) if iv is not None else 0.14
+    iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
+    if iv_dec is None:
+        return {
+            "symbol": sym,
+            "mode": decision.get("mode"),
+            "error": "implied_vol_unavailable",
+            "message": "What-if needs live ATM IV — no default 0.14 fill.",
+            "scenarios": [],
+        }
     return {
         "symbol": sym,
         "mode": decision.get("mode"),
@@ -5115,25 +5138,47 @@ async def execute_trade(payload: dict = Body(...)):
     idx = config.get_index(sym)
 
     total_qty = idx.lot_size * lots
-    entry_ltp = float(payload.get("ltp", 100.0))
-    strike = float(payload.get("strike", 24500.0))
+    if payload.get("ltp") is None or payload.get("strike") is None:
+        return JSONResponse(
+            {"status": "error", "message": "ltp and strike are required — no default 100/24500 fill"},
+            status_code=400,
+        )
+    entry_ltp = float(payload["ltp"])
+    strike = float(payload["strike"])
+    if entry_ltp <= 0 or strike <= 0:
+        return JSONResponse(
+            {"status": "error", "message": "ltp and strike must be positive live values"},
+            status_code=400,
+        )
     side = payload.get("side", "CE")
-    strat_name = payload.get("strategy_name", f"⚡ {sym} {strike} {side}")
+    strat_name = payload.get("strategy_name", f"{sym} {strike} {side}")
 
+    expiry = payload.get("expiry")
+    if not expiry:
+        return JSONResponse(
+            {"status": "error", "message": "expiry is required — no hardcoded 2026-10-15 fill"},
+            status_code=400,
+        )
+    entry_spot = payload.get("spot")
+    if entry_spot is None:
+        return JSONResponse(
+            {"status": "error", "message": "spot is required — no strike-as-spot fill"},
+            status_code=400,
+        )
     leg = {
         "action": "BUY",
         "type": side,
         "strike": strike,
         "ltp": entry_ltp,
-        "expiry": payload.get("expiry", "2026-10-15"),
+        "expiry": str(expiry),
     }
 
     trade = journal_store.open_trade(
         symbol=sym,
         strategy_name=strat_name,
         legs=[leg],
-        entry_spot=float(payload.get("spot", strike)),
-        entry_levels={"symbol": sym, "spot": float(payload.get("spot", strike))},
+        entry_spot=float(entry_spot),
+        entry_levels={"symbol": sym, "spot": float(entry_spot)},
         entry_regime={"symbol": sym, "regime": payload.get("regime", "NEUTRAL")},
         entry_net_premium=-entry_ltp,
         lot_size=total_qty,

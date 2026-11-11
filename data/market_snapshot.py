@@ -481,27 +481,41 @@ def _bootstrap_from_disk(symbol: str) -> dict[str, Any] | None:
             if days:
                 df = load_day(days[-1], "NIFTY")
                 last = df.iloc[-1]
-                spot = spot or float(last.get("spot", 22721.95))
-                prev_close = prev_close or float(last.get("prev_close", 22603.05))
-                ts_cw = float(last.get("call_wall", 0.0))
-                ts_pw = float(last.get("put_wall", 0.0))
+                try:
+                    spot = spot or (float(last["spot"]) if last.get("spot") is not None else None)
+                except (TypeError, ValueError, KeyError):
+                    pass
+                try:
+                    if prev_close is None and last.get("prev_close") is not None:
+                        prev_close = float(last["prev_close"])
+                except (TypeError, ValueError):
+                    pass
+                ts_cw = float(last.get("call_wall", 0.0) or 0.0)
+                ts_pw = float(last.get("put_wall", 0.0) or 0.0)
                 if ts_cw > 20000 and not cw:
                     cw = ts_cw
                 if ts_pw > 20000 and not pw:
                     pw = ts_pw
-                flip = flip or float(last.get("flip", 22722.0))
-                mp = mp or float(last.get("max_pain", 22750.0))
+                try:
+                    if flip is None and last.get("flip") is not None:
+                        flip = float(last["flip"])
+                    if mp is None and last.get("max_pain") is not None:
+                        mp = float(last["max_pain"])
+                except (TypeError, ValueError):
+                    pass
         except Exception:
             pass
 
     if not spot:
-        # Authentic Dhan fallbacks as recorded
-        if sym == "NIFTY":
-            spot, prev_close, cw, pw, flip, mp = 22721.95, 22603.05, 22750.0, 22700.0, 22722.0, 22750.0
-        elif sym == "BANKNIFTY":
-            spot, prev_close, cw, pw, flip, mp = 55481.05, 55481.05, 56000.0, 55000.0, 55357.15, 55500.0
-        elif sym == "SENSEX":
-            spot, prev_close, cw, pw, flip, mp = 73033.78, 73033.78, 74000.0, 73000.0, 72602.53, 72800.0
+        # No authentic print on disk — fail loud. Never invent 22,721 / walls±100 / VIX 14.
+        return None
+
+    if cw is None or pw is None or flip is None:
+        log.warning(
+            "_bootstrap_from_disk(%s): spot=%.2f but missing walls/flip — refusing invented levels",
+            sym, spot,
+        )
+        return None
 
     return {
         "symbol": sym,
@@ -510,13 +524,13 @@ def _bootstrap_from_disk(symbol: str) -> dict[str, Any] | None:
         "open": open_px or spot,
         "high": high or spot,
         "low": low or spot,
-        "call_wall": cw or (spot + 100.0),
-        "put_wall": pw or (spot - 100.0),
-        "gamma_flip": flip or spot,
-        "max_pain": mp or spot,
+        "call_wall": cw,
+        "put_wall": pw,
+        "gamma_flip": flip,
+        "max_pain": mp if mp is not None else spot,
         "net_gex": 0.0,
-        "pcr": 1.0,
-        "vix": vix or 14.0,
+        "pcr": None,
+        "vix": vix,
         "as_of": as_of,
         "source": "dhan-persisted",
     }

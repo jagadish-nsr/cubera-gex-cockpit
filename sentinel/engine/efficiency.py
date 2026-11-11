@@ -286,7 +286,7 @@ def compute_signal_efficiency(
 def calculate_model_calibration_and_expectancy(
     eff_report: SignalEfficiencyReport,
     spot: float = 24000.0,
-    atm_iv: float = 0.14,
+    atm_iv: float | None = None,
     dte_days: float = 5.0,
     horizon_minutes: int = 30,
 ) -> dict[str, Any]:
@@ -302,7 +302,9 @@ def calculate_model_calibration_and_expectancy(
     from target_engine.pricer import price, reprice
     from target_engine.time_utils import get_horizon_annual_duration
 
-    eff_iv = max(atm_iv, 0.05) if atm_iv > 0 else 0.14
+    if atm_iv is None or float(atm_iv) <= 0:
+        return {}  # never invent 0.14 for expectancy
+    eff_iv = max(float(atm_iv), 0.05)
     h_years = get_horizon_annual_duration(horizon_minutes)
     sigma_h = max(spot * eff_iv * math.sqrt(h_years), 15.0)
 

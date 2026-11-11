@@ -1226,19 +1226,20 @@ def net_greeks(
     *,
     spot: float,
     lot_size: int,
-    iv: float = 0.14,
+    iv: float | None = None,
     dte_days: float = 3.0,
     r: float = 0.065,
 ) -> dict:
     """Signed net Black-76 Greeks for the package (BUY +, SELL −), × lot.
 
-    IV is decimal. Missing LTP does not block Greek calc. VERIFY: F≈spot proxy.
+    IV is decimal and required. Missing IV → empty (never default 0.14).
+    Missing LTP does not block Greek calc. VERIFY: F≈spot proxy.
     """
     from target_engine.pricer import greeks as bs_greeks
 
     lot = int(lot_size or 0)
     s = float(spot or 0)
-    if not contracts or lot <= 0 or s <= 0:
+    if not contracts or lot <= 0 or s <= 0 or iv is None or float(iv) <= 0:
         return {}
     T = max(float(dte_days) / 365.0, 1e-4)
     sigma = float(iv) if float(iv) < 1.5 else float(iv) / 100.0
@@ -1508,7 +1509,7 @@ def scenario_whatif(
     *,
     spot: float,
     lot_size: int,
-    iv: float = 0.14,
+    iv: float | None = None,
     dte_days: float = 3.0,
     shocks: list[float] | None = None,
     r: float = 0.065,
@@ -1516,13 +1517,14 @@ def scenario_whatif(
     """Black-76 package MTM at spot shocks. shocks are fractional (e.g. -0.01, 0, +0.01).
 
     Returns pnl_inr vs entry credit (SELL−BUY) at each shock. VERIFY: F≈spot proxy.
+    IV is required — never defaults to 0.14.
     """
     from target_engine.pricer import price as bs_price
 
     lot = int(lot_size or 0)
     s0 = float(spot or 0)
-    if not contracts or lot <= 0 or s0 <= 0:
-        return {"scenarios": [], "spot": s0}
+    if not contracts or lot <= 0 or s0 <= 0 or iv is None or float(iv) <= 0:
+        return {"scenarios": [], "spot": s0, "error": "implied_vol_unavailable" if iv is None or (iv is not None and float(iv) <= 0) else None}
     entry = _net_credit_pts(contracts)
     entry_v = float(entry) if entry is not None else 0.0
     T = max(float(dte_days) / 365.0, 1e-4)

@@ -366,7 +366,7 @@ def test_target_engine_candidate_structures_table():
 
 
 def test_target_engine_reprice_calculator():
-    """Verify POST /api/target-engine/reprice runs Black-76 Greek repricing."""
+    """Verify POST /api/target-engine/reprice refuses theo entry without a live LTP/IV."""
     payload = {
         "symbol": "NIFTY",
         "spot": 24500.0,
@@ -380,6 +380,10 @@ def test_target_engine_reprice_calculator():
     assert status == 200
     data = json.loads(content)
     assert "contract" in data
+    # Hardened path: no live premium/IV → error (never invent 0.135 IV or theo fill).
+    if data.get("error"):
+        assert data["error"] in ("market_ltp_unavailable", "implied_vol_unavailable")
+        return
     assert "base_fut" in data
     assert "greeks" in data
     assert "p_theo_curr" in data
@@ -418,6 +422,7 @@ def test_recommendations_and_1click_execution():
         "ltp": 85.5,
         "strategy_name": "⚡ Bull Call Spread",
         "spot": 24500.0,
+        "expiry": "2026-11-18",
         "regime": "MOMENTUM_BULL",
     }
     exec_status, _, exec_content = asyncio.run(

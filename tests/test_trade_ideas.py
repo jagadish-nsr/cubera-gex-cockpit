@@ -32,7 +32,7 @@ def isolate_trade_ideas_db(tmp_path, monkeypatch):
         rs._CACHE_INITIALIZED = False
 
 
-def _mock_levels(spot=24500.0, cw=24700.0, pw=24300.0, flip=24520.0):
+def _mock_levels(spot=24500.0, cw=24700.0, pw=24300.0, flip=24520.0, atm_iv=0.14):
     return Levels(
         spot=spot,
         call_wall=cw,
@@ -47,6 +47,24 @@ def _mock_levels(spot=24500.0, cw=24700.0, pw=24300.0, flip=24520.0):
         oi_timestamp=None,
         oi_stale=False,
         source="demo",
+        atm_iv=atm_iv,
+    )
+
+
+def _mock_latest_bar(spot=24500.0):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        vwap=spot,
+        vwap_sigma_1=spot + 40.0,
+        vwap_lower_1=spot - 40.0,
+        vwap_sigma_2=spot + 80.0,
+        vwap_lower_2=spot - 80.0,
+        rvol_tod=1.0,
+        close=spot,
+        high=spot + 20.0,
+        low=spot - 20.0,
+        cvd=0.0,
+        oi_fresh=True,
     )
 
 
@@ -54,7 +72,9 @@ class MockDashboardData:
     def __init__(self, spot=24500.0, symbol="NIFTY"):
         self.symbol = symbol
         self.levels = _mock_levels(spot=spot)
+        self.latest_bar = _mock_latest_bar(spot=spot)
         self.oi_strikes = [
+            {"strike": spot - 200, "call_ltp": 210.0, "put_ltp": 40.0, "call_oi": 40000, "put_oi": 140000, "call_doi": 800, "put_doi": 5500},
             {"strike": spot - 100, "call_ltp": 160.0, "put_ltp": 70.0, "call_oi": 50000, "put_oi": 120000, "call_doi": 1200, "put_doi": 5000},
             {"strike": spot - 50, "call_ltp": 125.0, "put_ltp": 95.0, "call_oi": 60000, "put_oi": 100000, "call_doi": 1800, "put_doi": 4000},
             {"strike": spot, "call_ltp": 95.0, "put_ltp": 95.0, "call_oi": 150000, "put_oi": 150000, "call_doi": 3500, "put_doi": 3200},
@@ -62,7 +82,22 @@ class MockDashboardData:
             {"strike": spot + 100, "call_ltp": 50.0, "put_ltp": 160.0, "call_oi": 180000, "put_oi": 40000, "call_doi": 6000, "put_doi": 800},
             {"strike": spot + 200, "call_ltp": 25.0, "put_ltp": 230.0, "call_oi": 250000, "put_oi": 20000, "call_doi": 9500, "put_doi": 200},
         ]
-        self.contracts = None
+        # Chain with deltas so sell-leg spreads and delta windows have live prints (no BS fill).
+        rows = []
+        for s in self.oi_strikes:
+            k = float(s["strike"])
+            dist = (k - spot) / 50.0
+            rows.append({
+                "strike": k, "type": "C", "ltp": float(s["call_ltp"]), "mid": float(s["call_ltp"]),
+                "delta": max(0.05, min(0.95, 0.50 - 0.08 * dist)),
+                "oi": float(s["call_oi"]), "doi": float(s["call_doi"]),
+            })
+            rows.append({
+                "strike": k, "type": "P", "ltp": float(s["put_ltp"]), "mid": float(s["put_ltp"]),
+                "delta": -max(0.05, min(0.95, 0.50 + 0.08 * dist)),
+                "oi": float(s["put_oi"]), "doi": float(s["put_doi"]),
+            })
+        self.contracts = pd.DataFrame(rows)
 
 
 def test_generate_recommendations_basic():
@@ -1012,11 +1047,13 @@ def test_batch_includes_phase_2_and_3_enrichments():
     batch = generate_trade_recommendations(data, min_score=0)
 
     top_ce = batch.all_ce_candidates[0]
-    assert top_ce.spread_alternative is not None
-    assert "spread_name" in top_ce.spread_alternative
     assert top_ce.adx_regime in ("CHOP", "TRENDING", "NEUTRAL")
     assert top_ce.cvd_divergence in ("BULLISH_ABSORPTION", "BEARISH_ABSORPTION", "NONE")
     assert top_ce.latch_state in ("ACTIVE", "QUALIFIED", "TARGET_HIT", "INVALIDATED", "DEGRADED")
+    # Spread alt only when the sell-leg has a live print (never BS-fabricated).
+    with_spread = [t for t in batch.all_ce_candidates if t.spread_alternative]
+    assert with_spread, "expected at least one CE idea with a live sell-leg print"
+    assert "spread_name" in with_spread[0].spread_alternative
 
 
 def test_target_bounds_and_realistic_rr():
