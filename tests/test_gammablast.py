@@ -162,10 +162,16 @@ def test_score_journal_writes_once_per_minute(tmp_path, monkeypatch):
         "score": 59, "state": "COILING", "primary_strike": 23700,
         "badge": "GAMMA BLAST: COILING / IMMINENT", "call_wall": 23750,
         "put_wall": 23650, "in_blast_window": True,
+        "cover_frac": -0.12, "cover_known": True, "cover_side": "call",
+        "ignition_pts": 16.0, "proximity_pts": 26.0, "regime_pts": 10.0,
+        "pin_geometry": False, "sustain_score": 55, "sustain_grade": "WEAK / unconfirmed",
     }
     assert gb.journal_blast_read("NIFTY", 23720.0, result, fetched) is True
     # Same minute + changed score still dedupes — one row per minute for the trajectory grid
     assert gb.journal_blast_read("NIFTY", 23720.0, dict(result, score=62), fetched) is False
+    # Simulate another process (empty in-memory cache) — on-disk flock/scan still blocks
+    gb._score_written.clear()
+    assert gb.journal_blast_read("NIFTY", 23720.0, dict(result, score=90, state="TRIGGERED"), fetched) is False
     changed = dict(result, score=62, state="TRIGGERED")
     assert gb.journal_blast_read("BANKNIFTY", 54000.0, changed, fetched) is True
     nifty = (tmp_path / "NIFTY" / "2026-11-03.csv").read_text()
@@ -173,11 +179,46 @@ def test_score_journal_writes_once_per_minute(tmp_path, monkeypatch):
     assert nifty.count("\n") == 2  # header + one row
     header = nifty.splitlines()[0]
     assert "call_wall" in header and "badge" in header
+    assert "cover_frac" in header and "ignition_pts" in header
+    assert "-0.12" in nifty
     assert bank.splitlines()[1].split(",")[3] == "BANKNIFTY"
     # Next IST minute writes again (trajectory, not only on change)
     next_min = datetime(2026, 11, 3, 9, 31, tzinfo=timezone.utc)
     assert gb.journal_blast_read("NIFTY", 23725.0, result, next_min) is True
     assert (tmp_path / "NIFTY" / "2026-11-03.csv").read_text().count("\n") == 3
+
+
+def test_collapse_blast_score_keeps_earliest_print_per_minute():
+    from app.gammablast import collapse_blast_score_first_print
+
+    rows = [
+        {"time_ist": "13:25", "timestamp_utc": "2026-11-09T07:55:10Z", "score": "84", "state": "TRIGGERED"},
+        {"time_ist": "13:25", "timestamp_utc": "2026-11-09T07:55:40Z", "score": "34", "state": "NO_TRIGGER"},
+        {"time_ist": "13:26", "timestamp_utc": "2026-11-09T07:56:05Z", "score": "50", "state": "COILING"},
+    ]
+    out = collapse_blast_score_first_print(rows)
+    assert len(out) == 2
+    assert out[0]["time_ist"] == "13:25" and out[0]["score"] == "84" and out[0]["state"] == "TRIGGERED"
+    assert out[1]["time_ist"] == "13:26"
+
+
+def test_write_blast_score_minute_grid(tmp_path):
+    import csv
+    from app.gammablast import write_blast_score_minute_grid
+
+    src = tmp_path / "src" / "NIFTY"
+    src.mkdir(parents=True)
+    day = "2026-11-09"
+    with (src / f"{day}.csv").open("w", newline="", encoding="utf-8") as handle:
+        w = csv.DictWriter(handle, fieldnames=["timestamp_utc", "time_ist", "score", "state"])
+        w.writeheader()
+        w.writerow({"timestamp_utc": "2026-11-09T07:55:10Z", "time_ist": "13:25", "score": "84", "state": "TRIGGERED"})
+        w.writerow({"timestamp_utc": "2026-11-09T07:55:40Z", "time_ist": "13:25", "score": "34", "state": "NO_TRIGGER"})
+    dst = tmp_path / "dst"
+    out = write_blast_score_minute_grid("NIFTY", day, src_dir=tmp_path / "src", dst_dir=dst)
+    assert out is not None and out.exists()
+    rows = list(csv.DictReader(out.open()))
+    assert len(rows) == 1 and rows[0]["score"] == "84"
 
 
 def test_journal_blast_from_dashboard_skips_non_expiry(tmp_path, monkeypatch):
@@ -226,9 +267,11 @@ def test_evaluate_dashboard_gamma_blast_non_expiry():
     assert res["score"] <= 32
 
 
-def test_evaluate_dashboard_gamma_blast_0dte_breakout():
+def test_evaluate_dashboard_gamma_blast_0dte_breakout(tmp_path, monkeypatch):
     from datetime import datetime, timezone
     from unittest.mock import MagicMock
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
     reset_strike_oi_history()
     dash = MagicMock()
     dash.levels.spot = 23020.0  # breached Call Wall
@@ -248,7 +291,7 @@ def test_evaluate_dashboard_gamma_blast_0dte_breakout():
     res = evaluate_dashboard_gamma_blast(dash, "NIFTY")
     assert res["is_expiry"] is True
     assert res["in_blast_window"] is True
-    # One print has no 3-minute open-interest tape, so a breach stays coiling.
+    # One print has no short-window open-interest tape, so a breach stays coiling.
     assert res["state"] == "COILING"
     assert res["score"] >= 35
     assert res["score"] < 60
@@ -271,9 +314,11 @@ def _breach_dash(call_oi, call_doi, when):
     return dash
 
 
-def test_day_oi_build_does_not_cap_the_blast():
+def test_day_oi_build_does_not_cap_the_blast(tmp_path, monkeypatch):
     """The morning's open-interest build is not a defense of this afternoon's cross."""
     from datetime import datetime
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
     reset_strike_oi_history()
     # Day change is +300k on 388k, the 3 Nov 23,750 print. No prior minute yet.
     dash = _breach_dash(388_000.0, 313_000.0, datetime(2026, 11, 3, 8, 10))
@@ -283,8 +328,10 @@ def test_day_oi_build_does_not_cap_the_blast():
     assert res["state"] != "NO_TRIGGER"
 
 
-def test_recent_covering_triggers_while_the_day_is_still_built():
+def test_recent_covering_triggers_while_the_day_is_still_built(tmp_path, monkeypatch):
     from datetime import datetime
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
     reset_strike_oi_history()
     first = _breach_dash(100_000.0, 80_000.0, datetime(2026, 11, 3, 8, 0))
     evaluate_dashboard_gamma_blast(first, "NIFTY")
@@ -293,10 +340,45 @@ def test_recent_covering_triggers_while_the_day_is_still_built():
     res = evaluate_dashboard_gamma_blast(second, "NIFTY")
     assert res["state"] == "TRIGGERED"
     assert res["score"] >= 60
+    assert res.get("cover_known") is True
+    assert res.get("cover_frac") is not None and res["cover_frac"] < 0
 
 
-def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
+def test_cover_known_after_90s_not_three_minutes(tmp_path, monkeypatch):
+    """Dense blast-lane tape should unlock covering before a full 3-minute wait."""
+    from datetime import datetime, timedelta
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
+    reset_strike_oi_history()
+    t0 = datetime(2026, 11, 3, 8, 0)
+    first = _breach_dash(100_000.0, 0.0, t0)
+    evaluate_dashboard_gamma_blast(first, "NIFTY")
+    # 100 seconds later — under the old 3-min gate this stayed unknown/capped.
+    second = _breach_dash(70_000.0, 0.0, t0 + timedelta(seconds=100))
+    res = evaluate_dashboard_gamma_blast(second, "NIFTY")
+    assert res["cover_known"] is True
+    assert res["state"] == "TRIGGERED"
+    assert res["score"] >= 60
+
+
+def test_shared_oi_tape_survives_memory_reset(tmp_path, monkeypatch):
     from datetime import datetime
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
+    reset_strike_oi_history()
+    first = _breach_dash(100_000.0, 0.0, datetime(2026, 11, 3, 8, 0))
+    evaluate_dashboard_gamma_blast(first, "NIFTY")
+    reset_strike_oi_history()  # simulate another process with empty RAM
+    second = _breach_dash(70_000.0, 0.0, datetime(2026, 11, 3, 8, 10))
+    res = evaluate_dashboard_gamma_blast(second, "NIFTY")
+    assert res["cover_known"] is True
+    assert res["state"] == "TRIGGERED"
+
+
+def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score(tmp_path, monkeypatch):
+    from datetime import datetime
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
     reset_strike_oi_history()
     first = _breach_dash(100_000.0, 20_000.0, datetime(2026, 10, 19, 9, 5))
     evaluate_dashboard_gamma_blast(first, "NIFTY")
@@ -308,9 +390,11 @@ def test_evaluate_dashboard_gamma_blast_writers_defending_caps_score():
     assert res["score"] < 35
 
 
-def test_pin_badge_when_call_and_put_walls_equal():
+def test_pin_badge_when_call_and_put_walls_equal(tmp_path, monkeypatch):
     """Collapsed walls keep TRIGGERED score math but badge as PIN/COMPRESS."""
     from datetime import datetime
+    import app.gammablast as gb
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
     reset_strike_oi_history()
     first = _breach_dash(100_000.0, 80_000.0, datetime(2026, 11, 9, 8, 0))
     first.levels.call_wall = 25000.0

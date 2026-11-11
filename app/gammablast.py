@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+import json
 import os
 import threading
 
@@ -320,12 +321,17 @@ def blast_score(direction: str, crossed: list[dict], ahead: list[dict] | None = 
 
 # A blast is a few minutes of covering. The day's open-interest change stays
 # positive on a normal expiry morning, and that must not count as defense.
-_COVER_MIN_BASE = timedelta(minutes=3)
+# 90s min base: the nearest-expiry blast lane polls ~10s; waiting a full 3 minutes
+# left afternoon breaches stuck at the unknown-cover cap (COILING@59) on 9 Nov.
+_COVER_MIN_BASE = timedelta(seconds=90)
 _COVER_WINDOW = timedelta(minutes=10)
 _COVER_KEEP = timedelta(minutes=30)
-_COVER_SAMPLE_GAP = timedelta(seconds=45)
+_COVER_SAMPLE_GAP = timedelta(seconds=20)
 _OI_HISTORY: dict[str, list[tuple[datetime, dict[float, tuple[float, float]]]]] = {}
 _OI_LOCK = threading.Lock()
+OI_TAPE_DIR = (
+    Path(__file__).resolve().parents[1] / "data" / "journal" / "gamma_blast_oi_tape"
+)
 
 
 def reset_strike_oi_history() -> None:
@@ -334,11 +340,117 @@ def reset_strike_oi_history() -> None:
         _OI_HISTORY.clear()
 
 
+def _oi_tape_path(symbol: str) -> Path:
+    return OI_TAPE_DIR / f"{(symbol or 'NIFTY').upper()}.json"
+
+
+def _as_ist_naive(dt: datetime) -> datetime:
+    """Blast cover tape is an IST session clock (matches evaluate_dashboard dt_ist)."""
+    if getattr(dt, "tzinfo", None) is None:
+        return dt.replace(microsecond=0)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return dt.astimezone(ist).replace(tzinfo=None, microsecond=0)
+
+
+def _hist_to_disk(hist: list[tuple[datetime, dict[float, tuple[float, float]]]]) -> list:
+    out = []
+    for ts, book in hist:
+        wall = _as_ist_naive(ts)
+        out.append({
+            "ts": wall.strftime("%Y-%m-%dT%H:%M:%S"),
+            "book": {str(k): [float(v[0]), float(v[1])] for k, v in book.items()},
+        })
+    return out
+
+
+def _hist_from_disk(raw: list) -> list[tuple[datetime, dict[float, tuple[float, float]]]]:
+    out: list[tuple[datetime, dict[float, tuple[float, float]]]] = []
+    for item in raw or []:
+        try:
+            raw_ts = item["ts"]
+            if raw_ts.endswith("Z"):
+                ts = _as_ist_naive(
+                    datetime.strptime(raw_ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                )
+            else:
+                ts = datetime.strptime(raw_ts[:19], "%Y-%m-%dT%H:%M:%S")
+            book = {
+                float(k): (float(v[0]), float(v[1]))
+                for k, v in (item.get("book") or {}).items()
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if book:
+            out.append((ts, book))
+    return out
+
+
+def _merge_hist(
+    primary: list[tuple[datetime, dict[float, tuple[float, float]]]],
+    secondary: list[tuple[datetime, dict[float, tuple[float, float]]]],
+) -> list[tuple[datetime, dict[float, tuple[float, float]]]]:
+    """Union two tapes by IST wall second; later write wins on equal second."""
+    by_sec: dict[str, tuple[datetime, dict[float, tuple[float, float]]]] = {}
+    for ts, book in list(secondary) + list(primary):
+        wall = _as_ist_naive(ts)
+        by_sec[wall.strftime("%Y-%m-%dT%H:%M:%S")] = (wall, book)
+    return [by_sec[k] for k in sorted(by_sec)]
+
+
+def _flock_exclusive(lock_file) -> bool:
+    """Best-effort exclusive flock (no-op when unavailable)."""
+    try:
+        import fcntl
+
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return True
+    except (ImportError, OSError, AttributeError):
+        return False
+
+
+def _read_oi_tape_unlocked(path: Path) -> list[tuple[datetime, dict[float, tuple[float, float]]]]:
+    """Read the JSON tape. Caller must hold the per-symbol flock when racing writers."""
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return _hist_from_disk(raw if isinstance(raw, list) else [])
+
+
+def _write_oi_tape_unlocked(path: Path, hist) -> None:
+    """Atomic replace of the JSON tape. Caller must hold the per-symbol flock."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(_hist_to_disk(hist), separators=(",", ":"))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _with_oi_tape_lock(symbol: str, fn):
+    """Run ``fn(path)`` under thread lock + per-symbol flock (cross-process)."""
+    key = (symbol or "NIFTY").upper()
+    path = _oi_tape_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    with _OI_LOCK:
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            _flock_exclusive(lock_file)
+            return fn(key, path)
+
+
 def note_strike_oi(symbol: str, oi_strikes, now: datetime) -> None:
     """Remember absolute call and put OI at each strike.
 
-    A second print inside 45 seconds replaces the latest sample, so a cockpit
-    poll does not fill the tape. Samples older than 30 minutes are dropped.
+    A second print inside ``_COVER_SAMPLE_GAP`` replaces the latest sample, so a
+    cockpit poll does not fill the tape. Samples older than 30 minutes are
+    dropped. The tape is also flushed to ``OI_TAPE_DIR`` so web + timeseries +
+    blast loop share covering history across processes.
+
+    Concurrency: in-process ``_OI_LOCK`` + per-symbol flock around
+    load→merge→append→atomic replace so two processes cannot drop each other's
+    samples (last-writer-wins without merge).
     """
     book: dict[float, tuple[float, float]] = {}
     for row in oi_strikes or []:
@@ -354,32 +466,48 @@ def note_strike_oi(symbol: str, oi_strikes, now: datetime) -> None:
             continue
     if not book or now is None:
         return
-    key = (symbol or "NIFTY").upper()
-    with _OI_LOCK:
-        hist = _OI_HISTORY.setdefault(key, [])
+    now = _as_ist_naive(now)
+
+    def _commit(key: str, path: Path) -> None:
+        disk = _read_oi_tape_unlocked(path)
+        hist = _merge_hist(_OI_HISTORY.get(key) or [], disk)
         if hist and now - hist[-1][0] < _COVER_SAMPLE_GAP:
             hist[-1] = (now, book)
         else:
             hist.append((now, book))
         cutoff = now - _COVER_KEEP
-        while hist and hist[0][0] < cutoff:
-            hist.pop(0)
+        hist = [(ts, b) for ts, b in hist if ts >= cutoff]
+        _OI_HISTORY[key] = hist
+        try:
+            _write_oi_tape_unlocked(path, hist)
+        except OSError:
+            pass
+
+    _with_oi_tape_lock(symbol, _commit)
 
 
 def window_cover_frac(symbol: str, strike: float, side: str, now: datetime) -> float | None:
-    """OI change at ``strike`` over the last 3–10 minutes, as a fraction of the base.
+    """OI change at ``strike`` over the last ~1.5–10 minutes, as a fraction of the base.
 
     Positive means open interest rose (writers adding). Negative means it fell
-    (covering). None until a sample at least 3 minutes old exists. The day's
-    open-interest change is not this number.
+    (covering). None until a sample at least ``_COVER_MIN_BASE`` old exists. The
+    day's open-interest change is not this number. Merges the on-disk shared tape
+    so a freshly started process inherits covering history.
     """
     if strike is None or now is None:
         return None
+    now = _as_ist_naive(now)
     idx = 0 if side == "call" else 1
-    key = (symbol or "NIFTY").upper()
     target = now - _COVER_WINDOW
-    with _OI_LOCK:
-        hist = list(_OI_HISTORY.get(key) or [])
+
+    def _snapshot(key: str, path: Path):
+        disk = _read_oi_tape_unlocked(path)
+        hist = _merge_hist(_OI_HISTORY.get(key) or [], disk)
+        if hist:
+            _OI_HISTORY[key] = hist
+        return list(hist)
+
+    hist = _with_oi_tape_lock(symbol, _snapshot)
     if len(hist) < 2:
         return None
     latest = hist[-1][1].get(float(strike))
@@ -424,6 +552,46 @@ def gamma_concentration(oi_strikes, spot: float, n: int = 6,
     return out
 
 
+def _blast_card(
+    *,
+    state: str,
+    badge: str,
+    description: str,
+    score,
+    is_expiry: bool,
+    in_blast_window: bool,
+    primary_strike=None,
+    cover_frac=None,
+    cover_known=None,
+    cover_side=None,
+    ignition_pts=None,
+    proximity_pts=None,
+    regime_pts=None,
+    sustain_score=None,
+    sustain_grade=None,
+    pin_geometry=None,
+) -> dict:
+    """Uniform blast-card payload so journals always see the same keys."""
+    return {
+        "state": state,
+        "badge": badge,
+        "description": description,
+        "score": score,
+        "is_expiry": is_expiry,
+        "in_blast_window": in_blast_window,
+        "primary_strike": primary_strike,
+        "cover_frac": cover_frac,
+        "cover_known": cover_known,
+        "cover_side": cover_side,
+        "ignition_pts": ignition_pts,
+        "proximity_pts": proximity_pts,
+        "regime_pts": regime_pts,
+        "sustain_score": sustain_score,
+        "sustain_grade": sustain_grade,
+        "pin_geometry": pin_geometry,
+    }
+
+
 def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     """Evaluate point-in-time Expiry Gamma Blast status and 0-100 score for Cockpit.
 
@@ -442,19 +610,22 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
       - is_expiry: bool
       - in_blast_window: bool
       - primary_strike: float | None
+      - cover_frac / cover_known / cover_side, ignition_pts / proximity_pts /
+        regime_pts (afternoon components; often None/empty off-window)
+      - sustain_score / sustain_grade / pin_geometry when computed
     """
     levels = getattr(dash, "levels", None)
     spot = float(getattr(levels, "spot", 0.0) or 0.0)
     if spot <= 0:
-        return {
-            "state": "NO_TRIGGER",
-            "badge": "GAMMA BLAST: INACTIVE",
-            "description": "No spot on the book. The gamma-blast watch has nothing to mark.",
-            "score": None,
-            "is_expiry": False,
-            "in_blast_window": False,
-            "primary_strike": None,
-        }
+        return _blast_card(
+            state="NO_TRIGGER",
+            badge="GAMMA BLAST: INACTIVE",
+            description="No spot on the book. The gamma-blast watch has nothing to mark.",
+            score=None,
+            is_expiry=False,
+            in_blast_window=False,
+            primary_strike=None,
+        )
 
     call_wall = float(getattr(levels, "call_wall", 0.0) or 0.0)
     put_wall = float(getattr(levels, "put_wall", 0.0) or 0.0)
@@ -509,15 +680,15 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
 
     # Off-market hours safety gate: the blast watch is an open-session read.
     if not config.is_market_open(dt_ist):
-        return {
-            "state": "NO_TRIGGER",
-            "badge": "GAMMA BLAST: SESSION CONCLUDED",
-            "description": "Market session closed at 15:30 IST. The gamma-blast watch is off.",
-            "score": 0,
-            "is_expiry": False,
-            "in_blast_window": False,
-            "primary_strike": None,
-        }
+        return _blast_card(
+            state="NO_TRIGGER",
+            badge="GAMMA BLAST: SESSION CONCLUDED",
+            description="Market session closed at 15:30 IST. The gamma-blast watch is off.",
+            score=0,
+            is_expiry=False,
+            in_blast_window=False,
+            primary_strike=None,
+        )
 
     # 2. 0-DTE Expiry Gate
     dte_now = getattr(dash, "dte_now", None)
@@ -579,28 +750,31 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         score = max(10, min(32, score))
 
         dte_str = f"{dte_now:.1f}d" if (dte_now is not None and dte_now > 0) else "off-cycle"
-        return {
-            "state": "NO_TRIGGER",
-            "badge": "GAMMA BLAST: INACTIVE (NON-EXPIRY)",
-            "description": f"Non-expiry session ({dte_str} to nearest expiry). 0-DTE blast inactive.",
-            "score": score,
-            "is_expiry": False,
-            "in_blast_window": in_blast_window,
-            "primary_strike": primary_strike,
-        }
+        return _blast_card(
+            state="NO_TRIGGER",
+            badge="GAMMA BLAST: INACTIVE (NON-EXPIRY)",
+            description=f"Non-expiry session ({dte_str} to nearest expiry). 0-DTE blast inactive.",
+            score=score,
+            is_expiry=False,
+            in_blast_window=in_blast_window,
+            primary_strike=primary_strike,
+            cover_frac=cover_frac if cover_known else None,
+            cover_known=cover_known,
+            cover_side=cover_side if primary_strike else None,
+        )
 
     raw_flags = getattr(levels, "flags", None)
     flags = raw_flags if isinstance(raw_flags, (list, tuple)) else []
     if any("near book expired" in str(flag) for flag in flags):
-        return {
-            "state": "NO_TRIGGER",
-            "badge": "GAMMA BLAST: INACTIVE",
-            "description": "Near gamma has gone to dust. No strike is named as a wall.",
-            "score": 12,
-            "is_expiry": True,
-            "in_blast_window": in_blast_window,
-            "primary_strike": None,
-        }
+        return _blast_card(
+            state="NO_TRIGGER",
+            badge="GAMMA BLAST: INACTIVE",
+            description="Near gamma has gone to dust. No strike is named as a wall.",
+            score=12,
+            is_expiry=True,
+            in_blast_window=in_blast_window,
+            primary_strike=None,
+        )
 
     # 6. Expiry Session: Pre-Blast Window (< 13:00 IST)
     if not in_blast_window and ist_min < 13 * 60:
@@ -614,15 +788,18 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             state = "NO_TRIGGER"
             badge = "GAMMA BLAST: INACTIVE (MORNING)"
             desc = "0-DTE morning. No blast trigger yet. The blast window is 13:00–15:40 IST."
-        return {
-            "state": state,
-            "badge": badge,
-            "description": desc,
-            "score": base_score,
-            "is_expiry": True,
-            "in_blast_window": False,
-            "primary_strike": primary_strike,
-        }
+        return _blast_card(
+            state=state,
+            badge=badge,
+            description=desc,
+            score=base_score,
+            is_expiry=True,
+            in_blast_window=False,
+            primary_strike=primary_strike,
+            cover_frac=cover_frac if cover_known else None,
+            cover_known=cover_known,
+            cover_side=cover_side if primary_strike else None,
+        )
 
     # 7. Expiry Session: Afternoon Blast Window (13:00 through the F&O close)
     # Ignition points (0 to 40)
@@ -731,38 +908,86 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             f"(research grade {sustain_score}/100 — not a direction call)."
         )
 
-    return {
-        "state": state,
-        "badge": badge,
-        "description": desc,
-        "score": score,
-        "is_expiry": True,
-        "in_blast_window": in_blast_window,
-        "primary_strike": primary_strike,
-        "sustain_score": sustain_score,
-        "sustain_grade": sustain_grade,
-        "pin_geometry": pin_geometry,
-    }
+    return _blast_card(
+        state=state,
+        badge=badge,
+        description=desc,
+        score=score,
+        is_expiry=True,
+        in_blast_window=in_blast_window,
+        primary_strike=primary_strike,
+        cover_frac=cover_frac if cover_known else None,
+        cover_known=cover_known,
+        cover_side=cover_side if primary_strike else None,
+        ignition_pts=round(ignition_pts, 2),
+        proximity_pts=round(proximity_pts, 2),
+        regime_pts=round(regime_pts, 2),
+        sustain_score=sustain_score,
+        sustain_grade=sustain_grade,
+        pin_geometry=pin_geometry,
+    )
 
 
 _SCORE_FIELDS = (
     "timestamp_utc", "time_ist", "date_ist", "symbol", "spot",
     "score", "state", "primary_strike", "badge",
     "call_wall", "put_wall", "in_blast_window",
+    "cover_frac", "cover_known", "cover_side",
+    "ignition_pts", "proximity_pts", "regime_pts",
+    "pin_geometry", "sustain_score", "sustain_grade",
 )
 _score_written: dict[str, tuple] = {}
 BLAST_SCORE_DIR = (
     Path(__file__).resolve().parents[1] / "data" / "journal" / "gamma_blast_score"
 )
+BLAST_SCORE_MINUTE_DIR = (
+    Path(__file__).resolve().parents[1] / "data" / "journal" / "gamma_blast_score_minute"
+)
+
+
+def _score_minute_present(path: Path, minute: str) -> bool:
+    """True if ``time_ist`` already appears in the CSV (any schema)."""
+    import csv
+
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            if (row.get("time_ist") or "") == minute:
+                return True
+    return False
+
+
+def _migrate_score_csv_header(path: Path) -> None:
+    """Rewrite an on-disk score CSV to ``_SCORE_FIELDS`` when the header drifted."""
+    import csv
+
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        old_fields = list(reader.fieldnames or [])
+        if old_fields == list(_SCORE_FIELDS):
+            return
+        rows = list(reader)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            out = {k: row.get(k, "") for k in _SCORE_FIELDS}
+            writer.writerow(out)
+    tmp.replace(path)
 
 
 def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) -> bool:
     """Append one card reading per IST minute (headless + UI share this path).
 
-    At most one row per symbol per minute so a cockpit poll storm does not
-    duplicate the tape, while a flat COILING stretch still leaves a minute
-    grid for later intelligence. Returns True when a row was written.
-    Directory: ``data/journal/gamma_blast_score/<SYMBOL>``.
+    Cross-process safe: an on-disk flock + CSV scan enforce one row per
+    symbol per minute even when web_server, log_timeseries, and
+    log_gamma_blast all evaluate the same card. Returns True when a row
+    was written. Directory: ``data/journal/gamma_blast_score/<SYMBOL>``.
     """
     import csv
 
@@ -775,41 +1000,77 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
     ist = fetched_at.astimezone(timezone(timedelta(hours=5, minutes=30)))
     minute = ist.strftime("%H:%M")
     day = ist.strftime("%Y-%m-%d")
-    score = result.get("score")
-    state = result.get("state")
-    strike = result.get("primary_strike")
-    key = (day, minute)  # one print per minute — trajectory, not only changes
+    key = (day, minute)
     sym = (symbol or "NIFTY").upper()
     if _score_written.get(sym) == key:
-        return False
+        # Fast path — still verify on disk under lock below when racing writers.
+        pass
+
     levels = result.get("levels") or {}
     call_wall = result.get("call_wall", levels.get("call_wall") if isinstance(levels, dict) else None)
     put_wall = result.get("put_wall", levels.get("put_wall") if isinstance(levels, dict) else None)
     directory = BLAST_SCORE_DIR / sym
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{day}.csv"
-    new_file = not path.exists()
+    lock_path = directory / f".{day}.score.lock"
+
+    def _fmt(val):
+        if val is None or val == "":
+            return ""
+        if isinstance(val, bool):
+            return int(val)
+        if isinstance(val, float):
+            return round(val, 6)
+        return val
+
     row = {
         "timestamp_utc": fetched_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "time_ist": minute,
         "date_ist": day,
         "symbol": sym,
         "spot": round(float(spot), 2) if spot else "",
-        "score": score,
-        "state": state,
-        "primary_strike": "" if strike is None else strike,
+        "score": result.get("score"),
+        "state": result.get("state"),
+        "primary_strike": "" if result.get("primary_strike") is None else result.get("primary_strike"),
         "badge": result.get("badge") or "",
         "call_wall": "" if call_wall in (None, "") else call_wall,
         "put_wall": "" if put_wall in (None, "") else put_wall,
         "in_blast_window": int(bool(result.get("in_blast_window"))),
+        "cover_frac": _fmt(result.get("cover_frac")),
+        "cover_known": _fmt(result.get("cover_known")),
+        "cover_side": result.get("cover_side") or "",
+        "ignition_pts": _fmt(result.get("ignition_pts")),
+        "proximity_pts": _fmt(result.get("proximity_pts")),
+        "regime_pts": _fmt(result.get("regime_pts")),
+        "pin_geometry": _fmt(result.get("pin_geometry")),
+        "sustain_score": _fmt(result.get("sustain_score")),
+        "sustain_grade": result.get("sustain_grade") or "",
     }
-    with path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS)
-        if new_file:
-            writer.writeheader()
-        writer.writerow(row)
-    _score_written[sym] = key
-    return True
+
+    # Cross-process critical section: flock → scan minute → migrate → append.
+    # In-memory `_score_written` is only a hint; the CSV scan under flock is authority.
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        locked = _flock_exclusive(lock_file)
+        if _score_minute_present(path, minute):
+            _score_written[sym] = key
+            return False
+        _migrate_score_csv_header(path)
+        new_file = not path.exists() or path.stat().st_size == 0
+        with path.open("a", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS, extrasaction="ignore")
+            if new_file:
+                writer.writeheader()
+            writer.writerow(row)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+        _score_written[sym] = key
+        if not locked:
+            # flock unavailable: still wrote, but another process may race this minute.
+            pass
+        return True
 
 
 def journal_blast_from_dashboard(dash, symbol: str = "NIFTY") -> bool:
@@ -830,3 +1091,63 @@ def journal_blast_from_dashboard(dash, symbol: str = "NIFTY") -> bool:
         return journal_blast_read(symbol, spot, result, getattr(dash, "fetched_at", None))
     except Exception:
         return False
+
+
+def collapse_blast_score_first_print(rows: list[dict]) -> list[dict]:
+    """Keep the earliest ``timestamp_utc`` row per ``time_ist`` (research grid).
+
+    Multi-writer pollution left TRIGGERED and NO_TRIGGER in the same minute;
+    studies must use the first print, not the max score in the minute.
+    """
+    best: dict[str, dict] = {}
+    for row in rows or []:
+        minute = row.get("time_ist") or ""
+        if not minute:
+            continue
+        prev = best.get(minute)
+        if prev is None:
+            best[minute] = row
+            continue
+        if (row.get("timestamp_utc") or "") < (prev.get("timestamp_utc") or ""):
+            best[minute] = row
+    return [best[m] for m in sorted(best)]
+
+
+def write_blast_score_minute_grid(
+    symbol: str,
+    day: str,
+    *,
+    src_dir: Path | None = None,
+    dst_dir: Path | None = None,
+) -> Path | None:
+    """Collapse a polluted daily score CSV into a one-row-per-minute grid.
+
+    Writes ``gamma_blast_score_minute/<SYM>/<day>.csv`` by default. Returns the
+    output path, or None when the source file is missing.
+    """
+    import csv
+
+    sym = (symbol or "NIFTY").upper()
+    src_root = Path(src_dir) if src_dir is not None else BLAST_SCORE_DIR
+    dst_root = Path(dst_dir) if dst_dir is not None else BLAST_SCORE_MINUTE_DIR
+    src = src_root / sym / f"{day}.csv"
+    if not src.exists():
+        return None
+    with src.open("r", newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    collapsed = collapse_blast_score_first_print(rows)
+    out_dir = dst_root / sym
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{day}.csv"
+    # Preserve source columns; pad any missing research fields.
+    fieldnames = list(_SCORE_FIELDS)
+    for row in collapsed:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with out.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in collapsed:
+            writer.writerow({k: row.get(k, "") for k in fieldnames})
+    return out

@@ -116,8 +116,12 @@ Each evaluate call runs `note_strike_oi(symbol, oi_strikes, dt_ist)`:
 
 `window_cover_frac(symbol, strike, side, now)`:
 
-- Needs ≥2 samples and a base at least **3 minutes** old.
+- Needs ≥2 samples and a base at least **90 seconds** old (was 3 minutes —
+  that gate left 9 Nov stuck on COILING@59).
 - Prefers a sample near **now − 10 minutes**.
+- Sample gap **20s** (blast lane is ~10s).
+- Shared on-disk tape: `data/journal/gamma_blast_oi_tape/<SYM>.json` so web +
+  timeseries + blast loop inherit covering history across processes.
 - Returns `(OI_now − OI_base) / OI_base`.
   - **Negative** = covering (fuel).
   - **Positive** = OI building (defense when > +0.05).
@@ -260,11 +264,18 @@ thresholds.
 
 | Path | Writer | Content |
 |------|--------|---------|
-| `data/journal/gamma_blast_score/<SYM>/<YYYY-MM-DD>.csv` | `journal_blast_read` / `journal_blast_from_dashboard` | One row per **IST minute** per symbol: score, state, primary_strike, walls, `in_blast_window` |
+| `data/journal/gamma_blast_score/<SYM>/<YYYY-MM-DD>.csv` | `journal_blast_read` / `journal_blast_from_dashboard` | One row per **IST minute** per symbol (cross-process flock): score, state, walls, cover/ignition/proximity/regime, sustain/pin fields |
+| `data/journal/gamma_blast_score_minute/` | `scripts/rebuild_blast_score_minute_grid.py` | First-print collapse of a polluted day (research grid) |
+| `data/journal/gamma_blast_oi_tape/` | `note_strike_oi` | Shared covering OI history across processes |
+| `data/journal/blast_active_forward/` | `scripts/analyze_blast_active_forward.py` | ACTIVE episodes → spot/option forwards (research) |
 | Other blast journals / ticks | timeseries / blast loops | Separate capture; **recommendations do not learn from CSV** |
 
-`journal_blast_from_dashboard` skips non-expiry. Cockpit path journals on expiry
-when the card evaluates. Dedup key: `(date_ist, HH:MM)` per symbol.
+`journal_blast_from_dashboard` skips non-expiry. Dedup is **on-disk** (flock +
+CSV minute scan), not only in-process memory — web + timeseries + blast loop
+must not leave TRIGGERED and NO_TRIGGER in the same minute.
+
+**Live card also attaches a secondary sustain grade** (`sustain_score` /
+`sustain_grade`) when cover is known; location score remains primary.
 
 ---
 
