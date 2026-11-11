@@ -38,7 +38,13 @@ _LOCK = threading.Lock()
 
 # Tape completeness: a hole ≥ this many minutes forces a broker resync (rate-limited).
 _GAP_RESYNC_MINUTES = 3
-_GAP_RESYNC_COOLDOWN_SEC = 300.0
+_GAP_RESYNC_COOLDOWN_SEC = 180.0
+# Tick silence: if no futures tick arrives for this long during session, resync
+# even when no bar completed (Sensex 9-Nov dropped 106 minutes while Nifty lived —
+# gap detection only ran on completed bars, so a silent feed never self-healed).
+_TICK_SILENCE_SEC = 90.0
+_SILENCE_POLL_SEC = 30.0
+_OI_FLAT_BARS = 5
 
 
 def resolve_gex_levels_for_symbol(symbol: str) -> dict[str, float | None]:
@@ -151,6 +157,8 @@ class LiveSentinelManager:
         # Last known GEX levels per symbol (survives until MarketContext exists).
         self._pending_gex: dict[str, dict[str, float | None]] = {}
         self._gap_resync_at: dict[str, float] = {}
+        self._silence_watchdog_started = False
+        self._instrument_symbol: dict[str, str] = {}
 
     def _arm_recommendations_if_needed(self) -> None:
         """Enable reactive recommendations only after a live futures tick arrives."""
@@ -341,6 +349,7 @@ class LiveSentinelManager:
                 vwap_tracker = SessionVWAPTracker()
                 cum_cvd = 0.0
                 prev_oi = 0
+                oi_flat_bars = 0
                 bars_to_save: list[Bar] = []
                 signals_generated: list[SentinelSignal] = []
                 n_kept = 0
@@ -390,6 +399,10 @@ class LiveSentinelManager:
                         vwap_tracker.update(typical_kept, float(kept.volume_units))
                         cum_cvd = kept.cvd
                         if kept.oi > 0:
+                            if prev_oi > 0 and kept.oi == prev_oi:
+                                oi_flat_bars += 1
+                            else:
+                                oi_flat_bars = 0
                             prev_oi = kept.oi
                         bars_to_save.append(kept)
                         ctx.update_bar(kept)
@@ -418,7 +431,13 @@ class LiveSentinelManager:
 
                     delta_oi = (oi - prev_oi) if (prev_oi > 0 and oi > 0) else 0
                     if oi > 0:
+                        if prev_oi > 0 and oi == prev_oi:
+                            oi_flat_bars += 1
+                        else:
+                            oi_flat_bars = 0
                         prev_oi = oi
+                    # Same gate as BarAggregator: flat OI reprint is not a live tape.
+                    oi_fresh = oi_flat_bars < _OI_FLAT_BARS
 
                     bar = Bar(
                         instrument_id=instrument_id,
@@ -443,7 +462,7 @@ class LiveSentinelManager:
                         vwap_lower_2=round(dn2, 2),
                         oi=oi,
                         delta_oi=delta_oi,
-                        oi_fresh=True,
+                        oi_fresh=oi_fresh,
                         incomplete=False,
                         depth_imbalance=0.0,
                     )
@@ -484,16 +503,22 @@ class LiveSentinelManager:
                 agg.last_tick_price = latest_bar.close
                 agg.vwap_tracker = vwap_tracker
                 agg.bar_oi = latest_bar.oi
+                agg.prev_bar_oi = prev_oi if prev_oi > 0 else latest_bar.oi
+                agg._oi_flat_bars = int(oi_flat_bars)
                 self._aggregators[instrument_id] = agg
+                self._instrument_symbol[instrument_id] = symbol
+                self._last_tick_time[instrument_id] = time.time()
+                self._ensure_silence_watchdog()
 
                 log.info(
                     "Successfully synced %d real intraday bars for %s "
-                    "(kept %d live minutes, wrote %d, latest close: %.1f)",
+                    "(kept %d live minutes, wrote %d, latest close: %.1f, oi_flat=%d)",
                     len(bars_to_save),
                     instrument_id,
                     n_kept,
                     n_written,
                     latest_bar.close,
+                    oi_flat_bars,
                 )
                 try:
                     from sentinel.storage.db import record_daily_closing_cvd
@@ -513,6 +538,10 @@ class LiveSentinelManager:
             return
 
         instrument_id = f"{symbol}-FUT"
+        self._instrument_symbol[instrument_id] = symbol
+        self._last_tick_time[instrument_id] = time.time()
+        self._ensure_silence_watchdog()
+
         agg = self._aggregators.get(instrument_id)
         if agg is None:
             # A restart drops the in-memory aggregator while today's bars remain
@@ -626,6 +655,64 @@ class LiveSentinelManager:
                     record_daily_closing_cvd(instrument_id, symbol=symbol, trade_date=tick_dt.strftime("%Y-%m-%d"))
                 except Exception:
                     pass
+
+    def _ensure_silence_watchdog(self) -> None:
+        """Start one background poller that resyncs instruments with a silent feed.
+
+        Must not take ``_LOCK`` — ``sync_live_session`` arms this while holding
+        that lock (non-reentrant).
+        """
+        if self._silence_watchdog_started:
+            return
+        self._silence_watchdog_started = True
+
+        def _loop() -> None:
+            while True:
+                try:
+                    time.sleep(_SILENCE_POLL_SEC)
+                    self._poll_silent_instruments()
+                except Exception:
+                    log.debug("silence watchdog iteration failed", exc_info=True)
+
+        threading.Thread(
+            target=_loop, name="sentinel-silence-watchdog", daemon=True,
+        ).start()
+
+    def _session_active_for_silence(self, now_ist: datetime | None = None) -> bool:
+        """True during cash/FNO hours when a silent futures feed is a hole, not off-hours."""
+        now = now_ist or datetime.now(IST)
+        try:
+            import config
+            return bool(config.is_market_open(now, include_fno_extended=True))
+        except Exception:
+            t_min = now.hour * 60 + now.minute
+            return (9 * 60 + 15) <= t_min < (15 * 60 + 40) and now.weekday() < 5
+
+    def _poll_silent_instruments(self) -> None:
+        """Resync any armed instrument whose ticks or 1m bars went quiet."""
+        if not self._session_active_for_silence():
+            return
+        now = time.time()
+        now_ist = datetime.now(IST)
+        with _LOCK:
+            instruments = list(self._aggregators.keys()) or list(self._last_tick_time.keys())
+        for instrument_id in instruments:
+            symbol = self._instrument_symbol.get(
+                instrument_id, instrument_id.replace("-FUT", ""),
+            )
+            last_tick = self._last_tick_time.get(instrument_id, 0.0)
+            silent_sec = (now - last_tick) if last_tick > 0 else 0.0
+            bars = list_recent_bars(
+                instrument_id, timeframe="1m", limit=30,
+                session_only=True, _auto_populate=False,
+            )
+            gap = largest_1m_gap_minutes(bars, now_ist=now_ist) if bars else 0
+            if silent_sec >= _TICK_SILENCE_SEC or gap >= _GAP_RESYNC_MINUTES:
+                log.warning(
+                    "Sentinel silence/gap on %s: tick_age=%.0fs gap=%dm — scheduling resync",
+                    instrument_id, silent_sec, gap,
+                )
+                self._schedule_gap_resync(instrument_id, symbol)
 
     def _schedule_gap_resync(self, instrument_id: str, symbol: str) -> None:
         """Force a live session sync after a detected 1m tape hole (rate-limited)."""

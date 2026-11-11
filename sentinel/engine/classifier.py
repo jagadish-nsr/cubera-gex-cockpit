@@ -59,9 +59,31 @@ def _suppress_continuation_near_magnet(
         return False
 
 
-def _suppress_continuation_choppy(context: MarketContext) -> bool:
-    """True when the path-shape meter says the tape is boxed (Dreiss ≥ 61.8)."""
-    return bool(getattr(context, "chop_high", False))
+# Elevated chop (below CHOP_HIGH) still kills continuation when price is boxed
+# inside the opening range — 9-Nov V-reversal fired strong ABOVE_VWAP closes
+# that were still trapped in the ORB (CONTINUATION_BULL 7.7% WR).
+_CHOP_ELEVATED = 55.0
+
+
+def _suppress_continuation_choppy(
+    context: MarketContext,
+    tags: list[str] | None = None,
+) -> bool:
+    """True when the path-shape meter says the tape is boxed.
+
+    Dreiss ≥ 61.8 (chop_high) always blocks. Elevated chop (≥ 55) blocks only
+    when still INSIDE_ORB — open-space breakouts keep their continuation.
+    """
+    if bool(getattr(context, "chop_high", False)):
+        return True
+    tags = tags or []
+    if "INSIDE_ORB" not in tags:
+        return False
+    chop = getattr(context, "chop_value", None)
+    try:
+        return chop is not None and float(chop) >= _CHOP_ELEVATED
+    except (TypeError, ValueError):
+        return False
 
 
 def _continuation_score_penalty(tags: list[str], gex_alignment: str, score: int) -> int:
@@ -185,7 +207,7 @@ class SignalClassifierEngine:
             and close_pos >= 0.70
             and ("ABOVE_VWAP" in tags or "ABOVE_ORB_HIGH" in tags)
             and not _suppress_continuation_near_magnet(bar, tags, context)
-            and not _suppress_continuation_choppy(context)
+            and not _suppress_continuation_choppy(context, tags)
         ):
             sig_type = "CONTINUATION_BULL"
             category = "BULLISH"
@@ -209,7 +231,7 @@ class SignalClassifierEngine:
             and close_pos <= 0.30
             and ("BELOW_VWAP" in tags or "BELOW_ORB_LOW" in tags)
             and not _suppress_continuation_near_magnet(bar, tags, context)
-            and not _suppress_continuation_choppy(context)
+            and not _suppress_continuation_choppy(context, tags)
         ):
             sig_type = "CONTINUATION_BEAR"
             category = "BEARISH"

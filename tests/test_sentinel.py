@@ -692,3 +692,108 @@ def test_largest_1m_gap_minutes():
     ]
     assert largest_1m_gap_minutes(bars) == 6
     assert largest_1m_gap_minutes(bars[:2]) == 0
+
+
+def test_continuation_suppressed_when_elevated_chop_inside_orb():
+    """Chop 55–61.8 inside ORB must not mint CONTINUATION (9-Nov V-reversal)."""
+    engine = SignalClassifierEngine()
+    ctx = MarketContext(
+        symbol="NIFTY",
+        call_wall=26000.0,
+        magnet=26000.0,
+        orb_high=25000.0,
+        orb_low=24800.0,
+        orb_complete=True,
+    )
+    ctx.chop_high = False
+    ctx.chop_value = 58.0
+    t0 = datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc)
+    bar = _cont_bull_bar("NIFTY-FUT", t0, 24950.0)
+    tags = ctx.get_context_tags(bar)
+    assert "INSIDE_ORB" in tags
+    assert "CHOPPY" not in tags  # only chop_high tags CHOPPY
+    sig = engine.evaluate_bar(bar, ctx)
+    assert sig is None or sig.type != "CONTINUATION_BULL"
+
+
+def test_continuation_elevated_chop_allows_orb_breakout():
+    """Elevated chop alone does not block an ABOVE_ORB continuation."""
+    engine = SignalClassifierEngine()
+    ctx = MarketContext(
+        symbol="NIFTY",
+        call_wall=26000.0,
+        magnet=26000.0,
+        orb_high=24900.0,
+        orb_low=24800.0,
+        orb_complete=True,
+    )
+    ctx.chop_high = False
+    ctx.chop_value = 58.0
+    t0 = datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc)
+    bar = _cont_bull_bar("NIFTY-FUT", t0, 24950.0)
+    assert "ABOVE_ORB_HIGH" in ctx.get_context_tags(bar)
+    sig = engine.evaluate_bar(bar, ctx)
+    assert sig is not None
+    assert sig.type == "CONTINUATION_BULL"
+
+
+def test_silence_watchdog_schedules_resync_on_stale_ticks(monkeypatch):
+    """Silent futures feed must resync without waiting for a completed bar."""
+    import time as _time
+    from sentinel.feed.live import LiveSentinelManager, _TICK_SILENCE_SEC
+
+    mgr = LiveSentinelManager()
+    mgr._aggregators["SENSEX-FUT"] = object()  # armed
+    mgr._instrument_symbol["SENSEX-FUT"] = "SENSEX"
+    mgr._last_tick_time["SENSEX-FUT"] = _time.time() - (_TICK_SILENCE_SEC + 5)
+    called = []
+    monkeypatch.setattr(mgr, "_session_active_for_silence", lambda: True)
+    monkeypatch.setattr(
+        mgr, "_schedule_gap_resync",
+        lambda iid, sym: called.append((iid, sym)),
+    )
+    monkeypatch.setattr(
+        "sentinel.feed.live.list_recent_bars",
+        lambda *a, **k: [],
+    )
+    mgr._poll_silent_instruments()
+    assert called == [("SENSEX-FUT", "SENSEX")]
+
+
+def test_sync_backfill_marks_oi_stale_after_five_flat(monkeypatch):
+    """Candle sync must not force oi_fresh=True on a frozen OI reprint."""
+    import pandas as pd
+    from sentinel.feed.live import LiveSentinelManager
+    from sentinel.storage.db import clear_sentinel_data, list_recent_bars
+
+    clear_sentinel_data("TESTOI-FUT")
+    now_ts = datetime.now(timezone.utc).timestamp() - 600
+    rows = []
+    for i in range(7):
+        rows.append({
+            "open": 22500.0 + i,
+            "high": 22510.0 + i,
+            "low": 22495.0 + i,
+            "close": 22505.0 + i,
+            "volume": 5000,
+            "oi": 1_000_000,  # flat all the way
+            "timestamp": now_ts + i * 60,
+        })
+    mock_df = pd.DataFrame(rows)
+    monkeypatch.setattr(
+        "data.dhan.nearest_futures",
+        lambda sym: [{"security_id": 1, "symbol": "TESTOI-FUT", "lot": 65}],
+    )
+    monkeypatch.setattr("data.dhan.fetch_futures_intraday", lambda *a, **k: mock_df)
+    mgr = LiveSentinelManager()
+    ok = mgr.sync_live_session("TESTOI-FUT", "TESTOI", force=True)
+    assert ok is True
+    bars = list_recent_bars("TESTOI-FUT", "1m", limit=10, session_only=False, _auto_populate=False)
+    assert len(bars) >= 6
+    # Chronological: first flat reprints stay fresh; after 5 flats, stale.
+    assert bars[0].oi_fresh is True
+    assert bars[-1].oi_fresh is False
+    # Live aggregator inherits the flat streak so the next tick stays gated.
+    agg = mgr._aggregators["TESTOI-FUT"]
+    assert agg._oi_flat_bars >= 5
+    clear_sentinel_data("TESTOI-FUT")

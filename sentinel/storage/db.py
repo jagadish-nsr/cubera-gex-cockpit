@@ -403,8 +403,20 @@ def list_recent_bars(
             """, (instrument_id, timeframe, now_max, limit)).fetchall()
 
         bars = []
+        oi_flat = 0
+        prev_oi = 0
+        # Reconstruct oi_fresh from consecutive flat OI (column not stored).
+        # Same 5-bar gate as BarAggregator / candle sync.
+        _OI_FLAT_GATE = 5
         for r in reversed(rows):
             keys = r.keys()
+            oi_val = int(r["oi"] or 0)
+            if oi_val > 0 and prev_oi > 0 and oi_val == prev_oi:
+                oi_flat += 1
+            elif oi_val > 0:
+                oi_flat = 0
+            if oi_val > 0:
+                prev_oi = oi_val
             bars.append(Bar(
                 instrument_id=r["instrument_id"],
                 timeframe=r["timeframe"],
@@ -417,7 +429,8 @@ def list_recent_bars(
                 cvd=r["cvd"], vwap=r["vwap"],
                 vwap_sigma_1=r["vwap_sigma_1"], vwap_sigma_2=r["vwap_sigma_2"],
                 vwap_lower_1=r["vwap_lower_1"], vwap_lower_2=r["vwap_lower_2"],
-                oi=r["oi"], delta_oi=r["delta_oi"],
+                oi=oi_val, delta_oi=r["delta_oi"],
+                oi_fresh=oi_flat < _OI_FLAT_GATE,
                 depth_imbalance=r["depth_imbalance"] if "depth_imbalance" in keys else 0.0,
             ))
 

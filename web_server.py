@@ -262,7 +262,9 @@ async def _start_ingest_lanes():
     _run_lane("dhan.sync", _dhan)
     _run_lane("rec.publisher", _ensure_rec_publisher)
     _run_lane("blast.lane", _blast_lane)
-    if not config.is_market_open():
+    # Warm the option book from pre-market discovery (09:07), not only the
+    # 09:15 open — 9-Nov cold-start 503s at 09:15:44 hit an empty store.
+    if not _chain_lanes_should_run():
         return
     window = _ACTIVE_STATE.get("window") or "current_week"
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
@@ -782,6 +784,38 @@ def _ensure_rec_publisher() -> None:
     t = threading.Thread(target=_rec_publisher_loop, name="rec-publisher", daemon=True)
     _REC_THREAD = t
     t.start()
+
+
+def _chain_lanes_should_run(now: datetime | None = None) -> bool:
+    """True from NSE pre-market discovery (09:07) through FNO close.
+
+    Regular ``is_market_open`` starts at 09:15. Starting chain ingest at 09:07
+    pre-warms spot/GEX so the first cockpit poll after the open is not a 503.
+    """
+    now_ist = now or datetime.now(IST)
+    if now_ist.tzinfo is None:
+        now_ist = now_ist.replace(tzinfo=IST)
+    else:
+        now_ist = now_ist.astimezone(IST)
+    try:
+        from data.session_calendar import clock_for, is_muhurat_session
+        from data.holidays import is_holiday
+
+        clock = clock_for(now_ist.date())
+        t_min = now_ist.hour * 60 + now_ist.minute
+        close_min = int(getattr(clock, "fno_close_min", 15 * 60 + 40))
+        # Discovery opens ~8 minutes before the continuous session.
+        discovery_min = max(0, int(getattr(clock, "open_min", 9 * 60 + 15)) - 8)
+        if is_muhurat_session(now_ist.date()):
+            return discovery_min <= t_min < close_min
+        if now_ist.weekday() >= 5:
+            return False
+        if is_holiday(now_ist.date()):
+            return False
+        return discovery_min <= t_min < close_min
+    except Exception:
+        t_min = now_ist.hour * 60 + now_ist.minute
+        return (9 * 60 + 7) <= t_min < (15 * 60 + 40) and now_ist.weekday() < 5
 
 
 def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
