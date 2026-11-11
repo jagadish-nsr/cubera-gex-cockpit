@@ -717,7 +717,7 @@ def test_continuation_suppressed_when_elevated_chop_inside_orb():
 
 
 def test_continuation_elevated_chop_allows_orb_breakout():
-    """Elevated chop alone does not block an ABOVE_ORB continuation."""
+    """Elevated chop alone does not block an ABOVE_ORB continuation above VWAP."""
     engine = SignalClassifierEngine()
     ctx = MarketContext(
         symbol="NIFTY",
@@ -732,9 +732,59 @@ def test_continuation_elevated_chop_allows_orb_breakout():
     t0 = datetime(2026, 11, 9, 5, 0, tzinfo=timezone.utc)
     bar = _cont_bull_bar("NIFTY-FUT", t0, 24950.0)
     assert "ABOVE_ORB_HIGH" in ctx.get_context_tags(bar)
+    assert "ABOVE_VWAP" in ctx.get_context_tags(bar)
     sig = engine.evaluate_bar(bar, ctx)
     assert sig is not None
     assert sig.type == "CONTINUATION_BULL"
+
+
+def test_continuation_bull_requires_above_vwap_not_orb_alone():
+    """11 Nov: ABOVE_ORB_HIGH while BELOW_VWAP must not mint CONT_BULL."""
+    engine = SignalClassifierEngine()
+    ctx = MarketContext(
+        symbol="NIFTY",
+        call_wall=26000.0,
+        magnet=26000.0,
+        orb_high=24900.0,
+        orb_low=24800.0,
+        orb_complete=True,
+    )
+    t0 = datetime(2026, 11, 11, 10, 0, tzinfo=timezone.utc)
+    bar = _cont_bull_bar("NIFTY-FUT", t0, 24950.0)
+    # Force VWAP above close so the bar is BELOW_VWAP but still ABOVE_ORB_HIGH.
+    bar.vwap = 25050.0
+    bar.vwap_sigma_1 = 25080.0
+    bar.vwap_sigma_2 = 25110.0
+    bar.vwap_lower_1 = 25020.0
+    bar.vwap_lower_2 = 24990.0
+    tags = ctx.get_context_tags(bar)
+    assert "ABOVE_ORB_HIGH" in tags
+    assert "BELOW_VWAP" in tags
+    sig = engine.evaluate_bar(bar, ctx)
+    assert sig is None or sig.type != "CONTINUATION_BULL"
+
+
+def test_continuation_at_day_high_capped_below_rec_floor():
+    """11 Nov AT_DAY_HIGH CONT_BULL chase stays journaled but below score 70."""
+    engine = SignalClassifierEngine()
+    ctx = MarketContext(
+        symbol="NIFTY",
+        call_wall=26000.0,
+        magnet=26000.0,
+        orb_high=24900.0,
+        orb_low=24800.0,
+        orb_complete=True,
+    )
+    ctx.day_high = 24950.0
+    t0 = datetime(2026, 11, 11, 5, 0, tzinfo=timezone.utc)
+    bar = _cont_bull_bar("NIFTY-FUT", t0, 24950.0)
+    tags = ctx.get_context_tags(bar)
+    assert "AT_DAY_HIGH" in tags
+    assert "ABOVE_VWAP" in tags
+    sig = engine.evaluate_bar(bar, ctx)
+    assert sig is not None
+    assert sig.type == "CONTINUATION_BULL"
+    assert sig.score <= 69
 
 
 def test_silence_watchdog_schedules_resync_on_stale_ticks(monkeypatch):

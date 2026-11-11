@@ -186,6 +186,54 @@ def _resolve_contract_context(symbol: str) -> dict[str, Any] | None:
     }
 
 
+def _chain_option_ltp(symbol: str, strike: float, side: str) -> float | None:
+    """Last published chain print for the strike (exchange LTP, not Black-Scholes).
+
+    11 Nov BN/SX Sentinel recs died on missing WS ticks while the chain book
+    still had call_ltp/put_ltp from the poller. Prefer WS; chain is the backup.
+    """
+    try:
+        from pathlib import Path
+        import pickle
+
+        sym = config.index_key(symbol)
+        path = Path(f"data/journal/latest_snap_{sym}.pkl")
+        if not path.exists():
+            return None
+        with open(path, "rb") as fh:
+            cached = pickle.load(fh)
+        data = cached.get("data") if isinstance(cached, dict) else cached
+        strikes = getattr(data, "strikes", None) or getattr(data, "oi_strikes", None) or []
+        if isinstance(data, dict):
+            strikes = data.get("strikes") or data.get("oi_strikes") or strikes
+        side_u = str(side or "").upper()
+        key = "call_ltp" if side_u == "CE" else "put_ltp"
+        step = _get_strike_step(symbol)
+        tol = max(step * 0.4, 1.0)
+        for row in strikes:
+            try:
+                if abs(float(row.get("strike", 0) or 0) - float(strike)) > tol:
+                    continue
+                px = float(row.get(key) or 0.0)
+                if px > 0:
+                    return round(px, 2)
+            except (TypeError, ValueError, AttributeError):
+                continue
+    except Exception:
+        log.debug("chain option ltp lookup failed for %s %s %s", symbol, strike, side, exc_info=True)
+    return None
+
+
+def _ensure_option_ws_subscription(symbol: str, strike: float) -> None:
+    """Arm the futures/options WS for this ATM so the next ticks can fill the quote store."""
+    try:
+        from app.ws_spot_feed import subscribe_options
+
+        subscribe_options(symbol, [float(strike)])
+    except Exception:
+        log.debug("subscribe_options failed for %s %s", symbol, strike, exc_info=True)
+
+
 def _resolve_option_entry_ltp(
     symbol: str,
     strike: float,
@@ -193,7 +241,10 @@ def _resolve_option_entry_ltp(
     opt_sym: str = "",
     options_ltp_map: dict | None = None,
 ) -> float | None:
-    """Live premium only. Never invent Black-Scholes."""
+    """Live premium only. Never invent Black-Scholes.
+
+    Order: caller map → WS tick store → published chain LTP. Missing stays missing.
+    """
     book = options_ltp_map or {}
     for k in (opt_sym, f"{strike}_{side}", f"{int(strike)}_{side}", f"{symbol}_{int(strike)}_{side}"):
         if k in book:
@@ -204,9 +255,15 @@ def _resolve_option_entry_ltp(
             except Exception:
                 pass
 
+    _ensure_option_ws_subscription(symbol, strike)
+
     ltp = rec_store.resolve_live_option_ltp(symbol, strike, side, opt_sym, options_ltp_map)
     if ltp is not None and ltp > 0:
         return round(float(ltp), 2)
+
+    chain_ltp = _chain_option_ltp(symbol, strike, side)
+    if chain_ltp is not None and chain_ltp > 0:
+        return chain_ltp
     return None
 
 

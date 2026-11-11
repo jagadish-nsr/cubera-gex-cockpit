@@ -576,13 +576,34 @@ def test_zero_fabrication_missing_or_placeholder_spot_refused():
 
 def test_zero_fabrication_missing_live_premium_refused(monkeypatch):
     """Ship Blocker 3: Missing live option quote must REFUSE recommendation, never invent Black-Scholes."""
-    # Force option resolver to return None (no live quote)
+    # Force option resolver to return None (no live quote / no chain print)
     monkeypatch.setattr(rec_store, "resolve_live_option_ltp", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sr, "_chain_option_ltp", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sr, "_ensure_option_ws_subscription", lambda *args, **kwargs: None)
 
     sig = _make_signal(entry=24515.0, inval=24480.0)
     rec = sr.on_sentinel_signal(sig, current_spot=24515.0, options_ltp_map={})
     assert rec is None  # Refused! No fabricated BS premium!
     assert len(rec_store.list_active_sentinel_recommendations("NIFTY")) == 0
+
+
+def test_chain_ltp_backup_allows_bn_sensex_when_ws_missing(monkeypatch):
+    """11 Nov: BN/SX recs refused on missing WS — published chain LTP is a real print."""
+    monkeypatch.setattr(rec_store, "resolve_live_option_ltp", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sr, "_ensure_option_ws_subscription", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sr, "_chain_option_ltp", lambda *args, **kwargs: 412.5)
+    # Keep other gates green
+    monkeypatch.setattr(sr, "_resolve_contract_context", lambda symbol: {
+        "expiry": "2026-11-11",
+        "expiry_tag": "11 NOV",
+        "dte_days": 0.1,
+        "atm_iv": 0.12,
+    })
+
+    sig = _make_signal(inst="BANKNIFTY-FUT", entry=60600.0, inval=60450.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=60600.0, options_ltp_map={})
+    assert rec is not None
+    assert float(rec.get("initial_ltp") or rec.get("option_entry") or 0) == 412.5
 
 
 def test_unsupported_finnifty_symbol_refused():
@@ -955,6 +976,6 @@ def test_trade_recommendations_mini_card_markup_present():
     assert "cockpit-card-mini-header" in text
     assert "View Full Card Details" in text
     html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    assert "cockpit.js?v=6.54" in html
+    assert "cockpit.js?v=6.60" in html
 
 

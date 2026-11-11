@@ -87,19 +87,24 @@ def _suppress_continuation_choppy(
 
 
 def _continuation_score_penalty(tags: list[str], gex_alignment: str, score: int) -> int:
-    """Down-rank boxed / counter-trend continuation so it stays below the rec floor.
+    """Down-rank boxed / chase / counter-trend continuation below the rec floor.
 
     9 Nov: CONTINUATION_BULL avg score 93 with 8% WR — RVol/Δ bonuses loved the
-    strong close into the pin. COUNTER_TREND or INSIDE_ORB → penalize and cap 69
-    (MIN_SIGNAL_SCORE is 70). ORB breakout continuations keep their full stack.
+    strong close into the pin. 11 Nov: AT_DAY_HIGH CONT_BULL ran 22% target WR
+    with score-95 losers into the fade. COUNTER_TREND, INSIDE_ORB, or day-extreme
+    chase → penalize and cap 69 (MIN_SIGNAL_SCORE is 70). Clean ORB+VWAP
+    continuations keep their full stack.
     """
     boxed = "INSIDE_ORB" in tags
     counter = gex_alignment == "COUNTER_TREND"
+    day_chase = "AT_DAY_HIGH" in tags or "AT_DAY_LOW" in tags
     if counter:
         score -= 20
     if boxed:
         score -= 15
-    if counter or boxed:
+    if day_chase:
+        score -= 15
+    if counter or boxed or day_chase:
         score = min(score, 69)
     return max(0, min(100, score))
 
@@ -205,7 +210,9 @@ class SignalClassifierEngine:
             and rvol >= 1.5
             and bar.delta_ratio >= 0.25
             and close_pos >= 0.70
-            and ("ABOVE_VWAP" in tags or "ABOVE_ORB_HIGH" in tags)
+            # VWAP required — ABOVE_ORB_HIGH alone fired CONT_BULL while BELOW_VWAP
+            # on 11 Nov (stale morning ORB vs afternoon fade).
+            and "ABOVE_VWAP" in tags
             and not _suppress_continuation_near_magnet(bar, tags, context)
             and not _suppress_continuation_choppy(context, tags)
         ):
@@ -229,7 +236,7 @@ class SignalClassifierEngine:
             and rvol >= 1.5
             and bar.delta_ratio <= -0.25
             and close_pos <= 0.30
-            and ("BELOW_VWAP" in tags or "BELOW_ORB_LOW" in tags)
+            and "BELOW_VWAP" in tags
             and not _suppress_continuation_near_magnet(bar, tags, context)
             and not _suppress_continuation_choppy(context, tags)
         ):
