@@ -897,9 +897,179 @@ body {
   text-align: center;
 }
 
-/* Expiry gamma blast sits on its own row under the KPI grid. */
+/* Positioning 40% · confluence heatmap 40% · choppiness 20%. */
 #tab-cockpit .session-reads {
   margin-bottom: 8px;
+  grid-template-columns: 2fr 2fr 1fr;
+  align-items: stretch;
+}
+
+#tab-cockpit .session-reads > .direction-confluence,
+#tab-cockpit .session-reads > .session-read {
+  min-width: 0;
+}
+
+#tab-cockpit .direction-confluence {
+  margin-bottom: 0;
+  padding: 8px 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+#tab-cockpit .direction-confluence-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+#tab-cockpit .direction-confluence-head small {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+#tab-cockpit .direction-confluence-head b {
+  display: block;
+  margin: 2px 0 4px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+#tab-cockpit .direction-confluence-head p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ink-faint);
+}
+
+#tab-cockpit .direction-confluence-tally {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+}
+
+#tab-cockpit .direction-confluence-tally .cf-up {
+  color: var(--go);
+}
+
+#tab-cockpit .direction-confluence-tally .cf-down {
+  color: var(--stop);
+}
+
+#tab-cockpit .direction-confluence-tally .cf-flat {
+  color: var(--ink-mute);
+}
+
+#tab-cockpit .direction-confluence-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+#tab-cockpit .cf-cell {
+  min-height: 54px;
+  padding: 6px 6px 5px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: rgba(148, 163, 184, 0.08);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+#tab-cockpit .cf-cell .cf-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+  line-height: 1.2;
+}
+
+#tab-cockpit .cf-cell .cf-lean {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+#tab-cockpit .cf-cell .cf-detail {
+  font-size: 10px;
+  line-height: 1.25;
+  color: var(--ink-faint);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+#tab-cockpit .cf-cell.lean-up {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, var(--cf-alpha, 0.14));
+}
+
+#tab-cockpit .cf-cell.lean-up .cf-lean {
+  color: var(--go);
+}
+
+#tab-cockpit .cf-cell.lean-down {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, var(--cf-alpha, 0.14));
+}
+
+#tab-cockpit .cf-cell.lean-down .cf-lean {
+  color: var(--stop);
+}
+
+#tab-cockpit .cf-cell.lean-flat {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+#tab-cockpit .cf-cell.lean-flat .cf-lean {
+  color: var(--spark);
+}
+
+#tab-cockpit .cf-cell.lean-na {
+  opacity: 0.65;
+}
+
+#tab-cockpit .cf-cell.lean-na .cf-lean {
+  color: var(--ink-mute);
+}
+
+@media (max-width: 1200px) {
+  #tab-cockpit .session-reads {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #tab-cockpit .session-reads > #card-choppiness {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  #tab-cockpit .session-reads {
+    grid-template-columns: 1fr;
+  }
+
+  #tab-cockpit .session-reads > #card-choppiness {
+    grid-column: auto;
+  }
+
+  #tab-cockpit .direction-confluence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 #tab-cockpit .session-read {
