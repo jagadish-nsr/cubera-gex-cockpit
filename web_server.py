@@ -3511,6 +3511,16 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
         return None
     if not (decision.get("contracts") or []):
         return {"status": "skipped", "detail": "no contracts"}
+    try:
+        from analytics.go_desk import evidence_pack_complete
+
+        if not evidence_pack_complete(
+            decision.get("evidence") or [],
+            strategy_key=str(decision.get("strategy_key") or ""),
+        ):
+            return {"status": "skipped", "detail": "incomplete_evidence"}
+    except Exception as exc:
+        log.debug("go auto-stage evidence check: %s", exc)
 
     fp = _go_auto_stage_fingerprint(decision)
     sym = str(decision.get("symbol") or "").upper()

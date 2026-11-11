@@ -11,6 +11,7 @@ from analytics.go_desk import (
     build_structure_decision,
     build_writer_decision,
     decisive_gate,
+    evidence_pack_complete,
     rank_feed,
     state_from_score,
 )
@@ -27,14 +28,14 @@ def _levels(spot=25400.0, cw=25600.0, pw=25200.0, flip=25350.0, magnet=25400.0):
     )
 
 
-def _idea(score=82, side="CE", strike=25500.0, ltp=72.0):
+def _idea(score=82, side="CE", strike=25500.0, ltp=72.0, play_badge="CONTINUATION_BULL"):
     return SimpleNamespace(
         quality_score=score,
         side=side,
         strike=strike,
         current_ltp=ltp,
         delta_approx=0.32,
-        play_badge="CONTINUATION_BULL",
+        play_badge=play_badge,
         rationale="Buyer CVD + above VWAP; call wall is map.",
         spot_invalidation=25320.0,
         spot_invalidation_text="Spot below 25320",
@@ -129,6 +130,47 @@ def test_directional_hold_on_stale_oi():
     )
     assert d.state == "HOLD"
     assert "stale_oi" in d.hard_blocks
+
+
+def test_vanna_without_tape_cannot_fire():
+    """11 Nov: VANNA-CHARM flooded FIRE with CVD/VWAP red — must stay off FIRE."""
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82400, cw=82600, pw=82000, flip=82200, magnet=82500),
+        trade_ideas=[_idea(88, play_badge="VANNA-CHARM")],
+        sentinel_score=70,
+        cvd_aligned=False,
+        above_vwap=False,
+        breadth_aligned=True,
+        target_confluence=60,
+        oi_ts="2026-11-11T10:00:00+05:30",
+        chain_ok=True,
+    )
+    assert d.strategy_key == "VANNA-CHARM"
+    assert d.state != "FIRE"
+    assert "vanna_without_tape_confluence" in d.hard_blocks or "incomplete_evidence" in d.hard_blocks
+
+
+def test_vanna_with_tape_can_still_fire():
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82400, cw=82600, pw=82000, flip=82200, magnet=82500),
+        trade_ideas=[_idea(88, play_badge="VANNA-CHARM")],
+        sentinel_score=80,
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=70,
+        oi_ts="2026-11-11T10:00:00+05:30",
+        chain_ok=True,
+    )
+    assert d.strategy_key == "VANNA-CHARM"
+    assert d.state == "FIRE"
+    assert evidence_pack_complete(d.evidence, strategy_key=d.strategy_key)
 
 
 def test_structure_calm_condor_fire():

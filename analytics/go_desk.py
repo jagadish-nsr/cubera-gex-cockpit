@@ -176,6 +176,56 @@ def _ev(
     )
 
 
+def _evidence_pass(item: Any) -> bool:
+    if isinstance(item, EvidenceItem):
+        return bool(item.pass_)
+    if isinstance(item, dict):
+        return bool(item.get("pass", item.get("pass_", False)))
+    return bool(getattr(item, "pass_", getattr(item, "pass", False)))
+
+
+def _evidence_factor(item: Any) -> str:
+    if isinstance(item, EvidenceItem):
+        return str(item.factor or "")
+    if isinstance(item, dict):
+        return str(item.get("factor") or "")
+    return str(getattr(item, "factor", "") or "")
+
+
+def _evidence_weight(item: Any) -> float:
+    if isinstance(item, EvidenceItem):
+        return float(item.weight or 0.0)
+    if isinstance(item, dict):
+        return float(item.get("weight") or 0.0)
+    return float(getattr(item, "weight", 0.0) or 0.0)
+
+
+def evidence_pack_complete(evidence: list[Any] | None, *, strategy_key: str = "") -> bool:
+    """True when weighted evidence that matters for FIRE is actually green.
+
+    Empty pack = incomplete. Primary setup must pass. VANNA-CHARM also needs
+    CVD/VWAP alignment (11 Nov: VANNA flooded FIRE with tape factors red).
+    """
+    if not evidence:
+        return False
+    by_factor = {_evidence_factor(e): e for e in evidence}
+    primary = by_factor.get("sentinel_or_idea") or by_factor.get("trade_idea")
+    if primary is not None and not _evidence_pass(primary):
+        return False
+    weighted = [e for e in evidence if _evidence_weight(e) > 0]
+    if weighted:
+        passed = sum(_evidence_weight(e) for e in weighted if _evidence_pass(e))
+        total = sum(_evidence_weight(e) for e in weighted)
+        if total > 0 and (passed / total) < 0.50:
+            return False
+    sk = (strategy_key or "").upper().replace(" ", "_")
+    if "VANNA" in sk:
+        tape = by_factor.get("cvd_vwap")
+        if tape is not None and not _evidence_pass(tape):
+            return False
+    return True
+
+
 def decisive_gate(
     *,
     state: GoState,
@@ -184,6 +234,7 @@ def decisive_gate(
     evidence: list[EvidenceItem],
     context: dict,
     hard_blocks: list[str],
+    strategy_key: str = "",
 ) -> list[str]:
     """Return hard blocks that strip FIRE. SCOUT/HOLD may keep incomplete packs."""
     blocks = list(hard_blocks)
@@ -198,10 +249,19 @@ def decisive_gate(
             blocks.append("missing_risk")
     if not evidence:
         blocks.append("missing_evidence")
+    elif not evidence_pack_complete(evidence, strategy_key=strategy_key):
+        blocks.append("incomplete_evidence")
     if not context.get("oi_ts") and context.get("oi_stale") is True:
         blocks.append("stale_oi")
     if not context.get("lot_size"):
         blocks.append("missing_lot_size")
+    sk = (strategy_key or "").upper().replace(" ", "_")
+    if "VANNA" in sk:
+        # Charm map without tape confluence is SCOUT material, not FIRE.
+        by_factor = {_evidence_factor(e): e for e in (evidence or [])}
+        tape = by_factor.get("cvd_vwap")
+        if tape is not None and not _evidence_pass(tape):
+            blocks.append("vanna_without_tape_confluence")
     return blocks
 
 
@@ -490,6 +550,7 @@ def build_directional_decision(
         evidence=evidence,
         context=context,
         hard_blocks=hard,
+        strategy_key=strategy_key,
     )
     state = state_from_score(score, hard)
     if state == "HOLD":
@@ -708,6 +769,7 @@ def build_structure_decision(
         evidence=evidence,
         context=context,
         hard_blocks=hard,
+        strategy_key=strategy_key,
     )
     if "No trade" in str(name) or not contracts:
         hard.append("no_structure")
@@ -874,6 +936,7 @@ def build_writer_decision(
         evidence=evidence,
         context=context,
         hard_blocks=hard,
+        strategy_key="WRITE_OTM",
     )
     state = state_from_score(score, hard)
     if state == "HOLD" and hard:

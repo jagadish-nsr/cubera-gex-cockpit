@@ -9,6 +9,7 @@ import pytest
 def tmp_go_eff_db(tmp_path, monkeypatch):
     import data.journal.go_efficiency as ge
     monkeypatch.setattr(ge, "_DB_PATH", tmp_path / "go_efficiency.db")
+    ge._LAST_EMIT_FP.clear()
     ge.ensure_schema()
     yield
 
@@ -27,9 +28,9 @@ def test_record_emit_stage_skip_and_summarize():
     e1 = record_event("EMIT", decision)
     e2 = record_event("STAGE", decision, trade_id="pt_test")
     e3 = record_event("SKIP", {**decision, "id": "d2", "state": "FIRE"})
-    assert e1.startswith("ge_")
-    assert e2.startswith("ge_")
-    assert e3.startswith("ge_")
+    assert e1 is not None and e1.startswith("ge_")
+    assert e2 is not None and e2.startswith("ge_")
+    assert e3 is not None and e3.startswith("ge_")
 
     summary = summarize("NIFTY")
     assert summary["counts"]["EMIT"] == 1
@@ -37,6 +38,29 @@ def test_record_emit_stage_skip_and_summarize():
     assert summary["counts"]["SKIP"] == 1
     assert summary["emit_by_state"]["FIRE"] == 1
     assert summary["stage_rate_vs_fire_emit"] == 1.0
+
+
+def test_emit_dedupes_identical_board_across_poll_uuids():
+    """Hand-check: same strikes/state/strategy → one EMIT despite new decision ids."""
+    from data.journal.go_efficiency import emit_fingerprint, record_event, summarize
+
+    base = {
+        "symbol": "SENSEX",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 81.9,
+        "strategy_key": "VANNA-CHARM",
+        "contracts": [
+            {"action": "BUY", "opt_type": "CE", "strike": 82500, "ltp": 120},
+        ],
+    }
+    a = {**base, "id": "uuid-aaa", "score": 81.2}
+    b = {**base, "id": "uuid-bbb", "score": 83.7}  # same 5-pt bucket
+    assert emit_fingerprint(a) == emit_fingerprint(b)
+    assert record_event("EMIT", a) is not None
+    assert record_event("EMIT", b) is None  # flood suppressed
+    assert record_event("EMIT", {**b, "score": 88.0}) is not None  # new bucket
+    assert summarize("SENSEX")["counts"]["EMIT"] == 2
 
 
 def test_invalid_event_type_raises():

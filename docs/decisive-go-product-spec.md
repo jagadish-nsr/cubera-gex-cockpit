@@ -368,7 +368,7 @@ Problems called out in chat / prior analyses, turned into build obligations:
 
 | ID | Inefficiency | Requirement | Acceptance |
 |----|--------------|-------------|------------|
-| X1 | Dual recommendation engines (Trade Ideas vs Sentinel) | A3, E4, GO Desk merge | One ranked feed; provenance in `sources` |
+| X1 | Dual recommendation engines (Trade Ideas vs Sentinel) | A3, E4, GO Desk merge | **Deferred:** keep Higher/Secondary Trade Ideas + Sentinel OF recs visible beside GO Desk until GO efficiency is proven; then retire to one ranked feed with provenance in `sources` |
 | X2 | No persona mode → cognitive overload | A1, F2 | Mode filters primary CTA within 1 refresh |
 | X3 | Commentary / signal flood | F1 — shipped (`/api/go/digest` + Show raw tapes) |
 | X4 | Journal strategy as free text | E1 | Enum queryable in scorecard |

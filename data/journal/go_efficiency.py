@@ -249,19 +249,61 @@ def ensure_schema() -> None:
         c.close()
 
 
+# In-process last EMIT fingerprint per symbol (poll flood killer).
+_LAST_EMIT_FP: dict[str, str] = {}
+
+
+def emit_fingerprint(decision: dict) -> str:
+    """Stable board identity — ignores per-poll UUID / tiny score jitter.
+
+    11 Nov minted ~2.3k unique FIRE decision_ids from refresh churn. Stage
+    dedupe already used strikes; EMIT must share that discipline.
+    """
+    legs = decision.get("contracts") or []
+    strikes = ",".join(
+        f"{c.get('action')}:{c.get('opt_type')}:{c.get('strike')}"
+        for c in legs[:8]
+    )
+    # Bucket score to 5 pts so 81.2 vs 82.9 is not a new emit
+    sc = float(decision.get("score") or 0)
+    sc_bucket = int(sc // 5) * 5
+    return "|".join([
+        str(decision.get("symbol") or "").upper(),
+        str(decision.get("mode") or ""),
+        str(decision.get("state") or ""),
+        str(decision.get("strategy_key") or ""),
+        strikes,
+        str(sc_bucket),
+    ])
+
+
 def record_event(
     event_type: str,
     decision: dict,
     *,
     trade_id: str | None = None,
-) -> str:
-    """Append EMIT / STAGE / SKIP. STAGE also opens a go_open row."""
+    force: bool = False,
+) -> str | None:
+    """Append EMIT / STAGE / SKIP. STAGE also opens a go_open row.
+
+    EMIT is deduped by ``emit_fingerprint`` unless ``force=True``. Returns
+    None when an identical board was already ledgered (no new row).
+    """
     ensure_schema()
     et = str(event_type or "").upper()
     if et not in ("EMIT", "STAGE", "SKIP"):
         raise ValueError(f"invalid event_type {event_type!r}")
+
     event_id = f"ge_{uuid.uuid4().hex[:12]}"
+    fp = emit_fingerprint(decision) if et == "EMIT" else ""
+    sym_key = str(decision.get("symbol") or "").upper() or "_"
+    emit_key = f"{sym_key}:{fp}" if et == "EMIT" else ""
+
     with _LOCK:
+        if et == "EMIT" and not force:
+            if _LAST_EMIT_FP.get(emit_key) == fp:
+                return None
+            _LAST_EMIT_FP[emit_key] = fp
         conn = _conn()
         try:
             conn.execute(

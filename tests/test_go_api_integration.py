@@ -47,6 +47,7 @@ def _iso_go_dbs(tmp_path, monkeypatch):
     web_server._GO_LAST_FIRE_NOTIFY.clear()
     web_server._GO_LAST_FIRE_STAGE.clear()
     web_server._GO_STAGING_INFLIGHT.clear()
+    go_eff._LAST_EMIT_FP.clear()
     yield
 
 
