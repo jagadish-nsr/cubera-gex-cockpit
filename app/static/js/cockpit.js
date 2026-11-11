@@ -36,6 +36,14 @@
     sentinelInitialized: {},
     lastSentinelSoundTime: 0,
     lastSentinelSoundEventId: null,
+    goRefresh: {
+      timer: null,
+      inflight: false,
+      pending: false,
+      pendingReason: null,
+      lastStartedAt: 0,
+      lastSignalEventId: null,
+    },
     pendingSentinelSoundTimers: [],
     // Gamma-blast audio: live mode + preview loops
     blastHeartbeatTimer: null,
@@ -1367,6 +1375,115 @@
     return age >= 0 && age <= SENTINEL_SOUND_MAX_AGE_MS;
   }
 
+  const GO_REFRESH_DEBOUNCE_MS = 1500;
+  const GO_REFRESH_MIN_GAP_MS = 2500;
+
+  function _goRefreshState() {
+    if (!state.goRefresh) {
+      state.goRefresh = {
+        timer: null,
+        inflight: false,
+        pending: false,
+        pendingReason: null,
+        lastStartedAt: 0,
+        lastSignalEventId: null,
+      };
+    }
+    return state.goRefresh;
+  }
+
+  function clearGoDeskRefreshSchedule() {
+    const gr = _goRefreshState();
+    if (gr.timer) clearTimeout(gr.timer);
+    gr.timer = null;
+    gr.pending = false;
+    gr.pendingReason = null;
+  }
+
+  /**
+   * Absorb bursts of GO refresh triggers into one recompose.
+   * - trailing debounce for soft triggers (signals)
+   * - min gap between starts
+   * - single in-flight; at most one pending follow-up
+   */
+  function requestGoDeskRefresh(reason, opts) {
+    const o = opts || {};
+    const gr = _goRefreshState();
+    const signalId = o.signalId || null;
+
+    if (signalId) {
+      // Same signal already queued or just run — absorb duplicate polls.
+      if (signalId === gr.lastSignalEventId && (gr.timer || gr.inflight || gr.pending)) {
+        return;
+      }
+      gr.lastSignalEventId = signalId;
+    }
+
+    if (o.immediate) {
+      if (gr.timer) {
+        clearTimeout(gr.timer);
+        gr.timer = null;
+      }
+      _runGoDeskRefresh(reason || "immediate");
+      return;
+    }
+
+    // Trailing debounce: every new soft trigger resets the timer → one shot.
+    if (gr.timer) clearTimeout(gr.timer);
+    gr.timer = setTimeout(() => {
+      gr.timer = null;
+      _runGoDeskRefresh(reason || "debounced");
+    }, GO_REFRESH_DEBOUNCE_MS);
+  }
+
+  async function _runGoDeskRefresh(reason) {
+    const gr = _goRefreshState();
+    if (gr.inflight) {
+      gr.pending = true;
+      gr.pendingReason = reason || "coalesced";
+      return;
+    }
+    const now = Date.now();
+    const elapsed = now - (gr.lastStartedAt || 0);
+    if (gr.lastStartedAt && elapsed < GO_REFRESH_MIN_GAP_MS) {
+      // Too soon after last start — fold into one delayed run (don't stack timers).
+      if (!gr.timer) {
+        const wait = GO_REFRESH_MIN_GAP_MS - elapsed;
+        gr.timer = setTimeout(() => {
+          gr.timer = null;
+          _runGoDeskRefresh(reason || "min_gap");
+        }, wait);
+      } else {
+        gr.pending = true;
+        gr.pendingReason = reason || "min_gap";
+      }
+      return;
+    }
+
+    gr.inflight = true;
+    gr.lastStartedAt = now;
+    try {
+      if (typeof loadGoDesk === "function") await loadGoDesk();
+      if (typeof loadGoDeskFeed === "function") await loadGoDeskFeed();
+    } catch (e) {
+      /* non-fatal */
+    } finally {
+      gr.inflight = false;
+      if (gr.pending) {
+        const nextReason = gr.pendingReason || "coalesced_pending";
+        gr.pending = false;
+        gr.pendingReason = null;
+        requestGoDeskRefresh(nextReason, { immediate: true });
+      }
+    }
+  }
+
+  /** Debounced GO recompose on a new live Sentinel attention signal. */
+  function scheduleGoDeskOnSignal(signal) {
+    const id = signal && (signal.event_id || `${signal.type}_${signal.time || signal.bar_start_ts}`);
+    requestGoDeskRefresh("signal", { signalId: id || undefined });
+  }
+
   function processSentinelSignals(signals, sym) {
     const currentSym = (sym || state.symbol || "NIFTY").toUpperCase();
 
@@ -1414,13 +1531,18 @@
     const only = newSignals[0];
     const onlyId = only.event_id || `${only.type}_${only.time || only.bar_start_ts}`;
     if (!isLiveAttentionSignal(only)) return;
-    if (onlyId && onlyId === state.lastSentinelSoundEventId) return;
 
     const cat = (only.category || "").toUpperCase();
     const bias = (only.bias || "").toUpperCase();
     const isBull = cat.includes("BULL") || bias === "LONG";
     const isBear = !isBull && (cat.includes("BEAR") || bias === "SHORT");
     if (!isBull && !isBear) return;
+
+    // Event-based GO: recompose ~1.5s after a live bull/bear signal (server
+    // auto-stage still dedupes FIRE fingerprints while OPEN).
+    scheduleGoDeskOnSignal(only);
+
+    if (onlyId && onlyId === state.lastSentinelSoundEventId) return;
 
     const now = Date.now();
     if ((now - (state.lastSentinelSoundTime || 0)) < 2000) return;
@@ -2952,7 +3074,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: state.goMode }),
       }).catch(() => {});
-      loadGoDesk();
+      requestGoDeskRefresh("mode", { immediate: true });
       return;
     }
     if (t.hasAttribute("data-go-delta")) {
@@ -2963,10 +3085,10 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ delta_pref: state.goDelta }),
       }).catch(() => {});
-      loadGoDesk();
+      requestGoDeskRefresh("delta", { immediate: true });
       return;
     }
-    if (t.id === "go-refresh-btn") loadGoDesk();
+    if (t.id === "go-refresh-btn") requestGoDeskRefresh("manual", { immediate: true });
     if (t.id === "go-scorecard-refresh") loadGoScorecard();
 
   });
@@ -2988,7 +3110,8 @@
 
       if (!data.kpis) return;
       state.lastCockpitDash = data;
-      loadGoDesk();
+      // Share coalesce with signal-driven refreshes (absorb poll+signal bursts).
+      requestGoDeskRefresh("cockpit_poll", { immediate: true });
       paintHeaderSession(headerExecFromBook(data), headerCountdown(data), true, marketOpenFrom(data));
       if (state.spot > 0) data.spot = state.spot;
       const valueLine = document.getElementById("value-area-line");
@@ -8883,6 +9006,8 @@
           body: JSON.stringify({ symbol: state.symbol, window: state.window }),
         });
         clearPendingSentinelSounds();
+        clearGoDeskRefreshSchedule();
+        if (state.goRefresh) state.goRefresh.lastSignalEventId = null;
         // Force a silent reseed for the newly selected index so history never floods.
         if (state.sentinelInitialized) delete state.sentinelInitialized[state.symbol];
         if (state.seenSentinelSignals) delete state.seenSentinelSignals[state.symbol];
