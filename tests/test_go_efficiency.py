@@ -145,3 +145,129 @@ def test_summarize_process_and_mode_slices():
     hour_vals = list(summary["by_hour"].values())
     assert any(v.get("FIRE", 0) >= 1 for v in hour_vals)
     assert any(v.get("STAGE", 0) >= 1 for v in hour_vals)
+
+
+def test_settle_pnl_long_debit_hand_check():
+    """Nifty lot 65, 1-leg long CE: entry −72 → exit −80.
+
+    Gross pts = −72 − (−80) = 8
+    Gross ₹  = 8 × 65 = 520
+    Brokerage = 20 × 2 = 40
+    Slippage  = 0.5 × 1 × 65 = 32.5  (full round-trip)
+    Net ₹     = 520 − 40 − 32.5 = 447.5
+    """
+    from data.journal.go_efficiency import settle_pnl
+
+    s = settle_pnl(
+        entry_premium=-72.0,
+        exit_premium=-80.0,
+        lot_size=65,
+        n_legs=1,
+    )
+    assert s["gross_pts"] == 8.0
+    assert s["gross_pnl_inr"] == 520.0
+    assert s["brokerage_cost"] == 40.0
+    assert s["slippage_cost"] == 32.5
+    assert s["net_pnl_inr"] == 447.5
+
+
+def test_settle_pnl_short_credit_hand_check():
+    """Bank Nifty lot 30, 2-leg credit: entry +40 → exit +25 (buyback cheaper).
+
+    Gross pts = 40 − 25 = 15
+    Gross ₹  = 15 × 30 = 450
+    Brokerage = 40
+    Slippage  = 0.5 × 2 × 30 = 30
+    Net ₹     = 450 − 40 − 30 = 380
+    """
+    from data.journal.go_efficiency import settle_pnl
+
+    s = settle_pnl(
+        entry_premium=40.0,
+        exit_premium=25.0,
+        lot_size=30,
+        n_legs=2,
+    )
+    assert s["gross_pts"] == 15.0
+    assert s["gross_pnl_inr"] == 450.0
+    assert s["brokerage_cost"] == 40.0
+    assert s["slippage_cost"] == 30.0
+    assert s["net_pnl_inr"] == 380.0
+
+
+def test_close_open_settles_and_summarize_pnl():
+    from data.journal.go_efficiency import (
+        record_event,
+        mark_open,
+        close_open,
+        list_open,
+        summarize,
+    )
+
+    decision = {
+        "id": "d_pnl",
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 85,
+        "strategy_key": "CONTINUATION_BULL",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500, "ltp": 72}],
+        "risk": {"credit_or_debit": -72},
+        "context": {"spot": 25480, "lot_size": 65},
+    }
+    record_event("STAGE", decision, trade_id="pt_pnl")
+    opens = list_open("NIFTY")
+    assert opens[0]["lot_size"] == 65
+    assert opens[0]["unrealized_pnl_inr"] == 0.0
+
+    mark_open("d_pnl", mark_premium=-80.0, mark_spot=25520)
+    opens = list_open("NIFTY")
+    assert opens[0]["unrealized_pnl_inr"] == 520.0  # 8 pts × 65
+
+    settled = close_open(
+        "d_pnl",
+        exit_premium=-80.0,
+        exit_spot=25520,
+        exit_reason="MANUAL",
+    )
+    assert settled is not None
+    assert settled["gross_pnl_inr"] == 520.0
+    assert settled["net_pnl_inr"] == 447.5
+    assert settled["brokerage_cost"] == 40.0
+    assert settled["slippage_cost"] == 32.5
+    assert list_open("NIFTY") == []
+
+    summary = summarize("NIFTY")
+    assert summary["open_positions"] == 0
+    assert summary["pnl"]["closed_count"] == 1
+    assert summary["pnl"]["wins"] == 1
+    assert summary["pnl"]["win_rate"] == 1.0
+    assert summary["pnl"]["net_pnl_inr"] == 447.5
+    assert summary["pnl"]["gross_pnl_inr"] == 520.0
+
+
+def test_trail_stop_auto_settles_pnl():
+    from data.journal.go_efficiency import record_event, mark_open, summarize
+
+    decision = {
+        "id": "d_trail_pnl",
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 90,
+        "strategy_key": "CONTINUATION_BULL",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500, "ltp": 72}],
+        "risk": {"credit_or_debit": -72},
+        "context": {"spot": 25480, "lot_size": 65},
+    }
+    record_event("STAGE", decision, trade_id="pt_tp")
+    mark_open("d_trail_pnl", mark_premium=-94.0)  # arm
+    stopped = mark_open("d_trail_pnl", mark_premium=-78.0)
+    assert stopped["status"] == "TRAIL_STOP"
+    # entry −72 → exit −78 → gross 6 pts × 65 = 390; net 390 − 40 − 32.5 = 317.5
+    assert stopped["gross_pnl_inr"] == 390.0
+    assert stopped["net_pnl_inr"] == 317.5
+
+    summary = summarize("NIFTY")
+    assert summary["pnl"]["closed_count"] == 1
+    assert summary["pnl"]["net_pnl_inr"] == 317.5

@@ -628,7 +628,10 @@
               <button type="button" class="go-ritual-chip" data-ritual="firstblock">First block</button>
               <button type="button" class="go-ritual-chip" data-ritual="eod">EOD review</button>
               <span class="go-muted" style="font-size:0.68rem;margin-left:4px">optional · does not block FIRE</span>
-              <label class="go-muted" style="font-size:0.68rem;margin-left:auto;display:flex;align-items:center;gap:4px">
+              <label class="go-muted" style="font-size:0.68rem;margin-left:auto;display:flex;align-items:center;gap:4px" title="Paper journal only — not broker execution">
+                <input type="checkbox" id="go-auto-stage-toggle" checked> Auto-stage FIRE
+              </label>
+              <label class="go-muted" style="font-size:0.68rem;margin-left:8px;display:flex;align-items:center;gap:4px">
                 <input type="checkbox" id="go-fire-webhook-toggle"> FIRE webhook
               </label>
             </div>
@@ -2100,12 +2103,13 @@
               <span class="go-muted" id="go-scorecard-sub">Staged FIRE / SCOUT ledger · taken vs skipped</span>
               <button type="button" class="btn btn-secondary" id="go-scorecard-refresh" style="margin-left:auto;font-size:0.72rem">Refresh</button>
             </div>
-            <div class="kpi-grid" style="grid-template-columns:repeat(5, 1fr);margin-bottom:10px">
+            <div class="kpi-grid" style="grid-template-columns:repeat(6, 1fr);margin-bottom:10px">
               <div class="kpi-card"><small>Emits</small><b id="go-sc-emit">—</b><span>FIRE/SCOUT recorded</span></div>
               <div class="kpi-card go"><small>Staged</small><b id="go-sc-stage">—</b><span>Taken into journal</span></div>
               <div class="kpi-card stop"><small>Skipped</small><b id="go-sc-skip">—</b><span>FIRE passed over</span></div>
               <div class="kpi-card"><small>Edge MFE/MAE</small><b id="go-sc-edge">—</b><span>Open+closed avg</span></div>
-              <div class="kpi-card purple"><small>Emit→stage</small><b id="go-sc-latency">—</b><span>Median seconds</span></div>
+              <div class="kpi-card go"><small>Net P&amp;L</small><b id="go-sc-net">—</b><span>After costs · closed</span></div>
+              <div class="kpi-card purple"><small>Win rate</small><b id="go-sc-wr">—</b><span>Closed staged GOs</span></div>
             </div>
             <div class="go-scorecard-grid">
               <div>

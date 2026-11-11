@@ -42,8 +42,11 @@ def _iso_go_dbs(tmp_path, monkeypatch):
         "webhook_url": "",
         "fire_webhook": False,
         "trail_pct": 0.30,
+        "auto_stage_fire": True,
     })
     web_server._GO_LAST_FIRE_NOTIFY.clear()
+    web_server._GO_LAST_FIRE_STAGE.clear()
+    web_server._GO_STAGING_INFLIGHT.clear()
     yield
 
 
@@ -163,6 +166,35 @@ def test_go_decision_endpoint_emits_fire(monkeypatch):
     # EMIT recorded
     summary = go_eff.summarize("NIFTY")
     assert summary["counts"]["EMIT"] >= 1
+    # Default auto_stage_fire: FIRE with contracts → paper STAGE
+    if data["decision"]["state"] == "FIRE" and data["decision"].get("contracts"):
+        assert data.get("auto_stage", {}).get("status") == "auto_staged"
+        assert summary["counts"]["STAGE"] >= 1
+        assert go_eff.list_open("NIFTY")
+
+
+def test_go_auto_stage_fire_dedupes_while_open(monkeypatch):
+    _stub_compose(monkeypatch)
+    s1, _, b1 = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
+    assert s1 == 200
+    a1 = json.loads(b1).get("auto_stage") or {}
+    assert a1.get("status") == "auto_staged"
+    trade_id = a1.get("trade_id")
+
+    s2, _, b2 = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
+    assert s2 == 200
+    a2 = json.loads(b2).get("auto_stage") or {}
+    assert a2.get("status") == "deduped_open"
+    assert len(go_eff.list_open("NIFTY")) == 1
+
+    # Off → no stage attempt
+    asyncio.run(asgi_request("POST", "/api/go/prefs", body={"auto_stage_fire": False}))
+    go_eff.close_open(json.loads(b1)["decision"]["id"], exit_premium=-72.0)
+    web_server._GO_LAST_FIRE_STAGE.clear()
+    s3, _, b3 = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
+    assert s3 == 200
+    assert json.loads(b3).get("auto_stage") is None
+    assert trade_id  # sanity
 
 
 def test_go_feed_ranks_and_includes_alts(monkeypatch):
@@ -230,7 +262,50 @@ def test_go_mark_updates_mfe_and_trail(monkeypatch):
         body={"decision_id": payload["id"], "mark_premium": -78.0},
     ))
     assert st2 == 200
-    assert json.loads(body2)["open"]["status"] == "TRAIL_STOP"
+    stopped = json.loads(body2)["open"]
+    assert stopped["status"] == "TRAIL_STOP"
+    assert stopped["net_pnl_inr"] is not None  # auto-settled on trail hit
+
+
+def test_go_close_settles_cost_aware_pnl(monkeypatch):
+    d = _fire_decision("directional")
+    payload = d.to_dict()
+    payload["risk"]["credit_or_debit"] = -72
+    payload["contracts"] = [{"action": "BUY", "opt_type": "CE", "strike": 25500, "ltp": 72}]
+    payload["context"]["lot_size"] = 65
+    # Open a real journal trade so /api/go/close can mirror close_trade
+    trade = journal_store.open_trade(
+        symbol="NIFTY",
+        strategy_name="GO_TEST",
+        legs=[{"action": "BUY", "type": "C", "strike": 25500, "ltp": 72}],
+        entry_spot=25480,
+        entry_levels={},
+        entry_regime={},
+        entry_net_premium=-72.0,
+        lot_size=65,
+    )
+    go_eff.record_event("STAGE", payload, trade_id=trade.trade_id)
+
+    st, _, body = asyncio.run(asgi_request(
+        "POST", "/api/go/close",
+        body={
+            "decision_id": payload["id"],
+            "exit_premium": -80.0,
+            "exit_reason": "MANUAL",
+        },
+    ))
+    assert st == 200
+    data = json.loads(body)
+    assert data["status"] == "closed"
+    assert data["pnl"]["gross_pnl_inr"] == 520.0
+    assert data["pnl"]["net_pnl_inr"] == 447.5
+
+    ef, _, ebody = asyncio.run(asgi_request("GET", "/api/go/efficiency?symbol=NIFTY"))
+    assert ef == 200
+    pnl = json.loads(ebody)["pnl"]
+    assert pnl["closed_count"] == 1
+    assert pnl["net_pnl_inr"] == 447.5
+    assert pnl["win_rate"] == 1.0
 
 
 def test_go_structure_payoff_and_whatif(monkeypatch):

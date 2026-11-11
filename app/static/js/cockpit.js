@@ -2574,6 +2574,7 @@
   async function loadGoDesk() {
     syncGoToolbar();
     syncGoRitualChips();
+    syncGoAutoStageToggle();
     syncGoWebhookToggle();
     syncGoRawTapeToggle();
     loadGoDigest();
@@ -2592,11 +2593,34 @@
       if (data.notify && data.notify.status === "sent") {
         showToast("FIRE webhook sent");
       }
+      if (data.auto_stage && data.auto_stage.status === "auto_staged") {
+        showToast(`Auto-staged ${data.auto_stage.trade_id} · paper P&L study`);
+        loadGoOpenPanel();
+      }
       loadGoAlerts();
     } catch (err) {
       const card = document.getElementById("go-primary-card");
       if (card) card.innerHTML = `<div class="go-muted">GO desk error</div>`;
     }
+  }
+
+  function syncGoAutoStageToggle() {
+    const el = document.getElementById("go-auto-stage-toggle");
+    if (!el || el._goBound) return;
+    el._goBound = true;
+    const saved = localStorage.getItem("cubera_go_auto_stage_fire");
+    // Default ON for efficiency study unless user explicitly turned off
+    el.checked = saved !== "0";
+    const push = () => {
+      localStorage.setItem("cubera_go_auto_stage_fire", el.checked ? "1" : "0");
+      fetch("/api/go/prefs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_stage_fire: !!el.checked }),
+      }).catch(() => {});
+    };
+    el.addEventListener("change", push);
+    push();
   }
 
   function syncGoWebhookToggle() {
@@ -2703,8 +2727,14 @@
             ? `Δ ${net.delta} · Γ ${net.gamma} · V ${net.vega} · Θ ${net.theta}`
             : "Greeks —";
           const trail = o.trail_armed ? ` · trail ${o.trail_stop}` : "";
+          let mtm = "";
+          if (o.unrealized_pnl_inr != null) {
+            const n = Number(o.unrealized_pnl_inr);
+            const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+            mtm = ` · MTM ${n < 0 ? "−" : n > 0 ? "+" : ""}${s}`;
+          }
           return `<div class="go-open-row">
-            <span>${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe ?? "—"} / MAE ${o.mae ?? "—"}${trail}</span>
+            <span>${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe ?? "—"} / MAE ${o.mae ?? "—"}${trail}${mtm}</span>
             <span class="go-open-greeks">${gLine}</span>
           </div>`;
         }).join("");
@@ -2747,11 +2777,23 @@
       set("go-sc-stage", String(c.STAGE || 0));
       set("go-sc-skip", String(c.SKIP || 0));
       set("go-sc-edge", eff.edge_ratio != null ? `${eff.edge_ratio}×` : "—");
-      const lat = (eff.process || {}).median_emit_to_stage_sec;
-      set("go-sc-latency", lat != null ? `${lat}s` : "—");
+      const pnl = eff.pnl || {};
+      const fmtInr = (v) => {
+        if (v == null || Number.isNaN(Number(v))) return "—";
+        const n = Number(v);
+        const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+        return n < 0 ? `−${s}` : n > 0 ? `+${s}` : s;
+      };
+      set("go-sc-net", fmtInr(pnl.net_pnl_inr));
+      set("go-sc-wr", pnl.win_rate != null
+        ? `${Math.round(pnl.win_rate * 100)}% (${pnl.wins ?? 0}/${pnl.closed_count ?? 0})`
+        : "—");
       const sub = document.getElementById("go-scorecard-sub");
       if (sub) {
-        sub.textContent = `stage/FIRE ${eff.stage_rate_vs_fire_emit ?? "—"} · skip/FIRE ${eff.skip_rate_vs_fire_emit ?? "—"} · open ${eff.open_positions ?? 0}`;
+        const pf = pnl.profit_factor != null ? ` · PF ${pnl.profit_factor}` : "";
+        const lat = (eff.process || {}).median_emit_to_stage_sec;
+        const latStr = lat != null ? ` · emit→stage ${lat}s` : "";
+        sub.textContent = `stage/FIRE ${eff.stage_rate_vs_fire_emit ?? "—"} · skip/FIRE ${eff.skip_rate_vs_fire_emit ?? "—"} · open ${eff.open_positions ?? 0}${pf}${latStr}`;
       }
       const modeBody = document.querySelector("#go-sc-mode-table tbody");
       if (modeBody) {
@@ -2801,11 +2843,15 @@
       const procEl = document.getElementById("go-sc-process");
       if (procEl) {
         const p = eff.process || {};
+        const cm = (pnl.cost_model || {}).note || "₹20×2 + 0.5pt×legs×lot RT";
         procEl.innerHTML = [
           `Evidence complete: <b>${p.evidence_complete_pct != null ? p.evidence_complete_pct + "%" : "—"}</b>`,
           `Trail armed (open): <b>${p.trail_armed_open ?? 0}</b>`,
           `Lunch-chop emits: <b>${eff.lunch_emit_count ?? 0}</b>`,
           `Avg MFE / MAE: <b>${eff.avg_mfe ?? "—"} / ${eff.avg_mae ?? "—"}</b>`,
+          `Gross / net closed: <b>${fmtInr(pnl.gross_pnl_inr)} / ${fmtInr(pnl.net_pnl_inr)}</b>`,
+          `Costs Σ brok/slip: <b>${fmtInr(pnl.brokerage_cost_sum)} / ${fmtInr(pnl.slippage_cost_sum)}</b>`,
+          `<span class="go-muted">${cm}</span>`,
           `FIRE templates: <b>${bt.fire_emits ?? 0}</b> emit · <b>${bt.staged ?? 0}</b> staged`,
         ].join("<br>");
       }
@@ -2817,7 +2863,8 @@
             opens.slice(0, 8).map((o) => {
               const net = (o.greeks && o.greeks.net) || {};
               const g = net.delta != null ? ` · Δ ${net.delta}` : "";
-              return `<div style="font-family:var(--mono);font-size:0.72rem">${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe} / MAE ${o.mae}${o.trail_armed ? " · trail " + o.trail_stop : ""}${g}</div>`;
+              const u = o.unrealized_pnl_inr != null ? ` · MTM ${fmtInr(o.unrealized_pnl_inr)}` : "";
+              return `<div style="font-family:var(--mono);font-size:0.72rem">${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe} / MAE ${o.mae}${o.trail_armed ? " · trail " + o.trail_stop : ""}${u}${g}</div>`;
             }).join("")
           : "";
       }

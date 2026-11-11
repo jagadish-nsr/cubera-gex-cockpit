@@ -2,6 +2,7 @@
 
 Records emit / stage / skip events with immutable decision snapshots.
 Tracks open staged positions for trail + MFE/MAE mark updates.
+Settles cost-aware ₹ P&L on close / TRAIL_STOP (same model as journal store).
 """
 
 from __future__ import annotations
@@ -17,6 +18,23 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "go_efficiency.db"
 _LOCK = threading.Lock()
+
+# Same cost model as data.journal.store (H8) — VERIFY vs broker schedule.
+DEFAULT_BROKERAGE_PER_ORDER_INR = 20.0
+DEFAULT_SLIPPAGE_PTS_PER_LEG = 0.50
+
+_GO_OPEN_EXTRA_COLS = (
+    ("exit_premium", "REAL"),
+    ("exit_spot", "REAL"),
+    ("exit_reason", "TEXT"),
+    ("lot_size", "INTEGER"),
+    ("n_legs", "INTEGER"),
+    ("gross_pnl_inr", "REAL"),
+    ("brokerage_cost", "REAL"),
+    ("slippage_cost", "REAL"),
+    ("net_pnl_inr", "REAL"),
+    ("closed_at", "TEXT"),
+)
 
 
 def _now_ist() -> str:
@@ -69,6 +87,12 @@ def _conn() -> sqlite3.Connection:
         )
         """
     )
+    existing = {
+        r[1] for r in conn.execute("PRAGMA table_info(go_open)").fetchall()
+    }
+    for col, typ in _GO_OPEN_EXTRA_COLS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE go_open ADD COLUMN {col} {typ}")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_go_events_sym ON go_events (symbol, ts DESC)"
     )
@@ -80,6 +104,143 @@ def _conn() -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def _lot_and_legs(decision: dict) -> tuple[int, int]:
+    ctx = decision.get("context") or {}
+    lot = int(ctx.get("lot_size") or 0)
+    if lot <= 0:
+        try:
+            import config
+            lot = int(config.get_index(str(decision.get("symbol") or "NIFTY")).lot_size)
+        except Exception:
+            lot = 65
+    n_legs = max(1, len(decision.get("contracts") or []))
+    return lot, n_legs
+
+
+def settle_pnl(
+    *,
+    entry_premium: float,
+    exit_premium: float,
+    lot_size: int,
+    n_legs: int,
+    brokerage_per_order: float = DEFAULT_BROKERAGE_PER_ORDER_INR,
+    slippage_pts: float = DEFAULT_SLIPPAGE_PTS_PER_LEG,
+) -> dict[str, float]:
+    """Gross/net ₹ P&L for a staged GO. Same sign as journal: entry − exit.
+
+    Long debit (entry negative): mark more negative → profit.
+    Short credit (entry positive): mark smaller → profit.
+    Costs: ₹20 × 2 orders + 0.5 pt × n_legs × lot × round-trip.
+    """
+    lot = max(1, int(lot_size))
+    legs = max(1, int(n_legs))
+    gross_pts = float(entry_premium) - float(exit_premium)
+    gross_inr = gross_pts * lot
+    brokerage = float(brokerage_per_order) * 2.0
+    slippage = float(slippage_pts) * legs * lot  # full round-trip
+    net_inr = gross_inr - brokerage - slippage
+    return {
+        "gross_pts": round(gross_pts, 2),
+        "gross_pnl_inr": round(gross_inr, 2),
+        "brokerage_cost": round(brokerage, 2),
+        "slippage_cost": round(slippage, 2),
+        "net_pnl_inr": round(net_inr, 2),
+        "lot_size": float(lot),
+        "n_legs": float(legs),
+    }
+
+
+def unrealized_pnl_inr(
+    entry_premium: float | None,
+    mark_premium: float | None,
+    lot_size: int,
+) -> float | None:
+    """Mark MTM gross ₹ (no costs until close)."""
+    if entry_premium is None or mark_premium is None or lot_size <= 0:
+        return None
+    return round((float(entry_premium) - float(mark_premium)) * int(lot_size), 2)
+
+
+def _row_lot_legs(row: sqlite3.Row, decision: dict | None = None) -> tuple[int, int]:
+    lot = int(row["lot_size"] or 0) if "lot_size" in row.keys() else 0
+    n_legs = int(row["n_legs"] or 0) if "n_legs" in row.keys() else 0
+    if lot > 0 and n_legs > 0:
+        return lot, n_legs
+    dj = decision
+    if dj is None:
+        try:
+            dj = json.loads(row["decision_json"] or "{}")
+        except Exception:
+            dj = {}
+    lot2, legs2 = _lot_and_legs(dj if isinstance(dj, dict) else {})
+    return (lot or lot2), (n_legs or legs2)
+
+
+def _write_settlement(
+    conn: sqlite3.Connection,
+    *,
+    decision_id: str,
+    entry_premium: float,
+    exit_premium: float,
+    exit_spot: float | None,
+    exit_reason: str,
+    status: str,
+    lot_size: int,
+    n_legs: int,
+) -> dict[str, Any]:
+    settled = settle_pnl(
+        entry_premium=entry_premium,
+        exit_premium=exit_premium,
+        lot_size=lot_size,
+        n_legs=n_legs,
+    )
+    now = _now_ist()
+    conn.execute(
+        """
+        UPDATE go_open SET
+            mark_premium = ?,
+            exit_premium = ?,
+            exit_spot = ?,
+            exit_reason = ?,
+            lot_size = ?,
+            n_legs = ?,
+            gross_pnl_inr = ?,
+            brokerage_cost = ?,
+            slippage_cost = ?,
+            net_pnl_inr = ?,
+            status = ?,
+            closed_at = ?,
+            updated_at = ?
+        WHERE decision_id = ?
+        """,
+        (
+            float(exit_premium),
+            float(exit_premium),
+            exit_spot,
+            exit_reason,
+            int(settled["lot_size"]),
+            int(settled["n_legs"]),
+            settled["gross_pnl_inr"],
+            settled["brokerage_cost"],
+            settled["slippage_cost"],
+            settled["net_pnl_inr"],
+            status,
+            now,
+            now,
+            decision_id,
+        ),
+    )
+    return {
+        "decision_id": decision_id,
+        "status": status,
+        "exit_premium": float(exit_premium),
+        "exit_spot": exit_spot,
+        "exit_reason": exit_reason,
+        "closed_at": now,
+        **settled,
+    }
 
 
 def ensure_schema() -> None:
@@ -127,6 +288,7 @@ def record_event(
             if et == "STAGE":
                 entry_prem = _entry_premium(decision)
                 entry_spot = float((decision.get("context") or {}).get("spot") or 0)
+                lot, n_legs = _lot_and_legs(decision)
                 now = _now_ist()
                 conn.execute(
                     """
@@ -134,8 +296,12 @@ def record_event(
                         decision_id, trade_id, symbol, mode, strategy_key,
                         entry_premium, entry_spot, mark_premium, mark_spot,
                         mfe, mae, trail_armed, trail_stop, status,
-                        opened_at, updated_at, decision_json
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        opened_at, updated_at, decision_json,
+                        lot_size, n_legs,
+                        exit_premium, exit_spot, exit_reason,
+                        gross_pnl_inr, brokerage_cost, slippage_cost,
+                        net_pnl_inr, closed_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         str(decision.get("id") or ""),
@@ -155,6 +321,16 @@ def record_event(
                         now,
                         now,
                         json.dumps(decision, default=str),
+                        lot,
+                        n_legs,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     ),
                 )
             conn.commit()
@@ -254,6 +430,7 @@ def mark_open(
                     status = "TRAIL_STOP"
 
             now = _now_ist()
+            mark_spot_v = mark_spot if mark_spot is not None else row["mark_spot"]
             conn.execute(
                 """
                 UPDATE go_open SET
@@ -263,7 +440,7 @@ def mark_open(
                 """,
                 (
                     float(mark_premium),
-                    mark_spot if mark_spot is not None else row["mark_spot"],
+                    mark_spot_v,
                     round(mfe, 2),
                     round(mae, 2),
                     trail_armed,
@@ -273,8 +450,7 @@ def mark_open(
                     decision_id,
                 ),
             )
-            conn.commit()
-            return {
+            out: dict[str, Any] = {
                 "decision_id": decision_id,
                 "mark_premium": float(mark_premium),
                 "mfe": round(mfe, 2),
@@ -284,6 +460,32 @@ def mark_open(
                 "status": status,
                 "trail": trail,
             }
+            lot, n_legs = _row_lot_legs(row)
+            out["unrealized_pnl_inr"] = unrealized_pnl_inr(
+                entry, float(mark_premium), lot
+            )
+            if status == "TRAIL_STOP" and row["net_pnl_inr"] is None:
+                settled = _write_settlement(
+                    conn,
+                    decision_id=decision_id,
+                    entry_premium=entry,
+                    exit_premium=float(mark_premium),
+                    exit_spot=float(mark_spot_v) if mark_spot_v is not None else None,
+                    exit_reason="TRAIL_STOP",
+                    status="TRAIL_STOP",
+                    lot_size=lot,
+                    n_legs=n_legs,
+                )
+                out.update({
+                    "gross_pnl_inr": settled["gross_pnl_inr"],
+                    "brokerage_cost": settled["brokerage_cost"],
+                    "slippage_cost": settled["slippage_cost"],
+                    "net_pnl_inr": settled["net_pnl_inr"],
+                    "exit_reason": "TRAIL_STOP",
+                    "closed_at": settled["closed_at"],
+                })
+            conn.commit()
+            return out
         finally:
             conn.close()
 
@@ -318,16 +520,65 @@ def list_marked(symbol: str | None = None) -> list[dict[str, Any]]:
         conn.close()
 
 
-def close_open(decision_id: str, status: str = "CLOSED") -> None:
+def close_open(
+    decision_id: str,
+    status: str = "CLOSED",
+    *,
+    exit_premium: float | None = None,
+    exit_spot: float | None = None,
+    exit_reason: str = "MANUAL",
+) -> dict[str, Any] | None:
+    """Close an OPEN staged GO and settle cost-aware ₹ P&L.
+
+    If ``exit_premium`` is omitted, uses the last mark (or entry).
+    """
     ensure_schema()
     with _LOCK:
         conn = _conn()
+        conn.row_factory = sqlite3.Row
         try:
-            conn.execute(
-                "UPDATE go_open SET status = ?, updated_at = ? WHERE decision_id = ?",
-                (status, _now_ist(), decision_id),
+            row = conn.execute(
+                "SELECT * FROM go_open WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["status"] != "OPEN" and row["net_pnl_inr"] is not None:
+                return {
+                    "decision_id": decision_id,
+                    "status": row["status"],
+                    "gross_pnl_inr": row["gross_pnl_inr"],
+                    "brokerage_cost": row["brokerage_cost"],
+                    "slippage_cost": row["slippage_cost"],
+                    "net_pnl_inr": row["net_pnl_inr"],
+                    "exit_premium": row["exit_premium"],
+                    "exit_reason": row["exit_reason"],
+                    "closed_at": row["closed_at"],
+                    "already_closed": True,
+                }
+            entry = float(row["entry_premium"] or 0)
+            if exit_premium is None:
+                exit_premium = float(
+                    row["mark_premium"]
+                    if row["mark_premium"] is not None
+                    else entry
+                )
+            if exit_spot is None and row["mark_spot"] is not None:
+                exit_spot = float(row["mark_spot"])
+            lot, n_legs = _row_lot_legs(row)
+            settled = _write_settlement(
+                conn,
+                decision_id=decision_id,
+                entry_premium=entry,
+                exit_premium=float(exit_premium),
+                exit_spot=exit_spot,
+                exit_reason=exit_reason or status,
+                status=status,
+                lot_size=lot,
+                n_legs=n_legs,
             )
             conn.commit()
+            return settled
         finally:
             conn.close()
 
@@ -348,6 +599,7 @@ def list_open(symbol: str | None = None, *, include_decision: bool = False) -> l
             ).fetchall()
         out = []
         for r in rows:
+            lot, n_legs = _row_lot_legs(r)
             item = {
                 "decision_id": r["decision_id"],
                 "trade_id": r["trade_id"],
@@ -365,6 +617,11 @@ def list_open(symbol: str | None = None, *, include_decision: bool = False) -> l
                 "status": r["status"],
                 "opened_at": r["opened_at"],
                 "updated_at": r["updated_at"],
+                "lot_size": lot,
+                "n_legs": n_legs,
+                "unrealized_pnl_inr": unrealized_pnl_inr(
+                    r["entry_premium"], r["mark_premium"], lot
+                ),
             }
             if include_decision:
                 try:
@@ -389,7 +646,12 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
                 (symbol.upper(), limit),
             ).fetchall()
             open_rows = conn.execute(
-                "SELECT mfe, mae, trail_armed, status FROM go_open WHERE symbol = ?",
+                """
+                SELECT mfe, mae, trail_armed, status,
+                       gross_pnl_inr, net_pnl_inr, brokerage_cost, slippage_cost,
+                       mode, strategy_key, closed_at
+                FROM go_open WHERE symbol = ?
+                """,
                 (symbol.upper(),),
             ).fetchall()
         else:
@@ -398,7 +660,12 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
                 (limit,),
             ).fetchall()
             open_rows = conn.execute(
-                "SELECT mfe, mae, trail_armed, status FROM go_open"
+                """
+                SELECT mfe, mae, trail_armed, status,
+                       gross_pnl_inr, net_pnl_inr, brokerage_cost, slippage_cost,
+                       mode, strategy_key, closed_at
+                FROM go_open
+                """
             ).fetchall()
     finally:
         conn.close()
@@ -422,6 +689,47 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
     avg_mfe = round(sum(mfes) / len(mfes), 2) if mfes else None
     avg_mae = round(sum(maes) / len(maes), 2) if maes else None
     edge = round(avg_mfe / avg_mae, 2) if avg_mfe is not None and avg_mae and avg_mae > 0 else None
+
+    closed = [
+        r for r in open_rows
+        if r["status"] in ("CLOSED", "TRAIL_STOP") and r["net_pnl_inr"] is not None
+    ]
+    nets = [float(r["net_pnl_inr"]) for r in closed]
+    grosses = [float(r["gross_pnl_inr"] or 0) for r in closed]
+    wins = [n for n in nets if n > 0]
+    losses = [n for n in nets if n < 0]
+    sum_wins = sum(wins)
+    sum_losses_abs = abs(sum(losses))
+    pnl = {
+        "closed_count": len(closed),
+        "wins": len(wins),
+        "losses": len(losses),
+        "breakeven": sum(1 for n in nets if n == 0),
+        "win_rate": round(len(wins) / len(nets), 3) if nets else None,
+        "gross_pnl_inr": round(sum(grosses), 2) if closed else None,
+        "net_pnl_inr": round(sum(nets), 2) if closed else None,
+        "avg_net_pnl_inr": round(sum(nets) / len(nets), 2) if nets else None,
+        "profit_factor": (
+            round(sum_wins / sum_losses_abs, 2)
+            if sum_losses_abs > 0
+            else (None if not wins else None)
+        ),
+        "brokerage_cost_sum": round(
+            sum(float(r["brokerage_cost"] or 0) for r in closed), 2
+        ) if closed else None,
+        "slippage_cost_sum": round(
+            sum(float(r["slippage_cost"] or 0) for r in closed), 2
+        ) if closed else None,
+        "cost_model": {
+            "brokerage_per_order_inr": DEFAULT_BROKERAGE_PER_ORDER_INR,
+            "slippage_pts_per_leg": DEFAULT_SLIPPAGE_PTS_PER_LEG,
+            "note": "₹20×2 orders + 0.5pt×legs×lot round-trip · VERIFY vs broker",
+        },
+    }
+    if sum_wins > 0 and sum_losses_abs == 0:
+        pnl["profit_factor"] = None  # undefined when no losses
+    elif sum_wins == 0 and sum_losses_abs > 0:
+        pnl["profit_factor"] = 0.0
 
     # H3 / H5 slices: by mode × state, hour-of-day, DOW, lunch cohort
     by_mode: dict[str, dict[str, int]] = {}
@@ -534,6 +842,7 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
         "avg_mfe": avg_mfe,
         "avg_mae": avg_mae,
         "edge_ratio": edge,
+        "pnl": pnl,
         "by_mode": by_mode,
         "by_strategy_key": dict(sorted(by_strategy.items(), key=lambda x: -x[1])[:20]),
         "by_hour_emit": {h: v.get("EMIT", 0) for h, v in sorted(by_hour.items())},

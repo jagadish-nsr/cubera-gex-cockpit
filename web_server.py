@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional
 import pandas as pd
@@ -3344,8 +3345,13 @@ _GO_PREFS: dict[str, Any] = {
     "webhook_url": "",
     "fire_webhook": False,
     "trail_pct": 0.30,
+    # Paper ledger only — study profit efficiency. Not broker execution.
+    "auto_stage_fire": True,
 }
 _GO_LAST_FIRE_NOTIFY: dict[str, str] = {}  # fingerprint → decision_id
+_GO_LAST_FIRE_STAGE: dict[str, str] = {}  # auto-stage fp → decision_id
+_GO_STAGING_INFLIGHT: set[str] = set()
+_GO_AUTO_STAGE_LOCK = threading.Lock()
 
 
 def _go_fire_fingerprint(decision: dict) -> str:
@@ -3355,6 +3361,21 @@ def _go_fire_fingerprint(decision: dict) -> str:
         str(decision.get("state") or ""),
         str(decision.get("strategy_key") or ""),
         str(round(float(decision.get("score") or 0))),
+    ])
+
+
+def _go_auto_stage_fingerprint(decision: dict) -> str:
+    """Stable key for auto-stage dedupe (ignores new UUID per poll)."""
+    legs = decision.get("contracts") or []
+    strikes = ",".join(
+        f"{c.get('action')}:{c.get('opt_type')}:{c.get('strike')}"
+        for c in legs[:8]
+    )
+    return "|".join([
+        str(decision.get("symbol") or "").upper(),
+        str(decision.get("mode") or ""),
+        str(decision.get("strategy_key") or ""),
+        strikes,
     ])
 
 
@@ -3420,6 +3441,130 @@ def _go_maybe_notify_fire(decision: dict) -> dict | None:
     except Exception as exc:
         log.warning("go FIRE webhook failed: %s", exc)
         return {"status": "error", "detail": str(exc)}
+
+
+def _go_stage_decision(decision: dict, *, notes: str | None = None) -> dict[str, Any]:
+    """Open paper journal + STAGE ledger row. Never sends to broker."""
+    from data.journal import go_efficiency as go_eff
+
+    if not isinstance(decision, dict) or not (decision.get("contracts") or []):
+        raise ValueError("decision.contracts required")
+    sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
+    idx = config.get_index(sym)
+    legs = []
+    net = 0.0
+    for leg in decision.get("contracts") or []:
+        action = str(leg.get("action") or "BUY").upper()
+        opt = str(leg.get("opt_type") or "CE").upper()
+        strike = float(leg.get("strike") or 0)
+        ltp = float(leg.get("ltp") or 0)
+        if action == "SELL":
+            net += ltp
+        else:
+            net -= ltp
+        legs.append({
+            "action": action,
+            "type": "C" if opt.startswith("C") else "P",
+            "strike": strike,
+            "ltp": ltp,
+        })
+    ctx = decision.get("context") or {}
+    note = notes or (
+        f"Staged from Decisive GO · {decision.get('state')} · score {decision.get('score')}"
+    )
+    trade = journal_store.open_trade(
+        symbol=sym,
+        strategy_name=str(decision.get("strategy_key") or "GO"),
+        legs=legs,
+        entry_spot=float(ctx.get("spot") or 0),
+        entry_levels={
+            "spot": ctx.get("spot"),
+            "call_wall": ctx.get("call_wall"),
+            "put_wall": ctx.get("put_wall"),
+            "flip": ctx.get("flip"),
+            "magnet": ctx.get("magnet"),
+        },
+        entry_regime={
+            "go_state": decision.get("state"),
+            "mode": decision.get("mode"),
+            "abs_gex_bucket": ctx.get("abs_gex_bucket"),
+        },
+        entry_net_premium=round(net, 2),
+        lot_size=int(ctx.get("lot_size") or idx.lot_size),
+        notes=note,
+        strategy_type=str(decision.get("strategy_type") or ""),
+        go_decision=decision,
+    )
+    go_eff.record_event("STAGE", decision, trade_id=trade.trade_id)
+    return {
+        "status": "opened",
+        "trade_id": trade.trade_id,
+        "decision_id": str(decision.get("id") or ""),
+    }
+
+
+def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
+    """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
+    if not _GO_PREFS.get("auto_stage_fire"):
+        return None
+    if str(decision.get("state") or "") != "FIRE":
+        return None
+    if not (decision.get("contracts") or []):
+        return {"status": "skipped", "detail": "no contracts"}
+
+    fp = _go_auto_stage_fingerprint(decision)
+    sym = str(decision.get("symbol") or "").upper()
+    sk = str(decision.get("strategy_key") or "")
+    mode = str(decision.get("mode") or "")
+
+    with _GO_AUTO_STAGE_LOCK:
+        from data.journal import go_efficiency as go_eff
+
+        opens = go_eff.list_open(sym) if sym else go_eff.list_open()
+        prev_id = _GO_LAST_FIRE_STAGE.get(fp)
+        if prev_id and any(o.get("decision_id") == prev_id for o in opens):
+            return {
+                "status": "deduped_open",
+                "fingerprint": fp,
+                "decision_id": prev_id,
+            }
+        for o in opens:
+            if o.get("strategy_key") == sk and o.get("mode") == mode:
+                _GO_LAST_FIRE_STAGE[fp] = str(o.get("decision_id") or "")
+                return {
+                    "status": "deduped_open",
+                    "fingerprint": fp,
+                    "decision_id": o.get("decision_id"),
+                }
+        if fp in _GO_STAGING_INFLIGHT:
+            return {"status": "deduped_inflight", "fingerprint": fp}
+        # Previous stage closed (or never open) — allow a fresh study entry
+        _GO_LAST_FIRE_STAGE.pop(fp, None)
+        _GO_STAGING_INFLIGHT.add(fp)
+
+    try:
+        staged = _go_stage_decision(
+            decision,
+            notes=(
+                f"AUTO-STAGE FIRE · efficiency study · "
+                f"{decision.get('strategy_key')} · score {decision.get('score')} · "
+                f"paper only — confirm at broker if trading"
+            ),
+        )
+        with _GO_AUTO_STAGE_LOCK:
+            _GO_LAST_FIRE_STAGE[fp] = str(decision.get("id") or staged.get("decision_id") or "")
+        return {
+            "status": "auto_staged",
+            "fingerprint": fp,
+            "trade_id": staged.get("trade_id"),
+            "decision_id": staged.get("decision_id"),
+        }
+    except Exception as exc:
+        log.warning("go auto-stage FIRE failed: %s", exc)
+        return {"status": "error", "detail": str(exc)}
+    finally:
+        with _GO_AUTO_STAGE_LOCK:
+            _GO_STAGING_INFLIGHT.discard(fp)
 
 
 def _go_position_alerts(sym: str, dash=None) -> list[dict]:
@@ -3958,6 +4103,7 @@ async def get_go_decision(
     decision = await _compose_go_decision(sym, win, md, dp)
     payload = decision.to_dict()
     notify = None
+    auto_stage = None
     if payload.get("state") in ("FIRE", "SCOUT"):
         try:
             from data.journal import go_efficiency as go_eff
@@ -3966,6 +4112,7 @@ async def get_go_decision(
             log.debug("go EMIT ledger: %s", exc)
         if payload.get("state") == "FIRE":
             notify = _go_maybe_notify_fire(payload)
+            auto_stage = _go_maybe_auto_stage_fire(payload)
     prefs_out = dict(_GO_PREFS)
     wu = str(prefs_out.get("webhook_url") or "")
     if wu:
@@ -3976,6 +4123,7 @@ async def get_go_decision(
         "prefs": prefs_out,
         "decision": payload,
         "notify": notify,
+        "auto_stage": auto_stage,
     }
 
 
@@ -4003,6 +4151,7 @@ async def get_go_feed(
             log.debug("go feed alt %s: %s", alt, exc)
     ranked = rank_feed(feed)
     items = [d.to_dict() for d in ranked]
+    auto_stage = None
     # Ledger only mode-primary FIRE/SCOUT (avoid HOLD spam + alt triple-count)
     if items and items[0].get("state") in ("FIRE", "SCOUT"):
         try:
@@ -4010,11 +4159,14 @@ async def get_go_feed(
             go_eff.record_event("EMIT", items[0])
         except Exception as exc:
             log.debug("go feed EMIT ledger: %s", exc)
+        if items[0].get("state") == "FIRE":
+            auto_stage = _go_maybe_auto_stage_fire(items[0])
     return {
         "symbol": sym,
         "window": win,
         "mode": md,
         "items": items,
+        "auto_stage": auto_stage,
     }
 
 
@@ -4094,6 +4246,61 @@ async def post_go_mark(payload: dict = Body(...)):
     if updated is None:
         raise HTTPException(status_code=404, detail="No OPEN staged GO for that decision_id")
     return {"status": "ok", "open": updated}
+
+
+@app.post("/api/go/close")
+async def post_go_close(payload: dict = Body(...)):
+    """Settle a staged GO with cost-aware ₹ P&L (gross − brokerage − slippage).
+
+    No broker send. Optional ``exit_premium``; defaults to last mark.
+    Mirrors journal ``close_trade`` when the STAGE row has a trade_id.
+    """
+    from data.journal import go_efficiency as go_eff
+    from data.journal import store as journal_store
+
+    decision_id = str(payload.get("decision_id") or "")
+    if not decision_id:
+        raise HTTPException(status_code=400, detail="decision_id required")
+    exit_reason = str(payload.get("exit_reason") or "MANUAL")
+    exit_premium = payload.get("exit_premium")
+    exit_spot = payload.get("exit_spot")
+    exit_px = float(exit_premium) if exit_premium is not None else None
+    exit_spot_f = float(exit_spot) if exit_spot is not None else None
+
+    opens = {r["decision_id"]: r for r in go_eff.list_open()}
+    open_row = opens.get(decision_id)
+    settled = go_eff.close_open(
+        decision_id,
+        status="CLOSED",
+        exit_premium=exit_px,
+        exit_spot=exit_spot_f,
+        exit_reason=exit_reason,
+    )
+    if settled is None:
+        raise HTTPException(status_code=404, detail="No staged GO for that decision_id")
+
+    journal_closed = None
+    tid = (open_row or {}).get("trade_id") or payload.get("trade_id")
+    if tid and not settled.get("already_closed"):
+        try:
+            journal_closed = journal_store.close_trade(
+                tid,
+                exit_net_premium=float(
+                    settled.get("exit_premium")
+                    if settled.get("exit_premium") is not None
+                    else (exit_px or 0)
+                ),
+                exit_reason=exit_reason,
+            )
+        except Exception as exc:
+            log.debug("go close journal mirror: %s", exc)
+
+    return {
+        "status": "closed",
+        "pnl": settled,
+        "journal_trade_id": tid,
+        "journal_net_pnl": getattr(journal_closed, "net_realized_pnl", None) if journal_closed else None,
+    }
 
 
 @app.get("/api/go/structure/payoff")
@@ -4303,8 +4510,31 @@ async def post_go_action(payload: dict = Body(...)):
         strategy_type=str(decision.get("strategy_type") or "CUSTOM"),
         go_decision={**decision, "manage_action": action, "manage_legs": legs},
     )
+    settled = None
     if action == "flatten" and open_row:
-        go_eff.close_open(decision["id"], status="CLOSED")
+        exit_px = float(
+            open_row.get("mark_premium")
+            if open_row.get("mark_premium") is not None
+            else (open_row.get("entry_premium") or 0)
+        )
+        settled = go_eff.close_open(
+            decision["id"],
+            status="CLOSED",
+            exit_premium=exit_px,
+            exit_spot=open_row.get("mark_spot"),
+            exit_reason="FLATTEN",
+        )
+        # Mirror cost-aware close onto the parent staged journal trade when present
+        parent_tid = open_row.get("trade_id")
+        if parent_tid:
+            try:
+                journal_store.close_trade(
+                    parent_tid,
+                    exit_net_premium=exit_px,
+                    exit_reason="FLATTEN",
+                )
+            except Exception as exc:
+                log.debug("go flatten journal close: %s", exc)
     suggested = suggest_manage_actions(decision, open_row=open_row, strike_step=float(idx.strike_step))
     return {
         "status": "staged",
@@ -4312,6 +4542,7 @@ async def post_go_action(payload: dict = Body(...)):
         "trade_id": trade.trade_id,
         "legs": legs,
         "manage_actions": suggested,
+        "pnl": settled,
     }
 
 
@@ -4442,6 +4673,8 @@ async def post_go_prefs(payload: dict = Body(...)):
             raise HTTPException(status_code=400, detail="trail_pct must be a number")
     if "fire_webhook" in payload:
         _GO_PREFS["fire_webhook"] = bool(payload["fire_webhook"])
+    if "auto_stage_fire" in payload:
+        _GO_PREFS["auto_stage_fire"] = bool(payload["auto_stage_fire"])
     if "webhook_url" in payload:
         url = str(payload.get("webhook_url") or "").strip()
         if url and not url.startswith("http"):
@@ -4482,55 +4715,13 @@ async def post_go_stage(payload: dict = Body(...)):
     decision = payload.get("decision") or {}
     if not isinstance(decision, dict) or not decision.get("contracts"):
         raise HTTPException(status_code=400, detail="decision.contracts required")
-    sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
-    idx = config.get_index(sym)
-    legs = []
-    net = 0.0
-    for leg in decision.get("contracts") or []:
-        action = str(leg.get("action") or "BUY").upper()
-        opt = str(leg.get("opt_type") or "CE").upper()
-        strike = float(leg.get("strike") or 0)
-        ltp = float(leg.get("ltp") or 0)
-        if action == "SELL":
-            net += ltp
-        else:
-            net -= ltp
-        legs.append({
-            "action": action,
-            "type": "C" if opt.startswith("C") else "P",
-            "strike": strike,
-            "ltp": ltp,
-        })
-    ctx = decision.get("context") or {}
-    trade = journal_store.open_trade(
-        symbol=sym,
-        strategy_name=str(decision.get("strategy_key") or "GO"),
-        legs=legs,
-        entry_spot=float(ctx.get("spot") or 0),
-        entry_levels={
-            "spot": ctx.get("spot"),
-            "call_wall": ctx.get("call_wall"),
-            "put_wall": ctx.get("put_wall"),
-            "flip": ctx.get("flip"),
-            "magnet": ctx.get("magnet"),
-        },
-        entry_regime={
-            "go_state": decision.get("state"),
-            "mode": decision.get("mode"),
-            "abs_gex_bucket": ctx.get("abs_gex_bucket"),
-        },
-        entry_net_premium=round(net, 2),
-        lot_size=int(ctx.get("lot_size") or idx.lot_size),
-        notes=f"Staged from Decisive GO · {decision.get('state')} · score {decision.get('score')}",
-        strategy_type=str(decision.get("strategy_type") or ""),
-        go_decision=decision,
-    )
     try:
-        from data.journal import go_efficiency as go_eff
-        go_eff.record_event("STAGE", decision, trade_id=trade.trade_id)
+        return _go_stage_decision(decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        log.debug("go STAGE ledger: %s", exc)
-    return {"status": "opened", "trade_id": trade.trade_id}
+        log.warning("go STAGE failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/go/skip")
