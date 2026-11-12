@@ -126,8 +126,30 @@ STATIC_DIR = ROOT_DIR / "app" / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 IST = timezone(timedelta(hours=5, minutes=30))
 
-app = FastAPI(title="Cubera GEX Cockpit Web API", version="5.3.0")
-APP_VERSION = "5.3.0"
+def _resolve_app_version() -> str:
+    """Prefer the latest git release tag so /api/health matches promote.sh."""
+    try:
+        import subprocess
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent
+        out = subprocess.check_output(
+            ["git", "-C", str(root), "describe", "--tags", "--abbrev=0"],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        tag = out.decode().strip()
+        if tag.startswith("v") and len(tag) > 1:
+            return tag[1:]
+        if tag:
+            return tag
+    except Exception:
+        pass
+    return "5.3.0"
+
+
+APP_VERSION = _resolve_app_version()
+app = FastAPI(title="Cubera GEX Cockpit Web API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -4230,6 +4252,41 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
                 chain_ltp = _chain_leg_ltp(getattr(dash, "contracts", None), float(strike_g), side_guess)
         except Exception as exc:
             log.debug("go chain_ltp lookup: %s", exc)
+        # Breadth: prefer live advances/declines; Ideas bias only when present.
+        breadth_aligned = None
+        try:
+            mb = getattr(dash, "market_breadth", None) or {}
+            if isinstance(mb, dict):
+                adv = mb.get("advances")
+                dec = mb.get("declines")
+                if adv is not None and dec is not None:
+                    side_is_ce = True
+                    st = str(tape.get("type") or "").upper()
+                    if top_idea is not None:
+                        side_is_ce = str(getattr(top_idea, "side", "CE") or "CE").upper() == "CE"
+                    elif "BEAR" in st or "DOWN" in st:
+                        side_is_ce = False
+                    if side_is_ce:
+                        breadth_aligned = int(adv) > int(dec)
+                    else:
+                        breadth_aligned = int(dec) > int(adv)
+        except Exception:
+            breadth_aligned = None
+        if breadth_aligned is None and bias:
+            breadth_aligned = abs(bias) >= 1.5
+        # Real TE dial only — never invent 60/40. Soft-fail leaves weight excluded.
+        te_score = None
+        try:
+            te_res = run_target_engine(dashboard_data=dash, horizon_minutes=60, persist=False)
+            sc_set = getattr(te_res, "scenario_set", None)
+            if sc_set is not None:
+                dial = compose_confluence_dial(sc_set, getattr(te_res, "feature_vector", None))
+                raw = dial.get("score") if isinstance(dial, dict) else None
+                if raw is not None and float(raw) > 0:
+                    te_score = float(raw)
+        except Exception as exc:
+            log.debug("go TE dial: %s", exc)
+            te_score = None
         decision = build_directional_decision(
             symbol=sym,
             lot_size=int(idx.lot_size),
@@ -4240,9 +4297,8 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             sentinel_type=tape.get("type"),
             cvd_aligned=cvd_aligned,
             above_vwap=above_vwap,
-            breadth_aligned=(abs(bias) >= 1.5) if bias else None,
-            # Never invent 60/40 confluence — TE dial only when a real score exists.
-            target_confluence=None,
+            breadth_aligned=breadth_aligned,
+            target_confluence=te_score,
             oi_ts=oi_ts_s,
             oi_stale=oi_stale,
             chain_ok=True,

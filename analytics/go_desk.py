@@ -386,35 +386,43 @@ def build_directional_decision(
         )
     )
 
+    # Optional factors: unknown → weight excluded (fold into primary). Never invent.
+    tape_known = cvd_aligned is not None or above_vwap is not None
     cvd_ok = bool(cvd_aligned) if cvd_aligned is not None else False
     vwap_ok = bool(above_vwap) if above_vwap is not None else False
     tape_pts = 100.0 if (cvd_ok and vwap_ok) else (55.0 if (cvd_ok or vwap_ok) else 20.0)
+    w_tape = 0.0 if not tape_known else weights["cvd_vwap"]
     evidence.append(
         _ev(
             "cvd_vwap",
             "CVD / VWAP alignment",
             {"cvd": cvd_aligned, "above_vwap": above_vwap},
-            "both preferred",
-            cvd_ok and vwap_ok,
-            weights["cvd_vwap"],
+            "both preferred" if tape_known else "unavailable — not invented",
+            cvd_ok and vwap_ok if tape_known else False,
+            w_tape,
             "sentinel.tape",
+            note="" if tape_known else "no tape factors — weight excluded",
         )
     )
-    br_ok = bool(breadth_aligned) if breadth_aligned is not None else False
+    br_missing = breadth_aligned is None
+    br_ok = bool(breadth_aligned) if not br_missing else False
     br_pts = 100.0 if br_ok else 40.0
+    w_breadth = 0.0 if br_missing else weights["breadth"]
     evidence.append(
         _ev(
             "breadth",
             "Sector breadth alignment",
             breadth_aligned,
-            "aligned with side",
-            br_ok,
-            weights["breadth"],
+            "aligned with side" if not br_missing else "unavailable — not invented",
+            br_ok if not br_missing else False,
+            w_breadth,
             "market_intelligence",
+            note="" if not br_missing else "no breadth — weight excluded",
         )
     )
     te_missing = target_confluence is None
     te = 0.0 if te_missing else float(target_confluence)
+    w_te = 0.0 if te_missing else weights["target_engine"]
     evidence.append(
         _ev(
             "target_engine",
@@ -422,7 +430,7 @@ def build_directional_decision(
             None if te_missing else round(te, 1),
             "≥ 50 contributes / ≥ 65 strong" if not te_missing else "unavailable — not invented",
             False if te_missing else te >= 50,
-            0.0 if te_missing else weights["target_engine"],
+            w_te,
             "target_engine",
             note="no dial — weight excluded" if te_missing else "",
         )
@@ -455,12 +463,18 @@ def build_directional_decision(
         )
         soft.append("unusual_oi_vol")
 
-    w_te = 0.0 if te_missing else weights["target_engine"]
+    # Fold unused optional weight into primary so missing TE/breadth/tape cannot
+    # permanently floor a green Sentinel print below FIRE (12-Nov SCOUT ceiling).
+    optional_slack = (
+        (weights["cvd_vwap"] if not tape_known else 0.0)
+        + (weights["breadth"] if br_missing else 0.0)
+        + (weights["target_engine"] if te_missing else 0.0)
+    )
     score = _clamp(
-        w_primary * primary
+        (w_primary + optional_slack) * primary
         + w_idea * idea_score
-        + weights["cvd_vwap"] * tape_pts
-        + weights["breadth"] * br_pts
+        + w_tape * tape_pts
+        + w_breadth * br_pts
         + w_te * te
         + float(mtf.get("boost") or 0.0)
     )

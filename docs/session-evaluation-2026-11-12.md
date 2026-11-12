@@ -34,6 +34,9 @@ Writer SCOUT `WRITE_OTM` @ 73.8 (Nifty) and directional SCOUT absorption/continu
    60/40 confluence; CVD/VWAP from tape/bars only.
 4. **Shared gamma** — soft-flag equal walls; skip VANNA corridor Ideas; writer
    distance_beyond fails on collapsed walls (BN 60500/60500 was authentic).
+5. **GO FIRE path** — missing TE/breadth/tape no longer invents fillers; unused
+   weight folds into primary so sentinel-led + live premium can clear FIRE →
+   auto-stage. Health version tracks git tag.
 
 ## Diagnosis — Nifty OF scarcity (authentic)
 

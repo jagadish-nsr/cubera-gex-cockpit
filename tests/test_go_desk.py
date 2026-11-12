@@ -118,6 +118,31 @@ def test_directional_soft_corridor_half_size():
         assert d.size_tier == "HALF"
 
 
+def test_sentinel_led_fire_when_optional_factors_missing():
+    """Missing TE/breadth must not invent scores — fold weight so tape+Sentinel can FIRE."""
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82100, cw=82300, pw=81900, flip=82050, magnet=82100),
+        trade_ideas=[],
+        sentinel_score=82,
+        sentinel_type="ABSORPTION_BEAR",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=None,
+        target_confluence=None,
+        oi_ts="t",
+        chain_ltp=95.0,
+    )
+    assert d.state == "FIRE"
+    assert d.score >= FIRE_MIN
+    te = next(e for e in d.evidence if e.factor == "target_engine")
+    br = next(e for e in d.evidence if e.factor == "breadth")
+    assert te.weight == 0.0
+    assert br.weight == 0.0
+
+
 def test_shared_gamma_strike_soft_flag_bn_equal_walls():
     """BN 12-Nov had authentic call_wall=put_wall=60500 all session — flag, don't invent width."""
     d = build_directional_decision(
