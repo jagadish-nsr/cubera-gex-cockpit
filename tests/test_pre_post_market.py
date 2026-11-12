@@ -90,13 +90,26 @@ class TestPrePostMarket(unittest.TestCase):
         p_code, _, _ = get_current_session_phase(dt_sun)
         self.assertEqual(p_code, "OFF_HOURS")
 
-    def test_poller_asleep_before_0850(self):
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    def test_poller_asleep_before_0850(self, _persist):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
         self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 6, 30, tzinfo=IST)))
         self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 8, 49, tzinfo=IST)))
         self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 8, 50, tzinfo=IST)))
         self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 8, tzinfo=IST)))
-        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 22, tzinfo=IST)))
+        # Soft end 09:22: stay awake while undiscovered (Nov 12 locked ~09:22).
+        self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 22, tzinfo=IST)))
+        self.assertFalse(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 29, tzinfo=IST)))
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 30, tzinfo=IST)))
         self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 11, 9, 0, tzinfo=IST)))
+        # Once all three are discovered, soft-end window may sleep.
+        for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+            ppm._PRE_MARKET_CACHE[sym] = {
+                "date": "2026-10-13", "is_discovered": True, "discovered_spot": 1.0,
+            }
+        self.assertTrue(pre_market_poller_asleep(datetime(2026, 10, 13, 9, 22, tzinfo=IST)))
+        ppm._PRE_MARKET_CACHE.clear()
 
     @patch("data.dhan_live.fetch_index_ohlc")
     @patch("data.market_snapshot.resolve_offmarket_snapshot")
@@ -981,6 +994,158 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertTrue(state["is_post_market"])
         self.assertTrue(state["post_market_settled"])
         self.assertGreater(state["settlement_spot"], 0)
+
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_discovery_uses_spot_ltp_when_dhan_open_and_ltp_dark(self, mock_snap, mock_fetch, _save):
+        """Nov 12 failure: Dhan quote open=0 and ltp=0; spot_ticker already has today's print."""
+        from data import pre_post_market as ppm
+        import app.spot_ticker as ticker
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 25255.05, "prev_close": 25044.65,
+            "call_wall": 25500.0, "put_wall": 25000.0, "gamma_flip": 25020.0,
+            "net_gex": 1.2e10, "as_of": "2026-11-11T10:10:00+00:00",
+        }
+        mock_fetch.return_value = {
+            "open": 0.0, "high": 0.0, "low": 0.0,
+            "prev_close": 25255.05, "ltp": 0.0,
+            "as_of": "2026-11-12 09:10:00",
+        }
+        ticker._STORE["NIFTY"] = {
+            "ohlc": {
+                "open": 0.0,
+                "ltp": 25213.5,
+                "prev_close": 25255.05,
+                "as_of": "2026-11-12 09:10:05",
+            },
+            "ws_at": None,
+        }
+        try:
+            state = get_pre_market_state(
+                "NIFTY", force_refresh=True,
+                now=datetime(2026, 11, 12, 9, 10, 5, tzinfo=IST),
+            )
+        finally:
+            ticker._STORE.pop("NIFTY", None)
+        self.assertTrue(state["is_discovered"])
+        self.assertEqual(state["discovered_spot"], 25213.5)
+        self.assertEqual(state["open_source"], "spot-ltp")
+        self.assertEqual(state["discovered_at"], "09:10:05")
+
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_force_refresh_does_not_rewrite_discovered_at(self, mock_snap, mock_fetch, _save):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 25213.5, "prev_close": 25255.05,
+            "call_wall": 25500.0, "put_wall": 25000.0, "gamma_flip": 25020.0,
+            "net_gex": 1.0, "as_of": "2026-11-11T10:10:00+00:00",
+        }
+        ppm._PRE_MARKET_CACHE["NIFTY"] = {
+            "symbol": "NIFTY",
+            "date": "2026-11-12",
+            "is_discovered": True,
+            "discovered_spot": 25213.5,
+            "prev_close": 25255.05,
+            "gap_pts": -41.55,
+            "gap_pct": -0.16,
+            "gap_fill_status": "UNFILLED",
+            "gap_regime": "MODERATE_DRIFT",
+            "favored_play": "MAP ONLY",
+            "discovered_at": "09:10:05",
+            "open_source": "spot-ltp",
+            "regime_briefing": "Moderate opening gap",
+            "status_text": "Equilibrium Discovered",
+        }
+        mock_fetch.return_value = {
+            "open": 0.0, "prev_close": 25255.05, "ltp": 25302.0,
+            "as_of": "2026-11-12 09:22:00",
+        }
+        state = get_pre_market_state(
+            "NIFTY", force_refresh=True,
+            now=datetime(2026, 11, 12, 9, 22, 0, tzinfo=IST),
+        )
+        # force_refresh may probe for a day-open upgrade, but must keep the first lock.
+        self.assertEqual(state["discovered_at"], "09:10:05")
+        self.assertEqual(state["discovered_spot"], 25213.5)
+        self.assertEqual(state["open_source"], "spot-ltp")
+
+        # A hard open lock must short-circuit with no rewrite.
+        ppm._PRE_MARKET_CACHE["NIFTY"]["open_source"] = "dhan-open"
+        mock_fetch.reset_mock()
+        state2 = get_pre_market_state(
+            "NIFTY", force_refresh=True,
+            now=datetime(2026, 11, 12, 9, 22, 0, tzinfo=IST),
+        )
+        self.assertEqual(state2["discovered_at"], "09:10:05")
+        mock_fetch.assert_not_called()
+
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.dhan_live.fetch_index_ohlc")
+    @patch("data.market_snapshot.get_snapshot")
+    def test_ltp_lock_upgrades_to_dhan_open(self, mock_snap, mock_fetch, _save):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 25213.5, "prev_close": 25255.05,
+            "call_wall": 25500.0, "put_wall": 25000.0, "gamma_flip": 25020.0,
+            "net_gex": 1.0, "as_of": "2026-11-11T10:10:00+00:00",
+        }
+        ppm._PRE_MARKET_CACHE["NIFTY"] = {
+            "symbol": "NIFTY",
+            "date": "2026-11-12",
+            "is_discovered": True,
+            "discovered_spot": 25220.0,
+            "prev_close": 25255.05,
+            "gap_pts": -35.05,
+            "gap_pct": -0.14,
+            "gap_fill_status": "UNFILLED",
+            "gap_regime": "MODERATE_DRIFT",
+            "favored_play": "MAP ONLY",
+            "discovered_at": "09:10:05",
+            "open_source": "spot-ltp",
+            "call_wall": 25500.0,
+            "put_wall": 25000.0,
+            "gamma_flip": 25020.0,
+            "net_gex": 1.0,
+            "regime_briefing": "Moderate opening gap",
+            "status_text": "Equilibrium Discovered",
+        }
+        mock_fetch.return_value = {
+            "open": 25213.5, "prev_close": 25255.05, "ltp": 25302.0,
+            "high": 25310.0, "low": 25200.0,
+            "as_of": "2026-11-12 09:22:00",
+        }
+        state = get_pre_market_state(
+            "NIFTY", force_refresh=True,
+            now=datetime(2026, 11, 12, 9, 22, 0, tzinfo=IST),
+        )
+        self.assertEqual(state["open_source"], "dhan-open")
+        self.assertEqual(state["discovered_spot"], 25213.5)
+        self.assertEqual(state["discovered_at"], "09:10:05")
+        self.assertAlmostEqual(state["gap_pts"], -41.55, places=2)
+
+    @patch("data.pre_post_market.save_pre_market_state")
+    @patch("data.pre_post_market.ensure_pre_market_poller")
+    @patch("data.pre_post_market.get_persisted_auction_record", return_value=None)
+    @patch("data.market_snapshot.get_snapshot")
+    def test_http_arms_poller_after_open_while_undiscovered(self, mock_snap, _persist, mock_ensure, _save):
+        from data import pre_post_market as ppm
+        ppm._PRE_MARKET_CACHE.clear()
+        mock_snap.return_value = {
+            "spot": 25255.05, "prev_close": 25044.65,
+            "call_wall": 25500.0, "put_wall": 25000.0, "gamma_flip": 25020.0,
+            "as_of": "2026-11-11T10:10:00+00:00",
+        }
+        get_pre_market_state(
+            "NIFTY", force_refresh=False,
+            now=datetime(2026, 11, 12, 9, 16, tzinfo=IST),
+        )
+        mock_ensure.assert_called()
 
 
 if __name__ == "__main__":

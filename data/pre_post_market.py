@@ -101,6 +101,7 @@ def init_pre_post_db() -> None:
             ("net_change_pct", "REAL"),
             ("next_key_levels", "TEXT"),
             ("institutional_wrap", "TEXT"),
+            ("open_source", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE market_auctions_history ADD COLUMN {col} {col_type}")
@@ -145,8 +146,8 @@ def save_pre_market_state(symbol: str, state: dict, shocks: dict | None = None) 
                     discovered_at, straddle_shock_pct, atm_straddle_prev, atm_straddle_projected,
                     option_shocks_json, post_market_settled, settlement_spot, last_continuous_spot,
                     settlement_divergence_pts, pin_efficiency_pct, pin_target_wall, settled_at,
-                    closing_cvd, orderflow_bias, status_text, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    closing_cvd, orderflow_bias, status_text, updated_at, open_source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 trade_date,
                 sym,
@@ -178,6 +179,7 @@ def save_pre_market_state(symbol: str, state: dict, shocks: dict | None = None) 
                 ex.get("orderflow_bias"),
                 state.get("status_text") or ex.get("status_text"),
                 now_iso,
+                state.get("open_source") or ex.get("open_source"),
             ))
             conn.commit()
     except Exception as e:
@@ -370,7 +372,9 @@ def get_persisted_auction_record(symbol: str, trade_date: str | None = None) -> 
 
 _PM_POLL_START_MIN = 8 * 60 + 50
 _PM_POLL_END_MIN = 9 * 60 + 22
+_PM_POLL_HARD_END_MIN = 9 * 60 + 30  # stay awake until discovered, never past this
 _MORNING_BRIEFING_MIN = 6 * 60 + 30
+_LTP_OPEN_SOURCES = frozenset({"dhan-ltp", "spot-ltp", "ws-ltp"})
 
 
 def _cash_open_has_passed(now: datetime) -> bool:
@@ -383,18 +387,100 @@ def _cash_open_has_passed(now: datetime) -> bool:
     return now.hour * 60 + now.minute >= clock.open_min
 
 
+def _matching_lock_min(now: datetime) -> int:
+    """Earliest minute the indicative/matched print may be locked (regular: 09:08)."""
+    from data.session_calendar import clock_for
+
+    clock = clock_for(now.date())
+    return clock.discovery_min + 1
+
+
+def _as_of_is_today(as_of: str | None, today: date) -> bool:
+    return bool(as_of) and str(as_of)[:10] == today.isoformat()
+
+
+def _store_live_print(symbol: str, today: date) -> tuple[float, float, float, str]:
+    """Return (open, ltp, prior_close, as_of) from spot_ticker when the print is live today.
+
+    A live WebSocket tick may arrive before Dhan stamps today's as_of — trust LTP only
+    then, not a stale prior-session open left in the merged OHLC dict.
+    """
+    try:
+        from app.spot_ticker import _STORE, _ws_is_live_for
+        rec = _STORE.get(symbol.upper()) or {}
+        ohlc = rec.get("ohlc") or {}
+        quote = rec.get("quote") or {}
+        as_of = str(ohlc.get("as_of") or quote.get("as_of") or "")
+        ws_live = _ws_is_live_for(symbol.upper())
+        if not _as_of_is_today(as_of, today) and not ws_live:
+            return 0.0, 0.0, 0.0, ""
+        ltp = float(ohlc.get("ltp") or quote.get("ltp") or quote.get("spot") or 0.0)
+        prev = float(ohlc.get("prev_close") or quote.get("prev_close") or 0.0)
+        if _as_of_is_today(as_of, today):
+            open_px = float(ohlc.get("open") or quote.get("open") or 0.0)
+            return open_px, ltp, prev, as_of
+        # Live WS, prior as_of: LTP only.
+        return 0.0, ltp, prev, datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return 0.0, 0.0, 0.0, ""
+
+
+def _resolve_discovery_print(
+    symbol: str,
+    now: datetime,
+    ohlc: dict | None,
+    fallback_prev: float = 0.0,
+) -> tuple[float, float, str, str]:
+    """Pick the indicative open print and prior close.
+
+    Priority after matching (~09:08): dhan day-open → dhan LTP → spot-ticker open →
+    live WS/spot LTP. Before matching, only a positive day-open locks.
+    Returns (print_px, prev_close, open_source, as_of).
+    """
+    today = now.date()
+    now_mins = now.hour * 60 + now.minute
+    lock_min = _matching_lock_min(now)
+    after_match = now_mins >= lock_min
+
+    open_px = float((ohlc or {}).get("open") or 0.0)
+    ltp = float((ohlc or {}).get("ltp") or 0.0)
+    prev = float((ohlc or {}).get("prev_close") or (ohlc or {}).get("close") or 0.0)
+    as_of = str((ohlc or {}).get("as_of") or "")
+
+    if open_px > 0:
+        return open_px, (prev or fallback_prev), "dhan-open", as_of
+    if after_match and ltp > 0:
+        return ltp, (prev or fallback_prev), "dhan-ltp", as_of
+
+    store_open, store_ltp, store_prev, store_as_of = _store_live_print(symbol, today)
+    if after_match and store_open > 0:
+        return store_open, (store_prev or prev or fallback_prev), "spot-open", store_as_of or as_of
+    if after_match and store_ltp > 0:
+        try:
+            from app.spot_ticker import _ws_is_live_for
+            src = "ws-ltp" if _ws_is_live_for(symbol.upper()) else "spot-ltp"
+        except Exception:
+            src = "spot-ltp"
+        return store_ltp, (store_prev or prev or fallback_prev), src, store_as_of or as_of
+
+    return 0.0, (prev or fallback_prev), "", as_of
+
+
 def _prints_for_opening_gap(symbol: str, now: datetime) -> tuple[float, float] | None:
     """Today's open and the prior session's last price, from books already in memory.
 
     The auction poll is the one that calls Dhan. This only reads the quote and
     the snapshot. A previous close that is a copy of today's print is refused.
     When the snapshot is still the prior session, that session's spot is its close.
+    After the cash open, a today's LTP may stand in when day-open is still dark
+    (Nov 12: Dhan open stayed 0 until ~09:22 while tape was live).
     """
     from data.market_snapshot import as_of_datetime, get_snapshot, prev_close_copied_from_spot
 
     today = now.date()
     open_px = 0.0
     prior = 0.0
+    ltp_fallback = 0.0
     try:
         from app.spot_ticker import _STORE
         ohlc = (_STORE.get(symbol.upper()) or {}).get("ohlc") or {}
@@ -405,6 +491,8 @@ def _prints_for_opening_gap(symbol: str, now: datetime) -> tuple[float, float] |
                 open_px = op
             pc = float(ohlc.get("prev_close") or 0.0)
             ltp = float(ohlc.get("ltp") or op or 0.0)
+            if ltp > 0:
+                ltp_fallback = ltp
             if pc > 0 and ltp > 0 and not prev_close_copied_from_spot(pc, ltp):
                 prior = pc
     except Exception:
@@ -417,16 +505,22 @@ def _prints_for_opening_gap(symbol: str, now: datetime) -> tuple[float, float] |
         op = float(snap.get("open") or 0.0)
         if op > 0:
             open_px = op
+        if ltp_fallback <= 0:
+            spot = float(snap.get("spot") or 0.0)
+            if spot > 0:
+                ltp_fallback = spot
     if prior <= 0:
         if snap_day == today:
             pc = float(snap.get("prev_close") or 0.0)
-            spot = float(snap.get("spot") or open_px or 0.0)
+            spot = float(snap.get("spot") or open_px or ltp_fallback or 0.0)
             if pc > 0 and spot > 0 and not prev_close_copied_from_spot(pc, spot):
                 prior = pc
         elif snap_day is not None and snap_day < today:
             last = float(snap.get("spot") or 0.0)
             if last > 0:
                 prior = last
+    if open_px <= 0 and ltp_fallback > 0 and _cash_open_has_passed(now):
+        open_px = ltp_fallback
     if open_px <= 0 or prior <= 0:
         return None
     return round(open_px, 2), round(prior, 2)
@@ -487,27 +581,50 @@ def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
     return state
 
 
+def _symbol_discovered_today(symbol: str, today_str: str) -> bool:
+    with _CACHE_LOCK:
+        cached = _PRE_MARKET_CACHE.get(symbol.upper())
+        if cached and cached.get("date") == today_str and cached.get("is_discovered"):
+            return True
+    rec = get_persisted_auction_record(symbol.upper(), today_str)
+    return bool(rec and rec.get("is_discovered"))
+
+
 def pre_market_poller_asleep(now: datetime | None = None) -> bool:
-    """True outside the session's pre-open poll window. Briefing does not wake this poller."""
+    """True outside the session's pre-open poll window. Briefing does not wake this poller.
+
+    Stays awake past the soft end (09:22) until today's open is discovered, but never
+    past the hard end (09:30). Nov 12 locked only when day-open finally appeared ~09:22.
+    """
     from data.session_calendar import clock_for, is_live_session_day
 
     now_ist = now or datetime.now(IST)
     if not is_live_session_day(now_ist.date()):
         return True
     clock = clock_for(now_ist.date())
-    # Regular: 08:50–09:22. Muhurat: 15 min before pre-open through open+7.
+    # Regular: 08:50–09:22 soft / 09:30 hard. Muhurat: 15 min before pre-open through open+7.
     poll_start = (
         _PM_POLL_START_MIN
         if clock.kind == "regular"
         else max(0, clock.preopen_min - 15)
     )
-    poll_end = (
+    soft_end = (
         _PM_POLL_END_MIN
         if clock.kind == "regular"
         else clock.open_min + 7
     )
+    hard_end = (
+        _PM_POLL_HARD_END_MIN
+        if clock.kind == "regular"
+        else clock.open_min + 15
+    )
     t_min = now_ist.hour * 60 + now_ist.minute
-    return t_min < poll_start or t_min >= poll_end
+    if t_min < poll_start or t_min >= hard_end:
+        return True
+    if t_min < soft_end:
+        return False
+    today_str = now_ist.strftime("%Y-%m-%d")
+    return all(_symbol_discovered_today(sym, today_str) for sym in ("NIFTY", "BANKNIFTY", "SENSEX"))
 
 
 def prior_close_book_line(
@@ -689,10 +806,12 @@ def get_pre_market_state(
     fresh_cached: dict | None = None
     gap_fill_to_persist: str | None = None
     discovered_cached: dict | None = None
+    upgrade_from_ltp: dict | None = None
     with _CACHE_LOCK:
         cached = _PRE_MARKET_CACHE.get(symbol.upper())
-        if cached and cached.get("date") == today_str and not force_refresh:
-            # If already discovered today, dynamically refresh gap fill status against live high/low
+        if cached and cached.get("date") == today_str:
+            # Already locked: never rebuild from a force_refresh tick (that was rewriting
+            # discovered_at up to the 09:22 soft end). Only gap-fill / open-upgrade run.
             if cached.get("is_discovered"):
                 if cached.get("gap_fill_status") != "FILLED":
                     try:
@@ -710,10 +829,14 @@ def get_pre_market_state(
                             gap_fill_to_persist = "FILLED"
                     except Exception:
                         pass
-                discovered_cached = cached
-            # If discovery in progress but checked less than 2.8s ago, return cached.
-            # A morning-briefing stub must not outlive 09:00, when the cash auction starts.
-            elif (time.time() - cached.get("_polled_at", 0)) < 2.8:
+                src = str(cached.get("open_source") or "")
+                if force_refresh and src in _LTP_OPEN_SOURCES:
+                    upgrade_from_ltp = dict(cached)
+                else:
+                    discovered_cached = cached
+            elif not force_refresh and (time.time() - cached.get("_polled_at", 0)) < 2.8:
+                # Discovery in progress but checked less than 2.8s ago.
+                # A morning-briefing stub must not outlive 09:00, when the cash auction starts.
                 phase_now, _, _ = get_current_session_phase(now_ist)
                 if not (cached.get("is_morning_briefing") and phase_now != "PRE_MARKET_SETUP"):
                     fresh_cached = cached
@@ -900,11 +1023,13 @@ def get_pre_market_state(
         return state
 
     if not force_refresh:
-        if phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY"):
-            try:
-                ensure_pre_market_poller(symbol)
-            except Exception:
-                pass
+        # Keep the poller armed through REGULAR_SESSION until discovery (or hard end).
+        if phase_code in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY", "REGULAR_SESSION"):
+            if not _symbol_discovered_today(symbol.upper(), today_str):
+                try:
+                    ensure_pre_market_poller(symbol)
+                except Exception:
+                    pass
         apply_state: dict | None = None
         with _CACHE_LOCK:
             existing = _PRE_MARKET_CACHE.get(symbol.upper())
@@ -927,78 +1052,103 @@ def get_pre_market_state(
         from data.dhan_live import fetch_index_ohlc
         skip_c = (phase_code in ("PRE_MARKET_DISCOVERY", "PRE_MARKET_ENTRY") or force_refresh)
         ohlc = fetch_index_ohlc(symbol.upper(), timeout=4, skip_cache=skip_c)
-        if ohlc:
-            open_px = float(ohlc.get("open") or 0.0)
-            prev_close = float(ohlc.get("prev_close") or ohlc.get("close") or fallback_spot)
-            ltp = float(ohlc.get("ltp") or 0.0)
-            as_of = str(ohlc.get("as_of") or "")
+        print_px, prev_close, open_source, as_of = _resolve_discovery_print(
+            symbol.upper(), now_ist, ohlc, fallback_prev=float(fallback_spot or 0.0),
+        )
+        now_mins = now_ist.hour * 60 + now_ist.minute
+        lock_min = _matching_lock_min(now_ist)
+        is_disc = (
+            print_px > 0
+            and (abs(print_px - prev_close) > 0.01 or now_mins >= lock_min)
+        )
 
-            # Dhan day OHLC open often stays 0 through the cash auction. After
-            # 09:08 the index LTP is the indicative/matched print we can lock.
-            now_mins = now_ist.hour * 60 + now_ist.minute
-            if open_px > 0:
-                print_px = open_px
-                open_source = "dhan-open"
-            elif now_mins >= 9 * 60 + 8 and ltp > 0:
-                print_px = ltp
-                open_source = "dhan-ltp"
+        # Upgrade an earlier LTP lock once Dhan finally publishes day-open.
+        if upgrade_from_ltp is not None and open_source == "dhan-open" and print_px > 0:
+            state = dict(upgrade_from_ltp)
+            is_disc = True
+        elif upgrade_from_ltp is not None and not (open_source == "dhan-open" and print_px > 0):
+            if gap_fill_to_persist is not None:
+                update_gap_fill_status(symbol.upper(), gap_fill_to_persist, today_str)
+            return upgrade_from_ltp
+
+        if is_disc:
+            disc_spot = round(print_px, 2)
+            p_close = round(float(prev_close or fallback_spot or 0.0), 2)
+            gap_pts = round(disc_spot - p_close, 2) if p_close > 0 else 0.0
+            gap_pct = round((gap_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0
+
+            high_px = float((ohlc or {}).get("high") or (ohlc or {}).get("ltp") or print_px)
+            low_px = float((ohlc or {}).get("low") or (ohlc or {}).get("ltp") or print_px)
+            if gap_pts > 0:
+                is_filled = (low_px <= p_close)
+            elif gap_pts < 0:
+                is_filled = (high_px >= p_close)
             else:
-                print_px = 0.0
-                open_source = ""
-            is_disc = (
-                print_px > 0
-                and (abs(print_px - prev_close) > 0.01 or now_mins >= 9 * 60 + 8)
+                is_filled = True
+
+            gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
+
+            prior_src = str((upgrade_from_ltp or {}).get("open_source") or "")
+            keep_discovered_at = (
+                upgrade_from_ltp is not None
+                and prior_src in _LTP_OPEN_SOURCES
+                and open_source == "dhan-open"
             )
 
-            if is_disc:
-                disc_spot = round(print_px, 2)
-                p_close = round(prev_close, 2)
-                gap_pts = round(disc_spot - p_close, 2)
-                gap_pct = round((gap_pts / p_close) * 100.0, 2) if p_close > 0 else 0.0
-
-                high_px = float(ohlc.get("high") or ltp or print_px)
-                low_px = float(ohlc.get("low") or ltp or print_px)
-                if gap_pts > 0:
-                    is_filled = (low_px <= p_close)
-                elif gap_pts < 0:
-                    is_filled = (high_px >= p_close)
-                else:
-                    is_filled = True
-
-                gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
-
-                state["is_discovered"] = True
-                state["discovered_spot"] = disc_spot
-                state["prev_close"] = p_close
-                state["gap_pts"] = gap_pts
-                state["gap_pct"] = gap_pct
-                state["gap_fill_status"] = "FILLED" if is_filled else "UNFILLED"
-                state["gap_regime"] = gap_cls.get("regime", "AUCTION_BALANCED")
-                state["favored_play"] = gap_cls.get("favored_play", "")
-                state["regime_badge"] = gap_cls.get("badge", "")
-                state["regime_color"] = gap_cls.get("color", "")
-                state["regime_briefing"] = gap_cls.get("briefing", "")
-                state["discovered_at"] = as_of[-8:] if len(as_of) >= 8 else now_ist.strftime("%H:%M:%S")
-                state["open_source"] = open_source
-                state["status_text"] = (
-                    f"Equilibrium Discovered: ₹{disc_spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%)"
-                )
-
-                # Flag chime if not triggered today
-                chime_key = (symbol.upper(), today_str)
-                with _CACHE_LOCK:
-                    if chime_key not in _CHIME_TRIGGERED_DAYS:
-                        state["should_play_chime"] = True
-
-                save_pre_market_state(symbol.upper(), state)
+            state["is_discovered"] = True
+            state["discovered_spot"] = disc_spot
+            state["prev_close"] = p_close
+            state["gap_pts"] = gap_pts
+            state["gap_pct"] = gap_pct
+            state["gap_fill_status"] = "FILLED" if is_filled else "UNFILLED"
+            state["gap_regime"] = gap_cls.get("regime", "AUCTION_BALANCED")
+            state["favored_play"] = gap_cls.get("favored_play", "")
+            state["regime_badge"] = gap_cls.get("badge", "")
+            state["regime_color"] = gap_cls.get("color", "")
+            state["regime_briefing"] = gap_cls.get("briefing", "")
+            if keep_discovered_at and upgrade_from_ltp.get("discovered_at"):
+                state["discovered_at"] = upgrade_from_ltp["discovered_at"]
             else:
-                state["status_text"] = "Awaiting Equilibrium Auction Matching (09:08)..."
-                if phase_code == "PRE_MARKET_ENTRY":
-                    state["regime_badge"] = "PRE-OPEN COLLECTION"
-                elif phase_code == "PRE_MARKET_DISCOVERY":
-                    state["regime_badge"] = "EQUILIBRIUM DISCOVERY"
+                state["discovered_at"] = as_of[-8:] if len(as_of) >= 8 else now_ist.strftime("%H:%M:%S")
+            state["open_source"] = open_source
+            state["status_text"] = (
+                f"Equilibrium Discovered: ₹{disc_spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%)"
+                + (f" via {open_source}" if open_source else "")
+            )
+
+            chime_key = (symbol.upper(), today_str)
+            with _CACHE_LOCK:
+                if chime_key not in _CHIME_TRIGGERED_DAYS:
+                    state["should_play_chime"] = True
+
+            save_pre_market_state(symbol.upper(), state)
+            if keep_discovered_at:
+                log.info(
+                    "Pre-market %s upgraded %s → dhan-open @ ₹%.2f (first lock %s)",
+                    symbol.upper(), prior_src, disc_spot, state.get("discovered_at"),
+                )
+            else:
+                log.info(
+                    "Pre-market %s discovered via %s @ ₹%.2f (gap %+.1f / %+.2f%%)",
+                    symbol.upper(), open_source or "unknown", disc_spot, gap_pts, gap_pct,
+                )
+        else:
+            dhan_open = float((ohlc or {}).get("open") or 0.0)
+            dhan_ltp = float((ohlc or {}).get("ltp") or 0.0)
+            if now_mins >= lock_min:
+                log.info(
+                    "Pre-market %s still dark after matching (dhan open=%.2f ltp=%.2f source=%s)",
+                    symbol.upper(), dhan_open, dhan_ltp, open_source or "none",
+                )
+            state["status_text"] = "Awaiting Equilibrium Auction Matching (09:08)..."
+            if phase_code == "PRE_MARKET_ENTRY":
+                state["regime_badge"] = "PRE-OPEN COLLECTION"
+            elif phase_code == "PRE_MARKET_DISCOVERY":
+                state["regime_badge"] = "EQUILIBRIUM DISCOVERY"
+            elif phase_code == "REGULAR_SESSION":
+                state["regime_badge"] = "AWAITING DAY OPEN"
     except Exception as e:
-        log.debug(f"Pre-market poll failed for {symbol}: {e}")
+        log.info("Pre-market poll failed for %s: %s", symbol, e)
 
     if not state.get("is_discovered"):
         state = _apply_missed_open(state, symbol, now_ist)
@@ -1729,7 +1879,7 @@ def get_post_market_state(
     cont_px = settle_px
     live_print = False
 
-    if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and is_trading_day_today:
+    if is_post and (15 * 60 + 30 <= t_min <= 16 * 60 + 5) and is_live_today:
         try:
             from data.dhan_live import fetch_index_ohlc
             ohlc = fetch_index_ohlc(symbol.upper(), timeout=4)
