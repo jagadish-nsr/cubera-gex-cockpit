@@ -144,10 +144,16 @@ def serialize_ranked_candidates(candidates, dominant: str = "base") -> List[Dict
             max_l = float(getattr(c, "max_loss_pts", 0.0) or 0.0)
             sl = max(0.05, ent - max_l) if ent > 0 else ent
 
-        # Debit longs: stop cannot sit through the entry.
+        # Debit longs: stop cannot sit through the entry — refuse inventing ent×0.70.
         if ent > 0 and sl >= ent:
             max_l = float(getattr(c, "max_loss_pts", 0.0) or 0.0)
-            sl = max(0.05, ent - max_l) if max_l > 0 else max(0.05, ent * 0.70)
+            if max_l > 0:
+                sl = max(0.05, ent - max_l)
+            else:
+                continue  # no authentic stop — skip row
+
+        if ent > 0 and (t1 <= ent or sl >= ent or sl <= 0):
+            continue
 
         rr_val = float(getattr(c, "risk_reward", 0.0) or 0.0)
         rank = float(getattr(c, "rank_score", 0.0) or 0.0)

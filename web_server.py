@@ -4236,12 +4236,9 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
         sp = (pw - step) if pw else None
         credit_call = _chain_leg_ltp(contracts_df, float(sc), "CE") if sc else None
         credit_put = _chain_leg_ltp(contracts_df, float(sp), "PE") if sp else None
-        # VERIFY: SPAN proxy — not exchange SPAN. ~₹2k × lot as floor placeholder.
-        margin_est = float(idx.lot_size) * 2000.0
-        if credit_call or credit_put:
-            # Rough add:  short premium × lot × 15 as extra exposure proxy
-            prem = float(credit_call or 0) + float(credit_put or 0)
-            margin_est = max(margin_est, prem * float(idx.lot_size) * 15.0)
+        # No exchange SPAN in-tree — leave margin unset (UI "—"). Live credits
+        # still fill risk.credit_or_debit; do not invent lot×2000 or prem×15.
+        margin_est = None
         decision = build_writer_decision(
             symbol=sym,
             lot_size=int(idx.lot_size),
@@ -4258,7 +4255,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             short_put=sp,
             credit_call=credit_call,
             credit_put=credit_put,
-            margin_est_inr=round(margin_est, 0),
+            margin_est_inr=margin_est,
         )
     else:
         bias = float(getattr(batch, "directional_bias_score", 0) or 0) if batch else 0.0

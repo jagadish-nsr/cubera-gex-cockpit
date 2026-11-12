@@ -81,8 +81,8 @@ class StrikeLadderRow:
     """Pair of Call and Put at the same strike for Dual-Wing matrix view."""
     strike: float
     is_atm: bool
-    ce: StrikeRowData
-    pe: StrikeRowData
+    ce: Optional[StrikeRowData]
+    pe: Optional[StrikeRowData]
 
 
 @dataclass
@@ -450,10 +450,12 @@ def compute_strike_ladder(
             is_atm=is_atm,
             get_ws_quote_fn=get_option_ws_quote,
         )
+        if ce_data is None and pe_data is None:
+            continue
 
-        if ce_data.is_ws_live:
+        if ce_data is not None and ce_data.is_ws_live:
             ws_active_count += 1
-        if pe_data.is_ws_live:
+        if pe_data is not None and pe_data.is_ws_live:
             ws_active_count += 1
 
         rows.append(StrikeLadderRow(strike=float(k), is_atm=is_atm, ce=ce_data, pe=pe_data))
@@ -536,17 +538,18 @@ def _reprice_ladder_leg(
             if raw_iv is not None and not (isinstance(raw_iv, float) and np.isnan(raw_iv)) and float(raw_iv) > 0:
                 strike_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
 
-    # Step C: Model fallback if entry_ltp is still zero
+    # Step C: No live print → refuse (never invent BS entry / LTP×ratio targets)
     if not entry_ltp or entry_ltp <= 0:
-        entry_ltp = price(spot, strike, T_now, strike_iv, 0.065, opt_type)
-        entry_ltp = max(0.05, round(entry_ltp, 2))
+        return None
 
     # Step D: Extract strike IV using inversion if not present
     if not strike_iv or strike_iv <= 0.02 or math.isnan(strike_iv):
         solved = implied_vol(entry_ltp, spot, strike, T_now, 0.065, opt_type)
         strike_iv = solved if (solved and solved > 0.02) else atm_iv
 
-    strike_iv = max(0.04, min(0.90, strike_iv))
+    if not strike_iv or strike_iv <= 0.02 or math.isnan(strike_iv):
+        return None  # never invent 0.14 / default vol
+    strike_iv = max(0.04, min(0.90, float(strike_iv)))
 
     # Step E: Greeks
     cur_greeks = greeks(spot, strike, T_now, strike_iv, 0.065, opt_type)
@@ -561,24 +564,17 @@ def _reprice_ladder_leg(
         iv_tgt2 = max(0.04, strike_iv + 0.0250)
         iv_sl = max(0.04, strike_iv - 0.0080)
 
-    # Step G: Black-76 forward repricing
+    # Step G: Black-76 forward repricing at map spots
     p_tgt1_calc = reprice(tgt1_spot, strike, T_tgt1, iv_tgt1, 0.065, opt_type)
     p_tgt2_calc = reprice(tgt2_spot, strike, T_tgt2, iv_tgt2, 0.065, opt_type)
     p_sl_calc = reprice(inval_spot, strike, T_sl, iv_sl, 0.065, opt_type)
 
-    # Step H: Strict monotonicity and buffer enforcement
-    # T2 > T1 > Entry > SL
-    tgt1_opt = max(round(p_tgt1_calc, 1), round(entry_ltp * 1.15, 1))
-    tgt2_opt = max(round(p_tgt2_calc, 1), round(tgt1_opt * 1.15, 1))
-    
-    # Cap target price multiples to realistic intraday limits (max 4x for T1, 6.5x for T2)
-    tgt1_opt = min(tgt1_opt, round(entry_ltp * 4.0, 1))
-    tgt2_opt = min(tgt2_opt, round(entry_ltp * 6.5, 1))
-
-    sl_opt = min(round(p_sl_calc, 1), round(entry_ltp * 0.85, 1))
-    if sl_opt >= entry_ltp:
-        sl_opt = round(entry_ltp * 0.72, 2)
-    sl_opt = max(0.05, min(sl_opt, round(entry_ltp - 0.05, 2) if entry_ltp > 0.15 else round(entry_ltp * 0.70, 2)))
+    # Step H: BS premiums only — refuse LTP×1.15/1.25/0.70 invent
+    tgt1_opt = round(float(p_tgt1_calc), 2)
+    tgt2_opt = round(float(p_tgt2_calc), 2)
+    sl_opt = round(float(p_sl_calc), 2)
+    if tgt1_opt <= entry_ltp or tgt2_opt <= tgt1_opt or sl_opt >= entry_ltp or sl_opt <= 0:
+        return None
 
     # Step I: Calculate PnL (pts, %, INR)
     tgt1_pts = round(tgt1_opt - entry_ltp, 2)

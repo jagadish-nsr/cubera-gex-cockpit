@@ -87,3 +87,5 @@ need corridor width are skipped. **Do not invent a second wall.**
 | Nifty OF scarcity | **Not a bug** | quieter \|Δratio\|; CONT gates kept |
 | Snapshot `cw >= pw` test | **Fixed** | assertion removed — Sensex pw can exceed cw |
 | Live Ideas / FIRE proof | **Open** | needs next session after ~09:16 IST |
+| Ideas LTP×ratio T1/T2/SL | **Fixed** | BS-at-map-spots only; refuse otherwise |
+| Writer margin lot×2000 | **Fixed** | margin unset (no SPAN); live credits only |

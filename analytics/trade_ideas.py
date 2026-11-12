@@ -253,22 +253,25 @@ def _reprice_trade_idea_targets(
     """
     is_call = side.upper() == "CE"
     opt_type = "CE" if is_call else "PE"
-    safe_ltp = max(float(current_ltp or 0.0), 1.0)
-    safe_spot = max(float(spot or 0.0), 100.0)
-    safe_k = max(float(strike or 0.0), 100.0)
+    safe_ltp = float(current_ltp or 0.0)
+    if safe_ltp <= 0.05:
+        raise ValueError("live option LTP required — refusing LTP×ratio invent")
+    safe_spot = float(spot or 0.0)
+    safe_k = float(strike or 0.0)
+    if safe_spot <= 0 or safe_k <= 0:
+        raise ValueError("spot/strike required — refusing placeholder reprice")
 
     # 1. Base time to expiry in annual fraction
     safe_dte = float(dte_days if dte_days is not None else 3.0)
     T_entry = max(safe_dte / 365.0, 1.0 / (365.0 * 6.25 * 60.0))
 
-    # 2. Estimate or solve entry IV
+    # 2. Solve entry IV from live premium (atm_iv only if IV solve fails)
     iv_now = None
-    if safe_ltp > 0.0:
-        try:
-            from target_engine.pricer import implied_volatility
-            iv_now = implied_volatility(safe_spot, safe_k, T_entry, safe_ltp, r=0.065, option_type=opt_type)
-        except Exception:
-            iv_now = None
+    try:
+        from target_engine.pricer import implied_volatility
+        iv_now = implied_volatility(safe_spot, safe_k, T_entry, safe_ltp, r=0.065, option_type=opt_type)
+    except Exception:
+        iv_now = None
 
     if iv_now is None or iv_now <= 0.02 or math.isnan(iv_now):
         if atm_iv is None or float(atm_iv) <= 0.02:
@@ -310,57 +313,45 @@ def _reprice_trade_idea_targets(
         iv_f_tgt2 = iv_now
         iv_f_sl = iv_now
 
-    # 6. Black-76 Repricing
+    # 6. Black-76 Repricing at map spot targets — never invent LTP×ratio premiums.
+    actual_ltp = safe_ltp
     try:
         from target_engine.pricer import reprice
         tgt1_calc = reprice(tgt1_spot, safe_k, T_tgt1, iv_f_tgt1, r=0.065, option_type=opt_type)
         tgt2_calc = reprice(tgt2_spot, safe_k, T_tgt2, iv_f_tgt2, r=0.065, option_type=opt_type)
         sl_calc = reprice(inval_spot, safe_k, T_sl, iv_f_sl, r=0.065, option_type=opt_type)
-    except Exception:
-        tgt1_calc = safe_ltp * 1.35
-        tgt2_calc = safe_ltp * 1.70
-        sl_calc = safe_ltp * 0.72
+    except Exception as exc:
+        raise ValueError(f"option reprice failed — refusing LTP×ratio invent: {exc}") from exc
 
-    # Enforce strict monotonicity and minimum buffers against actual entry LTP:
-    actual_ltp = max(0.05, float(current_ltp))
-    tgt1_opt = max(round(tgt1_calc, 1), round(safe_ltp * 1.15, 1), round(actual_ltp * 1.15, 2))
-    tgt2_opt = max(round(tgt2_calc, 1), round(tgt1_opt * 1.15, 1), round(safe_ltp * 1.35, 1), round(actual_ltp * 1.35, 2))
-    
-    # Cap target prices to realistic intraday multiples (max 4.0x entry for T1, 6.5x for T2)
-    max_t1_mult = round(actual_ltp * 4.0, 1)
-    max_t2_mult = round(actual_ltp * 6.5, 1)
-    tgt1_opt = min(tgt1_opt, max_t1_mult)
-    tgt2_opt = min(tgt2_opt, max_t2_mult)
+    tgt1_opt = round(float(tgt1_calc), 2)
+    tgt2_opt = round(float(tgt2_calc), 2)
+    sl_opt = round(float(sl_calc), 2)
+    # Actionable vs live print only. No LTP×1.15/1.25/0.70 floors or caps.
+    if tgt1_opt <= actual_ltp or tgt2_opt <= tgt1_opt or sl_opt >= actual_ltp or sl_opt <= 0:
+        raise ValueError(
+            "BS targets not actionable vs live LTP — refusing LTP×ratio invent "
+            f"(ltp={actual_ltp}, t1={tgt1_opt}, t2={tgt2_opt}, sl={sl_opt})"
+        )
 
-    sl_opt = min(round(sl_calc, 1), round(safe_ltp * 0.85, 1), round(actual_ltp * 0.85, 2))
-    if sl_opt >= actual_ltp:
-        sl_opt = round(actual_ltp * 0.72, 2)
-    sl_opt = max(0.05, min(sl_opt, round(actual_ltp - 0.05, 2) if actual_ltp > 0.15 else round(actual_ltp * 0.70, 2)))
-    if tgt1_opt <= actual_ltp:
-        tgt1_opt = round(actual_ltp * 1.25, 2)
-    if tgt2_opt <= tgt1_opt:
-        tgt2_opt = round(tgt1_opt * 1.25, 2)
-
-    # 6. Touch Probabilities via Reflection Principle
+    # 7. Touch Probabilities via Reflection Principle
     try:
         from target_engine.levels import compute_touch_probability
         sigma_h = max(1.0, safe_spot * iv_now * math.sqrt(horizon_minutes / (365.0 * 6.25 * 60.0)))
         p_touch_tgt1 = compute_touch_probability(distance=abs(tgt1_spot - safe_spot), sigma_h=sigma_h)
         p_touch_sl = compute_touch_probability(distance=abs(inval_spot - safe_spot), sigma_h=sigma_h)
-    except Exception:
-        p_touch_tgt1 = 0.52
-        p_touch_sl = 0.38
+    except Exception as exc:
+        raise ValueError(f"touch probability failed — refusing invented 0.52/0.38: {exc}") from exc
 
-    # 7. Probability-weighted Net EV and Risk:Reward
-    gain_t1 = max(0.1, tgt1_opt - safe_ltp)
-    loss_sl = max(0.1, safe_ltp - sl_opt)
+    # 8. Probability-weighted Net EV and Risk:Reward
+    gain_t1 = max(0.1, tgt1_opt - actual_ltp)
+    loss_sl = max(0.1, actual_ltp - sl_opt)
     cost_pts = 0.8
     net_ev = round((p_touch_tgt1 * gain_t1) - (p_touch_sl * loss_sl) - cost_pts, 1)
 
     rr_ratio = round(gain_t1 / loss_sl, 1)
     rr_str = f"1 : {rr_ratio}"
 
-    # 8. Greek Attribution Decomposition
+    # 9. Greek Attribution Decomposition (empty if unavailable — never invent 70/10 split)
     attr_dict = {}
     try:
         from target_engine.pricer import greek_attribution
@@ -378,9 +369,23 @@ def _reprice_trade_idea_targets(
             "total_pnl": round(ga.total_pnl, 2),
         }
     except Exception:
-        attr_dict = {"delta_pnl": round(gain_t1 * 0.7, 2), "theta_pnl": -round(gain_t1 * 0.1, 2)}
+        attr_dict = {}
 
     return (sl_opt, tgt1_opt, tgt2_opt, p_touch_tgt1, p_touch_sl, net_ev, rr_str, attr_dict)
+
+
+def _try_reprice_trade_idea_targets(*args, **kwargs):
+    """BS reprice or None — never invent LTP×ratio fillers on failure."""
+    try:
+        return _reprice_trade_idea_targets(*args, **kwargs)
+    except Exception as exc:
+        log.warning(
+            "trade_idea reprice refuse %s %s: %s",
+            kwargs.get("side") or (args[0] if args else "?"),
+            kwargs.get("strike") or (args[1] if len(args) > 1 else "?"),
+            exc,
+        )
+        return None
 
 
 def _lookup_chain_data(
@@ -1302,12 +1307,8 @@ def refresh_trade_idea_live_mtm(
         idea.net_ev_pts = float(ev)
         idea.risk_reward_ratio = str(rr)
     except Exception:
-        if idea.stop_loss >= ltp:
-            idea.stop_loss = max(0.05, round(ltp * 0.72, 2))
-        if idea.target_1 <= ltp:
-            idea.target_1 = round(ltp * 1.25, 1)
-        if idea.target_2 <= idea.target_1:
-            idea.target_2 = round(idea.target_1 * 1.25, 1)
+        # Keep prior map/BS targets — never invent LTP×1.25 / ×0.72 fillers.
+        pass
     _refresh_trade_idea_pnl(idea, current_spot)
     return idea
 
@@ -2065,46 +2066,50 @@ def _evaluate_ce_strategies(
     ce_atm_inval_spot = round(min(session_vwap - (eff_atr * 0.9), spot - max(eff_atr * 1.3, step * 0.8)), 0)
     ce_atm_tgt1_spot = round(max(vwap_upper, spot + sigma_45), 0)
     ce_atm_tgt2_spot = round(max(call_wall, ce_atm_tgt1_spot + sigma_45), 0)
-    ce_atm_sl, ce_atm_tgt1, ce_atm_tgt2, ce_atm_pt1, ce_atm_psl, ce_atm_ev, ce_atm_rr, ce_atm_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
         inval_spot=ce_atm_inval_spot, tgt1_spot=ce_atm_tgt1_spot, tgt2_spot=ce_atm_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=45, step=step,
     )
-    ce_atm_score, ce_atm_label, ce_atm_color = _apply_ev_quality_gate(ce_atm_score, ce_atm_ev, ce_atm_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="ATM Momentum Play",
-            play_badge="MOMENTUM",
-            strike=ce_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
-            current_ltp=ce_atm_ltp,
-            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
-            entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
-            spot_invalidation=ce_atm_inval_spot,
-            spot_invalidation_text=f"Spot prints below ₹{ce_atm_inval_spot:,.0f} (through the VWAP level)",
-            target_1=ce_atm_tgt1,
-            target_1_spot=ce_atm_tgt1_spot,
-            target_2=ce_atm_tgt2,
-            target_2_spot=ce_atm_tgt2_spot,
-            stop_loss=ce_atm_sl,
-            risk_reward_ratio=ce_atm_rr,
-            quality_score=ce_atm_score,
-            conviction_label=ce_atm_label,
-            conviction_color=ce_atm_color,
-            rationale=(
-                f"Capitalizes on pure delta momentum with {symbol} holding equilibrium. "
-                f"Delta ~{ce_atm_delta:.2f}. The call-gamma strike is {call_wall:,.0f}. That is a concentration on the path, not a ceiling.{trend_tag}"
-            ),
-            catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
-            is_ws_live=ce_atm_ws,
-            p_touch_target_1=ce_atm_pt1,
-            p_touch_sl=ce_atm_psl,
-            net_ev_pts=ce_atm_ev,
-            greek_attribution=ce_atm_attr,
+
+    if _rp is not None:
+
+        ce_atm_sl, ce_atm_tgt1, ce_atm_tgt2, ce_atm_pt1, ce_atm_psl, ce_atm_ev, ce_atm_rr, ce_atm_attr = _rp
+        ce_atm_score, ce_atm_label, ce_atm_color = _apply_ev_quality_gate(ce_atm_score, ce_atm_ev, ce_atm_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="ATM Momentum Play",
+                play_badge="MOMENTUM",
+                strike=ce_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
+                current_ltp=ce_atm_ltp,
+                delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+                entry_trigger=f"Enter on intraday retest & bounce of Session VWAP (₹{session_vwap:,.0f}) or 5m close above Opening Range High.",
+                spot_invalidation=ce_atm_inval_spot,
+                spot_invalidation_text=f"Spot prints below ₹{ce_atm_inval_spot:,.0f} (through the VWAP level)",
+                target_1=ce_atm_tgt1,
+                target_1_spot=ce_atm_tgt1_spot,
+                target_2=ce_atm_tgt2,
+                target_2_spot=ce_atm_tgt2_spot,
+                stop_loss=ce_atm_sl,
+                risk_reward_ratio=ce_atm_rr,
+                quality_score=ce_atm_score,
+                conviction_label=ce_atm_label,
+                conviction_color=ce_atm_color,
+                rationale=(
+                    f"Capitalizes on pure delta momentum with {symbol} holding equilibrium. "
+                    f"Delta ~{ce_atm_delta:.2f}. The call-gamma strike is {call_wall:,.0f}. That is a concentration on the path, not a ceiling.{trend_tag}"
+                ),
+                catalyst_tags=["Delta ~0.50", "VWAP Pullback", "High Liquidity"],
+                is_ws_live=ce_atm_ws,
+                p_touch_target_1=ce_atm_pt1,
+                p_touch_sl=ce_atm_psl,
+                net_ev_pts=ce_atm_ev,
+                greek_attribution=ce_atm_attr,
+            )
         )
-    )
 
     # 2. CE STRUCTURE (h = 75 min)
     sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
@@ -2112,46 +2117,50 @@ def _evaluate_ce_strategies(
     ce_struct_inval_spot = round(min(put_wall - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_75 * 0.8, eff_atr * 1.4)), 0)
     ce_struct_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + sigma_75), 0)
     ce_struct_tgt2_spot = round(max(call_wall, ce_struct_tgt1_spot + sigma_75), 0)
-    ce_struct_sl, ce_struct_tgt1, ce_struct_tgt2, ce_struct_pt1, ce_struct_psl, ce_struct_ev, ce_struct_rr, ce_struct_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_struct_k, current_ltp=ce_struct_ltp, spot=spot,
         inval_spot=ce_struct_inval_spot, tgt1_spot=ce_struct_tgt1_spot, tgt2_spot=ce_struct_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=75, step=step,
     )
-    ce_struct_score, ce_struct_label, ce_struct_color = _apply_ev_quality_gate(ce_struct_score, ce_struct_ev, ce_struct_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="Institutional Structure Play",
-            play_badge="STRUCTURE",
-            strike=ce_struct_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
-            current_ltp=ce_struct_ltp,
-            delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
-            entry_trigger=f"Tape absorption near the put-gamma strike (₹{put_wall:,.0f}), or a print through the call−put balance (₹{flip:,.0f}). The strike is not a floor.",
-            spot_invalidation=ce_struct_inval_spot,
-            spot_invalidation_text=f"Spot prints below ₹{ce_struct_inval_spot:,.0f}",
-            target_1=ce_struct_tgt1,
-            target_1_spot=ce_struct_tgt1_spot,
-            target_2=ce_struct_tgt2,
-            target_2_spot=ce_struct_tgt2_spot,
-            stop_loss=ce_struct_sl,
-            risk_reward_ratio=ce_struct_rr,
-            quality_score=ce_struct_score,
-            conviction_label=ce_struct_label,
-            conviction_color=ce_struct_color,
-            rationale=(
-                f"Spot is near the put-gamma strike ({put_wall:,.0f}). "
-                f"That location is not writer defense and not a floor.{trend_tag}"
-            ),
-            catalyst_tags=["Put-gamma strike", "Tape", "Defined risk"],
-            is_ws_live=ce_struct_ws,
-            p_touch_target_1=ce_struct_pt1,
-            p_touch_sl=ce_struct_psl,
-            net_ev_pts=ce_struct_ev,
-            greek_attribution=ce_struct_attr,
+
+    if _rp is not None:
+
+        ce_struct_sl, ce_struct_tgt1, ce_struct_tgt2, ce_struct_pt1, ce_struct_psl, ce_struct_ev, ce_struct_rr, ce_struct_attr = _rp
+        ce_struct_score, ce_struct_label, ce_struct_color = _apply_ev_quality_gate(ce_struct_score, ce_struct_ev, ce_struct_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="Institutional Structure Play",
+                play_badge="STRUCTURE",
+                strike=ce_struct_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
+                current_ltp=ce_struct_ltp,
+                delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
+                entry_trigger=f"Tape absorption near the put-gamma strike (₹{put_wall:,.0f}), or a print through the call−put balance (₹{flip:,.0f}). The strike is not a floor.",
+                spot_invalidation=ce_struct_inval_spot,
+                spot_invalidation_text=f"Spot prints below ₹{ce_struct_inval_spot:,.0f}",
+                target_1=ce_struct_tgt1,
+                target_1_spot=ce_struct_tgt1_spot,
+                target_2=ce_struct_tgt2,
+                target_2_spot=ce_struct_tgt2_spot,
+                stop_loss=ce_struct_sl,
+                risk_reward_ratio=ce_struct_rr,
+                quality_score=ce_struct_score,
+                conviction_label=ce_struct_label,
+                conviction_color=ce_struct_color,
+                rationale=(
+                    f"Spot is near the put-gamma strike ({put_wall:,.0f}). "
+                    f"That location is not writer defense and not a floor.{trend_tag}"
+                ),
+                catalyst_tags=["Put-gamma strike", "Tape", "Defined risk"],
+                is_ws_live=ce_struct_ws,
+                p_touch_target_1=ce_struct_pt1,
+                p_touch_sl=ce_struct_psl,
+                net_ev_pts=ce_struct_ev,
+                greek_attribution=ce_struct_attr,
+            )
         )
-    )
 
     # 3. CE STRIKE BREAK (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
@@ -2160,92 +2169,100 @@ def _evaluate_ce_strategies(
     ce_sq_inval_spot = round(min(eff_cw - max(eff_atr * 0.6, step * 0.5), spot - max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     ce_sq_tgt1_spot = round(max(eff_cw + sigma_30, spot + max(sigma_30, step * 1.5)), 0)
     ce_sq_tgt2_spot = round(ce_sq_tgt1_spot + sigma_30, 0)
-    ce_sq_sl, ce_sq_tgt1, ce_sq_tgt2, ce_sq_pt1, ce_sq_psl, ce_sq_ev, ce_sq_rr, ce_sq_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_squeeze_k, current_ltp=ce_sq_ltp, spot=spot,
         inval_spot=ce_sq_inval_spot, tgt1_spot=ce_sq_tgt1_spot, tgt2_spot=ce_sq_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
     )
-    ce_sq_score, ce_sq_label, ce_sq_color = _apply_ev_quality_gate(ce_sq_score, ce_sq_ev, ce_sq_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="Strike break",
-            play_badge="STRIKE BREAK",
-            strike=ce_squeeze_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_squeeze_k, "CE"),
-            current_ltp=ce_sq_ltp,
-            delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
-            entry_trigger=f"Buyers print through the call-gamma strike (₹{call_wall:,.0f}) with positive CVD. A print through the strike is a location, not a squeeze.",
-            spot_invalidation=ce_sq_inval_spot,
-            spot_invalidation_text=f"Failed breakout: Spot drops back below ₹{ce_sq_inval_spot:,.0f}",
-            target_1=ce_sq_tgt1,
-            target_1_spot=ce_sq_tgt1_spot,
-            target_2=ce_sq_tgt2,
-            target_2_spot=ce_sq_tgt2_spot,
-            stop_loss=ce_sq_sl,
-            risk_reward_ratio=ce_sq_rr,
-            quality_score=ce_sq_score,
-            conviction_label=ce_sq_label,
-            conviction_color=ce_sq_color,
-            rationale=(
-                f"Convex idea only if price holds beyond the call-gamma strike ({call_wall:,.0f}). "
-                f"A breach is a location on the book, not a measured dealer hedge.{trend_tag}"
-            ),
-            catalyst_tags=["Call-gamma strike", "Convex idea", "User confirms"],
-            is_ws_live=ce_sq_ws,
-            p_touch_target_1=ce_sq_pt1,
-            p_touch_sl=ce_sq_psl,
-            net_ev_pts=ce_sq_ev,
-            greek_attribution=ce_sq_attr,
+
+    if _rp is not None:
+
+        ce_sq_sl, ce_sq_tgt1, ce_sq_tgt2, ce_sq_pt1, ce_sq_psl, ce_sq_ev, ce_sq_rr, ce_sq_attr = _rp
+        ce_sq_score, ce_sq_label, ce_sq_color = _apply_ev_quality_gate(ce_sq_score, ce_sq_ev, ce_sq_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="Strike break",
+                play_badge="STRIKE BREAK",
+                strike=ce_squeeze_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_squeeze_k, "CE"),
+                current_ltp=ce_sq_ltp,
+                delta_approx=ce_sq_delta if ce_sq_delta > 0 else 0.28,
+                entry_trigger=f"Buyers print through the call-gamma strike (₹{call_wall:,.0f}) with positive CVD. A print through the strike is a location, not a squeeze.",
+                spot_invalidation=ce_sq_inval_spot,
+                spot_invalidation_text=f"Failed breakout: Spot drops back below ₹{ce_sq_inval_spot:,.0f}",
+                target_1=ce_sq_tgt1,
+                target_1_spot=ce_sq_tgt1_spot,
+                target_2=ce_sq_tgt2,
+                target_2_spot=ce_sq_tgt2_spot,
+                stop_loss=ce_sq_sl,
+                risk_reward_ratio=ce_sq_rr,
+                quality_score=ce_sq_score,
+                conviction_label=ce_sq_label,
+                conviction_color=ce_sq_color,
+                rationale=(
+                    f"Convex idea only if price holds beyond the call-gamma strike ({call_wall:,.0f}). "
+                    f"A breach is a location on the book, not a measured dealer hedge.{trend_tag}"
+                ),
+                catalyst_tags=["Call-gamma strike", "Convex idea", "User confirms"],
+                is_ws_live=ce_sq_ws,
+                p_touch_target_1=ce_sq_pt1,
+                p_touch_sl=ce_sq_psl,
+                net_ev_pts=ce_sq_ev,
+                greek_attribution=ce_sq_attr,
+            )
         )
-    )
 
     # 4. CE ICEBERG ABSORPTION FADE (h = 30 min)
     ce_ice_score, _, _ = _score("OrderFlow Iceberg Absorption Fade", ce_atm_doi)
     ce_ice_inval_spot = round(min(vwap_lower - max(eff_atr * 0.6, step * 0.5), spot - max(eff_atr * 0.9, step * 0.6)), 0)
     ce_ice_tgt1_spot = round(max(session_vwap, spot + (sigma_30 * 0.75)), 0)
     ce_ice_tgt2_spot = round(max(vwap_upper, ce_ice_tgt1_spot + (sigma_30 * 0.75)), 0)
-    ce_ice_sl, ce_ice_tgt1, ce_ice_tgt2, ce_ice_pt1, ce_ice_psl, ce_ice_ev, ce_ice_rr, ce_ice_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
         inval_spot=ce_ice_inval_spot, tgt1_spot=ce_ice_tgt1_spot, tgt2_spot=ce_ice_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
     )
-    ce_ice_score, ce_ice_label, ce_ice_color = _apply_ev_quality_gate(ce_ice_score, ce_ice_ev, ce_ice_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="OrderFlow Iceberg Absorption Fade",
-            play_badge="ICEBERG FADE",
-            strike=ce_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
-            current_ltp=ce_atm_ltp,
-            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
-            entry_trigger=f"Tape buyer absorption confirmed at VWAP lower band (₹{vwap_lower:,.0f}) with positive CVD divergence.",
-            spot_invalidation=ce_ice_inval_spot,
-            spot_invalidation_text=f"Spot breakdown below ₹{ce_ice_inval_spot:,.0f} (OrderFlow absorption risk buffer)",
-            target_1=ce_ice_tgt1,
-            target_1_spot=ce_ice_tgt1_spot,
-            target_2=ce_ice_tgt2,
-            target_2_spot=ce_ice_tgt2_spot,
-            stop_loss=ce_ice_sl,
-            risk_reward_ratio=ce_ice_rr,
-            quality_score=ce_ice_score,
-            conviction_label=ce_ice_label,
-            conviction_color=ce_ice_color,
-            rationale=(
-                f"The tape absorbed selling at {vwap_lower:,.0f}. Session VWAP is {session_vwap:,.0f}. "
-                f"That is order flow, not a gamma floor.{trend_tag}"
-            ),
-            catalyst_tags=["Iceberg Absorption", "Tape Divergence", "Ultra-Tight Stop"],
-            is_ws_live=ce_atm_ws,
-            p_touch_target_1=ce_ice_pt1,
-            p_touch_sl=ce_ice_psl,
-            net_ev_pts=ce_ice_ev,
-            greek_attribution=ce_ice_attr,
+
+    if _rp is not None:
+
+        ce_ice_sl, ce_ice_tgt1, ce_ice_tgt2, ce_ice_pt1, ce_ice_psl, ce_ice_ev, ce_ice_rr, ce_ice_attr = _rp
+        ce_ice_score, ce_ice_label, ce_ice_color = _apply_ev_quality_gate(ce_ice_score, ce_ice_ev, ce_ice_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="OrderFlow Iceberg Absorption Fade",
+                play_badge="ICEBERG FADE",
+                strike=ce_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
+                current_ltp=ce_atm_ltp,
+                delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+                entry_trigger=f"Tape buyer absorption confirmed at VWAP lower band (₹{vwap_lower:,.0f}) with positive CVD divergence.",
+                spot_invalidation=ce_ice_inval_spot,
+                spot_invalidation_text=f"Spot breakdown below ₹{ce_ice_inval_spot:,.0f} (OrderFlow absorption risk buffer)",
+                target_1=ce_ice_tgt1,
+                target_1_spot=ce_ice_tgt1_spot,
+                target_2=ce_ice_tgt2,
+                target_2_spot=ce_ice_tgt2_spot,
+                stop_loss=ce_ice_sl,
+                risk_reward_ratio=ce_ice_rr,
+                quality_score=ce_ice_score,
+                conviction_label=ce_ice_label,
+                conviction_color=ce_ice_color,
+                rationale=(
+                    f"The tape absorbed selling at {vwap_lower:,.0f}. Session VWAP is {session_vwap:,.0f}. "
+                    f"That is order flow, not a gamma floor.{trend_tag}"
+                ),
+                catalyst_tags=["Iceberg Absorption", "Tape Divergence", "Ultra-Tight Stop"],
+                is_ws_live=ce_atm_ws,
+                p_touch_target_1=ce_ice_pt1,
+                p_touch_sl=ce_ice_psl,
+                net_ev_pts=ce_ice_ev,
+                greek_attribution=ce_ice_attr,
+            )
         )
-    )
 
     # 5. CE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
@@ -2254,46 +2271,50 @@ def _evaluate_ce_strategies(
         ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
         ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
         ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
-        ce_vc_sl, ce_vc_tgt1, ce_vc_tgt2, ce_vc_pt1, ce_vc_psl, ce_vc_ev, ce_vc_rr, ce_vc_attr = _reprice_trade_idea_targets(
+        _rp = _try_reprice_trade_idea_targets(
             side="CE", strike=ce_vanna_k, current_ltp=ce_vc_ltp, spot=spot,
             inval_spot=ce_vc_inval_spot, tgt1_spot=ce_vc_tgt1_spot, tgt2_spot=ce_vc_tgt2_spot,
             dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
         )
-        ce_vc_score, ce_vc_label, ce_vc_color = _apply_ev_quality_gate(ce_vc_score, ce_vc_ev, ce_vc_pt1)
-        ce_recs.append(
-            TradeIdea(
-                symbol=symbol,
-                side="CE",
-                play_type="0DTE Vanna-Charm Theta Compression",
-                play_badge="VANNA-CHARM",
-                strike=ce_vanna_k,
-                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
-                current_ltp=ce_vc_ltp,
-                delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
-                entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
-                spot_invalidation=ce_vc_inval_spot,
-                spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
-                target_1=ce_vc_tgt1,
-                target_1_spot=ce_vc_tgt1_spot,
-                target_2=ce_vc_tgt2,
-                target_2_spot=ce_vc_tgt2_spot,
-                stop_loss=ce_vc_sl,
-                risk_reward_ratio=ce_vc_rr,
-                quality_score=ce_vc_score,
-                conviction_label=ce_vc_label,
-                conviction_color=ce_vc_color,
-                rationale=(
-                    f"Charm decay while spot sits between the gamma strikes. "
-                    f"The corridor is a map, not a dealer pin.{trend_tag}"
-                ),
-                catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
-                is_ws_live=ce_vc_ws,
-                p_touch_target_1=ce_vc_pt1,
-                p_touch_sl=ce_vc_psl,
-                net_ev_pts=ce_vc_ev,
-                greek_attribution=ce_vc_attr,
+
+        if _rp is not None:
+
+            ce_vc_sl, ce_vc_tgt1, ce_vc_tgt2, ce_vc_pt1, ce_vc_psl, ce_vc_ev, ce_vc_rr, ce_vc_attr = _rp
+            ce_vc_score, ce_vc_label, ce_vc_color = _apply_ev_quality_gate(ce_vc_score, ce_vc_ev, ce_vc_pt1)
+            ce_recs.append(
+                TradeIdea(
+                    symbol=symbol,
+                    side="CE",
+                    play_type="0DTE Vanna-Charm Theta Compression",
+                    play_badge="VANNA-CHARM",
+                    strike=ce_vanna_k,
+                    option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
+                    current_ltp=ce_vc_ltp,
+                    delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
+                    entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
+                    spot_invalidation=ce_vc_inval_spot,
+                    spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
+                    target_1=ce_vc_tgt1,
+                    target_1_spot=ce_vc_tgt1_spot,
+                    target_2=ce_vc_tgt2,
+                    target_2_spot=ce_vc_tgt2_spot,
+                    stop_loss=ce_vc_sl,
+                    risk_reward_ratio=ce_vc_rr,
+                    quality_score=ce_vc_score,
+                    conviction_label=ce_vc_label,
+                    conviction_color=ce_vc_color,
+                    rationale=(
+                        f"Charm decay while spot sits between the gamma strikes. "
+                        f"The corridor is a map, not a dealer pin.{trend_tag}"
+                    ),
+                    catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                    is_ws_live=ce_vc_ws,
+                    p_touch_target_1=ce_vc_pt1,
+                    p_touch_sl=ce_vc_psl,
+                    net_ev_pts=ce_vc_ev,
+                    greek_attribution=ce_vc_attr,
+                )
             )
-        )
 
     # 6. CE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
@@ -2301,92 +2322,100 @@ def _evaluate_ce_strategies(
     ce_vd_inval_spot = round(min(session_vwap - max(eff_atr * 0.8, step * 0.6), spot - max(sigma_60 * 0.8, eff_atr * 1.3)), 0)
     ce_vd_tgt1_spot = round(max(call_wall, spot + (sigma_60 * 1.2)), 0)
     ce_vd_tgt2_spot = round(max(ce_vd_tgt1_spot + step, spot + (sigma_60 * 2.2)), 0)
-    ce_vd_sl, ce_vd_tgt1, ce_vd_tgt2, ce_vd_pt1, ce_vd_psl, ce_vd_ev, ce_vd_rr, ce_vd_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_atm_k, current_ltp=ce_atm_ltp, spot=spot,
         inval_spot=ce_vd_inval_spot, tgt1_spot=ce_vd_tgt1_spot, tgt2_spot=ce_vd_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=60, step=step,
     )
-    ce_vd_score, ce_vd_label, ce_vd_color = _apply_ev_quality_gate(ce_vd_score, ce_vd_ev, ce_vd_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="Volatility Dispersion / Long Gamma",
-            play_badge="VOL DISPERSION",
-            strike=ce_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
-            current_ltp=ce_atm_ltp,
-            delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
-            entry_trigger=f"Volatility compression breakout above ₹{vwap_upper:,.0f} with surging market volume and expanding ATR.",
-            spot_invalidation=ce_vd_inval_spot,
-            spot_invalidation_text=f"Spot falls back into consolidation band below ₹{ce_vd_inval_spot:,.0f}",
-            target_1=ce_vd_tgt1,
-            target_1_spot=ce_vd_tgt1_spot,
-            target_2=ce_vd_tgt2,
-            target_2_spot=ce_vd_tgt2_spot,
-            stop_loss=ce_vd_sl,
-            risk_reward_ratio=ce_vd_rr,
-            quality_score=ce_vd_score,
-            conviction_label=ce_vd_label,
-            conviction_color=ce_vd_color,
-            rationale=(
-                f"Pre-breakout long gamma positioning. Low implied volatility provides cheap option convexity; "
-                f"sudden volatility expansion creates non-linear premium surges.{trend_tag}"
-            ),
-            catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
-            is_ws_live=ce_atm_ws,
-            p_touch_target_1=ce_vd_pt1,
-            p_touch_sl=ce_vd_psl,
-            net_ev_pts=ce_vd_ev,
-            greek_attribution=ce_vd_attr,
+
+    if _rp is not None:
+
+        ce_vd_sl, ce_vd_tgt1, ce_vd_tgt2, ce_vd_pt1, ce_vd_psl, ce_vd_ev, ce_vd_rr, ce_vd_attr = _rp
+        ce_vd_score, ce_vd_label, ce_vd_color = _apply_ev_quality_gate(ce_vd_score, ce_vd_ev, ce_vd_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="Volatility Dispersion / Long Gamma",
+                play_badge="VOL DISPERSION",
+                strike=ce_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_atm_k, "CE"),
+                current_ltp=ce_atm_ltp,
+                delta_approx=ce_atm_delta if ce_atm_delta > 0 else 0.50,
+                entry_trigger=f"Volatility compression breakout above ₹{vwap_upper:,.0f} with surging market volume and expanding ATR.",
+                spot_invalidation=ce_vd_inval_spot,
+                spot_invalidation_text=f"Spot falls back into consolidation band below ₹{ce_vd_inval_spot:,.0f}",
+                target_1=ce_vd_tgt1,
+                target_1_spot=ce_vd_tgt1_spot,
+                target_2=ce_vd_tgt2,
+                target_2_spot=ce_vd_tgt2_spot,
+                stop_loss=ce_vd_sl,
+                risk_reward_ratio=ce_vd_rr,
+                quality_score=ce_vd_score,
+                conviction_label=ce_vd_label,
+                conviction_color=ce_vd_color,
+                rationale=(
+                    f"Pre-breakout long gamma positioning. Low implied volatility provides cheap option convexity; "
+                    f"sudden volatility expansion creates non-linear premium surges.{trend_tag}"
+                ),
+                catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
+                is_ws_live=ce_atm_ws,
+                p_touch_target_1=ce_vd_pt1,
+                p_touch_sl=ce_vd_psl,
+                net_ev_pts=ce_vd_ev,
+                greek_attribution=ce_vd_attr,
+            )
         )
-    )
 
     # 7. CE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
     ce_rr_score, _, _ = _score("Zero-Cost Ratio Risk Reversal", ce_struct_doi)
     ce_rr_inval_spot = round(min(session_vwap - max(eff_atr * 0.8, step * 0.6), spot - max(sigma_90 * 0.8, eff_atr * 1.3)), 0)
     ce_rr_tgt1_spot = round(max(call_wall, spot + sigma_90), 0)
     ce_rr_tgt2_spot = round(max(ce_rr_tgt1_spot + step, spot + (sigma_90 * 1.8)), 0)
-    ce_rr_sl, ce_rr_tgt1, ce_rr_tgt2, ce_rr_pt1, ce_rr_psl, ce_rr_ev, ce_rr_rr, ce_rr_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="CE", strike=ce_struct_k, current_ltp=ce_struct_ltp, spot=spot,
         inval_spot=ce_rr_inval_spot, tgt1_spot=ce_rr_tgt1_spot, tgt2_spot=ce_rr_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
     )
-    ce_rr_score, ce_rr_label, ce_rr_color = _apply_ev_quality_gate(ce_rr_score, ce_rr_ev, ce_rr_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="Zero-Cost Ratio Risk Reversal",
-            play_badge="RATIO REVERSAL",
-            strike=ce_struct_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
-            current_ltp=ce_struct_ltp,
-            delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
-            entry_trigger=f"Upward drift with the call-gamma strike at ₹{call_wall:,.0f}. The strike is a concentration, not a magnet.",
-            spot_invalidation=ce_rr_inval_spot,
-            spot_invalidation_text=f"Spot invalidation below VWAP @ ₹{ce_rr_inval_spot:,.0f}",
-            target_1=ce_rr_tgt1,
-            target_1_spot=ce_rr_tgt1_spot,
-            target_2=ce_rr_tgt2,
-            target_2_spot=ce_rr_tgt2_spot,
-            stop_loss=ce_rr_sl,
-            risk_reward_ratio=ce_rr_rr,
-            quality_score=ce_rr_score,
-            conviction_label=ce_rr_label,
-            conviction_color=ce_rr_color,
-            rationale=(
-                f"Ratio structure with the call-gamma strike at {call_wall:,.0f}. The strike is not a destination. "
-                f"Eliminates sideways theta drag while capturing directional upside.{trend_tag}"
-            ),
-            catalyst_tags=["Ratio asymmetry", "Call-gamma strike", "Defined risk"],
-            is_ws_live=ce_struct_ws,
-            p_touch_target_1=ce_rr_pt1,
-            p_touch_sl=ce_rr_psl,
-            net_ev_pts=ce_rr_ev,
-            greek_attribution=ce_rr_attr,
+
+    if _rp is not None:
+
+        ce_rr_sl, ce_rr_tgt1, ce_rr_tgt2, ce_rr_pt1, ce_rr_psl, ce_rr_ev, ce_rr_rr, ce_rr_attr = _rp
+        ce_rr_score, ce_rr_label, ce_rr_color = _apply_ev_quality_gate(ce_rr_score, ce_rr_ev, ce_rr_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="Zero-Cost Ratio Risk Reversal",
+                play_badge="RATIO REVERSAL",
+                strike=ce_struct_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_struct_k, "CE"),
+                current_ltp=ce_struct_ltp,
+                delta_approx=ce_struct_delta if ce_struct_delta > 0 else 0.40,
+                entry_trigger=f"Upward drift with the call-gamma strike at ₹{call_wall:,.0f}. The strike is a concentration, not a magnet.",
+                spot_invalidation=ce_rr_inval_spot,
+                spot_invalidation_text=f"Spot invalidation below VWAP @ ₹{ce_rr_inval_spot:,.0f}",
+                target_1=ce_rr_tgt1,
+                target_1_spot=ce_rr_tgt1_spot,
+                target_2=ce_rr_tgt2,
+                target_2_spot=ce_rr_tgt2_spot,
+                stop_loss=ce_rr_sl,
+                risk_reward_ratio=ce_rr_rr,
+                quality_score=ce_rr_score,
+                conviction_label=ce_rr_label,
+                conviction_color=ce_rr_color,
+                rationale=(
+                    f"Ratio structure with the call-gamma strike at {call_wall:,.0f}. The strike is not a destination. "
+                    f"Eliminates sideways theta drag while capturing directional upside.{trend_tag}"
+                ),
+                catalyst_tags=["Ratio asymmetry", "Call-gamma strike", "Defined risk"],
+                is_ws_live=ce_struct_ws,
+                p_touch_target_1=ce_rr_pt1,
+                p_touch_sl=ce_rr_psl,
+                net_ev_pts=ce_rr_ev,
+                greek_attribution=ce_rr_attr,
+            )
         )
-    )
 
     for idea in ce_recs:
         _enrich_trade_idea(
@@ -2503,46 +2532,50 @@ def _evaluate_pe_strategies(
     pe_atm_inval_spot = round(max(session_vwap + (eff_atr * 0.9), spot + max(eff_atr * 1.3, step * 0.8)), 0)
     pe_atm_tgt1_spot = round(min(vwap_lower, spot - sigma_45), 0)
     pe_atm_tgt2_spot = round(min(put_wall, pe_atm_tgt1_spot - sigma_45), 0)
-    pe_atm_sl, pe_atm_tgt1, pe_atm_tgt2, pe_atm_pt1, pe_atm_psl, pe_atm_ev, pe_atm_rr, pe_atm_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
         inval_spot=pe_atm_inval_spot, tgt1_spot=pe_atm_tgt1_spot, tgt2_spot=pe_atm_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=45, step=step,
     )
-    pe_atm_score, pe_atm_label, pe_atm_color = _apply_ev_quality_gate(pe_atm_score, pe_atm_ev, pe_atm_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="ATM Momentum Play",
-            play_badge="MOMENTUM",
-            strike=pe_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
-            current_ltp=pe_atm_ltp,
-            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
-            entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
-            spot_invalidation=pe_atm_inval_spot,
-            spot_invalidation_text=f"Spot prints above ₹{pe_atm_inval_spot:,.0f} (through the VWAP level)",
-            target_1=pe_atm_tgt1,
-            target_1_spot=pe_atm_tgt1_spot,
-            target_2=pe_atm_tgt2,
-            target_2_spot=pe_atm_tgt2_spot,
-            stop_loss=pe_atm_sl,
-            risk_reward_ratio=pe_atm_rr,
-            quality_score=pe_atm_score,
-            conviction_label=pe_atm_label,
-            conviction_color=pe_atm_color,
-            rationale=(
-                f"Downside acceleration vehicle when spot trades below Session Equilibrium. "
-                f"Delta ~{pe_atm_delta:.2f}. The put-gamma strike is {put_wall:,.0f}. That is a concentration on the path, not a floor.{trend_tag}"
-            ),
-            catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
-            is_ws_live=pe_atm_ws,
-            p_touch_target_1=pe_atm_pt1,
-            p_touch_sl=pe_atm_psl,
-            net_ev_pts=pe_atm_ev,
-            greek_attribution=pe_atm_attr,
+
+    if _rp is not None:
+
+        pe_atm_sl, pe_atm_tgt1, pe_atm_tgt2, pe_atm_pt1, pe_atm_psl, pe_atm_ev, pe_atm_rr, pe_atm_attr = _rp
+        pe_atm_score, pe_atm_label, pe_atm_color = _apply_ev_quality_gate(pe_atm_score, pe_atm_ev, pe_atm_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="ATM Momentum Play",
+                play_badge="MOMENTUM",
+                strike=pe_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
+                current_ltp=pe_atm_ltp,
+                delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+                entry_trigger=f"Rejection at Session VWAP (₹{session_vwap:,.0f}) or 5m close below Opening Range Low with negative CVD.",
+                spot_invalidation=pe_atm_inval_spot,
+                spot_invalidation_text=f"Spot prints above ₹{pe_atm_inval_spot:,.0f} (through the VWAP level)",
+                target_1=pe_atm_tgt1,
+                target_1_spot=pe_atm_tgt1_spot,
+                target_2=pe_atm_tgt2,
+                target_2_spot=pe_atm_tgt2_spot,
+                stop_loss=pe_atm_sl,
+                risk_reward_ratio=pe_atm_rr,
+                quality_score=pe_atm_score,
+                conviction_label=pe_atm_label,
+                conviction_color=pe_atm_color,
+                rationale=(
+                    f"Downside acceleration vehicle when spot trades below Session Equilibrium. "
+                    f"Delta ~{pe_atm_delta:.2f}. The put-gamma strike is {put_wall:,.0f}. That is a concentration on the path, not a floor.{trend_tag}"
+                ),
+                catalyst_tags=["Delta ~-0.50", "VWAP Rejection", "High Liquidity"],
+                is_ws_live=pe_atm_ws,
+                p_touch_target_1=pe_atm_pt1,
+                p_touch_sl=pe_atm_psl,
+                net_ev_pts=pe_atm_ev,
+                greek_attribution=pe_atm_attr,
+            )
         )
-    )
 
     # 2. PE STRUCTURE (h = 75 min)
     sigma_75 = _calc_horizon_sigma(spot, eff_iv, 75.0, step)
@@ -2550,46 +2583,50 @@ def _evaluate_pe_strategies(
     pe_struct_inval_spot = round(max(call_wall + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_75 * 0.8, eff_atr * 1.4)), 0)
     pe_struct_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - sigma_75), 0)
     pe_struct_tgt2_spot = round(min(put_wall, pe_struct_tgt1_spot - sigma_75), 0)
-    pe_struct_sl, pe_struct_tgt1, pe_struct_tgt2, pe_struct_pt1, pe_struct_psl, pe_struct_ev, pe_struct_rr, pe_struct_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_struct_k, current_ltp=pe_struct_ltp, spot=spot,
         inval_spot=pe_struct_inval_spot, tgt1_spot=pe_struct_tgt1_spot, tgt2_spot=pe_struct_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=75, step=step,
     )
-    pe_struct_score, pe_struct_label, pe_struct_color = _apply_ev_quality_gate(pe_struct_score, pe_struct_ev, pe_struct_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Institutional Structure Play",
-            play_badge="STRUCTURE",
-            strike=pe_struct_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
-            current_ltp=pe_struct_ltp,
-            delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
-            entry_trigger=f"Seller delta on the tape while spot is near the call-gamma strike (₹{call_wall:,.0f}). The strike is not a ceiling.",
-            spot_invalidation=pe_struct_inval_spot,
-            spot_invalidation_text=f"Print back through ₹{pe_struct_inval_spot:,.0f}",
-            target_1=pe_struct_tgt1,
-            target_1_spot=pe_struct_tgt1_spot,
-            target_2=pe_struct_tgt2,
-            target_2_spot=pe_struct_tgt2_spot,
-            stop_loss=pe_struct_sl,
-            risk_reward_ratio=pe_struct_rr,
-            quality_score=pe_struct_score,
-            conviction_label=pe_struct_label,
-            conviction_color=pe_struct_color,
-            rationale=(
-                f"Spot is near the call-gamma strike ({call_wall:,.0f}). "
-                f"That location is not a rejection and not a ceiling.{trend_tag}"
-            ),
-            catalyst_tags=["Call-gamma strike", "Tape", "Defined risk"],
-            is_ws_live=pe_struct_ws,
-            p_touch_target_1=pe_struct_pt1,
-            p_touch_sl=pe_struct_psl,
-            net_ev_pts=pe_struct_ev,
-            greek_attribution=pe_struct_attr,
+
+    if _rp is not None:
+
+        pe_struct_sl, pe_struct_tgt1, pe_struct_tgt2, pe_struct_pt1, pe_struct_psl, pe_struct_ev, pe_struct_rr, pe_struct_attr = _rp
+        pe_struct_score, pe_struct_label, pe_struct_color = _apply_ev_quality_gate(pe_struct_score, pe_struct_ev, pe_struct_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="Institutional Structure Play",
+                play_badge="STRUCTURE",
+                strike=pe_struct_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
+                current_ltp=pe_struct_ltp,
+                delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
+                entry_trigger=f"Seller delta on the tape while spot is near the call-gamma strike (₹{call_wall:,.0f}). The strike is not a ceiling.",
+                spot_invalidation=pe_struct_inval_spot,
+                spot_invalidation_text=f"Print back through ₹{pe_struct_inval_spot:,.0f}",
+                target_1=pe_struct_tgt1,
+                target_1_spot=pe_struct_tgt1_spot,
+                target_2=pe_struct_tgt2,
+                target_2_spot=pe_struct_tgt2_spot,
+                stop_loss=pe_struct_sl,
+                risk_reward_ratio=pe_struct_rr,
+                quality_score=pe_struct_score,
+                conviction_label=pe_struct_label,
+                conviction_color=pe_struct_color,
+                rationale=(
+                    f"Spot is near the call-gamma strike ({call_wall:,.0f}). "
+                    f"That location is not a rejection and not a ceiling.{trend_tag}"
+                ),
+                catalyst_tags=["Call-gamma strike", "Tape", "Defined risk"],
+                is_ws_live=pe_struct_ws,
+                p_touch_target_1=pe_struct_pt1,
+                p_touch_sl=pe_struct_psl,
+                net_ev_pts=pe_struct_ev,
+                greek_attribution=pe_struct_attr,
+            )
         )
-    )
 
     # 3. PE STRIKE BREAK (h = 30 min)
     sigma_30 = _calc_horizon_sigma(spot, eff_iv, 30.0, step)
@@ -2598,92 +2635,100 @@ def _evaluate_pe_strategies(
     pe_sq_inval_spot = round(max(eff_pw + max(eff_atr * 0.6, step * 0.5), spot + max(sigma_30 * 0.8, eff_atr * 1.1)), 0)
     pe_sq_tgt1_spot = round(min(eff_pw - sigma_30, spot - max(sigma_30, step * 1.5)), 0)
     pe_sq_tgt2_spot = round(pe_sq_tgt1_spot - sigma_30, 0)
-    pe_sq_sl, pe_sq_tgt1, pe_sq_tgt2, pe_sq_pt1, pe_sq_psl, pe_sq_ev, pe_sq_rr, pe_sq_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_squeeze_k, current_ltp=pe_sq_ltp, spot=spot,
         inval_spot=pe_sq_inval_spot, tgt1_spot=pe_sq_tgt1_spot, tgt2_spot=pe_sq_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
     )
-    pe_sq_score, pe_sq_label, pe_sq_color = _apply_ev_quality_gate(pe_sq_score, pe_sq_ev, pe_sq_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Strike break",
-            play_badge="STRIKE BREAK",
-            strike=pe_squeeze_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_squeeze_k, "PE"),
-            current_ltp=pe_sq_ltp,
-            delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
-            entry_trigger=f"High-volume print through the put-gamma strike (₹{put_wall:,.0f}). A break is a location, not a cascade.",
-            spot_invalidation=pe_sq_inval_spot,
-            spot_invalidation_text=f"Trapdoor reversal: Spot recovers back above ₹{pe_sq_inval_spot:,.0f}",
-            target_1=pe_sq_tgt1,
-            target_1_spot=pe_sq_tgt1_spot,
-            target_2=pe_sq_tgt2,
-            target_2_spot=pe_sq_tgt2_spot,
-            stop_loss=pe_sq_sl,
-            risk_reward_ratio=pe_sq_rr,
-            quality_score=pe_sq_score,
-            conviction_label=pe_sq_label,
-            conviction_color=pe_sq_color,
-            rationale=(
-                f"Convex idea only if price holds beyond the put-gamma strike ({put_wall:,.0f}). "
-                f"A break is a location on the book, not a measured dealer hedge.{trend_tag}"
-            ),
-            catalyst_tags=["Put-gamma strike", "Convex idea", "User confirms"],
-            is_ws_live=pe_sq_ws,
-            p_touch_target_1=pe_sq_pt1,
-            p_touch_sl=pe_sq_psl,
-            net_ev_pts=pe_sq_ev,
-            greek_attribution=pe_sq_attr,
+
+    if _rp is not None:
+
+        pe_sq_sl, pe_sq_tgt1, pe_sq_tgt2, pe_sq_pt1, pe_sq_psl, pe_sq_ev, pe_sq_rr, pe_sq_attr = _rp
+        pe_sq_score, pe_sq_label, pe_sq_color = _apply_ev_quality_gate(pe_sq_score, pe_sq_ev, pe_sq_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="Strike break",
+                play_badge="STRIKE BREAK",
+                strike=pe_squeeze_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_squeeze_k, "PE"),
+                current_ltp=pe_sq_ltp,
+                delta_approx=pe_sq_delta if pe_sq_delta < 0 else -0.28,
+                entry_trigger=f"High-volume print through the put-gamma strike (₹{put_wall:,.0f}). A break is a location, not a cascade.",
+                spot_invalidation=pe_sq_inval_spot,
+                spot_invalidation_text=f"Trapdoor reversal: Spot recovers back above ₹{pe_sq_inval_spot:,.0f}",
+                target_1=pe_sq_tgt1,
+                target_1_spot=pe_sq_tgt1_spot,
+                target_2=pe_sq_tgt2,
+                target_2_spot=pe_sq_tgt2_spot,
+                stop_loss=pe_sq_sl,
+                risk_reward_ratio=pe_sq_rr,
+                quality_score=pe_sq_score,
+                conviction_label=pe_sq_label,
+                conviction_color=pe_sq_color,
+                rationale=(
+                    f"Convex idea only if price holds beyond the put-gamma strike ({put_wall:,.0f}). "
+                    f"A break is a location on the book, not a measured dealer hedge.{trend_tag}"
+                ),
+                catalyst_tags=["Put-gamma strike", "Convex idea", "User confirms"],
+                is_ws_live=pe_sq_ws,
+                p_touch_target_1=pe_sq_pt1,
+                p_touch_sl=pe_sq_psl,
+                net_ev_pts=pe_sq_ev,
+                greek_attribution=pe_sq_attr,
+            )
         )
-    )
 
     # 4. PE ICEBERG ABSORPTION FADE (h = 30 min)
     pe_ice_score, _, _ = _score("OrderFlow Iceberg Absorption Fade", pe_atm_doi)
     pe_ice_inval_spot = round(max(vwap_upper + max(eff_atr * 0.6, step * 0.5), spot + max(eff_atr * 0.9, step * 0.6)), 0)
     pe_ice_tgt1_spot = round(min(session_vwap, spot - (sigma_30 * 0.75)), 0)
     pe_ice_tgt2_spot = round(min(vwap_lower, pe_ice_tgt1_spot - (sigma_30 * 0.75)), 0)
-    pe_ice_sl, pe_ice_tgt1, pe_ice_tgt2, pe_ice_pt1, pe_ice_psl, pe_ice_ev, pe_ice_rr, pe_ice_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
         inval_spot=pe_ice_inval_spot, tgt1_spot=pe_ice_tgt1_spot, tgt2_spot=pe_ice_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=30, step=step,
     )
-    pe_ice_score, pe_ice_label, pe_ice_color = _apply_ev_quality_gate(pe_ice_score, pe_ice_ev, pe_ice_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="OrderFlow Iceberg Absorption Fade",
-            play_badge="ICEBERG FADE",
-            strike=pe_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
-            current_ltp=pe_atm_ltp,
-            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
-            entry_trigger=f"Tape seller absorption confirmed at VWAP upper band (₹{vwap_upper:,.0f}) with negative CVD divergence.",
-            spot_invalidation=pe_ice_inval_spot,
-            spot_invalidation_text=f"Spot breakout above ₹{pe_ice_inval_spot:,.0f} (OrderFlow absorption risk buffer)",
-            target_1=pe_ice_tgt1,
-            target_1_spot=pe_ice_tgt1_spot,
-            target_2=pe_ice_tgt2,
-            target_2_spot=pe_ice_tgt2_spot,
-            stop_loss=pe_ice_sl,
-            risk_reward_ratio=pe_ice_rr,
-            quality_score=pe_ice_score,
-            conviction_label=pe_ice_label,
-            conviction_color=pe_ice_color,
-            rationale=(
-                f"Passive limit sellers absorbing aggressive retail buying at {vwap_upper:,.0f}. "
-                f"High R:R rotation back toward Session VWAP ({session_vwap:,.0f}).{trend_tag}"
-            ),
-            catalyst_tags=["Seller Absorption", "Tape Exhaustion", "Ultra-Tight Stop"],
-            is_ws_live=pe_atm_ws,
-            p_touch_target_1=pe_ice_pt1,
-            p_touch_sl=pe_ice_psl,
-            net_ev_pts=pe_ice_ev,
-            greek_attribution=pe_ice_attr,
+
+    if _rp is not None:
+
+        pe_ice_sl, pe_ice_tgt1, pe_ice_tgt2, pe_ice_pt1, pe_ice_psl, pe_ice_ev, pe_ice_rr, pe_ice_attr = _rp
+        pe_ice_score, pe_ice_label, pe_ice_color = _apply_ev_quality_gate(pe_ice_score, pe_ice_ev, pe_ice_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="OrderFlow Iceberg Absorption Fade",
+                play_badge="ICEBERG FADE",
+                strike=pe_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
+                current_ltp=pe_atm_ltp,
+                delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+                entry_trigger=f"Tape seller absorption confirmed at VWAP upper band (₹{vwap_upper:,.0f}) with negative CVD divergence.",
+                spot_invalidation=pe_ice_inval_spot,
+                spot_invalidation_text=f"Spot breakout above ₹{pe_ice_inval_spot:,.0f} (OrderFlow absorption risk buffer)",
+                target_1=pe_ice_tgt1,
+                target_1_spot=pe_ice_tgt1_spot,
+                target_2=pe_ice_tgt2,
+                target_2_spot=pe_ice_tgt2_spot,
+                stop_loss=pe_ice_sl,
+                risk_reward_ratio=pe_ice_rr,
+                quality_score=pe_ice_score,
+                conviction_label=pe_ice_label,
+                conviction_color=pe_ice_color,
+                rationale=(
+                    f"Passive limit sellers absorbing aggressive retail buying at {vwap_upper:,.0f}. "
+                    f"High R:R rotation back toward Session VWAP ({session_vwap:,.0f}).{trend_tag}"
+                ),
+                catalyst_tags=["Seller Absorption", "Tape Exhaustion", "Ultra-Tight Stop"],
+                is_ws_live=pe_atm_ws,
+                p_touch_target_1=pe_ice_pt1,
+                p_touch_sl=pe_ice_psl,
+                net_ev_pts=pe_ice_ev,
+                greek_attribution=pe_ice_attr,
+            )
         )
-    )
 
     # 5. PE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
@@ -2692,46 +2737,50 @@ def _evaluate_pe_strategies(
         pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
         pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
         pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
-        pe_vc_sl, pe_vc_tgt1, pe_vc_tgt2, pe_vc_pt1, pe_vc_psl, pe_vc_ev, pe_vc_rr, pe_vc_attr = _reprice_trade_idea_targets(
+        _rp = _try_reprice_trade_idea_targets(
             side="PE", strike=pe_vanna_k, current_ltp=pe_vc_ltp, spot=spot,
             inval_spot=pe_vc_inval_spot, tgt1_spot=pe_vc_tgt1_spot, tgt2_spot=pe_vc_tgt2_spot,
             dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
         )
-        pe_vc_score, pe_vc_label, pe_vc_color = _apply_ev_quality_gate(pe_vc_score, pe_vc_ev, pe_vc_pt1)
-        pe_recs.append(
-            TradeIdea(
-                symbol=symbol,
-                side="PE",
-                play_type="0DTE Vanna-Charm Theta Compression",
-                play_badge="VANNA-CHARM",
-                strike=pe_vanna_k,
-                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
-                current_ltp=pe_vc_ltp,
-                delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
-                entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
-                spot_invalidation=pe_vc_inval_spot,
-                spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
-                target_1=pe_vc_tgt1,
-                target_1_spot=pe_vc_tgt1_spot,
-                target_2=pe_vc_tgt2,
-                target_2_spot=pe_vc_tgt2_spot,
-                stop_loss=pe_vc_sl,
-                risk_reward_ratio=pe_vc_rr,
-                quality_score=pe_vc_score,
-                conviction_label=pe_vc_label,
-                conviction_color=pe_vc_color,
-                rationale=(
-                    f"Charm decay while spot sits between the gamma strikes. "
-                    f"The corridor is a map, not a dealer pin.{trend_tag}"
-                ),
-                catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
-                is_ws_live=pe_vc_ws,
-                p_touch_target_1=pe_vc_pt1,
-                p_touch_sl=pe_vc_psl,
-                net_ev_pts=pe_vc_ev,
-                greek_attribution=pe_vc_attr,
+
+        if _rp is not None:
+
+            pe_vc_sl, pe_vc_tgt1, pe_vc_tgt2, pe_vc_pt1, pe_vc_psl, pe_vc_ev, pe_vc_rr, pe_vc_attr = _rp
+            pe_vc_score, pe_vc_label, pe_vc_color = _apply_ev_quality_gate(pe_vc_score, pe_vc_ev, pe_vc_pt1)
+            pe_recs.append(
+                TradeIdea(
+                    symbol=symbol,
+                    side="PE",
+                    play_type="0DTE Vanna-Charm Theta Compression",
+                    play_badge="VANNA-CHARM",
+                    strike=pe_vanna_k,
+                    option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
+                    current_ltp=pe_vc_ltp,
+                    delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
+                    entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
+                    spot_invalidation=pe_vc_inval_spot,
+                    spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
+                    target_1=pe_vc_tgt1,
+                    target_1_spot=pe_vc_tgt1_spot,
+                    target_2=pe_vc_tgt2,
+                    target_2_spot=pe_vc_tgt2_spot,
+                    stop_loss=pe_vc_sl,
+                    risk_reward_ratio=pe_vc_rr,
+                    quality_score=pe_vc_score,
+                    conviction_label=pe_vc_label,
+                    conviction_color=pe_vc_color,
+                    rationale=(
+                        f"Charm decay while spot sits between the gamma strikes. "
+                        f"The corridor is a map, not a dealer pin.{trend_tag}"
+                    ),
+                    catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                    is_ws_live=pe_vc_ws,
+                    p_touch_target_1=pe_vc_pt1,
+                    p_touch_sl=pe_vc_psl,
+                    net_ev_pts=pe_vc_ev,
+                    greek_attribution=pe_vc_attr,
+                )
             )
-        )
 
     # 6. PE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
@@ -2739,92 +2788,100 @@ def _evaluate_pe_strategies(
     pe_vd_inval_spot = round(max(session_vwap + max(eff_atr * 0.8, step * 0.6), spot + max(sigma_60 * 0.8, eff_atr * 1.3)), 0)
     pe_vd_tgt1_spot = round(min(put_wall, spot - (sigma_60 * 1.2)), 0)
     pe_vd_tgt2_spot = round(min(pe_vd_tgt1_spot - step, spot - (sigma_60 * 2.2)), 0)
-    pe_vd_sl, pe_vd_tgt1, pe_vd_tgt2, pe_vd_pt1, pe_vd_psl, pe_vd_ev, pe_vd_rr, pe_vd_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_atm_k, current_ltp=pe_atm_ltp, spot=spot,
         inval_spot=pe_vd_inval_spot, tgt1_spot=pe_vd_tgt1_spot, tgt2_spot=pe_vd_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=60, step=step,
     )
-    pe_vd_score, pe_vd_label, pe_vd_color = _apply_ev_quality_gate(pe_vd_score, pe_vd_ev, pe_vd_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Volatility Dispersion / Long Gamma",
-            play_badge="VOL DISPERSION",
-            strike=pe_atm_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
-            current_ltp=pe_atm_ltp,
-            delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
-            entry_trigger=f"Volatility compression breakdown below ₹{vwap_lower:,.0f} with surging volume and downside momentum.",
-            spot_invalidation=pe_vd_inval_spot,
-            spot_invalidation_text=f"Spot recovers back into consolidation band above ₹{pe_vd_inval_spot:,.0f}",
-            target_1=pe_vd_tgt1,
-            target_1_spot=pe_vd_tgt1_spot,
-            target_2=pe_vd_tgt2,
-            target_2_spot=pe_vd_tgt2_spot,
-            stop_loss=pe_vd_sl,
-            risk_reward_ratio=pe_vd_rr,
-            quality_score=pe_vd_score,
-            conviction_label=pe_vd_label,
-            conviction_color=pe_vd_color,
-            rationale=(
-                f"Long gamma downside vehicle capitalizing on volatility regime shifts. In compressed markets, "
-                f"sudden put buying triggers rapid implied vol spikes.{trend_tag}"
-            ),
-            catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
-            is_ws_live=pe_atm_ws,
-            p_touch_target_1=pe_vd_pt1,
-            p_touch_sl=pe_vd_psl,
-            net_ev_pts=pe_vd_ev,
-            greek_attribution=pe_vd_attr,
+
+    if _rp is not None:
+
+        pe_vd_sl, pe_vd_tgt1, pe_vd_tgt2, pe_vd_pt1, pe_vd_psl, pe_vd_ev, pe_vd_rr, pe_vd_attr = _rp
+        pe_vd_score, pe_vd_label, pe_vd_color = _apply_ev_quality_gate(pe_vd_score, pe_vd_ev, pe_vd_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="Volatility Dispersion / Long Gamma",
+                play_badge="VOL DISPERSION",
+                strike=pe_atm_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_atm_k, "PE"),
+                current_ltp=pe_atm_ltp,
+                delta_approx=pe_atm_delta if pe_atm_delta < 0 else -0.50,
+                entry_trigger=f"Volatility compression breakdown below ₹{vwap_lower:,.0f} with surging volume and downside momentum.",
+                spot_invalidation=pe_vd_inval_spot,
+                spot_invalidation_text=f"Spot recovers back into consolidation band above ₹{pe_vd_inval_spot:,.0f}",
+                target_1=pe_vd_tgt1,
+                target_1_spot=pe_vd_tgt1_spot,
+                target_2=pe_vd_tgt2,
+                target_2_spot=pe_vd_tgt2_spot,
+                stop_loss=pe_vd_sl,
+                risk_reward_ratio=pe_vd_rr,
+                quality_score=pe_vd_score,
+                conviction_label=pe_vd_label,
+                conviction_color=pe_vd_color,
+                rationale=(
+                    f"Long gamma downside vehicle capitalizing on volatility regime shifts. In compressed markets, "
+                    f"sudden put buying triggers rapid implied vol spikes.{trend_tag}"
+                ),
+                catalyst_tags=["Long Gamma", "IV Expansion", "Convex Volatility"],
+                is_ws_live=pe_atm_ws,
+                p_touch_target_1=pe_vd_pt1,
+                p_touch_sl=pe_vd_psl,
+                net_ev_pts=pe_vd_ev,
+                greek_attribution=pe_vd_attr,
+            )
         )
-    )
 
     # 7. PE ZERO-COST RATIO RISK REVERSAL (h = 90 min)
     pe_rr_score, _, _ = _score("Zero-Cost Ratio Risk Reversal", pe_struct_doi)
     pe_rr_inval_spot = round(max(session_vwap + max(eff_atr * 0.8, step * 0.6), spot + max(sigma_90 * 0.8, eff_atr * 1.3)), 0)
     pe_rr_tgt1_spot = round(min(put_wall, spot - sigma_90), 0)
     pe_rr_tgt2_spot = round(min(pe_rr_tgt1_spot - step, spot - (sigma_90 * 1.8)), 0)
-    pe_rr_sl, pe_rr_tgt1, pe_rr_tgt2, pe_rr_pt1, pe_rr_psl, pe_rr_ev, pe_rr_rr, pe_rr_attr = _reprice_trade_idea_targets(
+    _rp = _try_reprice_trade_idea_targets(
         side="PE", strike=pe_struct_k, current_ltp=pe_struct_ltp, spot=spot,
         inval_spot=pe_rr_inval_spot, tgt1_spot=pe_rr_tgt1_spot, tgt2_spot=pe_rr_tgt2_spot,
         dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
     )
-    pe_rr_score, pe_rr_label, pe_rr_color = _apply_ev_quality_gate(pe_rr_score, pe_rr_ev, pe_rr_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="Zero-Cost Ratio Risk Reversal",
-            play_badge="RATIO REVERSAL",
-            strike=pe_struct_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
-            current_ltp=pe_struct_ltp,
-            delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
-            entry_trigger=f"Downward drift with the put-gamma strike at ₹{put_wall:,.0f}. The strike is a concentration, not a magnet.",
-            spot_invalidation=pe_rr_inval_spot,
-            spot_invalidation_text=f"Spot invalidation above VWAP @ ₹{pe_rr_inval_spot:,.0f}",
-            target_1=pe_rr_tgt1,
-            target_1_spot=pe_rr_tgt1_spot,
-            target_2=pe_rr_tgt2,
-            target_2_spot=pe_rr_tgt2_spot,
-            stop_loss=pe_rr_sl,
-            risk_reward_ratio=pe_rr_rr,
-            quality_score=pe_rr_score,
-            conviction_label=pe_rr_label,
-            conviction_color=pe_rr_color,
-            rationale=(
-                f"Ratio structure with the put-gamma strike at {put_wall:,.0f}. The strike is not a destination. "
-                f"Delivers high risk-adjusted return without severe chop decay.{trend_tag}"
-            ),
-            catalyst_tags=["Ratio asymmetry", "Put-gamma strike", "Defined risk"],
-            is_ws_live=pe_struct_ws,
-            p_touch_target_1=pe_rr_pt1,
-            p_touch_sl=pe_rr_psl,
-            net_ev_pts=pe_rr_ev,
-            greek_attribution=pe_rr_attr,
+
+    if _rp is not None:
+
+        pe_rr_sl, pe_rr_tgt1, pe_rr_tgt2, pe_rr_pt1, pe_rr_psl, pe_rr_ev, pe_rr_rr, pe_rr_attr = _rp
+        pe_rr_score, pe_rr_label, pe_rr_color = _apply_ev_quality_gate(pe_rr_score, pe_rr_ev, pe_rr_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="Zero-Cost Ratio Risk Reversal",
+                play_badge="RATIO REVERSAL",
+                strike=pe_struct_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_struct_k, "PE"),
+                current_ltp=pe_struct_ltp,
+                delta_approx=pe_struct_delta if pe_struct_delta < 0 else -0.40,
+                entry_trigger=f"Downward drift with the put-gamma strike at ₹{put_wall:,.0f}. The strike is a concentration, not a magnet.",
+                spot_invalidation=pe_rr_inval_spot,
+                spot_invalidation_text=f"Spot invalidation above VWAP @ ₹{pe_rr_inval_spot:,.0f}",
+                target_1=pe_rr_tgt1,
+                target_1_spot=pe_rr_tgt1_spot,
+                target_2=pe_rr_tgt2,
+                target_2_spot=pe_rr_tgt2_spot,
+                stop_loss=pe_rr_sl,
+                risk_reward_ratio=pe_rr_rr,
+                quality_score=pe_rr_score,
+                conviction_label=pe_rr_label,
+                conviction_color=pe_rr_color,
+                rationale=(
+                    f"Ratio structure with the put-gamma strike at {put_wall:,.0f}. The strike is not a destination. "
+                    f"Delivers high risk-adjusted return without severe chop decay.{trend_tag}"
+                ),
+                catalyst_tags=["Ratio asymmetry", "Put-gamma strike", "Defined risk"],
+                is_ws_live=pe_struct_ws,
+                p_touch_target_1=pe_rr_pt1,
+                p_touch_sl=pe_rr_psl,
+                net_ev_pts=pe_rr_ev,
+                greek_attribution=pe_rr_attr,
+            )
         )
-    )
 
     for idea in pe_recs:
         _enrich_trade_idea(

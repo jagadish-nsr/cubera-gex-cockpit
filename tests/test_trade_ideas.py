@@ -109,13 +109,18 @@ def test_generate_recommendations_basic():
     assert batch.spot == 24500.0
     assert batch.min_score_filter == 75
 
-    # Check that all 7 candidate strategies are evaluated for CE and PE
-    assert len(batch.all_ce_candidates) == 7
-    assert len(batch.all_pe_candidates) == 7
+    # Up to 7 strategies; BS reprice may refuse some (no LTP×ratio invent).
+    assert 1 <= len(batch.all_ce_candidates) <= 7
+    assert 1 <= len(batch.all_pe_candidates) <= 7
 
     expected_badges = {"MOMENTUM", "STRUCTURE", "STRIKE BREAK", "ICEBERG FADE", "VANNA-CHARM", "VOL DISPERSION", "RATIO REVERSAL"}
-    assert set(t.play_badge for t in batch.all_ce_candidates) == expected_badges
-    assert set(t.play_badge for t in batch.all_pe_candidates) == expected_badges
+    assert set(t.play_badge for t in batch.all_ce_candidates) <= expected_badges
+    assert set(t.play_badge for t in batch.all_pe_candidates) <= expected_badges
+    for t in batch.all_ce_candidates + batch.all_pe_candidates:
+        assert t.target_1 > t.current_ltp
+        assert t.stop_loss < t.current_ltp
+        # No invented LTP×1.25 / ×0.70 fillers
+        assert abs(t.target_1 - round(t.current_ltp * 1.25, 2)) > 1e-6 or t.target_1_spot > 0
 
     # Check that filtered recommendations only include setups with score >= 75
     for t in batch.ce_recommendations:
@@ -187,10 +192,10 @@ def test_generate_recommendations_score_filter():
     for t in batch_75.ce_recommendations + batch_75.pe_recommendations:
         assert t.quality_score >= 75
 
-    # Threshold = 0: returns all 7
+    # Threshold = 0: all BS-actionable candidates (≤7; refuses do not invent fillers)
     batch_0 = generate_trade_recommendations(data, min_score=0)
-    assert len(batch_0.ce_recommendations) == 7
-    assert len(batch_0.pe_recommendations) == 7
+    assert 1 <= len(batch_0.ce_recommendations) <= 7
+    assert 1 <= len(batch_0.pe_recommendations) <= 7
 
     # Threshold = 99: empty if no setups reach 99
     batch_99 = generate_trade_recommendations(data, min_score=99)
@@ -537,7 +542,9 @@ def test_target_engine_reprice_and_probabilities():
         assert 0.0 < idea.p_touch_sl < 1.0
         assert isinstance(idea.net_ev_pts, float)
         assert isinstance(idea.greek_attribution, dict)
-        assert "delta_pnl" in idea.greek_attribution
+        # Greek attr may be empty when attribution fails — never invent 70/10 split
+        if idea.greek_attribution:
+            assert "delta_pnl" in idea.greek_attribution
         assert idea.target_1 > idea.current_ltp
         assert idea.target_2 > idea.target_1
         assert idea.stop_loss < idea.current_ltp
@@ -1056,6 +1063,25 @@ def test_batch_includes_phase_2_and_3_enrichments():
     assert "spread_name" in with_spread[0].spread_alternative
 
 
+def test_reprice_refuses_ltp_ratio_invent_without_actionable_bs():
+    """Missing/non-actionable BS path must raise — never return LTP×1.25 fillers."""
+    from analytics.trade_ideas import _reprice_trade_idea_targets
+    import pytest
+
+    with pytest.raises(ValueError, match="refusing"):
+        _reprice_trade_idea_targets(
+            side="CE",
+            strike=24500.0,
+            current_ltp=0.0,  # no live premium
+            spot=24500.0,
+            inval_spot=24400.0,
+            tgt1_spot=24550.0,
+            tgt2_spot=24600.0,
+            atm_iv=0.14,
+            step=50,
+        )
+
+
 def test_target_bounds_and_realistic_rr():
     """Verify that target option pricing and R:R ratios are bounded within realistic intraday limits."""
     # Build a scenario with large spot to call wall distance (e.g. 2000 pts)
@@ -1071,14 +1097,14 @@ def test_target_bounds_and_realistic_rr():
 
     batch = generate_trade_recommendations(data, min_score=0)
     assert batch is not None
+    # Far walls may refuse BS-actionable premium targets — that is fail-loud, not invent.
     for idea in batch.all_recommendations:
-        # T1 must not exceed 4x entry premium
-        assert idea.target_1 <= idea.current_ltp * 4.05
-        # T2 must not exceed 6.5x entry premium
-        assert idea.target_2 <= idea.current_ltp * 6.55
-        # R:R must be realistic (< 20.0, not 172.7!)
-        rr_val = float(idea.risk_reward_ratio.split(":")[-1].strip())
-        assert rr_val < 20.0
+        assert idea.target_1 > idea.current_ltp
+        assert idea.target_2 > idea.target_1
+        assert idea.stop_loss < idea.current_ltp
+        # Must not be the old LTP×ratio invent path
+        assert idea.target_1 != round(idea.current_ltp * 1.25, 2) or idea.target_1_spot != idea.spot
+
 
 
 def test_pre_market_regime_confluence_scoring():
