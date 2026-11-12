@@ -315,9 +315,14 @@ class TestSentinelLive(unittest.TestCase):
         class _InlineThread:
             def __init__(self, target=None, name=None, daemon=None):
                 self._target = target
+                self.name = name
                 started.append(name)
 
             def start(self):
+                # on_tick also arms the silence watchdog (infinite sleep loop).
+                # Never run that inline — only the one-shot session sync.
+                if self.name == "sentinel-silence-watchdog":
+                    return
                 self._target()
 
         calls = []
@@ -345,7 +350,8 @@ class TestSentinelLive(unittest.TestCase):
         self.assertEqual(calls[0][1], "TEST")
         # Bootstrap sync now forwards resolved GEX kwargs (may all be None).
         self.assertIn("call_wall", calls[0][2])
-        self.assertEqual(len(started), 1)
+        sync_started = [n for n in started if n and str(n).startswith("sentinel-sync-")]
+        self.assertEqual(len(sync_started), 1)
 
     def test_live_session_isolation_never_returns_yesterday_data(self):
         """Verify that during an active live market session, list_recent_bars strictly isolates to today."""

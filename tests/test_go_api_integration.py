@@ -181,12 +181,16 @@ def test_go_auto_stage_fire_dedupes_while_open(monkeypatch):
     a1 = json.loads(b1).get("auto_stage") or {}
     assert a1.get("status") == "auto_staged"
     trade_id = a1.get("trade_id")
+    w1 = json.loads(b1).get("working")
+    assert w1 and w1.get("open_count") >= 1
 
     s2, _, b2 = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
     assert s2 == 200
     a2 = json.loads(b2).get("auto_stage") or {}
     assert a2.get("status") == "deduped_open"
     assert len(go_eff.list_open("NIFTY")) == 1
+    w2 = json.loads(b2).get("working")
+    assert w2 and w2.get("advisory") in ("manage", "strip_softened", "new_candidate", "conflict")
 
     # Off → no stage attempt
     asyncio.run(asgi_request("POST", "/api/go/prefs", body={"auto_stage_fire": False}))
@@ -196,6 +200,44 @@ def test_go_auto_stage_fire_dedupes_while_open(monkeypatch):
     assert s3 == 200
     assert json.loads(b3).get("auto_stage") is None
     assert trade_id  # sanity
+
+
+def test_go_auto_stage_blocks_opposite_side_conflict(monkeypatch):
+    bull = _fire_decision("directional").to_dict()
+    go_eff.record_event("STAGE", bull, trade_id="pt_bull")
+
+    bear = {
+        "id": "bear_conflict",
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 88,
+        "strategy_key": "CONTINUATION_BEAR",
+        "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 25200, "ltp": 70}],
+        "risk": {"credit_or_debit": -70},
+        "context": {"spot": 25400, "lot_size": 65},
+        "evidence": [
+            {"factor": "sentinel_or_idea", "pass": True, "weight": 1.0},
+            {"factor": "cvd_vwap", "pass": True, "weight": 1.0},
+        ],
+    }
+    blocked = web_server._go_maybe_auto_stage_fire(bear)
+    assert blocked is not None
+    assert blocked.get("status") == "blocked_conflict"
+    assert blocked.get("open_side") == "bull"
+    assert blocked.get("new_side") == "bear"
+    assert len(go_eff.list_open("NIFTY")) == 1
+
+    # Strip FIRE bear while bull open → working.conflict on decision payload
+    async def _compose_bear(sym, win, mode, delta_pref):
+        return SimpleNamespace(to_dict=lambda: bear, state="FIRE")
+
+    monkeypatch.setattr(web_server, "_compose_go_decision", _compose_bear)
+    st, _, body = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
+    assert st == 200
+    data = json.loads(body)
+    assert data.get("working", {}).get("advisory") == "conflict"
+    assert data.get("auto_stage", {}).get("status") == "blocked_conflict"
 
 
 def test_go_feed_ranks_and_includes_alts(monkeypatch):

@@ -2441,6 +2441,22 @@
     if (deltaGroup) deltaGroup.style.display = state.goMode === "directional" ? "" : "none";
   }
 
+  function paintGoWorkingBanner(working) {
+    const el = document.getElementById("go-working-banner");
+    if (!el) return;
+    if (!working || !working.message) {
+      el.hidden = true;
+      el.textContent = "";
+      el.removeAttribute("data-advisory");
+      return;
+    }
+    const n = working.open_count != null ? working.open_count : ((working.open || []).length || 0);
+    el.hidden = false;
+    el.dataset.advisory = working.advisory || "manage";
+    el.innerHTML = `<b>Working open</b> · ${working.message}` +
+      (n > 1 ? ` <span class="go-muted">(${n} open)</span>` : "");
+  }
+
   function renderGoLane(decision) {
     state.lastGoDecision = decision;
     const strip = document.getElementById("go-posture-strip");
@@ -2722,12 +2738,15 @@
         return;
       }
       if (data.decision) renderGoLane(data.decision);
+      paintGoWorkingBanner(data.working);
       if (data.notify && data.notify.status === "sent") {
         showToast("FIRE webhook sent");
       }
       if (data.auto_stage && data.auto_stage.status === "auto_staged") {
         showToast(`Auto-staged ${data.auto_stage.trade_id} · paper P&L study`);
         loadGoOpenPanel();
+      } else if (data.auto_stage && data.auto_stage.status === "blocked_conflict") {
+        showToast("Auto-stage blocked — opposite open still LIVE");
       }
       loadGoAlerts();
     } catch (err) {
@@ -2920,12 +2939,37 @@
       set("go-sc-wr", pnl.win_rate != null
         ? `${Math.round(pnl.win_rate * 100)}% (${pnl.wins ?? 0}/${pnl.closed_count ?? 0})`
         : "—");
+      const sess = eff.session || {};
+      const sp = sess.pnl || {};
+      const sessRoot = document.getElementById("go-sc-session");
+      if (sessRoot) sessRoot.dataset.verdict = sess.verdict || "";
+      set("go-sc-session-date", sess.date || "—");
+      const verdictLabel = ({
+        thin_sample: "Thin sample",
+        paper_edge_positive: "Paper edge +",
+        paper_edge_negative: "Paper edge −",
+        mixed: "Mixed",
+      })[sess.verdict] || "—";
+      set("go-sc-session-verdict", verdictLabel);
+      set("go-sc-session-line", sess.line || "Paper FIRE book after costs · descriptive only");
+      set("go-sc-sess-fire", String(sess.emit_fire ?? 0));
+      set("go-sc-sess-stage", String((sess.counts || {}).STAGE ?? 0));
+      set("go-sc-sess-skip", String((sess.counts || {}).SKIP ?? 0));
+      set("go-sc-sess-stage-rate", sess.stage_rate_vs_fire_emit != null ? String(sess.stage_rate_vs_fire_emit) : "—");
+      set("go-sc-sess-skip-rate", sess.skip_rate_vs_fire_emit != null ? String(sess.skip_rate_vs_fire_emit) : "—");
+      set("go-sc-sess-edge", sess.edge_ratio != null ? `${sess.edge_ratio}×` : "—");
+      set("go-sc-sess-net", fmtInr(sp.net_pnl_inr));
+      set("go-sc-sess-wr", sp.win_rate != null
+        ? `${Math.round(sp.win_rate * 100)}% (${sp.wins ?? 0}/${sp.closed_count ?? 0})`
+        : `— / open ${sess.open_positions ?? 0}`);
+      set("go-sc-sess-mtm", fmtInr(sess.unrealized_pnl_inr));
       const sub = document.getElementById("go-scorecard-sub");
       if (sub) {
         const pf = pnl.profit_factor != null ? ` · PF ${pnl.profit_factor}` : "";
         const lat = (eff.process || {}).median_emit_to_stage_sec;
         const latStr = lat != null ? ` · emit→stage ${lat}s` : "";
-        sub.textContent = `stage/FIRE ${eff.stage_rate_vs_fire_emit ?? "—"} · skip/FIRE ${eff.skip_rate_vs_fire_emit ?? "—"} · open ${eff.open_positions ?? 0}${pf}${latStr}`;
+        const sessNet = sess.pnl && sess.pnl.net_pnl_inr != null ? ` · today net ${fmtInr(sess.pnl.net_pnl_inr)}` : "";
+        sub.textContent = `stage/FIRE ${eff.stage_rate_vs_fire_emit ?? "—"} · skip/FIRE ${eff.skip_rate_vs_fire_emit ?? "—"} · open ${eff.open_positions ?? 0}${pf}${latStr}${sessNet}`;
       }
       const modeBody = document.querySelector("#go-sc-mode-table tbody");
       if (modeBody) {
@@ -5668,22 +5712,32 @@
           const c = eff.counts || {};
           const openN = eff.open_positions != null ? eff.open_positions : ((openPayload.open || []).length);
           const proc = eff.process || {};
+          const sess = eff.session || {};
+          const sp = sess.pnl || {};
           const parts = [
-            `Efficiency · emit ${c.EMIT || 0}`,
-            `staged ${c.STAGE || 0}`,
-            `skipped ${c.SKIP || 0}`,
+            `Today ${sess.date || ""}`.trim(),
+            `FIRE ${sess.emit_fire ?? 0}`,
+            `staged ${(sess.counts || {}).STAGE ?? 0}`,
+            `skip ${(sess.counts || {}).SKIP ?? 0}`,
           ];
-          if (eff.stage_rate_vs_fire_emit != null) parts.push(`stage/FIRE ${eff.stage_rate_vs_fire_emit}`);
-          if (eff.skip_rate_vs_fire_emit != null) parts.push(`skip/FIRE ${eff.skip_rate_vs_fire_emit}`);
-          if (eff.avg_mfe != null) parts.push(`avg MFE ${eff.avg_mfe}`);
-          if (eff.avg_mae != null) parts.push(`avg MAE ${eff.avg_mae}`);
-          if (eff.edge_ratio != null) parts.push(`edge ${eff.edge_ratio}`);
-          if (proc.median_emit_to_stage_sec != null) parts.push(`emit→stage ${proc.median_emit_to_stage_sec}s`);
-          if (proc.evidence_complete_pct != null) parts.push(`evidence ${proc.evidence_complete_pct}%`);
+          if (sess.stage_rate_vs_fire_emit != null) parts.push(`stage/FIRE ${sess.stage_rate_vs_fire_emit}`);
+          if (sp.net_pnl_inr != null) {
+            const n = Number(sp.net_pnl_inr);
+            const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+            parts.push(`net ${n < 0 ? "−" : n > 0 ? "+" : ""}${s}`);
+          }
+          if (sp.win_rate != null) parts.push(`WR ${Math.round(sp.win_rate * 100)}%`);
+          if (sess.unrealized_pnl_inr != null) {
+            const u = Number(sess.unrealized_pnl_inr);
+            const s = `₹${Math.abs(u).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+            parts.push(`MTM ${u < 0 ? "−" : u > 0 ? "+" : ""}${s}`);
+          }
+          if (sess.verdict) parts.push(sess.verdict.replace(/_/g, " "));
           parts.push(`open ${openN}`);
+          if (eff.edge_ratio != null) parts.push(`all-time edge ${eff.edge_ratio}`);
+          if (proc.evidence_complete_pct != null) parts.push(`evidence ${proc.evidence_complete_pct}%`);
           const trailed = (openPayload.open || []).filter((o) => o.trail_armed).length;
           if (trailed) parts.push(`trail armed ${trailed}`);
-          if (eff.lunch_emit_count) parts.push(`lunch emits ${eff.lunch_emit_count}`);
           effEl.textContent = parts.join(" · ");
         }).catch(() => {});
       }

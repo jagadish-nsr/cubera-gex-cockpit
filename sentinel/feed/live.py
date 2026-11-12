@@ -44,6 +44,12 @@ _GAP_RESYNC_COOLDOWN_SEC = 180.0
 # gap detection only ran on completed bars, so a silent feed never self-healed).
 _TICK_SILENCE_SEC = 90.0
 _SILENCE_POLL_SEC = 30.0
+# Process-wide silence watchdog (one thread). Instance managers still poll via
+# the singleton + any registered managers so unit tests do not spawn N loops.
+_SILENCE_WATCHDOG_STARTED = False
+_SILENCE_WATCHDOG_LOCK = threading.Lock()
+_SILENCE_WATCHDOG_STOP = threading.Event()
+_SILENCE_WATCH_MANAGERS: list = []
 _OI_FLAT_BARS = 5
 
 
@@ -181,8 +187,10 @@ class LiveSentinelManager:
         # Last known GEX levels per symbol (survives until MarketContext exists).
         self._pending_gex: dict[str, dict[str, float | None]] = {}
         self._gap_resync_at: dict[str, float] = {}
-        self._silence_watchdog_started = False
         self._instrument_symbol: dict[str, str] = {}
+        with _SILENCE_WATCHDOG_LOCK:
+            if self not in _SILENCE_WATCH_MANAGERS:
+                _SILENCE_WATCH_MANAGERS.append(self)
 
     def _arm_recommendations_if_needed(self) -> None:
         """Enable reactive recommendations only after a live futures tick arrives."""
@@ -683,20 +691,34 @@ class LiveSentinelManager:
                     pass
 
     def _ensure_silence_watchdog(self) -> None:
-        """Start one background poller that resyncs instruments with a silent feed.
+        """Start one process-wide poller that resyncs instruments with a silent feed.
 
         Must not take ``_LOCK`` — ``sync_live_session`` arms this while holding
-        that lock (non-reentrant).
+        that lock (non-reentrant). One thread for the process; polls every
+        registered ``LiveSentinelManager`` (singleton + test instances).
         """
-        if self._silence_watchdog_started:
-            return
-        self._silence_watchdog_started = True
+        global _SILENCE_WATCHDOG_STARTED
+        with _SILENCE_WATCHDOG_LOCK:
+            if self not in _SILENCE_WATCH_MANAGERS:
+                _SILENCE_WATCH_MANAGERS.append(self)
+            if _SILENCE_WATCHDOG_STARTED:
+                return
+            _SILENCE_WATCHDOG_STARTED = True
+            _SILENCE_WATCHDOG_STOP.clear()
 
         def _loop() -> None:
-            while True:
+            while not _SILENCE_WATCHDOG_STOP.is_set():
                 try:
-                    time.sleep(_SILENCE_POLL_SEC)
-                    self._poll_silent_instruments()
+                    # Interruptible wait so tests / shutdown are not stuck on sleep.
+                    if _SILENCE_WATCHDOG_STOP.wait(_SILENCE_POLL_SEC):
+                        break
+                    with _SILENCE_WATCHDOG_LOCK:
+                        managers = list(_SILENCE_WATCH_MANAGERS)
+                    for mgr in managers:
+                        try:
+                            mgr._poll_silent_instruments()
+                        except Exception:
+                            log.debug("silence watchdog poll failed", exc_info=True)
                 except Exception:
                     log.debug("silence watchdog iteration failed", exc_info=True)
 

@@ -623,6 +623,7 @@
               <span id="go-posture-thesis" class="go-posture-thesis">Waiting for Decisive GO…</span>
               <span id="go-posture-levels" class="go-posture-levels"></span>
             </div>
+            <div id="go-working-banner" class="go-working-banner" hidden aria-live="polite"></div>
             <div id="go-ritual-chips" class="go-ritual-chips" role="group" aria-label="Session ritual">
               <button type="button" class="go-ritual-chip" data-ritual="prebell">Pre-bell</button>
               <button type="button" class="go-ritual-chip" data-ritual="firstblock">First block</button>
@@ -2099,6 +2100,22 @@
               <h3>Decisive GO Scorecard</h3>
               <span class="go-muted" id="go-scorecard-sub">Staged FIRE / SCOUT ledger · taken vs skipped</span>
               <button type="button" class="btn btn-secondary" id="go-scorecard-refresh" style="margin-left:auto;font-size:0.72rem">Refresh</button>
+            </div>
+            <div id="go-sc-session" class="go-session-read" aria-label="Today session efficiency">
+              <div class="go-session-read-head">
+                <span class="go-lane-label">Today (IST)</span>
+                <span id="go-sc-session-date" class="go-muted">—</span>
+                <b id="go-sc-session-verdict">—</b>
+              </div>
+              <div id="go-sc-session-line" class="go-muted" style="font-size:0.76rem;margin:4px 0 8px">Paper FIRE book after costs · descriptive only</div>
+              <div class="kpi-grid" style="grid-template-columns:repeat(6, 1fr);margin-bottom:10px">
+                <div class="kpi-card"><small>FIRE emits</small><b id="go-sc-sess-fire">—</b><span>Today</span></div>
+                <div class="kpi-card go"><small>Staged</small><b id="go-sc-sess-stage">—</b><span>stage/FIRE <span id="go-sc-sess-stage-rate">—</span></span></div>
+                <div class="kpi-card stop"><small>Skipped</small><b id="go-sc-sess-skip">—</b><span>skip/FIRE <span id="go-sc-sess-skip-rate">—</span></span></div>
+                <div class="kpi-card"><small>Edge</small><b id="go-sc-sess-edge">—</b><span>MFE/MAE today</span></div>
+                <div class="kpi-card go"><small>Net P&amp;L</small><b id="go-sc-sess-net">—</b><span>Closed today · after costs</span></div>
+                <div class="kpi-card purple"><small>Win / open</small><b id="go-sc-sess-wr">—</b><span>MTM <span id="go-sc-sess-mtm">—</span></span></div>
+              </div>
             </div>
             <div class="kpi-grid" style="grid-template-columns:repeat(6, 1fr);margin-bottom:10px">
               <div class="kpi-card"><small>Emits</small><b id="go-sc-emit">—</b><span>FIRE/SCOUT recorded</span></div>

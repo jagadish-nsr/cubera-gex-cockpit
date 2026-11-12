@@ -338,3 +338,41 @@ def test_trail_stop_auto_settles_pnl():
     summary = summarize("NIFTY")
     assert summary["pnl"]["closed_count"] == 1
     assert summary["pnl"]["net_pnl_inr"] == 395.5
+
+
+def test_session_efficiency_slice_today():
+    from data.journal.go_efficiency import record_event, close_open, summarize
+
+    base = {
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 85,
+        "strategy_key": "CONTINUATION_BULL",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500, "ltp": 72}],
+        "risk": {"credit_or_debit": -72},
+        "context": {"spot": 25480, "lot_size": 65},
+    }
+    for i in range(3):
+        # Distinct strikes so EMIT fingerprint dedupe does not collapse the board
+        d = {
+            **base,
+            "id": f"d_sess_{i}",
+            "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500 + i * 50, "ltp": 72}],
+        }
+        record_event("EMIT", d)
+        record_event("STAGE", d, trade_id=f"pt_sess_{i}")
+        close_open(f"d_sess_{i}", exit_premium=-80.0, exit_reason="TEST")
+
+    summary = summarize("NIFTY")
+    sess = summary["session"]
+    assert sess["date"]
+    assert sess["counts"]["EMIT"] >= 3
+    assert sess["counts"]["STAGE"] >= 3
+    assert sess["emit_fire"] >= 3
+    assert sess["pnl"]["closed_count"] >= 3
+    assert sess["pnl"]["net_pnl_inr"] == 447.5 * 3
+    assert sess["pnl"]["win_rate"] == 1.0
+    assert sess["verdict"] == "paper_edge_positive"
+    assert "net-positive" in sess["line"]
+    assert sess["stage_rate_vs_fire_emit"] == 1.0

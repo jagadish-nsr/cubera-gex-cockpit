@@ -3232,6 +3232,30 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 .go-state-hold .go-state-pill { background: var(--surface-1); color: var(--ink-mute); border: 1px solid var(--line); }
 .go-posture-thesis { font-weight: 650; flex: 1 1 200px; font-size: 0.82rem; }
 .go-posture-levels { font-family: var(--mono); font-size: 0.68rem; color: var(--ink-mute); }
+.go-working-banner {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.go-working-banner[data-advisory="conflict"] {
+  border-color: var(--stop, #c45);
+  background: var(--stop-bg, rgba(180, 60, 60, 0.12));
+}
+.go-working-banner[data-advisory="strip_softened"] {
+  border-color: var(--warn);
+  background: var(--warn-bg);
+}
+.go-working-banner[data-advisory="new_candidate"],
+.go-working-banner[data-advisory="manage"] {
+  border-color: var(--spark, #3a7);
+  background: var(--spark-bg, rgba(40, 120, 90, 0.10));
+}
+.go-working-banner b { font-weight: 750; }
 .go-primary-card {
   background: var(--surface-1);
   border: 1px solid var(--line);
@@ -3473,6 +3497,28 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   border-color: var(--warn);
   color: var(--warn);
 }
+.go-session-read {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+.go-session-read-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: baseline;
+}
+.go-session-read-head b {
+  margin-left: auto;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+.go-session-read[data-verdict="paper_edge_positive"] .go-session-read-head b { color: var(--go); }
+.go-session-read[data-verdict="paper_edge_negative"] .go-session-read-head b { color: var(--stop, #c45); }
+.go-session-read[data-verdict="thin_sample"] .go-session-read-head b,
+.go-session-read[data-verdict="mixed"] .go-session-read-head b { color: var(--warn); }
 .go-scorecard {
   background: var(--surface-2);
   border: 1px solid var(--line);

@@ -7,13 +7,16 @@ from types import SimpleNamespace
 from analytics.go_desk import (
     FIRE_MIN,
     SCOUT_MIN,
+    book_side,
     build_directional_decision,
     build_structure_decision,
     build_writer_decision,
     decisive_gate,
     evidence_pack_complete,
     rank_feed,
+    sides_conflict,
     state_from_score,
+    working_fire_advisory,
 )
 from structures.suggest import CandidateStructure
 
@@ -468,3 +471,59 @@ def test_unusual_oi_volume_flag():
     assert edge["pass"] is True
     below = unusual_oi_volume_flag(strike=1, oi=2499, volume=None, median_oi=1000, median_vol=None)
     assert below["pass"] is False
+
+
+def test_book_side_and_conflict():
+    assert book_side(strategy_key="CONTINUATION_BULL") == "bull"
+    assert book_side(strategy_key="CONTINUATION_BEAR") == "bear"
+    assert book_side(
+        contracts=[{"action": "BUY", "opt_type": "CE", "strike": 25500}]
+    ) == "bull"
+    assert book_side(
+        contracts=[{"action": "BUY", "opt_type": "PE", "strike": 25200}]
+    ) == "bear"
+    assert book_side(
+        contracts=[
+            {"action": "SELL", "opt_type": "CE", "strike": 25600},
+            {"action": "BUY", "opt_type": "CE", "strike": 25700},
+            {"action": "SELL", "opt_type": "PE", "strike": 25200},
+            {"action": "BUY", "opt_type": "PE", "strike": 25100},
+        ]
+    ) == "neutral"
+    assert sides_conflict("bull", "bear") is True
+    assert sides_conflict("bull", "neutral") is False
+
+
+def test_working_fire_advisory_strip_softened_and_conflict():
+    open_rows = [{
+        "decision_id": "d_open",
+        "mode": "directional",
+        "strategy_key": "CONTINUATION_BULL",
+        "mfe": 8,
+        "mae": 2,
+        "trail_armed": False,
+        "decision": {
+            "strategy_key": "CONTINUATION_BULL",
+            "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25500}],
+        },
+    }]
+    soft = working_fire_advisory(
+        strip_decision={"state": "SCOUT", "strategy_key": "CONTINUATION_BULL", "contracts": []},
+        open_rows=open_rows,
+    )
+    assert soft is not None
+    assert soft["advisory"] == "strip_softened"
+    assert "manage open book" in soft["message"]
+
+    conflict = working_fire_advisory(
+        strip_decision={
+            "state": "FIRE",
+            "strategy_key": "CONTINUATION_BEAR",
+            "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 25200}],
+        },
+        open_rows=open_rows,
+    )
+    assert conflict["advisory"] == "conflict"
+    assert "conflicts" in conflict["message"]
+
+    assert working_fire_advisory(strip_decision={"state": "FIRE"}, open_rows=[]) is None

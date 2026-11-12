@@ -3599,8 +3599,9 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
 
     with _GO_AUTO_STAGE_LOCK:
         from data.journal import go_efficiency as go_eff
+        from analytics.go_desk import book_side, sides_conflict
 
-        opens = go_eff.list_open(sym) if sym else go_eff.list_open()
+        opens = go_eff.list_open(sym, include_decision=True) if sym else go_eff.list_open(include_decision=True)
         prev_id = _GO_LAST_FIRE_STAGE.get(fp)
         if prev_id and any(o.get("decision_id") == prev_id for o in opens):
             return {
@@ -3615,6 +3616,24 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
                     "status": "deduped_open",
                     "fingerprint": fp,
                     "decision_id": o.get("decision_id"),
+                }
+        # Opposite-side open → do not auto-stage; trader must flatten/hedge first
+        new_side = book_side(strategy_key=sk, contracts=decision.get("contracts") or [])
+        for o in opens:
+            od = o.get("decision") if isinstance(o.get("decision"), dict) else {}
+            open_side = book_side(
+                strategy_key=str(o.get("strategy_key") or od.get("strategy_key") or ""),
+                contracts=od.get("contracts") or o.get("contracts") or [],
+            )
+            if sides_conflict(open_side, new_side):
+                return {
+                    "status": "blocked_conflict",
+                    "fingerprint": fp,
+                    "open_decision_id": o.get("decision_id"),
+                    "open_strategy_key": o.get("strategy_key"),
+                    "open_side": open_side,
+                    "new_side": new_side,
+                    "detail": "Opposite-side open staged GO — flatten/hedge before auto-stage",
                 }
         if fp in _GO_STAGING_INFLIGHT:
             return {"status": "deduped_inflight", "fingerprint": fp}
@@ -4193,6 +4212,16 @@ async def get_go_decision(
         if payload.get("state") == "FIRE":
             notify = _go_maybe_notify_fire(payload)
             auto_stage = _go_maybe_auto_stage_fire(payload)
+    # After auto-stage so a fresh OPEN is visible on the same response
+    working = None
+    try:
+        from data.journal import go_efficiency as go_eff
+        from analytics.go_desk import working_fire_advisory
+
+        opens = go_eff.list_open(sym, include_decision=True)
+        working = working_fire_advisory(strip_decision=payload, open_rows=opens)
+    except Exception as exc:
+        log.debug("go working advisory: %s", exc)
     prefs_out = dict(_GO_PREFS)
     wu = str(prefs_out.get("webhook_url") or "")
     if wu:
@@ -4204,6 +4233,7 @@ async def get_go_decision(
         "decision": payload,
         "notify": notify,
         "auto_stage": auto_stage,
+        "working": working,
     }
 
 

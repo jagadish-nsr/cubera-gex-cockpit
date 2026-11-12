@@ -705,9 +705,25 @@ def list_open(symbol: str | None = None, *, include_decision: bool = False) -> l
         conn.close()
 
 
+def _ist_today_str() -> str:
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime.now(ist).date().isoformat()
+
+
+def _ts_date(ts_raw: str | None) -> str | None:
+    if not ts_raw:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts_raw)).date().isoformat()
+    except Exception:
+        s = str(ts_raw)
+        return s[:10] if len(s) >= 10 and s[4] == "-" else None
+
+
 def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
     """Descriptive counts for Scorecard / Efficiency tab."""
     ensure_schema()
+    session_day = _ist_today_str()
     conn = _conn()
     conn.row_factory = sqlite3.Row
     try:
@@ -716,11 +732,21 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
                 "SELECT * FROM go_events WHERE symbol = ? ORDER BY ts DESC LIMIT ?",
                 (symbol.upper(), limit),
             ).fetchall()
+            # Prefer today's events even if they fall outside the recent LIMIT window
+            session_event_rows = conn.execute(
+                """
+                SELECT * FROM go_events
+                WHERE symbol = ? AND ts LIKE ?
+                ORDER BY ts DESC
+                """,
+                (symbol.upper(), f"{session_day}%"),
+            ).fetchall()
             open_rows = conn.execute(
                 """
                 SELECT mfe, mae, trail_armed, status,
                        gross_pnl_inr, net_pnl_inr, brokerage_cost, slippage_cost,
-                       mode, strategy_key, closed_at
+                       mode, strategy_key, closed_at, opened_at,
+                       entry_premium, mark_premium, lot_size
                 FROM go_open WHERE symbol = ?
                 """,
                 (symbol.upper(),),
@@ -730,11 +756,20 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
                 "SELECT * FROM go_events ORDER BY ts DESC LIMIT ?",
                 (limit,),
             ).fetchall()
+            session_event_rows = conn.execute(
+                """
+                SELECT * FROM go_events
+                WHERE ts LIKE ?
+                ORDER BY ts DESC
+                """,
+                (f"{session_day}%",),
+            ).fetchall()
             open_rows = conn.execute(
                 """
                 SELECT mfe, mae, trail_armed, status,
                        gross_pnl_inr, net_pnl_inr, brokerage_cost, slippage_cost,
-                       mode, strategy_key, closed_at
+                       mode, strategy_key, closed_at, opened_at,
+                       entry_premium, mark_premium, lot_size
                 FROM go_open
                 """
             ).fetchall()
@@ -801,6 +836,113 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
         pnl["profit_factor"] = None  # undefined when no losses
     elif sum_wins == 0 and sum_losses_abs > 0:
         pnl["profit_factor"] = 0.0
+
+    # Today's IST session slice (paper FIRE efficiency study)
+    sess_counts = {"EMIT": 0, "STAGE": 0, "SKIP": 0}
+    sess_fire = 0
+    sess_scout = 0
+    for r in session_event_rows:
+        et = r["event_type"]
+        if et in sess_counts:
+            sess_counts[et] += 1
+        if et == "EMIT":
+            if r["state"] == "FIRE":
+                sess_fire += 1
+            elif r["state"] == "SCOUT":
+                sess_scout += 1
+    sess_closed = [
+        r for r in open_rows
+        if r["status"] in ("CLOSED", "TRAIL_STOP")
+        and r["net_pnl_inr"] is not None
+        and (
+            _ts_date(r["closed_at"]) == session_day
+            or _ts_date(r["opened_at"]) == session_day
+        )
+    ]
+    sess_nets = [float(r["net_pnl_inr"]) for r in sess_closed]
+    sess_wins = [n for n in sess_nets if n > 0]
+    sess_losses = [n for n in sess_nets if n < 0]
+    sess_sum_wins = sum(sess_wins)
+    sess_sum_loss_abs = abs(sum(sess_losses))
+    sess_open = [r for r in open_rows if r["status"] == "OPEN"]
+    sess_open_today = [r for r in sess_open if _ts_date(r["opened_at"]) == session_day]
+    unrealized = []
+    for r in sess_open:
+        lot = int(r["lot_size"] or 0)
+        u = unrealized_pnl_inr(r["entry_premium"], r["mark_premium"], lot)
+        if u is not None:
+            unrealized.append(u)
+    sess_mfes = [
+        float(r["mfe"] or 0) for r in open_rows
+        if r["status"] in ("OPEN", "TRAIL_STOP", "CLOSED")
+        and _ts_date(r["opened_at"]) == session_day
+    ]
+    sess_maes = [
+        float(r["mae"] or 0) for r in open_rows
+        if r["status"] in ("OPEN", "TRAIL_STOP", "CLOSED")
+        and _ts_date(r["opened_at"]) == session_day
+    ]
+    sess_avg_mfe = round(sum(sess_mfes) / len(sess_mfes), 2) if sess_mfes else None
+    sess_avg_mae = round(sum(sess_maes) / len(sess_maes), 2) if sess_maes else None
+    sess_edge = (
+        round(sess_avg_mfe / sess_avg_mae, 2)
+        if sess_avg_mfe is not None and sess_avg_mae and sess_avg_mae > 0
+        else None
+    )
+    sess_net = round(sum(sess_nets), 2) if sess_closed else None
+    sess_wr = round(len(sess_wins) / len(sess_nets), 3) if sess_nets else None
+    sess_pf = None
+    if sess_sum_loss_abs > 0:
+        sess_pf = round(sess_sum_wins / sess_sum_loss_abs, 2)
+    elif sess_wins and not sess_losses:
+        sess_pf = None
+    elif sess_losses and not sess_wins:
+        sess_pf = 0.0
+    if len(sess_nets) < 3:
+        sess_verdict = "thin_sample"
+        sess_line = "Need ≥3 closed paper GOs today for a session edge read."
+    elif sess_net is not None and sess_net > 0 and (sess_wr or 0) >= 0.5:
+        sess_verdict = "paper_edge_positive"
+        sess_line = "Today's closed paper book is net-positive after costs — descriptive only."
+    elif sess_net is not None and sess_net < 0:
+        sess_verdict = "paper_edge_negative"
+        sess_line = "Today's closed paper book is net-negative after costs — review templates / skips."
+    else:
+        sess_verdict = "mixed"
+        sess_line = "Today's closed paper book is mixed — no clear edge signal yet."
+    session = {
+        "date": session_day,
+        "counts": sess_counts,
+        "emit_fire": sess_fire,
+        "emit_scout": sess_scout,
+        # Cap at 1.0 — EMIT fingerprint dedupe can make STAGE > FIRE emits
+        "stage_rate_vs_fire_emit": (
+            round(min(1.0, sess_counts["STAGE"] / sess_fire), 3) if sess_fire else None
+        ),
+        "skip_rate_vs_fire_emit": (
+            round(min(1.0, sess_counts["SKIP"] / sess_fire), 3) if sess_fire else None
+        ),
+        "open_positions": len(sess_open),
+        "open_opened_today": len(sess_open_today),
+        "unrealized_pnl_inr": round(sum(unrealized), 2) if unrealized else None,
+        "avg_mfe": sess_avg_mfe,
+        "avg_mae": sess_avg_mae,
+        "edge_ratio": sess_edge,
+        "pnl": {
+            "closed_count": len(sess_closed),
+            "wins": len(sess_wins),
+            "losses": len(sess_losses),
+            "win_rate": sess_wr,
+            "net_pnl_inr": sess_net,
+            "gross_pnl_inr": (
+                round(sum(float(r["gross_pnl_inr"] or 0) for r in sess_closed), 2)
+                if sess_closed else None
+            ),
+            "profit_factor": sess_pf,
+        },
+        "verdict": sess_verdict,
+        "line": sess_line,
+    }
 
     # H3 / H5 slices: by mode × state, hour-of-day, DOW, lunch cohort
     by_mode: dict[str, dict[str, int]] = {}
@@ -914,6 +1056,7 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
         "avg_mae": avg_mae,
         "edge_ratio": edge,
         "pnl": pnl,
+        "session": session,
         "by_mode": by_mode,
         "by_strategy_key": dict(sorted(by_strategy.items(), key=lambda x: -x[1])[:20]),
         "by_hour_emit": {h: v.get("EMIT", 0) for h, v in sorted(by_hour.items())},

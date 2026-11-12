@@ -1556,6 +1556,139 @@ def scenario_whatif(
     }
 
 
+def book_side(
+    *,
+    strategy_key: str = "",
+    contracts: list | None = None,
+) -> str:
+    """Coarse book side for conflict checks: bull | bear | neutral.
+
+    Uses strategy_key tokens first, then leg vote (BUY CE / SELL PE → bull;
+    BUY PE / SELL CE → bear). Multi-leg balanced books → neutral.
+    """
+    sk = str(strategy_key or "").upper()
+    if any(t in sk for t in ("BULL", "CONTINUATION_BULL", "BREAK_UP", "CALL_BUY")):
+        if "BEAR" not in sk and "PUT_BUY" not in sk:
+            return "bull"
+    if any(t in sk for t in ("BEAR", "CONTINUATION_BEAR", "BREAK_DOWN", "PUT_BUY")):
+        if "BULL" not in sk:
+            return "bear"
+    vote = 0
+    n = 0
+    for c in contracts or []:
+        if isinstance(c, dict):
+            action = str(c.get("action") or "").upper()
+            opt = str(c.get("opt_type") or "").upper()
+        else:
+            action = str(getattr(c, "action", "") or "").upper()
+            opt = str(getattr(c, "opt_type", "") or "").upper()
+        if not action or not opt:
+            continue
+        n += 1
+        is_call = opt.startswith("C")
+        if action == "BUY":
+            vote += 1 if is_call else -1
+        elif action == "SELL":
+            vote += -1 if is_call else 1
+    if n == 0:
+        return "neutral"
+    if vote > 0:
+        return "bull"
+    if vote < 0:
+        return "bear"
+    return "neutral"
+
+
+def sides_conflict(a: str | None, b: str | None) -> bool:
+    """True when one side is bull and the other bear (neutral never conflicts)."""
+    sa = str(a or "neutral")
+    sb = str(b or "neutral")
+    return {sa, sb} == {"bull", "bear"}
+
+
+def working_fire_advisory(
+    *,
+    strip_decision: dict,
+    open_rows: list[dict],
+) -> dict | None:
+    """Sticky open-FIRE advisory when strip recomputes but paper books are still OPEN.
+
+    Strip = may I take *new* risk. Open row = risk already taken — manage it.
+    """
+    if not open_rows:
+        return None
+    strip = strip_decision or {}
+    strip_state = str(strip.get("state") or "HOLD")
+    strip_sk = str(strip.get("strategy_key") or "")
+    strip_side = book_side(
+        strategy_key=strip_sk,
+        contracts=strip.get("contracts") or [],
+    )
+    opens_out = []
+    conflict_with = None
+    for row in open_rows:
+        decision = row.get("decision") if isinstance(row.get("decision"), dict) else {}
+        if not decision and row.get("decision_json"):
+            try:
+                import json as _json
+                decision = _json.loads(row["decision_json"] or "{}")
+            except Exception:
+                decision = {}
+        sk = str(row.get("strategy_key") or decision.get("strategy_key") or "")
+        contracts = decision.get("contracts") or row.get("contracts") or []
+        side = book_side(strategy_key=sk, contracts=contracts)
+        item = {
+            "decision_id": row.get("decision_id"),
+            "mode": row.get("mode"),
+            "strategy_key": sk or "—",
+            "side": side,
+            "mfe": row.get("mfe"),
+            "mae": row.get("mae"),
+            "trail_armed": bool(row.get("trail_armed")),
+            "unrealized_pnl_inr": row.get("unrealized_pnl_inr"),
+        }
+        opens_out.append(item)
+        if strip_state == "FIRE" and sides_conflict(side, strip_side):
+            conflict_with = item
+
+    primary = opens_out[0]
+    if conflict_with is not None:
+        advisory = "conflict"
+        message = (
+            f"Working open · {conflict_with['strategy_key']} ({conflict_with['side']}) "
+            f"conflicts with new FIRE {strip_sk or '—'} ({strip_side}) — "
+            f"flatten or hedge before staging opposite"
+        )
+    elif strip_state in ("SCOUT", "HOLD"):
+        advisory = "strip_softened"
+        message = (
+            f"Working FIRE · {primary['strategy_key']} · strip now {strip_state} — "
+            f"manage open book, don't re-enter from the strip"
+        )
+    elif strip_state == "FIRE" and strip_sk and strip_sk != primary["strategy_key"]:
+        advisory = "new_candidate"
+        message = (
+            f"Working open · {primary['strategy_key']} still LIVE · strip FIRE is "
+            f"{strip_sk} — manage first book; stage second only if deliberate add"
+        )
+    else:
+        advisory = "manage"
+        message = (
+            f"Working FIRE · {primary['strategy_key']} still OPEN — "
+            f"manage by trail / invalidate / target; strip is new-risk only"
+        )
+
+    return {
+        "advisory": advisory,
+        "message": message,
+        "strip_state": strip_state,
+        "strip_strategy_key": strip_sk or None,
+        "strip_side": strip_side,
+        "open": opens_out,
+        "open_count": len(opens_out),
+    }
+
+
 def fire_template_slice(
     events: list[dict],
     open_rows: list[dict] | None = None,
