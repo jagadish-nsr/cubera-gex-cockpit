@@ -3476,6 +3476,39 @@ _GO_LAST_FIRE_NOTIFY: dict[str, str] = {}  # fingerprint → decision_id
 _GO_LAST_FIRE_STAGE: dict[str, str] = {}  # auto-stage fp → decision_id
 _GO_STAGING_INFLIGHT: set[str] = set()
 _GO_AUTO_STAGE_LOCK = threading.Lock()
+# TE dial is optional GO weight — cache so strip/feed polls do not re-run the
+# full Target Engine pipeline every few seconds (next-open latency risk).
+_GO_TE_DIAL_CACHE: dict[str, tuple[float, float | None]] = {}
+_GO_TE_DIAL_TTL_S = 20.0
+_GO_TE_DIAL_LOCK = threading.Lock()
+
+
+def _go_te_dial_score(sym: str, dash) -> float | None:
+    """Live Target Engine confluence dial, or None (never invent 60/40).
+
+    Cached ~20s per symbol. Failure / missing ATM IV → None and weight excluded.
+    """
+    key = (sym or "").upper()
+    now = time.time()
+    with _GO_TE_DIAL_LOCK:
+        hit = _GO_TE_DIAL_CACHE.get(key)
+        if hit is not None and (now - hit[0]) < _GO_TE_DIAL_TTL_S:
+            return hit[1]
+    score: float | None = None
+    try:
+        te_res = run_target_engine(dashboard_data=dash, horizon_minutes=60, persist=False)
+        sc_set = getattr(te_res, "scenario_set", None)
+        if sc_set is not None:
+            dial = compose_confluence_dial(sc_set, getattr(te_res, "feature_vector", None))
+            raw = dial.get("score") if isinstance(dial, dict) else None
+            if raw is not None and float(raw) > 0:
+                score = float(raw)
+    except Exception as exc:
+        log.debug("go TE dial %s: %s", key, exc)
+        score = None
+    with _GO_TE_DIAL_LOCK:
+        _GO_TE_DIAL_CACHE[key] = (now, score)
+    return score
 
 
 def _go_fire_fingerprint(decision: dict) -> str:
@@ -4286,18 +4319,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
         if breadth_aligned is None and bias:
             breadth_aligned = abs(bias) >= 1.5
         # Real TE dial only — never invent 60/40. Soft-fail leaves weight excluded.
-        te_score = None
-        try:
-            te_res = run_target_engine(dashboard_data=dash, horizon_minutes=60, persist=False)
-            sc_set = getattr(te_res, "scenario_set", None)
-            if sc_set is not None:
-                dial = compose_confluence_dial(sc_set, getattr(te_res, "feature_vector", None))
-                raw = dial.get("score") if isinstance(dial, dict) else None
-                if raw is not None and float(raw) > 0:
-                    te_score = float(raw)
-        except Exception as exc:
-            log.debug("go TE dial: %s", exc)
-            te_score = None
+        te_score = _go_te_dial_score(sym, dash)
         decision = build_directional_decision(
             symbol=sym,
             lot_size=int(idx.lot_size),

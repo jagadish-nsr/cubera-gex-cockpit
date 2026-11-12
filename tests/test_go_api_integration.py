@@ -47,6 +47,7 @@ def _iso_go_dbs(tmp_path, monkeypatch):
     web_server._GO_LAST_FIRE_NOTIFY.clear()
     web_server._GO_LAST_FIRE_STAGE.clear()
     web_server._GO_STAGING_INFLIGHT.clear()
+    web_server._GO_TE_DIAL_CACHE.clear()
     go_eff._LAST_EMIT_FP.clear()
     yield
 
@@ -172,6 +173,41 @@ def test_go_decision_endpoint_emits_fire(monkeypatch):
         assert data.get("auto_stage", {}).get("status") == "auto_staged"
         assert summary["counts"]["STAGE"] >= 1
         assert go_eff.list_open("NIFTY")
+
+
+def test_go_te_dial_score_caches_and_never_invents(monkeypatch):
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise ValueError("target_engine requires live ATM IV — refusing default 0.15")
+
+    monkeypatch.setattr(web_server, "run_target_engine", _boom)
+    web_server._GO_TE_DIAL_CACHE.clear()
+    dash = SimpleNamespace(levels=SimpleNamespace(spot=25400.0, atm_iv=None))
+    assert web_server._go_te_dial_score("NIFTY", dash) is None
+    assert web_server._go_te_dial_score("NIFTY", dash) is None  # cache hit
+    assert calls["n"] == 1
+    # Positive dial is cached too
+    calls["n"] = 0
+
+    def _ok(*a, **k):
+        calls["n"] += 1
+        return SimpleNamespace(
+            scenario_set=SimpleNamespace(conviction=0.72, dominant_scenario="bull"),
+            feature_vector=None,
+        )
+
+    monkeypatch.setattr(web_server, "run_target_engine", _ok)
+    monkeypatch.setattr(
+        web_server,
+        "compose_confluence_dial",
+        lambda *a, **k: {"score": 72},
+    )
+    web_server._GO_TE_DIAL_CACHE.clear()
+    assert web_server._go_te_dial_score("BANKNIFTY", dash) == 72.0
+    assert web_server._go_te_dial_score("BANKNIFTY", dash) == 72.0
+    assert calls["n"] == 1
 
 
 def test_sentinel_led_fire_auto_stages_without_invented_te_breadth(monkeypatch):

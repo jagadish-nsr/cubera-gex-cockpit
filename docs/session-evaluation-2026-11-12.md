@@ -37,6 +37,8 @@ Writer SCOUT `WRITE_OTM` @ 73.8 (Nifty) and directional SCOUT absorption/continu
 5. **GO FIRE path** — missing TE/breadth/tape no longer invents fillers; unused
    weight folds into primary so sentinel-led + live premium can clear FIRE →
    auto-stage. Health version tracks git tag.
+6. **GO TE dial cache** — live TE confluence cached ~20s so strip/feed polls do
+   not re-run the full Target Engine every tick (still never invents 60/40).
 
 ## Diagnosis — Nifty OF scarcity (authentic)
 
