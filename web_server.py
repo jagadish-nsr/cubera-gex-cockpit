@@ -603,6 +603,29 @@ def _iter_cached_ideas(batch) -> list:
     return ideas
 
 
+def _load_rec_sentinel_context(sym: str) -> tuple:
+    """Sentinel bar + signals for Trade Ideas (VWAP/σ gate).
+
+    12-Nov blackout: publisher called generate_trade_recommendations without
+    latest_bar → permanent ``Missing session VWAP`` refuse. Always load bars
+    here; empty tuple means refuse loud, never invent a VWAP envelope.
+    """
+    latest_bar = None
+    sentinel_bars = None
+    sentinel_sigs = None
+    try:
+        inst_id = f"{(sym or '').upper()}-FUT"
+        sentinel_bars = list_recent_bars(
+            inst_id, timeframe="1m", limit=60, session_only=True, _auto_populate=False,
+        )
+        if sentinel_bars:
+            latest_bar = sentinel_bars[-1]
+        sentinel_sigs = list_recent_signals(inst_id, limit=12)
+    except Exception as exc:
+        log.warning("rec publisher Sentinel context %s: %s", sym, exc)
+    return latest_bar, sentinel_bars, sentinel_sigs
+
+
 def _rec_publisher_loop() -> None:
     """Generate ideas, reprice them, and close the book off the event loop.
 
@@ -649,19 +672,7 @@ def _rec_publisher_loop() -> None:
                     bias = _compute_active_directional_bias(dash, sym)
                     # Harden requires live session VWAP/sigma from Sentinel bars —
                     # without this the publisher refused every cycle on 2026-11-12.
-                    latest_bar = None
-                    sentinel_bars = None
-                    sentinel_sigs = None
-                    try:
-                        inst_id = f"{sym}-FUT"
-                        sentinel_bars = list_recent_bars(
-                            inst_id, timeframe="1m", limit=60, session_only=True, _auto_populate=False,
-                        )
-                        if sentinel_bars:
-                            latest_bar = sentinel_bars[-1]
-                        sentinel_sigs = list_recent_signals(inst_id, limit=12)
-                    except Exception as exc:
-                        log.warning("rec publisher Sentinel context %s: %s", sym, exc)
+                    latest_bar, sentinel_bars, sentinel_sigs = _load_rec_sentinel_context(sym)
                     batch = generate_trade_recommendations(
                         dash,
                         bias_result=bias,

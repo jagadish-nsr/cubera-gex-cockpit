@@ -61,5 +61,14 @@ need corridor width are skipped. **Do not invent a second wall.**
 ## Next open checks
 
 1. Ideas publish after first 1m bar (no continuous `rec.refused` VWAP).
+   Regression: `tests/test_rec_publisher_sentinel.py`.
 2. At least one GO FIRE → `go_open` under trend (sentinel-led or Ideas latch; no fabricated T1/T2/SL).
+   Regression: `test_sentinel_led_fire_auto_stages_without_invented_te_breadth`.
 3. BN shared-gamma soft flag visible when walls collapse; Nifty OF stays quiet unless tape earns it.
+
+### Operator checklist (first 30 min)
+
+1. Confirm `/api/health` version matches the promoted tag.
+2. After ~09:16 IST: Ideas count > 0 on Nifty (or refuse reason ≠ Missing session VWAP).
+3. On a ≥65 Sentinel print with live ATM LTP: GO strip reaches FIRE and `go_open` has a row (auto-stage).
+4. If BN walls equal: soft flag `shared_gamma_strike` — do not invent corridor width.

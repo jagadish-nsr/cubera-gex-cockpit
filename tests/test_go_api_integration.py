@@ -174,6 +174,39 @@ def test_go_decision_endpoint_emits_fire(monkeypatch):
         assert go_eff.list_open("NIFTY")
 
 
+def test_sentinel_led_fire_auto_stages_without_invented_te_breadth(monkeypatch):
+    """Next-open path: Ideas dark, no TE/breadth fillers — FIRE still paper-stages go_open."""
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82100, cw=82300, pw=81900, flip=82050, magnet=82100),
+        trade_ideas=[],
+        sentinel_score=82,
+        sentinel_type="ABSORPTION_BEAR",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=None,
+        target_confluence=None,
+        oi_ts="2026-11-12T11:06:00+05:30",
+        chain_ok=True,
+        chain_ltp=95.0,
+    )
+    assert d.state == "FIRE"
+    assert d.targets == {} or not d.targets.get("t1")
+    _stub_compose(monkeypatch, d)
+    status, _, body = asyncio.run(
+        asgi_request("GET", "/api/go/decision?symbol=SENSEX&mode=directional")
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data["decision"]["state"] == "FIRE"
+    assert data.get("auto_stage", {}).get("status") == "auto_staged"
+    opens = go_eff.list_open("SENSEX")
+    assert opens
+    assert opens[0].get("status") == "OPEN" or opens[0].get("decision_id")
+
+
 def test_go_auto_stage_fire_dedupes_while_open(monkeypatch):
     _stub_compose(monkeypatch)
     s1, _, b1 = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
