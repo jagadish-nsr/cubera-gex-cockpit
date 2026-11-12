@@ -625,7 +625,28 @@ def _rec_publisher_loop() -> None:
                 elif do_gen and levels is not None:
                     _kick_commentary_eval(sym, dash)
                     bias = _compute_active_directional_bias(dash, sym)
-                    batch = generate_trade_recommendations(dash, bias_result=bias)
+                    # Harden requires live session VWAP/sigma from Sentinel bars —
+                    # without this the publisher refused every cycle on 2026-11-12.
+                    latest_bar = None
+                    sentinel_bars = None
+                    sentinel_sigs = None
+                    try:
+                        inst_id = f"{sym}-FUT"
+                        sentinel_bars = list_recent_bars(
+                            inst_id, timeframe="1m", limit=60, session_only=True, _auto_populate=False,
+                        )
+                        if sentinel_bars:
+                            latest_bar = sentinel_bars[-1]
+                        sentinel_sigs = list_recent_signals(inst_id, limit=12)
+                    except Exception as exc:
+                        log.warning("rec publisher Sentinel context %s: %s", sym, exc)
+                    batch = generate_trade_recommendations(
+                        dash,
+                        bias_result=bias,
+                        latest_bar=latest_bar,
+                        sentinel_bars=sentinel_bars,
+                        sentinel_signals=sentinel_sigs,
+                    )
                     batch_spot = float(getattr(batch, "spot", 0.0) or 0.0)
                     n_ideas = len(_iter_cached_ideas(batch))
                     with _REC_LOCK:
