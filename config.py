@@ -283,3 +283,39 @@ def is_market_open(now: datetime | None = None, include_fno_extended: bool = Tru
         pass
 
     return clock.open_min <= t_min < close_min
+
+
+def is_chain_ingest_open(now: datetime | None = None) -> bool:
+    """True from NSE pre-market discovery (~09:07) through FNO close.
+
+    Background chain lanes should fetch in this window so the first post-open
+    cockpit poll is not a cold 503. Continuous cash/FnO open is still
+    :func:`is_market_open` (09:15).
+    """
+    from datetime import datetime, timezone, timedelta
+    from data.session_calendar import clock_for, is_muhurat_session
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if now is None:
+        now = datetime.now(ist)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=ist)
+    else:
+        now = now.astimezone(ist)
+
+    clock = clock_for(now.date())
+    t_min = now.hour * 60 + now.minute
+    close_min = int(getattr(clock, "fno_close_min", 15 * 60 + 40))
+    discovery_min = int(getattr(clock, "discovery_min", max(0, int(getattr(clock, "open_min", 9 * 60 + 15)) - 8)))
+
+    if is_muhurat_session(now.date()):
+        return discovery_min <= t_min < close_min
+    if now.weekday() >= 5:
+        return False
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(now.date()):
+            return False
+    except Exception:
+        pass
+    return discovery_min <= t_min < close_min

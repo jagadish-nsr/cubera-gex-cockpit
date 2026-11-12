@@ -3408,7 +3408,7 @@ def generate_trade_recommendations(
 
     # Expiry gamma-blast risk conditioner (map, not a CE/PE direction boost).
     blast_adj: dict = {"applies": False, "size_mult": 1.0, "tag": "", "risk_line": "",
-                       "active": False, "coiling": False, "primary_strike": None}
+                       "active": False, "coiling": False, "pin": False, "primary_strike": None}
     _blast_penalty_fn = None
     try:
         from app.blast_risk import apply_active_short_magnet_penalty as _blast_penalty_fn

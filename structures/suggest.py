@@ -81,7 +81,7 @@ def suggest_structures(
     spot = float(getattr(levels, "spot", 0.0) or 0.0)
     blast_adj = blast_risk_adjust(blast, spot) if (is_expiry_day or blast) else {
         "applies": False, "size_mult": 1.0, "tag": "", "risk_line": "",
-        "active": False, "coiling": False, "primary_strike": None,
+        "active": False, "coiling": False, "pin": False, "primary_strike": None,
     }
 
     candidates = _base_structures(

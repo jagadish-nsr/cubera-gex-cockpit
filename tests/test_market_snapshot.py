@@ -257,6 +257,54 @@ def test_older_sqlite_row_does_not_replace_a_newer_book(tmp_path, monkeypatch):
     assert out.levels.call_wall == 23000.0
 
 
+def test_book_stale_skips_sub_minute_lag(tmp_path, monkeypatch):
+    """Sub-minute SQLite lag must not flood book.stale (11-Nov audit noise)."""
+    local = tmp_path / "local"
+    local.mkdir()
+    monkeypatch.setattr("data.market_snapshot.candidate_journals", lambda: [local])
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", local / "market_snapshot.db")
+    monkeypatch.setattr("config.is_market_open", lambda: True)
+    # Snapshot 30s behind the book
+    book_ts = datetime(2026, 11, 11, 10, 0, 30, tzinfo=timezone.utc)
+    snap_ts = "2026-11-11T10:00:00+00:00"
+    _save_nifty(25100.0, 25000.0, snap_ts)
+
+    noted: list[str] = []
+    monkeypatch.setattr(
+        "web_server.event",
+        lambda name, **kw: noted.append(name),
+    )
+    from web_server import _overlay_sqlite_kpis
+
+    book = _Dash(25100.0, book_ts)
+    out = _overlay_sqlite_kpis(book, "NIFTY")
+    assert out.levels.spot == 25100.0
+    assert "book.stale" not in noted
+
+
+def test_book_stale_emits_when_lag_is_material(tmp_path, monkeypatch):
+    local = tmp_path / "local"
+    local.mkdir()
+    monkeypatch.setattr("data.market_snapshot.candidate_journals", lambda: [local])
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", local / "market_snapshot.db")
+    monkeypatch.setattr("config.is_market_open", lambda: True)
+    book_ts = datetime(2026, 11, 11, 10, 5, 0, tzinfo=timezone.utc)
+    _save_nifty(25100.0, 25000.0, "2026-11-11T10:00:00+00:00")  # 5 min lag
+
+    noted: list[dict] = []
+    monkeypatch.setattr(
+        "web_server.event",
+        lambda name, **kw: noted.append({"name": name, **kw}),
+    )
+    from web_server import _overlay_sqlite_kpis
+
+    book = _Dash(25100.0, book_ts)
+    _overlay_sqlite_kpis(book, "NIFTY")
+    stale = [e for e in noted if e["name"] == "book.stale"]
+    assert len(stale) == 1
+    assert stale[0].get("lag_s", 0) >= 60.0
+
+
 def test_format_ist_stamp_and_offmarket_clock():
     from data.market_snapshot import format_ist_stamp, offmarket_book_clock, session_date_label
 

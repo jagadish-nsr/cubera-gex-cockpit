@@ -10,6 +10,8 @@ from app.data_access import DashboardData, _bundle_from_journal_pickle, load_das
 
 def test_load_dashboard_demo():
     d = load_dashboard(window="0dte_to_next_monthly", use_demo=True)
+    assert d.network_ms == 0.0
+    assert d.compute_ms >= 0.0
     assert isinstance(d, DashboardData)
     assert d.source == "DEMO-SYNTHETIC"
     assert d.levels.spot > 0

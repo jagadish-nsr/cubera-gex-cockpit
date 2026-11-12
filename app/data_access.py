@@ -89,6 +89,8 @@ class DashboardData:
     degraded_reason: str = ""          # IOAS §2.2 reason for degradation
     derivatives_frozen: bool = False   # IOAS §2.2 derivative freeze flag
     circuit_state: str = "CLOSED"      # IOAS §2.2 circuit breaker state
+    network_ms: float = 0.0            # gate+HTTP+chain parse wall (live path)
+    compute_ms: float = 0.0            # GEX/levels/greeks wall after chain ready
 
     @property
     def raw_agg(self) -> dict:
@@ -293,6 +295,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                           parse_nse_option_chain, per_strike_nearest_changes,
                           per_strike_oi)
 
+    network_ms = 0.0
+    t_compute0 = time.perf_counter()
+
     if use_demo:
         from data.demo import build_demo_payload, build_demo_rows
 
@@ -303,6 +308,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         usdinr = None
         news = None
         sectors = None
+        t_compute0 = time.perf_counter()
 
     else:
         # Check Circuit Breaker before making network calls
@@ -352,6 +358,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 raise TimeoutError(f"{idx.symbol} chain was not ready within 35s")
             payload, source, day_ohlc, source_note = chain
             rows, spot = parse_nse_option_chain(payload)
+            # Wall through gate+HTTP+JSON parse. News/sectors continue in parallel.
+            network_ms = (time.monotonic() - t_start) * 1000.0
+            t_compute0 = time.perf_counter()
             news = _wait_worker(_fx["news"], 12.0, f"{idx.symbol} news")
             sectors = _wait_worker(_fx["sectors"], 12.0, f"{idx.symbol} sectors")
             proxy_vanna = _wait_worker(_fx["proxy"], 12.0, f"{idx.symbol} proxy vanna") if "proxy" in _fx else None
@@ -467,6 +476,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             s["call_oi_near"] = c.get("call_oi_near")   # nearest-expiry abs OI (trailing windows)
             s["put_oi_near"] = c.get("put_oi_near")
     gk = _live_greeks(snap.contracts, float(levels.spot), idx.lot_size)
+    compute_ms = (time.perf_counter() - t_compute0) * 1000.0
     bundle = DashboardData(
         levels=levels, view=view, fetched_at=fetched_at,
         contracts=snap.contracts,
@@ -482,6 +492,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         degraded_reason="",
         derivatives_frozen=False,
         circuit_state=cb.state.value if not use_demo else "CLOSED",
+        network_ms=round(float(network_ms), 1),
+        compute_ms=round(float(compute_ms), 1),
     )
     get_lkgs_manager().store(idx.symbol, bundle, fetched_at=fetched_at)
     return bundle

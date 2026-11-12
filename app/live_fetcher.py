@@ -218,9 +218,10 @@ def _loop(store_key) -> None:
         )
         window = cfg.get("window")
         import config
-        # This loop stays idle off-market. Dhan is called only by the explicit
-        # sync: manual, 06:30 IST, or a new session token.
-        if not config.is_market_open() and not use_demo:
+        # Idle outside discovery→FNO close. Discovery (~09:07) pre-warms the
+        # book before the 09:15 continuous open. Explicit Dhan sync still runs
+        # off this loop (manual / 06:30 / new token).
+        if not config.is_chain_ingest_open() and not use_demo:
             if not close_saved:
                 pub = _STORE.get(store_key) or {}
                 data = pub.get("data")
@@ -301,6 +302,8 @@ def _loop(store_key) -> None:
                     "chain.published",
                     workflow=f"chain.{symbol}",
                     duration_ms=round((time.perf_counter() - started) * 1000.0, 1),
+                    network_ms=round(float(getattr(data, "network_ms", 0.0) or 0.0), 1),
+                    compute_ms=round(float(getattr(data, "compute_ms", 0.0) or 0.0), 1),
                     window=window,
                     spot_stale=spot_stale,
                     spot_held_s=round(spot_held_s, 1),

@@ -1,4 +1,4 @@
-"""Fast OPTION lane for the gamma blast — the NEAREST-EXPIRY chain, every ~10s.
+"""Fast OPTION lane for the gamma blast — the NEAREST-EXPIRY chain, every ~8s on expiry.
 
 The blast score reads writer covering (ΔOI on the pain side) and premium expansion, which used to
 come from the full-window chain — so the *fuel* reading sat at that 1-5 min beat even after the
@@ -35,7 +35,7 @@ _THREADS: dict = {}
 _CFG: dict = {}                    # symbol -> {"band_pts": float|None, "interval": s}
 _LOCK = threading.Lock()
 
-DEFAULT_INTERVAL_S = 10.0
+DEFAULT_INTERVAL_S = 8.0           # denser covering tape (10s left unknown-cover sticky on 9 Nov)
 STALE_AFTER_S = 60.0               # the chain fallback is only minutes old, so don't cling to junk
 
 

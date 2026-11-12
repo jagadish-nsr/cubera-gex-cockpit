@@ -285,7 +285,7 @@ must not leave TRIGGERED and NO_TRIGGER in the same minute.
 |----------|----------|
 | Cockpit UI + audio | Badge/score colors; COILING → heartbeat; TRIGGERED/ACTIVE → intensity-linked engine rev |
 | `analytics/market_alert.py` | Expiry + score ≥ 60 prefixes alert badge; no direction scoring |
-| `app/blast_risk.py` | Expiry COILING → size × **0.75**; ACTIVE → × **0.50**; tags / risk lines; optional short-near-magnet quality **penalty** only — **never** boosts CE/PE quality for blast |
+| `app/blast_risk.py` | Expiry COILING → size × **0.75**; ACTIVE → × **0.50**; PIN/COMPRESS → × **0.40**; ACTIVE+FAKE/WEAK sustain → × **0.45**; tags / risk lines; optional short-near-magnet quality **penalty** only — **never** boosts CE/PE quality for blast |
 | `analytics/trade_ideas.py` / `structures/suggest.py` | Same live eval; de-size + annotate; shorts nudged off magnet / primary strike |
 
 Learning from score journals / promoting lottery longs from blast is **out of

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from app.blast_risk import (
     SIZE_MULT_ACTIVE,
     SIZE_MULT_COILING,
+    SIZE_MULT_FAKE_SUSTAIN,
+    SIZE_MULT_PIN,
     SHORT_NEAR_MAGNET_PENALTY,
     apply_active_short_magnet_penalty,
     blast_risk_adjust,
@@ -55,6 +57,45 @@ def test_active_stronger_desize():
     assert adj["size_mult"] == SIZE_MULT_ACTIVE
     assert "ACTIVE" in adj["tag"]
     assert "magnet" in adj["risk_line"].lower()
+
+
+def test_pin_compress_cuts_harder_than_active_no_direction():
+    """Nifty 9-style collapsed walls → PIN mult; still no CE/PE boost."""
+    adj = blast_risk_adjust(
+        {
+            "is_expiry": True,
+            "state": "TRIGGERED",
+            "score": 85,
+            "badge": "GAMMA PIN: COMPRESS",
+            "primary_strike": 25000,
+            "pin_geometry": True,
+            "sustain_grade": "FAKE-leaning (pin/cap)",
+        },
+        spot=25005,
+    )
+    assert adj["active"] is True
+    assert adj["pin"] is True
+    assert adj["size_mult"] == SIZE_MULT_PIN
+    assert adj["size_mult"] < SIZE_MULT_ACTIVE
+    assert "PIN" in adj["tag"]
+    assert "expansion" in adj["risk_line"].lower()
+    assert "dealers" not in adj["risk_line"].lower()
+
+
+def test_fake_sustain_active_desizes_without_raising_side():
+    adj = blast_risk_adjust(
+        {
+            "is_expiry": True,
+            "state": "TRIGGERED",
+            "score": 70,
+            "badge": "GAMMA BLAST: ACTIVE",
+            "pin_geometry": False,
+            "sustain_grade": "WEAK / unconfirmed",
+        },
+        spot=79100,
+    )
+    assert adj["size_mult"] == SIZE_MULT_FAKE_SUSTAIN
+    assert SIZE_MULT_PIN < adj["size_mult"] < SIZE_MULT_ACTIVE or adj["size_mult"] == SIZE_MULT_FAKE_SUSTAIN
 
 
 def test_no_trigger_on_expiry_noop():

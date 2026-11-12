@@ -253,9 +253,11 @@ async def _start_ingest_lanes():
         today = _dt.now(IST).strftime("%Y-%m-%d")
         from app.blast_ticker import ensure as ensure_blast_lane
 
+        # 8s on the expiry index: denser covering tape for the live card
+        # (10s left unknown-cover caps sticky on 9 Nov). Non-expiry indices stay off.
         for sym, idx in config.INDICES.items():
             if is_expiry_day(sym, today):
-                ensure_blast_lane(sym, band_pts=idx.band_pts, interval_s=10.0)
+                ensure_blast_lane(sym, band_pts=idx.band_pts, interval_s=8.0)
 
     _run_lane("admin.monitor", _admin)
     _run_lane("spot.warmup", _spot)
@@ -263,13 +265,13 @@ async def _start_ingest_lanes():
     _run_lane("dhan.sync", _dhan)
     _run_lane("rec.publisher", _ensure_rec_publisher)
     _run_lane("blast.lane", _blast_lane)
-    # Warm the option book from pre-market discovery (09:07), not only the
-    # 09:15 open — 9-Nov cold-start 503s at 09:15:44 hit an empty store.
-    if not _chain_lanes_should_run():
-        return
+    # Always arm all three index chains at boot. Threads idle off-hours; a
+    # overnight / post-close start must not leave BANKNIFTY dark until someone
+    # opens that tab. chain.arm re-ensures through the discovery→close window.
     window = _ACTIVE_STATE.get("window") or "current_week"
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
         _run_lane(f"chain.{sym}", lambda sym=sym: _ensure_chain_ingest(sym, window))
+    _run_lane("chain.arm", _ensure_chain_armer)
 
 
 # --------------------------------------------------------------------------
@@ -551,6 +553,7 @@ _WS_HEARTBEAT_S = 1.0
 _REC_BATCH: Dict[tuple, Any] = {}
 _REC_LOCK = __import__("threading").Lock()
 _REC_THREAD = None
+_CHAIN_ARM_THREAD = None
 _COMMENTARY_LOCKS: dict[str, __import__("threading").Lock] = {}
 _COMMENTARY_LOCK = None
 
@@ -598,6 +601,8 @@ def _rec_publisher_loop() -> None:
             do_gen = (now - last_gen) >= 20.0
             ran_life = False
             for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+                # Rec loops every index; arm ingest even if UI never selected BN.
+                _ensure_chain_ingest(sym, win)
                 dash = (chain_latest(sym, win) or {}).get("data")
                 quote = latest_quote(sym) or {}
                 quote_spot = float(quote.get("spot") or 0.0)
@@ -806,30 +811,40 @@ def _chain_lanes_should_run(now: datetime | None = None) -> bool:
     Regular ``is_market_open`` starts at 09:15. Starting chain ingest at 09:07
     pre-warms spot/GEX so the first cockpit poll after the open is not a 503.
     """
-    now_ist = now or datetime.now(IST)
-    if now_ist.tzinfo is None:
-        now_ist = now_ist.replace(tzinfo=IST)
-    else:
-        now_ist = now_ist.astimezone(IST)
-    try:
-        from data.session_calendar import clock_for, is_muhurat_session
-        from data.holidays import is_holiday
+    return config.is_chain_ingest_open(now)
 
-        clock = clock_for(now_ist.date())
-        t_min = now_ist.hour * 60 + now_ist.minute
-        close_min = int(getattr(clock, "fno_close_min", 15 * 60 + 40))
-        # Discovery opens ~8 minutes before the continuous session.
-        discovery_min = max(0, int(getattr(clock, "open_min", 9 * 60 + 15)) - 8)
-        if is_muhurat_session(now_ist.date()):
-            return discovery_min <= t_min < close_min
-        if now_ist.weekday() >= 5:
-            return False
-        if is_holiday(now_ist.date()):
-            return False
-        return discovery_min <= t_min < close_min
-    except Exception:
-        t_min = now_ist.hour * 60 + now_ist.minute
-        return (9 * 60 + 7) <= t_min < (15 * 60 + 40) and now_ist.weekday() < 5
+
+def _ensure_all_chain_ingest(window: Optional[str] = None) -> None:
+    """Arm NIFTY / BANKNIFTY / SENSEX for the active expiry window."""
+    win = window or _ACTIVE_STATE.get("window") or "current_week"
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        _ensure_chain_ingest(sym, win)
+
+
+def _chain_arm_loop() -> None:
+    """Re-arm all three chains while discovery→close is open.
+
+    Recovers dead threads after watchdog execv and keeps BANKNIFTY alive when
+    the UI never selects it. Off-hours it sleeps; threads already idle in
+    ``live_fetcher``.
+    """
+    while True:
+        try:
+            if _chain_lanes_should_run():
+                _ensure_all_chain_ingest()
+        except Exception:
+            log.warning("chain.arm failed", exc_info=True)
+        time.sleep(30.0)
+
+
+def _ensure_chain_armer() -> None:
+    global _CHAIN_ARM_THREAD
+    t = _CHAIN_ARM_THREAD
+    if t is not None and t.is_alive():
+        return
+    t = threading.Thread(target=_chain_arm_loop, name="chain-arm", daemon=True)
+    _CHAIN_ARM_THREAD = t
+    t.start()
 
 
 def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
@@ -901,19 +916,32 @@ def _overlay_sqlite_kpis(dash, sym: str):
             return dash
         dash.snapshot_as_of = db_snap.get("as_of")
         if snapshot_is_older_than(db_snap, getattr(dash, "fetched_at", None)):
+            from data.market_snapshot import as_of_datetime
+            snap_dt = as_of_datetime(db_snap.get("as_of"))
+            book_dt = getattr(dash, "fetched_at", None)
+            lag_s = None
+            if snap_dt is not None and book_dt is not None:
+                if book_dt.tzinfo is None:
+                    from data.market_snapshot import _IST
+                    book_dt = book_dt.replace(tzinfo=_IST)
+                lag_s = (book_dt.astimezone(snap_dt.tzinfo) - snap_dt).total_seconds()
             log.warning(
                 "%s snapshot %s is older than the loaded book (%s); keeping the book",
                 sym, db_snap.get("as_of"), getattr(dash, "fetched_at", None),
             )
-            event(
-                "book.stale",
-                level="WARNING",
-                ok=False,
-                workflow=f"book.{sym}",
-                symbol=sym,
-                snapshot_as_of=str(db_snap.get("as_of")),
-                book_fetched=str(getattr(dash, "fetched_at", None)),
-            )
+            # Sub-minute lag is normal while SQLite KPI rows trail a fresh chain
+            # publish; only journal material staleness (audit noise on 11 Nov).
+            if lag_s is None or lag_s >= 60.0:
+                event(
+                    "book.stale",
+                    level="WARNING",
+                    ok=False,
+                    workflow=f"book.{sym}",
+                    symbol=sym,
+                    snapshot_as_of=str(db_snap.get("as_of")),
+                    book_fetched=str(getattr(dash, "fetched_at", None)),
+                    lag_s=round(float(lag_s), 1) if lag_s is not None else None,
+                )
             _note_stale_session(dash, db_snap)
             return dash
         # A quote row and a chain are different books. Copying the newer
