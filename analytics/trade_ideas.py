@@ -2843,6 +2843,7 @@ def _evaluate_pe_strategies(
 
 def _empty_recommendation_batch(symbol: str, reason: str) -> RecommendationBatch:
     """No ideas. Used when the chain spot is missing or the book is the demo fixture."""
+    log.warning("trade_ideas refuse %s: %s", symbol, reason)
     return RecommendationBatch(
         symbol=symbol,
         spot=0.0,
@@ -2853,6 +2854,7 @@ def _empty_recommendation_batch(symbol: str, reason: str) -> RecommendationBatch
         directional_bias_score=0.0,
         bias_regime="UNAVAILABLE",
         executive_summary=reason,
+        top_recommended_side="NONE",
     )
 
 

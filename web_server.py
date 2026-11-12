@@ -621,14 +621,27 @@ def _rec_publisher_loop() -> None:
                     _kick_commentary_eval(sym, dash)
                     bias = _compute_active_directional_bias(dash, sym)
                     batch = generate_trade_recommendations(dash, bias_result=bias)
-                    if float(getattr(batch, "spot", 0.0) or 0.0) > 0:
-                        with _REC_LOCK:
-                            _REC_BATCH[(sym, win)] = batch
+                    batch_spot = float(getattr(batch, "spot", 0.0) or 0.0)
+                    n_ideas = len(_iter_cached_ideas(batch))
+                    with _REC_LOCK:
+                        # Always publish: empty refuse clears stale scored cards and
+                        # surfaces executive_summary to the UI (never leave yesterday's ideas).
+                        _REC_BATCH[(sym, win)] = batch
+                    if batch_spot <= 0 or n_ideas == 0:
+                        reason = str(getattr(batch, "executive_summary", "") or "no ideas")
+                        log.warning("rec.refused %s: %s", sym, reason)
+                        event(
+                            "rec.refused",
+                            workflow="rec.generate",
+                            symbol=sym,
+                            reason=reason[:200],
+                            count=0,
+                        )
                     event(
                         "rec.generated",
                         workflow="rec.generate",
                         symbol=sym,
-                        count=len(_iter_cached_ideas(batch)),
+                        count=n_ideas,
                     )
                 if spot > 0 and _latest_rec_batch(sym, win) is not None:
                     _refresh_cached_rec_quotes(sym, spot)
@@ -2843,7 +2856,20 @@ async def get_target_engine(
     idx = config.get_index(sym)
     dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     horizon_val = int(horizon) if horizon else 120
-    res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
+    try:
+        res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
+    except ValueError as exc:
+        log.warning("target_engine refuse %s: %s", sym, exc)
+        return {
+            "symbol": sym,
+            "error": "target_engine_unavailable",
+            "message": str(exc),
+            "dial": None,
+            "targets": {},
+            "candidates": [],
+            "ladder": [],
+            "scenario_set": None,
+        }
     spot = float(dash.levels.spot or 0.0)
 
     sc_set = res.scenario_set
@@ -3092,17 +3118,21 @@ async def reprice_target_engine(payload: dict = Body(...)):
         strike_iv = max(0.07, min(0.90, float(strike_iv)))
 
     if strike_iv is None or strike_iv <= 0:
+        msg = "This strike has no implied vol, so the repricer has nothing to price."
+        log.warning("reprice refuse %s %s %s %s: implied_vol_unavailable", sym, sel_expiry, int(sel_strike), sel_type)
         return {
             "error": "implied_vol_unavailable",
             "contract": f"{sym} {sel_expiry} {int(sel_strike)} {sel_type}",
-            "message": "This strike has no implied vol, so the repricer has nothing to price.",
+            "message": msg,
         }
 
     if market_ltp is None or market_ltp <= 0:
+        msg = "No live option premium for this strike — theo entry is not used as a fill."
+        log.warning("reprice refuse %s %s %s %s: market_ltp_unavailable", sym, sel_expiry, int(sel_strike), sel_type)
         return {
             "error": "market_ltp_unavailable",
             "contract": f"{sym} {sel_expiry} {int(sel_strike)} {sel_type}",
-            "message": "No live option premium for this strike — theo entry is not used as a fill.",
+            "message": msg,
         }
 
     p_theo_curr = price(base_fut, sel_strike, T_now, strike_iv, 0.065, sel_type)
@@ -4380,6 +4410,8 @@ async def get_go_structure_payoff(
         "mode": decision.get("mode"),
         "payoff": curve,
         "greeks": greeks,
+        "greeks_unavailable": not bool(greeks),
+        "iv_pct": iv,
         "smile": smile,
         "manage_actions": actions,
         "risk": decision.get("risk") or {},
@@ -4661,12 +4693,14 @@ async def get_go_whatif(
     iv, _rv = _go_iv_rv(await _aload_active_dashboard(sym, win), sym)
     iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
     if iv_dec is None:
+        log.warning("go/whatif refuse %s: implied_vol_unavailable", sym)
         return {
             "symbol": sym,
             "mode": decision.get("mode"),
             "error": "implied_vol_unavailable",
             "message": "What-if needs live ATM IV — no default 0.14 fill.",
             "scenarios": [],
+            "whatif": {"scenarios": [], "error": "implied_vol_unavailable"},
         }
     return {
         "symbol": sym,
@@ -5155,16 +5189,27 @@ async def execute_trade(payload: dict = Body(...)):
 
     expiry = payload.get("expiry")
     if not expiry:
-        return JSONResponse(
-            {"status": "error", "message": "expiry is required — no hardcoded 2026-10-15 fill"},
-            status_code=400,
+        # Calendar next expiry is authentic; a hardcoded 2026-10-15 is not.
+        today_ist = _get_ist_now().date()
+        exch = getattr(idx, "exchange", "NSE")
+        exp_date = (
+            next_weekly_expiry(today_ist, exch)
+            if getattr(idx, "has_weekly", True)
+            else next_monthly_expiry(today_ist, exch)
         )
+        expiry = exp_date.isoformat()
+        log.warning("paper execute: expiry omitted — using calendar %s for %s", expiry, sym)
     entry_spot = payload.get("spot")
     if entry_spot is None:
-        return JSONResponse(
-            {"status": "error", "message": "spot is required — no strike-as-spot fill"},
-            status_code=400,
-        )
+        from app.spot_ticker import latest_quote as _lq
+        q_spot = float((_lq(sym) or {}).get("spot") or 0)
+        if q_spot <= 0:
+            return JSONResponse(
+                {"status": "error", "message": "spot is required — no live quote and no strike-as-spot fill"},
+                status_code=400,
+            )
+        entry_spot = q_spot
+        log.warning("paper execute: spot omitted — using live quote %.2f for %s", q_spot, sym)
     leg = {
         "action": "BUY",
         "type": side,

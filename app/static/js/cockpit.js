@@ -2611,11 +2611,15 @@
       const data = await res.json();
       if (!res.ok) return;
       const net = (data.greeks && data.greeks.net) || {};
-      if (gEl && net.delta != null) {
-        gEl.innerHTML = `Net Δ ${net.delta} · Γ ${net.gamma} · Vega ${net.vega} · Θ ${net.theta}`
-          + (data.greeks.note ? ` · <span class="go-muted">${data.greeks.note}</span>` : "")
-          + renderGoPerLegGreeks(data.greeks)
-          + (mode !== "directional" ? renderGoSmileLine(data.smile) : "");
+      if (gEl) {
+        if (net.delta != null) {
+          gEl.innerHTML = `Net Δ ${net.delta} · Γ ${net.gamma} · Vega ${net.vega} · Θ ${net.theta}`
+            + (data.greeks.note ? ` · <span class="go-muted">${data.greeks.note}</span>` : "")
+            + renderGoPerLegGreeks(data.greeks)
+            + (mode !== "directional" ? renderGoSmileLine(data.smile) : "");
+        } else if (data.greeks_unavailable || data.iv_pct == null) {
+          gEl.innerHTML = `<span class="go-muted">Greeks withheld — live ATM IV unavailable (no 0.14 fill).</span>`;
+        }
       }
       if (mode === "directional") {
         if (mEl) {
@@ -2636,8 +2640,14 @@
         fetch(`/api/go/whatif?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(mode)}`)
           .then((r) => r.json())
           .then((wf) => {
+            if (!pEl) return;
+            if (wf.error) {
+              pEl.insertAdjacentHTML("beforeend",
+                `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">${wf.message || wf.error}</div>`);
+              return;
+            }
             const rows = (wf.whatif && wf.whatif.scenarios) || [];
-            if (!rows.length || !pEl) return;
+            if (!rows.length) return;
             const mid = rows.filter((s) => Math.abs(s.shock_pct) <= 1.0);
             pEl.insertAdjacentHTML("beforeend",
               `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">What-if (Black-76)</div>
@@ -4969,6 +4979,21 @@
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
 
+      if (data.error || !data.dial) {
+        const why = data.message || data.error || "Target Engine needs live spot and ATM IV.";
+        const dialVerdict = document.getElementById("dial-verdict");
+        if (dialVerdict) {
+          dialVerdict.textContent = "UNAVAILABLE";
+          dialVerdict.style.color = "var(--spark)";
+        }
+        const scoreEl = document.getElementById("dial-score-num");
+        if (scoreEl) scoreEl.textContent = "—";
+        const convBadge = document.getElementById("dial-conviction-badge");
+        if (convBadge) convBadge.textContent = "NO FILL";
+        showToast(why, "⚠");
+        return;
+      }
+
       const dialVerdict = document.getElementById("dial-verdict");
       if (dialVerdict) {
         dialVerdict.textContent = data.dial.verdict;
@@ -5432,7 +5457,13 @@
         body: JSON.stringify(payload),
       });
       const data = await res.json();
-      if (!data.target || !data.stop_loss) return;
+      if (data.error || !data.target || !data.stop_loss) {
+        const why = data.message || data.error || "Repricer needs live premium and IV — no theo fill.";
+        showToast(why, "⚠");
+        const sSub = document.getElementById("te-strip-sub");
+        if (sSub) sSub.textContent = why;
+        return;
+      }
 
       // 1. Update Contract Strip
       const sTitle = document.getElementById("te-strip-title");
@@ -5729,7 +5760,27 @@
         loadSentinelRecommendations();
         return;
       }
-      if (noticeContainer) noticeContainer.innerHTML = "";
+      const hiCe = (data.higher_conviction && data.higher_conviction.ce_clusters) || [];
+      const hiPe = (data.higher_conviction && data.higher_conviction.pe_clusters) || [];
+      const loCe = (data.fallback_tier && data.fallback_tier.ce_clusters) || [];
+      const loPe = (data.fallback_tier && data.fallback_tier.pe_clusters) || [];
+      const tacCe = (data.tactical_tier && data.tactical_tier.ce_clusters) || [];
+      const tacPe = (data.tactical_tier && data.tactical_tier.pe_clusters) || [];
+      const noIdeas = !(hiCe.length || hiPe.length || loCe.length || loPe.length || tacCe.length || tacPe.length);
+      const refuseMsg = (data.executive_summary || "").trim();
+      const refuseBias = String(data.top_recommended_side || "").toUpperCase() === "NONE"
+        || /missing|unavailable|not built|paused|awaiting/i.test(refuseMsg);
+      if (noticeContainer) {
+        if (noIdeas && refuseMsg && refuseBias) {
+          noticeContainer.innerHTML = `
+            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin-bottom:20px">
+              <div style="font-size:0.78rem;font-weight:800;color:var(--spark);margin-bottom:4px;letter-spacing:0.04em">IDEAS WITHHELD</div>
+              <p style="font-size:0.86rem;color:var(--ink);margin:0;line-height:1.45">${refuseMsg}</p>
+            </div>`;
+        } else {
+          noticeContainer.innerHTML = "";
+        }
+      }
 
       // Render Higher Conviction: CE on Left, PE on Right
       renderClusterList("higher-ce-container", data.higher_conviction ? data.higher_conviction.ce_clusters : [], "CE", false);
@@ -8823,6 +8874,10 @@
 
   window.executePaperTrade = async function (recId, optSymbol, strike, side, ltp, lots) {
     try {
+      if (ltp == null || !(Number(ltp) > 0) || strike == null || !(Number(strike) > 0)) {
+        showToast("Live LTP and strike required — paper trade not staged.", "⚠");
+        return;
+      }
       const res = await fetch("/api/recommendations/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -8838,14 +8893,19 @@
         }),
       });
       const data = await res.json();
+      if (!res.ok || data.status === "error") {
+        showToast(data.message || data.detail || "Paper trade refused", "⚠");
+        return;
+      }
       playSuccessChime();
-      showToast(data.message, "🚀");
+      showToast(data.message || "Paper trade staged", "🚀");
 
       // Switch to Journal tab automatically
       const journalTabBtn = document.querySelector('[data-tab="tab-journal"]');
       if (journalTabBtn) journalTabBtn.click();
     } catch (e) {
       console.error("Error executing trade:", e);
+      showToast("Paper trade failed — see console", "⚠");
     }
   };
 

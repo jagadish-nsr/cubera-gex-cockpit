@@ -508,6 +508,7 @@ def _bootstrap_from_disk(symbol: str) -> dict[str, Any] | None:
 
     if not spot:
         # No authentic print on disk — fail loud. Never invent 22,721 / walls±100 / VIX 14.
+        log.warning("_bootstrap_from_disk(%s): no authentic spot on disk — snapshot unavailable", sym)
         return None
 
     if cw is None or pw is None or flip is None:
