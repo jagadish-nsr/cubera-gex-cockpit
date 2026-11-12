@@ -74,3 +74,16 @@ need corridor width are skipped. **Do not invent a second wall.**
 2. After ~09:16 IST: Ideas count > 0 on Nifty (or refuse reason ≠ Missing session VWAP).
 3. On a ≥65 Sentinel print with live ATM LTP: GO strip reaches FIRE and `go_open` has a row (auto-stage).
 4. If BN walls equal: soft flag `shared_gamma_strike` — do not invent corridor width.
+
+## Offline audit (12-Nov night, v5.3.112+)
+
+| Gap | Status | Evidence |
+|---|---|---|
+| Ideas VWAP publisher | **Fixed** | `_load_rec_sentinel_context` + `test_rec_publisher_sentinel.py` |
+| GO FIRE / auto-stage | **Fixed (code)** | optional weight fold + `test_sentinel_led_fire_auto_stages_*` |
+| Fabricated GO T1/T2/SL | **Fixed** | no LTP×ratios; empty targets on sentinel-led |
+| Invented TE 60/40 | **Fixed** | live dial or None; 20s cache |
+| BN equal walls | **Fixed (surface)** | `shared_gamma_strike`; VANNA skipped; authentic map |
+| Nifty OF scarcity | **Not a bug** | quieter \|Δratio\|; CONT gates kept |
+| Snapshot `cw >= pw` test | **Fixed** | assertion removed — Sensex pw can exceed cw |
+| Live Ideas / FIRE proof | **Open** | needs next session after ~09:16 IST |

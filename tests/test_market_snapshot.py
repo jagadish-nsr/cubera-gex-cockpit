@@ -65,7 +65,8 @@ def test_market_snapshot_bootstrap_authentic_values():
         assert snap is not None
         assert snap["spot"] >= expected_spot_range[0]
         assert snap["spot"] <= expected_spot_range[1]
-        assert snap["call_wall"] >= snap["put_wall"]
+        # Walls are independent concentration peaks — call may be below put
+        # (Sensex 12-Nov close: cw 81900 / pw 82000). Never require cw >= pw.
         assert snap["call_wall"] > 0.0
         assert snap["put_wall"] > 0.0
         assert snap["prev_close"] > 0.0
