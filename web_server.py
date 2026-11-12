@@ -3843,12 +3843,24 @@ def _go_sentinel_context(sym: str) -> dict:
         sigs = list_recent_signals(inst_id, limit=20) or []
     except Exception:
         sigs = []
+    above_vwap = None
+    try:
+        bars = list_recent_bars(inst_id, timeframe="1m", limit=1, session_only=True, _auto_populate=False)
+        if bars:
+            b = bars[-1]
+            vwap = float(getattr(b, "vwap", 0) or 0)
+            close = float(getattr(b, "close", 0) or 0)
+            if vwap > 0 and close > 0:
+                above_vwap = close >= vwap
+    except Exception:
+        above_vwap = None
     if not sigs:
         return {
             "score": 0.0,
             "type": None,
             "category": None,
             "cvd_aligned": None,
+            "above_vwap": above_vwap,
             "range_ok": None,
             "tape_ok": True,
         }
@@ -3856,6 +3868,19 @@ def _go_sentinel_context(sym: str) -> dict:
     score = float(getattr(best, "score", 0) or 0)
     typ = str(getattr(best, "type", "") or "")
     cat = str(getattr(best, "category", "") or "")
+    tags = getattr(best, "context_tags_json", None) or getattr(best, "context_tags", None) or []
+    if isinstance(tags, str):
+        try:
+            import json as _json
+            tags = _json.loads(tags) or []
+        except Exception:
+            tags = []
+    tag_set = {str(t).upper() for t in (tags or [])}
+    # Prefer explicit VWAP tags on the signal; else last bar close vs session VWAP.
+    if "ABOVE_VWAP" in tag_set:
+        above_vwap = True
+    elif "BELOW_VWAP" in tag_set:
+        above_vwap = False
     range_ok = any(
         "ABSORPTION" in str(getattr(s, "type", "")).upper()
         or "EXHAUSTION" in str(getattr(s, "type", "")).upper()
@@ -3873,6 +3898,7 @@ def _go_sentinel_context(sym: str) -> dict:
         "type": typ or None,
         "category": cat or None,
         "cvd_aligned": cat in ("BULLISH", "BEARISH") and score >= 65,
+        "above_vwap": above_vwap,
         "range_ok": bool(range_ok) if not break_ok else False,
         "tape_ok": not break_ok,  # writer: continuation through levels is bad
         "break_ok": bool(break_ok),
@@ -4169,16 +4195,17 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             margin_est_inr=round(margin_est, 0),
         )
     else:
-        top = getattr(batch, "top_recommended_side", None) if batch else None
         bias = float(getattr(batch, "directional_bias_score", 0) or 0) if batch else 0.0
         idea_score = max((getattr(i, "quality_score", 0) or 0) for i in ideas) if ideas else 0
         sent_score = float(tape.get("score") or 0)
         # Prefer live Sentinel score when present; else fall back to idea quality
         primary_sent = sent_score if sent_score > 0 else float(idea_score)
+        # Tape factors from Sentinel only — never invent CVD/VWAP from bias placeholders.
         cvd_aligned = tape.get("cvd_aligned")
-        if cvd_aligned is None:
-            cvd_aligned = top in ("CE", "PE", "BOTH") and abs(bias) >= 1.0
-        above_vwap = bias > 0 if bias else (str(tape.get("category") or "") == "BULLISH")
+        above_vwap = tape.get("above_vwap")
+        if above_vwap is None:
+            # Category BULLISH/BEARISH is not a VWAP read; leave unknown.
+            above_vwap = None
         mtf_leans = _go_mtf_leans(sym, dash)
         unusual = None
         top_idea = max(ideas, key=lambda i: int(getattr(i, "quality_score", 0) or 0)) if ideas else None
@@ -4211,10 +4238,11 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             trade_ideas=ideas,
             sentinel_score=primary_sent,
             sentinel_type=tape.get("type"),
-            cvd_aligned=bool(cvd_aligned),
-            above_vwap=bool(above_vwap),
-            breadth_aligned=abs(bias) >= 1.5,
-            target_confluence=60.0 if ideas or sent_score >= 65 else 40.0,
+            cvd_aligned=cvd_aligned,
+            above_vwap=above_vwap,
+            breadth_aligned=(abs(bias) >= 1.5) if bias else None,
+            # Never invent 60/40 confluence — TE dial only when a real score exists.
+            target_confluence=None,
             oi_ts=oi_ts_s,
             oi_stale=oi_stale,
             chain_ok=True,

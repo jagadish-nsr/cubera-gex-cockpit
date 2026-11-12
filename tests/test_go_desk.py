@@ -118,6 +118,42 @@ def test_directional_soft_corridor_half_size():
         assert d.size_tier == "HALF"
 
 
+def test_shared_gamma_strike_soft_flag_bn_equal_walls():
+    """BN 12-Nov had authentic call_wall=put_wall=60500 all session — flag, don't invent width."""
+    d = build_directional_decision(
+        symbol="BANKNIFTY",
+        lot_size=30,
+        strike_step=100,
+        levels=_levels(spot=61090, cw=60500, pw=60500, flip=60630, magnet=60500),
+        trade_ideas=[],
+        sentinel_score=70,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        oi_ts="t",
+        chain_ltp=120.0,
+    )
+    assert "shared_gamma_strike" in d.soft_flags
+    w = build_writer_decision(
+        symbol="BANKNIFTY",
+        lot_size=30,
+        strike_step=100,
+        levels=_levels(spot=61090, cw=60500, pw=60500, flip=60630, magnet=60500),
+        vol_regime="calm",
+        iv=18,
+        rv=12,
+        catalyst_clear=True,
+        oi_ts="t",
+        short_call=61200,
+        short_put=60800,
+        margin_est_inr=150000,
+    )
+    assert "shared_gamma_strike" in w.soft_flags
+    # Writer must not treat a collapsed wall as two-sided "beyond" geometry.
+    dist_ev = next(e for e in w.evidence if e.factor == "distance_beyond_walls")
+    assert dist_ev.pass_ is False
+
+
 def test_directional_hold_on_stale_oi():
     d = build_directional_decision(
         symbol="NIFTY",
@@ -157,6 +193,7 @@ def test_sentinel_led_can_fire_when_ideas_empty_and_premium_filled():
     assert d.strategy_key == "ABSORPTION_BEAR"
     assert d.contracts and d.contracts[0].ltp == 95.0
     assert float(d.risk.get("max_loss_inr") or 0) > 0
+    assert d.targets == {} or not d.targets.get("t1")  # no fabricated LTP×ratio targets
     assert "Ideas latch absent" in d.thesis or "sentinel" in d.thesis.lower()
 
 

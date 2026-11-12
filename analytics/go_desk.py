@@ -279,7 +279,20 @@ def _inside_corridor(spot: float, put_wall: float, call_wall: float, step: float
     if put_wall <= 0 or call_wall <= 0 or step <= 0:
         return False
     lo, hi = min(put_wall, call_wall), max(put_wall, call_wall)
+    if hi - lo < step:
+        return False  # shared / collapsed gamma strike — not a usable corridor
     return (lo + step) < spot < (hi - step)
+
+
+def _shared_gamma_strike(put_wall: float, call_wall: float, step: float) -> bool:
+    """True when call and put gamma peak at the same (or one-step) strike.
+
+    Authentic on some sessions (e.g. BN 12-Nov both at 60500). Not an invented
+    corridor — surface it so writer/corridor plays do not treat width 0 as calm.
+    """
+    if put_wall <= 0 or call_wall <= 0 or step <= 0:
+        return False
+    return abs(float(call_wall) - float(put_wall)) < float(step)
 
 
 def _pick_best_idea(ideas: list[Any]) -> Any | None:
@@ -400,16 +413,18 @@ def build_directional_decision(
             "market_intelligence",
         )
     )
-    te = float(target_confluence or 0.0)
+    te_missing = target_confluence is None
+    te = 0.0 if te_missing else float(target_confluence)
     evidence.append(
         _ev(
             "target_engine",
             "Target Engine confluence",
-            round(te, 1),
-            "≥ 50 contributes / ≥ 65 strong",
-            te >= 50,
-            weights["target_engine"],
+            None if te_missing else round(te, 1),
+            "≥ 50 contributes / ≥ 65 strong" if not te_missing else "unavailable — not invented",
+            False if te_missing else te >= 50,
+            0.0 if te_missing else weights["target_engine"],
             "target_engine",
+            note="no dial — weight excluded" if te_missing else "",
         )
     )
 
@@ -440,12 +455,13 @@ def build_directional_decision(
         )
         soft.append("unusual_oi_vol")
 
+    w_te = 0.0 if te_missing else weights["target_engine"]
     score = _clamp(
         w_primary * primary
         + w_idea * idea_score
         + weights["cvd_vwap"] * tape_pts
         + weights["breadth"] * br_pts
-        + weights["target_engine"] * te
+        + w_te * te
         + float(mtf.get("boost") or 0.0)
     )
 
@@ -453,6 +469,8 @@ def build_directional_decision(
     in_corr = _inside_corridor(spot, pw, cw, step)
     if in_corr and not (sentinel_type and "BREAK" in str(sentinel_type).upper()):
         soft.append("inside_corridor")
+    if _shared_gamma_strike(pw, cw, step):
+        soft.append("shared_gamma_strike")
     if lunch_chop:
         soft.append("lunch_chop")
     if blast_tag and str(blast_tag).upper() in ("ACTIVE", "COILING"):
@@ -543,23 +561,20 @@ def build_directional_decision(
         strategy_key = str(sentinel_type).replace(" ", "_")
         sources = {"sentinel_type": sentinel_type, "alert_tape_headline": alert_headline}
         if ltp_fill > 0:
-            # Soft option targets — map only; Ideas latch still preferred when present.
-            targets = {
-                "t1": round(ltp_fill * 1.25, 1),
-                "t2": round(ltp_fill * 1.50, 1),
-                "sl": round(ltp_fill * 0.70, 1),
-                "trail_rule": "after_+30pct_premium",
-            }
+            # Live premium only — no invented T1/T2/SL ratios (those come from Ideas/TE).
+            targets = {}
+            wall_inval = (pw if side == "CE" else cw) or 0.0
             invalidation = {
-                "rule": f"Sentinel {sentinel_type} invalidation / spot through opposite wall",
-                "spot_level": (pw if side == "CE" else cw) or 0.0,
+                "rule": f"Sentinel {sentinel_type} invalidation / spot through opposite gamma strike",
+                "spot_level": float(wall_inval) if wall_inval > 0 else 0.0,
             }
             risk = {
                 "max_loss_inr": round(ltp_fill * float(lot_size), 0),
                 "credit_or_debit": -ltp_fill,
             }
             thesis = (
-                f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f} filled."
+                f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f} filled "
+                "(no fabricated option targets)."
             )
         else:
             thesis = (
@@ -682,11 +697,22 @@ def build_structure_decision(
     evidence.append(
         _ev("abs_gex_fit", "Absolute GEX bucket", vr, "calm|wild", vr in ("calm", "wild"), weights["abs_gex_fit"], "structures.suggest")
     )
-    corr = _inside_corridor(spot, pw, cw, step) if vr == "calm" else True
+    shared = _shared_gamma_strike(pw, cw, step)
+    if shared:
+        soft.append("shared_gamma_strike")
+    corr = False if shared else (_inside_corridor(spot, pw, cw, step) if vr == "calm" else True)
     if vr == "calm" and not corr:
         soft.append("spot_outside_corridor")
     evidence.append(
-        _ev("corridor", "Corridor geometry", {"spot": spot, "pw": pw, "cw": cw}, "inside for calm short-vol", corr, weights["corridor"], "gex.levels")
+        _ev(
+            "corridor",
+            "Corridor geometry",
+            {"spot": spot, "pw": pw, "cw": cw, "shared_gamma": shared},
+            "inside for calm short-vol" if not shared else "shared gamma strike — no corridor width",
+            corr,
+            weights["corridor"],
+            "gex.levels",
+        )
     )
     iv_ok = True if iv_rank_ok is None else bool(iv_rank_ok)
     term_edge = None
@@ -914,13 +940,17 @@ def build_writer_decision(
     # default shorts one step beyond walls
     sc = float(short_call) if short_call is not None else (cw + step if cw else 0)
     sp = float(short_put) if short_put is not None else (pw - step if pw else 0)
-    dist_ok = sc > cw and sp < pw if (cw and pw) else False
+    shared = _shared_gamma_strike(pw, cw, step)
+    if shared:
+        soft.append("shared_gamma_strike")
+    # Shared peak: both legs must sit outside the single strike; put short above it fails.
+    dist_ok = (sc > cw and sp < pw) if (cw and pw and not shared) else False
     evidence.append(
         _ev(
             "distance_beyond_walls",
             "Shorts beyond walls",
-            {"short_call": sc, "short_put": sp, "cw": cw, "pw": pw},
-            "beyond call/put concentration",
+            {"short_call": sc, "short_put": sp, "cw": cw, "pw": pw, "shared_gamma": shared},
+            "beyond call/put concentration" if not shared else "shared gamma strike — no two-sided beyond",
             dist_ok,
             weights["distance_beyond_walls"],
             "gex.levels",

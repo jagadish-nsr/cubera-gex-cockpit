@@ -2247,52 +2247,53 @@ def _evaluate_ce_strategies(
         )
     )
 
-    # 5. CE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
-    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-    ce_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", ce_vc_doi)
-    ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
-    ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
-    ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
-    ce_vc_sl, ce_vc_tgt1, ce_vc_tgt2, ce_vc_pt1, ce_vc_psl, ce_vc_ev, ce_vc_rr, ce_vc_attr = _reprice_trade_idea_targets(
-        side="CE", strike=ce_vanna_k, current_ltp=ce_vc_ltp, spot=spot,
-        inval_spot=ce_vc_inval_spot, tgt1_spot=ce_vc_tgt1_spot, tgt2_spot=ce_vc_tgt2_spot,
-        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
-    )
-    ce_vc_score, ce_vc_label, ce_vc_color = _apply_ev_quality_gate(ce_vc_score, ce_vc_ev, ce_vc_pt1)
-    ce_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="CE",
-            play_type="0DTE Vanna-Charm Theta Compression",
-            play_badge="VANNA-CHARM",
-            strike=ce_vanna_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
-            current_ltp=ce_vc_ltp,
-            delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
-            entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
-            spot_invalidation=ce_vc_inval_spot,
-            spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
-            target_1=ce_vc_tgt1,
-            target_1_spot=ce_vc_tgt1_spot,
-            target_2=ce_vc_tgt2,
-            target_2_spot=ce_vc_tgt2_spot,
-            stop_loss=ce_vc_sl,
-            risk_reward_ratio=ce_vc_rr,
-            quality_score=ce_vc_score,
-            conviction_label=ce_vc_label,
-            conviction_color=ce_vc_color,
-            rationale=(
-                f"Charm decay while spot sits between the gamma strikes. "
-                f"The corridor is a map, not a dealer pin.{trend_tag}"
-            ),
-            catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
-            is_ws_live=ce_vc_ws,
-            p_touch_target_1=ce_vc_pt1,
-            p_touch_sl=ce_vc_psl,
-            net_ev_pts=ce_vc_ev,
-            greek_attribution=ce_vc_attr,
+    # 5. CE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
+    if abs(call_wall - put_wall) >= step:
+        sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+        ce_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", ce_vc_doi)
+        ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
+        ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
+        ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
+        ce_vc_sl, ce_vc_tgt1, ce_vc_tgt2, ce_vc_pt1, ce_vc_psl, ce_vc_ev, ce_vc_rr, ce_vc_attr = _reprice_trade_idea_targets(
+            side="CE", strike=ce_vanna_k, current_ltp=ce_vc_ltp, spot=spot,
+            inval_spot=ce_vc_inval_spot, tgt1_spot=ce_vc_tgt1_spot, tgt2_spot=ce_vc_tgt2_spot,
+            dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
         )
-    )
+        ce_vc_score, ce_vc_label, ce_vc_color = _apply_ev_quality_gate(ce_vc_score, ce_vc_ev, ce_vc_pt1)
+        ce_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="CE",
+                play_type="0DTE Vanna-Charm Theta Compression",
+                play_badge="VANNA-CHARM",
+                strike=ce_vanna_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
+                current_ltp=ce_vc_ltp,
+                delta_approx=ce_vc_delta if ce_vc_delta > 0 else 0.20,
+                entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
+                spot_invalidation=ce_vc_inval_spot,
+                spot_invalidation_text=f"Spot volatility breakdown below ₹{ce_vc_inval_spot:,.0f}",
+                target_1=ce_vc_tgt1,
+                target_1_spot=ce_vc_tgt1_spot,
+                target_2=ce_vc_tgt2,
+                target_2_spot=ce_vc_tgt2_spot,
+                stop_loss=ce_vc_sl,
+                risk_reward_ratio=ce_vc_rr,
+                quality_score=ce_vc_score,
+                conviction_label=ce_vc_label,
+                conviction_color=ce_vc_color,
+                rationale=(
+                    f"Charm decay while spot sits between the gamma strikes. "
+                    f"The corridor is a map, not a dealer pin.{trend_tag}"
+                ),
+                catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                is_ws_live=ce_vc_ws,
+                p_touch_target_1=ce_vc_pt1,
+                p_touch_sl=ce_vc_psl,
+                net_ev_pts=ce_vc_ev,
+                greek_attribution=ce_vc_attr,
+            )
+        )
 
     # 6. CE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)
@@ -2684,52 +2685,53 @@ def _evaluate_pe_strategies(
         )
     )
 
-    # 5. PE 0DTE VANNA-CHARM THETA COMPRESSION (h = 90 min)
-    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-    pe_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", pe_vc_doi)
-    pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
-    pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
-    pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
-    pe_vc_sl, pe_vc_tgt1, pe_vc_tgt2, pe_vc_pt1, pe_vc_psl, pe_vc_ev, pe_vc_rr, pe_vc_attr = _reprice_trade_idea_targets(
-        side="PE", strike=pe_vanna_k, current_ltp=pe_vc_ltp, spot=spot,
-        inval_spot=pe_vc_inval_spot, tgt1_spot=pe_vc_tgt1_spot, tgt2_spot=pe_vc_tgt2_spot,
-        dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
-    )
-    pe_vc_score, pe_vc_label, pe_vc_color = _apply_ev_quality_gate(pe_vc_score, pe_vc_ev, pe_vc_pt1)
-    pe_recs.append(
-        TradeIdea(
-            symbol=symbol,
-            side="PE",
-            play_type="0DTE Vanna-Charm Theta Compression",
-            play_badge="VANNA-CHARM",
-            strike=pe_vanna_k,
-            option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
-            current_ltp=pe_vc_ltp,
-            delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
-            entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
-            spot_invalidation=pe_vc_inval_spot,
-            spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
-            target_1=pe_vc_tgt1,
-            target_1_spot=pe_vc_tgt1_spot,
-            target_2=pe_vc_tgt2,
-            target_2_spot=pe_vc_tgt2_spot,
-            stop_loss=pe_vc_sl,
-            risk_reward_ratio=pe_vc_rr,
-            quality_score=pe_vc_score,
-            conviction_label=pe_vc_label,
-            conviction_color=pe_vc_color,
-            rationale=(
-                f"Charm decay while spot sits between the gamma strikes. "
-                f"The corridor is a map, not a dealer pin.{trend_tag}"
-            ),
-            catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
-            is_ws_live=pe_vc_ws,
-            p_touch_target_1=pe_vc_pt1,
-            p_touch_sl=pe_vc_psl,
-            net_ev_pts=pe_vc_ev,
-            greek_attribution=pe_vc_attr,
+    # 5. PE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
+    if abs(call_wall - put_wall) >= step:
+        sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+        pe_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", pe_vc_doi)
+        pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
+        pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
+        pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
+        pe_vc_sl, pe_vc_tgt1, pe_vc_tgt2, pe_vc_pt1, pe_vc_psl, pe_vc_ev, pe_vc_rr, pe_vc_attr = _reprice_trade_idea_targets(
+            side="PE", strike=pe_vanna_k, current_ltp=pe_vc_ltp, spot=spot,
+            inval_spot=pe_vc_inval_spot, tgt1_spot=pe_vc_tgt1_spot, tgt2_spot=pe_vc_tgt2_spot,
+            dte_days=dte_days, atm_iv=atm_iv, horizon_minutes=90, step=step,
         )
-    )
+        pe_vc_score, pe_vc_label, pe_vc_color = _apply_ev_quality_gate(pe_vc_score, pe_vc_ev, pe_vc_pt1)
+        pe_recs.append(
+            TradeIdea(
+                symbol=symbol,
+                side="PE",
+                play_type="0DTE Vanna-Charm Theta Compression",
+                play_badge="VANNA-CHARM",
+                strike=pe_vanna_k,
+                option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
+                current_ltp=pe_vc_ltp,
+                delta_approx=pe_vc_delta if pe_vc_delta < 0 else -0.20,
+                entry_trigger=f"Spot between the gamma strikes (₹{put_wall:,.0f}–₹{call_wall:,.0f}), balance at ₹{flip:,.0f}. Charm decay is not a pin.",
+                spot_invalidation=pe_vc_inval_spot,
+                spot_invalidation_text=f"Spot volatility breakdown below ₹{pe_vc_inval_spot:,.0f}",
+                target_1=pe_vc_tgt1,
+                target_1_spot=pe_vc_tgt1_spot,
+                target_2=pe_vc_tgt2,
+                target_2_spot=pe_vc_tgt2_spot,
+                stop_loss=pe_vc_sl,
+                risk_reward_ratio=pe_vc_rr,
+                quality_score=pe_vc_score,
+                conviction_label=pe_vc_label,
+                conviction_color=pe_vc_color,
+                rationale=(
+                    f"Charm decay while spot sits between the gamma strikes. "
+                    f"The corridor is a map, not a dealer pin.{trend_tag}"
+                ),
+                catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                is_ws_live=pe_vc_ws,
+                p_touch_target_1=pe_vc_pt1,
+                p_touch_sl=pe_vc_psl,
+                net_ev_pts=pe_vc_ev,
+                greek_attribution=pe_vc_attr,
+            )
+        )
 
     # 6. PE VOLATILITY DISPERSION / LONG GAMMA (h = 60 min)
     sigma_60 = _calc_horizon_sigma(spot, eff_iv, 60.0, step)

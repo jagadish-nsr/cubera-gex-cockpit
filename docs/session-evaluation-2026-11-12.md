@@ -30,9 +30,33 @@ Writer SCOUT `WRITE_OTM` @ 73.8 (Nifty) and directional SCOUT absorption/continu
 2. **Sentinel-led GO** — when Ideas latch is empty, fold Trade Ideas weight into
    primary Sentinel score and fill ATM `chain_ltp` so FIRE can auto-stage
    (12 Nov SCOUT ceiling was Ideas blackout + unfilled premium).
+3. **Anti-fabrication** — strip sentinel-led LTP×ratio T1/T2/SL; no invented TE
+   60/40 confluence; CVD/VWAP from tape/bars only.
+4. **Shared gamma** — soft-flag equal walls; skip VANNA corridor Ideas; writer
+   distance_beyond fails on collapsed walls (BN 60500/60500 was authentic).
+
+## Diagnosis — Nifty OF scarcity (authentic)
+
+| Index | 1m bars | mean \|Δratio\| | CONT-gate candidates (crude) | Signals |
+|---|---:|---:|---:|---:|
+| Nifty | 384 | 0.15 | 15 | **4** (CVD only) |
+| Bank Nifty | 384 | 0.16 | 29 | 18 |
+| Sensex | 380 | 0.24 | 78 | **70** |
+
+Sensex’s thin book prints extreme \|Δratio\| (≥0.40 on 114 bars vs Nifty’s 6).
+Nifty silence is microstructure + CONT gates (`oi_fresh`, TOD RVol, VWAP,
+close position) — **not** a missing feed. Do not lower CONT thresholds to
+fabricate Nifty prints. Keep day-extreme / oi_fresh gates (CONT_BULL quality).
+
+## Diagnosis — BN equal walls (authentic)
+
+All 699 `chain.published` rows on 12-Nov carried `call_wall = put_wall = 60500`
+with spot ~61k. Session-close snapshot matched. Gamma blast already badges this
+as `GAMMA PIN`. GO now soft-flags `shared_gamma_strike`; VANNA-CHARM Ideas that
+need corridor width are skipped. **Do not invent a second wall.**
 
 ## Next open checks
 
 1. Ideas publish after first 1m bar (no continuous `rec.refused` VWAP).
-2. At least one GO FIRE → `go_open` under trend (sentinel-led or Ideas latch).
-3. Nifty OF volume vs Sensex flood.
+2. At least one GO FIRE → `go_open` under trend (sentinel-led or Ideas latch; no fabricated T1/T2/SL).
+3. BN shared-gamma soft flag visible when walls collapse; Nifty OF stays quiet unless tape earns it.
