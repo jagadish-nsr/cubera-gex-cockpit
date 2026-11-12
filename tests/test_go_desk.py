@@ -135,6 +135,54 @@ def test_directional_hold_on_stale_oi():
     assert "stale_oi" in d.hard_blocks
 
 
+def test_sentinel_led_can_fire_when_ideas_empty_and_premium_filled():
+    """12 Nov: Ideas blackout capped GO at SCOUT — sentinel-led must still reach FIRE."""
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82100, cw=82300, pw=81900, flip=82050, magnet=82100),
+        trade_ideas=[],
+        sentinel_score=82,
+        sentinel_type="ABSORPTION_BEAR",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=60,
+        oi_ts="2026-11-12T11:06:00+05:30",
+        chain_ok=True,
+        chain_ltp=95.0,
+    )
+    assert d.state == "FIRE"
+    assert d.strategy_key == "ABSORPTION_BEAR"
+    assert d.contracts and d.contracts[0].ltp == 95.0
+    assert float(d.risk.get("max_loss_inr") or 0) > 0
+    assert "Ideas latch absent" in d.thesis or "sentinel" in d.thesis.lower()
+
+
+def test_sentinel_led_stays_scout_without_premium():
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=82100, cw=82300, pw=81900, flip=82050, magnet=82100),
+        trade_ideas=[],
+        sentinel_score=82,
+        sentinel_type="ABSORPTION_BEAR",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=60,
+        oi_ts="2026-11-12T11:06:00+05:30",
+        chain_ok=True,
+        chain_ltp=None,
+    )
+    # Score may clear FIRE_MIN, but missing risk/premium strips FIRE.
+    assert d.state in ("SCOUT", "HOLD")
+    assert d.state != "FIRE"
+    assert "premium_unfilled" in d.soft_flags or d.risk.get("max_loss_inr") in (None, 0)
+
+
 def test_vanna_without_tape_cannot_fire():
     """11 Nov: VANNA-CHARM flooded FIRE with CVD/VWAP red — must stay off FIRE."""
     d = build_directional_decision(

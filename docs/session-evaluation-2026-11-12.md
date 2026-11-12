@@ -24,8 +24,15 @@ Harden (v5.3.102+) correctly refuses ideas without live VWAP σ. The rec publish
 
 Writer SCOUT `WRITE_OTM` @ 73.8 (Nifty) and directional SCOUT absorption/continuation (SX/BN) emitted, but nothing staged to `go_open`. No GO trail/MFE sample today.
 
+## Follow-ups shipped after close
+
+1. **v5.3.107** — Ideas publisher passes Sentinel `latest_bar` (VWAP gate).
+2. **Sentinel-led GO** — when Ideas latch is empty, fold Trade Ideas weight into
+   primary Sentinel score and fill ATM `chain_ltp` so FIRE can auto-stage
+   (12 Nov SCOUT ceiling was Ideas blackout + unfilled premium).
+
 ## Next open checks
 
 1. Ideas publish after first 1m bar (no continuous `rec.refused` VWAP).
-2. At least one GO FIRE → `go_open` under trend.
+2. At least one GO FIRE → `go_open` under trend (sentinel-led or Ideas latch).
 3. Nifty OF volume vs Sensex flood.

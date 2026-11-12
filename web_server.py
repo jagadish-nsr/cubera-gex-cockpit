@@ -4184,6 +4184,25 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
         top_idea = max(ideas, key=lambda i: int(getattr(i, "quality_score", 0) or 0)) if ideas else None
         if top_idea is not None and getattr(top_idea, "strike", None):
             unusual = _go_unusual_at_strike(dash, float(top_idea.strike))
+        # Live ATM premium for sentinel-led packages (Ideas latch may be empty).
+        chain_ltp = None
+        try:
+            step = float(idx.strike_step)
+            spot_f = float(getattr(levels, "spot", 0) or 0)
+            atm = round(spot_f / step) * step if step and spot_f > 0 else 0.0
+            side_guess = "CE"
+            st = str(tape.get("type") or "").upper()
+            if "BEAR" in st or "DOWN" in st:
+                side_guess = "PE"
+            if top_idea is not None:
+                side_guess = str(getattr(top_idea, "side", side_guess) or side_guess).upper()
+                strike_g = float(getattr(top_idea, "strike", 0) or 0) or atm
+            else:
+                strike_g = atm
+            if strike_g > 0:
+                chain_ltp = _chain_leg_ltp(getattr(dash, "contracts", None), float(strike_g), side_guess)
+        except Exception as exc:
+            log.debug("go chain_ltp lookup: %s", exc)
         decision = build_directional_decision(
             symbol=sym,
             lot_size=int(idx.lot_size),
@@ -4204,6 +4223,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             delta_pref=float(delta_pref or 0.50),
             mtf_leans=mtf_leans,
             unusual_strike=unusual,
+            chain_ltp=chain_ltp,
         )
     return decision
 

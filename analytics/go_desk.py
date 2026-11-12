@@ -310,8 +310,13 @@ def build_directional_decision(
     alert_headline: str | None = None,
     mtf_leans: dict[str, str] | None = None,
     unusual_strike: dict | None = None,
+    chain_ltp: float | None = None,
 ) -> GoDecision:
-    """Build directional GO from idea/sentinel confluence inputs."""
+    """Build directional GO from idea/sentinel confluence inputs.
+
+    ``chain_ltp`` fills the ATM (or idea) premium when the latch has no LTP —
+    required for sentinel-led FIRE (risk + auto-stage).
+    """
     weights = dict(DIRECTIONAL_WEIGHTS)
     evidence: list[EvidenceItem] = []
     soft: list[str] = []
@@ -332,6 +337,11 @@ def build_directional_decision(
     idea_score = float(getattr(idea, "quality_score", 0) or 0) if idea else 0.0
     sent = float(sentinel_score or 0.0)
     primary = max(idea_score, sent)
+    # When Trade Ideas is empty but Sentinel clears SCOUT, fold the idea weight
+    # into the primary so a dark Ideas publisher cannot permanently cap FIRE.
+    sentinel_led = idea is None and sent >= SCOUT_MIN
+    w_primary = weights["sentinel_or_idea"] + (weights["trade_idea"] if sentinel_led else 0.0)
+    w_idea = 0.0 if sentinel_led else weights["trade_idea"]
     side_guess = str(getattr(idea, "side", "") or "").upper()
     if not side_guess and sentinel_type:
         side_guess = "CE" if "BULL" in str(sentinel_type).upper() else "PE"
@@ -344,9 +354,10 @@ def build_directional_decision(
             round(primary, 1),
             f"≥ {FIRE_MIN} FIRE / ≥ {SCOUT_MIN} SCOUT",
             primary >= SCOUT_MIN,
-            weights["sentinel_or_idea"],
+            w_primary,
             "trade_ideas|sentinel",
-            note=str(sentinel_type or getattr(idea, "play_badge", "") or ""),
+            note=str(sentinel_type or getattr(idea, "play_badge", "") or "")
+            + (" · sentinel-led" if sentinel_led else ""),
         )
     )
     evidence.append(
@@ -354,10 +365,11 @@ def build_directional_decision(
             "trade_idea",
             "Trade Ideas quality",
             round(idea_score, 1),
-            "≥ 65 contributes",
-            idea_score >= SCOUT_MIN,
-            weights["trade_idea"],
+            "≥ 65 contributes" if not sentinel_led else "optional — sentinel-led",
+            True if sentinel_led else idea_score >= SCOUT_MIN,
+            w_idea,
             "analytics.trade_ideas",
+            note="latch absent — Sentinel carries weight" if sentinel_led else "",
         )
     )
 
@@ -429,8 +441,8 @@ def build_directional_decision(
         soft.append("unusual_oi_vol")
 
     score = _clamp(
-        weights["sentinel_or_idea"] * primary
-        + weights["trade_idea"] * idea_score
+        w_primary * primary
+        + w_idea * idea_score
         + weights["cvd_vwap"] * tape_pts
         + weights["breadth"] * br_pts
         + weights["target_engine"] * te
@@ -515,11 +527,47 @@ def build_directional_decision(
     elif sent >= SCOUT_MIN and sentinel_type:
         side = "CE" if "BULL" in str(sentinel_type).upper() else "PE"
         atm = round(spot / step) * step if step else spot
-        contracts = [GoLeg(action="BUY", opt_type=side, strike=float(atm), delta_target=delta_pref)]
+        try:
+            ltp_fill = float(chain_ltp) if chain_ltp is not None and float(chain_ltp) > 0 else 0.0
+        except (TypeError, ValueError):
+            ltp_fill = 0.0
+        contracts = [
+            GoLeg(
+                action="BUY",
+                opt_type=side,
+                strike=float(atm),
+                delta_target=delta_pref,
+                ltp=ltp_fill or None,
+            )
+        ]
         strategy_key = str(sentinel_type).replace(" ", "_")
-        thesis = f"Sentinel {sentinel_type} without a Trade Ideas latch — SCOUT until premium filled."
-        risk = {"max_loss_inr": None}
         sources = {"sentinel_type": sentinel_type, "alert_tape_headline": alert_headline}
+        if ltp_fill > 0:
+            # Soft option targets — map only; Ideas latch still preferred when present.
+            targets = {
+                "t1": round(ltp_fill * 1.25, 1),
+                "t2": round(ltp_fill * 1.50, 1),
+                "sl": round(ltp_fill * 0.70, 1),
+                "trail_rule": "after_+30pct_premium",
+            }
+            invalidation = {
+                "rule": f"Sentinel {sentinel_type} invalidation / spot through opposite wall",
+                "spot_level": (pw if side == "CE" else cw) or 0.0,
+            }
+            risk = {
+                "max_loss_inr": round(ltp_fill * float(lot_size), 0),
+                "credit_or_debit": -ltp_fill,
+            }
+            thesis = (
+                f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f} filled."
+            )
+        else:
+            thesis = (
+                f"Sentinel {sentinel_type} without a Trade Ideas latch — "
+                "SCOUT until live premium filled."
+            )
+            risk = {"max_loss_inr": None}
+            soft.append("premium_unfilled")
 
     size: SizeTier = "FULL"
     if "inside_corridor" in soft or "lunch_chop" in soft:
