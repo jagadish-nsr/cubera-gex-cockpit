@@ -319,3 +319,40 @@ def is_chain_ingest_open(now: datetime | None = None) -> bool:
     except Exception:
         pass
     return discovery_min <= t_min < close_min
+
+
+def is_spot_ingest_open(now: datetime | None = None) -> bool:
+    """True from cash pre-open (~09:00) through FNO close.
+
+    Index spot / VIX may print in the auction window. This gate is for the
+    spot WebSocket and REST poller only. It is **not** continuous-session
+    open — that remains :func:`is_market_open` (09:15). Futures Full and
+    FNO option subscribe must still wait for :func:`is_market_open`.
+    """
+    from datetime import datetime, timezone, timedelta
+    from data.session_calendar import clock_for, is_muhurat_session
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    if now is None:
+        now = datetime.now(ist)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=ist)
+    else:
+        now = now.astimezone(ist)
+
+    clock = clock_for(now.date())
+    t_min = now.hour * 60 + now.minute
+    close_min = int(getattr(clock, "fno_close_min", 15 * 60 + 40))
+    preopen_min = int(getattr(clock, "preopen_min", 9 * 60))
+
+    if is_muhurat_session(now.date()):
+        return preopen_min <= t_min < close_min
+    if now.weekday() >= 5:
+        return False
+    try:
+        from data.holidays import is_holiday
+        if is_holiday(now.date()):
+            return False
+    except Exception:
+        pass
+    return preopen_min <= t_min < close_min

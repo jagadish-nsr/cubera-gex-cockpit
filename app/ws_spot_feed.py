@@ -4,9 +4,11 @@ real-time ticks for NIFTY, BANKNIFTY and SENSEX.
 Architecture
 ────────────
 One persistent background thread opens a single Dhan v2 WebSocket (``wss://api-feed.dhan.co``)
-and subscribes to:
+when ``config.is_spot_ingest_open`` (cash pre-open ~09:00 → FNO close). It subscribes to:
   • Index spot underlyings  → IDX_I segment  (NIFTY:13, BANKNIFTY:25, SENSEX:51) — Quote tier
-  • Near-month index futures → NSE_FNO / BSE_FNO               — Full tier (LTP + LTQ + OHLC + OI)
+    from pre-open so discovery has a live print by ~09:08
+  • Near-month index futures → NSE_FNO / BSE_FNO — Full tier only after ``is_market_open`` (09:15)
+    (futures are dark in the cash auction; do not mix with spot ingest)
 
 Quote packets do **not** carry OI on Dhan v2 (OI lives on Full code 8 / OI-only code 5).
 Subscribing futures at Quote left Sentinel ``oi_fresh=False`` after five flat bars and
@@ -278,9 +280,28 @@ def _handle_spot_tick(pkt: dict, spot_ids: dict[str, int]) -> None:
     if sym is None:
         return
 
+    import config as _cfg
+
     existing_ohlc = (_st._STORE.get(sym) or {}).get("ohlc") or {}
     prev_close = pkt.get("prev_close") or existing_ohlc.get("prev_close")
-    open_px = pkt.get("open") or existing_ohlc.get("open")
+    raw_open = pkt.get("open")
+    try:
+        pkt_open = float(raw_open) if raw_open is not None else 0.0
+    except (TypeError, ValueError):
+        pkt_open = 0.0
+    try:
+        existing_open = float(existing_ohlc.get("open") or 0.0)
+    except (TypeError, ValueError):
+        existing_open = 0.0
+    # Never invent day-open from LTP during cash pre-open (09:00–09:15).
+    if pkt_open > 0:
+        open_px = pkt_open
+    elif existing_open > 0:
+        open_px = existing_open
+    elif _cfg.is_market_open():
+        open_px = ltp
+    else:
+        open_px = 0.0
     high_px = pkt.get("high") or existing_ohlc.get("high")
     low_px = pkt.get("low") or existing_ohlc.get("low")
 
@@ -291,7 +312,7 @@ def _handle_spot_tick(pkt: dict, spot_ids: dict[str, int]) -> None:
 
     ohlc = {
         "ltp":        ltp,
-        "open":       open_px or ltp,
+        "open":       open_px,
         "high":       high_px or ltp,
         "low":        low_px or ltp,
         "prev_close": prev_close or ltp,
@@ -411,11 +432,14 @@ def _run(symbols: tuple[str, ...]) -> None:
                         pass
 
         import config
-        if not config.is_market_open():
+        # Spot/VIX from cash pre-open (09:00). Continuous FnO (09:15) is separate.
+        if not config.is_spot_ingest_open():
             _STATUS["ws_connected"] = False
-            _STATUS["ws_error"] = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+            _STATUS["ws_error"] = "Spot ingest asleep (pre-open 09:00 – FNO close)"
             _STOP.wait(15)
             continue
+
+        continuous_open = config.is_market_open()
 
         try:
             from data.dhan import _secret
@@ -440,18 +464,19 @@ def _run(symbols: tuple[str, ...]) -> None:
             _STOP.wait(5)
             continue
 
-        # Spots / VIX / options stay on Quote. Futures need Full so OI updates
-        # reach Sentinel (Quote never carries OI on this feed).
+        # Spots / VIX on Quote from 09:00. Futures Full + FNO options only after
+        # continuous open (09:15) — futures are dark in the cash auction.
         fut_sec_set = set(fut_map.keys())
         fut_instr = [it for it in all_instr if int(it["SecurityId"]) in fut_sec_set]
+        spot_quote_instr = [
+            {"ExchangeSegment": _IDX_SEG, "SecurityId": str(sid)}
+            for sid in list(spot_ids.values()) + [_VIX_SCRIP]
+        ]
         with _OPT_MAP_LOCK:
             opt_instr = [{"ExchangeSegment": c["segment"], "SecurityId": str(sid)}
-                         for sid, c in _OPT_MAP.items()]
-        quote_instr = (
-            [{"ExchangeSegment": _IDX_SEG, "SecurityId": str(sid)}
-             for sid in list(spot_ids.values()) + [_VIX_SCRIP]]
-            + opt_instr
-        )
+                         for sid, c in _OPT_MAP.items()] if continuous_open else []
+        quote_instr = spot_quote_instr + opt_instr
+        fno_subscribed = False
 
         try:
             if quote_instr:
@@ -460,12 +485,13 @@ def _run(symbols: tuple[str, ...]) -> None:
                     "InstrumentCount": len(quote_instr),
                     "InstrumentList": quote_instr,
                 }))
-            if fut_instr:
+            if continuous_open and fut_instr:
                 ws.send(json.dumps({
                     "RequestCode": _SUB_FULL,
                     "InstrumentCount": len(fut_instr),
                     "InstrumentList": fut_instr,
                 }))
+                fno_subscribed = True
         except Exception as e:  # noqa: BLE001
             _STATUS["ws_error"] = f"subscribe: {type(e).__name__}"
             _STATUS["ws_connected"] = False
@@ -477,18 +503,47 @@ def _run(symbols: tuple[str, ...]) -> None:
             continue
 
         _STATUS["ws_connected"] = True
-        _STATUS["ws_error"] = None
+        _STATUS["ws_error"] = (
+            None if continuous_open else "Pre-open: index spot/VIX only (futures from 09:15)"
+        )
         ws.settimeout(1.0)
 
         spot_sec_set = set(spot_ids.values()) | {_VIX_SCRIP}
 
         try:
             while not _STOP.is_set():
-                if not config.is_market_open():
-                    _STATUS["ws_error"] = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+                if not config.is_spot_ingest_open():
+                    _STATUS["ws_error"] = "Spot ingest asleep (pre-open 09:00 – FNO close)"
                     break
-                # Process dynamic option subscriptions queued from the UI / analytics
-                if _PENDING_OPT_SUBS:
+
+                # Connected in the auction: add futures/options once continuous open hits.
+                if not fno_subscribed and config.is_market_open():
+                    try:
+                        with _OPT_MAP_LOCK:
+                            late_opt = [
+                                {"ExchangeSegment": c["segment"], "SecurityId": str(sid)}
+                                for sid, c in _OPT_MAP.items()
+                            ]
+                        if late_opt:
+                            ws.send(json.dumps({
+                                "RequestCode": _SUB_QUOTE,
+                                "InstrumentCount": len(late_opt),
+                                "InstrumentList": late_opt,
+                            }))
+                        if fut_instr:
+                            ws.send(json.dumps({
+                                "RequestCode": _SUB_FULL,
+                                "InstrumentCount": len(fut_instr),
+                                "InstrumentList": fut_instr,
+                            }))
+                        fno_subscribed = True
+                        _STATUS["ws_error"] = None
+                    except Exception as e:  # noqa: BLE001
+                        _STATUS["ws_error"] = f"fno-subscribe: {type(e).__name__}"
+                        break
+
+                # Process dynamic option subscriptions only in continuous session
+                if config.is_market_open() and _PENDING_OPT_SUBS:
                     with _OPT_MAP_LOCK:
                         to_sub = list(_PENDING_OPT_SUBS)
                         _PENDING_OPT_SUBS.clear()
@@ -503,6 +558,9 @@ def _run(symbols: tuple[str, ...]) -> None:
                                 _SUBSCRIBED_OPT_IDS.add(int(item["SecurityId"]))
                         except Exception:
                             pass
+                elif _PENDING_OPT_SUBS and not config.is_market_open():
+                    # Do not drain the queue before 09:15 — retry after continuous open.
+                    pass
 
                 try:
                     opcode, frame = ws.recv_data()
@@ -525,9 +583,9 @@ def _run(symbols: tuple[str, ...]) -> None:
                 if sec in spot_sec_set:
                     if pkt.get("ltp"):
                         _handle_spot_tick(pkt, spot_ids)
-                elif sec in fut_map:
+                elif fno_subscribed and sec in fut_map:
                     _handle_fut_tick(pkt, fut_map)
-                elif sec in _OPT_MAP:
+                elif fno_subscribed and sec in _OPT_MAP:
                     if pkt.get("ltp"):
                         _handle_opt_tick(pkt, _OPT_MAP[sec])
 

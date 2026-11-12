@@ -324,16 +324,9 @@ def _loop(symbol: str, interval_s: float) -> None:
     from data.dhan_live import fetch_index_ohlc, fetch_futures_dhan
     import config
     while True:
-        # Off-market hours guard: never call Dhan API when market is closed
-        if not config.is_market_open():
-            try:
-                from data.pre_post_market import get_current_session_phase
-                phase_code, _, _ = get_current_session_phase()
-            except Exception:
-                phase_code = "OFF_HOURS"
-
-            # Hydrate from the last completed session, and replace a stored
-            # quote when a newer session snapshot appears.
+        # Outside cash pre-open→FNO close: hydrate from the sealed book, no Dhan.
+        # is_market_open (09:15) stays the continuous-session flag elsewhere.
+        if not config.is_spot_ingest_open():
             from data.market_snapshot import resolve_offmarket_snapshot
             snap = resolve_offmarket_snapshot(symbol)
             stored_asof = ((_STORE.get(symbol) or {}).get("ohlc") or {}).get("as_of")
@@ -358,26 +351,28 @@ def _loop(symbol: str, interval_s: float) -> None:
                     "ws_at": None,
                     "err": None,
                 }
+            time.sleep(30.0)
+            continue
 
-            if phase_code != "PRE_MARKET_DISCOVERY":
-                time.sleep(30.0)
-                continue
-            else:
-                interval_s = 3.0  # Adaptive retry during pre-open discovery window
+        continuous = config.is_market_open()
+        # Pre-open (09:00–09:15): denser index OHLC poll; skip stale day cache.
+        poll_interval = 3.0 if not continuous else interval_s
 
         ok = False
         try:
-            d = fetch_index_ohlc(symbol)
-            fd = fetch_futures_dhan(symbol)
+            d = fetch_index_ohlc(symbol, skip_cache=not continuous)
+            # Futures REST is continuous-session only — dark / misleading in the auction.
+            fd = fetch_futures_dhan(symbol) if continuous else None
             if d and d.get("ltp") is not None:
                 # Only overwrite if WS hasn't updated more recently
                 rec = _STORE.get(symbol)
                 ws_at = (rec or {}).get("ws_at") or 0
                 if time.time() - ws_at >= 10.0:  # WS went quiet — take REST values immediately
-                    q = _compile_quote(symbol, d, fd)
+                    keep_fut = fd if continuous else (rec or {}).get("fut")
+                    q = _compile_quote(symbol, d, keep_fut)
                     _STORE[symbol] = {
                         "ohlc": d,
-                        "fut": fd,
+                        "fut": keep_fut,
                         "quote": q,
                         "at": time.time(),
                         "ws_at": ws_at if ws_at else None,
@@ -388,7 +383,7 @@ def _loop(symbol: str, interval_s: float) -> None:
             rec = _STORE.get(symbol)
             if rec:
                 rec["err"] = f"{type(e).__name__}"
-        time.sleep(interval_s if (ok or _STORE.get(symbol)) else 2.0)
+        time.sleep(poll_interval if (ok or _STORE.get(symbol)) else 2.0)
 
 
 def ensure(symbol: str, interval_s: float = DEFAULT_INTERVAL_S) -> None:
