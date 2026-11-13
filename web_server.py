@@ -2241,7 +2241,9 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     from data.market_snapshot import get_snapshot, resolve_offmarket_snapshot
     db_snap = (resolve_offmarket_snapshot(sym) if not is_live else get_snapshot(sym)) or {}
-    if not is_live and db_snap.get("stale_session"):
+    # During cash pre-open the sealed book is yesterday by design; do not
+    # overwrite the Pre-open badge with "Stale snapshot".
+    if not is_live and not spot_ingest and db_snap.get("stale_session"):
         book_day = None
         fetched = getattr(dash, "fetched_at", None)
         if fetched is not None and hasattr(fetched, "astimezone"):
@@ -2262,7 +2264,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     if not is_live:
         refreshed_src = getattr(offmarket_book, "fetched_at", None) or getattr(dash, "fetched_at", None) or db_snap.get("as_of")
         data_refreshed_at = _fmt_snapshot_as_of(refreshed_src)
-        if not feed_subtext.startswith("Newest snapshot"):
+        if not spot_ingest and not feed_subtext.startswith("Newest snapshot"):
             from app.dhan_sync import offmarket_refresh_line
             feed_subtext = offmarket_refresh_line(data_refreshed_at, morning=is_morning_briefing)
     real_ohlc = _status_day_ohlc(dash, q, db_snap, spot, is_live)
