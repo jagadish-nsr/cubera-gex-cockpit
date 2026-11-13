@@ -99,6 +99,16 @@ def register_admin_routes(app: FastAPI) -> None:
         from app.session_checklist import build_session_checklist
         return build_session_checklist(version=APP_VERSION)
 
+    @app.get("/api/admin/session-smoke")
+    def admin_session_smoke():
+        """Post-open smoke (checklist + VWAP blackout + tape). See docs/sli-slo.md."""
+        try:
+            from web_server import APP_VERSION
+        except Exception:
+            APP_VERSION = None
+        from app.slo_monitor import run_session_open_smoke
+        return run_session_open_smoke(version=APP_VERSION)
+
     @app.get("/api/admin/ops")
     def admin_ops(
         process: Optional[str] = Query(None),

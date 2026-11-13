@@ -76,6 +76,7 @@ def evaluate_alerts(
     token_fn=None,
     feed_fn=None,
     include_gaps: bool = True,
+    include_slo: bool = True,
 ) -> dict:
     """Upsert or resolve alerts for the current conditions. Safe to call every minute."""
     now = as_ist(now or now_ist())
@@ -93,6 +94,8 @@ def evaluate_alerts(
         _gap_alert(root, now, stamp)
     _process_alert(now, stamp)
     _obs_perf_alerts(now, stamp)
+    if include_slo:
+        _slo_alerts(now, stamp)
     _prune_events(now)
     return {"badge_count": db.badge_count()}
 
@@ -458,6 +461,95 @@ def _obs_perf_alerts(now: datetime, stamp: str) -> None:
             )
         else:
             db.resolve_alert(silent_fp, stamp)
+
+
+def _slo_alerts(now: datetime, stamp: str) -> None:
+    """Minute readiness rollup + consecutive not-ready / VWAP / tape burns."""
+    import config
+    from app.readiness import build_readiness
+    from app.slo_monitor import (
+        NOT_READY_STREAK_CRIT,
+        probe_tape_completeness,
+        probe_vwap_blackout,
+        record_readiness_minute,
+    )
+
+    session_date = as_ist(now).date().isoformat()
+    try:
+        market_open = bool(config.is_market_open(now))
+        readiness = build_readiness(market_open=market_open)
+        roll = record_readiness_minute(readiness, now=as_ist(now))
+    except Exception:
+        log.exception("slo readiness rollup failed")
+        return
+
+    streak_fp = "SLO|readiness-streak"
+    streak = int(roll.get("streak") or 0)
+    if market_open and streak >= NOT_READY_STREAK_CRIT:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=streak_fp,
+            severity="CRITICAL",
+            category="SLO",
+            title=f"Readiness false for {streak} consecutive minutes",
+            description=(
+                f"reasons={','.join(roll.get('reasons') or []) or 'unknown'}. "
+                f"Threshold={NOT_READY_STREAK_CRIT}m (docs/sli-slo.md)."
+            ),
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(streak_fp, stamp)
+
+    vwap_fp = "SLO|vwap-blackout"
+    try:
+        vwap = probe_vwap_blackout()
+    except Exception:
+        log.exception("slo vwap probe failed")
+        vwap = {"blackout": False, "count": 0}
+    if market_open and vwap.get("blackout"):
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=vwap_fp,
+            severity="CRITICAL",
+            category="SLO",
+            title="Ideas VWAP blackout (sustained Missing session VWAP refuses)",
+            description=(
+                f"{vwap.get('count')} rec.refused VWAP misses in "
+                f"{vwap.get('window_min')}m (floor {vwap.get('floor')}). "
+                "Fix publisher Sentinel context — do not lower CONT gates."
+            ),
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(vwap_fp, stamp)
+
+    tape_fp = "SLO|tape-completeness"
+    try:
+        tape = probe_tape_completeness(now=as_ist(now), market_open=market_open)
+    except Exception:
+        log.exception("slo tape probe failed")
+        tape = {"ok": True, "severity": "", "reason": ""}
+    sev = str(tape.get("severity") or "")
+    if sev and not tape.get("ok"):
+        detail = ", ".join(
+            f"{sym} {row.get('bars')}/{row.get('expected')}"
+            for sym, row in (tape.get("per_symbol") or {}).items()
+        )
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=tape_fp,
+            severity=sev,
+            category="SLO",
+            title="Sentinel 1m tape completeness burn",
+            description=f"{tape.get('reason')}: {detail} (worst_frac={tape.get('worst_frac')})",
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(tape_fp, stamp)
 
 
 def _prune_events(now: datetime) -> None:

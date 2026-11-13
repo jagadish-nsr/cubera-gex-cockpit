@@ -59,6 +59,7 @@ def test_token_alert_is_one_row_and_clears(tmp_path):
             token_fn=lambda: _token(1.0),
             feed_fn=lambda: _feed(age=1.0),
             include_gaps=False,
+            include_slo=False,
         )
     assert result["badge_count"] == 1
     rows = db.list_alerts()
@@ -72,6 +73,7 @@ def test_token_alert_is_one_row_and_clears(tmp_path):
         token_fn=lambda: _token(10.0),
         feed_fn=lambda: _feed(age=1.0),
         include_gaps=False,
+        include_slo=False,
     )
     assert cleared["badge_count"] == 0
     assert db.list_alerts() == []
@@ -91,6 +93,7 @@ def test_feed_silence_does_not_alert_outside_the_session(tmp_path):
             token_fn=lambda: _token(10.0),
             feed_fn=silent,
             include_gaps=False,
+            include_slo=False,
         )
         fingerprints = {row["fingerprint"] for row in db.list_alerts()}
         assert not any(fp.startswith("FEED|silence") for fp in fingerprints)
@@ -104,6 +107,7 @@ def test_feed_silence_alerts_during_the_session_and_clears(tmp_path):
         token_fn=lambda: _token(10.0),
         feed_fn=lambda: _feed(age=45.0),
         include_gaps=False,
+        include_slo=False,
     )
     rows = db.list_alerts()
     assert any(row["fingerprint"] == "FEED|silence" and row["session_date"] == "2026-10-23" and row["severity"] == "CRITICAL" for row in rows)
@@ -113,6 +117,7 @@ def test_feed_silence_alerts_during_the_session_and_clears(tmp_path):
         token_fn=lambda: _token(10.0),
         feed_fn=lambda: _feed(age=1.0),
         include_gaps=False,
+        include_slo=False,
     )
     assert not any(row["fingerprint"].startswith("FEED|silence") for row in db.list_alerts())
 
@@ -137,6 +142,7 @@ def test_gap_alert_skips_sensex_futures_and_clears_when_the_hole_is_filled(tmp_p
         now=now,
         token_fn=lambda: _token(10.0),
         feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
     )
     gap = next(row for row in db.list_alerts() if row["fingerprint"] == "GAP|2026-10-23")
     assert "SENSEX futures" not in gap["description"]
@@ -148,5 +154,6 @@ def test_gap_alert_skips_sensex_futures_and_clears_when_the_hole_is_filled(tmp_p
         now=now,
         token_fn=lambda: _token(10.0),
         feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
     )
     assert not any(row["fingerprint"].startswith("GAP|") for row in db.list_alerts())

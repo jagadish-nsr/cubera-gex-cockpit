@@ -46,3 +46,15 @@ Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft 
 
 - Burn budget → investigate Admin Observability (chain p95, loop lag, CB) before changing model thresholds.
 - Do not lower CONT / VWAP gates to clear an Ideas blackout — fix wiring first (`app/hard_gates.py`).
+
+## Enforcement (Phase C)
+
+| Detector | Where | Alert |
+|----------|-------|-------|
+| Minute readiness rollup | `slo.readiness.minute` ops event | — |
+| Ready=false ≥ 3 consecutive session minutes | `app/slo_monitor.py` + health daemon | `SLO\|readiness-streak` CRITICAL |
+| Sustained `Missing session VWAP` refuses (≥20 / 10m) | health daemon | `SLO\|vwap-blackout` CRITICAL |
+| Tape bars ≪ expected (live lag or post-close incomplete) | health daemon | `SLO\|tape-completeness` WARNING/CRITICAL |
+| Post-open smoke | `scripts/session_open_smoke.py` / `GET /api/admin/session-smoke` | exit 1 / Admin button |
+
+

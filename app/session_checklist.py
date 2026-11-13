@@ -137,6 +137,27 @@ def build_session_checklist(
         "skipped": not ideas_applicable,
     })
 
+    from app.slo_monitor import probe_tape_completeness, probe_vwap_blackout
+    vwap = probe_vwap_blackout()
+    checks.append({
+        "id": "vwap_refuse_burn",
+        "label": "No sustained Missing session VWAP refuses",
+        "ok": (not market_open) or bool(vwap.get("ok")),
+        "detail": (
+            "off_session" if not market_open
+            else f"refuses={vwap.get('count')} / {vwap.get('window_min')}m"
+        ),
+        "skipped": not market_open,
+    })
+    tape = probe_tape_completeness(now=now, market_open=market_open)
+    checks.append({
+        "id": "tape_completeness",
+        "label": "Sentinel 1m tape vs expected",
+        "ok": bool(tape.get("ok")),
+        "detail": tape.get("reason") or f"worst_frac={tape.get('worst_frac')}",
+        "skipped": tape.get("reason") in ("too_early", "off_session") and tape.get("ok"),
+    })
+
     failed = [c for c in checks if not c.get("ok") and not c.get("skipped")]
     return {
         "as_of": now.isoformat(timespec="seconds"),
@@ -146,5 +167,7 @@ def build_session_checklist(
         "checks": checks,
         "readiness": readiness,
         "ideas": ideas,
+        "vwap": vwap,
+        "tape": tape,
         "slo_doc": "docs/sli-slo.md",
     }

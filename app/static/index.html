@@ -3013,12 +3013,18 @@
           <div class="ladder-card" style="margin:14px 0" id="admin-session-checklist-card">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
               <h3 style="margin:0;font-size:1rem">Session Open Checklist</h3>
-              <span id="admin-checklist-verdict"
-                style="font-family:var(--mono);font-size:0.72rem;font-weight:800;padding:2px 8px;border-radius:4px;background:var(--surface-3);color:var(--ink-mute)">—</span>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button type="button" id="admin-run-smoke" class="btn btn-secondary"
+                  style="font-size:0.72rem;padding:3px 10px">Run open smoke</button>
+                <span id="admin-checklist-verdict"
+                  style="font-family:var(--mono);font-size:0.72rem;font-weight:800;padding:2px 8px;border-radius:4px;background:var(--surface-3);color:var(--ink-mute)">—</span>
+              </div>
             </div>
             <p style="margin:0 0 8px;font-size:0.72rem;color:var(--ink-mute)">Automated SLI probes from
               <code>docs/sli-slo.md</code> · first 30 minutes after open</p>
             <div id="admin-session-checklist" style="font-family:var(--mono);font-size:0.74rem;line-height:1.55"></div>
+            <div id="admin-smoke-result"
+              style="display:none;margin-top:8px;font-family:var(--mono);font-size:0.72rem;color:var(--ink-mute)"></div>
           </div>
 
           <div id="admin-alert-list" class="ladder-card" style="margin:14px 0"></div>

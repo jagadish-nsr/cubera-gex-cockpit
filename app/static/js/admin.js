@@ -82,6 +82,41 @@
     }
   }
 
+  async function runSessionSmoke() {
+    const out = document.getElementById("admin-smoke-result");
+    const btn = document.getElementById("admin-run-smoke");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch("/api/admin/session-smoke");
+      const data = await res.json().catch(function () { return {}; });
+      if (out) {
+        out.style.display = "block";
+        const status = data.pass ? "PASS" : "FAIL";
+        const color = data.pass ? "var(--go)" : "var(--stop)";
+        const failed = (data.failed || []).join(",") || "—";
+        out.style.color = color;
+        out.textContent = "Smoke " + status + " · failed=[" + failed + "]";
+      }
+      loadSessionChecklist();
+    } catch (err) {
+      if (out) {
+        out.style.display = "block";
+        out.style.color = "var(--stop)";
+        out.textContent = "Smoke unreachable";
+      }
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    const smokeBtn = document.getElementById("admin-run-smoke");
+    if (smokeBtn && !smokeBtn._bound) {
+      smokeBtn._bound = true;
+      smokeBtn.addEventListener("click", function () { runSessionSmoke(); });
+    }
+  });
+
   async function refreshAdminChrome() {
     try {
       const res = await fetch("/api/admin/status");

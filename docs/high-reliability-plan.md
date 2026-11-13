@@ -127,11 +127,11 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| B1 | Minute rollup writer: ready/not-ready, chain age, feed age, CB state | SQLite or ops_events series for session |
-| B2 | Health daemon CRITICAL when session readiness false > N consecutive minutes (e.g. 3) | Admin alert fires without human poll |
-| B3 | Tape completeness SLI: expected 1m bars vs stored (per index) after 15:45 | Gap audit already exists — promote to checklist + CRITICAL if drop > threshold |
-| B4 | Ideas VWAP blackout detector: continuous `rec.refused` Missing session VWAP after first bar | Auto CRITICAL (12-Nov class) |
-| B5 | Post-open smoke script (09:16+): curl health/checklist/ideas; exit non-zero | Can be cron or Admin “Run open smoke” |
+| B1 | Minute rollup writer: ready/not-ready, chain age, feed age, CB state | **Done** — `slo.readiness.minute` |
+| B2 | Health daemon CRITICAL when session readiness false > N consecutive minutes (e.g. 3) | **Done** — `SLO\|readiness-streak` |
+| B3 | Tape completeness SLI: expected 1m bars vs stored (per index) after 15:45 | **Done** — checklist + `SLO\|tape-completeness` |
+| B4 | Ideas VWAP blackout detector: continuous `rec.refused` Missing session VWAP after first bar | **Done** — `SLO\|vwap-blackout` |
+| B5 | Post-open smoke script (09:16+): curl health/checklist/ideas; exit non-zero | **Done** — `scripts/session_open_smoke.py` + Admin |
 
 **Primary files:** [app/admin/health_daemon.py](../app/admin/health_daemon.py), [app/session_checklist.py](../app/session_checklist.py), [docs/sli-slo.md](sli-slo.md).
 
