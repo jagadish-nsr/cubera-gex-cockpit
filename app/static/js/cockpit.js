@@ -57,6 +57,9 @@
     blastLastScore: null,
     spot: 0,
     ws: null,
+    wsReconnectTimer: null,
+    wsReconnectAttempt: 0,
+    lastTelemetryAt: null,
     sentinelChart: null,
     candlestickSeries: null,
     cvdSeries: null,
@@ -1637,50 +1640,206 @@
     }, 4000);
   }
 
-  // Fail-loud fetch degradation — never look like a quiet market when the API is down.
-  const _fetchDegraded = Object.create(null);
-  let _degradeMode = "OK";
-  let _degradeReasons = [];
+  // -------------------------------------------------------------------------
+  // ReliabilityController — one banner source of truth (Pillar F)
+  // Modes: OK | DEGRADED | NOT_READY | OFF_SESSION
+  // -------------------------------------------------------------------------
+  const ReliabilityController = (function () {
+    const MODES = {
+      OK: "OK",
+      DEGRADED: "DEGRADED",
+      NOT_READY: "NOT_READY",
+      OFF_SESSION: "OFF_SESSION",
+    };
+    const TELEMETRY_WARN_S = 5;
+    const TELEMETRY_CRIT_S = 30;
+    let mode = MODES.OK;
+    let serverMode = "OK";
+    let reasons = [];
+    const sources = Object.create(null);
+    let marketOpen = false;
+    let lastGoodBook = null;
+    let tickAgeS = null;
+
+    function mapServer(brief) {
+      const dm = String((brief && brief.degrade_mode) || "OK");
+      if (dm === "OFF_SESSION" || (brief && brief.market_open === false)) return MODES.OFF_SESSION;
+      if (dm === "OK" && brief && brief.ready !== false) return MODES.OK;
+      if (dm === "TOKEN_DEAD" || dm === "NOT_READY") return MODES.NOT_READY;
+      if (dm === "FEED_DOWN" || dm === "CHAIN_DEGRADED") return MODES.DEGRADED;
+      if (brief && brief.ready === false) return MODES.NOT_READY;
+      return MODES.DEGRADED;
+    }
+
+    function resolve() {
+      if (serverMode === MODES.OFF_SESSION || !marketOpen) {
+        // Off-session: still surface fetch failures as DEGRADED, else OFF_SESSION.
+        if (Object.keys(sources).length) return MODES.DEGRADED;
+        return MODES.OFF_SESSION;
+      }
+      if (serverMode === MODES.NOT_READY) return MODES.NOT_READY;
+      if (Object.keys(sources).length) return MODES.DEGRADED;
+      if (serverMode === MODES.DEGRADED) return MODES.DEGRADED;
+      if (tickAgeS != null && tickAgeS >= TELEMETRY_CRIT_S) return MODES.DEGRADED;
+      return MODES.OK;
+    }
+
+    function paintBanner() {
+      const el = document.getElementById("reliability-banner");
+      if (!el) return;
+      mode = resolve();
+      const keys = Object.keys(sources);
+      const modeLoud = mode !== MODES.OK && mode !== MODES.OFF_SESSION;
+      if (!keys.length && !modeLoud) {
+        el.style.display = "none";
+        el.textContent = "";
+        el.dataset.mode = mode;
+        return;
+      }
+      el.style.display = "block";
+      el.dataset.mode = mode;
+      const parts = [];
+      if (modeLoud || keys.length) parts.push(mode);
+      if (Array.isArray(reasons) && reasons.length && modeLoud) {
+        parts.push(reasons.slice(0, 4).join(","));
+      }
+      if (keys.length) {
+        parts.push(keys.map((k) => `${k}: ${sources[k]}`).join(" · "));
+      }
+      el.textContent = parts.join(" · ");
+    }
+
+    function paintTelemetryChip() {
+      const chip = document.getElementById("telemetry-stale-chip");
+      if (!chip) return;
+      if (!marketOpen) {
+        chip.style.display = "none";
+        chip.textContent = "";
+        chip.dataset.level = "";
+        return;
+      }
+      if (tickAgeS == null) {
+        chip.style.display = "inline-block";
+        chip.dataset.level = "crit";
+        chip.textContent = "telemetry: no tick";
+        chip.style.color = "var(--stop)";
+        chip.style.background = "var(--stop-bg, rgba(239,68,68,0.12))";
+        return;
+      }
+      if (tickAgeS >= TELEMETRY_CRIT_S) {
+        chip.style.display = "inline-block";
+        chip.dataset.level = "crit";
+        chip.textContent = `telemetry stale ${Math.round(tickAgeS)}s`;
+        chip.style.color = "var(--stop)";
+        chip.style.background = "var(--stop-bg, rgba(239,68,68,0.12))";
+        return;
+      }
+      if (tickAgeS >= TELEMETRY_WARN_S) {
+        chip.style.display = "inline-block";
+        chip.dataset.level = "warn";
+        chip.textContent = `telemetry ${Math.round(tickAgeS)}s`;
+        chip.style.color = "var(--warn)";
+        chip.style.background = "rgba(250,204,21,0.12)";
+        return;
+      }
+      chip.style.display = "none";
+      chip.textContent = "";
+      chip.dataset.level = "ok";
+    }
+
+    function applyServer(brief) {
+      if (!brief || typeof brief !== "object") return;
+      serverMode = mapServer(brief);
+      reasons = Array.isArray(brief.reasons) ? brief.reasons.slice() : [];
+      if (typeof brief.market_open === "boolean") marketOpen = brief.market_open;
+      paintBanner();
+      paintTelemetryChip();
+    }
+
+    function setMarketOpen(open) {
+      marketOpen = Boolean(open);
+      paintTelemetryChip();
+      paintBanner();
+    }
+
+    function setSource(source, message, { toast = true } = {}) {
+      const msg = String(message || "unavailable");
+      const prev = sources[source];
+      sources[source] = msg;
+      paintBanner();
+      if (toast && prev !== msg && typeof showToast === "function") {
+        showToast(`${source}: ${msg}`, "⚠");
+      }
+    }
+
+    function clearSource(source) {
+      if (!sources[source]) return;
+      delete sources[source];
+      paintBanner();
+    }
+
+    function noteTick(atMs) {
+      state.lastTelemetryAt = typeof atMs === "number" ? atMs : Date.now();
+      tickAgeS = 0;
+      paintTelemetryChip();
+      paintBanner();
+    }
+
+    function pulseTickAge() {
+      if (state.lastTelemetryAt == null) {
+        tickAgeS = marketOpen ? null : null;
+      } else {
+        tickAgeS = (Date.now() - state.lastTelemetryAt) / 1000;
+      }
+      paintTelemetryChip();
+      paintBanner();
+    }
+
+    function rememberBook(book) {
+      if (!book || !book.kpis) return;
+      lastGoodBook = book;
+      state.lastCockpitDash = book;
+    }
+
+    function lastBook() {
+      return lastGoodBook || state.lastCockpitDash || null;
+    }
+
+    return {
+      MODES,
+      TELEMETRY_WARN_S,
+      TELEMETRY_CRIT_S,
+      applyServer,
+      setMarketOpen,
+      setSource,
+      clearSource,
+      noteTick,
+      pulseTickAge,
+      rememberBook,
+      lastBook,
+      paintBanner,
+      getMode: function () { return mode; },
+      getSources: function () { return Object.assign({}, sources); },
+    };
+  })();
+
   function paintReliabilityBanner() {
-    const el = document.getElementById("reliability-banner");
-    if (!el) return;
-    const keys = Object.keys(_fetchDegraded);
-    const mode = String(_degradeMode || "OK");
-    const modeLoud = mode !== "OK" && mode !== "OFF_SESSION";
-    if (!keys.length && !modeLoud) {
-      el.style.display = "none";
-      el.textContent = "";
-      return;
-    }
-    el.style.display = "block";
-    const parts = [];
-    if (modeLoud) {
-      parts.push(mode + (Array.isArray(_degradeReasons) && _degradeReasons.length
-        ? " · " + _degradeReasons.slice(0, 4).join(",")
-        : ""));
-    }
-    if (keys.length) {
-      parts.push(keys.map((k) => `${k}: ${_fetchDegraded[k]}`).join(" · "));
-    }
-    el.textContent = parts.join(" · ");
+    ReliabilityController.paintBanner();
   }
   function applyDegradeMode(brief) {
-    if (!brief || typeof brief !== "object") return;
-    _degradeMode = String(brief.degrade_mode || "OK");
-    _degradeReasons = Array.isArray(brief.reasons) ? brief.reasons : [];
-    paintReliabilityBanner();
+    ReliabilityController.applyServer(brief);
   }
-  function setFetchDegraded(source, message, { toast = true } = {}) {
-    const msg = String(message || "unavailable");
-    const prev = _fetchDegraded[source];
-    _fetchDegraded[source] = msg;
-    paintReliabilityBanner();
-    if (toast && prev !== msg) showToast(`${source}: ${msg}`, "⚠");
+  function setFetchDegraded(source, message, opts) {
+    ReliabilityController.setSource(source, message, opts || {});
   }
   function clearFetchDegraded(source) {
-    if (!_fetchDegraded[source]) return;
-    delete _fetchDegraded[source];
-    paintReliabilityBanner();
+    ReliabilityController.clearSource(source);
+  }
+  function notePrefCatch(source, err) {
+    // Money-adjacent prefs: never silent. Audio-only catches stay allowlisted separately.
+    const detail = (err && (err.message || String(err))) || "prefs_sync_failed";
+    try { console.warn(`[reliability] ${source}:`, err); } catch (e) { /* ignore */ }
+    ReliabilityController.setSource(source, detail, { toast: false });
   }
   async function noteFetchResult(source, res, data) {
     if (res && res.ok) {
@@ -1692,6 +1851,8 @@
     setFetchDegraded(source, detail);
     return false;
   }
+  // Expose for Admin / tests
+  window.ReliabilityController = ReliabilityController;
 
   // -------------------------------------------------------------------------
   // Dark / Light Theme Mode Management Engine
@@ -1833,10 +1994,31 @@
   }
 
   setInterval(updateRecCounters, 1000);
+  setInterval(function () {
+    try { ReliabilityController.pulseTickAge(); } catch (e) { /* ignore */ }
+  }, 1000);
 
   // -------------------------------------------------------------------------
-  // WebSocket Telemetry Connection
+  // WebSocket Telemetry Connection (exponential reconnect + stale chip)
   // -------------------------------------------------------------------------
+  function _wsReconnectDelayMs() {
+    const attempt = Math.max(0, Number(state.wsReconnectAttempt) || 0);
+    return Math.min(30000, 1000 * Math.pow(2, Math.min(attempt, 5)));
+  }
+
+  function scheduleWsReconnect(reason) {
+    if (state.wsReconnectTimer) {
+      clearTimeout(state.wsReconnectTimer);
+      state.wsReconnectTimer = null;
+    }
+    const delay = _wsReconnectDelayMs();
+    state.wsReconnectAttempt = (Number(state.wsReconnectAttempt) || 0) + 1;
+    try {
+      console.warn(`[reliability] telemetry WS reconnect in ${delay}ms (${reason || "close"}; attempt ${state.wsReconnectAttempt})`);
+    } catch (e) { /* ignore */ }
+    state.wsReconnectTimer = setTimeout(initWebSocket, delay);
+  }
+
   function initWebSocket() {
     if (state.wsReconnectTimer) {
       clearTimeout(state.wsReconnectTimer);
@@ -1859,6 +2041,8 @@
 
       state.ws.onopen = () => {
         console.log(`WebSocket connected to /ws/telemetry for ${state.symbol}`);
+        state.wsReconnectAttempt = 0;
+        ReliabilityController.noteTick();
         try {
           state.ws.send(JSON.stringify({ action: "subscribe", symbol: state.symbol }));
         } catch (e) { }
@@ -1872,6 +2056,7 @@
       state.ws.onmessage = (event) => {
         try {
           const tick = JSON.parse(event.data);
+          ReliabilityController.noteTick();
           paintWallKpisFromTick(tick);
           if (tick.type === "TICK" && tick.is_market_open) {
             handleLiveTick(tick);
@@ -1891,14 +2076,14 @@
           badge.textContent = "⚡ MTM 0ms";
           badge.style.color = "var(--ink-mute)";
         }
-        state.wsReconnectTimer = setTimeout(initWebSocket, 2500);
+        scheduleWsReconnect("close");
       };
 
       state.ws.onerror = () => {
         if (state.ws) state.ws.close();
       };
     } catch (e) {
-      state.wsReconnectTimer = setTimeout(initWebSocket, 3000);
+      scheduleWsReconnect("connect_error");
     }
   }
 
@@ -2160,6 +2345,7 @@
         return;
       }
       if (data.readiness) applyDegradeMode(data.readiness);
+      ReliabilityController.setMarketOpen(Boolean(data.is_market_open));
       const wsLive = state.ws && state.ws.readyState === 1 && data.is_market_open;
       if (!wsLive) {
         state.spot = data.spot;
@@ -2219,6 +2405,7 @@
 
       // Market Hours & Feed Mode Handling
       state.isMarketOpen = Boolean(data.is_market_open);
+      ReliabilityController.setMarketOpen(state.isMarketOpen);
       if (data.pre_market && data.pre_market.opening_watch) {
         state.openingWatch = data.pre_market.opening_watch;
       }
@@ -2777,7 +2964,7 @@
               `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">What-if (Black-76)</div>
                <table class="go-legs"><thead><tr><th>Shock</th><th>Spot</th><th>P&amp;L ₹</th></tr></thead>
                <tbody>${mid.map((s) => `<tr><td>${s.shock_pct}%</td><td>${s.spot}</td><td>${s.pnl_inr}</td></tr>`).join("")}</tbody></table>`);
-          }).catch(() => {});
+          }).catch((err) => notePrefCatch("GO whatif", err));
       }
       if (mEl) {
         const acts = data.manage_actions || [];
@@ -2877,7 +3064,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ auto_stage_fire: !!el.checked }),
-      }).catch(() => {});
+      }).catch((err) => notePrefCatch("GO prefs", err));
     };
     el.addEventListener("change", push);
     push();
@@ -2896,7 +3083,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fire_webhook: !!el.checked, webhook_url: url }),
-      }).catch(() => {});
+      }).catch((err) => notePrefCatch("GO prefs", err));
       if (el.checked && !url) {
         const entered = window.prompt("FIRE webhook URL (Telegram bot or generic JSON POST):", "");
         if (entered) {
@@ -2905,7 +3092,7 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fire_webhook: true, webhook_url: entered.trim() }),
-          }).catch(() => {});
+          }).catch((err) => notePrefCatch("GO prefs", err));
         } else {
           el.checked = false;
           localStorage.setItem("cubera_go_fire_webhook", "0");
@@ -2920,7 +3107,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ fire_webhook: true, webhook_url: url }),
-        }).catch(() => {});
+        }).catch((err) => notePrefCatch("GO prefs", err));
       }
     }
   }
@@ -3236,7 +3423,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: state.goMode }),
-      }).catch(() => {});
+      }).catch((err) => notePrefCatch("GO prefs", err));
       requestGoDeskRefresh("mode", { immediate: true });
       return;
     }
@@ -3247,7 +3434,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ delta_pref: state.goDelta }),
-      }).catch(() => {});
+      }).catch((err) => notePrefCatch("GO prefs", err));
       requestGoDeskRefresh("delta", { immediate: true });
       return;
     }
@@ -3261,15 +3448,27 @@
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
       const data = await res.json().catch(() => ({}));
-      if (!(await noteFetchResult("Cockpit", res, data))) return;
+      if (!(await noteFetchResult("Cockpit", res, data))) {
+        // Stale-while-revalidate: keep last good book on screen — never invent walls/spot.
+        const last = ReliabilityController.lastBook();
+        if (last && last.kpis && String(last.symbol || "").toUpperCase() === requestedSym) {
+          const age = last.fetched_at || last.as_of || last.data_refreshed_at || "prior";
+          setFetchDegraded("Cockpit", `stale_while_revalidate (${age})`, { toast: false });
+        }
+        return;
+      }
       // Discard stale in-flight response if index switched
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) {
         return;
       }
 
-      if (!data.kpis) return;
-      state.lastCockpitDash = data;
+      if (!data.kpis) {
+        // Empty payload must not clear the last good paint to placeholders.
+        setFetchDegraded("Cockpit", "empty_book", { toast: false });
+        return;
+      }
+      ReliabilityController.rememberBook(data);
       // Share coalesce with signal-driven refreshes (absorb poll+signal bursts).
       requestGoDeskRefresh("cockpit_poll", { immediate: true });
       paintHeaderSession(headerExecFromBook(data), headerCountdown(data), true, marketOpenFrom(data));
@@ -5858,7 +6057,7 @@
           const trailed = (openPayload.open || []).filter((o) => o.trail_armed).length;
           if (trailed) parts.push(`trail armed ${trailed}`);
           effEl.textContent = parts.join(" · ");
-        }).catch(() => {});
+        }).catch((err) => notePrefCatch("GO Desk", err));
       }
     } catch (e) {
       setFetchDegraded("GO Desk", e.message || "network error");
@@ -9797,7 +9996,7 @@
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol: state.symbol, window: state.window }),
-    }).catch(() => { });
+    }).catch((err) => notePrefCatch("select-index", err));
     initWebSocket();
     const pollPinAlerts = async () => {
       try {

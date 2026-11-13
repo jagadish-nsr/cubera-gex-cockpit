@@ -64,5 +64,6 @@ Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft 
 | Post-open smoke | `scripts/session_open_smoke.py` / `GET /api/admin/session-smoke` | exit 1 / Admin button |
 | Hard-gate wiring | `tests/test_hard_gates.py` (VWAP / FIRE premium / TE IV / blast pin / tab banners) | promote gate |
 | Lot/expiry VERIFY | `GET /api/admin/verify-exchange` | Admin Ops card |
+| Client reliability | `ReliabilityController` + telemetry chip + prefs catch audit | `tests/test_client_reliability.py` |
 
 

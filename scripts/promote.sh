@@ -58,7 +58,8 @@ python3 -m pytest -q --timeout=60 \
   "${DEV_DIR}/tests/test_wal_checkpoint.py" \
   "${DEV_DIR}/tests/test_ingest_heartbeat.py" \
   "${DEV_DIR}/tests/test_slo_monitor.py" \
-  "${DEV_DIR}/tests/test_verify_exchange.py"
+  "${DEV_DIR}/tests/test_verify_exchange.py" \
+  "${DEV_DIR}/tests/test_client_reliability.py"
 
 echo "  • Executing Quant & Market Parity Tests..."
 python3 -m pytest -q "${DEV_DIR}/tests/test_cockpit_market_hours.py" \
