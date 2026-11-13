@@ -12,17 +12,11 @@ from app.admin.clock import IST, as_ist, now_ist
 
 
 def _ideas_probe(symbol: str = "NIFTY") -> dict[str, Any]:
-    """Peek at the in-memory Ideas batch — never invents a summary."""
+    """Peek at the Ideas latch (memory or shared latest_rec pickle) — never invents."""
     try:
         import web_server
-        with web_server._REC_LOCK:
-            batch = web_server._REC_BATCH.get((symbol, web_server._ACTIVE_STATE.get("window") or "current_week"))
-            if batch is None:
-                # try any window for this symbol
-                for (sym, _win), b in web_server._REC_BATCH.items():
-                    if sym == symbol:
-                        batch = b
-                        break
+        win = web_server._ACTIVE_STATE.get("window") or "current_week"
+        batch = web_server._latest_rec_batch(symbol, win)
         if batch is None:
             return {"ok": False, "count": 0, "summary": "", "reason": "no_batch_yet"}
         ideas = []

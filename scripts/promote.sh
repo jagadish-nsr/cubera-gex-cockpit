@@ -65,6 +65,7 @@ REQUIRED_RELIABILITY_TESTS=(
   tests/test_reliability_scorecard.py
   tests/test_event_loop_watchdog.py
   tests/test_readiness_external.py
+  tests/test_latest_rec.py
 )
 RELIABILITY_PYTEST_ARGS=()
 for rel in "${REQUIRED_RELIABILITY_TESTS[@]}"; do

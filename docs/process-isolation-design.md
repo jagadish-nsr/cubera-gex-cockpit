@@ -52,7 +52,9 @@ tape continuity.
    `live_fetcher.latest` then LKGS. Keep that boundary absolute after the split.
 2. **One writer for chain publish.** Only the ingest process writes
    `latest_snap_{SYMBOL}.pkl` and LKGS memory is process-local — serve restores
-   from disk pickle on cold start.
+   from disk pickle on cold start. Same for Ideas: ingest writes
+   `latest_rec_{SYMBOL}.pkl`; EXTERNAL serve reads it for GO/Ideas latch and
+   must not start `rec.publisher`.
 3. **Sentinel DB:** ingest owns tick→bar writes; serve is read-mostly. WAL mode
    + `busy_timeout` stay. Health daemon PASSIVE checkpoints when WAL > 25 MB.
 4. **No synthetic data path** in either process. Replay remains a separate

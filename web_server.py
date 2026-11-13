@@ -625,8 +625,28 @@ _COMMENTARY_LOCK = None
 
 
 def _latest_rec_batch(symbol: str, window: str):
+    """In-process latch, else shared ``latest_rec_*.pkl`` written by ingest.
+
+    EXTERNAL serve never runs ``rec.publisher``; without the disk latch GO always
+    saw empty Ideas and fell back to sentinel-led packages (2026-11-13).
+    """
     key = ((symbol or "").upper(), window or "current_week")
     with _REC_LOCK:
+        mem = _REC_BATCH.get(key)
+    if mem is not None:
+        return mem
+    try:
+        from app.latest_rec import read_latest_rec
+        disk = read_latest_rec(symbol, window=window or "current_week")
+    except Exception as exc:
+        log.debug("latest_rec read %s: %s", symbol, exc)
+        return None
+    if disk is None:
+        return None
+    with _REC_LOCK:
+        # Do not clobber a concurrent in-process publish.
+        if key not in _REC_BATCH:
+            _REC_BATCH[key] = disk
         return _REC_BATCH.get(key)
 
 
@@ -702,6 +722,11 @@ def _rec_publisher_loop() -> None:
                 if withhold:
                     with _REC_LOCK:
                         _REC_BATCH.pop((sym, win), None)
+                    try:
+                        from app.latest_rec import clear_latest_rec
+                        clear_latest_rec(sym)
+                    except Exception:
+                        pass
                     if do_gen:
                         event(
                             "rec.withheld",
@@ -749,6 +774,11 @@ def _rec_publisher_loop() -> None:
                         # Always publish: empty refuse clears stale scored cards and
                         # surfaces executive_summary to the UI (never leave yesterday's ideas).
                         _REC_BATCH[(sym, win)] = batch
+                    try:
+                        from app.latest_rec import write_latest_rec
+                        write_latest_rec(sym, batch, window=win)
+                    except Exception as exc:
+                        log.warning("latest_rec persist %s: %s", sym, exc)
                     if batch_spot <= 0 or n_ideas == 0:
                         reason = str(getattr(batch, "executive_summary", "") or "no ideas")
                         log.warning("rec.refused %s: %s", sym, reason)
@@ -912,7 +942,10 @@ def _kick_commentary_eval(sym: str, dash) -> None:
 
 
 def _ensure_rec_publisher() -> None:
+    """Arm Ideas publisher. EXTERNAL serve must not — ingest owns the latch file."""
     global _REC_THREAD
+    if os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1":
+        return
     import threading
     t = _REC_THREAD
     if t is not None and t.is_alive():

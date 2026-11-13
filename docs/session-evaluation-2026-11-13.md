@@ -54,20 +54,19 @@ Walls at close: NF 25,200/25,000 · BN 61,000/60,500 · SX 81,500/80,000.
 
 | Hour IST | `rec.generated` | Notes |
 |---|---:|---|
-| 09 | 0 | Open window — Ideas latch still empty at first FIRE |
-| 10 | 52 | First gen 10:14:47 (seconds after first FIRE) |
+| 09 | **80** DB / **535** ops | Ideas **did** mint from 09:15 on ingest; serve latch was empty |
+| 10 | 14 DB | First GO FIRE 10:13 was sentinel-led (serve `_REC_BATCH` miss) |
 | 11 | 23 | Quiet mid-morning |
 | 12–15 | 353 / 507 / 608 / 450 | Steady through close |
 
-- **1,993** generated events across Nifty 1,099 / BN 642 / Sensex 252.
-- **0** zero-count publishes; **0** `rec.refused` (no Missing session VWAP).
-- First GO FIRE at 10:13 was explicitly **sentinel-led** (`Ideas latch absent;
-  live ATM premium … no fabricated option targets`) — weight fold + `chain_ltp`
-  path worked as designed before Ideas caught up.
+- Ops: **~6.7k** `rec.generated` across the day; DB `recommendation_records` **190**
+  with **80** in hour 09 from **09:15:01**.
+- **0** sustained Missing session VWAP refuses (3 early wall/flip refuses only).
+- First GO FIRE at 10:13 was **sentinel-led** because EXTERNAL **serve** never saw
+  ingest’s in-memory Ideas latch — not because Ideas were dark.
 
-Residual: Ideas still lagged ~1h after 09:15 (not the all-day blackout of
-12-Nov). Dual ingest/serve + readiness-false streak likely delayed the
-publisher; worth a first-30-min watch next open.
+Fix (v5.3.136+): ingest writes `latest_rec_{SYMBOL}.pkl`; serve `_latest_rec_batch`
+reads it; EXTERNAL serve must not start `rec.publisher`.
 
 ## OrderFlow Sentinel
 
@@ -161,23 +160,20 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 
 ## Next open checks
 
-1. Ideas count > 0 by ~09:20 IST (or refuse ≠ Missing session VWAP).
-2. ~~No GO STAGE / `go_open` after cash close~~ — gated in code (session_closed / 400).
+1. ~~Ideas by ~09:20~~ — mint was already on; **serve latch** fixed via `latest_rec_*.pkl`.
+2. ~~No GO STAGE / `go_open` after cash close~~ — gated (session_closed / 400).
 3. CONT_BULL still weak — size off or require ABS/CVD confirmation; keep gates.
-4. ~~Readiness SLO false red~~ — **v5.3.133**; confirm `probes.chains.*.age_s` finite and
-   `feed.source=ingest_heartbeat` under EXTERNAL after ~09:16.
+4. ~~Readiness SLO false red~~ — **v5.3.133**; confirm ages under EXTERNAL after ~09:16.
 5. If Sensex walls equal: confirm `shared_gamma_strike` soft flag + VANNA skip.
-6. ~~Incomplete-journals GAP vs complete Sentinel~~ — GAP is Sentinel/PARTIAL
-   only; missing `dhan_futures` / `dhan_intraday` → INFO REPAIR backlog (v5.3.135+).
+6. ~~Incomplete-journals GAP vs complete Sentinel~~ — **v5.3.135** REPAIR INFO path.
 
 ### Operator checklist (first 30 min)
 
-1. `/api/health` version matches promoted tag (expect ≥ **v5.3.133**).
-2. Readiness: not stuck on `no_fresh_chain` while chains publish; ingest heartbeat ok.
-3. After ~09:16: Ideas > 0 on Nifty.
-4. On ≥75 Sentinel + live ATM LTP: FIRE → `go_open` with empty targets if
-   Ideas latch absent; no STAGE after F&O close.
-5. Do not treat CONT_BULL alone as a size-up on a chop open.
+1. `/api/health` version matches promoted tag (expect ≥ **v5.3.136**).
+2. Readiness: finite `probes.chains.*.age_s`; `feed.source=ingest_heartbeat`.
+3. After ~09:16: Ideas UI / GO latch not empty while `latest_rec_NIFTY.pkl` is fresh.
+4. On FIRE with Ideas present: latch should prefer Ideas (not only sentinel-led).
+5. No STAGE after F&O close; do not size up on CONT_BULL alone.
 
 ## Disclaimer
 
