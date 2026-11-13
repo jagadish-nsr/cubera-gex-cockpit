@@ -39,6 +39,16 @@
     if (feedEl) {
       feedEl.textContent = feed.last_tick_age_s == null ? "not started" : (feed.last_tick_age_s + "s");
     }
+    const spotSrc = data.spot_source || {};
+    const spotSrcEl = document.getElementById("admin-kpi-spot-source");
+    if (spotSrcEl) {
+      const primary = spotSrc.primary || "none";
+      const bits = Object.keys(spotSrc.per_symbol || {}).map(function (sym) {
+        return sym + "=" + ((spotSrc.per_symbol[sym] || {}).source || "?");
+      });
+      spotSrcEl.textContent = "Spot source " + primary
+        + (bits.length ? " · " + bits.join(" ") : "");
+    }
     const wal = document.getElementById("admin-kpi-wal");
     if (wal && data.wal_sizes_mb) wal.textContent = data.wal_sizes_mb.sentinel + " MB";
     const gaps = document.getElementById("admin-kpi-gaps");

@@ -35,6 +35,13 @@ def test_probe_stale(tmp_path: Path):
         hb.set_path_for_tests(None)
 
 
+def _token_ok():
+    return {
+        "present": True, "hours_left": 8.0, "expired": False,
+        "source": "file", "malformed": False,
+    }
+
+
 def test_readiness_external_requires_heartbeat(tmp_path: Path, monkeypatch):
     path = tmp_path / "ingest.heartbeat"
     hb.set_path_for_tests(path)
@@ -45,6 +52,7 @@ def test_readiness_external_requires_heartbeat(tmp_path: Path, monkeypatch):
              mock.patch("app.ws_spot_feed.get_status", return_value={
                  "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,
              }), \
+             mock.patch("data.dhan.token_status", return_value=_token_ok()), \
              mock.patch("resilience.get_circuit_breaker") as cb_fn:
             class _CB:
                 state = type("S", (), {"value": "CLOSED"})()
@@ -63,6 +71,7 @@ def test_readiness_external_requires_heartbeat(tmp_path: Path, monkeypatch):
              mock.patch("app.ws_spot_feed.get_status", return_value={
                  "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,
              }), \
+             mock.patch("data.dhan.token_status", return_value=_token_ok()), \
              mock.patch("resilience.get_circuit_breaker") as cb_fn:
             class _CB:
                 state = type("S", (), {"value": "CLOSED"})()

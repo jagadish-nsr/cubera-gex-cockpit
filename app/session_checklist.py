@@ -53,7 +53,8 @@ def build_session_checklist(
     version: str | None = None,
 ) -> dict[str, Any]:
     import config
-    from app.readiness import build_readiness
+    from data.holidays import is_trading_day
+    from app.readiness import TOKEN_MIN_HOURS, build_readiness
 
     now = as_ist(now or now_ist())
     market_open = bool(config.is_market_open(now))
@@ -61,6 +62,12 @@ def build_session_checklist(
     ideas = _ideas_probe("NIFTY")
 
     after_ideas_window = now.time().replace(tzinfo=None) >= time(9, 16)
+    pre_open = (
+        is_trading_day(now.date())
+        and now.time().replace(tzinfo=None) < time(9, 15)
+    )
+    # Token floor applies pre-open (blocking) and throughout the cash session.
+    token_gate_active = pre_open or market_open
     checks: list[dict[str, Any]] = []
 
     checks.append({
@@ -69,11 +76,33 @@ def build_session_checklist(
         "ok": bool(version),
         "detail": version or "missing",
     })
+
+    token = (readiness.get("probes") or {}).get("token") or {}
+    hours = token.get("hours_left")
+    token_ok = bool(token.get("ok"))
+    if not token and token_gate_active:
+        # Older readiness mocks without token probe — treat as unknown fail when gated.
+        token_ok = False
+    checks.append({
+        "id": "token_hours",
+        "label": f"Dhan token ≥ {TOKEN_MIN_HOURS:.0f}h (pre-open / session)",
+        "ok": (not token_gate_active) or token_ok,
+        "detail": (
+            "off_gate"
+            if not token_gate_active
+            else (token.get("reason") or (f"hours_left={hours}" if hours is not None else "token_unknown"))
+        ),
+        "skipped": not token_gate_active,
+    })
+
     checks.append({
         "id": "readiness",
         "label": "Readiness ready (or off-session)",
         "ok": bool(readiness.get("ready")),
-        "detail": ",".join(readiness.get("reasons") or []) or "ready",
+        "detail": (
+            f"mode={readiness.get('degrade_mode') or '—'}; "
+            + (",".join(readiness.get("reasons") or []) or "ready")
+        ),
     })
     chains = (readiness.get("probes") or {}).get("chains") or {}
     any_chain = any(c.get("ok") for c in chains.values())
@@ -158,10 +187,30 @@ def build_session_checklist(
         "skipped": tape.get("reason") in ("too_early", "off_session") and tape.get("ok"),
     })
 
+    nse = (readiness.get("probes") or {}).get("nse_fallback") or {}
+    checks.append({
+        "id": "nse_fallback",
+        "label": "Book from Dhan (not NSE scrape)",
+        "ok": (not market_open) or not bool(nse.get("active")),
+        "detail": (
+            "off_session" if not market_open
+            else (
+                nse.get("reason")
+                or (
+                    f"ok lifetime_nse_fallback={nse.get('lifetime_count', 0)}"
+                    if not nse.get("active")
+                    else "book_from_nse_scrape"
+                )
+            )
+        ),
+        "skipped": not market_open,
+    })
+
     failed = [c for c in checks if not c.get("ok") and not c.get("skipped")]
     return {
         "as_of": now.isoformat(timespec="seconds"),
         "market_open": market_open,
+        "pre_open": pre_open,
         "pass": len(failed) == 0,
         "failed": [c["id"] for c in failed],
         "checks": checks,
@@ -169,5 +218,6 @@ def build_session_checklist(
         "ideas": ideas,
         "vwap": vwap,
         "tape": tape,
+        "degrade_mode": readiness.get("degrade_mode"),
         "slo_doc": "docs/sli-slo.md",
     }

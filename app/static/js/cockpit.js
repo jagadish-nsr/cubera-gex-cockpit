@@ -1639,17 +1639,36 @@
 
   // Fail-loud fetch degradation — never look like a quiet market when the API is down.
   const _fetchDegraded = Object.create(null);
+  let _degradeMode = "OK";
+  let _degradeReasons = [];
   function paintReliabilityBanner() {
     const el = document.getElementById("reliability-banner");
     if (!el) return;
     const keys = Object.keys(_fetchDegraded);
-    if (!keys.length) {
+    const mode = String(_degradeMode || "OK");
+    const modeLoud = mode !== "OK" && mode !== "OFF_SESSION";
+    if (!keys.length && !modeLoud) {
       el.style.display = "none";
       el.textContent = "";
       return;
     }
     el.style.display = "block";
-    el.textContent = "DEGRADED · " + keys.map((k) => `${k}: ${_fetchDegraded[k]}`).join(" · ");
+    const parts = [];
+    if (modeLoud) {
+      parts.push(mode + (Array.isArray(_degradeReasons) && _degradeReasons.length
+        ? " · " + _degradeReasons.slice(0, 4).join(",")
+        : ""));
+    }
+    if (keys.length) {
+      parts.push(keys.map((k) => `${k}: ${_fetchDegraded[k]}`).join(" · "));
+    }
+    el.textContent = parts.join(" · ");
+  }
+  function applyDegradeMode(brief) {
+    if (!brief || typeof brief !== "object") return;
+    _degradeMode = String(brief.degrade_mode || "OK");
+    _degradeReasons = Array.isArray(brief.reasons) ? brief.reasons : [];
+    paintReliabilityBanner();
   }
   function setFetchDegraded(source, message, { toast = true } = {}) {
     const msg = String(message || "unavailable");
@@ -2140,6 +2159,7 @@
         requestedSym !== (state.symbol || "").toUpperCase()) {
         return;
       }
+      if (data.readiness) applyDegradeMode(data.readiness);
       const wsLive = state.ws && state.ws.readyState === 1 && data.is_market_open;
       if (!wsLive) {
         state.spot = data.spot;

@@ -255,7 +255,7 @@ Call the system highly reliable only when **all** are true for two consecutive f
 |-----|------|
 | [system-reliability-plan.md](system-reliability-plan.md) | Phase A assessment + what shipped |
 | [process-isolation-design.md](process-isolation-design.md) | Locked split contracts |
-| [sli-slo.md](sli-slo.md) | SLI/SLO numbers (update when Phase C enforces) |
+| [sli-slo.md](sli-slo.md) | SLI/SLO numbers + degrade modes (Pillar C/D) |
 | [backup-restore.md](backup-restore.md) | Nightly backup + scratch restore runbook (Phase D) |
 | **This file** | Phase B+ high-reliability roadmap |
 | Session eval `docs/session-evaluation-YYYY-MM-DD.md` | Empirical burn evidence |

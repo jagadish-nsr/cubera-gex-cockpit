@@ -71,6 +71,15 @@ def _feed_public() -> dict:
     }
 
 
+def _spot_source_public() -> dict:
+    """WS vs REST path currently feeding the header spot."""
+    try:
+        from app.spot_ticker import spot_source_status
+        return spot_source_status()
+    except Exception as exc:
+        return {"primary": "none", "per_symbol": {}, "error": str(exc)}
+
+
 def register_admin_routes(app: FastAPI) -> None:
     @app.get("/api/admin/status")
     def admin_status():
@@ -80,6 +89,7 @@ def register_admin_routes(app: FastAPI) -> None:
             "port": _port(),
             "token_status": _token_public(),
             "feed_status": _feed_public(),
+            "spot_source": _spot_source_public(),
             "wal_sizes_mb": {
                 "sentinel": _wal_mb(root / "data" / "sentinel.db-wal"),
                 "market_snapshot": _wal_mb(root / "data" / "journal" / "market_snapshot.db-wal"),

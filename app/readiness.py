@@ -26,6 +26,15 @@ SPOT_STALE_S = 45.0            # matches spot_ticker.STALE_AFTER_S
 FEED_STALE_S = 30.0            # health daemon CRITICAL threshold
 CHAIN_DEGRADED_S = 7200.0      # matches cockpit is_degraded wall
 INGEST_HEARTBEAT_STALE_S = 90.0  # process-isolation design Phase C
+TOKEN_MIN_HOURS = 2.0          # pre-open / session checklist floor
+
+# Explicit degrade modes (Pillar D) — UI banner shows the enum, not free text only.
+MODE_OK = "OK"
+MODE_OFF_SESSION = "OFF_SESSION"
+MODE_TOKEN_DEAD = "TOKEN_DEAD"
+MODE_FEED_DOWN = "FEED_DOWN"
+MODE_CHAIN_DEGRADED = "CHAIN_DEGRADED"
+MODE_NOT_READY = "NOT_READY"
 
 
 def _chain_probe(symbol: str) -> dict[str, Any]:
@@ -172,6 +181,97 @@ def _ingest_probe() -> dict[str, Any]:
     return beat
 
 
+def _token_probe() -> dict[str, Any]:
+    """Dhan token freshness. hours_left < TOKEN_MIN_HOURS → not ok (pre-open FAIL)."""
+    out: dict[str, Any] = {
+        "present": False,
+        "hours_left": None,
+        "expired": None,
+        "ok": False,
+        "reason": "token_missing",
+        "min_hours": TOKEN_MIN_HOURS,
+    }
+    try:
+        from data.dhan import token_status
+        st = token_status()
+        hours = st.get("hours_left")
+        expired = st.get("expired")
+        present = bool(st.get("present"))
+        out["present"] = present
+        out["hours_left"] = round(float(hours), 2) if hours is not None else None
+        out["expired"] = expired
+        out["source"] = st.get("source")
+        if not present or expired is True:
+            out["reason"] = "token_dead"
+            return out
+        if hours is None:
+            out["reason"] = "token_unknown"
+            return out
+        if float(hours) < TOKEN_MIN_HOURS:
+            out["reason"] = f"token_hours_{float(hours):.1f}"
+            return out
+        out["ok"] = True
+        out["reason"] = ""
+        return out
+    except Exception as exc:
+        out["reason"] = f"token_probe_error:{exc}"
+        return out
+
+
+def _nse_fallback_probe(symbols: list[str]) -> dict[str, Any]:
+    """Surface active NSE scrape books + lifetime egress counter."""
+    active: list[str] = []
+    sources: dict[str, str] = {}
+    try:
+        from app import live_fetcher
+        for sym in symbols:
+            rec = live_fetcher.latest(sym)
+            data = (rec or {}).get("data")
+            src = str(getattr(data, "source", "") or "")
+            sources[sym] = src
+            if data is not None and "nse" in src.lower():
+                active.append(sym)
+    except Exception:
+        pass
+    count = 0
+    try:
+        from app.obs.metrics import egress_snapshot
+        count = int((egress_snapshot() or {}).get("nse_fallback") or 0)
+    except Exception:
+        count = 0
+    return {
+        "active": bool(active),
+        "symbols": active,
+        "sources": sources,
+        "lifetime_count": count,
+        "ok": not bool(active),
+        "reason": ("book_from_nse_scrape:" + ",".join(active)) if active else "",
+    }
+
+
+def _resolve_degrade_mode(
+    *,
+    market_open: bool,
+    reasons: list[str],
+    token: dict[str, Any],
+    feed: dict[str, Any],
+    chains: dict[str, Any],
+    nse: dict[str, Any],
+) -> str:
+    if not market_open:
+        return MODE_OFF_SESSION
+    if not token.get("ok"):
+        return MODE_TOKEN_DEAD
+    if not feed.get("ok"):
+        return MODE_FEED_DOWN
+    any_degraded = any(c.get("degraded") for c in chains.values())
+    if any_degraded or nse.get("active") or "no_fresh_chain" in reasons:
+        return MODE_CHAIN_DEGRADED
+    if reasons:
+        return MODE_NOT_READY
+    return MODE_OK
+
+
 def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     """Assemble readiness payload. Safe to call on every /api/health hit."""
     import config
@@ -185,12 +285,20 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     feed = _feed_probe()
     circuits = {s: _circuit_probe(s) for s in symbols}
     ingest = _ingest_probe()
+    token = _token_probe()
+    nse = _nse_fallback_probe(symbols)
+    try:
+        from app.spot_ticker import spot_source_status
+        spot_src = spot_source_status(tuple(symbols))
+    except Exception as exc:
+        spot_src = {"primary": "none", "per_symbol": {}, "error": str(exc)}
 
     thresholds = {
         "chain_stale_s": CHAIN_STALE_S,
         "spot_stale_s": SPOT_STALE_S,
         "feed_stale_s": FEED_STALE_S,
         "ingest_heartbeat_stale_s": INGEST_HEARTBEAT_STALE_S,
+        "token_min_hours": TOKEN_MIN_HOURS,
     }
     probes = {
         "chains": chains,
@@ -198,14 +306,21 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
         "feed": feed,
         "circuits": circuits,
         "ingest": ingest,
+        "token": token,
+        "nse_fallback": nse,
+        "spot_source": spot_src,
     }
 
     reasons: list[str] = []
     if not market_open:
+        mode = _resolve_degrade_mode(
+            market_open=False, reasons=[], token=token, feed=feed, chains=chains, nse=nse,
+        )
         return {
             "ready": True,
             "market_open": False,
             "reasons": [],
+            "degrade_mode": mode,
             "probes": probes,
             "thresholds": thresholds,
         }
@@ -225,11 +340,19 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
         reasons.append("circuit_open:" + ",".join(open_cbs))
     if ingest.get("required") and not ingest.get("ok"):
         reasons.append(ingest.get("reason") or "ingest_heartbeat_stale")
+    if not token.get("ok"):
+        reasons.append(token.get("reason") or "token_dead")
+    if nse.get("active"):
+        reasons.append(nse.get("reason") or "nse_fallback")
 
+    mode = _resolve_degrade_mode(
+        market_open=True, reasons=reasons, token=token, feed=feed, chains=chains, nse=nse,
+    )
     return {
         "ready": len(reasons) == 0,
         "market_open": True,
         "reasons": reasons,
+        "degrade_mode": mode,
         "probes": probes,
         "thresholds": thresholds,
     }

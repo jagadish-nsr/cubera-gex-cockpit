@@ -18,7 +18,8 @@ poller automatically switches back to its 3s beat and keeps prices fresh.
 Store shape
 ───────────
 ``_STORE[symbol]`` → {"ohlc": dict, "fut": dict|None, "quote": dict|None, "at": epoch,
-                       "ws_at": epoch|None, "err": str|None}
+                       "ws_at": epoch|None, "source": "ws"|"rest"|"snapshot"|None,
+                       "err": str|None}
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from __future__ import annotations
 import threading
 import time
 
-_STORE: dict = {}   # symbol -> {"ohlc": dict, "fut": dict|None, "quote": dict|None, "at": epoch, "ws_at": epoch|None, "err": str|None}
+_STORE: dict = {}   # symbol -> tick record (see module docstring)
 _THREADS: dict = {}
 _LOCK = threading.Lock()
 
@@ -192,9 +193,50 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
         rec["quote"] = quote
         if ohlc:
             rec["ohlc"] = ohlc
+            if not _ws_is_live_for(symbol):
+                rec["source"] = "rest" if market_open else (rec.get("source") or "snapshot")
     else:
-        _STORE[symbol] = {"ohlc": ohlc, "fut": fut, "quote": quote, "at": now, "err": None}
+        _STORE[symbol] = {
+            "ohlc": ohlc, "fut": fut, "quote": quote, "at": now,
+            "ws_at": None,
+            "source": "rest" if market_open else "snapshot",
+            "err": None,
+        }
     return quote
+
+
+def spot_source_status(symbols: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")) -> dict:
+    """Admin/readiness probe: which path last fed the header spot per index."""
+    now = time.time()
+    per: dict[str, dict] = {}
+    for sym in symbols:
+        rec = _STORE.get(sym) or {}
+        ws_at = rec.get("ws_at")
+        at = rec.get("at")
+        source = rec.get("source")
+        if not source:
+            if ws_at and (now - float(ws_at)) < 10.0:
+                source = "ws"
+            elif at:
+                source = "rest_or_unknown"
+            else:
+                source = "none"
+        per[sym] = {
+            "source": source,
+            "age_s": round(now - float(at), 1) if at else None,
+            "ws_age_s": round(now - float(ws_at), 1) if ws_at else None,
+        }
+    # Header primary: prefer any live WS, else REST, else snapshot/none.
+    sources = [p["source"] for p in per.values()]
+    if any(s == "ws" for s in sources):
+        primary = "ws"
+    elif any(s == "rest" for s in sources):
+        primary = "rest"
+    elif any(s == "snapshot" for s in sources):
+        primary = "snapshot"
+    else:
+        primary = "none"
+    return {"primary": primary, "per_symbol": per}
 
 
 
@@ -231,10 +273,14 @@ def note_synced_book(symbol: str, ohlc: dict | None) -> None:
         return
     if _ws_is_live_for(sym):
         return
-    rec = _STORE.setdefault(sym, {"ohlc": None, "fut": None, "quote": None, "at": 0, "ws_at": None, "err": None})
+    rec = _STORE.setdefault(sym, {
+        "ohlc": None, "fut": None, "quote": None, "at": 0,
+        "ws_at": None, "source": None, "err": None,
+    })
     rec["ohlc"] = dict(ohlc)
     rec["quote"] = _compile_quote(sym, rec["ohlc"], rec.get("fut"))
     rec["at"] = time.time()
+    rec["source"] = "rest"
     rec["err"] = None
 
 
@@ -244,8 +290,10 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
     Either ``ohlc`` (from an IDX_I spot tick) or ``fut`` (from an FNO futures tick), or both.
     Merges into the existing record so the two streams don't clobber each other."""
     now = time.time()
-    rec = _STORE.setdefault(symbol, {"ohlc": None, "fut": None, "quote": None, "at": 0,
-                                     "ws_at": None, "err": None})
+    rec = _STORE.setdefault(symbol, {
+        "ohlc": None, "fut": None, "quote": None, "at": 0,
+        "ws_at": None, "source": None, "err": None,
+    })
     changed = False
     if ohlc is not None:
         # Merge: preserve keys the WS packet doesn't carry (e.g. vix from a VIX tick)
@@ -259,6 +307,7 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
     if changed:
         rec["ws_at"] = now
         rec["at"] = now
+        rec["source"] = "ws"
         rec["quote"] = _compile_quote(symbol, rec.get("ohlc"), rec.get("fut"))
 
         # Throttle SQLite snapshot persistence: at most once per 15s in background
@@ -349,6 +398,7 @@ def _loop(symbol: str, interval_s: float) -> None:
                     "quote": q_init,
                     "at": time.time(),
                     "ws_at": None,
+                    "source": "snapshot",
                     "err": None,
                 }
             time.sleep(30.0)
@@ -376,6 +426,7 @@ def _loop(symbol: str, interval_s: float) -> None:
                         "quote": q,
                         "at": time.time(),
                         "ws_at": ws_at if ws_at else None,
+                        "source": "rest",
                         "err": None,
                     }
                 ok = True

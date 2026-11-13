@@ -16,6 +16,10 @@ the UI looks healthy) is worse than a loud 503.
 | **Ingest heartbeat** | When `COCKPIT_INGEST_EXTERNAL=1`, heartbeat age ≤ 90s in session | readiness probes.ingest / `data/journal/ingest.heartbeat` |
 | **Ideas gate wiring** | After ~09:16, Ideas refuse reason ≠ `Missing session VWAP` for a live bar | Admin session checklist |
 | **Zero fabrication** | Execute / serialize / HTML seeds never invent premium/strike/spot | hard_gates + UI lessons |
+| **Token floor** | `hours_left ≥ 2` pre-open and in session | readiness probes.token / checklist `token_hours` |
+| **Degrade mode** | Enum `OK` / `OFF_SESSION` / `TOKEN_DEAD` / `FEED_DOWN` / `CHAIN_DEGRADED` / `NOT_READY` | readiness.degrade_mode → reliability banner |
+| **NSE fallback** | Active scrape books flagged (not silent) | readiness probes.nse_fallback + checklist |
+| **Spot path** | Header fed by `ws` vs `rest` vs `snapshot` | readiness probes.spot_source / Admin KPI |
 
 ## Service level objectives (session)
 
@@ -33,12 +37,14 @@ the UI looks healthy) is worse than a loud 503.
 Admin tab → Session Open Checklist (`GET /api/admin/session-checklist`):
 
 1. Health version present
-2. Readiness ready (or off-session)
-3. At least one fresh chain + spot
-4. Feed live when market open
-5. No OPEN circuits
-6. Ingest heartbeat OK when dual-process (EXTERNAL) mode
-7. After 09:16 IST: Ideas batch present or refuse ≠ Missing session VWAP
+2. Dhan token ≥ 2h (blocking before 09:15 and during session)
+3. Readiness ready (or off-session) — see `degrade_mode`
+4. At least one fresh chain + spot
+5. Feed live when market open
+6. No OPEN circuits
+7. Ingest heartbeat OK when dual-process (EXTERNAL) mode
+8. After 09:16 IST: Ideas batch present or refuse ≠ Missing session VWAP
+9. Book from Dhan (not NSE scrape) when market open
 
 Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft flag when walls equal.
 

@@ -2063,6 +2063,28 @@ def _status_day_ohlc(dash, quote: dict | None, snap: dict | None, spot: float, m
 # API REST Endpoints
 # --------------------------------------------------------------------------
 
+def _status_readiness_brief() -> dict:
+    """Compact readiness for the header banner (degrade_mode enum + reasons)."""
+    try:
+        from app.readiness import build_readiness
+        r = build_readiness(market_open=bool(config.is_market_open()))
+        return {
+            "ready": bool(r.get("ready")),
+            "degrade_mode": r.get("degrade_mode") or "OK",
+            "reasons": list(r.get("reasons") or [])[:8],
+            "spot_source": ((r.get("probes") or {}).get("spot_source") or {}).get("primary"),
+            "nse_fallback": bool(((r.get("probes") or {}).get("nse_fallback") or {}).get("active")),
+        }
+    except Exception as exc:
+        return {
+            "ready": False,
+            "degrade_mode": "NOT_READY",
+            "reasons": [f"readiness_error:{exc}"],
+            "spot_source": None,
+            "nse_fallback": False,
+        }
+
+
 @app.get("/api/status")
 async def get_status(symbol: Optional[str] = None, window: Optional[str] = None):
     """Live quote, market phase, futures basis, DTE, feed mode, timeline countdown."""
@@ -2265,8 +2287,10 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
             "present": dhan_st.get("present", False),
             "hours_left": dhan_st.get("hours_left", 0.0),
             "source": dhan_st.get("source", "none"),
+            "expired": bool(dhan_st.get("expired")),
         },
         "ist_time": _fmt_ist_clock(),
+        "readiness": _status_readiness_brief(),
     }
 
 
