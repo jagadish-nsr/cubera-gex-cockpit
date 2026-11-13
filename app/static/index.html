@@ -3065,8 +3065,77 @@
           </div>
 
           <div class="ladder-card" style="margin-top:14px">
-            <h3 style="margin:0 0 8px">Processes</h3>
-            <p id="admin-ops-http" style="margin:0 0 8px;color:var(--ink-mute)">HTTP —</p>
+            <div class="admin-obs-head">
+              <h3 style="margin:0">Observability</h3>
+              <div class="admin-obs-toggle" id="admin-obs-window">
+                <button type="button" data-window="15m" class="admin-chip is-active">15m</button>
+                <button type="button" data-window="session" class="admin-chip">Today</button>
+              </div>
+            </div>
+            <div class="admin-obs-kpis" id="admin-obs-kpis">
+              <div class="admin-obs-kpi"><small>HTTP RPM</small><b id="obs-kpi-rpm">—</b></div>
+              <div class="admin-obs-kpi"><small>Err RPM</small><b id="obs-kpi-err-rpm">—</b></div>
+              <div class="admin-obs-kpi"><small>HTTP p95</small><b id="obs-kpi-p95">—</b></div>
+              <div class="admin-obs-kpi"><small>In-flight</small><b id="obs-kpi-inflight">—</b></div>
+              <div class="admin-obs-kpi"><small>Lag p95</small><b id="obs-kpi-lag">—</b></div>
+              <div class="admin-obs-kpi"><small>Watchdog</small><b id="obs-kpi-wd">—</b></div>
+              <div class="admin-obs-kpi"><small>Gate headroom</small><b id="obs-kpi-gate">—</b></div>
+              <div class="admin-obs-kpi"><small>WS age</small><b id="obs-kpi-ws">—</b></div>
+              <div class="admin-obs-kpi"><small>CB open</small><b id="obs-kpi-cb">—</b></div>
+              <div class="admin-obs-kpi"><small>Failures</small><b id="obs-kpi-fail">—</b></div>
+            </div>
+
+            <div class="admin-obs-grid">
+              <div>
+                <h4 class="admin-obs-h">HTTP</h4>
+                <table class="admin-table">
+                  <thead><tr><th>Route</th><th>n</th><th>p50</th><th>p95</th><th>err</th></tr></thead>
+                  <tbody id="admin-obs-http-body"></tbody>
+                </table>
+                <p id="admin-ops-http" class="admin-obs-meta">HTTP —</p>
+              </div>
+              <div>
+                <h4 class="admin-obs-h">External APIs</h4>
+                <pre id="admin-obs-external" class="admin-log admin-obs-block">—</pre>
+              </div>
+              <div>
+                <h4 class="admin-obs-h">Infra / concurrency</h4>
+                <pre id="admin-obs-infra" class="admin-log admin-obs-block">—</pre>
+              </div>
+              <div>
+                <h4 class="admin-obs-h">Resilience</h4>
+                <table class="admin-table">
+                  <thead><tr><th>Symbol</th><th>CB</th><th>RTT</th><th>Degraded</th></tr></thead>
+                  <tbody id="admin-obs-resilience-body"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="admin-obs-grid">
+              <div>
+                <h4 class="admin-obs-h">Failures</h4>
+                <pre id="admin-obs-failures" class="admin-log admin-obs-block">—</pre>
+              </div>
+              <div>
+                <h4 class="admin-obs-h">Volume</h4>
+                <pre id="admin-obs-volume" class="admin-log admin-obs-block">—</pre>
+              </div>
+            </div>
+
+            <h4 class="admin-obs-h">Chain performance</h4>
+            <table class="admin-table">
+              <thead>
+                <tr>
+                  <th>Symbol</th><th>n</th><th>p50</th><th>p95</th><th>net</th><th>cmp</th><th>last ok</th>
+                </tr>
+              </thead>
+              <tbody id="admin-obs-chain-body"></tbody>
+            </table>
+
+            <h4 class="admin-obs-h">Recent events</h4>
+            <pre id="admin-ops-events" class="admin-log">No workflow events yet.</pre>
+
+            <h3 style="margin:18px 0 8px">Processes</h3>
             <table class="admin-table">
               <thead>
                 <tr>
@@ -3093,8 +3162,6 @@
               </thead>
               <tbody id="admin-ops-workflows"></tbody>
             </table>
-            <h3 style="margin:14px 0 8px">Events</h3>
-            <pre id="admin-ops-events" class="admin-log">No workflow events yet.</pre>
           </div>
         </div>
       </section>

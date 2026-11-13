@@ -6681,39 +6681,61 @@ def build_ops_timeline_windows(now_ist: datetime) -> tuple[str, str, list[dict]]
 
 @app.get("/api/ops-calendar")
 async def get_ops_calendar(symbol: Optional[str] = None):
-    """Ops & Calendar Tab: Token status, Circuit breaker, session timeline windows, Holidays."""
+    """Ops & Calendar Tab: live token/CB/RTT/WAL + session timeline windows."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     now_ist = _get_ist_now()
     title, session_kind, windows = build_ops_timeline_windows(now_ist)
 
+    from app.admin.obs_snapshot import build_ops_payload
+
+    snap = build_ops_payload(window="15m", limit=1)
+    res = (snap.get("resilience") or {}).get(sym) or {}
+    circuit = res.get("circuit") or {}
+    adaptive = res.get("adaptive") or {}
+    token = (snap.get("external") or {}).get("token") or {}
+    wal = (snap.get("infra") or {}).get("wal_mb") or {}
+
     return {
         "symbol": sym,
-        "token_status": {"present": True, "hours_left": 14.5, "source": "data/.dhan_token"},
-        "circuit_breaker": {"state": "CLOSED", "failure_count": 0, "last_failure": None},
+        "token_status": {
+            "present": bool(token.get("present")),
+            "hours_left": token.get("hours_left"),
+            "source": token.get("source"),
+            "expired": bool(token.get("expired")),
+        },
+        "circuit_breaker": {
+            "state": circuit.get("state") or "UNKNOWN",
+            "failure_count": circuit.get("consecutive_failures") or 0,
+            "cooldown_remaining": circuit.get("cooldown_remaining"),
+            "last_failure": None,
+        },
         "resilience": {
-            "adaptive_poller_rtt_ms": 42.5,
-            "cache_entries": 128,
-            "sqlite_wal_mb": 2.4,
+            "adaptive_poller_rtt_ms": adaptive.get("rolling_rtt_ms") or 0.0,
+            "cache_entries": sum(
+                1 for s in ("NIFTY", "BANKNIFTY", "SENSEX")
+                if ((snap.get("resilience") or {}).get(s) or {}).get("lkgs", {}).get("has_snapshot")
+            ),
+            "sqlite_wal_mb": round(sum(float(wal.get(k) or 0.0) for k in wal), 2),
+            "wal_mb": wal,
         },
         "timeline_title": title,
         "session_kind": session_kind,
         "timeline_windows": windows,
-        "upcoming_expiries": [
-            {"date": "2026-10-15", "index": "NIFTY", "type": "Weekly", "days_left": 0},
-            {"date": "2026-10-16", "index": "BSE SENSEX", "type": "Weekly", "days_left": 1},
-            {"date": "2026-10-22", "index": "NIFTY", "type": "Weekly", "days_left": 7},
-            {"date": "2026-10-29", "index": "NIFTY", "type": "Monthly", "days_left": 14},
-        ],
+        "upcoming_expiries": [],
     }
 
 
 @app.post("/api/ops/reset-circuit-breaker")
 async def reset_circuit_breaker():
+    from resilience.circuit_breaker import reset_all_circuits
+    reset_all_circuits()
     return {"status": "ok", "message": "Circuit breaker reset to CLOSED"}
 
 
 @app.post("/api/ops/clear-cache")
 async def clear_cache():
+    from resilience import get_lkgs_manager
+    get_lkgs_manager().clear()
     return {"status": "ok", "message": "LKGS memory cache cleared successfully"}
 
 

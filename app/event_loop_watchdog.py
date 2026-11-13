@@ -19,6 +19,8 @@ TICK_S = 1.0
 
 _heartbeat = 0.0
 _started = False
+_armed_at = 0.0
+_expected_beat = 0.0
 
 
 def stalled(now: float, beat: float, armed_at: float, stall_s: float) -> bool:
@@ -31,6 +33,24 @@ def stalled(now: float, beat: float, armed_at: float, stall_s: float) -> bool:
         return False
     anchor = beat if beat > 0 else armed_at
     return (now - anchor) > stall_s
+
+
+def is_armed() -> bool:
+    return _started
+
+
+def snapshot() -> dict:
+    """Lag vs expected 1s beat — used by Admin Observability."""
+    now = time.monotonic()
+    beat = _heartbeat
+    expected = _expected_beat if _expected_beat > 0 else (beat + TICK_S if beat > 0 else now)
+    lag_ms = max(0.0, (now - expected) * 1000.0) if _started else 0.0
+    return {
+        "armed": _started,
+        "lag_ms": round(lag_ms, 1),
+        "stall_s": STALL_S,
+        "last_beat_age_s": round(now - beat, 1) if beat > 0 else None,
+    }
 
 
 def main_thread_stack(limit: int = 40) -> str:
@@ -71,17 +91,26 @@ def _default_restart() -> None:
 
 def start(loop: asyncio.AbstractEventLoop, *, stall_s: float = STALL_S, restart=None) -> None:
     """Arm the watchdog on ``loop``. Further calls in this process do nothing."""
-    global _started
+    global _started, _armed_at, _expected_beat
     if _started:
         return
     _started = True
     restart_fn = restart or _default_restart
-    armed_at = time.monotonic()
+    _armed_at = time.monotonic()
+    _expected_beat = _armed_at + TICK_S
 
     async def _beat() -> None:
-        global _heartbeat
+        global _heartbeat, _expected_beat
         while True:
-            _heartbeat = time.monotonic()
+            now = time.monotonic()
+            lag_ms = max(0.0, (now - _expected_beat) * 1000.0) if _expected_beat > 0 else 0.0
+            _heartbeat = now
+            _expected_beat = now + TICK_S
+            try:
+                from app.obs import metrics as obs_metrics
+                obs_metrics.note_loop_lag(lag_ms)
+            except Exception:
+                pass
             await asyncio.sleep(TICK_S)
 
     loop.create_task(_beat())
@@ -89,7 +118,7 @@ def start(loop: asyncio.AbstractEventLoop, *, stall_s: float = STALL_S, restart=
     def _watch() -> None:
         while True:
             time.sleep(TICK_S)
-            if stalled(time.monotonic(), _heartbeat, armed_at, stall_s):
+            if stalled(time.monotonic(), _heartbeat, _armed_at, stall_s):
                 restart_fn()
                 return
 

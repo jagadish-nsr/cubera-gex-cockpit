@@ -228,6 +228,11 @@ def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
             except Exception:  # noqa: BLE001 - drop just this feed, keep the others
                 continue
         if not ok:
+            try:
+                from app.obs import metrics as obs_metrics
+                obs_metrics.note_egress("news_miss")
+            except Exception:
+                pass
             return None
         res = score_news(items, now_utc)
         with _NEWS_LOCK:
@@ -235,5 +240,10 @@ def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
             _NEWS_CACHE["data"] = res
         return res
     except Exception:  # noqa: BLE001 - fail soft; news is optional context
+        try:
+            from app.obs import metrics as obs_metrics
+            obs_metrics.note_egress("news_miss")
+        except Exception:
+            pass
         return None
 

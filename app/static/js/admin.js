@@ -7,6 +7,7 @@
 
   let pollTimer = null;
   let activeTask = null;
+  let obsWindow = "15m";
 
   function isoDate(day) {
     const z = function (n) { return String(n).padStart(2, "0"); };
@@ -72,25 +73,172 @@
     body.appendChild(tr);
   }
 
+  function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value == null || value === "" ? "—" : String(value);
+  }
+
+  function fmtMs(v) {
+    if (v == null || v === "") return "—";
+    const n = Number(v);
+    if (!isFinite(n)) return "—";
+    if (n >= 1000) return (n / 1000).toFixed(1) + "s";
+    return Math.round(n) + "ms";
+  }
+
+  function countMap(obj) {
+    const parts = [];
+    Object.keys(obj || {}).forEach(function (key) {
+      const n = obj[key] || 0;
+      if (n) parts.push(key + " " + n);
+    });
+    return parts.length ? parts.join(" · ") : "none";
+  }
+
+  function paintObs(data) {
+    const http = data.http || {};
+    const infra = data.infra || {};
+    const external = data.external || {};
+    const summary = data.events_summary || {};
+    const failures = summary.failures || {};
+    const volume = summary.volume || {};
+    const gate = (external.rate_gate || {}).chain || {};
+    const ws = external.spot_ws || {};
+    const failTotal = Object.keys(failures).reduce(function (acc, k) { return acc + (failures[k] || 0); }, 0);
+
+    setText("obs-kpi-rpm", http.rpm != null ? http.rpm : "—");
+    setText("obs-kpi-err-rpm", http.error_rpm != null ? http.error_rpm : "—");
+    setText("obs-kpi-p95", fmtMs(http.p95_ms));
+    setText("obs-kpi-inflight", http.in_flight != null ? http.in_flight : "—");
+    setText("obs-kpi-lag", fmtMs(infra.loop_lag_p95_ms != null ? infra.loop_lag_p95_ms : http.loop_lag_p95_ms));
+    setText("obs-kpi-wd", infra.watchdog_restarts != null ? infra.watchdog_restarts : "—");
+    setText("obs-kpi-gate", gate.headroom != null ? gate.headroom : "—");
+    setText("obs-kpi-ws", ws.last_tick_age_s != null ? (ws.last_tick_age_s + "s") : "—");
+    setText("obs-kpi-cb", infra.cb_open != null ? infra.cb_open : "—");
+    setText("obs-kpi-fail", failTotal);
+
+    const by = http.by_class || {};
+    const httpEl = document.getElementById("admin-ops-http");
+    if (httpEl) {
+      httpEl.textContent = "Lifetime " + (data.window || obsWindow)
+        + " · lifetime " + (http.count || 0)
+        + "  2xx " + (by["2xx"] || 0)
+        + "  4xx " + (by["4xx"] || 0)
+        + "  5xx " + (by["5xx"] || 0)
+        + "  slow " + (http.slow || 0)
+        + "  p50 " + fmtMs(http.p50_ms)
+        + "  p99 " + fmtMs(http.p99_ms);
+    }
+
+    const httpBody = document.getElementById("admin-obs-http-body");
+    if (httpBody) {
+      httpBody.replaceChildren();
+      const routes = http.top_routes || [];
+      if (!routes.length) opsEmpty(httpBody, 5, "No HTTP samples in window");
+      routes.forEach(function (row) {
+        const tr = document.createElement("tr");
+        tr.appendChild(opsCell(row.route));
+        tr.appendChild(opsCell(row.count));
+        tr.appendChild(opsCell(fmtMs(row.p50_ms)));
+        tr.appendChild(opsCell(fmtMs(row.p95_ms)));
+        tr.appendChild(opsCell(row.error_count));
+        httpBody.appendChild(tr);
+      });
+    }
+
+    const token = external.token || {};
+    const sync = external.sync || {};
+    const misses = external.egress_misses || {};
+    const quote = (external.rate_gate || {}).quote || {};
+    setText("admin-obs-external",
+      "Token " + (token.present ? ((token.hours_left != null ? Number(token.hours_left).toFixed(1) + "h" : "ok") + (token.expired ? " expired" : "")) : "missing")
+      + "\nRate gate chain calls " + (gate.calls != null ? gate.calls : "—")
+      + " headroom " + (gate.headroom != null ? gate.headroom : "—")
+      + " wait_p95 " + fmtMs(gate.wait_p95_ms)
+      + "\nRate gate quote calls " + (quote.calls != null ? quote.calls : "—")
+      + " headroom " + (quote.headroom != null ? quote.headroom : "—")
+      + "\nSpot WS " + (ws.ws_connected ? "connected" : "down")
+      + (ws.ws_error ? (" err=" + ws.ws_error) : "")
+      + " age " + (ws.last_tick_age_s != null ? ws.last_tick_age_s + "s" : "—")
+      + "\nSync " + (sync.status || "—")
+      + " trigger " + (sync.trigger || "—")
+      + "\nEgress misses news " + (misses.news_miss || 0)
+      + " sectors " + (misses.sectors_miss || 0)
+      + " nse_fallback " + (misses.nse_fallback || 0)
+    );
+
+    const wal = infra.wal_mb || {};
+    const journal = infra.journal_mb || {};
+    const threads = infra.chain_threads || {};
+    setText("admin-obs-infra",
+      "RSS " + (infra.rss_mb != null ? infra.rss_mb + " MB" : "—")
+      + " · threads " + (infra.threads != null ? infra.threads : "—")
+      + " · in-flight " + (infra.http_in_flight != null ? infra.http_in_flight : "—")
+      + "\nWAL sen " + (wal.sentinel != null ? wal.sentinel : "—")
+      + " market " + (wal.market_snapshot != null ? wal.market_snapshot : "—")
+      + " admin " + (wal.admin_ops != null ? wal.admin_ops : "—")
+      + "\nJournal ts " + (journal.timeseries != null ? journal.timeseries : "—")
+      + " blast " + (journal.gamma_blast != null ? journal.gamma_blast : "—")
+      + " ticks " + (journal.blast_ticks != null ? journal.blast_ticks : "—")
+      + "\nLoop lag p95 " + fmtMs(infra.loop_lag_p95_ms)
+      + " · watchdog " + (infra.watchdog_armed ? "armed" : "off")
+      + " restarts " + (infra.watchdog_restarts || 0)
+      + "\nChain threads NIFTY " + (threads.NIFTY ? "alive" : "dark")
+      + " BN " + (threads.BANKNIFTY ? "alive" : "dark")
+      + " SX " + (threads.SENSEX ? "alive" : "dark")
+    );
+
+    const resBody = document.getElementById("admin-obs-resilience-body");
+    if (resBody) {
+      resBody.replaceChildren();
+      const res = data.resilience || {};
+      ["NIFTY", "BANKNIFTY", "SENSEX"].forEach(function (sym) {
+        const row = res[sym] || {};
+        const circuit = row.circuit || {};
+        const adaptive = row.adaptive || {};
+        const lkgs = row.lkgs || {};
+        const tr = document.createElement("tr");
+        tr.appendChild(opsCell(sym));
+        tr.appendChild(opsCell(circuit.state || "—"));
+        tr.appendChild(opsCell(fmtMs(adaptive.rolling_rtt_ms)));
+        tr.appendChild(opsCell(lkgs.is_degraded ? ("yes " + Math.round(lkgs.staleness_seconds || 0) + "s") : "no"));
+        resBody.appendChild(tr);
+      });
+    }
+
+    setText("admin-obs-failures", countMap(failures));
+    setText("admin-obs-volume", countMap(volume));
+
+    const chainBody = document.getElementById("admin-obs-chain-body");
+    if (chainBody) {
+      chainBody.replaceChildren();
+      const chain = data.chain || {};
+      ["NIFTY", "BANKNIFTY", "SENSEX"].forEach(function (sym) {
+        const row = chain[sym] || {};
+        const tr = document.createElement("tr");
+        if (!row.last_ok_at && (row.n || 0) === 0) tr.className = "admin-obs-warn";
+        tr.appendChild(opsCell(sym));
+        tr.appendChild(opsCell(row.n || 0));
+        tr.appendChild(opsCell(fmtMs(row.p50_ms)));
+        tr.appendChild(opsCell(fmtMs(row.p95_ms)));
+        tr.appendChild(opsCell(fmtMs(row.network_avg_ms)));
+        tr.appendChild(opsCell(fmtMs(row.compute_avg_ms)));
+        tr.appendChild(opsCell(row.last_ok_at || "—"));
+        chainBody.appendChild(tr);
+      });
+    }
+  }
+
   async function loadOps() {
     const processes = document.getElementById("admin-ops-processes");
     const workflows = document.getElementById("admin-ops-workflows");
     const events = document.getElementById("admin-ops-events");
     if (!processes || !workflows || !events) return;
     try {
-      const res = await fetch("/api/admin/ops?limit=40");
+      const res = await fetch("/api/admin/ops?limit=40&window=" + encodeURIComponent(obsWindow));
       if (!res.ok) return;
       const data = await res.json();
-      const http = data.http || {};
-      const by = http.by_class || {};
-      const httpEl = document.getElementById("admin-ops-http");
-      if (httpEl) {
-        httpEl.textContent = "HTTP " + (http.count || 0)
-          + "  2xx " + (by["2xx"] || 0)
-          + "  4xx " + (by["4xx"] || 0)
-          + "  5xx " + (by["5xx"] || 0)
-          + "  slow " + (http.slow || 0);
-      }
+      paintObs(data);
       processes.replaceChildren();
       const beats = data.heartbeats || [];
       if (!beats.length) opsEmpty(processes, 4, "No process has reported a heartbeat yet");
@@ -117,12 +265,33 @@
         workflows.appendChild(tr);
       });
       const lines = (data.events || []).map(function (row) {
-        return [row.ts, row.level, row.process, row.event, row.symbol || "", row.message || ""].join("  ");
+        const fields = row.fields || {};
+        const bits = [row.ts, row.level, row.process, row.event, row.symbol || "", row.message || ""];
+        if (row.duration_ms != null) bits.push(row.duration_ms + "ms");
+        if (fields.network_ms != null) bits.push("net=" + fields.network_ms);
+        if (fields.compute_ms != null) bits.push("cmp=" + fields.compute_ms);
+        if (fields.lag_s != null) bits.push("lag_s=" + fields.lag_s);
+        return bits.join("  ");
       });
       events.textContent = lines.length ? lines.join("\n") : "No workflow events yet.";
     } catch (err) {
       /* the next admin refresh tries again */
     }
+  }
+
+  function bindObsWindow() {
+    const root = document.getElementById("admin-obs-window");
+    if (!root || root._bound) return;
+    root._bound = true;
+    root.addEventListener("click", function (ev) {
+      const btn = ev.target.closest("button[data-window]");
+      if (!btn) return;
+      obsWindow = btn.getAttribute("data-window") || "15m";
+      root.querySelectorAll("button[data-window]").forEach(function (el) {
+        el.classList.toggle("is-active", el === btn);
+      });
+      loadOps();
+    });
   }
 
   function stateNode(status, extra) {
@@ -378,6 +547,7 @@
   }
 
   function bind() {
+    bindObsWindow();
     const inspect = document.getElementById("admin-inspect");
     if (inspect) inspect.addEventListener("click", inspectAudit);
     const planOpt = document.getElementById("admin-plan-options");

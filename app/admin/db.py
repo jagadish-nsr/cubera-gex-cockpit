@@ -582,3 +582,147 @@ def mark_orphaned_running(now_iso: str) -> int:
             return cur.rowcount
         finally:
             conn.close()
+
+
+def count_events_by_name(since_iso: str, names: list[str]) -> dict[str, int]:
+    """Windowed counts for named ops_events (missing names → 0)."""
+    out = {name: 0 for name in names}
+    if not names:
+        return out
+    placeholders = ",".join("?" for _ in names)
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT event, COUNT(*) AS c
+                  FROM ops_events
+                 WHERE ts >= ? AND event IN ({placeholders})
+                 GROUP BY event
+                """,
+                [since_iso, *names],
+            ).fetchall()
+        finally:
+            conn.close()
+    for row in rows:
+        out[str(row["event"])] = int(row["c"])
+    return out
+
+
+def _percentile(vals: list[float], q: float) -> float:
+    if not vals:
+        return 0.0
+    s = sorted(vals)
+    if len(s) == 1:
+        return s[0]
+    i = min(len(s) - 1, max(0, int(round((len(s) - 1) * q))))
+    return float(s[i])
+
+
+def summarize_chain_latency(since_iso: str) -> dict:
+    """Per-symbol + ALL rollup for chain.published duration / network / compute."""
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT symbol, duration_ms, fields_json
+                  FROM ops_events
+                 WHERE event = 'chain.published' AND ts >= ?
+                """,
+                (since_iso,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+    by_sym: dict[str, list[dict]] = {}
+    for row in rows:
+        sym = (row["symbol"] or "UNKNOWN").upper()
+        fields = _loads(row["fields_json"]) or {}
+        entry = {
+            "duration_ms": float(row["duration_ms"] or 0.0),
+            "network_ms": float(fields.get("network_ms") or 0.0),
+            "compute_ms": float(fields.get("compute_ms") or 0.0),
+        }
+        by_sym.setdefault(sym, []).append(entry)
+
+    def _agg(items: list[dict]) -> dict:
+        if not items:
+            return {
+                "n": 0, "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0,
+                "network_avg_ms": 0.0, "compute_avg_ms": 0.0,
+            }
+        durs = [x["duration_ms"] for x in items]
+        nets = [x["network_ms"] for x in items]
+        cmps = [x["compute_ms"] for x in items]
+        return {
+            "n": len(items),
+            "avg_ms": round(sum(durs) / len(durs), 1),
+            "p50_ms": round(_percentile(durs, 0.50), 1),
+            "p95_ms": round(_percentile(durs, 0.95), 1),
+            "max_ms": round(max(durs), 1),
+            "network_avg_ms": round(sum(nets) / len(nets), 1),
+            "compute_avg_ms": round(sum(cmps) / len(cmps), 1),
+        }
+
+    out = {sym: _agg(items) for sym, items in by_sym.items()}
+    all_items = [item for items in by_sym.values() for item in items]
+    out["ALL"] = _agg(all_items)
+    return out
+
+
+def summarize_http_journal(since_iso: str) -> dict:
+    """Top routes from journaled http.error / http.slow since ``since_iso``."""
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT event, duration_ms, fields_json
+                  FROM ops_events
+                 WHERE ts >= ? AND event IN ('http.error', 'http.slow')
+                """,
+                (since_iso,),
+            ).fetchall()
+        finally:
+            conn.close()
+    by_route: dict[str, dict] = {}
+    for row in rows:
+        fields = _loads(row["fields_json"]) or {}
+        route = str(fields.get("route") or "/")
+        slot = by_route.setdefault(route, {"route": route, "error": 0, "slow": 0, "durs": []})
+        if row["event"] == "http.error":
+            slot["error"] += 1
+        else:
+            slot["slow"] += 1
+        if row["duration_ms"] is not None:
+            slot["durs"].append(float(row["duration_ms"]))
+    ranked = sorted(by_route.values(), key=lambda r: r["error"] + r["slow"], reverse=True)[:8]
+    return {
+        "top_routes": [
+            {
+                "route": r["route"],
+                "error": r["error"],
+                "slow": r["slow"],
+                "p95_ms": round(_percentile(r["durs"], 0.95), 1) if r["durs"] else 0.0,
+            }
+            for r in ranked
+        ]
+    }
+
+
+def latest_workflow_ok(name_prefix: str = "chain.") -> dict[str, str | None]:
+    """Map workflow name → last_ok_at for names starting with ``name_prefix``."""
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT name, last_ok_at FROM ops_status
+                 WHERE name LIKE ?
+                """,
+                (f"{name_prefix}%",),
+            ).fetchall()
+        finally:
+            conn.close()
+    return {str(r["name"]): r["last_ok_at"] for r in rows}

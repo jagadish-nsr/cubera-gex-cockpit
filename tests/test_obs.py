@@ -326,6 +326,9 @@ def test_admin_ops_route_returns_events_and_heartbeats():
         symbol="NIFTY",
         contract_size=65,
         dealer_sign_model="short_call_short_put",
+        duration_ms=1200.0,
+        network_ms=1000.0,
+        compute_ms=200.0,
     )
     heartbeat()
     app = FastAPI()
@@ -337,5 +340,64 @@ def test_admin_ops_route_returns_events_and_heartbeats():
     assert body["events"][0]["fields"]["dealer_sign_model"] == "short_call_short_put"
     assert any(row["name"] == "heartbeat" and row["process"] == process_name() for row in body["heartbeats"])
     assert any(row["name"] == "chain.published" for row in body["workflows"])
+    assert "rpm" in body["http"]
+    assert "p95_ms" in body["http"]
+    assert "in_flight" in body["http"]
+    assert "external" in body and "rate_gate" in body["external"]
+    assert "infra" in body and "wal_mb" in body["infra"]
+    assert "resilience" in body and "NIFTY" in body["resilience"]
+    assert "events_summary" in body
+    assert "chain" in body and "ALL" in body["chain"]
     _status, _headers, empty_raw = _asgi(app, "GET", "/api/admin/ops", "process=missing")
     assert json.loads(empty_raw)["events"] == []
+
+
+def test_http_ring_rpm_percentiles_and_inflight():
+    metrics.reset()
+    metrics.begin_request()
+    assert metrics.snapshot()["in_flight"] == 1
+    metrics.end_request()
+    for i in range(20):
+        metrics.note(200, 10.0 + i, route="/api/gex")
+    metrics.note(500, 50.0, route="/api/gex")
+    metrics.note_loop_lag(12.0)
+    snap = metrics.snapshot()
+    assert snap["count"] == 21
+    assert snap["rpm"] == 21
+    assert snap["error_rpm"] == 1
+    assert snap["p50_ms"] > 0
+    assert snap["p95_ms"] >= snap["p50_ms"]
+    assert snap["top_routes"][0]["route"] == "/api/gex"
+    assert snap["loop_lag_p95_ms"] >= 12.0
+    assert snap["in_flight"] == 0
+
+
+def test_chain_latency_rollup_reads_network_compute():
+    now = datetime.now(IST).isoformat(timespec="seconds")
+    db.insert_ops_event({
+        "ts": now,
+        "process": "web",
+        "event": "chain.published",
+        "level": "INFO",
+        "trace_id": "t1",
+        "symbol": "NIFTY",
+        "duration_ms": 20000.0,
+        "message": "chain.published",
+        "fields_json": json.dumps({"network_ms": 18000.0, "compute_ms": 2000.0}),
+    })
+    db.insert_ops_event({
+        "ts": now,
+        "process": "web",
+        "event": "chain.published",
+        "level": "INFO",
+        "trace_id": "t2",
+        "symbol": "NIFTY",
+        "duration_ms": 22000.0,
+        "message": "chain.published",
+        "fields_json": json.dumps({"network_ms": 20000.0, "compute_ms": 2000.0}),
+    })
+    since = (datetime.now(IST) - timedelta(minutes=15)).isoformat(timespec="seconds")
+    summary = db.summarize_chain_latency(since)
+    assert summary["NIFTY"]["n"] == 2
+    assert summary["NIFTY"]["network_avg_ms"] == 19000.0
+    assert summary["ALL"]["n"] == 2

@@ -80,6 +80,8 @@ def _gate(bucket: str = "chain", hi: bool = False) -> None:
     if st is None:
         return
     lim = _LIMITS[bucket]
+    waited = 0.0
+    t0 = time.perf_counter()
     with st["cv"]:
         if hi:
             st["hi"] += 1
@@ -92,12 +94,19 @@ def _gate(bucket: str = "chain", hi: bool = False) -> None:
                     st["calls"].append(now)
                     del st["calls"][:-120]          # keep the recent window only
                     st["cv"].notify_all()
-                    return
+                    waited = (time.perf_counter() - t0) * 1000.0
+                    break
                 st["cv"].wait(timeout=max(0.02, wait if wait > 0 else 0.05))
         finally:
             if hi:
                 st["hi"] -= 1
                 st["cv"].notify_all()
+    if waited > 0:
+        try:
+            from app.obs import metrics as obs_metrics
+            obs_metrics.note_gate_wait(bucket, waited)
+        except Exception:
+            pass
 
 
 def rate_report(window_s: float = 60.0) -> dict:

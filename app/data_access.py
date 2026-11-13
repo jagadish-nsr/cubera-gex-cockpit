@@ -185,6 +185,21 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
 
     payload = nse_fetch(idx.symbol, has_weekly=idx.has_weekly)
     source = "nse (Dhan fallback)" if note and "using NSE" in note and pref != "nse" else "nse"
+    if note and "using NSE" in note and pref != "nse":
+        try:
+            from app.obs import event
+            from app.obs import metrics as obs_metrics
+            obs_metrics.note_egress("nse_fallback")
+            event(
+                "egress.nse_fallback",
+                level="WARNING",
+                ok=False,
+                workflow=f"chain.{idx.symbol}",
+                symbol=idx.symbol,
+                reason=(note or "")[:160],
+            )
+        except Exception:
+            pass
     return payload, source, None, note
 
 

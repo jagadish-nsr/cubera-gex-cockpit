@@ -2994,6 +2994,76 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 .admin-state-weekend,
 .admin-state-special_session { color: var(--ink-mute); }
 
+.admin-obs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.admin-obs-toggle { display: flex; gap: 6px; }
+.admin-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-mute);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.admin-chip.is-active {
+  border-color: var(--accent, #0f766e);
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent, #0f766e) 14%, transparent);
+}
+.admin-obs-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.admin-obs-kpi {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+}
+.admin-obs-kpi small {
+  display: block;
+  color: var(--ink-mute);
+  font-size: 0.68rem;
+  margin-bottom: 4px;
+}
+.admin-obs-kpi b {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.admin-obs-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 10px 0 14px;
+}
+.admin-obs-h {
+  margin: 10px 0 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.admin-obs-meta {
+  margin: 6px 0 0;
+  color: var(--ink-mute);
+  font-size: 0.72rem;
+}
+.admin-obs-block {
+  max-height: 160px;
+}
+.admin-obs-warn td { color: var(--warn); }
+@media (max-width: 900px) {
+  .admin-obs-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .admin-obs-grid { grid-template-columns: 1fr; }
+}
+
 /* Cockpit Active Recommendations Mini / Full Expandable Cards */
 .cockpit-rec-card {
   background: var(--surface-2);

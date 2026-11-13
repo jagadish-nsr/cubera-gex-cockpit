@@ -14,8 +14,8 @@ from app.admin import db
 from app.admin.audit_engine import audit_range
 from app.admin.clock import now_ist
 from app.admin.health_daemon import evaluate_alerts, gap_count
+from app.admin.obs_snapshot import build_ops_payload
 from app.admin.task_runner import AdminRequestError, cancel, handle, task_view
-from app.obs.metrics import snapshot as http_snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -95,15 +95,16 @@ def register_admin_routes(app: FastAPI) -> None:
         event: Optional[str] = Query(None),
         level: Optional[str] = Query(None),
         limit: int = Query(80, ge=1, le=500),
+        window: str = Query("15m"),
     ):
-        """Heartbeats, workflow gauges, and the latest workflow events."""
-        rows = db.list_ops_status(process=process)
-        return {
-            "heartbeats": [row for row in rows if row["name"] == "heartbeat"],
-            "workflows": [row for row in rows if row["name"] != "heartbeat"],
-            "events": db.list_ops_events(process=process, event=event, level=level, limit=limit),
-            "http": http_snapshot(),
-        }
+        """Heartbeats, workflow gauges, HTTP/perf rollups, and latest events."""
+        return build_ops_payload(
+            window=window,
+            process=process,
+            event=event,
+            level=level,
+            limit=limit,
+        )
 
     @app.get("/api/admin/audit")
     def admin_audit(

@@ -785,6 +785,19 @@ class LiveSentinelManager:
             if (now - last) < _GAP_RESYNC_COOLDOWN_SEC:
                 return
             self._gap_resync_at[instrument_id] = now
+        try:
+            from app.obs import event
+            event(
+                "sentinel.silence_resync",
+                level="WARNING",
+                ok=False,
+                workflow="sentinel",
+                symbol=symbol,
+                instrument_id=instrument_id,
+                message="silence/gap watchdog scheduled broker resync",
+            )
+        except Exception:
+            pass
 
         def _run() -> None:
             try:

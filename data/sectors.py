@@ -241,5 +241,10 @@ def fetch_sector_snap(prefer_dhan: bool = False, session=None, blocking: bool = 
         threading.Thread(target=_pull, args=(prefer_dhan, None), daemon=True,
                          name="sector-snap").start()
     if _cache["rows"] is None:
+        try:
+            from app.obs import metrics as obs_metrics
+            obs_metrics.note_egress("sectors_miss")
+        except Exception:
+            pass
         return None                            # nothing to show yet (panel simply doesn't render)
     return {"rows": _cache["rows"], "source": _cache["src"], "weights_as_of": WEIGHTS_AS_OF}

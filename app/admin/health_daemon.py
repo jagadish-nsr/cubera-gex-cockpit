@@ -27,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[2]
 WAL_WARN_BYTES = 25 * 1024 * 1024
 PROCESS_SILENCE = timedelta(minutes=3)
 EVENT_KEEP = timedelta(days=7)
+OBS_ERROR_RPM_WARN = 5
+OBS_CHAIN_P95_MS = 30_000.0
+OBS_CHAIN_SILENT_MULT = 3.0
+OBS_CHAIN_INTERVAL_S = 30.0
+OBS_LOOP_LAG_P95_MS = 5_000.0
+OBS_GATE_HEADROOM_WARN = 0.05
 _gap_checked: set[str] = set()
 _gap_count = 0
 _gap_lock = threading.Lock()
@@ -84,6 +90,7 @@ def evaluate_alerts(
     if include_gaps:
         _gap_alert(root, now, stamp)
     _process_alert(now, stamp)
+    _obs_perf_alerts(now, stamp)
     _prune_events(now)
     return {"badge_count": db.badge_count()}
 
@@ -275,6 +282,152 @@ def _process_alert(now: datetime, stamp: str) -> None:
         fingerprint = str(row.get("fingerprint") or "")
         if fingerprint.startswith("PROCESS|") and fingerprint not in stale:
             db.resolve_alert(fingerprint, stamp)
+
+
+def _obs_perf_alerts(now: datetime, stamp: str) -> None:
+    """Latency / concurrency / vendor alerts from the Observability snapshot."""
+    try:
+        from app.admin.obs_snapshot import build_ops_payload
+        import config
+        snap = build_ops_payload(window="15m", limit=1)
+    except Exception:
+        log.exception("obs perf alert snapshot failed")
+        return
+
+    http = snap.get("http") or {}
+    infra = snap.get("infra") or {}
+    failures = ((snap.get("events_summary") or {}).get("failures") or {})
+    gate = ((snap.get("external") or {}).get("rate_gate") or {}).get("chain") or {}
+    resilience = snap.get("resilience") or {}
+    chain = snap.get("chain") or {}
+    session_date = as_ist(now).date().isoformat()
+
+    err_fp = "OBS|http-error-rpm"
+    err_rpm = float(http.get("error_rpm") or 0)
+    if err_rpm >= OBS_ERROR_RPM_WARN:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=err_fp,
+            severity="CRITICAL" if err_rpm >= OBS_ERROR_RPM_WARN * 2 else "WARNING",
+            category="OBS",
+            title="HTTP error RPM elevated",
+            description=f"error_rpm={err_rpm:.0f} over the last 60s (threshold {OBS_ERROR_RPM_WARN}).",
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(err_fp, stamp)
+
+    lag_fp = "OBS|loop-lag"
+    lag = float(infra.get("loop_lag_p95_ms") or http.get("loop_lag_p95_ms") or 0.0)
+    if lag >= OBS_LOOP_LAG_P95_MS:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=lag_fp,
+            severity="WARNING",
+            category="OBS",
+            title="Event-loop lag p95 elevated",
+            description=f"loop_lag_p95={lag:.0f}ms (threshold {OBS_LOOP_LAG_P95_MS:.0f}ms).",
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(lag_fp, stamp)
+
+    wd_fp = "OBS|watchdog-restart"
+    if int(failures.get("watchdog.restart") or 0) > 0:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=wd_fp,
+            severity="CRITICAL",
+            category="OBS",
+            title="Event-loop watchdog restarted the process",
+            description=f"watchdog.restart count in window: {failures.get('watchdog.restart')}.",
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(wd_fp, stamp)
+
+    gate_fp = "OBS|rate-gate-starve"
+    headroom = gate.get("headroom")
+    if headroom is not None and float(headroom) <= OBS_GATE_HEADROOM_WARN:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=gate_fp,
+            severity="WARNING",
+            category="OBS",
+            title="Dhan chain rate-gate headroom nearly exhausted",
+            description=f"chain headroom={headroom} (threshold {OBS_GATE_HEADROOM_WARN}).",
+            session_date=session_date,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(gate_fp, stamp)
+
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        cb_fp = f"OBS|circuit-open|{sym}"
+        state = ((resilience.get(sym) or {}).get("circuit") or {}).get("state")
+        if state == "OPEN":
+            db.upsert_alert(
+                alert_id=_alert_id(),
+                fingerprint=cb_fp,
+                severity="WARNING",
+                category="OBS",
+                title=f"{sym} circuit breaker is OPEN",
+                description=f"{sym} CB state OPEN with cooldown "
+                f"{((resilience.get(sym) or {}).get('circuit') or {}).get('cooldown_remaining')}s.",
+                session_date=session_date,
+                now_iso=stamp,
+            )
+        else:
+            db.resolve_alert(cb_fp, stamp)
+
+        row = chain.get(sym) or {}
+        p95_fp = f"OBS|chain-p95|{sym}"
+        if int(row.get("n") or 0) >= 10 and float(row.get("p95_ms") or 0) >= OBS_CHAIN_P95_MS:
+            db.upsert_alert(
+                alert_id=_alert_id(),
+                fingerprint=p95_fp,
+                severity="WARNING",
+                category="OBS",
+                title=f"{sym} chain p95 above 30s",
+                description=f"{sym} chain p95={row.get('p95_ms')}ms over n={row.get('n')}.",
+                session_date=session_date,
+                now_iso=stamp,
+            )
+        else:
+            db.resolve_alert(p95_fp, stamp)
+
+        silent_fp = f"OBS|chain-silent|{sym}"
+        last_ok = row.get("last_ok_at")
+        silent = False
+        try:
+            ingest_open = config.is_chain_ingest_open(now)
+        except Exception:
+            ingest_open = is_regular_session(now)
+        # Only after a publish has been seen — cold start before first chain
+        # row must not CRITICAL-spam empty ledgers.
+        if ingest_open and last_ok:
+            try:
+                beat = as_ist(datetime.fromisoformat(str(last_ok)))
+                age = (as_ist(now) - beat).total_seconds()
+                silent = age > (OBS_CHAIN_INTERVAL_S * OBS_CHAIN_SILENT_MULT)
+            except Exception:
+                silent = False
+        if silent:
+            db.upsert_alert(
+                alert_id=_alert_id(),
+                fingerprint=silent_fp,
+                severity="CRITICAL",
+                category="OBS",
+                title=f"{sym} chain publish is silent",
+                description=f"{sym} last_ok_at={last_ok or 'never'} during ingest window.",
+                session_date=session_date,
+                now_iso=stamp,
+            )
+        else:
+            db.resolve_alert(silent_fp, stamp)
 
 
 def _prune_events(now: datetime) -> None:
