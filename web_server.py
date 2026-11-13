@@ -300,6 +300,20 @@ async def _start_ingest_lanes():
         role=role,
         ingest_external=external,
     )
+
+    def _warm_lkgs():
+        # Cold-start: seed empty LKGS from latest_snap pickles so the first
+        # cockpit paint never invents spot (Phase D C5).
+        try:
+            from app.durability import warm_lkgs_from_pickles
+
+            warmed = warm_lkgs_from_pickles()
+            log.info("LKGS cold-start warm: %s", warmed)
+        except Exception:
+            log.exception("LKGS cold-start warm failed")
+
+    _run_lane("lkgs.warm", _warm_lkgs)
+
     if os.environ.get("COCKPIT_WATCHDOG") == "1":
         from app.event_loop_watchdog import start as start_watchdog
         loop = asyncio.get_running_loop()

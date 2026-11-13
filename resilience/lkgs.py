@@ -148,6 +148,31 @@ class LKGSManager:
         with self._lock:
             return sym in self._registry
 
+    def seed(
+        self,
+        symbol: str,
+        data: Any,
+        stored_at: datetime | None = None,
+    ) -> bool:
+        """Fill an empty LKGS slot from disk without writing session_snapshots.
+
+        Used for cold-start serve (Phase D C5). Returns False if the slot is
+        already occupied or data is None.
+        """
+        if data is None:
+            return False
+        sym = symbol.upper().strip()
+        ts = stored_at or datetime.now(timezone.utc)
+        with self._lock:
+            if sym in self._registry:
+                return False
+            self._registry[sym] = SnapshotEntry(data=data, stored_at=ts)
+            spot = getattr(getattr(data, "levels", None), "spot", None)
+            if spot and spot > 0:
+                self._prev_spot[sym] = float(spot)
+        log.info("LKGS[%s]: Seeded from disk as of %s (no session_snapshot write)", sym, ts.isoformat())
+        return True
+
     def clear(self, symbol: str | None = None) -> None:
         with self._lock:
             if symbol is not None:

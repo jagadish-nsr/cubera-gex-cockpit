@@ -3,9 +3,10 @@
 The loop reads ``token_status()`` and ``app.ws_spot_feed.get_status()``. It does
 not open a second WebSocket. When ``sentinel.db-wal`` exceeds 25 MB it runs a
 PASSIVE ``wal_checkpoint`` (non-blocking if writers are active) and alerts if
-the file stays large. A closed session with a gap is rechecked until the
-journals are complete. A clean session is not scanned again until the process
-restarts.
+the file stays large. After 15:45 IST on a trading day it attempts one
+TRUNCATE checkpoint so the WAL does not carry overnight. A closed session with
+a gap is rechecked until the journals are complete. A clean session is not
+scanned again until the process restarts.
 """
 
 from __future__ import annotations
@@ -38,6 +39,8 @@ OBS_GATE_HEADROOM_WARN = 0.05
 _gap_checked: set[str] = set()
 _gap_count = 0
 _gap_lock = threading.Lock()
+_wal_truncate_done: set[str] = set()
+_wal_truncate_lock = threading.Lock()
 _task: asyncio.Task | None = None
 
 
@@ -51,6 +54,8 @@ def reset_gap_cache() -> None:
     with _gap_lock:
         _gap_checked.clear()
         _gap_count = 0
+    with _wal_truncate_lock:
+        _wal_truncate_done.clear()
 
 
 def _iso(now: datetime) -> str:
@@ -90,6 +95,7 @@ def evaluate_alerts(
     _token_alert(token_fn(), stamp)
     _feed_alert(feed_fn(), now, stamp)
     _wal_alert(root, stamp)
+    _wal_truncate_post_close(root, now, stamp)
     if include_gaps:
         _gap_alert(root, now, stamp)
     _process_alert(now, stamp)
@@ -187,6 +193,57 @@ def _checkpoint_sentinel_wal(db_path: Path) -> str:
     except Exception as exc:
         log.warning("sentinel WAL checkpoint failed: %s", exc)
         return f"checkpoint_failed:{exc}"
+
+
+def _wal_truncate_post_close(root: Path, now: datetime, stamp: str) -> None:
+    """Once per trading day after 15:45 IST, TRUNCATE sentinel WAL if present.
+
+    Skipped while the regular session is open so we never block the open print.
+    Busy writers leave busy!=0; we retry next minute until success or process exit.
+    """
+    now = as_ist(now)
+    if not is_trading_day(now.date()):
+        return
+    if now.time().replace(tzinfo=None) < time(15, 45):
+        return
+    key = now.date().isoformat()
+    with _wal_truncate_lock:
+        if key in _wal_truncate_done:
+            return
+    db_path = root / "data" / "sentinel.db"
+    if not db_path.exists():
+        with _wal_truncate_lock:
+            _wal_truncate_done.add(key)
+        return
+    wal_path = root / "data" / "sentinel.db-wal"
+    if not wal_path.exists() or wal_path.stat().st_size == 0:
+        with _wal_truncate_lock:
+            _wal_truncate_done.add(key)
+        return
+    try:
+        from app.durability import wal_checkpoint
+
+        busy, log_frames, ckpt = wal_checkpoint(db_path, mode="TRUNCATE")
+        if busy:
+            log.info(
+                "sentinel WAL TRUNCATE deferred (busy=%s log=%s ckpt=%s)",
+                busy,
+                log_frames,
+                ckpt,
+            )
+            return
+        with _wal_truncate_lock:
+            _wal_truncate_done.add(key)
+        log.info(
+            "sentinel WAL TRUNCATE ok after close (%s): busy=%s log=%s ckpt=%s",
+            key,
+            busy,
+            log_frames,
+            ckpt,
+        )
+        db.resolve_alert("DB|sentinel-wal", stamp)
+    except Exception as exc:
+        log.warning("sentinel WAL TRUNCATE failed: %s", exc)
 
 
 def _wal_alert(root: Path, stamp: str) -> None:
