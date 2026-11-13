@@ -33,7 +33,8 @@ from tests.test_web_server_endpoints import asgi_request
 def _iso_go_dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(journal_store, "_DB_PATH", tmp_path / "journal.db")
     monkeypatch.setattr(go_eff, "_DB_PATH", tmp_path / "go_efficiency.db")
-    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    # Session open for stage/auto-stage paths; closed-session cases override.
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: True)
     journal_store.ensure_schema()
     go_eff.ensure_schema()
     web_server._GO_PREFS.update({
@@ -307,6 +308,28 @@ def test_go_auto_stage_blocks_opposite_side_conflict(monkeypatch):
     data = json.loads(body)
     assert data.get("working", {}).get("advisory") == "conflict"
     assert data.get("auto_stage", {}).get("status") == "blocked_conflict"
+
+
+def test_go_auto_stage_skipped_when_session_closed(monkeypatch):
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    _stub_compose(monkeypatch)
+    st, _, body = asyncio.run(asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional"))
+    assert st == 200
+    data = json.loads(body)
+    assert data.get("auto_stage", {}).get("status") == "skipped"
+    assert data.get("auto_stage", {}).get("detail") == "session_closed"
+    assert go_eff.list_open("NIFTY") == []
+
+
+def test_go_manual_stage_refused_when_session_closed(monkeypatch):
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    d = _stub_compose(monkeypatch)
+    payload = d.to_dict()
+    st, _, body = asyncio.run(asgi_request("POST", "/api/go/stage", body={"decision": payload}))
+    assert st == 400
+    detail = json.loads(body).get("detail") or ""
+    assert "session closed" in detail.lower()
+    assert go_eff.list_open("NIFTY") == []
 
 
 def test_go_feed_ranks_and_includes_alts(monkeypatch):

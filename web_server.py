@@ -3817,9 +3817,15 @@ def _go_maybe_notify_fire(decision: dict) -> dict | None:
 
 
 def _go_stage_decision(decision: dict, *, notes: str | None = None) -> dict[str, Any]:
-    """Open paper journal + STAGE ledger row. Never sends to broker."""
+    """Open paper journal + STAGE ledger row. Never sends to broker.
+
+    Refuses outside the F&O session window so post-close FIRE polls cannot open
+    paper ``go_open`` rows (session-eval 2026-11-13).
+    """
     from data.journal import go_efficiency as go_eff
 
+    if not config.is_market_open():
+        raise ValueError("GO stage refused: F&O session closed")
     if not isinstance(decision, dict) or not (decision.get("contracts") or []):
         raise ValueError("decision.contracts required")
     sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
@@ -3880,6 +3886,8 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
     """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
     if not _GO_PREFS.get("auto_stage_fire"):
         return None
+    if not config.is_market_open():
+        return {"status": "skipped", "detail": "session_closed"}
     if str(decision.get("state") or "") != "FIRE":
         return None
     if not (decision.get("contracts") or []):
