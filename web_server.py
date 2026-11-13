@@ -314,10 +314,15 @@ async def _start_ingest_lanes():
 
     _run_lane("lkgs.warm", _warm_lkgs)
 
-    if os.environ.get("COCKPIT_WATCHDOG") == "1":
-        from app.event_loop_watchdog import start as start_watchdog
+    from app.event_loop_watchdog import mode_from_env, start as start_watchdog
+    wd_mode = mode_from_env()
+    if wd_mode:
         loop = asyncio.get_running_loop()
-        _run_lane("watchdog", lambda: start_watchdog(loop))
+        soft = wd_mode == "soft"
+        _run_lane(
+            "watchdog",
+            lambda: start_watchdog(loop, soft=soft),
+        )
 
     def _admin():
         from app.admin.health_daemon import start_background
@@ -7039,7 +7044,26 @@ async def get_session_commentary(symbol: Optional[str] = None):
         pw = float(pw) if pw is not None and float(pw) > 0 else None
     except (TypeError, ValueError):
         cw = pw = None
+    # Fall back to sealed pre_market walls when the loaded book has no levels yet.
+    if cw is None:
+        try:
+            cw_pm = float(pm_state.get("call_wall") or 0)
+            cw = cw_pm if cw_pm > 0 else None
+        except (TypeError, ValueError):
+            cw = None
+    if pw is None:
+        try:
+            pw_pm = float(pm_state.get("put_wall") or 0)
+            pw = pw_pm if pw_pm > 0 else None
+        except (TypeError, ValueError):
+            pw = None
     flip = _extract_active_gamma_flip(dash, sym)
+    if not flip:
+        try:
+            flip_pm = float(pm_state.get("gamma_flip") or 0)
+            flip = flip_pm if flip_pm > 0 else None
+        except (TypeError, ValueError):
+            flip = None
 
     empty_shocks = {
         "atm_strike": None,
@@ -7190,6 +7214,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
             })
 
     if not cards:
+        flip_txt = f"{flip:,.0f}" if flip else "unavailable"
         cards = [
             {
                 "time_str": f"{now_ist.strftime('%d %b')} · 09:15 IST",
@@ -7197,7 +7222,10 @@ async def get_session_commentary(symbol: Optional[str] = None):
                 "card_class": "comm-card-bullish",
                 "topic_class": "topic-bullish",
                 "icon": "🟢",
-                "body": f"Opening print relative to the put-gamma strike ({pw:,.0f}) and the call-gamma strike. Neither strike is a floor.",
+                "body": (
+                    f"Opening print relative to the put-gamma strike ({pw_txt}) "
+                    f"and the call-gamma strike ({cw_txt}). Neither strike is a floor."
+                ),
                 "bites": [{"type": "WATCH", "pill_class": "bite-watch", "text": "Watch whether the open holds relative to the gamma strikes. That is a map, not a squeeze."}],
             },
             {
@@ -7206,7 +7234,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
                 "card_class": "comm-card-wall",
                 "topic_class": "topic-wall",
                 "icon": "🟣",
-                "body": f"Spot inside the session VWAP band. Call−put balance at {flip:,.0f}. That balance is not a hedge.",
+                "body": f"Spot inside the session VWAP band. Call−put balance at {flip_txt}. That balance is not a hedge.",
                 "bites": [{"type": "PREPARE", "pill_class": "bite-prepare", "text": "Prepare for breakout expansion if volume climax crosses 1.8x RVOL."}],
             },
             {
