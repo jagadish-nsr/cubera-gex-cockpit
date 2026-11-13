@@ -4,6 +4,9 @@ Prove degrade paths **without writing live SQLite**. The chaos host is a separat
 process on port **8660**. It does not import `web_server` and never opens
 `data/sentinel.db` / live journal DBs for write.
 
+**Last drill:** 2026-11-13 — `scripts/chaos_drill.py` → **DRILL PASS** (all five
+faults failed the session checklist).
+
 Full market-replay (minute parquet playhead) remains specified in
 [websocket-simulator-replay-and-stress-engine-plan.md](websocket-simulator-replay-and-stress-engine-plan.md).
 This host is the smallest end-to-end fault injector that satisfies the

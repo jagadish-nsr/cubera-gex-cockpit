@@ -5767,9 +5767,15 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
     is_live = config.is_market_open()
     raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
     if not raw_bars:
+        # Demo seed writes the ledger — EXTERNAL serve must stay read-only (A5).
         try:
-            seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw)
-            raw_bars = list_recent_bars(inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False)
+            from sentinel.storage.db import sentinel_writes_allowed
+
+            if sentinel_writes_allowed():
+                seed_sentinel_demo_if_needed(inst_id, spot=spot, call_wall=cw, put_wall=pw)
+                raw_bars = list_recent_bars(
+                    inst_id, timeframe=tf, limit=250, session_only=is_live, _auto_populate=False
+                )
         except Exception:
             pass
     sigs = list_recent_signals(inst_id, limit=40)
@@ -5860,8 +5866,12 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
             if sub_bars:
                 try:
                     from sentinel.engine.outcomes import evaluate_signal_outcomes
+                    from sentinel.storage.db import sentinel_writes_allowed
+
                     outcome = evaluate_signal_outcomes(s, sub_bars, call_wall=cw, put_wall=pw)
-                    save_outcome(outcome)
+                    # Paint live MFE/MAE; persist only when this process owns the ledger.
+                    if sentinel_writes_allowed():
+                        save_outcome(outcome)
                     outcome_by_id[s.event_id] = outcome
                 except Exception:
                     pass

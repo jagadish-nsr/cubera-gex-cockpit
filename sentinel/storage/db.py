@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone, timedelta
@@ -29,7 +30,31 @@ _DB_PATH = ROOT / "data" / "sentinel.db"
 _WRITE_LOCK = threading.Lock()
 
 
+class SentinelReadOnlyError(RuntimeError):
+    """Raised when EXTERNAL serve / chaos tries to write the Sentinel ledger."""
+
+
+def sentinel_writes_allowed() -> bool:
+    """False on EXTERNAL serve or chaos — ingest (or combined) owns the ledger."""
+    if os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1":
+        return False
+    role = os.environ.get("COCKPIT_ROLE", "").strip().lower()
+    if role in ("serve", "chaos"):
+        return False
+    return True
+
+
+def _assert_writes_allowed(op: str) -> None:
+    if sentinel_writes_allowed():
+        return
+    raise SentinelReadOnlyError(
+        f"Sentinel write refused ({op}): COCKPIT_INGEST_EXTERNAL / "
+        f"COCKPIT_ROLE=serve|chaos — ingest owns data/sentinel.db"
+    )
+
+
 def _get_write_conn() -> sqlite3.Connection:
+    _assert_writes_allowed("connect")
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL;")
@@ -1062,7 +1087,11 @@ def ensure_historical_daily_cvd(
     A day with 1m bars uses that tape. A day that only has a futures journal
     file uses that file's recorded volume, split by the day's price change.
     Dates are never invented to pad the window out to ten.
+
+    EXTERNAL serve is read-only: return rows already on disk (no purge/backfill).
     """
+    if not sentinel_writes_allowed():
+        return list_daily_cvd(instrument_id, limit=int(days))
     ensure_sentinel_schema()
     sym = symbol or instrument_id.split("-")[0]
     _purge_hashed_daily_cvd(instrument_id)

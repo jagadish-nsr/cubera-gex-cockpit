@@ -111,11 +111,11 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| A1 | `scripts/run_ingest.py` + `run_ingest.sh` — same lanes as today, no `:8640` bind | Ingest alone publishes snaps + Sentinel bars |
-| A2 | Serve honors `COCKPIT_INGEST_EXTERNAL=1` — skip `_start_ingest_lanes` | Serve boots without Dhan threads |
-| A3 | Ingest heartbeat file/row (`ingest.heartbeat` age) | Serve readiness fails if heartbeat > 90s in session |
-| A4 | Dual supervise in `run_prod.sh` / launchd — restart each independently | Kill ingest → UI shows DEGRADED, not blank crash; kill serve → ingest keeps writing |
-| A5 | (Later) Sentinel writer only in ingest; serve opens DB read-only | Mid-session SQLite writer stall does not freeze HTTP |
+| A1 | `scripts/run_ingest.py` + `run_ingest.sh` — same lanes as today, no `:8640` bind | **Done** — ingest publishes snaps + Sentinel bars |
+| A2 | Serve honors `COCKPIT_INGEST_EXTERNAL=1` — skip `_start_ingest_lanes` | **Done** |
+| A3 | Ingest heartbeat file/row (`ingest.heartbeat` age) | **Done** — ready fails if heartbeat > 90s in session |
+| A4 | Dual supervise in `run_prod.sh` / launchd — restart each independently | **Done** |
+| A5 | Sentinel writer only in ingest; serve opens DB read-only | **Done** — `SentinelReadOnlyError` on EXTERNAL; ingest WAL thread |
 
 **Primary files:** [web_server.py](../web_server.py) `_start_ingest_lanes`, [app/live_fetcher.py](../app/live_fetcher.py), [app/readiness.py](../app/readiness.py), [scripts/promote.sh](../scripts/promote.sh), new `scripts/run_ingest.py`.
 
@@ -149,11 +149,11 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| C1 | Nightly backup of `sentinel.db`, `recommendations.db`, `paper_trades.db`, `admin_ops.db`, latest snaps | Timestamped copies under `data/journal/backups/` (or external disk) |
-| C2 | Documented restore runbook + dry-run script (restore to *scratch* path only) | Operator can restore a prior day tape into a non-prod dir |
-| C3 | WAL checkpoint policy: PASSIVE when >25MB (done); TRUNCATE once post-close if safe | Post-15:45 TRUNCATE succeeds without blocking open |
-| C4 | Publish atomicity: write snap to temp then rename | No half-written pickle on crash mid-publish |
-| C5 | Cold-start serve: restore LKGS from pickle before first HTTP paint | First cockpit load after restart never invents spot |
+| C1 | Nightly backup of `sentinel.db`, `recommendations.db`, `paper_trades.db`, `admin_ops.db`, latest snaps | **Done** — `scripts/backup_journals.py` |
+| C2 | Documented restore runbook + dry-run script (restore to *scratch* path only) | **Done** — [backup-restore.md](backup-restore.md) |
+| C3 | WAL checkpoint policy: PASSIVE when >25MB; TRUNCATE once post-close if safe | **Done** — ingest owns WAL when dual (A5) |
+| C4 | Publish atomicity: write snap to temp then rename | **Done** — `app/latest_snap.py` |
+| C5 | Cold-start serve: restore LKGS from pickle before first HTTP paint | **Done** — `warm_lkgs_from_pickles` |
 
 ### Pillar D — Broker / feed resilience (availability under SPOF)
 
@@ -173,10 +173,10 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| E1 | Expand [app/hard_gates.py](../app/hard_gates.py) coverage: GO FIRE premium, TE ATM IV, blast equal-walls soft-flag | Static + unit tests per gate |
-| E2 | Publisher/GO/TE “context required” CI test: source inspection + one integration per gate | Promote fails if wiring removed |
-| E3 | Per-tab contract test: on 503/empty, UI shows banner source key (lightweight JS fixture or Playwright later) | No silent empty Sentinel/GO |
-| E4 | Lot/expiry VERIFY drill: annual calendar refresh checklist in Admin Ops | Holiday year file present; lot constants match exchange notice |
+| E1 | Expand [app/hard_gates.py](../app/hard_gates.py) coverage: GO FIRE premium, TE ATM IV, blast equal-walls soft-flag | **Done** |
+| E2 | Publisher/GO/TE “context required” CI test: source inspection + one integration per gate | **Done** — `tests/test_hard_gates.py` |
+| E3 | Per-tab contract test: on 503/empty, UI shows banner source key (lightweight JS fixture or Playwright later) | **Done** — `TAB_BANNER_SOURCES` |
+| E4 | Lot/expiry VERIFY drill: annual calendar refresh checklist in Admin Ops | **Done** — `app/verify_exchange.py` |
 
 ### Pillar F — Client / UX reliability
 
@@ -184,10 +184,10 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| F1 | Single `ReliabilityController` state machine: OK / DEGRADED / NOT_READY / OFF_SESSION | One banner source of truth (extend current `_fetchDegraded`) |
-| F2 | Stale-while-revalidate rules: show last good book with `is_degraded` age; never clear to fabricated placeholders | Matches server LKGS semantics |
-| F3 | WS reconnect backoff + “telemetry stale” chip tied to last tick age | Chip turns warn at 5s, critical at 30s in session |
-| F4 | Reduce fire-and-forget `.catch(() => {})` on money-adjacent prefs to logged degrade | Audit pass with allowlist for audio-only |
+| F1 | Single `ReliabilityController` state machine: OK / DEGRADED / NOT_READY / OFF_SESSION | **Done** — `cockpit.js` |
+| F2 | Stale-while-revalidate rules: show last good book with `is_degraded` age; never clear to fabricated placeholders | **Done** |
+| F3 | WS reconnect backoff + “telemetry stale” chip tied to last tick age | **Done** |
+| F4 | Reduce fire-and-forget `.catch(() => {})` on money-adjacent prefs to logged degrade | **Done** — `notePrefCatch`; audio/fullscreen allowlisted |
 
 ### Pillar G — Chaos, soak, and session proof
 
@@ -195,10 +195,10 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| G1 | Stand up stress/replay host per [websocket-simulator-replay-and-stress-engine-plan.md](websocket-simulator-replay-and-stress-engine-plan.md) on port **8660** | Separate process; no write to live DBs |
-| G2 | Scripted fault injection against *serve* reading fixture snaps: empty chain, CB OPEN, stale spot, missing VWAP context | Checklist turns FAIL for each injected fault |
-| G3 | Pre-open soak: 30 min ingest+serve under prod supervise before first use of a release on a weekly expiry day | No watchdog restart; readiness green after 09:16 |
-| G4 | Keep writing session-evaluation notes; add “reliability scorecard” section (ready minutes, restarts, refuses) | Each session eval cites SLI burn |
+| G1 | Fault-inject host on port **8660** (full parquet replay still deferred) | **Done** — `app/chaos` + `scripts/run_chaos.sh` |
+| G2 | Scripted fault injection: empty chain, CB OPEN, stale spot, missing VWAP, feed silence | **Done** — `scripts/chaos_drill.py` (PASS 2026-11-13) |
+| G3 | Pre-open soak: 30 min ingest+serve under prod supervise before first use of a release on a weekly expiry day | **Tool ready** — `scripts/pre_open_soak.py` (run on expiry opens) |
+| G4 | Keep writing session-evaluation notes; add “reliability scorecard” section (ready minutes, restarts, refuses) | **Done** — scorecard section in session evals |
 
 ### Pillar H — Promote / ops reliability
 

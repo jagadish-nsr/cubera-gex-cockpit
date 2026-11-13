@@ -69,7 +69,7 @@ tape continuity.
 | A | WAL PASSIVE checkpoint + holiday fail-loud + deep `/api/health` | Done (v5.3.117) |
 | B | Extract ingest entrypoint `scripts/run_ingest.py`; serve skips broker lanes when `COCKPIT_INGEST_EXTERNAL=1`; dual `run_prod.sh` | Done |
 | C | Shared readiness: serve fails ready if ingest heartbeat stale > 90s (session); chain/spot/feed from pickle meta + SQLite + heartbeat detail (not local empty WS) | Done (probes.ingest + EXTERNAL shared probes) |
-| D | Optional: move Sentinel tick writer fully into ingest; serve opens DB read-only | Mid-session SQLite stalls leave HTTP responsive |
+| D | Sentinel tick writer fully in ingest; EXTERNAL serve read-only + ingest WAL thread | **Done** (A5) — `SentinelReadOnlyError` |
 
 ## Explicit non-goals
 
@@ -79,6 +79,8 @@ tape continuity.
 
 ## Operator notes
 
-- Prod today: single process + watchdog. Treat Phase A mitigations as mandatory.
-- After Phase B: both `run_prod.sh` and a new `run_ingest.sh` must be supervised;
-  if ingest dies, serve must show DEGRADED via readiness, not invent a book.
+- Prod default: dual ingest + EXTERNAL serve (`run_prod.sh`). Combined emergency:
+  `COCKPIT_COMBINED=1 ./run_prod.sh`.
+- If ingest dies, serve must show DEGRADED via readiness / heartbeat, not invent a book.
+- EXTERNAL serve refuses Sentinel ledger writes (`SentinelReadOnlyError`); ingest
+  owns WAL PASSIVE/TRUNCATE.

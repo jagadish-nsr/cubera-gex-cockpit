@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
 import uuid
 from datetime import datetime, time, timedelta
@@ -42,6 +43,22 @@ _gap_lock = threading.Lock()
 _wal_truncate_done: set[str] = set()
 _wal_truncate_lock = threading.Lock()
 _task: asyncio.Task | None = None
+_wal_thread: threading.Thread | None = None
+_wal_thread_stop = threading.Event()
+
+
+def owns_sentinel_wal() -> bool:
+    """True when this process may PASSIVE/TRUNCATE sentinel.db WAL (Pillar A5).
+
+    Dual mode: ingest owns checkpoints. EXTERNAL serve only observes size.
+    Combined / ingest role: own WAL. Chaos never checkpoints live DBs.
+    """
+    if os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1":
+        return False
+    role = os.environ.get("COCKPIT_ROLE", "").strip().lower()
+    if role in ("serve", "chaos"):
+        return False
+    return True
 
 
 def gap_count() -> int:
@@ -95,7 +112,8 @@ def evaluate_alerts(
     _token_alert(token_fn(), stamp)
     _feed_alert(feed_fn(), now, stamp)
     _wal_alert(root, stamp)
-    _wal_truncate_post_close(root, now, stamp)
+    if owns_sentinel_wal():
+        _wal_truncate_post_close(root, now, stamp)
     if include_gaps:
         _gap_alert(root, now, stamp)
         _reclassify_backfill_only_gap_alerts(stamp)
@@ -255,7 +273,7 @@ def _wal_alert(root: Path, stamp: str) -> None:
     if size > WAL_WARN_BYTES:
         mb = size / (1024 * 1024)
         note = ""
-        if db_path.exists():
+        if db_path.exists() and owns_sentinel_wal():
             note = _checkpoint_sentinel_wal(db_path)
             size_after = path.stat().st_size if path.exists() else 0
             mb_after = size_after / (1024 * 1024)
@@ -264,6 +282,8 @@ def _wal_alert(root: Path, stamp: str) -> None:
                 db.resolve_alert(fp, stamp)
                 return
             note = f"{note}; still {mb_after:.1f} MB after PASSIVE"
+        elif not owns_sentinel_wal():
+            note = "EXTERNAL serve observes only — ingest owns WAL checkpoint"
         db.upsert_alert(
             alert_id=_alert_id(),
             fingerprint=fp,
@@ -276,6 +296,41 @@ def _wal_alert(root: Path, stamp: str) -> None:
         )
     else:
         db.resolve_alert(fp, stamp)
+
+
+def run_wal_maintenance(root: Path | None = None, now: datetime | None = None) -> None:
+    """PASSIVE size check + post-close TRUNCATE. Safe for ingest thread (A5)."""
+    if not owns_sentinel_wal():
+        return
+    now = as_ist(now or now_ist())
+    root = Path(root) if root is not None else ROOT
+    stamp = _iso(now)
+    _wal_alert(root, stamp)
+    _wal_truncate_post_close(root, now, stamp)
+
+
+def start_wal_maintenance_thread(*, interval_s: float = 60.0) -> None:
+    """Daemon thread for ingest (no asyncio loop). No-op if this role is read-only."""
+    global _wal_thread
+    if not owns_sentinel_wal():
+        log.info("WAL maintenance thread skipped — this role is Sentinel read-only")
+        return
+    if _wal_thread is not None and _wal_thread.is_alive():
+        return
+    _wal_thread_stop.clear()
+
+    def _loop() -> None:
+        log.info("Sentinel WAL maintenance thread started (interval=%.0fs)", interval_s)
+        while not _wal_thread_stop.wait(interval_s):
+            try:
+                run_wal_maintenance()
+            except Exception:
+                log.exception("ingest WAL maintenance")
+
+    _wal_thread = threading.Thread(
+        target=_loop, name="sentinel-wal-maintenance", daemon=True
+    )
+    _wal_thread.start()
 
 
 def _is_backfill_only_gap_description(description: str) -> bool:

@@ -42,6 +42,11 @@ def main() -> None:
 
     boot_broker_ingest_lanes()
 
+    # Pillar A5: ingest owns sentinel.db WAL PASSIVE/TRUNCATE (serve is read-only).
+    from app.admin.health_daemon import start_wal_maintenance_thread
+
+    start_wal_maintenance_thread()
+
     from app.ingest_heartbeat import beat_forever
 
     log.info("Ingest armed — writing heartbeat; Ctrl-C to stop")
