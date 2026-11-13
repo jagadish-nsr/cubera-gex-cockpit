@@ -313,6 +313,40 @@ def _pick_best_idea(ideas: list[Any]) -> Any | None:
     return max(ideas, key=lambda i: int(getattr(i, "quality_score", 0) or 0))
 
 
+def is_continuation_key(strategy_key: str | None) -> bool:
+    return "CONTINUATION" in str(strategy_key or "").upper()
+
+
+def continuation_confirmed(
+    strategy_key: str | None,
+    *,
+    confirming_types: list[str] | None = None,
+    sentinel_type: str | None = None,
+) -> bool:
+    """Same-side ABSORPTION / CVD_DIVERGENCE in recent tape unlocks FULL CONT size.
+
+    Print gates stay unchanged — this only sizes / soft-flags weak continuation.
+    """
+    sk = str(strategy_key or "").upper()
+    if "CONTINUATION" not in sk:
+        return True
+    want_bull = "BULL" in sk
+    want_bear = "BEAR" in sk
+    pool: list[str] = []
+    for t in list(confirming_types or []):
+        if t:
+            pool.append(str(t).upper())
+    if sentinel_type:
+        pool.append(str(sentinel_type).upper())
+    for u in pool:
+        side_ok = (want_bull and "BULL" in u) or (want_bear and "BEAR" in u)
+        if not side_ok:
+            continue
+        if u.startswith("ABSORPTION_") or u.startswith("CVD_DIVERGENCE_"):
+            return True
+    return False
+
+
 def build_directional_decision(
     *,
     symbol: str,
@@ -336,6 +370,7 @@ def build_directional_decision(
     mtf_leans: dict[str, str] | None = None,
     unusual_strike: dict | None = None,
     chain_ltp: float | None = None,
+    confirming_types: list[str] | None = None,
 ) -> GoDecision:
     """Build directional GO from idea/sentinel confluence inputs.
 
@@ -559,6 +594,7 @@ def build_directional_decision(
             "trade_idea_id": getattr(idea, "rec_id", None),
             "sentinel_type": sentinel_type,
             "alert_tape_headline": alert_headline,
+            "confirming_types": list(confirming_types or []),
         }
         # Enter rule heuristic
         trigger = str(getattr(idea, "entry_trigger", "") or "").lower()
@@ -585,7 +621,11 @@ def build_directional_decision(
             )
         ]
         strategy_key = str(sentinel_type).replace(" ", "_")
-        sources = {"sentinel_type": sentinel_type, "alert_tape_headline": alert_headline}
+        sources = {
+            "sentinel_type": sentinel_type,
+            "alert_tape_headline": alert_headline,
+            "confirming_types": list(confirming_types or []),
+        }
         if ltp_fill > 0:
             # Live premium only — no invented T1/T2/SL ratios (those come from Ideas/TE).
             targets = {}
@@ -613,6 +653,16 @@ def build_directional_decision(
     size: SizeTier = "FULL"
     if "inside_corridor" in soft or "lunch_chop" in soft:
         size = "HALF"
+    # CONT alone stays FIRE/SCOUT on existing gates — size off until ABS/CVD same-side.
+    cont_ok = continuation_confirmed(
+        strategy_key,
+        confirming_types=confirming_types,
+        sentinel_type=sentinel_type,
+    )
+    if is_continuation_key(strategy_key) and not cont_ok:
+        soft.append("continuation_unconfirmed")
+        if size == "FULL":
+            size = "HALF"
     if score < FIRE_MIN:
         size = "SCOUT"
 
@@ -629,6 +679,7 @@ def build_directional_decision(
         "abs_gex_bucket": None,
         "blast_tag": blast_tag,
         "dealer_sign_model": "short_call_short_put",
+        "continuation_confirmed": cont_ok if is_continuation_key(strategy_key) else None,
     }
     # Only run FIRE completeness gate when score would otherwise FIRE
     gate_state: GoState = "FIRE" if provisional == "FIRE" else provisional

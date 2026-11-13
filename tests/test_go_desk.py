@@ -11,8 +11,10 @@ from analytics.go_desk import (
     build_directional_decision,
     build_structure_decision,
     build_writer_decision,
+    continuation_confirmed,
     decisive_gate,
     evidence_pack_complete,
+    is_continuation_key,
     rank_feed,
     sides_conflict,
     state_from_score,
@@ -73,6 +75,45 @@ def test_decisive_gate_strips_fire_without_contracts():
 
 
 def test_directional_fire_with_idea():
+    # Spot outside put/call corridor so CONT+ABS confirm can reach FULL size.
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25650, cw=25600, pw=25200, flip=25400, magnet=25450),
+        trade_ideas=[_idea(82)],
+        sentinel_score=80,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=70,
+        oi_ts="2026-11-10T10:42:00+05:30",
+        chain_ok=True,
+        confirming_types=["ABSORPTION_BULL"],
+    )
+    assert d.state == "FIRE"
+    assert d.mode == "directional"
+    assert d.score >= FIRE_MIN
+    assert d.contracts and d.contracts[0].action == "BUY"
+    assert d.risk.get("max_loss_inr", 0) > 0
+    assert d.evidence and all("pass" in e.to_dict() for e in d.evidence)
+    assert d.context["lot_size"] == 65
+    assert d.enter_rule == "NOW_CLOSE"
+    assert "inside_corridor" not in d.soft_flags
+    assert d.size_tier == "FULL"
+    assert "continuation_unconfirmed" not in d.soft_flags
+    assert d.context.get("continuation_confirmed") is True
+
+
+def test_continuation_unconfirmed_sizes_half_keeps_fire():
+    """Session 13-Nov: CONT alone weak — size off; do not raise print gates."""
+    assert is_continuation_key("CONTINUATION_BULL")
+    assert not continuation_confirmed("CONTINUATION_BULL", confirming_types=["CONTINUATION_BULL"])
+    assert continuation_confirmed(
+        "CONTINUATION_BEAR",
+        confirming_types=["CVD_DIVERGENCE_BEAR"],
+    )
     d = build_directional_decision(
         symbol="NIFTY",
         lot_size=65,
@@ -87,15 +128,12 @@ def test_directional_fire_with_idea():
         target_confluence=70,
         oi_ts="2026-11-10T10:42:00+05:30",
         chain_ok=True,
+        confirming_types=["CONTINUATION_BULL", "EXHAUSTION_DOWN"],
     )
     assert d.state == "FIRE"
-    assert d.mode == "directional"
-    assert d.score >= FIRE_MIN
-    assert d.contracts and d.contracts[0].action == "BUY"
-    assert d.risk.get("max_loss_inr", 0) > 0
-    assert d.evidence and all("pass" in e.to_dict() for e in d.evidence)
-    assert d.context["lot_size"] == 65
-    assert d.enter_rule == "NOW_CLOSE"
+    assert d.size_tier == "HALF"
+    assert "continuation_unconfirmed" in d.soft_flags
+    assert d.context.get("continuation_confirmed") is False
 
 
 def test_directional_soft_corridor_half_size():

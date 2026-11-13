@@ -162,7 +162,9 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 
 1. ~~Ideas by ~09:20~~ — mint was already on; **serve latch** fixed via `latest_rec_*.pkl`.
 2. ~~No GO STAGE / `go_open` after cash close~~ — gated (session_closed / 400).
-3. CONT_BULL still weak — size off or require ABS/CVD confirmation; keep gates.
+3. ~~CONT_BULL size / confirm~~ — **v5.3.139+**: CONT stays FIRE on existing gates;
+   `continuation_unconfirmed` → HALF size; paper auto-stage skipped until same-side
+   ABSORPTION / CVD_DIVERGENCE in recent tape.
 4. ~~Readiness SLO false red~~ — **v5.3.133**; confirm ages under EXTERNAL after ~09:16.
 5. ~~Sensex equal walls~~ — `shared_gamma_strike` + VANNA corridor skip covered for
    step=100 (same as BN); regression `test_shared_gamma_strike_soft_flag_sensex_equal_walls`.
@@ -171,11 +173,11 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 
 ### Operator checklist (first 30 min)
 
-1. `/api/health` version matches promoted tag (expect ≥ **v5.3.137**).
+1. `/api/health` version matches promoted tag (expect ≥ **v5.3.139**).
 2. Readiness: finite `probes.chains.*.age_s`; `feed.source=ingest_heartbeat`.
 3. After ~09:16: Ideas UI / GO latch not empty while `latest_rec_NIFTY.pkl` is fresh.
 4. On FIRE with Ideas present: latch should prefer Ideas (not only sentinel-led).
-5. No STAGE after F&O close; do not size up on CONT_BULL alone.
+5. No STAGE after F&O close; CONT alone → HALF + no auto-stage until ABS/CVD.
 
 ## Disclaimer
 

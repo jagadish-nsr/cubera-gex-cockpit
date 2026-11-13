@@ -140,6 +140,8 @@ def _fire_decision(mode: str = "directional") -> GoDecision:
         oi_stale=False,
         chain_ok=True,
         mtf_leans={"1m": "UP", "5m": "UP", "15m": "UP"},
+        # Same-side ABS/CVD unlocks FULL CONT size + paper auto-stage.
+        confirming_types=["CVD_DIVERGENCE_BULL"],
     )
 
 
@@ -242,6 +244,58 @@ def test_sentinel_led_fire_auto_stages_without_invented_te_breadth(monkeypatch):
     opens = go_eff.list_open("SENSEX")
     assert opens
     assert opens[0].get("status") == "OPEN" or opens[0].get("decision_id")
+
+
+def test_continuation_unconfirmed_skips_auto_stage(monkeypatch):
+    """CONT without ABS/CVD confirm: FIRE + HALF, no paper STAGE."""
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(),
+        trade_ideas=[
+            SimpleNamespace(
+                quality_score=88,
+                side="CE",
+                strike=25500.0,
+                current_ltp=72.0,
+                delta_approx=0.32,
+                play_badge="CONTINUATION_BULL",
+                rationale="CONT alone",
+                spot_invalidation=25320.0,
+                spot_invalidation_text="Spot below 25320",
+                target_1=98.0,
+                target_2=118.0,
+                stop_loss=55.0,
+                p_touch_target_1=0.42,
+                net_ev_pts=8.0,
+                entry_trigger="now",
+                rec_id="idea_cont",
+                risk_reward_ratio=1.8,
+            )
+        ],
+        sentinel_score=90,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=70,
+        oi_ts="2026-11-13T11:00:00+05:30",
+        chain_ok=True,
+        confirming_types=["CONTINUATION_BULL"],
+    )
+    assert d.state == "FIRE"
+    assert d.size_tier == "HALF"
+    assert "continuation_unconfirmed" in d.soft_flags
+    _stub_compose(monkeypatch, d)
+    status, _, body = asyncio.run(
+        asgi_request("GET", "/api/go/decision?symbol=NIFTY&mode=directional")
+    )
+    assert status == 200
+    data = json.loads(body)
+    assert data.get("auto_stage", {}).get("status") == "skipped"
+    assert data.get("auto_stage", {}).get("detail") == "continuation_unconfirmed"
+    assert go_eff.list_open("NIFTY") == []
 
 
 def test_go_auto_stage_fire_dedupes_while_open(monkeypatch):

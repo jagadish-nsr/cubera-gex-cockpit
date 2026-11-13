@@ -3936,6 +3936,15 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
     except Exception as exc:
         log.debug("go auto-stage evidence check: %s", exc)
 
+    # CONT alone: size-off already applied; do not paper-stage until ABS/CVD confirms.
+    soft = decision.get("soft_flags") or []
+    if "continuation_unconfirmed" in soft:
+        return {
+            "status": "skipped",
+            "detail": "continuation_unconfirmed",
+            "size_tier": decision.get("size_tier"),
+        }
+
     fp = _go_auto_stage_fingerprint(decision)
     sym = str(decision.get("symbol") or "").upper()
     sk = str(decision.get("strategy_key") or "")
@@ -4186,11 +4195,17 @@ def _go_sentinel_context(sym: str) -> dict:
             "above_vwap": above_vwap,
             "range_ok": None,
             "tape_ok": True,
+            "recent_types": [],
         }
     best = max(sigs, key=lambda s: float(getattr(s, "score", 0) or 0))
     score = float(getattr(best, "score", 0) or 0)
     typ = str(getattr(best, "type", "") or "")
     cat = str(getattr(best, "category", "") or "")
+    recent_types = [
+        str(getattr(s, "type", "") or "")
+        for s in sigs
+        if str(getattr(s, "type", "") or "")
+    ]
     tags = getattr(best, "context_tags_json", None) or getattr(best, "context_tags", None) or []
     if isinstance(tags, str):
         try:
@@ -4225,6 +4240,7 @@ def _go_sentinel_context(sym: str) -> dict:
         "range_ok": bool(range_ok) if not break_ok else False,
         "tape_ok": not break_ok,  # writer: continuation through levels is bad
         "break_ok": bool(break_ok),
+        "recent_types": recent_types,
     }
 
 
@@ -4595,6 +4611,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             mtf_leans=mtf_leans,
             unusual_strike=unusual,
             chain_ltp=chain_ltp,
+            confirming_types=list(tape.get("recent_types") or []),
         )
     return decision
 
