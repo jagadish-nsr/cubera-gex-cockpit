@@ -1080,6 +1080,18 @@ def _overlay_live_spot(dash, sym: str):
     except Exception:
         ohlc = None
     if not ohlc:
+        # EXTERNAL serve has an empty in-process store; ingest may have written
+        # today's LTP to SQLite during cash pre-open (09:00) or live hours.
+        try:
+            if config.is_spot_ingest_open() or config.is_market_open():
+                from data.market_snapshot import get_snapshot
+                snap = get_snapshot(sym) or {}
+                snap_ltp = snap.get("spot")
+                if snap_ltp is not None and float(snap_ltp) > 0:
+                    ohlc = {"ltp": float(snap_ltp)}
+        except Exception:
+            ohlc = None
+    if not ohlc:
         return dash
     ltp = ohlc.get("ltp") or ohlc.get("close")
     if not ltp or float(ltp) <= 0:
@@ -1142,7 +1154,11 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
         snap_asof = (snap or {}).get("as_of")
         cached_asof = getattr(cached, "snapshot_as_of", None)
         if (snap_asof and cached_asof == snap_asof) or (snap is None and cached_asof is None):
-            return _refresh_book_view(cached)
+            out = _refresh_book_view(cached)
+            # Walls stay on the sealed book; header spot may move in cash auction.
+            if config.is_spot_ingest_open():
+                out = _overlay_live_spot(out, sym)
+            return out
 
     dash = None
     from_live_store = False
@@ -1180,7 +1196,10 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
         return None
     dash = _overlay_sqlite_kpis(dash, sym)
     dash = _refresh_book_view(dash)
+    # Cache the sealed book only — live auction LTP overlays on the way out.
     _DASH_MEM_CACHE[ckey] = (time.time(), dash)
+    if config.is_spot_ingest_open():
+        dash = _overlay_live_spot(dash, sym)
     return dash
 
 
