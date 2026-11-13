@@ -18,13 +18,24 @@ def _fresh_token(**kw):
 
 
 def test_readiness_off_session_is_ready():
-    payload = build_readiness(market_open=False)
+    with mock.patch("config.is_spot_ingest_open", return_value=False):
+        payload = build_readiness(market_open=False)
     assert payload["ready"] is True
     assert payload["market_open"] is False
+    assert payload["spot_ingest_open"] is False
     assert payload["reasons"] == []
     assert payload["degrade_mode"] == "OFF_SESSION"
     assert "token" in payload["probes"]
     assert "spot_source" in payload["probes"]
+
+
+def test_readiness_pre_open_spot_mode():
+    with mock.patch("config.is_spot_ingest_open", return_value=True):
+        payload = build_readiness(market_open=False)
+    assert payload["ready"] is True
+    assert payload["market_open"] is False
+    assert payload["spot_ingest_open"] is True
+    assert payload["degrade_mode"] == "PRE_OPEN_SPOT"
 
 
 def test_readiness_session_fails_without_chain_or_spot():
