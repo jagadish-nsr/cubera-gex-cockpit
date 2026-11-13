@@ -15,6 +15,7 @@ from data.pre_post_market import (
     estimate_pre_bell_option_ltps,
     get_current_session_phase,
     get_persisted_auction_record,
+    persist_opening_watch_from_state,
     post_market_poller_asleep,
     pre_market_poller_asleep,
     get_post_market_state,
@@ -533,17 +534,36 @@ class TestPrePostMarket(unittest.TestCase):
         ba_res = classify_opening_gap(gap_pts=15.0, gap_pct=0.07, spot=22515.0, call_wall=23000.0, put_wall=22000.0)
         self.assertEqual(ba_res["regime"], "AUCTION_BALANCED")
 
-        # 6. Call Wall Breach Squeeze (> CW + 10)
+        # 6. Call Wall Breach Squeeze (> CW + 10) needs same-direction gap ≥ +0.15%
         cws_res = classify_opening_gap(gap_pts=150.0, gap_pct=0.66, spot=22720.0, call_wall=22700.0, put_wall=22400.0)
         self.assertEqual(cws_res["regime"], "CALL_WALL_BREACH_SQUEEZE")
         self.assertIn("CALL STRIKE", cws_res["favored_play"])
         self.assertNotIn("SQUEEZE", cws_res["favored_play"])
 
-        # 7. Put Wall Breakdown Cascade (< PW - 10)
+        # 7. Put Wall Breakdown Cascade (< PW - 10) needs same-direction gap ≤ −0.15%
         pwc_res = classify_opening_gap(gap_pts=-150.0, gap_pct=-0.67, spot=22380.0, call_wall=22700.0, put_wall=22400.0)
         self.assertEqual(pwc_res["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
         self.assertIn("PUT STRIKE", pwc_res["favored_play"])
         self.assertNotIn("CASCADE", pwc_res["favored_play"])
+
+        # 6b/7b. Through-wall without matching gap → map only (13-Nov BN / Sensex shape).
+        bn_map = classify_opening_gap(
+            gap_pts=-217.95, gap_pct=-0.35, spot=61300.55,
+            call_wall=61000.0, put_wall=60500.0, flip=60837.0,
+        )
+        self.assertEqual(bn_map["regime"], "MODERATE_DRIFT")
+        self.assertEqual(bn_map["favored_play"], "MAP ONLY")
+        self.assertIn("location only", bn_map["briefing"])
+        self.assertNotIn("SQUEEZE", bn_map["regime"])
+
+        sx_flat = classify_opening_gap(
+            gap_pts=-77.23, gap_pct=-0.09, spot=81833.78,
+            call_wall=82000.0, put_wall=82000.0, flip=81800.0,
+        )
+        self.assertEqual(sx_flat["regime"], "AUCTION_BALANCED")
+        self.assertEqual(sx_flat["favored_play"], "NO BOOK TRADE")
+        self.assertIn("location only", sx_flat["briefing"])
+        self.assertNotEqual(sx_flat["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
 
         # 8. Gap up above the balance, still under the call strike. Not a fade.
         gup_res = classify_opening_gap(gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0, flip=22450.0)
@@ -569,6 +589,42 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertEqual(light["regime"], "GAP_UP_INTO_POS_GAMMA")
         self.assertIn("Put gamma is larger", light["briefing"])
         self.assertNotIn("Call gamma is larger", light["briefing"])
+
+    def test_persist_opening_watch_from_state_stages_all_indices(self):
+        """Discovery must lock a STAGED watch for BN/Sensex, not only the desk symbol."""
+        cases = [
+            ("BANKNIFTY", 61300.55, 61518.5, 61000.0, 60500.0),
+            ("SENSEX", 81833.78, 81911.01, 82000.0, 82000.0),
+            ("NIFTY", 25209.85, 25299.35, 25500.0, 25000.0),
+        ]
+        with patch("data.pre_post_market.save_opening_watch") as save:
+            for sym, spot, prev, cw, pw in cases:
+                gap_pts = round(spot - prev, 2)
+                gap_pct = round((gap_pts / prev) * 100.0, 2)
+                cls = classify_opening_gap(gap_pts, gap_pct, spot, cw, pw)
+                state = {
+                    "date": "2026-11-13",
+                    "is_discovered": True,
+                    "discovered_spot": spot,
+                    "prev_close": prev,
+                    "gap_pts": gap_pts,
+                    "gap_pct": gap_pct,
+                    "call_wall": cw,
+                    "put_wall": pw,
+                    "gamma_flip": 0.0,
+                    "gap_regime": cls["regime"],
+                    "favored_play": cls["favored_play"],
+                }
+                watch = persist_opening_watch_from_state(sym, state)
+                self.assertIsNotNone(watch)
+                self.assertEqual(watch["status"], "STAGED")
+                self.assertEqual(watch["symbol"], sym)
+                self.assertEqual(watch["side_hint"], "NONE")
+                self.assertIsNone(watch["structure"])
+                self.assertIn(watch["regime"], {
+                    "MODERATE_DRIFT", "AUCTION_BALANCED",
+                })
+            self.assertEqual(save.call_count, 3)
 
     def test_settle_distance_is_not_a_stamped_pin(self):
         from data.pre_post_market import settle_vs_gamma_strikes
@@ -995,10 +1051,13 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertTrue(state["post_market_settled"])
         self.assertGreater(state["settlement_spot"], 0)
 
+    @patch("data.pre_post_market.persist_opening_watch_from_state")
     @patch("data.pre_post_market.save_pre_market_state")
     @patch("data.dhan_live.fetch_index_ohlc")
     @patch("data.market_snapshot.get_snapshot")
-    def test_discovery_uses_spot_ltp_when_dhan_open_and_ltp_dark(self, mock_snap, mock_fetch, _save):
+    def test_discovery_uses_spot_ltp_when_dhan_open_and_ltp_dark(
+        self, mock_snap, mock_fetch, _save, mock_watch,
+    ):
         """Nov 12 failure: Dhan quote open=0 and ltp=0; spot_ticker already has today's print."""
         from data import pre_post_market as ppm
         import app.spot_ticker as ticker
@@ -1033,6 +1092,8 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertEqual(state["discovered_spot"], 25213.5)
         self.assertEqual(state["open_source"], "spot-ltp")
         self.assertEqual(state["discovered_at"], "09:10:05")
+        mock_watch.assert_called_once()
+        self.assertEqual(mock_watch.call_args[0][0], "NIFTY")
 
     @patch("data.pre_post_market.save_pre_market_state")
     @patch("data.dhan_live.fetch_index_ohlc")

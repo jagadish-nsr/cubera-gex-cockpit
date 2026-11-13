@@ -148,6 +148,27 @@ def save_opening_watch(symbol: str, watch: dict, trade_date: str | None = None) 
         log.debug("Failed to save opening watch for %s: %s", symbol, e)
 
 
+def persist_opening_watch_from_state(symbol: str, state: dict) -> dict | None:
+    """Build + lock the first STAGED watch at discovery for every index.
+
+    HTTP attach only runs for the desk's active symbol, so BN/Sensex used to
+    discover without an opening_watch_json. Call this from the discovery path.
+    """
+    if not state or not isinstance(state, dict):
+        return None
+    if not (state.get("is_discovered") and float(state.get("discovered_spot") or 0) > 0):
+        return None
+    try:
+        from analytics.pre_open_watch import build_pre_open_watch
+        watch = build_pre_open_watch(state, symbol=symbol, market_open=False)
+        if watch.get("status") == "STAGED":
+            save_opening_watch(symbol, watch, trade_date=state.get("date"))
+        return watch
+    except Exception as exc:
+        log.debug("persist_opening_watch_from_state skipped for %s: %s", symbol, exc)
+        return None
+
+
 def save_pre_market_state(symbol: str, state: dict, shocks: dict | None = None) -> None:
     """Persist discovered pre-market equilibrium state into SQLite."""
     try:
@@ -613,6 +634,10 @@ def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
         save_pre_market_state(symbol.upper(), state)
     except Exception as exc:
         log.debug("missed-open save failed for %s: %s", symbol, exc)
+    try:
+        persist_opening_watch_from_state(symbol.upper(), state)
+    except Exception as exc:
+        log.debug("missed-open opening watch skipped for %s: %s", symbol, exc)
     with _CACHE_LOCK:
         _PRE_MARKET_CACHE[symbol.upper()] = state
     return state
@@ -1159,6 +1184,7 @@ def get_pre_market_state(
                     state["should_play_chime"] = True
 
             save_pre_market_state(symbol.upper(), state)
+            persist_opening_watch_from_state(symbol.upper(), state)
             if keep_discovered_at:
                 log.info(
                     "Pre-market %s upgraded %s → dhan-open @ ₹%.2f (first lock %s)",
@@ -1417,51 +1443,85 @@ def classify_opening_gap(
     The flip argument is a price. Spot above that price is a location.
     Call-heavy is net_gex > 0 only. A strike is not a floor.
     Missing net_gex is unavailable; exact 0 is balanced.
+
+    Wall breach / cascade labels require a same-direction gap of at least
+    ±0.15%. A flat or opposite-direction open that merely sits through a
+    gamma strike is map location (AUCTION_BALANCED / MODERATE_DRIFT), not a
+    squeeze or cascade — those ids feed CE/PE structure staging.
     """
     above_balance = flip > 0 and spot >= flip
     book = _book_label(net_gex)
     book_line = _book_sentence(net_gex)
     flip_txt = f"₹{flip:,.0f}" if flip else "unavailable"
+    wall_note = ""
 
-    if call_wall > 0 and spot >= call_wall - 15.0:
-        if spot >= call_wall + 10.0:
-            regime = "CALL_WALL_BREACH_SQUEEZE"
-            badge = "🚀 OPEN ABOVE CALL-GAMMA STRIKE"
-            color = "var(--go)"
-            briefing = (
-                f"Indicative open at ₹{spot:,.0f} is above the call-gamma strike (₹{call_wall:,.0f}). "
-                f"That is a location on the book ({book}; balance {flip_txt}). It is not a dealer squeeze."
-            )
-            favored_play = "WATCH HOLD ABOVE CALL STRIKE"
-        else:
-            regime = "SHORT_GAMMA_WALL_TEST"
-            badge = "🚨 AT CALL-GAMMA STRIKE"
-            color = "var(--warn)"
-            briefing = (
-                f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
-                f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
-            )
-            favored_play = "WATCH THE CALL STRIKE"
-    elif put_wall > 0 and spot <= put_wall + 15.0:
-        if spot <= put_wall - 10.0:
-            regime = "PUT_WALL_BREAKDOWN_CASCADE"
-            badge = "🔴 OPEN BELOW PUT-GAMMA STRIKE"
-            color = "var(--stop)"
-            briefing = (
-                f"Indicative open at ₹{spot:,.0f} is below the put-gamma strike (₹{put_wall:,.0f}). "
-                f"Book is {book} (balance {flip_txt}). It is not a cascade and not a floor that failed."
-            )
-            favored_play = "WATCH HOLD BELOW PUT STRIKE"
-        else:
-            regime = "PUT_WALL_BREAKDOWN_TEST"
-            badge = "⚠️ AT PUT-GAMMA STRIKE"
-            color = "var(--stop)"
-            briefing = (
-                f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
-                f"Book is {book} (balance {flip_txt}). A touch is not a defense."
-            )
-            favored_play = "WATCH THE PUT STRIKE"
-    elif gap_pct >= 0.40:
+    through_call = call_wall > 0 and spot >= call_wall + 10.0
+    at_call = call_wall > 0 and (call_wall - 15.0) <= spot < (call_wall + 10.0)
+    through_put = put_wall > 0 and spot <= put_wall - 10.0
+    at_put = put_wall > 0 and (put_wall - 10.0) < spot <= (put_wall + 15.0)
+
+    if through_call and gap_pct >= 0.15:
+        regime = "CALL_WALL_BREACH_SQUEEZE"
+        badge = "🚀 OPEN ABOVE CALL-GAMMA STRIKE"
+        color = "var(--go)"
+        briefing = (
+            f"Indicative open at ₹{spot:,.0f} is above the call-gamma strike (₹{call_wall:,.0f}). "
+            f"That is a location on the book ({book}; balance {flip_txt}). It is not a dealer squeeze."
+        )
+        favored_play = "WATCH HOLD ABOVE CALL STRIKE"
+    elif at_call:
+        regime = "SHORT_GAMMA_WALL_TEST"
+        badge = "🚨 AT CALL-GAMMA STRIKE"
+        color = "var(--warn)"
+        briefing = (
+            f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
+            f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
+        )
+        favored_play = "WATCH THE CALL STRIKE"
+    elif through_put and gap_pct <= -0.15:
+        regime = "PUT_WALL_BREAKDOWN_CASCADE"
+        badge = "🔴 OPEN BELOW PUT-GAMMA STRIKE"
+        color = "var(--stop)"
+        briefing = (
+            f"Indicative open at ₹{spot:,.0f} is below the put-gamma strike (₹{put_wall:,.0f}). "
+            f"Book is {book} (balance {flip_txt}). It is not a cascade and not a floor that failed."
+        )
+        favored_play = "WATCH HOLD BELOW PUT STRIKE"
+    elif at_put:
+        regime = "PUT_WALL_BREAKDOWN_TEST"
+        badge = "⚠️ AT PUT-GAMMA STRIKE"
+        color = "var(--stop)"
+        briefing = (
+            f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
+            f"Book is {book} (balance {flip_txt}). A touch is not a defense."
+        )
+        favored_play = "WATCH THE PUT STRIKE"
+    elif through_call:
+        # Above call-gamma without an upside gap — map only.
+        wall_note = (
+            f" Open sits above call-gamma ₹{call_wall:,.0f} — location only, not a squeeze."
+        )
+        regime = ""
+    elif through_put:
+        wall_note = (
+            f" Open sits below put-gamma ₹{put_wall:,.0f} — location only, not a cascade."
+        )
+        regime = ""
+    else:
+        regime = ""
+
+    if regime:
+        return {
+            "regime": regime,
+            "badge": badge,
+            "color": color,
+            "briefing": briefing,
+            "favored_play": favored_play,
+            "gap_pts": gap_pts,
+            "gap_pct": gap_pct,
+        }
+
+    if gap_pct >= 0.40:
         if above_balance and call_wall > 0 and spot < call_wall - 35.0:
             regime = "GAP_UP_INTO_POS_GAMMA"
             badge = "⚖️ GAP UP, ABOVE THE BALANCE"
@@ -1517,6 +1577,9 @@ def classify_opening_gap(
             f"Book is {book} (balance {flip_txt})."
         )
         favored_play = "MAP ONLY"
+
+    if wall_note:
+        briefing = f"{briefing}{wall_note}"
 
     return {
         "regime": regime,
