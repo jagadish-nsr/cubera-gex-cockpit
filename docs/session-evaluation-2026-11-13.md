@@ -171,7 +171,7 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 
 ### Operator checklist (first 30 min)
 
-1. `/api/health` version matches promoted tag (expect ≥ **v5.3.136**).
+1. `/api/health` version matches promoted tag (expect ≥ **v5.3.137**).
 2. Readiness: finite `probes.chains.*.age_s`; `feed.source=ingest_heartbeat`.
 3. After ~09:16: Ideas UI / GO latch not empty while `latest_rec_NIFTY.pkl` is fresh.
 4. On FIRE with Ideas present: latch should prefer Ideas (not only sentinel-led).
