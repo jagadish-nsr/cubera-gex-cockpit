@@ -933,7 +933,7 @@
                 <select id="te-mode-select" class="form-control" style="font-size:0.8rem;padding:5px 10px;width:190px"
                   onchange="window.onTargetEngineParamsChange()">
                   <option value="heuristic" selected>Heuristic Baseline</option>
-                  <option value="calibrated">Calibrated (Stage B)</option>
+                  <option value="calibrated" disabled title="Stage B not promoted — heuristic only">Calibrated (Stage B — offline)</option>
                 </select>
               </div>
             </div>
@@ -3025,6 +3025,22 @@
             <div id="admin-session-checklist" style="font-family:var(--mono);font-size:0.74rem;line-height:1.55"></div>
             <div id="admin-smoke-result"
               style="display:none;margin-top:8px;font-family:var(--mono);font-size:0.72rem;color:var(--ink-mute)"></div>
+          </div>
+
+          <div class="ladder-card" style="margin:14px 0" id="admin-verify-exchange-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+              <h3 style="margin:0;font-size:1rem">Lot / Expiry VERIFY</h3>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <button type="button" id="admin-run-verify" class="btn btn-secondary"
+                  style="font-size:0.72rem;padding:3px 10px">Run VERIFY drill</button>
+                <span id="admin-verify-verdict"
+                  style="font-family:var(--mono);font-size:0.72rem;font-weight:800;padding:2px 8px;border-radius:4px;background:var(--surface-3);color:var(--ink-mute)">—</span>
+              </div>
+            </div>
+            <p style="margin:0 0 8px;font-size:0.72rem;color:var(--ink-mute)">
+              Nifty 65 / Bank Nifty 30 / Sensex 20 · holiday year file · no substring lot trap
+              · <code>CLAUDE.md</code></p>
+            <div id="admin-verify-exchange" style="font-family:var(--mono);font-size:0.74rem;line-height:1.55"></div>
           </div>
 
           <div id="admin-alert-list" class="ladder-card" style="margin:14px 0"></div>

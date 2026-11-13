@@ -119,11 +119,51 @@
     }
   }
 
+  function paintVerifyExchange(data) {
+    const host = document.getElementById("admin-verify-exchange");
+    const verdict = document.getElementById("admin-verify-verdict");
+    if (!host) return;
+    const checks = data.checks || [];
+    host.innerHTML = checks.map(function (c) {
+      const mark = c.ok ? "✓" : "✗";
+      const color = c.ok ? "var(--go)" : "var(--stop)";
+      return "<div style=\"color:" + color + "\">" + mark + " <b>" + (c.label || c.id) + "</b>"
+        + " <span style=\"color:var(--ink-mute)\">— " + (c.detail || "") + "</span></div>";
+    }).join("");
+    if (verdict) {
+      if (data.pass) {
+        verdict.textContent = "PASS";
+        verdict.style.color = "var(--go)";
+        verdict.style.background = "var(--go-bg)";
+      } else {
+        verdict.textContent = "FAIL · " + ((data.failed || []).join(",") || "checks");
+        verdict.style.color = "var(--stop)";
+        verdict.style.background = "var(--stop-bg, rgba(239,68,68,0.12))";
+      }
+    }
+  }
+
+  async function loadVerifyExchange() {
+    try {
+      const res = await fetch("/api/admin/verify-exchange");
+      if (!res.ok) return;
+      const data = await res.json();
+      paintVerifyExchange(data);
+    } catch (err) {
+      /* retried with admin chrome poll */
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     const smokeBtn = document.getElementById("admin-run-smoke");
     if (smokeBtn && !smokeBtn._bound) {
       smokeBtn._bound = true;
       smokeBtn.addEventListener("click", function () { runSessionSmoke(); });
+    }
+    const verifyBtn = document.getElementById("admin-run-verify");
+    if (verifyBtn && !verifyBtn._bound) {
+      verifyBtn._bound = true;
+      verifyBtn.addEventListener("click", function () { loadVerifyExchange(); });
     }
   });
 
@@ -139,6 +179,7 @@
       paintStatus(data);
       loadOps();
       loadSessionChecklist();
+      loadVerifyExchange();
     } catch (err) {
       const alerts = document.getElementById("admin-kpi-alerts");
       if (alerts) alerts.textContent = "Status unreachable";

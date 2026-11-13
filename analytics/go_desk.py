@@ -242,6 +242,18 @@ def decisive_gate(
         return blocks
     if not contracts:
         blocks.append("missing_contracts")
+    else:
+        # FIRE needs a live premium on every leg — never invent T1/SL from a blank LTP.
+        unpaid = []
+        for c in contracts:
+            try:
+                ltp = float(getattr(c, "ltp", None) if not isinstance(c, dict) else c.get("ltp"))
+            except (TypeError, ValueError):
+                ltp = 0.0
+            if ltp is None or ltp <= 0:
+                unpaid.append(c)
+        if unpaid:
+            blocks.append("missing_premium")
     max_loss = risk.get("max_loss_inr")
     if max_loss is None or float(max_loss) <= 0:
         # Writers may use margin_est; allow if margin present

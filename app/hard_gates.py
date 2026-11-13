@@ -58,6 +58,56 @@ GATES: tuple[HardGate, ...] = (
         required_context=("atm_iv",),
         owner="analytics.go_desk / payoff routes",
     ),
+    HardGate(
+        name="go_fire_premium",
+        refuse_reason="missing_premium",
+        required_context=("contracts_ltp",),
+        owner="analytics.go_desk.decisive_gate",
+    ),
+    HardGate(
+        name="te_strike_iv",
+        refuse_reason="implied_vol_unavailable",
+        required_context=("strike_iv",),
+        owner="web_server.reprice_target_engine",
+    ),
+    HardGate(
+        name="te_reprice_ltp",
+        refuse_reason="No live LTP for reprice entry",
+        required_context=("entry_ltp",),
+        owner="web_server.reprice_target_engine",
+    ),
+    HardGate(
+        name="te_run_spot",
+        refuse_reason="target_engine requires live spot — refusing default 25000",
+        required_context=("spot",),
+        owner="target_engine.runner.run_target_engine",
+    ),
+    HardGate(
+        name="te_run_atm_iv",
+        refuse_reason="target_engine requires live ATM IV — refusing default 0.15",
+        required_context=("atm_iv",),
+        owner="target_engine.runner.run_target_engine",
+    ),
+    HardGate(
+        name="te_run_expiry",
+        refuse_reason="target_engine requires an expiry — refusing hardcoded date",
+        required_context=("expiry",),
+        owner="target_engine.runner.run_target_engine",
+    ),
+    HardGate(
+        name="blast_equal_walls",
+        refuse_reason="pin_geometry",  # soft-flag, not a hard refuse
+        required_context=("call_wall", "put_wall"),
+        owner="app.gammablast.evaluate_dashboard_gamma_blast",
+    ),
+)
+
+# Banner source keys the SPA must wire through noteFetchResult (Pillar E3).
+TAB_BANNER_SOURCES: tuple[str, ...] = (
+    "GO Desk",
+    "Sentinel",
+    "Recommendations",
+    "Cockpit",
 )
 
 
@@ -73,8 +123,19 @@ def require_context(gate_name: str, provided: dict[str, Any]) -> list[str]:
             missing.append(key)
         elif isinstance(val, (list, tuple)) and len(val) == 0:
             missing.append(key)
-        elif isinstance(val, (int, float)) and val == 0 and key.endswith(("spot", "ltp", "strike", "iv")):
+        elif isinstance(val, (int, float)) and val == 0 and key.endswith(
+            ("spot", "ltp", "strike", "iv", "wall")
+        ):
             missing.append(key)
+        elif key == "contracts_ltp":
+            # Expect a positive float (ATM / leg premium) or True when priced.
+            try:
+                if val is True:
+                    continue
+                if float(val) <= 0:
+                    missing.append(key)
+            except (TypeError, ValueError):
+                missing.append(key)
     return missing
 
 
@@ -93,4 +154,48 @@ def assert_publisher_wires_vwap(source: str) -> None:
     if missing:
         raise AssertionError(
             "rec publisher missing VWAP wiring (12-Nov regression): " + ", ".join(missing)
+        )
+
+
+def assert_go_fire_premium_gated(source: str) -> None:
+    """FIRE completeness must hard-block when leg premium is missing."""
+    needed = ("missing_premium", "decisive_gate")
+    # Source may be go_desk module text — require the block token.
+    if "missing_premium" not in source:
+        raise AssertionError(
+            "go_desk missing FIRE premium hard-block (Pillar E1): expected 'missing_premium'"
+        )
+    del needed  # documented for readers
+
+
+def assert_te_refuses_without_iv(source: str) -> None:
+    """Target Engine reprice must refuse when strike IV is absent — no default fill."""
+    needed = ("implied_vol_unavailable", "strike_iv")
+    missing = [n for n in needed if n not in source]
+    if missing:
+        raise AssertionError(
+            "TE reprice missing IV refuse wiring: " + ", ".join(missing)
+        )
+
+
+def assert_blast_flags_equal_walls(source: str) -> None:
+    """Gamma blast must soft-flag collapsed call/put walls as pin_geometry."""
+    needed = ("pin_geometry", "call_wall", "put_wall")
+    missing = [n for n in needed if n not in source]
+    if missing:
+        raise AssertionError(
+            "gammablast missing equal-walls soft-flag wiring: " + ", ".join(missing)
+        )
+
+
+def assert_tab_banner_sources(cockpit_js: str) -> None:
+    """SPA must route money-adjacent tabs through noteFetchResult with known keys."""
+    missing = []
+    for key in TAB_BANNER_SOURCES:
+        needle = f'noteFetchResult("{key}"'
+        if needle not in cockpit_js:
+            missing.append(key)
+    if missing:
+        raise AssertionError(
+            "cockpit.js missing noteFetchResult wiring for: " + ", ".join(missing)
         )

@@ -119,6 +119,12 @@ def register_admin_routes(app: FastAPI) -> None:
         from app.slo_monitor import run_session_open_smoke
         return run_session_open_smoke(version=APP_VERSION)
 
+    @app.get("/api/admin/verify-exchange")
+    def admin_verify_exchange():
+        """Lot / expiry / holiday VERIFY drill (Pillar E4)."""
+        from app.verify_exchange import build_verify_drill
+        return build_verify_drill()
+
     @app.get("/api/admin/ops")
     def admin_ops(
         process: Optional[str] = Query(None),

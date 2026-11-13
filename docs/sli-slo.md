@@ -62,5 +62,7 @@ Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft 
 | Sustained `Missing session VWAP` refuses (≥20 / 10m) | health daemon | `SLO\|vwap-blackout` CRITICAL |
 | Tape bars ≪ expected (live lag or post-close incomplete) | health daemon | `SLO\|tape-completeness` WARNING/CRITICAL |
 | Post-open smoke | `scripts/session_open_smoke.py` / `GET /api/admin/session-smoke` | exit 1 / Admin button |
+| Hard-gate wiring | `tests/test_hard_gates.py` (VWAP / FIRE premium / TE IV / blast pin / tab banners) | promote gate |
+| Lot/expiry VERIFY | `GET /api/admin/verify-exchange` | Admin Ops card |
 
 
