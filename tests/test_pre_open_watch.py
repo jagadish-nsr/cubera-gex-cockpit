@@ -5,9 +5,10 @@ Never invents VWAP. Never calls generate_trade_recommendations.
 
 from __future__ import annotations
 
+import math
 from unittest.mock import patch
 
-from analytics.pre_open_watch import build_pre_open_watch
+from analytics.pre_open_watch import _estimate_first_5m, build_pre_open_watch
 
 
 def _discovered_pm(**overrides) -> dict:
@@ -211,3 +212,93 @@ def test_map_only_favored_kills_structure_even_on_ce_regime():
     )
     assert w["side_hint"] == "CE"  # regime still CE
     assert w["structure"] is None
+
+
+def test_first_5m_hand_check_nifty_iv():
+    """24500 × 0.12 → σ₅ = spot·IV·√(5/(375·252)) ≈ 21.4 pts."""
+    open_px, iv = 24500.0, 0.12
+    expected_sigma = open_px * iv * math.sqrt(5.0 / (375.0 * 252.0))
+    est = _estimate_first_5m(open_px, iv)
+    assert est is not None
+    assert est["method"] == "iv_sigma_5m"
+    assert abs(est["sigma_pts"] - round(expected_sigma, 1)) < 0.05
+    assert abs(est["high"] - round(open_px + expected_sigma, 1)) < 0.05
+    assert abs(est["low"] - round(open_px - expected_sigma, 1)) < 0.05
+    assert 21.0 <= est["sigma_pts"] <= 22.0
+
+
+def test_first_5m_null_without_iv():
+    assert _estimate_first_5m(24500.0, None) is None
+    assert _estimate_first_5m(24500.0, 0.0) is None
+    w = build_pre_open_watch(_discovered_pm(), symbol="NIFTY", market_open=False, atm_iv=None)
+    assert w["first_5m_estimate"] is None
+
+
+def test_first_5m_attached_on_map_only_regime():
+    """Map level — present even when structure is null."""
+    w = build_pre_open_watch(
+        _discovered_pm(
+            gap_regime="GAP_UP_INTO_POS_GAMMA",
+            favored_play="MAP ONLY — NO FADE",
+            discovered_spot=24500.0,
+            call_wall=24520.0,  # inside the ~±21 envelope
+        ),
+        symbol="NIFTY",
+        market_open=False,
+        atm_iv=0.12,
+    )
+    assert w["structure"] is None
+    assert w["first_5m_estimate"] is not None
+    assert w["first_5m_estimate"]["high"] >= 24520.0
+    assert "Call-gamma" in w["first_5m_estimate"]["note"]
+
+
+def test_undiscovered_has_no_first_5m():
+    w = build_pre_open_watch({"is_discovered": False}, symbol="NIFTY", market_open=False, atm_iv=0.12)
+    assert w.get("first_5m_estimate") is None
+
+
+def test_structure_target_price_ce():
+    """CE target spot = min(short, open+σ₅); long-leg premium repriced there."""
+    open_px = 24620.0  # above CW 24600 — squeeze print
+    w = build_pre_open_watch(
+        _discovered_pm(discovered_spot=open_px, call_wall=24600.0),
+        symbol="NIFTY",
+        market_open=False,
+        atm_iv=0.12,
+        dte_days=2.0,
+    )
+    s = w["structure"]
+    assert s is not None
+    assert s["buy_strike"] == 24600.0
+    assert s["short_strike"] == 24650.0
+    assert s["target_spot"] is not None
+    # open+σ₅ ≈ 24620+21.5 ≈ 24641.5; capped at short 24650 → ~24641.5
+    assert s["target_spot"] <= s["short_strike"]
+    assert s["target_spot"] >= open_px
+    assert s["target_buy_pts"] is not None and s["target_buy_pts"] > 0
+    assert s["target_net_pts"] is not None
+    assert s["target_net_pts"] >= s.get("net_debit_pts") or s["target_net_pts"] >= 0
+
+
+def test_structure_target_price_pe():
+    w = build_pre_open_watch(
+        _discovered_pm(
+            gap_regime="PUT_WALL_BREAKDOWN_CASCADE",
+            favored_play="WATCH HOLD BELOW PUT STRIKE",
+            discovered_spot=24280.0,
+            put_wall=24300.0,
+            gap_pts=-120.0,
+        ),
+        symbol="NIFTY",
+        market_open=False,
+        atm_iv=0.14,
+        dte_days=1.0,
+    )
+    s = w["structure"]
+    assert s is not None
+    assert s["side"] == "PE"
+    assert s["target_spot"] is not None
+    assert s["target_spot"] >= s["short_strike"]
+    assert s["target_spot"] <= 24280.0
+    assert s["target_buy_pts"] is not None

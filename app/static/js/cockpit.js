@@ -515,14 +515,41 @@
       const maxLoss = struct.max_loss_inr != null
         ? ` · max loss ~₹${Number(struct.max_loss_inr).toLocaleString("en-IN")}`
         : "";
+      let tgtLine = "";
+      if (struct.target_spot != null) {
+        const ts = Number(struct.target_spot).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+        const buyT = struct.target_buy_pts != null
+          ? ` · long ${Number(struct.buy_strike).toFixed(0)} target ~₹${Number(struct.target_buy_pts).toFixed(1)}`
+          : "";
+        const netT = struct.target_net_pts != null
+          ? ` · vertical ~₹${Number(struct.target_net_pts).toFixed(1)}`
+          : "";
+        tgtLine = `<div style="margin-top:4px">Target spot ~₹${ts}${buyT}${netT}</div>
+          <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${struct.target_note || "Illustrative target — not a Trade Idea T1."}</div>`;
+      }
       structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure (illustrative)</b>
         <div>${struct.name || "Debit vertical"} — long ${Number(struct.buy_strike).toFixed(0)} / short ${Number(struct.short_strike).toFixed(0)} ${struct.side || ""}${debit}${maxLoss}</div>
         <div style="font-size:0.74rem;color:var(--ink-mute);margin-top:4px">${struct.rationale || ""}</div>
+        ${tgtLine}
         <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${struct.expiry_note || ""}</div>
       </div>`;
     } else {
       structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure</b>
         <div>Map only — no structure candidate from the auction print.</div></div>`;
+    }
+    const f5 = watch.first_5m_estimate;
+    let f5Html;
+    if (f5 && f5.high != null && f5.low != null) {
+      const hi = Number(f5.high).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+      const lo = Number(f5.low).toLocaleString("en-IN", { maximumFractionDigits: 1 });
+      const sig = f5.sigma_pts != null ? Number(f5.sigma_pts).toFixed(1) : "—";
+      f5Html = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Est. first 5m range</b>
+        <div style="font-family:var(--mono)">Est. 5m high ~ ₹${hi} · low ~ ₹${lo} <span style="color:var(--ink-faint)">(±1σ IV · σ=${sig})</span></div>
+        <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${f5.note || "Opening-noise estimate — not a target."}</div>
+      </div>`;
+    } else {
+      f5Html = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Est. first 5m range</b>
+        <div style="color:var(--ink-mute)">5m range unavailable — no IV.</div></div>`;
     }
     return `
       <div class="pm-opening-watch" data-status="${status}" style="margin:${marginTop} 0 10px 0;background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)">
@@ -538,6 +565,7 @@
           <div style="margin-bottom:6px;font-weight:650">${watch.title || ""}</div>
           <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Trigger</b><div>${watch.trigger || ""}</div></div>
           <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Invalidation</b><div>${watch.invalidation || ""}</div></div>
+          ${f5Html}
           ${structHtml}
           <div style="font-size:0.74rem;color:var(--warn);border-top:1px solid var(--line);padding-top:8px">${watch.confirm_after || ""}</div>
           <div style="font-size:0.72rem;color:var(--ink-mute);margin-top:4px">${watch.caution || ""}</div>
