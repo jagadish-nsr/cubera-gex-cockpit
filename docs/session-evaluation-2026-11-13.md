@@ -167,7 +167,8 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 4. ~~Readiness SLO false red~~ — **v5.3.133**; confirm `probes.chains.*.age_s` finite and
    `feed.source=ingest_heartbeat` under EXTERNAL after ~09:16.
 5. If Sensex walls equal: confirm `shared_gamma_strike` soft flag + VANNA skip.
-6. Incomplete-journals GAP alert vs complete Sentinel 1m tape — still open.
+6. ~~Incomplete-journals GAP vs complete Sentinel~~ — GAP is Sentinel/PARTIAL
+   only; missing `dhan_futures` / `dhan_intraday` → INFO REPAIR backlog (v5.3.135+).
 
 ### Operator checklist (first 30 min)
 

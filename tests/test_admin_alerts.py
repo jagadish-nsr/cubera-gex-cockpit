@@ -122,20 +122,88 @@ def test_feed_silence_alerts_during_the_session_and_clears(tmp_path):
     assert not any(row["fingerprint"].startswith("FEED|silence") for row in db.list_alerts())
 
 
-def test_gap_alert_skips_sensex_futures_and_clears_when_the_hole_is_filled(tmp_path, monkeypatch):
+def test_gap_alert_skips_sensex_futures_and_missing_backfill_is_repair_not_gap(tmp_path, monkeypatch):
     from app.admin import health_daemon
 
-    state = {"nifty": "MISSING"}
+    state = {"nifty_fut": "MISSING", "nifty_sent": "COMPLETE"}
 
     def fake_audit(root, symbol, start, end, now=None):
-        futures = "MISSING" if symbol == "SENSEX" else ("COMPLETE" if symbol == "BANKNIFTY" else state["nifty"])
+        if symbol == "SENSEX":
+            futures = "MISSING"
+            sent = "COMPLETE"
+            opt = "COMPLETE"
+        elif symbol == "BANKNIFTY":
+            futures = "COMPLETE"
+            sent = "COMPLETE"
+            opt = "COMPLETE"
+        else:
+            futures = state["nifty_fut"]
+            sent = state["nifty_sent"]
+            opt = "COMPLETE"
         return {"days": [{
             "futures_status": futures,
+            "options_matrix_status": opt,
+            "sentinel_status": sent,
+        }]}
+
+    monkeypatch.setattr(health_daemon, "audit_range", fake_audit)
+    now = datetime(2026, 10, 23, 16, 0, tzinfo=IST)
+    # Clear the per-process "already checked" set between scenarios.
+    health_daemon._gap_checked.clear()
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
+    )
+    assert not any(row["fingerprint"].startswith("GAP|") for row in db.list_alerts())
+    repair = next(row for row in db.list_alerts() if row["fingerprint"] == "REPAIR|2026-10-23")
+    assert repair["severity"] == "INFO"
+    assert "NIFTY futures MISSING" in repair["description"]
+    assert "SENSEX futures" not in repair["description"]
+
+    # Sentinel hole → real GAP WARNING
+    health_daemon._gap_checked.clear()
+    state["nifty_sent"] = "PARTIAL"
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
+    )
+    gap = next(row for row in db.list_alerts() if row["fingerprint"] == "GAP|2026-10-23")
+    assert gap["severity"] == "WARNING"
+    assert "NIFTY sentinel PARTIAL" in gap["description"]
+    assert not any(row["fingerprint"].startswith("REPAIR|") for row in db.list_alerts())
+
+    health_daemon._gap_checked.clear()
+    state["nifty_fut"] = "COMPLETE"
+    state["nifty_sent"] = "COMPLETE"
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
+    )
+    assert not any(row["fingerprint"].startswith("GAP|") for row in db.list_alerts())
+    assert not any(row["fingerprint"].startswith("REPAIR|") for row in db.list_alerts())
+
+
+def test_gap_alert_flags_partial_futures_as_session_gap(tmp_path, monkeypatch):
+    from app.admin import health_daemon
+
+    def fake_audit(root, symbol, start, end, now=None):
+        return {"days": [{
+            "futures_status": "PARTIAL" if symbol == "NIFTY" else "COMPLETE",
             "options_matrix_status": "COMPLETE",
             "sentinel_status": "COMPLETE",
         }]}
 
     monkeypatch.setattr(health_daemon, "audit_range", fake_audit)
+    health_daemon._gap_checked.clear()
     now = datetime(2026, 10, 23, 16, 0, tzinfo=IST)
     evaluate_alerts(
         root=tmp_path,
@@ -145,15 +213,4 @@ def test_gap_alert_skips_sensex_futures_and_clears_when_the_hole_is_filled(tmp_p
         include_slo=False,
     )
     gap = next(row for row in db.list_alerts() if row["fingerprint"] == "GAP|2026-10-23")
-    assert "SENSEX futures" not in gap["description"]
-    assert "NIFTY futures MISSING" in gap["description"]
-
-    state["nifty"] = "COMPLETE"
-    evaluate_alerts(
-        root=tmp_path,
-        now=now,
-        token_fn=lambda: _token(10.0),
-        feed_fn=lambda: _feed(age=1.0),
-        include_slo=False,
-    )
-    assert not any(row["fingerprint"].startswith("GAP|") for row in db.list_alerts())
+    assert "NIFTY futures PARTIAL" in gap["description"]

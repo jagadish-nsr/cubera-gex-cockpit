@@ -278,6 +278,16 @@ def _wal_alert(root: Path, stamp: str) -> None:
 
 
 def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
+    """Post-15:45 session completeness vs Dhan backfill backlog.
+
+    **GAP (WARNING):** live desk tape holes — Sentinel MISSING/PARTIAL, or
+    futures/options parquet that exist but are PARTIAL (corrupt/unreadable).
+
+    **REPAIR (INFO):** ``dhan_futures`` / ``dhan_intraday`` MISSING. Those paths
+    are filled by backfill scripts, not by the live dual ingest. A complete
+    Sentinel day with no parquet backfill is not an incomplete session
+    (session-eval 2026-11-13).
+    """
     global _gap_count
     if is_trading_day(now.date()) and now.time().replace(tzinfo=None) < time(15, 45):
         return
@@ -288,7 +298,8 @@ def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
     with _gap_lock:
         if key in _gap_checked:
             return
-    gaps = []
+    session_gaps: list[str] = []
+    repair_missing: list[str] = []
     for symbol in ("NIFTY", "BANKNIFTY", "SENSEX"):
         try:
             report = audit_range(root, symbol, key, key, now=now)
@@ -305,28 +316,46 @@ def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
             # file is the steady state, not a session gap.
             if symbol == "SENSEX" and label == "futures":
                 continue
-            if status in ("PARTIAL", "MISSING"):
-                gaps.append(f"{symbol} {label} {status}")
+            if status not in ("PARTIAL", "MISSING"):
+                continue
+            if label in ("futures", "options") and status == "MISSING":
+                repair_missing.append(f"{symbol} {label} {status}")
+                continue
+            session_gaps.append(f"{symbol} {label} {status}")
     with _gap_lock:
         if key in _gap_checked:
             return
-        _gap_count = len(gaps)
-        if not gaps:
+        _gap_count = len(session_gaps)
+        if not session_gaps and not repair_missing:
             _gap_checked.add(key)
     fp = f"GAP|{key}"
-    if gaps:
+    repair_fp = f"REPAIR|{key}"
+    if session_gaps:
         db.upsert_alert(
             alert_id=_alert_id(),
             fingerprint=fp,
             severity="WARNING",
             category="GAP",
             title=f"Session {key} has incomplete journals",
-            description="; ".join(gaps),
+            description="; ".join(session_gaps),
             session_date=key,
             now_iso=stamp,
         )
-        return
-    db.resolve_alert(fp, stamp)
+    else:
+        db.resolve_alert(fp, stamp)
+    if repair_missing and not session_gaps:
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=repair_fp,
+            severity="INFO",
+            category="REPAIR",
+            title=f"Session {key} Dhan backfill not on disk",
+            description="; ".join(repair_missing),
+            session_date=key,
+            now_iso=stamp,
+        )
+    else:
+        db.resolve_alert(repair_fp, stamp)
 
 
 def _parse_beat(value: str | None) -> datetime | None:
