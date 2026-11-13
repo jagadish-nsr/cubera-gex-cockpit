@@ -202,6 +202,7 @@ def extract_features(
         staleness_seconds=0.0,
         dte_calendar_days=dte_days,
         has_depth=False,
+        depth_expected=False,
     )
 
     return FeatureVector(

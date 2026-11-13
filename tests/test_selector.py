@@ -87,3 +87,81 @@ def test_select_trade_candidates(sample_chain):
 def test_sizing():
     lots = compute_recommended_sizing(max_loss_per_lot_inr=5000.0, risk_budget_inr=15000.0)
     assert lots == 3
+
+
+def test_selector_skips_missing_ltp_and_iv():
+    """Fail loud: no theo entry / 0.15 IV invent for unquoted legs."""
+    bad = pd.DataFrame([
+        {"strike": 25000, "type": "CE", "ltp": 0.0, "iv": float("nan"), "oi": 20000},
+        {"strike": 25000, "type": "PE", "ltp": 0.0, "iv": float("nan"), "oi": 20000},
+    ])
+    sc_set = ScenarioSet(
+        ts=datetime(2026, 10, 12, 10, 0, 0),
+        scenarios=[
+            ScenarioProb(name="bull", prob=0.60),
+            ScenarioProb(name="base", prob=0.25),
+            ScenarioProb(name="bear", prob=0.15),
+        ],
+        dominant_scenario="bull",
+        conviction=0.75,
+    )
+    targets = {
+        "bull": UnderlyingTarget("bull", 120, 25150.0, 24900.0, 0.45, 0.10, 0.25, "Call Wall"),
+        "base": UnderlyingTarget("base", 120, 25000.0, 24950.0, 0.30, 0.20, 0.15, "Range"),
+        "bear": UnderlyingTarget("bear", 120, 24850.0, 25100.0, 0.10, 0.40, 0.05, "Put Wall"),
+    }
+    iv_fcs = {
+        "bull": IVForecast("bull", 120, 0.15, 0.145, "rule"),
+        "base": IVForecast("base", 120, 0.15, 0.150, "rule"),
+        "bear": IVForecast("bear", 120, 0.15, 0.160, "rule"),
+    }
+    candidates = select_trade_candidates(
+        scenario_set=sc_set,
+        underlying_targets=targets,
+        iv_forecasts=iv_fcs,
+        contracts_df=bad,
+        spot=25000.0,
+        fut=25010.0,
+        expiry="2026-10-15",
+        horizon_minutes=120,
+        atm_iv=0.15,
+    )
+    assert candidates == []
+
+
+def test_ranked_option_target_carries_p_touch(sample_chain):
+    sc_set = ScenarioSet(
+        ts=datetime(2026, 10, 12, 10, 0, 0),
+        scenarios=[
+            ScenarioProb(name="bull", prob=0.60),
+            ScenarioProb(name="base", prob=0.25),
+            ScenarioProb(name="bear", prob=0.15),
+        ],
+        dominant_scenario="bull",
+        conviction=0.75,
+    )
+    targets = {
+        "bull": UnderlyingTarget("bull", 120, 25150.0, 24900.0, 0.45, 0.10, 0.25, "Call Wall"),
+        "base": UnderlyingTarget("base", 120, 25000.0, 24950.0, 0.30, 0.20, 0.15, "Range"),
+        "bear": UnderlyingTarget("bear", 120, 24850.0, 25100.0, 0.10, 0.40, 0.05, "Put Wall"),
+    }
+    iv_fcs = {
+        "bull": IVForecast("bull", 120, 0.15, 0.145, "rule"),
+        "base": IVForecast("base", 120, 0.15, 0.150, "rule"),
+        "bear": IVForecast("bear", 120, 0.15, 0.160, "rule"),
+    }
+    candidates = select_trade_candidates(
+        scenario_set=sc_set,
+        underlying_targets=targets,
+        iv_forecasts=iv_fcs,
+        contracts_df=sample_chain,
+        spot=25000.0,
+        fut=25010.0,
+        expiry="2026-10-15",
+        horizon_minutes=120,
+        atm_iv=0.15,
+    )
+    assert candidates
+    bull_tgt = candidates[0].scenario_targets.get("bull")
+    assert bull_tgt is not None
+    assert bull_tgt.p_touch_target == pytest.approx(0.45)

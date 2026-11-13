@@ -369,8 +369,10 @@ def compute_strike_ladder(
         )
     atm_iv_base = max(0.04, min(0.90, atm_iv_base))
 
-    # 1-SD horizon expected move
-    sigma_h = max(safe_spot * atm_iv_base * math.sqrt(horizon_minutes / (375.0 * 252.0)), 15.0)
+    # 1-SD horizon expected move (shared trading-session σₕ)
+    from target_engine.time_utils import horizon_sigma
+    sigma_h = horizon_sigma(safe_spot, atm_iv_base, horizon_minutes)
+    wall_buf = max(10.0, 0.1 * sigma_h)
 
     # Extract GEX structural walls if present
     call_wall = float(getattr(levels, "call_wall", None) or 0.0) if levels else 0.0
@@ -384,8 +386,13 @@ def compute_strike_ladder(
     else:
         ce_tgt1_spot = safe_spot + 0.6 * sigma_h
     ce_tgt2_spot = safe_spot + 1.2 * sigma_h
-    ce_spot_inval = max(put_wall if 0 < put_wall < safe_spot else safe_spot - 0.4 * sigma_h, safe_spot - max_reach)
-    ce_spot_inval = min(ce_spot_inval, safe_spot - 15.0)  # At least 15 pts buffer
+    # Invalidation beyond put wall — never on the magnet.
+    if 0 < put_wall < safe_spot:
+        ce_spot_inval = min(put_wall - wall_buf, safe_spot - 0.4 * sigma_h)
+    else:
+        ce_spot_inval = safe_spot - 0.4 * sigma_h
+    ce_spot_inval = max(ce_spot_inval, safe_spot - max_reach)
+    ce_spot_inval = min(ce_spot_inval, safe_spot - 15.0)
 
     # Put (PE) underlying levels: Bearish directional view
     if 0 < put_wall < safe_spot:
@@ -393,8 +400,12 @@ def compute_strike_ladder(
     else:
         pe_tgt1_spot = safe_spot - 0.6 * sigma_h
     pe_tgt2_spot = safe_spot - 1.2 * sigma_h
-    pe_spot_inval = min(call_wall if call_wall > safe_spot else safe_spot + 0.4 * sigma_h, safe_spot + max_reach)
-    pe_spot_inval = max(pe_spot_inval, safe_spot + 15.0)  # At least 15 pts buffer
+    if call_wall > safe_spot:
+        pe_spot_inval = max(call_wall + wall_buf, safe_spot + 0.4 * sigma_h)
+    else:
+        pe_spot_inval = safe_spot + 0.4 * sigma_h
+    pe_spot_inval = min(pe_spot_inval, safe_spot + max_reach)
+    pe_spot_inval = max(pe_spot_inval, safe_spot + 15.0)
 
     # Time decrements for targets and stop loss
     _, T_tgt1 = calculate_horizon_t(now_dt, horizon_minutes, expiry)

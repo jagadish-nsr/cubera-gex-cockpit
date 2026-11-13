@@ -3095,7 +3095,13 @@ async def get_target_engine(
             "bear": round(p_bear, 4),
         },
         "horizon_minutes": horizon_val,
-        "scoring_mode": mode or "heuristic",
+        # Calibrated Stage B is offline-only until a promoted model is wired.
+        "scoring_mode": "heuristic",
+        "scoring_mode_requested": mode or "heuristic",
+        "scoring_mode_note": (
+            None if (mode or "heuristic") == "heuristic"
+            else "Calibrated mode not promoted — running heuristic baseline"
+        ),
     }
 
     # Bull, Base, Bear Targets with Full Mathematical Probabilities & IV Forecasts
@@ -3135,7 +3141,29 @@ async def get_target_engine(
         if dash.expiries:
             active_exps = [str(dash.expiries[0])]
         else:
-            active_exps = [datetime.now().date().isoformat()]
+            # Same calendar resolver as reprice — never invent today's date.
+            today_ist = _get_ist_now().date()
+            exch = idx.exchange
+            try:
+                cal_exp = (
+                    next_weekly_expiry(today_ist, exch)
+                    if idx.has_weekly
+                    else next_monthly_expiry(today_ist, exch)
+                )
+                active_exps = [cal_exp.isoformat() if hasattr(cal_exp, "isoformat") else str(cal_exp)]
+            except Exception:
+                active_exps = []
+    if not active_exps:
+        return {
+            "symbol": sym,
+            "error": "target_engine_unavailable",
+            "message": "No resolvable expiry for Target Engine ladder",
+            "dial": dial,
+            "targets": targets,
+            "candidates": [],
+            "ladder": [],
+            "scenario_set": scenario_info,
+        }
     exp_str = active_exps[0]
     ladder_bundle = compute_strike_ladder(
         sym, spot, getattr(dash, "contracts", None), exp_str, horizon_val, dash.levels,
@@ -3206,7 +3234,8 @@ async def get_target_engine(
         "dial": dial,
         "scenario_set": scenario_info,
         "horizon": horizon_val,
-        "scoring_mode": mode,
+        "scoring_mode": "heuristic",
+        "scoring_mode_requested": mode or "heuristic",
         "targets": targets,
         "ladder": strike_ladder_rows,
         "ladder_meta": {
@@ -3388,8 +3417,9 @@ async def reprice_target_engine(payload: dict = Body(...)):
 
     rr_ratio = (gain_pts / loss_pts) if loss_pts > 0.05 else (9.99 if gain_pts > 0 else 0.0)
 
-    # 1-SD horizon move for touch probability
-    sigma_h = max(base_fut * strike_iv * (tgt_mins / (375.0 * 252.0)) ** 0.5, 15.0)
+    # 1-SD horizon move for touch probability (shared trading-session σₕ)
+    from target_engine.time_utils import horizon_sigma
+    sigma_h = horizon_sigma(base_fut, strike_iv, int(tgt_mins))
     drift_tgt = 0.25 * sigma_h if sel_type == "CE" else -0.25 * sigma_h
     p_touch_target = compute_touch_probability(abs(user_tgt_spot - base_fut), sigma_h, drift_tgt)
     p_touch_sl = compute_touch_probability(abs(base_fut - user_sl_spot), sigma_h, -0.2 * sigma_h)

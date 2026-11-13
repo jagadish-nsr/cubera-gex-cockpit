@@ -1623,8 +1623,12 @@ def calculate_pre_market_option_shocks(
     # Overnight gap jump vol adjustment
     move_pct = gap_pts / prev_close if prev_close > 0 else 0.0
     try:
-        iv_proj_ce = forecast_iv("bull" if gap_pts > 0 else "bear", 15, atm_iv, spot_move_pct=move_pct).sigma_target
-        iv_proj_pe = forecast_iv("bear" if gap_pts < 0 else "bull", 15, atm_iv, spot_move_pct=move_pct).sigma_target
+        iv_proj_ce = forecast_iv(
+            "bull" if gap_pts > 0 else "bear", 15, atm_iv, spot_move_pct=move_pct,
+        ).iv_at_horizon
+        iv_proj_pe = forecast_iv(
+            "bear" if gap_pts < 0 else "bull", 15, atm_iv, spot_move_pct=move_pct,
+        ).iv_at_horizon
     except Exception:
         iv_proj_ce = atm_iv
         iv_proj_pe = atm_iv

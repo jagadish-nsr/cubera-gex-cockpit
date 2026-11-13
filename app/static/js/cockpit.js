@@ -5506,18 +5506,44 @@
           const tr = document.createElement("tr");
           if (row.is_atm) tr.className = "atm-row";
 
-          const ce = row.ce || {};
-          const pe = row.pe || {};
-
-          const cePnlClr = (ce.tgt1_inr || 0) >= 0 ? "var(--go)" : "var(--stop)";
-          const pePnlClr = (pe.tgt1_inr || 0) >= 0 ? "var(--go)" : "var(--stop)";
+          const ce = row.ce;  // null wing → dash cells (never invent ₹0)
+          const pe = row.pe;
+          const dash = "—";
+          const fmtInr = (v) => (v == null || Number.isNaN(Number(v))) ? dash : `₹${Number(v).toLocaleString("en-IN")}`;
+          const fmtPx = (v) => (v == null || Number.isNaN(Number(v))) ? dash : `₹${Number(v).toFixed(1)}`;
+          const fmtPts = (v, sign) => (v == null || Number.isNaN(Number(v))) ? "" : `${sign}${Number(v).toFixed(1)}`;
+          const cePnlClr = (ce && (ce.tgt1_inr || 0) >= 0) ? "var(--go)" : "var(--stop)";
+          const pePnlClr = (pe && (pe.tgt1_inr || 0) >= 0) ? "var(--go)" : "var(--stop)";
           const ceRrCls = "rr-med";
           const peRrCls = "rr-med";
           const greekLine = (wing) => {
-            if (wing.delta == null && wing.iv == null) return "";
+            if (!wing || (wing.delta == null && wing.iv == null)) return "";
             const d = wing.delta == null ? "" : `Δ ${Number(wing.delta).toFixed(2)}`;
             const iv = wing.iv == null ? "" : `IV ${Number(wing.iv).toFixed(1)}%`;
             return [d, iv].filter(Boolean).join(" · ");
+          };
+          const wingCell = (wing, kind) => {
+            if (!wing) return `<td style="color:var(--ink-faint)">${dash}</td>`;
+            if (kind === "ltp") {
+              return `<td style="color:var(--spark);font-weight:700">${fmtPx(wing.ltp)}<div class="sub-pts" style="color:var(--ink-faint)">${greekLine(wing)}</div></td>`;
+            }
+            if (kind === "sl") {
+              return `<td style="color:var(--stop);font-weight:700">${fmtPx(wing.opt_sl)}<div class="sub-pts" style="color:var(--stop)">${fmtPts(wing.sl_pts, "-")}</div></td>`;
+            }
+            if (kind === "t1") {
+              return `<td style="color:#4ade80;font-weight:700">${fmtPx(wing.opt_tgt1)}<div class="sub-pts" style="color:#4ade80">${fmtPts(wing.tgt1_pts, "+")}</div></td>`;
+            }
+            if (kind === "t2") {
+              return `<td style="color:var(--go);font-weight:700">${fmtPx(wing.opt_tgt2)}<div class="sub-pts" style="color:var(--go)">${fmtPts(wing.tgt2_pts, "+")}</div></td>`;
+            }
+            if (kind === "rr") {
+              return `<td><span class="rr-badge-ladder ${wing === ce ? ceRrCls : peRrCls}">${wing.rr_str || dash}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${wing.p_touch_tgt1 == null ? dash : wing.p_touch_tgt1 + "%"}</div></td>`;
+            }
+            if (kind === "pnl") {
+              const clr = wing === ce ? cePnlClr : pePnlClr;
+              return `<td style="color:${clr};font-weight:700">${fmtInr(wing.tgt1_inr)}<div class="sub-pts" style="color:var(--ink-faint)">T2: ${fmtInr(wing.tgt2_inr)}</div></td>`;
+            }
+            return `<td>${dash}</td>`;
           };
 
           const strikeTag = row.is_atm
@@ -5525,19 +5551,19 @@
             : `₹${row.strike.toLocaleString("en-IN")}`;
 
           tr.innerHTML = `
-            <td style="color:${cePnlClr};font-weight:700">₹${(ce.tgt1_inr || 0).toLocaleString("en-IN")}<div class="sub-pts" style="color:var(--ink-faint)">T2: ₹${(ce.tgt2_inr || 0).toLocaleString("en-IN")}</div></td>
-            <td><span class="rr-badge-ladder ${ceRrCls}">${ce.rr_str || "—"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${ce.p_touch_tgt1 == null ? "—" : ce.p_touch_tgt1 + "%"}</div></td>
-            <td style="color:var(--go);font-weight:700">₹${(ce.opt_tgt2 || 0).toFixed(1)}<div class="sub-pts" style="color:var(--go)">+${(ce.tgt2_pts || 0).toFixed(1)}</div></td>
-            <td style="color:#4ade80;font-weight:700">₹${(ce.opt_tgt1 || 0).toFixed(1)}<div class="sub-pts" style="color:#4ade80">+${(ce.tgt1_pts || 0).toFixed(1)}</div></td>
-            <td style="color:var(--stop);font-weight:700">₹${(ce.opt_sl || 0).toFixed(1)}<div class="sub-pts" style="color:var(--stop)">-${(ce.sl_pts || 0).toFixed(1)}</div></td>
-            <td style="color:var(--spark);font-weight:700">₹${(ce.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">${greekLine(ce)}</div></td>
+            ${wingCell(ce, "pnl")}
+            ${wingCell(ce, "rr")}
+            ${wingCell(ce, "t2")}
+            ${wingCell(ce, "t1")}
+            ${wingCell(ce, "sl")}
+            ${wingCell(ce, "ltp")}
             <td class="col-strike">${strikeTag}</td>
-            <td style="color:var(--spark);font-weight:700">₹${(pe.ltp || 0).toFixed(1)}<div class="sub-pts" style="color:var(--ink-faint)">${greekLine(pe)}</div></td>
-            <td style="color:var(--stop);font-weight:700">₹${(pe.opt_sl || 0).toFixed(1)}<div class="sub-pts" style="color:var(--stop)">-${(pe.sl_pts || 0).toFixed(1)}</div></td>
-            <td style="color:#4ade80;font-weight:700">₹${(pe.opt_tgt1 || 0).toFixed(1)}<div class="sub-pts" style="color:#4ade80">+${(pe.tgt1_pts || 0).toFixed(1)}</div></td>
-            <td style="color:var(--go);font-weight:700">₹${(pe.opt_tgt2 || 0).toFixed(1)}<div class="sub-pts" style="color:var(--go)">+${(pe.tgt2_pts || 0).toFixed(1)}</div></td>
-            <td><span class="rr-badge-ladder ${peRrCls}">${pe.rr_str || "—"}</span><div class="sub-pts" style="color:var(--ink-mute)">P: ${pe.p_touch_tgt1 == null ? "—" : pe.p_touch_tgt1 + "%"}</div></td>
-            <td style="color:${pePnlClr};font-weight:700">₹${(pe.tgt1_inr || 0).toLocaleString("en-IN")}<div class="sub-pts" style="color:var(--ink-faint)">T2: ₹${(pe.tgt2_inr || 0).toLocaleString("en-IN")}</div></td>
+            ${wingCell(pe, "ltp")}
+            ${wingCell(pe, "sl")}
+            ${wingCell(pe, "t1")}
+            ${wingCell(pe, "t2")}
+            ${wingCell(pe, "rr")}
+            ${wingCell(pe, "pnl")}
           `;
           ladderBody.appendChild(tr);
         });
@@ -5637,6 +5663,7 @@
       }
     } catch (e) {
       console.error("Error loading target engine:", e);
+      showToast(e && e.message ? e.message : "Target Engine load failed", "⚠");
     }
   }
 

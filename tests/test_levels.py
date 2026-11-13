@@ -79,4 +79,40 @@ def test_bear_target_stays_below_cash_when_futures_are_rich():
     assert targets["bear"].stop > spot
     assert targets["bull"].target > spot
     assert targets["bull"].stop < spot
-    assert targets["base"].stop in (22400.0, 22700.0)
+    # Band stop must sit *beyond* the nearer wall, never on the magnet.
+    assert targets["base"].stop not in (22400.0, 22700.0)
+    assert targets["base"].stop < 22400.0 or targets["base"].stop > 22700.0
+
+
+def test_stops_beyond_gamma_walls():
+    call_walls = [OptionWall(strike=25200.0, side="CALL", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    put_walls = [OptionWall(strike=24800.0, side="PUT", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    targets = generate_underlying_targets(
+        spot=25000.0,
+        fut=25010.0,
+        atm_iv=0.15,
+        horizon_minutes=120,
+        call_walls=call_walls,
+        put_walls=put_walls,
+    )
+    assert targets["bull"].stop < 24800.0
+    assert targets["bear"].stop > 25200.0
+
+
+def test_sigma_h_uses_trading_session_clock():
+    """TE levels σₕ must match ladder/reprice trading-session formula (not calendar)."""
+    from target_engine.time_utils import horizon_sigma
+    import math
+
+    spot, iv, h = 25000.0, 0.15, 120
+    expected = horizon_sigma(spot, iv, h)
+    calendar = spot * iv * math.sqrt((h * 60.0) / (365.0 * 86400.0))
+    assert expected > calendar * 1.5
+
+    call_walls = [OptionWall(strike=25200.0, side="CALL", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    put_walls = [OptionWall(strike=24800.0, side="PUT", oi=1, oi_share=0.3, oi_change=0, strength=0.3)]
+    targets = generate_underlying_targets(
+        spot=spot, fut=spot + 10, atm_iv=iv, horizon_minutes=h,
+        call_walls=call_walls, put_walls=put_walls,
+    )
+    assert targets["bull"].target - spot >= 0.5 * expected * 0.5

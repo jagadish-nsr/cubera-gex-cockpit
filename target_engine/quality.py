@@ -26,12 +26,17 @@ def validate_snapshot_quality(
     staleness_seconds: float,
     dte_calendar_days: float,
     has_depth: bool = False,
+    depth_expected: bool = False,
     minutes_from_open: float = 30.0,
     median_spread_pct: float = 1.0,
     max_acceptable_staleness: float = 180.0,
     min_contracts_threshold: int = 20,
 ) -> List[str]:
-    """Inspect snapshot attributes and return active quality flag tags."""
+    """Inspect snapshot attributes and return active quality flag tags.
+
+    ``MISSING_DEPTH`` only fires when depth was expected but absent — stubbed
+    depth must not chronically force ``no_edge``.
+    """
     flags: List[str] = []
 
     if staleness_seconds > max_acceptable_staleness:
@@ -40,7 +45,7 @@ def validate_snapshot_quality(
     if n_contracts < min_contracts_threshold:
         flags.append(QualityFlag.THIN_CHAIN.value)
 
-    if not has_depth:
+    if depth_expected and not has_depth:
         flags.append(QualityFlag.MISSING_DEPTH.value)
 
     if minutes_from_open < 15.0:

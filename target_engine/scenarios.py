@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import numpy as np
 
 from target_engine.config import DEFAULT_CONFIG, TargetEngineConfig

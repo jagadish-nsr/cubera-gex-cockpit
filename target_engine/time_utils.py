@@ -6,6 +6,7 @@ wall-clock conversions, horizon clipping, and trading session calculations.
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional, Union
 
@@ -97,5 +98,50 @@ def calculate_horizon_t(
 
 
 def get_horizon_annual_duration(horizon_minutes: int, day_count: float = 365.0) -> float:
-    """Convert horizon duration in minutes to fractional calendar years."""
+    """Convert horizon duration in minutes to fractional calendar years.
+
+    Prefer ``trading_session_horizon_years`` for intraday σₕ (levels, ladder, reprice).
+    Calendar years remain correct for expiry T and IV mean-reversion horizons.
+    """
     return max((horizon_minutes * 60.0) / (day_count * 86400.0), 1e-8)
+
+
+# NSE cash session: 09:15–15:30 = 375 minutes; 252 trading days/year.
+TRADING_MINUTES_PER_YEAR = 375.0 * 252.0
+
+
+def trading_session_horizon_years(
+    horizon_minutes: int,
+    minutes_per_session: float = 375.0,
+    trading_days_per_year: float = 252.0,
+) -> float:
+    """Intraday horizon as a fraction of trading-session years.
+
+    σₕ = spot · IV · √(h / (375 · 252)). Matches strike ladder / reprice / trade ideas.
+    """
+    denom = max(minutes_per_session * trading_days_per_year, 1.0)
+    return max(float(horizon_minutes) / denom, 1e-8)
+
+
+def horizon_sigma(
+    spot: float,
+    atm_iv: float,
+    horizon_minutes: int,
+    *,
+    floor: float = 15.0,
+    minutes_per_session: float = 375.0,
+    trading_days_per_year: float = 252.0,
+) -> float:
+    """1-SD cash-spot move over an intraday horizon (trading-session clock).
+
+    Refuses to invent IV: caller must pass a live ATM IV (> 0). Floor only
+    clamps tiny geometric moves, not missing vol.
+    """
+    if spot <= 0 or atm_iv <= 0 or horizon_minutes <= 0:
+        raise ValueError("horizon_sigma requires positive spot, atm_iv, and horizon_minutes")
+    h_years = trading_session_horizon_years(
+        horizon_minutes,
+        minutes_per_session=minutes_per_session,
+        trading_days_per_year=trading_days_per_year,
+    )
+    return max(float(spot) * float(atm_iv) * math.sqrt(h_years), float(floor))

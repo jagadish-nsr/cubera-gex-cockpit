@@ -125,6 +125,7 @@ class OptionTarget:
     greek_attribution: GreekAttribution
     entry_greeks: OptionGreeks
     target_greeks: OptionGreeks
+    p_touch_target: Optional[float] = None  # from matching UnderlyingTarget
 
 
 @dataclass

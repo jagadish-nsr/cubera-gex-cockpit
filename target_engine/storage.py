@@ -113,7 +113,7 @@ def persist_target_run(
                 symbol,
                 feature_vector.spot,
                 feature_vector.fut,
-                feature_vector.features.get("F13_atm_iv", 0.15),
+                feature_vector.features.get("F13_atm_iv"),
                 scenario_set.dominant_scenario,
                 scenario_set.conviction,
                 1 if scenario_set.no_edge else 0,
@@ -140,7 +140,7 @@ def persist_target_run(
                         target_obj.p_touch_target,
                         target_obj.p_touch_stop,
                         target_obj.p_close_beyond,
-                        iv_obj.iv_at_horizon if iv_obj else 0.15,
+                        iv_obj.iv_at_horizon if iv_obj else None,
                         target_obj.reason,
                     ))
 

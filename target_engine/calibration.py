@@ -61,7 +61,7 @@ class TargetEngineCalibrator:
         X_rows: List[List[float]] = []
         y_labels: List[str] = []
 
-        h_years = horizon_minutes / (365.0 * 24.0 * 60.0)
+        from target_engine.time_utils import horizon_sigma
 
         for i in range(len(df) - 1):
             row_now = df.iloc[i]
@@ -74,15 +74,27 @@ class TargetEngineCalibrator:
             spot_now = float(row_now["spot"])
             spot_future = float(row_future["spot"])
             fut_now = float(row_now.get("fut", spot_now))
-            atm_iv = float(row_now.get("atm_iv", 0.15))
-            sigma_h = max(fut_now * atm_iv * np.sqrt(h_years), 15.0)
+            raw_iv = row_now.get("atm_iv")
+            try:
+                atm_iv = float(raw_iv) if raw_iv is not None else 0.0
+            except (TypeError, ValueError):
+                atm_iv = 0.0
+            if atm_iv <= 0.05:
+                continue  # skip — refuse inventing 0.15
+            expiry = row_now.get("expiry")
+            if not expiry:
+                continue  # skip — refuse hardcoded expiry
+            try:
+                sigma_h = horizon_sigma(spot_now, atm_iv, horizon_minutes)
+            except ValueError:
+                continue
 
             past_df = df.iloc[: i + 1]
             fv = extract_features(
                 spot=spot_now,
                 fut=fut_now,
                 atm_iv=atm_iv,
-                expiry=str(row_now.get("expiry", "2026-10-15")),
+                expiry=str(expiry),
                 history_df=past_df,
                 now=t_now,
             )

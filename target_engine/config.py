@@ -80,22 +80,24 @@ class TargetEngineConfig:
     iv_forecast: IVForecastConfig = field(default_factory=IVForecastConfig)
     scoring: ScoringParams = field(default_factory=ScoringParams)
 
-    # T1 Directional feature baseline weights (sum of directional |w_i| = 1.0)
+    # T1 Directional feature baseline weights.
+    # F1/F2 stay at 0: wall proximity is a map, not a direction (anti-pin).
+    # Remaining weights renormalize in score_scenarios.
     feature_weights: Dict[str, float] = field(default_factory=lambda: {
-        "F1_call_wall_prox": 0.12,
-        "F2_put_wall_prox": 0.12,
-        "F3_wall_momentum": 0.08,
-        "F4_aggregate_buildup": 0.14,
-        "F5_pcr_level": 0.06,
-        "F6_pcr_trend": 0.08,
-        "F7_pcr_oi_change": 0.06,
-        "F8_futures_buildup": 0.12,
-        "F9_futures_basis": 0.04,
+        "F1_call_wall_prox": 0.0,
+        "F2_put_wall_prox": 0.0,
+        "F3_wall_momentum": 0.10,
+        "F4_aggregate_buildup": 0.18,
+        "F5_pcr_level": 0.08,
+        "F6_pcr_trend": 0.10,
+        "F7_pcr_oi_change": 0.08,
+        "F8_futures_buildup": 0.14,
+        "F9_futures_basis": 0.06,
         "F10_depth_imbalance": 0.00,       # Stubbed out if market depth unavailable
-        "F11_volume_burst": 0.06,
-        "F14_skew_change": 0.04,
-        "F15_max_pain_pull": 0.04,
-        "F16_intraday_trend": 0.04,
+        "F11_volume_burst": 0.08,
+        "F14_skew_change": 0.06,
+        "F15_max_pain_pull": 0.0,          # max pain distance is not directional
+        "F16_intraday_trend": 0.12,
     })
 
     # Strike selection filters

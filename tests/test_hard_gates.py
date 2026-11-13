@@ -29,6 +29,10 @@ def test_gate_registry_covers_known_money_paths():
     assert "ideas_session_vwap" in names
     assert "paper_execute_ltp_strike" in names
     assert "te_reprice_expiry" in names
+    assert "te_reprice_ltp" in names
+    assert "te_run_spot" in names
+    assert "te_run_atm_iv" in names
+    assert "te_run_expiry" in names
     assert "go_fire_premium" in names
     assert "te_strike_iv" in names
     assert "blast_equal_walls" in names

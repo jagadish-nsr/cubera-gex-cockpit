@@ -94,6 +94,17 @@ def run_target_engine(
     call_walls = _prepend_gex(call_walls, gex_call, "CALL")
     put_walls = _prepend_gex(put_walls, gex_put, "PUT")
 
+    # Session VWAP from levels when present.
+    raw_vwap = getattr(lv, "vwap", None) if lv else None
+    try:
+        vwap = float(raw_vwap) if raw_vwap is not None and float(raw_vwap) > 0 else None
+    except (TypeError, ValueError):
+        vwap = None
+
+    history_df = None
+    if isinstance(getattr(dash, "history_df", None), pd.DataFrame):
+        history_df = dash.history_df
+
     # Step 2: Feature Extraction
     fv = extract_features(
         spot=spot,
@@ -101,7 +112,9 @@ def run_target_engine(
         atm_iv=atm_iv,
         expiry=expiry,
         contracts_df=contracts_df,
+        history_df=history_df,
         oi_volume_agg=dash.oi_volume,
+        vwap=vwap,
         day_high=float(dash.day_ohlc.get("high")) if dash.day_ohlc and "high" in dash.day_ohlc else None,
         day_low=float(dash.day_ohlc.get("low")) if dash.day_ohlc and "low" in dash.day_ohlc else None,
         max_pain=max_pain,
@@ -152,6 +165,7 @@ def run_target_engine(
         expiry=expiry,
         horizon_minutes=horizon_minutes,
         symbol=dash.symbol,
+        atm_iv=atm_iv,
         config=config,
     )
 

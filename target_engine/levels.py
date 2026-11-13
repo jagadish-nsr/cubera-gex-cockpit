@@ -6,15 +6,27 @@ probabilities using the reflection principle and structural resistance/support w
 
 from __future__ import annotations
 
-import math
 from typing import Dict, List, Optional, Tuple
 import numpy as np
 from scipy.stats import norm
 
 from target_engine.config import DEFAULT_CONFIG, TargetEngineConfig
 from target_engine.contracts import UnderlyingTarget
-from target_engine.time_utils import get_horizon_annual_duration
+from target_engine.time_utils import horizon_sigma
 from target_engine.walls import OptionWall
+
+
+def _stop_beyond_wall(wall: float, side: str, spot: float, sigma_h: float) -> float:
+    """Place stop past the gamma strike, never on the magnet/wall.
+
+    side='put'  → stop below put wall (bull invalidation).
+    side='call' → stop above call wall (bear invalidation).
+    Buffer is max(10 pts, 0.1 · σₕ).
+    """
+    buf = max(10.0, 0.1 * sigma_h)
+    if side == "put":
+        return min(wall - buf, spot - 0.4 * sigma_h)
+    return max(wall + buf, spot + 0.4 * sigma_h)
 
 
 def compute_touch_probability(
@@ -78,12 +90,19 @@ def generate_underlying_targets(
     call_walls, put_walls : List[OptionWall]
         Identified call resistance and put support walls.
     """
-    h_years = get_horizon_annual_duration(horizon_minutes, day_count=config.day_count)
-    effective_iv = max(atm_iv, 0.05) if atm_iv > 0 else 0.15
+    if atm_iv is None or float(atm_iv) <= 0.0:
+        raise ValueError("generate_underlying_targets requires live ATM IV — refusing default 0.15")
+    effective_iv = max(float(atm_iv), 0.05)
 
-    # Cash-spot 1-SD horizon move. Futures premium must not lift a bear target
-    # above cash spot (Nifty fut often trades rich vs cash).
-    sigma_h = max(spot * effective_iv * math.sqrt(h_years), 15.0)
+    # Cash-spot 1-SD horizon move on the trading-session clock (matches ladder/reprice).
+    # Futures premium must not lift a bear target above cash spot.
+    mh = config.market_hours
+    sigma_h = horizon_sigma(
+        spot,
+        effective_iv,
+        horizon_minutes,
+        minutes_per_session=float(mh.minutes_per_session),
+    )
 
     # Wall references
     nearest_call = call_walls[0].strike if call_walls else None
@@ -112,7 +131,7 @@ def generate_underlying_targets(
         bull_reason = f"0.6-Sigma Move ({bull_target_val:.0f})"
 
     if nearest_put and nearest_put < spot:
-        bull_stop_val = min(nearest_put - 10.0, spot - 0.4 * sigma_h)
+        bull_stop_val = _stop_beyond_wall(nearest_put, "put", spot, sigma_h)
     else:
         bull_stop_val = spot - 0.5 * sigma_h
     bull_stop_val = max(bull_stop_val, spot - 1.5 * sigma_h)
@@ -149,7 +168,7 @@ def generate_underlying_targets(
         bear_reason = f"0.6-Sigma Move ({bear_target_val:.0f})"
 
     if nearest_call and nearest_call > spot:
-        bear_stop_val = max(nearest_call + 10.0, spot + 0.4 * sigma_h)
+        bear_stop_val = _stop_beyond_wall(nearest_call, "call", spot, sigma_h)
     else:
         bear_stop_val = spot + 0.5 * sigma_h
     bear_stop_val = min(bear_stop_val, spot + 1.5 * sigma_h)
@@ -169,19 +188,26 @@ def generate_underlying_targets(
 
     # -------------------------------------------------------------
     # 3. BASE (RANGE) SCENARIO TARGET & STOP
-    # Band stop is the nearer wall (corridor break), not a call-wall overshoot.
+    # Band stop sits *beyond* the nearer wall (corridor break), never on the magnet.
     # p_close_beyond is P(stay in band) to match the cockpit label.
     # -------------------------------------------------------------
+    wall_buf = max(10.0, 0.1 * sigma_h)
     if nearest_call and nearest_put and nearest_call > nearest_put:
         base_target_val = 0.5 * (nearest_call + nearest_put)
         dist_put = abs(spot - nearest_put)
         dist_call = abs(nearest_call - spot)
         if dist_put <= dist_call:
-            base_stop_val = nearest_put
-            base_reason = f"Mid {int(nearest_put)}/{int(nearest_call)}; band stop put wall {int(nearest_put)}"
+            base_stop_val = nearest_put - wall_buf
+            base_reason = (
+                f"Mid {int(nearest_put)}/{int(nearest_call)}; "
+                f"band stop beyond put wall {int(nearest_put)}"
+            )
         else:
-            base_stop_val = nearest_call
-            base_reason = f"Mid {int(nearest_put)}/{int(nearest_call)}; band stop call wall {int(nearest_call)}"
+            base_stop_val = nearest_call + wall_buf
+            base_reason = (
+                f"Mid {int(nearest_put)}/{int(nearest_call)}; "
+                f"band stop beyond call wall {int(nearest_call)}"
+            )
         p_stay = float(np.clip(
             1.0 - compute_close_probability(min(dist_put, dist_call), sigma_h, 0.0),
             0.05,

@@ -261,6 +261,10 @@ def implied_vol(
     return 0.5 * (low + high)
 
 
+# Public alias — trade_ideas and peers import this name.
+implied_volatility = implied_vol
+
+
 def reprice(
     F_new: float,
     K: float,

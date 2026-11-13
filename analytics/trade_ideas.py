@@ -268,8 +268,10 @@ def _reprice_trade_idea_targets(
     # 2. Solve entry IV from live premium (atm_iv only if IV solve fails)
     iv_now = None
     try:
-        from target_engine.pricer import implied_volatility
-        iv_now = implied_volatility(safe_spot, safe_k, T_entry, safe_ltp, r=0.065, option_type=opt_type)
+        from target_engine.pricer import implied_vol
+        iv_now = implied_vol(
+            market_price=safe_ltp, F=safe_spot, K=safe_k, T=T_entry, r=0.065, option_type=opt_type,
+        )
     except Exception:
         iv_now = None
 
@@ -278,8 +280,8 @@ def _reprice_trade_idea_targets(
             raise ValueError("atm_iv required — refusing default 0.14 for idea reprice")
         iv_now = float(atm_iv)
 
-    # 3. Horizon time decrements
-    dt_annual = horizon_minutes / (365.0 * 6.25 * 60.0)
+    # 3. Horizon time decrements (trading-session clock: 375 × 252)
+    dt_annual = horizon_minutes / (375.0 * 252.0)
     T_tgt1 = max(1e-4, T_entry - dt_annual)
     T_tgt2 = max(1e-4, T_entry - (dt_annual * 1.5))
     T_sl = max(1e-4, T_entry - (dt_annual * 0.5))
@@ -295,23 +297,18 @@ def _reprice_trade_idea_targets(
         tgt2_spot = max(tgt2_spot, safe_spot - (max_spot_reach * 1.5))
         inval_spot = min(inval_spot, safe_spot + max_spot_reach)
 
-    # 5. Forecasted IVs for scenarios
-    try:
-        from target_engine.iv_forecast import forecast_iv
-        scen_fwd = "bull" if is_call else "bear"
-        scen_adv = "bear" if is_call else "bull"
+    # 5. Forecasted IVs for scenarios — field is iv_at_horizon (not sigma_target).
+    from target_engine.iv_forecast import forecast_iv
+    scen_fwd = "bull" if is_call else "bear"
+    scen_adv = "bear" if is_call else "bull"
 
-        move1_pct = (tgt1_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
-        move2_pct = (tgt2_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
-        move_sl_pct = (inval_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+    move1_pct = (tgt1_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+    move2_pct = (tgt2_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
+    move_sl_pct = (inval_spot - safe_spot) / safe_spot if safe_spot > 0 else 0.0
 
-        iv_f_tgt1 = forecast_iv(scen_fwd, horizon_minutes, iv_now, spot_move_pct=move1_pct).sigma_target
-        iv_f_tgt2 = forecast_iv(scen_fwd, horizon_minutes * 2, iv_now, spot_move_pct=move2_pct).sigma_target
-        iv_f_sl = forecast_iv(scen_adv, int(horizon_minutes * 0.5), iv_now, spot_move_pct=move_sl_pct).sigma_target
-    except Exception:
-        iv_f_tgt1 = iv_now
-        iv_f_tgt2 = iv_now
-        iv_f_sl = iv_now
+    iv_f_tgt1 = forecast_iv(scen_fwd, horizon_minutes, iv_now, spot_move_pct=move1_pct).iv_at_horizon
+    iv_f_tgt2 = forecast_iv(scen_fwd, horizon_minutes * 2, iv_now, spot_move_pct=move2_pct).iv_at_horizon
+    iv_f_sl = forecast_iv(scen_adv, int(horizon_minutes * 0.5), iv_now, spot_move_pct=move_sl_pct).iv_at_horizon
 
     # 6. Black-76 Repricing at map spot targets — never invent LTP×ratio premiums.
     actual_ltp = safe_ltp
@@ -336,7 +333,8 @@ def _reprice_trade_idea_targets(
     # 7. Touch Probabilities via Reflection Principle
     try:
         from target_engine.levels import compute_touch_probability
-        sigma_h = max(1.0, safe_spot * iv_now * math.sqrt(horizon_minutes / (365.0 * 6.25 * 60.0)))
+        from target_engine.time_utils import horizon_sigma
+        sigma_h = horizon_sigma(safe_spot, iv_now, int(horizon_minutes), floor=1.0)
         p_touch_tgt1 = compute_touch_probability(distance=abs(tgt1_spot - safe_spot), sigma_h=sigma_h)
         p_touch_sl = compute_touch_probability(distance=abs(inval_spot - safe_spot), sigma_h=sigma_h)
     except Exception as exc:
@@ -366,7 +364,7 @@ def _reprice_trade_idea_targets(
             "gamma_pnl": round(ga.gamma_pnl, 2),
             "vega_pnl": round(ga.vega_pnl, 2),
             "theta_pnl": round(ga.theta_pnl, 2),
-            "total_pnl": round(ga.total_pnl, 2),
+            "total_pnl": round(ga.total_modeled_pnl, 2),
         }
     except Exception:
         attr_dict = {}
@@ -1924,13 +1922,12 @@ def _generate_strategy_score_reason(
 
 
 def _calc_horizon_sigma(spot: float, eff_iv: float, horizon_minutes: float, step: int) -> float:
-    """Computes intraday expected move sigma_h = max(step * 0.5, spot * eff_iv * sqrt(h / 94500)).
-
-    Calibrated to Indian market trading hours (375 intraday minutes per day, 252 trading days/year = 94,500 mins).
-    """
-    ann_factor = 1.0 / math.sqrt(252.0 * 375.0)
-    raw_sigma = spot * eff_iv * ann_factor * math.sqrt(horizon_minutes)
-    return max(step * 0.5, raw_sigma)
+    """Intraday expected move via shared trading-session σₕ (375 × 252)."""
+    from target_engine.time_utils import horizon_sigma
+    try:
+        return max(step * 0.5, horizon_sigma(spot, eff_iv, int(horizon_minutes), floor=0.0))
+    except ValueError:
+        return step * 0.5
 
 
 def _apply_ev_quality_gate(
