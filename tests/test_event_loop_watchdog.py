@@ -3,7 +3,13 @@
 import os
 import sys
 
-from app.event_loop_watchdog import _default_restart, main_thread_stack, stalled
+from app.event_loop_watchdog import (
+    _default_restart,
+    _soft_alert,
+    main_thread_stack,
+    mode_from_env,
+    stalled,
+)
 
 
 def test_fresh_heartbeat_is_not_a_stall():
@@ -51,3 +57,32 @@ def test_restart_writes_the_stack_before_replacing_the_process(monkeypatch):
     assert recorded[0][0] == ("watchdog.restart",)
     assert "test_restart_writes_the_stack_before_replacing_the_process" in recorded[0][1]["stack"]
     assert replaced and replaced[0][0] == sys.executable
+
+
+def test_soft_alert_logs_without_execv(monkeypatch):
+    written = []
+    monkeypatch.setattr(os, "write", lambda fd, data: written.append((fd, data)) or len(data))
+    replaced = []
+    monkeypatch.setattr(os, "execv", lambda exe, argv: replaced.append((exe, argv)))
+    recorded = []
+    monkeypatch.setattr(
+        "app.obs.event",
+        lambda *args, **kwargs: recorded.append((args, kwargs)),
+    )
+
+    _soft_alert()
+
+    stderr = b"".join(data for fd, data in written if fd == 2)
+    assert b"soft watchdog (log-only, no restart)" in stderr
+    assert recorded[0][0] == ("watchdog.stall",)
+    assert recorded[0][1].get("mode") == "soft"
+    assert replaced == []
+
+
+def test_mode_from_env_maps_hard_and_soft(monkeypatch):
+    monkeypatch.setenv("COCKPIT_WATCHDOG", "1")
+    assert mode_from_env() == "hard"
+    monkeypatch.setenv("COCKPIT_WATCHDOG", "soft")
+    assert mode_from_env() == "soft"
+    monkeypatch.delenv("COCKPIT_WATCHDOG", raising=False)
+    assert mode_from_env() is None

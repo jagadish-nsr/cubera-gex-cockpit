@@ -50,18 +50,31 @@ fi
 echo "  • Executing Web Server Endpoint Integration Tests..."
 python3 -m pytest -q --timeout=120 "${DEV_DIR}/tests/test_web_server_endpoints.py"
 
-echo "  • Executing Reliability Gates (readiness / hard_gates / checklist / WAL)..."
-python3 -m pytest -q --timeout=60 \
-  "${DEV_DIR}/tests/test_readiness.py" \
-  "${DEV_DIR}/tests/test_hard_gates.py" \
-  "${DEV_DIR}/tests/test_session_checklist.py" \
-  "${DEV_DIR}/tests/test_wal_checkpoint.py" \
-  "${DEV_DIR}/tests/test_ingest_heartbeat.py" \
-  "${DEV_DIR}/tests/test_slo_monitor.py" \
-  "${DEV_DIR}/tests/test_verify_exchange.py" \
-  "${DEV_DIR}/tests/test_client_reliability.py" \
-  "${DEV_DIR}/tests/test_chaos_host.py" \
-  "${DEV_DIR}/tests/test_reliability_scorecard.py"
+echo "  • Executing Reliability Gates (H1 mandatory list)..."
+# Fail loud if a required gate file was deleted or renamed — do not skip silently.
+REQUIRED_RELIABILITY_TESTS=(
+  tests/test_readiness.py
+  tests/test_hard_gates.py
+  tests/test_session_checklist.py
+  tests/test_wal_checkpoint.py
+  tests/test_ingest_heartbeat.py
+  tests/test_slo_monitor.py
+  tests/test_verify_exchange.py
+  tests/test_client_reliability.py
+  tests/test_chaos_host.py
+  tests/test_reliability_scorecard.py
+  tests/test_event_loop_watchdog.py
+)
+RELIABILITY_PYTEST_ARGS=()
+for rel in "${REQUIRED_RELIABILITY_TESTS[@]}"; do
+  abs="${DEV_DIR}/${rel}"
+  if [[ ! -f "${abs}" ]]; then
+    echo "❌ ERROR: mandatory reliability test missing: ${rel}"
+    exit 1
+  fi
+  RELIABILITY_PYTEST_ARGS+=("${abs}")
+done
+python3 -m pytest -q --timeout=60 "${RELIABILITY_PYTEST_ARGS[@]}"
 
 echo "  • Executing Quant & Market Parity Tests..."
 python3 -m pytest -q "${DEV_DIR}/tests/test_cockpit_market_hours.py" \
@@ -278,13 +291,22 @@ if ver != tag and not ver.startswith(tag):
     if ver.replace("v", "") != tag:
         print(f"ERROR: health version {ver!r} != promoted {tag!r}", file=sys.stderr)
         sys.exit(1)
-if "readiness" not in data or "probes" not in (data.get("readiness") or {}):
-    print("ERROR: /api/health missing readiness.probes schema", file=sys.stderr)
+rd = data.get("readiness")
+if not isinstance(rd, dict):
+    print("ERROR: /api/health missing readiness object", file=sys.stderr)
     sys.exit(1)
-if "ingest" not in (data["readiness"]["probes"] or {}):
+for key in ("ready", "degrade_mode", "probes"):
+    if key not in rd:
+        print(f"ERROR: readiness missing required key {key!r}", file=sys.stderr)
+        sys.exit(1)
+probes = rd.get("probes") or {}
+if "ingest" not in probes:
     print("ERROR: readiness.probes.ingest missing", file=sys.stderr)
     sys.exit(1)
-print(f"  • Smoke OK: version={ver} readiness.probes.ingest present")
+print(
+    f"  • Smoke OK: version={ver} ready={rd.get('ready')} "
+    f"degrade_mode={rd.get('degrade_mode')!r} probes.ingest present"
+)
 PY
     echo ""
     echo "======================================================================"

@@ -8812,10 +8812,12 @@ def main():
 
     os.environ["COCKPIT_PORT"] = str(args.port)
     os.environ.setdefault("COCKPIT_ENV", "prod" if args.port == 8640 else "dev")
-    # Production only. A stalled event loop cannot accept connections, and
-    # SIGTERM does not land while the main thread is blocked in a lock.
+    # Prod 8640: hard watchdog (execv on stall). Dev 8650: soft log-only so
+    # stalls are visible before they surprise a promote. Explicit env wins.
     if args.port == 8640 and not args.dev and not args.reload:
         os.environ["COCKPIT_WATCHDOG"] = "1"
+    elif args.port != 8640 or args.dev:
+        os.environ.setdefault("COCKPIT_WATCHDOG", "soft")
 
     is_dev = args.dev or args.reload or (args.port != 8640)
     if is_dev:

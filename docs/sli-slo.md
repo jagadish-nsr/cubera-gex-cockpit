@@ -66,6 +66,7 @@ Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft 
 | Lot/expiry VERIFY | `GET /api/admin/verify-exchange` | Admin Ops card |
 | Client reliability | `ReliabilityController` + telemetry chip + prefs catch audit | `tests/test_client_reliability.py` |
 | Chaos drill (:8660) | Fault inject → checklist FAIL; no live DB write | `scripts/chaos_drill.py` / `docs/chaos-drill.md` |
+| Rollback drill | Timed restore of prior tag ≤ 5 min; health schema OK | `scripts/rollback_drill.sh` / `docs/rollback-drill.md` |
 | Pre-open soak | Dual serve health ≥ 30m, burn ≤ 10%, no watchdog | `scripts/pre_open_soak.py` |
 
 

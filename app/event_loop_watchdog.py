@@ -21,6 +21,17 @@ _heartbeat = 0.0
 _started = False
 _armed_at = 0.0
 _expected_beat = 0.0
+_mode = "off"  # "hard" | "soft" | "off"
+
+
+def mode_from_env() -> str | None:
+    """Map ``COCKPIT_WATCHDOG`` to ``hard`` / ``soft`` / None (disarmed)."""
+    raw = (os.environ.get("COCKPIT_WATCHDOG") or "").strip().lower()
+    if raw in ("1", "hard", "restart"):
+        return "hard"
+    if raw in ("soft", "log", "log-only"):
+        return "soft"
+    return None
 
 
 def stalled(now: float, beat: float, armed_at: float, stall_s: float) -> bool:
@@ -47,6 +58,7 @@ def snapshot() -> dict:
     lag_ms = max(0.0, (now - expected) * 1000.0) if _started else 0.0
     return {
         "armed": _started,
+        "mode": _mode,
         "lag_ms": round(lag_ms, 1),
         "stall_s": STALL_S,
         "last_beat_age_s": round(now - beat, 1) if beat > 0 else None,
@@ -89,13 +101,52 @@ def _default_restart() -> None:
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
-def start(loop: asyncio.AbstractEventLoop, *, stall_s: float = STALL_S, restart=None) -> None:
-    """Arm the watchdog on ``loop``. Further calls in this process do nothing."""
-    global _started, _armed_at, _expected_beat
+def _soft_alert() -> None:
+    """Log-only stall signal for 8650/dev — never replaces the process."""
+    stack = main_thread_stack()
+    try:
+        from app.obs import event
+        event(
+            "watchdog.stall",
+            level="ERROR",
+            ok=False,
+            workflow="watchdog",
+            message="event loop stalled; soft watchdog (log-only, no restart)",
+            stack=stack,
+            mode="soft",
+        )
+    except Exception:
+        pass
+    try:
+        os.write(2, b"event loop stalled; soft watchdog (log-only, no restart)\n")
+        os.write(2, stack.encode("utf-8", errors="replace") + b"\n")
+    except Exception:
+        pass
+
+
+def start(
+    loop: asyncio.AbstractEventLoop,
+    *,
+    stall_s: float = STALL_S,
+    restart=None,
+    soft: bool = False,
+) -> None:
+    """Arm the watchdog on ``loop``. Further calls in this process do nothing.
+
+    ``soft=True`` (or ``COCKPIT_WATCHDOG=soft``) logs stalls without ``execv``.
+    Prod 8640 uses hard mode so a blocked loop cannot leave the desk deaf.
+    """
+    global _started, _armed_at, _expected_beat, _mode
     if _started:
         return
     _started = True
-    restart_fn = restart or _default_restart
+    _mode = "soft" if soft else "hard"
+    if restart is not None:
+        restart_fn = restart
+    elif soft:
+        restart_fn = _soft_alert
+    else:
+        restart_fn = _default_restart
     _armed_at = time.monotonic()
     _expected_beat = _armed_at + TICK_S
 
@@ -120,6 +171,10 @@ def start(loop: asyncio.AbstractEventLoop, *, stall_s: float = STALL_S, restart=
             time.sleep(TICK_S)
             if stalled(time.monotonic(), _heartbeat, _armed_at, stall_s):
                 restart_fn()
+                if soft:
+                    # Cooldown so a sticky stall re-alerts without spinning.
+                    time.sleep(max(stall_s, TICK_S))
+                    continue
                 return
 
     threading.Thread(target=_watch, name="event-loop-watchdog", daemon=True).start()

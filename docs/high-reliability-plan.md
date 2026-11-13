@@ -206,10 +206,10 @@ Contracts (non-negotiable — copy from isolation design):
 
 | Step | Deliverable | Done when |
 |------|-------------|-----------|
-| H1 | Promote Stage 1 includes `tests/test_readiness.py`, `test_hard_gates.py`, `test_session_checklist.py`, `test_wal_checkpoint.py` | Already adjacent — make mandatory in [scripts/promote.sh](../scripts/promote.sh) |
-| H2 | Post-deploy smoke asserts `version` == new tag **and** `readiness` key present | v5.3.117 already returns readiness — assert schema |
-| H3 | Rollback drill documented (`./scripts/rollback.sh`) once per quarter | Timed restore of prior tag |
-| H4 | Dev (8650) optionally arms a softer watchdog (log-only) so stalls are visible before prod | No surprise prod-only failure mode |
+| H1 | Promote Stage 1 includes `tests/test_readiness.py`, `test_hard_gates.py`, `test_session_checklist.py`, `test_wal_checkpoint.py` | **Shipped** — mandatory file list + pytest in [scripts/promote.sh](../scripts/promote.sh) |
+| H2 | Post-deploy smoke asserts `version` == new tag **and** `readiness` key present | **Shipped** — asserts `ready` / `degrade_mode` / `probes.ingest` |
+| H3 | Rollback drill documented (`./scripts/rollback.sh`) once per quarter | **Shipped** — [rollback-drill.md](rollback-drill.md) + `scripts/rollback_drill.sh` |
+| H4 | Dev (8650) optionally arms a softer watchdog (log-only) so stalls are visible before prod | **Shipped** — `COCKPIT_WATCHDOG=soft` / `watchdog.stall` (no execv) |
 
 ---
 
@@ -258,6 +258,7 @@ Call the system highly reliable only when **all** are true for two consecutive f
 | [sli-slo.md](sli-slo.md) | SLI/SLO numbers + degrade modes (Pillar C/D) |
 | [backup-restore.md](backup-restore.md) | Nightly backup + scratch restore runbook (Phase D) |
 | [chaos-drill.md](chaos-drill.md) | Chaos host :8660 + soak + scorecard (Pillar G) |
+| [rollback-drill.md](rollback-drill.md) | Quarterly timed rollback (Pillar H3) |
 | [session-evaluation-TEMPLATE.md](session-evaluation-TEMPLATE.md) | Session notes incl. reliability scorecard |
 | **This file** | Phase B+ high-reliability roadmap |
 | Session eval `docs/session-evaluation-YYYY-MM-DD.md` | Empirical burn evidence |

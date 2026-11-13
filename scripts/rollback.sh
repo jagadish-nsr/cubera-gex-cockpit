@@ -58,14 +58,44 @@ NEW_PID=$!
 echo "${NEW_PID}" > "${PROD_DIR}/logs/prod_server.pid"
 cd "${DEV_DIR}"
 
-# 4. Verify health
+# 4. Verify health + readiness schema (same keys promote Stage 5 / H2 asserts)
 echo "Verifying health..."
-sleep 2
-if curl -s -f "${HEALTH_URL}" > /dev/null 2>&1; then
+HEALTH_PASSED=false
+for i in {1..15}; do
+    if curl -s -f "${HEALTH_URL}" > /tmp/rollback_health.json 2>/dev/null; then
+        HEALTH_PASSED=true
+        break
+    fi
+    sleep 1
+done
+
+if [[ "${HEALTH_PASSED}" == "true" ]]; then
+    TAG_BARE="${TARGET_TAG#v}"
+    python3 - <<PY
+import json, sys
+tag = "${TAG_BARE}"
+data = json.load(open("/tmp/rollback_health.json"))
+ver = str(data.get("version") or "")
+if ver.replace("v", "") != tag and not ver.startswith(tag):
+    print(f"ERROR: health version {ver!r} != rollback target {tag!r}", file=sys.stderr)
+    sys.exit(1)
+rd = data.get("readiness")
+if not isinstance(rd, dict):
+    print("ERROR: /api/health missing readiness object", file=sys.stderr)
+    sys.exit(1)
+for key in ("ready", "degrade_mode", "probes"):
+    if key not in rd:
+        print(f"ERROR: readiness missing {key!r}", file=sys.stderr)
+        sys.exit(1)
+if "ingest" not in (rd.get("probes") or {}):
+    print("ERROR: readiness.probes.ingest missing", file=sys.stderr)
+    sys.exit(1)
+print(f"  • Rollback smoke OK: version={ver} ready={rd.get('ready')} degrade_mode={rd.get('degrade_mode')!r}")
+PY
     echo "✅ SUCCESS: Rolled back cleanly to ${TARGET_TAG} on http://localhost:${PROD_PORT}"
     echo "$(date '+%Y-%m-%d %H:%M:%S') | ROLLBACK | ${TARGET_TAG} | PID: ${NEW_PID}" >> "${RELEASE_LOG}"
     exit 0
 else
-    echo "⚠️ WARNING: Health check probe did not respond immediately. Check logs at ${PROD_DIR}/logs/prod.log"
+    echo "⚠️ WARNING: Health check probe did not respond. Check logs at ${PROD_DIR}/logs/prod.log"
     exit 1
 fi
