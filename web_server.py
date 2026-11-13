@@ -3037,47 +3037,36 @@ async def get_target_engine(
     ladder_bundle = compute_strike_ladder(
         sym, spot, getattr(dash, "contracts", None), exp_str, horizon_val, dash.levels,
     )
+    def _wing_payload(wing) -> dict | None:
+        """Serialize one CE/PE wing; missing wing stays None (never invent LTP)."""
+        if wing is None:
+            return None
+        return {
+            "ltp": round(float(wing.ltp), 1),
+            "delta": round(float(wing.delta), 2),
+            "iv": round(float(wing.iv) * 100.0, 1),
+            "live": bool(wing.is_ws_live),
+            "theta": round(float(wing.theta), 1),
+            "opt_sl": round(float(wing.opt_sl), 1),
+            "opt_tgt1": round(float(wing.opt_tgt1), 1),
+            "opt_tgt2": round(float(wing.opt_tgt2), 1),
+            "sl_pts": round(float(wing.sl_pts), 1),
+            "tgt1_pts": round(float(wing.tgt1_pts), 1),
+            "tgt2_pts": round(float(wing.tgt2_pts), 1),
+            "sl_inr": round(float(wing.sl_inr), 0),
+            "tgt1_inr": round(float(wing.tgt1_inr), 0),
+            "tgt2_inr": round(float(wing.tgt2_inr), 0),
+            "rr_str": wing.rr_str,
+            "p_touch_tgt1": round(float(wing.p_touch_tgt1) * 100, 0),
+        }
+
     strike_ladder_rows = []
     for r in ladder_bundle.rows:
         strike_ladder_rows.append({
             "strike": r.strike,
             "is_atm": r.is_atm,
-            "ce": {
-                "ltp": round(float(r.ce.ltp), 1),
-                "delta": round(float(r.ce.delta), 2),
-                "iv": round(float(r.ce.iv) * 100.0, 1),
-                "live": bool(r.ce.is_ws_live),
-                "theta": round(float(r.ce.theta), 1),
-                "opt_sl": round(float(r.ce.opt_sl), 1),
-                "opt_tgt1": round(float(r.ce.opt_tgt1), 1),
-                "opt_tgt2": round(float(r.ce.opt_tgt2), 1),
-                "sl_pts": round(float(r.ce.sl_pts), 1),
-                "tgt1_pts": round(float(r.ce.tgt1_pts), 1),
-                "tgt2_pts": round(float(r.ce.tgt2_pts), 1),
-                "sl_inr": round(float(r.ce.sl_inr), 0),
-                "tgt1_inr": round(float(r.ce.tgt1_inr), 0),
-                "tgt2_inr": round(float(r.ce.tgt2_inr), 0),
-                "rr_str": r.ce.rr_str,
-                "p_touch_tgt1": round(float(r.ce.p_touch_tgt1) * 100, 0),
-            },
-            "pe": {
-                "ltp": round(float(r.pe.ltp), 1),
-                "delta": round(float(r.pe.delta), 2),
-                "iv": round(float(r.pe.iv) * 100.0, 1),
-                "live": bool(r.pe.is_ws_live),
-                "theta": round(float(r.pe.theta), 1),
-                "opt_sl": round(float(r.pe.opt_sl), 1),
-                "opt_tgt1": round(float(r.pe.opt_tgt1), 1),
-                "opt_tgt2": round(float(r.pe.opt_tgt2), 1),
-                "sl_pts": round(float(r.pe.sl_pts), 1),
-                "tgt1_pts": round(float(r.pe.tgt1_pts), 1),
-                "tgt2_pts": round(float(r.pe.tgt2_pts), 1),
-                "sl_inr": round(float(r.pe.sl_inr), 0),
-                "tgt1_inr": round(float(r.pe.tgt1_inr), 0),
-                "tgt2_inr": round(float(r.pe.tgt2_inr), 0),
-                "rr_str": r.pe.rr_str,
-                "p_touch_tgt1": round(float(r.pe.p_touch_tgt1) * 100, 0),
-            },
+            "ce": _wing_payload(r.ce),
+            "pe": _wing_payload(r.pe),
         })
 
     ranked_candidates = serialize_ranked_candidates(
@@ -3093,7 +3082,7 @@ async def get_target_engine(
             except (TypeError, ValueError):
                 continue
     live_ticks = sum(
-        int(bool(r.ce.is_ws_live)) + int(bool(r.pe.is_ws_live))
+        int(bool(getattr(r.ce, "is_ws_live", False))) + int(bool(getattr(r.pe, "is_ws_live", False)))
         for r in ladder_bundle.rows
     )
 
