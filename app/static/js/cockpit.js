@@ -2446,7 +2446,42 @@
       const sessionTitleDisplay = document.getElementById("session-title-display");
       const sessionSubstateDisplay = document.getElementById("session-substate-display");
 
-      if (!data.is_market_open) {
+      if (!data.is_market_open && data.is_spot_ingest_open) {
+        // Cash pre-open (09:00–09:15): index spot may tick; continuous session still closed.
+        if (quoteBoxLabel) quoteBoxLabel.textContent = "Pre-open Spot";
+        if (quoteStatusDot) quoteStatusDot.className = "live-dot";
+        if (feedBadge) {
+          feedBadge.textContent = "Pre-open";
+          feedBadge.style.color = "var(--warn)";
+          feedBadge.style.background = "rgba(245,158,11,0.12)";
+          feedBadge.style.borderColor = "rgba(245,158,11,0.35)";
+        }
+        if (sessionPhaseBadge) {
+          const badgeText = (data.session_schedule && data.session_schedule.phase_badge) || data.session_label || "PRE-OPEN";
+          sessionPhaseBadge.textContent = withMeridianIst(badgeText.toUpperCase());
+          sessionPhaseBadge.className = "badge-active";
+          sessionPhaseBadge.style.background = "rgba(245,158,11,0.15)";
+          sessionPhaseBadge.style.color = "var(--warn)";
+          sessionPhaseBadge.style.border = "1px solid rgba(245,158,11,0.35)";
+        }
+        if (feedBanner) {
+          feedBanner.className = "feed-mode-banner live";
+          feedBanner.style.borderColor = "rgba(245,158,11,0.35)";
+          feedBanner.style.background = "rgba(245,158,11,0.04)";
+        }
+        if (feedStatusBadge) {
+          feedStatusBadge.textContent = data.feed_badge || "🌅 Pre-open spot";
+          feedStatusBadge.style.color = "var(--warn)";
+          feedStatusBadge.style.background = "rgba(245,158,11,0.15)";
+        }
+        if (sessionTitleDisplay) {
+          sessionTitleDisplay.textContent = data.feed_title || "Pre-open · index spot ingest";
+          sessionTitleDisplay.style.color = "var(--warn)";
+        }
+        if (sessionSubstateDisplay) {
+          sessionSubstateDisplay.textContent = data.feed_subtext || "Index spot/VIX may print · futures from 09:15";
+        }
+      } else if (!data.is_market_open) {
         if (quoteBoxLabel) quoteBoxLabel.textContent = "Spot Close (EOD)";
         if (quoteStatusDot) quoteStatusDot.className = "offline-dot";
         if (feedBadge) {
@@ -2517,10 +2552,12 @@
       // The session line is in the header on every tab. Do not wait for the book paint.
       const spotNum = Number(data.spot);
       const spotTxt = Number.isFinite(spotNum) && spotNum > 0 ? `₹${spotNum.toLocaleString("en-IN")}` : "";
-      const statusExec = !data.is_market_open
-        ? (spotTxt ? `Snapshot Locked at ${spotTxt}` : "")
-        : (spotTxt ? `Spot ${spotTxt}` : "");
-      paintHeaderSession(statusExec, headerCountdown(data), false, Boolean(data.is_market_open));
+      const statusExec = data.is_market_open
+        ? (spotTxt ? `Spot ${spotTxt}` : "")
+        : (data.is_spot_ingest_open
+          ? (spotTxt ? `Pre-open ${spotTxt}` : "")
+          : (spotTxt ? `Snapshot Locked at ${spotTxt}` : ""));
+      paintHeaderSession(statusExec, headerCountdown(data), false, Boolean(data.is_market_open || data.is_spot_ingest_open));
 
       // Ephemeral Pre-Bell briefing: 08:45–09:22 IST, client clock is the hard stop
       syncCockpitPreBellCard(data.is_pre_bell_ephemeral);

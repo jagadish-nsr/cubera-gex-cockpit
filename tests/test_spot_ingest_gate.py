@@ -89,11 +89,13 @@ def test_handle_spot_tick_may_seed_open_after_bell(monkeypatch):
         st._STORE.pop("NIFTY", None)
 
 
-def test_instant_quote_still_prefers_prior_book_before_bell(monkeypatch):
-    """UI instant quote must not flip to live pre-open via is_market_open mix-up."""
+def test_instant_quote_prefers_prior_book_before_spot_ingest(monkeypatch):
+    """Before 09:00, sealed book wins — do not leak overnight store noise."""
     import app.spot_ticker as st
+    import time
 
     monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    monkeypatch.setattr(config, "is_spot_ingest_open", lambda *a, **k: False)
     monkeypatch.setattr(st, "ensure", lambda *a, **k: None)
     monkeypatch.setattr(
         "data.market_snapshot.resolve_offmarket_snapshot",
@@ -111,16 +113,47 @@ def test_instant_quote_still_prefers_prior_book_before_bell(monkeypatch):
             "ltp": 25213.5,
             "open": 0.0,
             "prev_close": 25255.05,
-            "as_of": "2026-11-13 09:05:00",
+            "as_of": "2026-11-13 08:50:00",
         },
         "fut": None,
         "quote": None,
-        "at": 0,
+        "at": time.time(),
         "ws_at": None,
     }
     try:
         q = st.get_instant_quote("NIFTY")
-        # Off-market with snap present uses snap, not the live pre-open _STORE ohlc.
         assert abs(float(q.get("spot") or 0) - 25255.05) < 0.1
+    finally:
+        st._STORE.pop("NIFTY", None)
+
+
+def test_instant_quote_prefers_live_store_during_spot_ingest(monkeypatch):
+    """Cash pre-open (09:00–09:15): in-memory LTP wins over sealed overnight snap."""
+    import app.spot_ticker as st
+    import time
+
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    monkeypatch.setattr(config, "is_spot_ingest_open", lambda *a, **k: True)
+    monkeypatch.setattr(st, "ensure", lambda *a, **k: None)
+    st._STORE["NIFTY"] = {
+        "ohlc": {
+            "ltp": 25213.5,
+            "open": 0.0,
+            "prev_close": 25255.05,
+            "as_of": "2026-11-13 09:05:00",
+        },
+        "fut": None,
+        "quote": {
+            "spot": 25213.5,
+            "prev_close": 25255.05,
+            "as_of": "2026-11-13 09:05:00",
+        },
+        "at": time.time(),
+        "ws_at": time.time(),
+        "source": "ws",
+    }
+    try:
+        q = st.get_instant_quote("NIFTY")
+        assert abs(float(q.get("spot") or 0) - 25213.5) < 0.1
     finally:
         st._STORE.pop("NIFTY", None)

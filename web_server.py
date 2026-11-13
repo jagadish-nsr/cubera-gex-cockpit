@@ -2115,9 +2115,11 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
 
     spot = _px(q.get("spot")) or _px(getattr(lv, "spot", None) if lv is not None else None) or 0.0
     fut = _px(q.get("fut_px")) or _px(getattr(lv, "future_price", None) if lv is not None else None)
+    spot_ingest = bool(config.is_spot_ingest_open())
     offmarket_book = None
     if not config.is_market_open():
-        # The close is the chain. A later quote must not move the header spot off that book.
+        # Walls/flip stay on the prior book. Header spot may move once cash
+        # pre-open spot ingest is armed (09:00) — do not pin to the sealed close.
         book = await _aload_active_dashboard(sym, win)
         offmarket_book = book
         book_lv = getattr(book, "levels", None) if book is not None else None
@@ -2125,10 +2127,21 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         if book_spot > 0 and getattr(book, "source", "") != "DEMO-SYNTHETIC":
             dash = book
             lv = book_lv
-            spot = book_spot
-            book_fut = _px(getattr(book_lv, "future_price", None))
-            if book_fut is not None:
-                fut = book_fut
+            if not spot_ingest:
+                spot = book_spot
+                book_fut = _px(getattr(book_lv, "future_price", None))
+                if book_fut is not None:
+                    fut = book_fut
+            else:
+                # Prefer in-memory quote; else ingest-persisted SQLite LTP.
+                if spot <= 0:
+                    try:
+                        from data.market_snapshot import get_snapshot
+                        snap_row = get_snapshot(sym) or {}
+                        spot = _px(snap_row.get("spot")) or book_spot
+                    except Exception:
+                        spot = book_spot
+                # Futures stay dark in the auction — do not invent from the book.
     elif spot <= 0:
         dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
         spot = float(dash.levels.spot or 0.0)
@@ -2155,7 +2168,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     is_pre_session = sess_phase in (
         "PRE_MARKET_SETUP", "PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY",
     )
-    feed_mode = "LIVE_WEBSOCKET" if is_live else "OFFLINE_AUTOSWITCH"
+    feed_mode = "LIVE_WEBSOCKET" if is_live else ("PREOPEN_SPOT" if spot_ingest else "OFFLINE_AUTOSWITCH")
     if is_muhurat_day and is_pre_session and not is_live:
         session_title = "Muhurat pre-open · prior-session book"
         feed_badge = "🪔 Muhurat pre-open"
@@ -2164,6 +2177,15 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         feed_subtext = (
             "Laxmi Pujan holiday for expiry roll-back; Muhurat live window arms at the bell. "
             "Walls/flip are the prior session until continuous trade."
+        )
+    elif spot_ingest and not is_live:
+        session_title = "Pre-open · index spot ingest"
+        feed_badge = "🌅 Pre-open spot"
+        feed_source = "Spot WS / REST (09:00)"
+        pollers_status = "Spot ingest active · futures from 09:15"
+        feed_subtext = (
+            "Index spot/VIX may print in the cash auction. Walls/flip remain the prior session "
+            "until continuous trade. Futures stay dark until 09:15."
         )
     elif is_morning_briefing:
         session_title = "Morning briefing · prior-session book"
@@ -2274,6 +2296,7 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
         "session_schedule": sched,
         "next_phase_countdown": sched["exec_phase_countdown"],
         "is_market_open": is_live,
+        "is_spot_ingest_open": spot_ingest,
         "is_morning_briefing": is_morning_briefing,
         "feed_mode": feed_mode,
         "feed_title": session_title,

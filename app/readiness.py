@@ -278,6 +278,7 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
 
     if market_open is None:
         market_open = bool(config.is_market_open())
+    spot_ingest_open = bool(config.is_spot_ingest_open())
 
     symbols = ["NIFTY", "BANKNIFTY", "SENSEX"]
     chains = {s: _chain_probe(s) for s in symbols}
@@ -316,9 +317,12 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
         mode = _resolve_degrade_mode(
             market_open=False, reasons=[], token=token, feed=feed, chains=chains, nse=nse,
         )
+        if spot_ingest_open:
+            mode = "PRE_OPEN_SPOT"
         return {
             "ready": True,
             "market_open": False,
+            "spot_ingest_open": spot_ingest_open,
             "reasons": [],
             "degrade_mode": mode,
             "probes": probes,
@@ -351,6 +355,7 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     return {
         "ready": len(reasons) == 0,
         "market_open": True,
+        "spot_ingest_open": spot_ingest_open,
         "reasons": reasons,
         "degrade_mode": mode,
         "probes": probes,

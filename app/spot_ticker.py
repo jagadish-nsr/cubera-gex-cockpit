@@ -62,7 +62,8 @@ def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     if not ohlc or not ohlc.get("ltp"):
         try:
             import config
-            if config.is_market_open():
+            # Live window = continuous open OR cash pre-open spot ingest (09:00+).
+            if config.is_market_open() or config.is_spot_ingest_open():
                 from data.market_snapshot import get_snapshot
                 snap = get_snapshot(symbol)
             else:
@@ -111,8 +112,11 @@ def _compile_quote(symbol: str, ohlc: dict | None, fut: dict | None) -> dict:
     import config
     from datetime import datetime, timezone, timedelta
     market_open = config.is_market_open()
+    spot_ingest = config.is_spot_ingest_open()
     is_premarket = (high_px == 0.0 and low_px == 0.0) or (high_px == low_px and not market_open)
-    if is_premarket or not market_open:
+    if spot_ingest and not market_open:
+        range_str = f"Prev Close: ₹{prev_close:,.2f} · Pre-open spot (continuous 09:15)"
+    elif is_premarket or not market_open:
         now_dt = datetime.now(timezone(timedelta(hours=5, minutes=30)))
         if now_dt.hour < 9 or (now_dt.hour == 9 and now_dt.minute < 15):
             range_str = f"Prev Close: ₹{prev_close:,.2f} · Pre-Market (Opens 09:15)"
@@ -158,19 +162,31 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
     now = time.time()
     import config
     market_open = config.is_market_open()
+    spot_ingest = config.is_spot_ingest_open()
+    live_window = market_open or spot_ingest
     snap = None
-    if not market_open:
+    if not live_window:
         from data.market_snapshot import resolve_offmarket_snapshot
         snap = resolve_offmarket_snapshot(symbol)
+    elif not rec or not (rec.get("ohlc") or {}).get("ltp"):
+        # EXTERNAL serve: ingest may have persisted pre-open LTP into SQLite.
+        try:
+            from data.market_snapshot import get_snapshot
+            snap = get_snapshot(symbol)
+        except Exception:
+            snap = None
 
     stored = (rec or {}).get("quote")
-    if stored and (market_open or snap is None or stored.get("as_of") == snap.get("as_of")):
-        return stored
+    if stored and (live_window or snap is None or stored.get("as_of") == snap.get("as_of")):
+        if live_window and rec and (rec.get("ohlc") or {}).get("ltp"):
+            return stored
+        if not live_window:
+            return stored
 
-    ohlc = None if (not market_open and snap) else (rec.get("ohlc") if rec else None)
+    ohlc = (rec.get("ohlc") if rec else None) if live_window else (None if snap else (rec.get("ohlc") if rec else None))
     if ohlc is None:
-        if not market_open:
-            if snap:
+        if live_window:
+            if snap and snap.get("spot"):
                 ohlc = {
                     "ltp": snap.get("spot"),
                     "close": snap.get("spot"),
@@ -181,12 +197,23 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
                     "vix": {"last": snap.get("vix")} if snap.get("vix") is not None else {},
                     "as_of": snap.get("as_of"),
                 }
-        else:
-            try:
-                from data.dhan_live import fetch_index_ohlc
-                ohlc = fetch_index_ohlc(symbol)
-            except Exception:
-                pass
+            elif market_open or spot_ingest:
+                try:
+                    from data.dhan_live import fetch_index_ohlc
+                    ohlc = fetch_index_ohlc(symbol, skip_cache=spot_ingest and not market_open)
+                except Exception:
+                    pass
+        elif snap:
+            ohlc = {
+                "ltp": snap.get("spot"),
+                "close": snap.get("spot"),
+                "prev_close": snap.get("prev_close"),
+                "open": snap.get("open"),
+                "high": snap.get("high"),
+                "low": snap.get("low"),
+                "vix": {"last": snap.get("vix")} if snap.get("vix") is not None else {},
+                "as_of": snap.get("as_of"),
+            }
     fut = rec.get("fut") if rec else None
     quote = _compile_quote(symbol, ohlc, fut)
     if rec:
@@ -194,12 +221,18 @@ def get_instant_quote(symbol: str = "NIFTY") -> dict:
         if ohlc:
             rec["ohlc"] = ohlc
             if not _ws_is_live_for(symbol):
-                rec["source"] = "rest" if market_open else (rec.get("source") or "snapshot")
+                if market_open:
+                    rec["source"] = "rest"
+                elif spot_ingest:
+                    rec["source"] = rec.get("source") or "rest"
+                else:
+                    rec["source"] = rec.get("source") or "snapshot"
     else:
+        src = "rest" if market_open else ("rest" if spot_ingest and ohlc else "snapshot")
         _STORE[symbol] = {
             "ohlc": ohlc, "fut": fut, "quote": quote, "at": now,
             "ws_at": None,
-            "source": "rest" if market_open else "snapshot",
+            "source": src,
             "err": None,
         }
     return quote
@@ -310,9 +343,13 @@ def push_ws_tick(symbol: str, ohlc: dict | None = None, fut: dict | None = None)
         rec["source"] = "ws"
         rec["quote"] = _compile_quote(symbol, rec.get("ohlc"), rec.get("fut"))
 
-        # Throttle SQLite snapshot persistence: at most once per 15s in background
+        # Throttle SQLite snapshot persistence: at most once per 15s in background.
+        # Persist in the spot-ingest window too so EXTERNAL serve can read pre-open LTP.
         import config
-        if config.is_market_open() and now - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S:
+        if (
+            (config.is_market_open() or config.is_spot_ingest_open())
+            and now - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S
+        ):
             _LAST_SNAPSHOT_SAVE[symbol] = now
             q = rec["quote"]
             threading.Thread(target=_bg_save_snapshot, args=(symbol, q), daemon=True, name=f"snap-{symbol}").start()
@@ -420,15 +457,23 @@ def _loop(symbol: str, interval_s: float) -> None:
                 if time.time() - ws_at >= 10.0:  # WS went quiet — take REST values immediately
                     keep_fut = fd if continuous else (rec or {}).get("fut")
                     q = _compile_quote(symbol, d, keep_fut)
+                    now_rest = time.time()
                     _STORE[symbol] = {
                         "ohlc": d,
                         "fut": keep_fut,
                         "quote": q,
-                        "at": time.time(),
+                        "at": now_rest,
                         "ws_at": ws_at if ws_at else None,
                         "source": "rest",
                         "err": None,
                     }
+                    # Share pre-open / session LTP with EXTERNAL serve via SQLite.
+                    if now_rest - _LAST_SNAPSHOT_SAVE.get(symbol, 0.0) >= _SNAPSHOT_SAVE_INTERVAL_S:
+                        _LAST_SNAPSHOT_SAVE[symbol] = now_rest
+                        threading.Thread(
+                            target=_bg_save_snapshot, args=(symbol, q),
+                            daemon=True, name=f"snap-{symbol}",
+                        ).start()
                 ok = True
         except Exception as e:  # noqa: BLE001 - a price lane must never die on one bad poll
             rec = _STORE.get(symbol)

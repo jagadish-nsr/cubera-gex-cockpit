@@ -100,13 +100,16 @@ def save_snapshot(
 
     # Off-hours must not restamp the registry as a future calendar day. A 06:30
     # sync that writes as_of=today makes matches_last_session fail against
-    # yesterday's sealed close.
+    # yesterday's sealed close. Cash pre-open spot ingest (09:00–09:15) is
+    # allowed to write today's LTP so EXTERNAL serve can read live prints.
     try:
         import config
         market_open = config.is_market_open()
+        spot_ingest = bool(config.is_spot_ingest_open())
     except Exception:
         market_open = True
-    if not market_open and as_of:
+        spot_ingest = False
+    if not market_open and not spot_ingest and as_of:
         incoming_day = snapshot_session_date({"as_of": as_of})
         expected_day = last_completed_session_date()
         if incoming_day is not None and incoming_day > expected_day:
