@@ -214,3 +214,48 @@ def test_gap_alert_flags_partial_futures_as_session_gap(tmp_path, monkeypatch):
     )
     gap = next(row for row in db.list_alerts() if row["fingerprint"] == "GAP|2026-10-23")
     assert "NIFTY futures PARTIAL" in gap["description"]
+
+
+def test_reclassify_legacy_backfill_only_gap_to_repair(tmp_path, monkeypatch):
+    from app.admin import health_daemon
+
+    # Seed a pre-fix GAP that only lists missing parquet (complete Sentinel day).
+    db.upsert_alert(
+        alert_id="alert_legacy_gap",
+        fingerprint="GAP|2026-11-12",
+        severity="WARNING",
+        category="GAP",
+        title="Session 2026-11-12 has incomplete journals",
+        description=(
+            "NIFTY futures MISSING; NIFTY options MISSING; "
+            "BANKNIFTY futures MISSING; BANKNIFTY options MISSING; "
+            "SENSEX options MISSING"
+        ),
+        session_date="2026-11-12",
+        now_iso="2026-11-12T15:45:00+05:30",
+    )
+
+    def fake_audit(root, symbol, start, end, now=None):
+        return {"days": [{
+            "futures_status": "COMPLETE",
+            "options_matrix_status": "COMPLETE",
+            "sentinel_status": "COMPLETE",
+        }]}
+
+    monkeypatch.setattr(health_daemon, "audit_range", fake_audit)
+    health_daemon._gap_checked.clear()
+    now = datetime(2026, 11, 13, 16, 0, tzinfo=IST)
+    evaluate_alerts(
+        root=tmp_path,
+        now=now,
+        token_fn=lambda: _token(10.0),
+        feed_fn=lambda: _feed(age=1.0),
+        include_slo=False,
+    )
+    assert not any(
+        row["fingerprint"] == "GAP|2026-11-12" and not row.get("resolved_at")
+        for row in db.list_alerts()
+    )
+    repair = next(row for row in db.list_alerts() if row["fingerprint"] == "REPAIR|2026-11-12")
+    assert repair["severity"] == "INFO"
+    assert "NIFTY futures MISSING" in repair["description"]

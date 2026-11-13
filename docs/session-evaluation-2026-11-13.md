@@ -152,7 +152,7 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 
 | Check | Result |
 |---|---|
-| Ideas after first 1m bar (no VWAP refuse) | **Partial** — online from 10:14, not 09:16 |
+| Ideas after first 1m bar (no VWAP refuse) | **Held on ingest 09:15** — serve latch fixed v5.3.136 |
 | GO FIRE → `go_open` under live premium | **Proven** — 10 staged; trails paid |
 | BN shared-gamma soft flag / Nifty OF quiet | BN not equal today; Nifty still scarce prints |
 | No fabricated GO T1/T2/SL on sentinel-led | **Held** — empty targets |
@@ -164,8 +164,10 @@ Soft-flag path for equal walls remains correct; BN did not need it today.
 2. ~~No GO STAGE / `go_open` after cash close~~ — gated (session_closed / 400).
 3. CONT_BULL still weak — size off or require ABS/CVD confirmation; keep gates.
 4. ~~Readiness SLO false red~~ — **v5.3.133**; confirm ages under EXTERNAL after ~09:16.
-5. If Sensex walls equal: confirm `shared_gamma_strike` soft flag + VANNA skip.
-6. ~~Incomplete-journals GAP vs complete Sentinel~~ — **v5.3.135** REPAIR INFO path.
+5. ~~Sensex equal walls~~ — `shared_gamma_strike` + VANNA corridor skip covered for
+   step=100 (same as BN); regression `test_shared_gamma_strike_soft_flag_sensex_equal_walls`.
+6. ~~Incomplete-journals GAP vs complete Sentinel~~ — **v5.3.135** REPAIR INFO;
+   legacy backfill-only GAP rows reclassified on alert refresh (**v5.3.137+**).
 
 ### Operator checklist (first 30 min)
 

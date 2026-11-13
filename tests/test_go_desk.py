@@ -179,6 +179,41 @@ def test_shared_gamma_strike_soft_flag_bn_equal_walls():
     assert dist_ev.pass_ is False
 
 
+def test_shared_gamma_strike_soft_flag_sensex_equal_walls():
+    """Sensex afternoon pin (e.g. 81500/81500) uses step=100 — same soft flag as BN."""
+    d = build_directional_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=81590, cw=81500, pw=81500, flip=81550, magnet=81500),
+        trade_ideas=[],
+        sentinel_score=72,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        oi_ts="t",
+        chain_ltp=90.0,
+    )
+    assert "shared_gamma_strike" in d.soft_flags
+    w = build_writer_decision(
+        symbol="SENSEX",
+        lot_size=20,
+        strike_step=100,
+        levels=_levels(spot=81590, cw=81500, pw=81500, flip=81550, magnet=81500),
+        vol_regime="calm",
+        iv=16,
+        rv=11,
+        catalyst_clear=True,
+        oi_ts="t",
+        short_call=81700,
+        short_put=81300,
+        margin_est_inr=120000,
+    )
+    assert "shared_gamma_strike" in w.soft_flags
+    dist_ev = next(e for e in w.evidence if e.factor == "distance_beyond_walls")
+    assert dist_ev.pass_ is False
+
+
 def test_directional_hold_on_stale_oi():
     d = build_directional_decision(
         symbol="NIFTY",

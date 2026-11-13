@@ -98,6 +98,7 @@ def evaluate_alerts(
     _wal_truncate_post_close(root, now, stamp)
     if include_gaps:
         _gap_alert(root, now, stamp)
+        _reclassify_backfill_only_gap_alerts(stamp)
     _process_alert(now, stamp)
     _obs_perf_alerts(now, stamp)
     if include_slo:
@@ -275,6 +276,57 @@ def _wal_alert(root: Path, stamp: str) -> None:
         )
     else:
         db.resolve_alert(fp, stamp)
+
+
+def _is_backfill_only_gap_description(description: str) -> bool:
+    """True when every clause is futures/options MISSING (no sentinel / PARTIAL)."""
+    parts = [p.strip() for p in (description or "").split(";") if p.strip()]
+    if not parts:
+        return False
+    for part in parts:
+        low = part.lower()
+        if "sentinel" in low:
+            return False
+        if "partial" in low:
+            return False
+        if not (low.endswith("futures missing") or low.endswith("options missing")):
+            return False
+    return True
+
+
+def _reclassify_backfill_only_gap_alerts(stamp: str) -> None:
+    """Convert legacy GAP WARNINGs that were only missing Dhan parquet into REPAIR INFO.
+
+    Pre-v5.3.135 every session without backfill fired GAP. Those rows stay open
+    until reclassified; do not invent new session holes.
+    """
+    try:
+        rows = db.list_alerts(unread_only=False)
+    except Exception:
+        log.exception("reclassify gap alerts: list failed")
+        return
+    for row in rows or []:
+        fp = str(row.get("fingerprint") or "")
+        if not fp.startswith("GAP|"):
+            continue
+        if row.get("resolved_at"):
+            continue
+        desc = str(row.get("description") or "")
+        if not _is_backfill_only_gap_description(desc):
+            continue
+        session_date = str(row.get("session_date") or fp.split("|", 1)[-1])
+        repair_fp = f"REPAIR|{session_date}"
+        db.resolve_alert(fp, stamp)
+        db.upsert_alert(
+            alert_id=_alert_id(),
+            fingerprint=repair_fp,
+            severity="INFO",
+            category="REPAIR",
+            title=f"Session {session_date} Dhan backfill not on disk",
+            description=desc,
+            session_date=session_date,
+            now_iso=stamp,
+        )
 
 
 def _gap_alert(root: Path, now: datetime, stamp: str) -> None:
