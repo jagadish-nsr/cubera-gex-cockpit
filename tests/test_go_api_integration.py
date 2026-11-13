@@ -247,7 +247,7 @@ def test_sentinel_led_fire_auto_stages_without_invented_te_breadth(monkeypatch):
 
 
 def test_continuation_unconfirmed_skips_auto_stage(monkeypatch):
-    """CONT without ABS/CVD confirm: FIRE + HALF, no paper STAGE."""
+    """CONT without ABS/CVD confirm: SCOUT — no paper STAGE."""
     d = build_directional_decision(
         symbol="NIFTY",
         lot_size=65,
@@ -284,8 +284,8 @@ def test_continuation_unconfirmed_skips_auto_stage(monkeypatch):
         chain_ok=True,
         confirming_types=["CONTINUATION_BULL"],
     )
-    assert d.state == "FIRE"
-    assert d.size_tier == "HALF"
+    assert d.state == "SCOUT"
+    assert d.size_tier == "SCOUT"
     assert "continuation_unconfirmed" in d.soft_flags
     _stub_compose(monkeypatch, d)
     status, _, body = asyncio.run(
@@ -293,8 +293,9 @@ def test_continuation_unconfirmed_skips_auto_stage(monkeypatch):
     )
     assert status == 200
     data = json.loads(body)
-    assert data.get("auto_stage", {}).get("status") == "skipped"
-    assert data.get("auto_stage", {}).get("detail") == "continuation_unconfirmed"
+    # SCOUT never auto-stages (state gate); soft-flag path is belt-and-suspenders.
+    # SCOUT → auto-stage returns None (state gate).
+    assert data.get("auto_stage") is None
     assert go_eff.list_open("NIFTY") == []
 
 

@@ -122,6 +122,16 @@ def _signal_passes_quality(signal: SentinelSignal) -> bool:
     score = int(getattr(signal, "score", 0) or 0)
     if score < MIN_SIGNAL_SCORE:
         return False
+    # 13-Nov: MICRO_BURST CONT @ wall sprayed SPOT_INVAL (20% WR). Tape-only.
+    speed = str(getattr(signal, "trigger_speed", "") or "").upper()
+    if speed == "MICRO_BURST":
+        return False
+    tags = getattr(signal, "context_tags", None) or []
+    if isinstance(tags, str):
+        tags = []
+    tag_set = {str(t).upper() for t in tags}
+    if "MICRO_BURST" in tag_set or "INSTANT_TAPE" in tag_set:
+        return False
     sig_type = str(getattr(signal, "type", "") or "").upper()
     if sig_type in _BLOCKED_SIGNAL_TYPES:
         return False

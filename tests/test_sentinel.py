@@ -266,7 +266,7 @@ def test_aggregator_marks_oi_stale_after_five_flat_bars():
 
 
 def test_micro_continuation_needs_a_gamma_strike():
-    """Floor-68 micro CONTINUATION floods without a wall gate (2026-11-05)."""
+    """Wall-touch micro CONT is tape-only SCOUT — never FIRE/paper (13-Nov)."""
     engine = SignalClassifierEngine()
     context = MarketContext()
     context.call_wall = 24600.0
@@ -286,8 +286,60 @@ def test_micro_continuation_needs_a_gamma_strike():
     sig = engine.evaluate_micro_burst(burst_at_wall, context)
     assert sig is not None
     assert sig.type == "CONTINUATION_BULL"
-    assert sig.score >= 70
     assert sig.trigger_speed == "MICRO_BURST"
+    # Below MIN_SIGNAL_SCORE (70) and FIRE_MIN (75) — SCOUT tape annotation only.
+    assert sig.score == 65
+    assert sig.score < 70
+    assert sig.confidence == "MEDIUM"
+
+
+def test_micro_burst_never_passes_recommendation_quality():
+    """Even a legacy micro @75 must not mint Sentinel paper (hard trigger gate)."""
+    from analytics.sentinel_recommendations import _signal_passes_quality
+    from sentinel.models import SentinelSignal
+
+    sig = SentinelSignal(
+        event_id="micro_test",
+        instrument_id="NIFTY-FUT",
+        timeframe="15s",
+        bar_start_ts=datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc),
+        type="CONTINUATION_BULL",
+        category="BULLISH",
+        bias="LONG",
+        score=75,
+        confidence="HIGH",
+        rvol_tod=2.0,
+        delta=100.0,
+        delta_ratio=0.5,
+        oi_change=0,
+        context_tags=["MICRO_BURST", "INSTANT_TAPE"],
+        insight_text="test",
+        invalidation_level=25100.0,
+        entry_price=25150.0,
+        trigger_speed="MICRO_BURST",
+    )
+    assert _signal_passes_quality(sig) is False
+    sig2 = SentinelSignal(
+        event_id="bar_test",
+        instrument_id="NIFTY-FUT",
+        timeframe="1m",
+        bar_start_ts=datetime(2026, 11, 13, 10, 0, tzinfo=timezone.utc),
+        type="CONTINUATION_BULL",
+        category="BULLISH",
+        bias="LONG",
+        score=80,
+        confidence="HIGH",
+        rvol_tod=2.0,
+        delta=100.0,
+        delta_ratio=0.5,
+        oi_change=0,
+        context_tags=["ABOVE_VWAP"],
+        insight_text="test",
+        invalidation_level=25100.0,
+        entry_price=25150.0,
+        trigger_speed="CONFIRMED_BAR",
+    )
+    assert _signal_passes_quality(sig2) is True
 
 
 def test_classifier_exhaustion_up_and_down_categories():

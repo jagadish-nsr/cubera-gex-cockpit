@@ -4196,11 +4196,20 @@ def _go_sentinel_context(sym: str) -> dict:
             "range_ok": None,
             "tape_ok": True,
             "recent_types": [],
+            "trigger_speed": None,
         }
-    best = max(sigs, key=lambda s: float(getattr(s, "score", 0) or 0))
+    # Prefer confirmed 1m bars over MICRO_BURST when scores tie — micro is SCOUT-only.
+    def _sig_rank(s) -> tuple:
+        sc = float(getattr(s, "score", 0) or 0)
+        speed = str(getattr(s, "trigger_speed", "") or "").upper()
+        confirmed = 1 if speed != "MICRO_BURST" else 0
+        return (sc, confirmed)
+
+    best = max(sigs, key=_sig_rank)
     score = float(getattr(best, "score", 0) or 0)
     typ = str(getattr(best, "type", "") or "")
     cat = str(getattr(best, "category", "") or "")
+    trigger_speed = str(getattr(best, "trigger_speed", "") or "") or None
     recent_types = [
         str(getattr(s, "type", "") or "")
         for s in sigs
@@ -4241,6 +4250,7 @@ def _go_sentinel_context(sym: str) -> dict:
         "tape_ok": not break_ok,  # writer: continuation through levels is bad
         "break_ok": bool(break_ok),
         "recent_types": recent_types,
+        "trigger_speed": trigger_speed,
     }
 
 
@@ -4612,6 +4622,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             unusual_strike=unusual,
             chain_ltp=chain_ltp,
             confirming_types=list(tape.get("recent_types") or []),
+            trigger_speed=tape.get("trigger_speed"),
         )
     return decision
 

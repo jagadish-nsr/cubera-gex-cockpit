@@ -411,31 +411,32 @@ class SignalClassifierEngine:
         base_score = 65
 
         # Micro sweeps are not bar continuations. On 2026-11-05 Nifty journaled
-        # 133 CONTINUATION_BULL at score 68 from this path. Only keep a micro
-        # print when it sits on a named gamma strike, and score it into the
-        # tape band (≥ 70) so the floor-68 flood cannot return.
+        # 133 CONTINUATION_BULL at score 68 from this path; raising to 75 then
+        # paper-sprayed SPOT_INVAL on 13-Nov (micro CONT 20% WR vs confirmed 71%).
+        # Keep a wall-touch tape print, but SCOUT-only: score 65 (< MIN_SIGNAL_SCORE
+        # 70 and < FIRE_MIN 75) — never mint paper / FIRE from unconfirmed micro.
         if delta_ratio >= 0.40 and near_call_wall:
             sig_type = "CONTINUATION_BULL"
             category = "BULLISH"
             bias = "LONG"
-            base_score = 75
+            base_score = 65
             invalidation = cur_px - min_buf
             insight = (
                 f"⚡ Buyer sweep (+{burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}). "
                 f"Print is at the call-gamma strike ({context.call_wall:,.0f}). "
-                "That is a location, not a ceiling."
+                "SCOUT only — wait for a confirmed 1m bar; not a FIRE continuation."
             )
 
         elif delta_ratio <= -0.40 and near_put_wall:
             sig_type = "CONTINUATION_BEAR"
             category = "BEARISH"
             bias = "SHORT"
-            base_score = 75
+            base_score = 65
             invalidation = cur_px + min_buf
             insight = (
                 f"⚡ Seller sweep ({burst['volume_15s']} units in 15s, Δ {burst['delta_15s']:+,.0f}). "
                 f"Print is at the put-gamma strike ({context.put_wall:,.0f}). "
-                "That is a location, not a floor."
+                "SCOUT only — wait for a confirmed 1m bar; not a FIRE continuation."
             )
 
         if not sig_type:
@@ -462,7 +463,7 @@ class SignalClassifierEngine:
             category=category,
             bias=bias,
             score=base_score,
-            confidence="HIGH" if base_score >= 70 else "MEDIUM",
+            confidence="MEDIUM",
             rvol_tod=2.0,
             delta=burst["delta_15s"],
             delta_ratio=delta_ratio,
@@ -476,7 +477,7 @@ class SignalClassifierEngine:
             risk_reward_ratio=1.5,
             actionable_play=play,
             trigger_speed="MICRO_BURST",
-            rule_set_version="v2.1",
+            rule_set_version="v2.2",
             status="NEW",
             gex_alignment="CONFIRMED_AT_WALL",
         )

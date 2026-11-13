@@ -106,13 +106,18 @@ def test_directional_fire_with_idea():
     assert d.context.get("continuation_confirmed") is True
 
 
-def test_continuation_unconfirmed_sizes_half_keeps_fire():
-    """Session 13-Nov: CONT alone weak — size off; do not raise print gates."""
+def test_continuation_unconfirmed_stays_scout():
+    """Session 13-Nov: CONT alone → SCOUT until same-side ABS/CVD."""
     assert is_continuation_key("CONTINUATION_BULL")
     assert not continuation_confirmed("CONTINUATION_BULL", confirming_types=["CONTINUATION_BULL"])
     assert continuation_confirmed(
         "CONTINUATION_BEAR",
         confirming_types=["CVD_DIVERGENCE_BEAR"],
+    )
+    assert not continuation_confirmed(
+        "CONTINUATION_BULL",
+        confirming_types=["ABSORPTION_BULL"],
+        trigger_speed="MICRO_BURST",
     )
     d = build_directional_decision(
         symbol="NIFTY",
@@ -130,10 +135,35 @@ def test_continuation_unconfirmed_sizes_half_keeps_fire():
         chain_ok=True,
         confirming_types=["CONTINUATION_BULL", "EXHAUSTION_DOWN"],
     )
-    assert d.state == "FIRE"
-    assert d.size_tier == "HALF"
+    assert d.state == "SCOUT"
+    assert d.size_tier == "SCOUT"
     assert "continuation_unconfirmed" in d.soft_flags
     assert d.context.get("continuation_confirmed") is False
+
+
+def test_micro_burst_continuation_stays_scout_even_with_abs():
+    """MICRO_BURST never unlocks FIRE even if ABS is in the recent pool."""
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(),
+        trade_ideas=[],
+        sentinel_score=75,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=None,
+        oi_ts="2026-11-13T10:13:00+05:30",
+        chain_ok=True,
+        chain_ltp=162.7,
+        confirming_types=["ABSORPTION_BULL"],
+        trigger_speed="MICRO_BURST",
+    )
+    assert d.state == "SCOUT"
+    assert d.size_tier == "SCOUT"
+    assert "continuation_unconfirmed" in d.soft_flags
 
 
 def test_directional_soft_corridor_half_size():

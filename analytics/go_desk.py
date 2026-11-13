@@ -322,14 +322,19 @@ def continuation_confirmed(
     *,
     confirming_types: list[str] | None = None,
     sentinel_type: str | None = None,
+    trigger_speed: str | None = None,
 ) -> bool:
-    """Same-side ABSORPTION / CVD_DIVERGENCE in recent tape unlocks FULL CONT size.
+    """Same-side ABSORPTION / CVD_DIVERGENCE unlocks CONT FIRE.
 
-    Print gates stay unchanged — this only sizes / soft-flags weak continuation.
+    MICRO_BURST / INSTANT_TAPE never counts as confirmed — 13-Nov wall sweeps
+    were 20% WR vs confirmed-bar CONT 71%.
     """
     sk = str(strategy_key or "").upper()
     if "CONTINUATION" not in sk:
         return True
+    speed = str(trigger_speed or "").upper()
+    if speed == "MICRO_BURST":
+        return False
     want_bull = "BULL" in sk
     want_bear = "BEAR" in sk
     pool: list[str] = []
@@ -371,11 +376,13 @@ def build_directional_decision(
     unusual_strike: dict | None = None,
     chain_ltp: float | None = None,
     confirming_types: list[str] | None = None,
+    trigger_speed: str | None = None,
 ) -> GoDecision:
     """Build directional GO from idea/sentinel confluence inputs.
 
     ``chain_ltp`` fills the ATM (or idea) premium when the latch has no LTP —
     required for sentinel-led FIRE (risk + auto-stage).
+    ``trigger_speed`` (e.g. MICRO_BURST) demotes unconfirmed CONT below FIRE.
     """
     weights = dict(DIRECTIONAL_WEIGHTS)
     evidence: list[EvidenceItem] = []
@@ -653,16 +660,16 @@ def build_directional_decision(
     size: SizeTier = "FULL"
     if "inside_corridor" in soft or "lunch_chop" in soft:
         size = "HALF"
-    # CONT alone stays FIRE/SCOUT on existing gates — size off until ABS/CVD same-side.
+    # CONT without ABS/CVD (or MICRO_BURST) stays SCOUT — 13-Nov chop proof.
     cont_ok = continuation_confirmed(
         strategy_key,
         confirming_types=confirming_types,
         sentinel_type=sentinel_type,
+        trigger_speed=trigger_speed,
     )
     if is_continuation_key(strategy_key) and not cont_ok:
         soft.append("continuation_unconfirmed")
-        if size == "FULL":
-            size = "HALF"
+        size = "SCOUT"
     if score < FIRE_MIN:
         size = "SCOUT"
 
@@ -680,9 +687,13 @@ def build_directional_decision(
         "blast_tag": blast_tag,
         "dealer_sign_model": "short_call_short_put",
         "continuation_confirmed": cont_ok if is_continuation_key(strategy_key) else None,
+        "trigger_speed": str(trigger_speed or "") or None,
     }
     # Only run FIRE completeness gate when score would otherwise FIRE
     gate_state: GoState = "FIRE" if provisional == "FIRE" else provisional
+    # Unconfirmed CONT must not enter the FIRE completeness path.
+    if is_continuation_key(strategy_key) and not cont_ok and gate_state == "FIRE":
+        gate_state = "SCOUT"
     hard = decisive_gate(
         state=gate_state,
         contracts=contracts,
@@ -693,6 +704,14 @@ def build_directional_decision(
         strategy_key=strategy_key,
     )
     state = state_from_score(score, hard)
+    if is_continuation_key(strategy_key) and not cont_ok and state == "FIRE":
+        state = "SCOUT"
+        size = "SCOUT"
+        thesis = (
+            f"SCOUT — continuation unconfirmed"
+            f"{' (micro burst)' if str(trigger_speed or '').upper() == 'MICRO_BURST' else ''}"
+            f". Need same-side ABS/CVD. "
+        ) + thesis
     if state == "HOLD":
         size = "SCOUT"
         thesis = thesis if hard else "Score below SCOUT — stand aside."
