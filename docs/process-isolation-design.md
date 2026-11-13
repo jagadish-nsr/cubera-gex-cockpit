@@ -64,9 +64,9 @@ tape continuity.
 
 | Phase | Ship | Done when |
 |-------|------|-----------|
-| A (now) | WAL PASSIVE checkpoint + holiday fail-loud + deep `/api/health` | This reliability pass |
-| B | Extract ingest entrypoint `scripts/run_ingest.py` that starts the same lanes without binding :8640; serve starts without `_start_ingest_lanes` when `COCKPIT_INGEST_EXTERNAL=1` | Both processes healthy on one host |
-| C | Shared readiness: serve `/api/health?ready=1` fails if ingest heartbeat stale > 90s | Operator checklist automated |
+| A | WAL PASSIVE checkpoint + holiday fail-loud + deep `/api/health` | Done (v5.3.117) |
+| B | Extract ingest entrypoint `scripts/run_ingest.py`; serve skips broker lanes when `COCKPIT_INGEST_EXTERNAL=1`; dual `run_prod.sh` | Done |
+| C | Shared readiness: serve fails ready if ingest heartbeat stale > 90s (session) | Done (probes.ingest) |
 | D | Optional: move Sentinel tick writer fully into ingest; serve opens DB read-only | Mid-session SQLite stalls leave HTTP responsive |
 
 ## Explicit non-goals

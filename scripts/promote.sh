@@ -50,6 +50,14 @@ fi
 echo "  • Executing Web Server Endpoint Integration Tests..."
 python3 -m pytest -q --timeout=120 "${DEV_DIR}/tests/test_web_server_endpoints.py"
 
+echo "  • Executing Reliability Gates (readiness / hard_gates / checklist / WAL)..."
+python3 -m pytest -q --timeout=60 \
+  "${DEV_DIR}/tests/test_readiness.py" \
+  "${DEV_DIR}/tests/test_hard_gates.py" \
+  "${DEV_DIR}/tests/test_session_checklist.py" \
+  "${DEV_DIR}/tests/test_wal_checkpoint.py" \
+  "${DEV_DIR}/tests/test_ingest_heartbeat.py"
+
 echo "  • Executing Quant & Market Parity Tests..."
 python3 -m pytest -q "${DEV_DIR}/tests/test_cockpit_market_hours.py" \
                      "${DEV_DIR}/tests/test_universal_ist_timestamps.py" \
@@ -176,35 +184,65 @@ else
     echo "    (Live market data in prod is protected. Use './scripts/promote.sh --sync-db' only if deliberate overwrite is needed.)"
 fi
 
-# Reload production server on port 8640
-echo "  • Gracefully reloading Production Server on port ${PROD_PORT}..."
+# Reload production dual processes (ingest + serve) on port 8640
+echo "  • Gracefully reloading Production (ingest + serve) on port ${PROD_PORT}..."
 OLD_PID=$(lsof -nP -iTCP:${PROD_PORT} -sTCP:LISTEN -t || true)
 if [[ -n "${OLD_PID}" ]]; then
-    echo "    Found running prod server (PID: ${OLD_PID}). Terminating cleanly..."
+    echo "    Found running prod serve (PID: ${OLD_PID}). Terminating cleanly..."
     kill -15 ${OLD_PID} || true
-    sleep 2
 fi
+if [[ -f "${PROD_DIR}/logs/ingest.pid" ]]; then
+    OLD_INGEST=$(cat "${PROD_DIR}/logs/ingest.pid" 2>/dev/null || true)
+    if [[ -n "${OLD_INGEST}" ]] && kill -0 "${OLD_INGEST}" 2>/dev/null; then
+        echo "    Found running ingest (PID: ${OLD_INGEST}). Terminating cleanly..."
+        kill -15 "${OLD_INGEST}" || true
+    fi
+fi
+# Also stop a supervised run_prod.sh parent if present
+if [[ -f "${PROD_DIR}/logs/prod_supervisor.pid" ]]; then
+    OLD_SUP=$(cat "${PROD_DIR}/logs/prod_supervisor.pid" 2>/dev/null || true)
+    if [[ -n "${OLD_SUP}" ]] && kill -0 "${OLD_SUP}" 2>/dev/null; then
+        kill -15 "${OLD_SUP}" || true
+    fi
+fi
+sleep 2
 
-# A new session so this process outlives the promotion shell.
-echo "    Starting production server ${NEW_TAG}..."
-NEW_PID=$(PROD_DIR="${PROD_DIR}" PROD_PORT="${PROD_PORT}" python3 - <<'PY'
+echo "    Starting dual production stack ${NEW_TAG} (ingest + EXTERNAL serve)..."
+NEW_PIDS=$(PROD_DIR="${PROD_DIR}" PROD_PORT="${PROD_PORT}" python3 - <<'PY'
 import os
 import subprocess
 from pathlib import Path
 prod = Path(os.environ["PROD_DIR"])
-log = open(prod / "logs" / "prod.log", "a")
-proc = subprocess.Popen(
-    ["python3", "web_server.py", "--port", os.environ["PROD_PORT"]],
+(prod / "logs").mkdir(parents=True, exist_ok=True)
+ingest_log = open(prod / "logs" / "ingest.log", "a")
+serve_log = open(prod / "logs" / "prod.log", "a")
+ingest = subprocess.Popen(
+    ["python3", "scripts/run_ingest.py"],
     cwd=prod,
-    stdout=log,
+    stdout=ingest_log,
     stderr=subprocess.STDOUT,
     start_new_session=True,
 )
-print(proc.pid)
+env = os.environ.copy()
+env["COCKPIT_INGEST_EXTERNAL"] = "1"
+env["COCKPIT_ROLE"] = "serve"
+serve = subprocess.Popen(
+    ["python3", "web_server.py", "--port", os.environ["PROD_PORT"]],
+    cwd=prod,
+    stdout=serve_log,
+    stderr=subprocess.STDOUT,
+    env=env,
+    start_new_session=True,
+)
+(prod / "logs" / "ingest.pid").write_text(str(ingest.pid))
+(prod / "logs" / "prod_server.pid").write_text(str(serve.pid))
+print(f"{ingest.pid},{serve.pid}")
 PY
 )
-echo "${NEW_PID}" > "${PROD_DIR}/logs/prod_server.pid"
-echo "    Production server started (PID: ${NEW_PID})."
+INGEST_NEW="${NEW_PIDS%%,*}"
+SERVE_NEW="${NEW_PIDS##*,}"
+NEW_PID="${SERVE_NEW}"
+echo "    Ingest PID ${INGEST_NEW} · Serve PID ${SERVE_NEW}"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -224,6 +262,25 @@ done
 
 if [[ "${HEALTH_PASSED}" == "true" ]]; then
     cat /tmp/health_resp.json | python3 -m json.tool || cat /tmp/health_resp.json
+    # Schema assert: version matches tag + readiness block present (high-reliability H2)
+    python3 - <<PY
+import json, sys
+tag = "${NEW_TAG}".lstrip("v")
+data = json.load(open("/tmp/health_resp.json"))
+ver = str(data.get("version") or "")
+if ver != tag and not ver.startswith(tag):
+    # Accept exact tag without v, or full semver equal
+    if ver.replace("v", "") != tag:
+        print(f"ERROR: health version {ver!r} != promoted {tag!r}", file=sys.stderr)
+        sys.exit(1)
+if "readiness" not in data or "probes" not in (data.get("readiness") or {}):
+    print("ERROR: /api/health missing readiness.probes schema", file=sys.stderr)
+    sys.exit(1)
+if "ingest" not in (data["readiness"]["probes"] or {}):
+    print("ERROR: readiness.probes.ingest missing", file=sys.stderr)
+    sys.exit(1)
+print(f"  • Smoke OK: version={ver} readiness.probes.ingest present")
+PY
     echo ""
     echo "======================================================================"
     echo "  🎉 SUCCESS! Version ${NEW_TAG} PROMOTED TO PRODUCTION"

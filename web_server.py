@@ -236,23 +236,12 @@ def _run_lane(name: str, fn) -> None:
     event("lane.started", workflow=name, message=name)
 
 
-@app.on_event("startup")
-async def _start_ingest_lanes():
-    """One chain ingest per index + spot WS. HTTP/WS handlers only read the stores."""
-    from app.obs import start_heartbeat
-    start_heartbeat()
-    event("process.started", workflow="process", message="web")
-    if os.environ.get("COCKPIT_WATCHDOG") == "1":
-        from app.event_loop_watchdog import start as start_watchdog
-        loop = asyncio.get_running_loop()
-        _run_lane("watchdog", lambda: start_watchdog(loop))
+def boot_broker_ingest_lanes(*, window: str | None = None) -> None:
+    """Start spot / chain / rec / blast / pre-post / dhan lanes + ingest heartbeat.
 
-    def _admin():
-        from app.admin.health_daemon import start_background
-        from app.admin.task_runner import mark_orphaned_tasks
-        mark_orphaned_tasks()
-        start_background()
-
+    Owned by the combined web process (default) or by ``scripts/run_ingest.py``.
+    Serve with ``COCKPIT_INGEST_EXTERNAL=1`` must NOT call this — HTTP only.
+    """
     def _spot():
         from app.spot_ticker import warmup_all
         warmup_all()
@@ -269,7 +258,7 @@ async def _start_ingest_lanes():
         start_scheduler()
 
     def _blast_lane():
-        """10s nearest-expiry ladder on 0-DTE — covering fuel for the blast card."""
+        """8s nearest-expiry ladder on 0-DTE — covering fuel for the blast card."""
         from datetime import datetime as _dt
 
         from data.session_flags import is_expiry_day
@@ -277,25 +266,59 @@ async def _start_ingest_lanes():
         today = _dt.now(IST).strftime("%Y-%m-%d")
         from app.blast_ticker import ensure as ensure_blast_lane
 
-        # 8s on the expiry index: denser covering tape for the live card
-        # (10s left unknown-cover caps sticky on 9 Nov). Non-expiry indices stay off.
         for sym, idx in config.INDICES.items():
             if is_expiry_day(sym, today):
                 ensure_blast_lane(sym, band_pts=idx.band_pts, interval_s=8.0)
 
-    _run_lane("admin.monitor", _admin)
     _run_lane("spot.warmup", _spot)
     _run_lane("premarket", _premarket)
     _run_lane("dhan.sync", _dhan)
     _run_lane("rec.publisher", _ensure_rec_publisher)
     _run_lane("blast.lane", _blast_lane)
-    # Always arm all three index chains at boot. Threads idle off-hours; a
-    # overnight / post-close start must not leave BANKNIFTY dark until someone
-    # opens that tab. chain.arm re-ensures through the discovery→close window.
-    window = _ACTIVE_STATE.get("window") or "current_week"
+    win = window or _ACTIVE_STATE.get("window") or "current_week"
     for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
-        _run_lane(f"chain.{sym}", lambda sym=sym: _ensure_chain_ingest(sym, window))
+        _run_lane(f"chain.{sym}", lambda sym=sym, win=win: _ensure_chain_ingest(sym, win))
     _run_lane("chain.arm", _ensure_chain_armer)
+
+    from app.ingest_heartbeat import start_writer
+    role = os.environ.get("COCKPIT_ROLE", "combined")
+    start_writer(role=role)
+    event("ingest.owner", workflow="ingest", role=role, message="broker lanes armed")
+
+
+@app.on_event("startup")
+async def _start_ingest_lanes():
+    """HTTP process boot. Broker lanes optional when ingest is external."""
+    from app.obs import start_heartbeat
+    start_heartbeat()
+    external = os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1"
+    role = os.environ.get("COCKPIT_ROLE", "serve" if external else "combined")
+    event(
+        "process.started",
+        workflow="process",
+        message="serve-external-ingest" if external else "web",
+        role=role,
+        ingest_external=external,
+    )
+    if os.environ.get("COCKPIT_WATCHDOG") == "1":
+        from app.event_loop_watchdog import start as start_watchdog
+        loop = asyncio.get_running_loop()
+        _run_lane("watchdog", lambda: start_watchdog(loop))
+
+    def _admin():
+        from app.admin.health_daemon import start_background
+        from app.admin.task_runner import mark_orphaned_tasks
+        mark_orphaned_tasks()
+        start_background()
+
+    _run_lane("admin.monitor", _admin)
+
+    if external:
+        # Serve does not own Dhan threads. Readiness watches ingest.heartbeat.
+        log.info("COCKPIT_INGEST_EXTERNAL=1 — skipping broker ingest lanes (HTTP/read only)")
+        return
+
+    boot_broker_ingest_lanes()
 
 
 # --------------------------------------------------------------------------

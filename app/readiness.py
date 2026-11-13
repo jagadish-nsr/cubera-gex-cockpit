@@ -25,6 +25,7 @@ CHAIN_STALE_S = 120.0          # >2× the 60s ingest grid
 SPOT_STALE_S = 45.0            # matches spot_ticker.STALE_AFTER_S
 FEED_STALE_S = 30.0            # health daemon CRITICAL threshold
 CHAIN_DEGRADED_S = 7200.0      # matches cockpit is_degraded wall
+INGEST_HEARTBEAT_STALE_S = 90.0  # process-isolation design Phase C
 
 
 def _chain_probe(symbol: str) -> dict[str, Any]:
@@ -153,6 +154,24 @@ def _circuit_probe(symbol: str) -> dict[str, Any]:
         }
 
 
+def _ingest_probe() -> dict[str, Any]:
+    """When ingest is external, require a fresh heartbeat. Combined mode always ok if file fresh or absent-with-local-owner."""
+    import os
+    from app.ingest_heartbeat import probe as beat_probe
+
+    external = os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1"
+    beat = beat_probe(stale_after_s=INGEST_HEARTBEAT_STALE_S)
+    beat["required"] = external
+    if not external:
+        # Combined process owns lanes; missing file is OK until writer starts.
+        # If a file exists and is stale, still flag — something wrote then died.
+        if beat.get("age_s") is None:
+            beat["ok"] = True
+            beat["reason"] = "combined_no_file_yet"
+        return beat
+    return beat
+
+
 def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     """Assemble readiness payload. Safe to call on every /api/health hit."""
     import config
@@ -165,6 +184,21 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     spots = {s: _spot_probe(s) for s in symbols}
     feed = _feed_probe()
     circuits = {s: _circuit_probe(s) for s in symbols}
+    ingest = _ingest_probe()
+
+    thresholds = {
+        "chain_stale_s": CHAIN_STALE_S,
+        "spot_stale_s": SPOT_STALE_S,
+        "feed_stale_s": FEED_STALE_S,
+        "ingest_heartbeat_stale_s": INGEST_HEARTBEAT_STALE_S,
+    }
+    probes = {
+        "chains": chains,
+        "spots": spots,
+        "feed": feed,
+        "circuits": circuits,
+        "ingest": ingest,
+    }
 
     reasons: list[str] = []
     if not market_open:
@@ -172,21 +206,12 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
             "ready": True,
             "market_open": False,
             "reasons": [],
-            "probes": {
-                "chains": chains,
-                "spots": spots,
-                "feed": feed,
-                "circuits": circuits,
-            },
-            "thresholds": {
-                "chain_stale_s": CHAIN_STALE_S,
-                "spot_stale_s": SPOT_STALE_S,
-                "feed_stale_s": FEED_STALE_S,
-            },
+            "probes": probes,
+            "thresholds": thresholds,
         }
 
     # Session open: at least one index must have a fresh chain + spot; feed should be live;
-    # no OPEN circuit on the active symbols we care about.
+    # no OPEN circuit; external ingest must be heartbeating.
     any_chain_ok = any(c.get("ok") for c in chains.values())
     any_spot_ok = any(s.get("ok") for s in spots.values())
     if not any_chain_ok:
@@ -198,20 +223,13 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     open_cbs = [s for s, c in circuits.items() if not c.get("ok")]
     if open_cbs:
         reasons.append("circuit_open:" + ",".join(open_cbs))
+    if ingest.get("required") and not ingest.get("ok"):
+        reasons.append(ingest.get("reason") or "ingest_heartbeat_stale")
 
     return {
         "ready": len(reasons) == 0,
         "market_open": True,
         "reasons": reasons,
-        "probes": {
-            "chains": chains,
-            "spots": spots,
-            "feed": feed,
-            "circuits": circuits,
-        },
-        "thresholds": {
-            "chain_stale_s": CHAIN_STALE_S,
-            "spot_stale_s": SPOT_STALE_S,
-            "feed_stale_s": FEED_STALE_S,
-        },
+        "probes": probes,
+        "thresholds": thresholds,
     }

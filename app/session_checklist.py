@@ -111,6 +111,19 @@ def build_session_checklist(
         "detail": ",".join(open_cbs) if open_cbs else "all_closed",
     })
 
+    ingest = (readiness.get("probes") or {}).get("ingest") or {}
+    ingest_required = bool(ingest.get("required"))
+    checks.append({
+        "id": "ingest_heartbeat",
+        "label": "Ingest heartbeat (dual-process)",
+        "ok": (not ingest_required) or bool(ingest.get("ok")),
+        "detail": (
+            "combined_mode" if not ingest_required
+            else (ingest.get("reason") or f"age={ingest.get('age_s')}s")
+        ),
+        "skipped": not ingest_required,
+    })
+
     ideas_applicable = market_open and after_ideas_window
     checks.append({
         "id": "ideas_vwap",

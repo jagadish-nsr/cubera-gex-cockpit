@@ -118,6 +118,7 @@ on loop stall (prod only). See also [process-isolation-design.md](process-isolat
 
 ## Related docs
 
+- [high-reliability-plan.md](high-reliability-plan.md) — **Phase B+ plan (availability / SLO enforcement / durability / chaos); not yet implemented**
 - [sli-slo.md](sli-slo.md)
 - [process-isolation-design.md](process-isolation-design.md)
 - [UI_MIGRATION_LESSONS_LEARNED.md](UI_MIGRATION_LESSONS_LEARNED.md) (open fabrication gaps — many closed this pass)
