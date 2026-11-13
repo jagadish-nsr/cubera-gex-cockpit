@@ -494,6 +494,54 @@
     };
   }
 
+  function renderOpeningWatchHtml(watch, { marginTop = "10px" } = {}) {
+    if (!watch || typeof watch !== "object") return "";
+    const status = String(watch.status || "UNAVAILABLE").toUpperCase();
+    if (status === "UNAVAILABLE") return "";
+    const side = String(watch.side_hint || "NONE").toUpperCase();
+    const statusClr = status === "STAGED" ? "var(--warn)" : "var(--ink-mute)";
+    const sideBadge = side === "NONE"
+      ? `<span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">MAP</span>`
+      : `<span style="font-size:0.65rem;color:var(--spark);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">${side}</span>`;
+    const struct = watch.structure;
+    let structHtml;
+    if (struct && struct.buy_strike != null) {
+      const debit = struct.premium_note === "priced" && struct.net_debit_pts != null
+        ? ` · debit ~${Number(struct.net_debit_pts).toFixed(1)} pts`
+        : " · premium unpriced";
+      const maxLoss = struct.max_loss_inr != null
+        ? ` · max loss ~₹${Number(struct.max_loss_inr).toLocaleString("en-IN")}`
+        : "";
+      structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure (illustrative)</b>
+        <div>${struct.name || "Debit vertical"} — long ${Number(struct.buy_strike).toFixed(0)} / short ${Number(struct.short_strike).toFixed(0)} ${struct.side || ""}${debit}${maxLoss}</div>
+        <div style="font-size:0.74rem;color:var(--ink-mute);margin-top:4px">${struct.rationale || ""}</div>
+        <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${struct.expiry_note || ""}</div>
+      </div>`;
+    } else {
+      structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure</b>
+        <div>Map only — no structure candidate from the auction print.</div></div>`;
+    }
+    return `
+      <div class="pm-opening-watch" data-status="${status}" style="margin:${marginTop} 0 10px 0;background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-size:0.72rem;font-weight:750;color:var(--warn);text-transform:uppercase">Staged opening watch</span>
+            <span style="font-size:0.65rem;font-weight:700;color:${statusClr};background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">${status}</span>
+            ${sideBadge}
+          </div>
+          <span style="font-size:0.7rem;color:var(--ink-mute);font-family:var(--mono)">${watch.open_txt || ""}</span>
+        </div>
+        <div style="font-size:0.78rem;line-height:1.55;color:var(--ink)">
+          <div style="margin-bottom:6px;font-weight:650">${watch.title || ""}</div>
+          <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Trigger</b><div>${watch.trigger || ""}</div></div>
+          <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Invalidation</b><div>${watch.invalidation || ""}</div></div>
+          ${structHtml}
+          <div style="font-size:0.74rem;color:var(--warn);border-top:1px solid var(--line);padding-top:8px">${watch.confirm_after || ""}</div>
+          <div style="font-size:0.72rem;color:var(--ink-mute);margin-top:4px">${watch.caution || ""}</div>
+        </div>
+      </div>`;
+  }
+
   function renderPreMarketPlaybookHtml(pm, discovered, { openAttr = "", marginTop = "10px" } = {}) {
     const book = preMarketPlaybookFor(pm, discovered);
     const ctx = playbookCtx(pm, discovered);
@@ -2151,6 +2199,9 @@
 
       // Market Hours & Feed Mode Handling
       state.isMarketOpen = Boolean(data.is_market_open);
+      if (data.pre_market && data.pre_market.opening_watch) {
+        state.openingWatch = data.pre_market.opening_watch;
+      }
       const quoteBoxLabel = document.getElementById("quote-box-label");
       const quoteStatusDot = document.getElementById("quote-status-dot");
       const feedBadge = document.getElementById("quote-source-badge");
@@ -3365,6 +3416,11 @@
             openAttr: wasOpen ? "open" : "",
             marginTop: "0",
           });
+        }
+        const watchSlot = document.getElementById("pm-opening-watch-slot");
+        if (watchSlot) {
+          state.openingWatch = pm.opening_watch || null;
+          watchSlot.innerHTML = renderOpeningWatchHtml(pm.opening_watch, { marginTop: "0" });
         }
 
         // Straddle badge
@@ -5837,17 +5893,34 @@
       }
 
       if (data.is_market_closed) {
+        const ow = data.opening_watch || state.openingWatch || null;
+        const staged = ow && String(ow.status || "").toUpperCase() === "STAGED";
         if (noticeContainer) {
-          noticeContainer.innerHTML = `
-            <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:32px 24px;text-align:center;margin-bottom:24px">
-              <div style="font-size:2rem;margin-bottom:10px">🌙</div>
-              <div style="font-size:1.1rem;font-weight:800;color:var(--ink);margin-bottom:6px">Session Closed · Off-Market Hours</div>
-              <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 auto;max-width:580px;line-height:1.5">
-                Broker API polling and NSE live feeds are paused after market hours.
-                Recommendations run during the F&O session (09:15 – 15:40 IST).
-              </p>
-            </div>
-          `;
+          if (staged) {
+            noticeContainer.innerHTML = `
+              <div style="background:var(--surface-2);border:1px dashed var(--warn);border-radius:12px;padding:18px 20px;margin-bottom:24px">
+                <div style="font-size:0.72rem;font-weight:800;color:var(--warn);letter-spacing:0.05em;margin-bottom:6px">PRE-OPEN WATCH</div>
+                <div style="font-size:0.95rem;font-weight:700;color:var(--ink);margin-bottom:4px">${ow.title || "Staged opening watch"}</div>
+                <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 0 8px;line-height:1.45">
+                  ${ow.trigger || "Confirm after a post-09:15 hold/fail. Not a Trade Idea — no VWAP score yet."}
+                </p>
+                <p style="font-size:0.78rem;color:var(--ink-faint);margin:0">
+                  Full trigger, invalidation, and structure live on the pre-market card. Ideas own the session only after 09:15.
+                </p>
+              </div>
+            `;
+          } else {
+            noticeContainer.innerHTML = `
+              <div style="background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:32px 24px;text-align:center;margin-bottom:24px">
+                <div style="font-size:2rem;margin-bottom:10px">🌙</div>
+                <div style="font-size:1.1rem;font-weight:800;color:var(--ink);margin-bottom:6px">Session Closed · Off-Market Hours</div>
+                <p style="font-size:0.84rem;color:var(--ink-mute);margin:0 auto;max-width:580px;line-height:1.5">
+                  Broker API polling and NSE live feeds are paused after market hours.
+                  Recommendations run during the F&O session (09:15 – 15:40 IST).
+                </p>
+              </div>
+            `;
+          }
         }
         renderClusterList("higher-ce-container", [], "CE", false);
         renderClusterList("higher-pe-container", [], "PE", false);
@@ -8770,6 +8843,7 @@
           openAttr: window._pmPlaybookOpen ? "open" : "",
           marginTop: "10px",
         })}
+          ${renderOpeningWatchHtml(pm.opening_watch, { marginTop: "10px" })}
           ${shocksTableHtml}
         `;
       }

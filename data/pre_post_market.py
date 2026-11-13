@@ -102,6 +102,7 @@ def init_pre_post_db() -> None:
             ("next_key_levels", "TEXT"),
             ("institutional_wrap", "TEXT"),
             ("open_source", "TEXT"),
+            ("opening_watch_json", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE market_auctions_history ADD COLUMN {col} {col_type}")
@@ -109,6 +110,42 @@ def init_pre_post_db() -> None:
                 pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auctions_date_sym ON market_auctions_history(trade_date, symbol)")
         conn.commit()
+
+
+def save_opening_watch(symbol: str, watch: dict, trade_date: str | None = None) -> None:
+    """Persist the first STAGED opening watch. Never overwrite after SUPERSEDED."""
+    if not watch or not isinstance(watch, dict):
+        return
+    if str(watch.get("status") or "") != "STAGED":
+        return
+    try:
+        init_pre_post_db()
+        sym = symbol.upper().strip()
+        t_date = trade_date or datetime.now(IST).strftime("%Y-%m-%d")
+        payload = json.dumps(watch)
+        with _DB_LOCK, _get_db_conn() as conn:
+            row = conn.execute(
+                "SELECT opening_watch_json FROM market_auctions_history WHERE trade_date = ? AND symbol = ?",
+                (t_date, sym),
+            ).fetchone()
+            if row is not None:
+                existing = row["opening_watch_json"] if "opening_watch_json" in row.keys() else None
+                if existing:
+                    return  # first lock wins
+                conn.execute(
+                    "UPDATE market_auctions_history SET opening_watch_json = ?, updated_at = ? "
+                    "WHERE trade_date = ? AND symbol = ?",
+                    (payload, datetime.now(timezone.utc).isoformat(), t_date, sym),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO market_auctions_history (trade_date, symbol, opening_watch_json, updated_at, is_discovered) "
+                    "VALUES (?, ?, ?, ?, 1)",
+                    (t_date, sym, payload, datetime.now(timezone.utc).isoformat()),
+                )
+            conn.commit()
+    except Exception as e:
+        log.debug("Failed to save opening watch for %s: %s", symbol, e)
 
 
 def save_pre_market_state(symbol: str, state: dict, shocks: dict | None = None) -> None:

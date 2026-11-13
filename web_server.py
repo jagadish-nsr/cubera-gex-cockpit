@@ -102,7 +102,9 @@ from data.pre_post_market import (
     get_post_market_state,
     attach_pre_market_shocks,
     calculate_pre_market_option_shocks,
+    save_opening_watch,
 )
+from analytics.pre_open_watch import build_pre_open_watch
 from sentinel.storage.db import (
     list_recent_signals,
     ensure_historical_daily_cvd,
@@ -1578,6 +1580,36 @@ def _extract_active_dte(dash: Any, default_days: float | None = None) -> float |
     return default_days
 
 
+def _attach_opening_watch(pm_state: dict, *, symbol: str, dash: Any = None) -> dict:
+    """Attach staged pre-open watch onto pre_market. Persist first STAGED only."""
+    if not isinstance(pm_state, dict):
+        pm_state = {}
+    atm_iv = _extract_active_atm_iv(dash) if dash is not None else None
+    dte = _extract_active_dte(dash) if dash is not None else None
+    expiry_tag = ""
+    try:
+        if dash is not None and getattr(dash, "expiries", None):
+            near = dash.expiries[0]
+            expiry_tag = near.strftime("%d-%b-%Y") if hasattr(near, "strftime") else str(near)
+    except Exception:
+        expiry_tag = ""
+    watch = build_pre_open_watch(
+        pm_state,
+        symbol=symbol,
+        market_open=bool(config.is_market_open()),
+        atm_iv=atm_iv,
+        dte_days=dte,
+        expiry_tag=expiry_tag,
+    )
+    pm_state["opening_watch"] = watch
+    if watch.get("status") == "STAGED":
+        try:
+            save_opening_watch(symbol, watch, trade_date=pm_state.get("date"))
+        except Exception as exc:
+            log.debug("save_opening_watch skipped: %s", exc)
+    return pm_state
+
+
 def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
     """Eight bias rows. PCR, gamma-strike midpoint, max pain, and open-interest change contribute 0."""
     spot = float(dash.levels.spot or 0.0) if dash and hasattr(dash, "levels") and dash.levels else 0.0
@@ -2087,7 +2119,16 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
             feed_subtext = (
                 f"Chain spot unchanged for {held_m}m. This print is not a live tick."
             )
-    pm_st = get_pre_market_state(sym)
+    pm_st = dict(get_pre_market_state(sym) or {})
+    if lv is not None:
+        if not pm_st.get("call_wall"):
+            pm_st["call_wall"] = float(getattr(lv, "call_wall", 0) or 0)
+        if not pm_st.get("put_wall"):
+            pm_st["put_wall"] = float(getattr(lv, "put_wall", 0) or 0)
+        flip_st = float(getattr(lv, "flip", 0) or 0)
+        if flip_st > 0 and not pm_st.get("gamma_flip"):
+            pm_st["gamma_flip"] = flip_st
+    _attach_opening_watch(pm_st, symbol=sym, dash=dash)
     is_pre_bell_ephemeral = _is_pre_bell_ephemeral(now_ist, sess_phase, pm_st)
 
     from data.dhan import token_status
@@ -2728,6 +2769,7 @@ async def get_cockpit_data(
     )
     if not pm_state.get("regime_briefing"):
         pm_state["regime_briefing"] = pm_state.get("status_text") or ""
+    _attach_opening_watch(pm_state, symbol=sym, dash=dash)
 
     # OrderFlow Sentinel Stream Summary (Tape Alerts)
     inst_id = f"{sym}-FUT"
@@ -3398,11 +3440,15 @@ async def get_recommendations(
         from data.market_snapshot import get_snapshot
         snap = get_snapshot(sym) or {}
         spot = float(snap.get("spot") or 0)
+        pm_closed = dict(get_pre_market_state(sym) or {})
+        _attach_opening_watch(pm_closed, symbol=sym, dash=None)
+        opening_watch = pm_closed.get("opening_watch") or {}
         return {
             "symbol": sym,
             "spot": spot,
             "hud": hud,
             "is_market_closed": True,
+            "opening_watch": opening_watch,
             "closed_notice": {
                 "title": "Session Closed · Off-Market Hours",
                 "message": (
@@ -6957,6 +7003,7 @@ async def get_session_commentary(symbol: Optional[str] = None):
             pm_state["briefing"] = f"Indicative open at ₹{disc_spot:,.0f} ({gap_pts:,.1f} pts). Put-gamma strike {pw_txt}. Call-gamma strike {cw_txt}. Neither strike is a floor or a ceiling."
         else:
             pm_state["briefing"] = f"Flat open at ₹{disc_spot:,.0f}. Call-gamma strike {cw_txt}. Put-gamma strike {pw_txt}."
+    _attach_opening_watch(pm_state, symbol=sym, dash=dash)
 
     post_state = dict(get_post_market_state(sym, session_date=active_session_date) or {})
     if post_state:
