@@ -118,16 +118,16 @@ def test_bar_aggregator_rollover_and_cvd():
 # ---------------------------------------------------------------------------
 
 def test_tod_rvol_normalization():
-    # 09:20 IST (morning open peak)
+    # 09:20 IST (morning open peak) — baseline is high, so 60k is modest RVol
     dt_morning = datetime(2026, 10, 2, 3, 50, tzinfo=timezone.utc)  # 09:20 IST is 03:50 UTC
     rvol_morning = compute_tod_rvol(dt_morning, volume=60000.0, instrument="NIFTY")
-    assert rvol_morning > 0.5
+    assert rvol_morning > 0.3
 
-    # 12:30 IST (midday lull)
+    # 12:30 IST (midday lull) — same absolute units are more unusual
     dt_midday = datetime(2026, 10, 2, 7, 0, tzinfo=timezone.utc)  # 12:30 IST is 07:00 UTC
-    # 60,000 volume midday is extremely high relative to normal
     rvol_midday = compute_tod_rvol(dt_midday, volume=60000.0, instrument="NIFTY")
-    assert rvol_midday > rvol_morning  # relative volume is higher midday for same absolute units
+    assert rvol_midday > rvol_morning
+    assert rvol_midday >= 1.5  # clearly clears CONT volume gate at noon
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +609,8 @@ def test_5m_close_invalidation_and_target_rules():
 
 def _cont_bull_bar(instrument_id: str, t0: datetime, close: float, low: float | None = None) -> Bar:
     lo = close - 30.0 if low is None else low
+    # Volume must clear TOD RVol ≥ 1.5 under the empirical U-curve (mid-morning
+    # Nifty baseline ~50k). 40k was sized for the retired ~12–30k analytical curve.
     return Bar(
         instrument_id=instrument_id,
         timeframe="1m",
@@ -617,14 +619,14 @@ def _cont_bull_bar(instrument_id: str, t0: datetime, close: float, low: float | 
         high=close + 2.0,
         low=lo,
         close=close,
-        volume_units=40000,
-        volume_lots=615.0,
-        buy_vol_est=30000.0,
-        sell_vol_est=10000.0,
-        delta=20000.0,
+        volume_units=100_000,
+        volume_lots=1_538.0,
+        buy_vol_est=75_000.0,
+        sell_vol_est=25_000.0,
+        delta=50_000.0,
         delta_ratio=0.50,
         delta_quality=1.0,
-        cvd=20000.0,
+        cvd=50_000.0,
         vwap=close - 20.0,
         vwap_sigma_1=close - 5.0,
         vwap_sigma_2=close + 10.0,

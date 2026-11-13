@@ -89,7 +89,12 @@ By type (resolved):
 | EXHAUSTION_DOWN | 3 | 1 | 0 | 100% |
 
 Nifty is no longer “silent” on \|Δratio\| (81 bars ≥0.40 vs 6 on 12-Nov), but
-CONT gates still keep prints scarce (6 signals). **Do not lower CONT thresholds.**
+**all 6 prints were MICRO_BURST** and none after 11:09. Confirmed-bar CONT was
+muted by an **inflated TOD RVol baseline** (~12k midday vs empirical ~6.6k):
+73 CONT-shaped bars after 11:10, **0** cleared real `rvol≥1.5`. BN/SX still
+printed because their baselines matched tape. **Do not lower CONT Δ/VWAP/oi
+gates** — recalibrate the RVol denominator (empirical asymmetric U-curve,
+fit 05–12 Nov, holdout 13).
 
 ## Sentinel paper
 
