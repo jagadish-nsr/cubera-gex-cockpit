@@ -1,9 +1,11 @@
 """Deduplicated token, feed, WAL, gap, and stale-process alerts.
 
 The loop reads ``token_status()`` and ``app.ws_spot_feed.get_status()``. It does
-not open a second WebSocket, and it does not checkpoint or vacuum. A closed
-session with a gap is rechecked until the journals are complete. A clean
-session is not scanned again until the process restarts.
+not open a second WebSocket. When ``sentinel.db-wal`` exceeds 25 MB it runs a
+PASSIVE ``wal_checkpoint`` (non-blocking if writers are active) and alerts if
+the file stays large. A closed session with a gap is rechecked until the
+journals are complete. A clean session is not scanned again until the process
+restarts.
 """
 
 from __future__ import annotations
@@ -167,19 +169,47 @@ def _feed_alert(status: dict, now: datetime, stamp: str) -> None:
         db.resolve_alert(idle_fp, stamp)
 
 
+def _checkpoint_sentinel_wal(db_path: Path) -> str:
+    """PASSIVE checkpoint — returns a short result note. Never raises to caller."""
+    try:
+        import sqlite3
+        con = sqlite3.connect(str(db_path), timeout=5.0)
+        try:
+            con.execute("PRAGMA busy_timeout=5000")
+            row = con.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            # row: (busy, log, checkpointed)
+            return f"passive busy={row[0]} log={row[1]} ckpt={row[2]}"
+        finally:
+            con.close()
+    except Exception as exc:
+        log.warning("sentinel WAL checkpoint failed: %s", exc)
+        return f"checkpoint_failed:{exc}"
+
+
 def _wal_alert(root: Path, stamp: str) -> None:
     path = root / "data" / "sentinel.db-wal"
+    db_path = root / "data" / "sentinel.db"
     fp = "DB|sentinel-wal"
     size = path.stat().st_size if path.exists() else 0
     if size > WAL_WARN_BYTES:
         mb = size / (1024 * 1024)
+        note = ""
+        if db_path.exists():
+            note = _checkpoint_sentinel_wal(db_path)
+            size_after = path.stat().st_size if path.exists() else 0
+            mb_after = size_after / (1024 * 1024)
+            if size_after <= WAL_WARN_BYTES:
+                log.info("sentinel WAL checkpointed: %.1f MB → %.1f MB (%s)", mb, mb_after, note)
+                db.resolve_alert(fp, stamp)
+                return
+            note = f"{note}; still {mb_after:.1f} MB after PASSIVE"
         db.upsert_alert(
             alert_id=_alert_id(),
             fingerprint=fp,
             severity="WARNING",
             category="DB",
             title="sentinel.db WAL is over 25 MB",
-            description=f"sentinel.db-wal is {mb:.1f} MB. The admin monitor does not checkpoint it.",
+            description=f"sentinel.db-wal is {mb:.1f} MB. {note}".strip(),
             session_date=None,
             now_iso=stamp,
         )

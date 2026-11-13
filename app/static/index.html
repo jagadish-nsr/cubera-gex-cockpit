@@ -241,6 +241,11 @@
           </div>
         </div>
 
+        <!-- Fail-loud fetch / readiness banner (hidden when all clear) -->
+        <div id="reliability-banner" role="status" aria-live="polite"
+          style="display:none;margin:0 0 10px;padding:8px 12px;border-radius:6px;border:1px solid rgba(250,204,21,0.45);background:rgba(250,204,21,0.10);color:var(--warn);font-size:0.78rem;font-family:var(--mono);font-weight:700">
+        </div>
+
         <!-- 11 Tab Navigation Bar -->
         <nav class="nav-tabs" id="nav-tabs">
           <!-- 1. Cockpit -->
@@ -952,11 +957,11 @@
               <div style="text-align:right">
                 <span id="te-edge-badge"
                   style="background:#064e3b;color:#f8fafc;padding:4px 10px;border-radius:4px;font-size:0.74rem;font-weight:800;letter-spacing:0.04em;border:1px solid rgba(16,185,129,0.3)">
-                  CONFIRMED EDGE
+                  —
                 </span>
                 <div style="font-size:0.78rem;color:var(--ink-mute);margin-top:4px">
-                  Conviction: <b id="te-conviction-val" style="color:var(--ink)">78%</b> &nbsp;|&nbsp; Spot: <b
-                    id="te-spot-val" style="color:var(--spark)">₹24,480.0</b>
+                  Conviction: <b id="te-conviction-val" style="color:var(--ink)">—</b> &nbsp;|&nbsp; Spot: <b
+                    id="te-spot-val" style="color:var(--spark)">—</b>
                 </div>
               </div>
             </div>
@@ -964,18 +969,18 @@
             <!-- Multi-color Segmented Progress Bar -->
             <div
               style="display:flex;height:16px;border-radius:6px;overflow:hidden;background:#334155;box-shadow:inset 0 1px 3px rgba(0,0,0,0.4)">
-              <div id="te-bar-bull" style="width:62.4%;background:#10b981;transition:width 0.4s ease"
-                title="Bull: 62.4%"></div>
-              <div id="te-bar-base" style="width:25.1%;background:#3b82f6;transition:width 0.4s ease"
-                title="Base: 25.1%"></div>
-              <div id="te-bar-bear" style="width:12.5%;background:#ef4444;transition:width 0.4s ease"
-                title="Bear: 12.5%"></div>
+              <div id="te-bar-bull" style="width:0%;background:#10b981;transition:width 0.4s ease"
+                title="Bull: —"></div>
+              <div id="te-bar-base" style="width:0%;background:#3b82f6;transition:width 0.4s ease"
+                title="Base: —"></div>
+              <div id="te-bar-bear" style="width:0%;background:#ef4444;transition:width 0.4s ease"
+                title="Bear: —"></div>
             </div>
             <div
               style="display:flex;justify-content:space-between;font-size:0.76rem;color:var(--ink-mute);margin-top:8px">
-              <span>🟢 Bullish: <b id="te-prob-bull" style="color:#10b981">62.4%</b></span>
-              <span>🔵 Base (Range): <b id="te-prob-base" style="color:#3b82f6">25.1%</b></span>
-              <span>🔴 Bearish: <b id="te-prob-bear" style="color:#ef4444">12.5%</b></span>
+              <span>🟢 Bullish: <b id="te-prob-bull" style="color:#10b981">—</b></span>
+              <span>🔵 Base (Range): <b id="te-prob-base" style="color:#3b82f6">—</b></span>
+              <span>🔴 Bearish: <b id="te-prob-bear" style="color:#ef4444">—</b></span>
             </div>
           </div>
 
@@ -989,18 +994,18 @@
               </div>
               <div id="te-bull-target-val"
                 style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
-                ₹24,620.0
+                —
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Stop: <span id="te-bull-stop-val"
-                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,395.0</span>
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">—</span>
               </div>
               <div
                 style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
-                • P(Touch Target): <b id="te-bull-ptouch" style="color:#10b981">68.4%</b><br>
-                • P(Close Beyond): <b id="te-bull-pclose" style="color:#38bdf8">42.1%</b><br>
-                • Forecast ATM IV: <b id="te-bull-iv" style="color:#facc15">14.12%</b><br>
-                • Anchor: <i id="te-bull-anchor" style="color:var(--ink-mute)">Call Wall + 0.5σ Extension</i>
+                • P(Touch Target): <b id="te-bull-ptouch" style="color:#10b981">—</b><br>
+                • P(Close Beyond): <b id="te-bull-pclose" style="color:#38bdf8">—</b><br>
+                • Forecast ATM IV: <b id="te-bull-iv" style="color:#facc15">—</b><br>
+                • Anchor: <i id="te-bull-anchor" style="color:var(--ink-mute)">—</i>
               </div>
             </div>
 
@@ -1012,18 +1017,18 @@
               </div>
               <div id="te-base-target-val"
                 style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
-                ₹24,535.0
+                —
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Band Stop: <span id="te-base-stop-val"
-                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,420.0</span>
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">—</span>
               </div>
               <div
                 style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
-                • P(Touch Target): <b id="te-base-ptouch" style="color:#3b82f6">74.2%</b><br>
-                • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">58.6%</b><br>
-                • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">13.85%</b><br>
-                • Anchor: <i id="te-base-anchor" style="color:var(--ink-mute)">Range centre</i>
+                • P(Touch Target): <b id="te-base-ptouch" style="color:#3b82f6">—</b><br>
+                • P(Stay in Band): <b id="te-base-pclose" style="color:#38bdf8">—</b><br>
+                • Forecast ATM IV: <b id="te-base-iv" style="color:#facc15">—</b><br>
+                • Anchor: <i id="te-base-anchor" style="color:var(--ink-mute)">—</i>
               </div>
             </div>
 
@@ -1035,18 +1040,18 @@
               </div>
               <div id="te-bear-target-val"
                 style="font-size:1.45rem;font-weight:900;color:var(--ink);font-family:var(--mono)">
-                ₹24,395.0
+                —
               </div>
               <div style="font-size:0.78rem;color:var(--ink-mute);margin-bottom:8px">
                 Stop: <span id="te-bear-stop-val"
-                  style="color:#f87171;font-family:var(--mono);font-weight:700">₹24,550.0</span>
+                  style="color:#f87171;font-family:var(--mono);font-weight:700">—</span>
               </div>
               <div
                 style="font-size:0.75rem;color:var(--ink-mute);line-height:1.6;border-top:1px solid var(--line);padding-top:6px">
-                • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">32.0%</b><br>
-                • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">18.5%</b><br>
-                • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">15.40%</b><br>
-                • Anchor: <i id="te-bear-anchor" style="color:var(--ink-mute)">Put-gamma strike</i>
+                • P(Touch Target): <b id="te-bear-ptouch" style="color:#ef4444">—</b><br>
+                • P(Close Beyond): <b id="te-bear-pclose" style="color:#38bdf8">—</b><br>
+                • Forecast ATM IV: <b id="te-bear-iv" style="color:#facc15">—</b><br>
+                • Anchor: <i id="te-bear-anchor" style="color:var(--ink-mute)">—</i>
               </div>
             </div>
           </div>
@@ -1076,11 +1081,11 @@
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <span style="font-weight:750;color:var(--go)">🟢 Bullish / Calls (CE) Reference</span>
                 <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-ce-inval"
-                    style="color:var(--stop)">24,395.0</b></span>
+                    style="color:var(--stop)">—</b></span>
               </div>
               <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
-                Target 1: <b id="ladder-ce-tgt1" style="color:var(--go)">24,535.0</b> · Target 2: <b id="ladder-ce-tgt2"
-                  style="color:#4ade80">24,620.0</b>
+                Target 1: <b id="ladder-ce-tgt1" style="color:var(--go)">—</b> · Target 2: <b id="ladder-ce-tgt2"
+                  style="color:#4ade80">—</b>
               </div>
             </div>
             <div
@@ -1088,11 +1093,11 @@
               <div style="display:flex;justify-content:space-between;align-items:center">
                 <span style="font-weight:750;color:var(--stop)">🔴 Bearish / Puts (PE) Reference</span>
                 <span style="font-size:0.72rem;color:var(--ink-mute)">Spot Inval: <b id="ladder-pe-inval"
-                    style="color:var(--stop)">24,550.0</b></span>
+                    style="color:var(--stop)">—</b></span>
               </div>
               <div style="margin-top:4px;color:var(--ink);font-size:0.75rem">
-                Target 1: <b id="ladder-pe-tgt1" style="color:var(--stop)">24,420.0</b> · Target 2: <b
-                  id="ladder-pe-tgt2" style="color:#f87171">24,350.0</b>
+                Target 1: <b id="ladder-pe-tgt1" style="color:var(--stop)">—</b> · Target 2: <b
+                  id="ladder-pe-tgt2" style="color:#f87171">—</b>
               </div>
             </div>
           </div>
@@ -1103,7 +1108,7 @@
               <span id="ladder-ws-status" style="color:var(--ink-mute);font-weight:700">Chain snapshot</span> ·
               Lot Size: <b id="ladder-lot-size" style="color:var(--ink)">—</b> ·
               Spot: <b id="ladder-spot-display" style="color:var(--spark)">—</b> ·
-              ATM: <b id="ladder-atm-display" style="color:var(--warn)">23,150</b>
+              ATM: <b id="ladder-atm-display" style="color:var(--warn)">—</b>
             </div>
             <span style="font-size:0.7rem;color:var(--ink-faint)">Updated: Real-time 0ms</span>
           </div>
@@ -1198,15 +1203,15 @@
             <div id="te-contract-strip"
               style="background:rgba(15, 23, 42, 0.85);border:1px solid #334155;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:0.78rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
               <div>
-                <b id="te-strip-title" style="color:#f8fafc">NIFTY 23,150 CE</b>
+                <b id="te-strip-title" style="color:#f8fafc">—</b>
                 <span id="te-strip-sub" style="color:#94a3b8;font-size:0.72rem;margin-left:6px">(ATM Reference
                   Contract)</span>
               </div>
               <div style="display:flex;gap:12px;font-family:var(--mono);color:#cbd5e1">
-                <span>LTP: <b id="te-strip-ltp" style="color:#38bdf8">₹124.5</b></span>
-                <span>Model Theo: <b id="te-strip-theo" style="color:#94a3b8">₹123.8</b></span>
+                <span>LTP: <b id="te-strip-ltp" style="color:#38bdf8">—</b></span>
+                <span>Model Theo: <b id="te-strip-theo" style="color:#94a3b8">—</b></span>
                 <span>Strike IV: <b id="te-strip-iv" style="color:#facc15">—</b></span>
-                <span>Delta: <b id="te-strip-delta" style="color:#34d399">+0.512</b></span>
+                <span>Delta: <b id="te-strip-delta" style="color:#34d399">—</b></span>
                 <span>Theta: <b id="te-strip-theta" style="color:#f87171">—</b></span>
                 <span>Vega: <b id="te-strip-vega" style="color:#c084fc">+18.5</b></span>
               </div>
@@ -1270,31 +1275,27 @@
               <div class="kpi-grid" style="grid-template-columns:repeat(4, 1fr);margin-bottom:14px">
                 <div class="kpi-card go">
                   <small>Target Option Premium</small>
-                  <b id="te-out-tgt-ltp">₹168.40</b>
-                  <span id="te-out-tgt-gain" style="color:var(--go)">+43.90 pts (+35.3%)</span>
-                  <div id="te-out-tgt-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target PnL /
-                    Lot: +₹1,098 · P(Touch): 68.4%</div>
+                  <b id="te-out-tgt-ltp">—</b>
+                  <span id="te-out-tgt-gain" style="color:var(--go)">—</span>
+                  <div id="te-out-tgt-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">—</div>
                 </div>
                 <div class="kpi-card stop">
                   <small>Stop Loss Option Premium</small>
-                  <b id="te-out-sl-ltp">₹98.20</b>
-                  <span id="te-out-sl-loss" style="color:var(--stop)">-26.30 pts (-21.1%)</span>
-                  <div id="te-out-sl-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Risk / Lot:
-                    -₹658 · P(Touch SL): 32.1%</div>
+                  <b id="te-out-sl-ltp">—</b>
+                  <span id="te-out-sl-loss" style="color:var(--stop)">—</span>
+                  <div id="te-out-sl-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">—</div>
                 </div>
                 <div class="kpi-card spark">
                   <small>Risk : Reward Ratio</small>
-                  <b id="te-out-rr-ratio">1.67 : 1</b>
-                  <span id="te-out-rr-verdict" style="color:var(--spark)">Sub-Optimal (&lt; 1.8)</span>
-                  <div id="te-out-rr-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Net Spread:
-                    +17.6 pts · Breakeven: ₹24,624.5</div>
+                  <b id="te-out-rr-ratio">—</b>
+                  <span id="te-out-rr-verdict" style="color:var(--spark)">—</span>
+                  <div id="te-out-rr-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">—</div>
                 </div>
                 <div class="kpi-card purple">
                   <small>Touch-Weighted EV / Lot</small>
-                  <b id="te-out-ev-val">+₹540</b>
-                  <span id="te-out-ev-verdict" style="color:var(--go)">Positive Expectancy</span>
-                  <div id="te-out-ev-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">Target IV:
-                    13.5% (-0.8 pts)</div>
+                  <b id="te-out-ev-val">—</b>
+                  <span id="te-out-ev-verdict" style="color:var(--go)">—</span>
+                  <div id="te-out-ev-sub" style="font-size:0.68rem;color:var(--ink-mute);margin-top:4px">—</div>
                 </div>
               </div>
 
@@ -2366,12 +2367,12 @@
                 </div>
                 <div class="kpi-card purple">
                   <small>Calibration Alpha</small>
-                  <b id="calib-kpi-alpha" style="color:var(--go)">+11.4%</b>
+                  <b id="calib-kpi-alpha" style="color:var(--go)">—</b>
                   <span>Model Edge over Brownian</span>
                 </div>
                 <div class="kpi-card">
                   <small>ATM Benchmark</small>
-                  <b id="calib-kpi-atm">23,150 CE</b>
+                  <b id="calib-kpi-atm">—</b>
                   <span id="calib-kpi-entry">—</span>
                 </div>
               </div>
@@ -2614,7 +2615,7 @@
                   style="background:var(--spark-bg);color:var(--spark);font-size:0.72rem">CALL WING SKEW</span>
               </div>
               <div style="display:flex;gap:12px;font-family:var(--mono);font-size:0.75rem">
-                <span>25Δ Skew: <b id="noa-skew-25d" style="color:var(--spark)">+1.8%</b></span>
+                <span>25Δ Skew: <b id="noa-skew-25d" style="color:var(--spark)">—</b></span>
                 <span>Near ATM IV: <b id="noa-skew-atm-iv">—</b></span>
                 <span>Term Spread: <b id="noa-skew-term-spread" style="color:var(--go)">—</b></span>
               </div>
@@ -3006,6 +3007,17 @@
               <b id="admin-kpi-alerts">Alerts 0</b>
               <span>Unresolved and not dismissed</span>
             </div>
+          </div>
+
+          <div class="ladder-card" style="margin:14px 0" id="admin-session-checklist-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+              <h3 style="margin:0;font-size:1rem">Session Open Checklist</h3>
+              <span id="admin-checklist-verdict"
+                style="font-family:var(--mono);font-size:0.72rem;font-weight:800;padding:2px 8px;border-radius:4px;background:var(--surface-3);color:var(--ink-mute)">—</span>
+            </div>
+            <p style="margin:0 0 8px;font-size:0.72rem;color:var(--ink-mute)">Automated SLI probes from
+              <code>docs/sli-slo.md</code> · first 30 minutes after open</p>
+            <div id="admin-session-checklist" style="font-family:var(--mono);font-size:0.74rem;line-height:1.55"></div>
           </div>
 
           <div id="admin-alert-list" class="ladder-card" style="margin:14px 0"></div>

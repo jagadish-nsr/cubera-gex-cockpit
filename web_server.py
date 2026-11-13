@@ -673,6 +673,25 @@ def _rec_publisher_loop() -> None:
                     # Harden requires live session VWAP/sigma from Sentinel bars —
                     # without this the publisher refused every cycle on 2026-11-12.
                     latest_bar, sentinel_bars, sentinel_sigs = _load_rec_sentinel_context(sym)
+                    try:
+                        from app.hard_gates import require_context
+                        missing_ctx = require_context(
+                            "ideas_session_vwap",
+                            {
+                                "latest_bar": latest_bar,
+                                "sentinel_bars": sentinel_bars or [],
+                            },
+                        )
+                        if missing_ctx:
+                            event(
+                                "rec.gate_context_missing",
+                                workflow="rec.generate",
+                                symbol=sym,
+                                missing=",".join(missing_ctx),
+                                reason="ideas_session_vwap",
+                            )
+                    except Exception:
+                        pass
                     batch = generate_trade_recommendations(
                         dash,
                         bias_result=bias,
@@ -2982,9 +3001,11 @@ async def get_target_engine(
     for k, v in res.underlying_targets.items():
         tgt_val = float(getattr(v, "target", spot) or spot)
         stop_val = float(getattr(v, "stop", spot) or spot)
-        p_touch = float(getattr(v, "p_touch_target", 0.65) or 0.65)
-        p_close = float(getattr(v, "p_close_beyond", 0.45) or 0.45)
-        reason_txt = getattr(v, "reason", "") or "GEX / Volatility Anchor"
+        raw_pt = getattr(v, "p_touch_target", None)
+        raw_pc = getattr(v, "p_close_beyond", None)
+        p_touch = float(raw_pt) if raw_pt is not None else None
+        p_close = float(raw_pc) if raw_pc is not None else None
+        reason_txt = getattr(v, "reason", "") or ""
         if k in iv_fcs and hasattr(iv_fcs[k], "iv_at_horizon") and iv_fcs[k].iv_at_horizon is not None:
             fc_iv = round(float(iv_fcs[k].iv_at_horizon), 4)
         else:
@@ -2992,9 +3013,9 @@ async def get_target_engine(
         targets[k] = {
             "target": round(tgt_val, 1),
             "stop": round(stop_val, 1),
-            "p_touch_target": round(p_touch, 4),
-            "p_touch": round(p_touch, 4),
-            "p_close_beyond": round(p_close, 4),
+            "p_touch_target": round(p_touch, 4) if p_touch is not None else None,
+            "p_touch": round(p_touch, 4) if p_touch is not None else None,
+            "p_close_beyond": round(p_close, 4) if p_close is not None else None,
             "points_away": round(tgt_val - spot, 1),
             "horizon_minutes": getattr(v, "horizon_minutes", horizon_val),
             "reason": reason_txt,
@@ -3128,11 +3149,25 @@ async def reprice_target_engine(payload: dict = Body(...)):
         dash=dash,
         contracts_df=getattr(dash, "contracts", None),
     )
-    default_exp = active_exps[0] if active_exps else "2026-10-19"
+    if active_exps:
+        default_exp = active_exps[0]
+    else:
+        # Calendar next expiry is authentic; a hardcoded past date is not.
+        today_ist = _get_ist_now().date()
+        exch = getattr(idx, "exchange", "NSE")
+        exp_date = (
+            next_weekly_expiry(today_ist, exch)
+            if getattr(idx, "has_weekly", True)
+            else next_monthly_expiry(today_ist, exch)
+        )
+        default_exp = exp_date.isoformat()
+        log.warning("reprice: empty active expiries — using calendar %s for %s", default_exp, sym)
 
     sel_expiry = payload.get("expiry")
     if not sel_expiry or sel_expiry in ("current_week", "weekly", "next_week", "monthly", "all") or is_expiry_crossed(sel_expiry):
         sel_expiry = default_exp
+    if not sel_expiry:
+        raise HTTPException(status_code=503, detail="No resolvable expiry for reprice — refusing hardcoded fill")
     sel_strike = float(payload.get("strike", spot))
     sel_type = (payload.get("option_type") or payload.get("side") or "CE").upper()
     step = getattr(idx, "strike_step", 100.0 if sym in ("BANKNIFTY", "SENSEX") else 50.0)
@@ -7261,7 +7296,7 @@ async def standalone_tradingview_chart(symbol: str = "NIFTY", timeframe: str = "
             locale: "en",
             toolbar_bg: isL ? "#ffffff" : "#0c1424",
             enable_publishing: false,
-            allow_symbol_change: true,
+            allow_symbol_change: false,
             container_id: "tv-mount",
             hide_side_toolbar: false,
             withdateranges: true,
@@ -8214,19 +8249,37 @@ def session_report_page(session_date: str):
 
 
 @app.get("/api/health")
-async def health_check():
-    """Health check endpoint for CD pipeline probes, monitoring, and readiness verification."""
+async def health_check(ready: int = 0):
+    """Liveness + deep readiness.
+
+    Default: always 200 with ``status=ok`` (CD liveness) plus a ``readiness``
+    block (chain age, spot age, feed age, circuit state).
+
+    ``?ready=1``: HTTP 503 when the F&O session is open and probes fail, so
+    operator / load-balancer readiness checks can fail loud.
+    """
     from datetime import datetime
+    from fastapi.responses import JSONResponse
+    from app.readiness import build_readiness
+
     now_ist = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S IST")
-    return {
-        "status": "ok",
+    market_open = bool(config.is_market_open())
+    readiness = build_readiness(market_open=market_open)
+    body = {
+        "status": "ok" if (not market_open or readiness.get("ready")) else "degraded",
         "app": "Cubera GEX Cockpit",
         "version": APP_VERSION,
         "env": os.environ.get("ENV_MODE", "production"),
         "timestamp": now_ist,
-        "market_open": config.is_market_open(),
+        "market_open": market_open,
         "data_source": config.DATA_SOURCE,
+        "ready": bool(readiness.get("ready")),
+        "readiness": readiness,
     }
+    if int(ready or 0) == 1 and market_open and not readiness.get("ready"):
+        body["status"] = "not_ready"
+        return JSONResponse(body, status_code=503)
+    return body
 
 
 # --------------------------------------------------------------------------

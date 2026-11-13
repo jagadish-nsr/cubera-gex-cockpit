@@ -42,14 +42,12 @@ def _expiry_weekday(exchange: str = "NSE") -> int:
 def _holiday_roll(d: date) -> date:
     """Roll d backward to the nearest trading day if it falls on a holiday.
 
-    Uses the NSE F&O holiday calendar (data/holidays.py). Gracefully falls back
-    to the original date if the holiday module is unavailable.
+    Uses the NSE F&O holiday calendar (data/holidays.py). Fail loud if the
+    calendar cannot be loaded — returning an unrolled holiday date would put
+    the wrong expiry on the decision screen.
     """
-    try:
-        from data.holidays import roll_back_to_trading_day
-        return roll_back_to_trading_day(d)
-    except Exception:
-        return d   # degrade gracefully — no roll if calendar unavailable
+    from data.holidays import roll_back_to_trading_day
+    return roll_back_to_trading_day(d)
 
 
 def last_weekday_of_month(year: int, month: int, weekday: int) -> date:

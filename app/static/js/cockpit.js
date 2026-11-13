@@ -55,7 +55,7 @@
     blastLastSpot: null,
     blastSpotSpikeEma: 0,
     blastLastScore: null,
-    spot: 24500.0,
+    spot: 0,
     ws: null,
     sentinelChart: null,
     candlestickSeries: null,
@@ -1589,6 +1589,43 @@
     }, 4000);
   }
 
+  // Fail-loud fetch degradation — never look like a quiet market when the API is down.
+  const _fetchDegraded = Object.create(null);
+  function paintReliabilityBanner() {
+    const el = document.getElementById("reliability-banner");
+    if (!el) return;
+    const keys = Object.keys(_fetchDegraded);
+    if (!keys.length) {
+      el.style.display = "none";
+      el.textContent = "";
+      return;
+    }
+    el.style.display = "block";
+    el.textContent = "DEGRADED · " + keys.map((k) => `${k}: ${_fetchDegraded[k]}`).join(" · ");
+  }
+  function setFetchDegraded(source, message, { toast = true } = {}) {
+    const msg = String(message || "unavailable");
+    const prev = _fetchDegraded[source];
+    _fetchDegraded[source] = msg;
+    paintReliabilityBanner();
+    if (toast && prev !== msg) showToast(`${source}: ${msg}`, "⚠");
+  }
+  function clearFetchDegraded(source) {
+    if (!_fetchDegraded[source]) return;
+    delete _fetchDegraded[source];
+    paintReliabilityBanner();
+  }
+  async function noteFetchResult(source, res, data) {
+    if (res && res.ok) {
+      clearFetchDegraded(source);
+      return true;
+    }
+    const detail = (data && (data.detail || data.message || data.error))
+      || (res ? `HTTP ${res.status}` : "network error");
+    setFetchDegraded(source, detail);
+    return false;
+  }
+
   // -------------------------------------------------------------------------
   // Dark / Light Theme Mode Management Engine
   // -------------------------------------------------------------------------
@@ -2731,8 +2768,8 @@
     try {
       const url = `/api/go/decision?symbol=${encodeURIComponent(sym)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode)}&delta_pref=${encodeURIComponent(state.goDelta)}`;
       const res = await fetch(url);
-      const data = await res.json();
-      if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("GO Desk", res, data))) {
         const card = document.getElementById("go-primary-card");
         if (card) card.innerHTML = `<div class="go-muted">${data.detail || "GO desk unavailable"}</div>`;
         return;
@@ -2750,6 +2787,7 @@
       }
       loadGoAlerts();
     } catch (err) {
+      setFetchDegraded("GO Desk", err.message || "network error");
       const card = document.getElementById("go-primary-card");
       if (card) card.innerHTML = `<div class="go-muted">GO desk error</div>`;
     }
@@ -3151,11 +3189,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
-      const data = await res.json();
-      if (!res.ok) {
-        showToast(data.detail || "Cockpit data unavailable");
-        return;
-      }
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Cockpit", res, data))) return;
       // Discard stale in-flight response if index switched
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) {
@@ -3707,14 +3742,18 @@
               stateBadgeHtml = `<span style="background:rgba(56,189,248,.15);color:var(--spark);border:1px solid rgba(56,189,248,.4);padding:2px 7px;border-radius:4px;font-size:0.68rem;font-weight:800">⚡ QUALIFIED</span>`;
             }
 
-            // Probabilities & Greeks
-            const pT1 = Math.round((c.p_touch_target_1 || 0.65) * 100);
-            const pSl = Math.round((c.p_touch_sl || 0.35) * 100);
-            const evPts = Number(c.net_ev_pts || 18.5).toFixed(1);
-            const deltaApprox = Number(c.delta_approx || (String(c.side).toUpperCase() === "CE" ? 0.50 : -0.50)).toFixed(2);
+            // Probabilities & Greeks — never invent 0.65 / 0.35 / 18.5 / ±0.50
+            const pT1 = (c.p_touch_target_1 != null && Number(c.p_touch_target_1) > 0)
+              ? Math.round(Number(c.p_touch_target_1) * 100) : null;
+            const pSl = (c.p_touch_sl != null && Number(c.p_touch_sl) > 0)
+              ? Math.round(Number(c.p_touch_sl) * 100) : null;
+            const evPts = (c.net_ev_pts != null && Number.isFinite(Number(c.net_ev_pts)))
+              ? Number(c.net_ev_pts).toFixed(1) : null;
+            const deltaApprox = (c.delta_approx != null && Number.isFinite(Number(c.delta_approx)))
+              ? Number(c.delta_approx).toFixed(2) : null;
 
             // Rationale & Tags
-            const rationaleText = c.rationale || "Institutional gamma concentration setup.";
+            const rationaleText = c.rationale || "—";
             const tags = Array.isArray(c.catalyst_tags) ? c.catalyst_tags : [];
             const tagsHtml = tags.map((t) => `<span style="font-size:0.68rem;background:var(--surface-3);color:var(--ink-mute);padding:2px 7px;border-radius:4px;border:1px solid var(--line)">${t}</span>`).join("");
 
@@ -3781,7 +3820,7 @@
                         Score ${score}/100 (${c.conviction_label || "Active Thesis"})
                       </span>
                     </div>
-                    <span style="font-size:0.74rem;color:var(--ink-mute)">R:R <b>${c.risk_reward_ratio || "1 : 2.5"}</b></span>
+                    <span style="font-size:0.74rem;color:var(--ink-mute)">R:R <b>${c.risk_reward_ratio || "—"}</b></span>
                   </div>
 
                   <!-- Expanded LTP & MTM Strip -->
@@ -3840,8 +3879,8 @@
 
                   <!-- Probabilities & Delta Strip -->
                   <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-3);padding:5px 8px;border-radius:4px;margin:6px 0">
-                    <span>P(T1): <b style="color:var(--go)">${pT1}%</b> · P(SL): <b style="color:var(--stop)">${pSl}%</b></span>
-                    <span>EV: <b style="color:var(--go)">+${evPts} pts</b> · Δ ~${deltaApprox}</span>
+                    <span>P(T1): <b style="color:var(--go)">${pT1 != null ? pT1 + "%" : "—"}</b> · P(SL): <b style="color:var(--stop)">${pSl != null ? pSl + "%" : "—"}</b></span>
+                    <span>EV: <b style="color:var(--go)">${evPts != null ? "+" + evPts + " pts" : "—"}</b> · Δ ~${deltaApprox != null ? deltaApprox : "—"}</span>
                   </div>
 
                   <!-- Institutional Setup Narrative & Catalyst Tags -->
@@ -5362,7 +5401,11 @@
     const defTgtOffset = isSensex ? 250.0 : (isBnf ? 180.0 : 70.0);
     const defSlOffset = isSensex ? 150.0 : (isBnf ? 100.0 : 40.0);
 
-    const baseSpot = (state.teData && state.teData.spot) ? state.teData.spot : (state.spot || (isSensex ? 75000.0 : (isBnf ? 52000.0 : 24500.0)));
+    const baseSpot = (state.teData && state.teData.spot) ? state.teData.spot : (state.spot > 0 ? state.spot : 0);
+    if (!(baseSpot > 0)) {
+      if (typeof showToast === "function") showToast("TE preset needs live spot — no index fallback fill");
+      return;
+    }
     const ceRadio = document.querySelector('input[name="te_calc_type"][value="CE"]');
     const peRadio = document.querySelector('input[name="te_calc_type"][value="PE"]');
 
@@ -5697,8 +5740,8 @@
     try {
       const url = `/api/go/feed?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode || "directional")}`;
       const res = await fetch(url);
-      const data = await res.json();
-      if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("GO Desk", res, data))) {
         feed.innerHTML = `<div class="go-muted">${data.detail || "GO Desk unavailable"}</div>`;
         return;
       }
@@ -5742,7 +5785,8 @@
         }).catch(() => {});
       }
     } catch (e) {
-      feed.innerHTML = `<div class="go-muted">GO Desk error</div>`;
+      setFetchDegraded("GO Desk", e.message || "network error");
+      feed.innerHTML = `<div class="go-muted">GO Desk error — ${e.message || "unavailable"}</div>`;
     }
   }
 
@@ -5750,7 +5794,8 @@
     try {
       loadGoDeskFeed();
       const res = await fetch(`/api/recommendations?symbol=${state.symbol}&window=${state.window}&capital=${state.capital}&risk=${state.riskPct}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Recommendations", res, data))) return;
       const lotEl = document.getElementById("hud-lot-size");
       const lot = data.hud && data.hud.lot_size;
       if (lotEl && lot) lotEl.textContent = `${lot} Qty/lot`;
@@ -5852,6 +5897,7 @@
       loadRecommendationHistory();
       loadSentinelRecommendations();
     } catch (e) {
+      setFetchDegraded("Recommendations", e.message || "network error");
       console.error("Error loading recommendations:", e);
     }
   }
@@ -6839,8 +6885,8 @@
           ${spreadBoxHtml}
 
           <div style="display:flex;justify-content:space-between;font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);background:var(--surface-2);padding:5px 10px;border-radius:4px;margin:6px 0">
-            <span>P(T1): <b style="color:var(--go)">${Math.round((best.p_touch_target_1 || 0.65) * 100)}%</b> · P(SL): <b style="color:var(--stop)">${Math.round((best.p_touch_sl || 0.35) * 100)}%</b></span>
-            <span>EV: <b style="color:${(best.net_ev_pts || 0) >= 0 ? "var(--go)" : "var(--stop)"}">${(best.net_ev_pts || 0) >= 0 ? "+" : ""}${Number(best.net_ev_pts || 0).toFixed(1)} pts</b> · Δ ~${Number(best.delta_approx || 0.50).toFixed(2)}</span>
+            <span>P(T1): <b style="color:var(--go)">${(best.p_touch_target_1 != null && Number(best.p_touch_target_1) > 0) ? Math.round(Number(best.p_touch_target_1) * 100) + "%" : "—"}</b> · P(SL): <b style="color:var(--stop)">${(best.p_touch_sl != null && Number(best.p_touch_sl) > 0) ? Math.round(Number(best.p_touch_sl) * 100) + "%" : "—"}</b></span>
+            <span>EV: <b style="color:${(best.net_ev_pts != null && Number(best.net_ev_pts) >= 0) ? "var(--go)" : "var(--stop)"}">${best.net_ev_pts != null && Number.isFinite(Number(best.net_ev_pts)) ? ((Number(best.net_ev_pts) >= 0 ? "+" : "") + Number(best.net_ev_pts).toFixed(1) + " pts") : "—"}</b> · Δ ~${best.delta_approx != null && Number.isFinite(Number(best.delta_approx)) ? Number(best.delta_approx).toFixed(2) : "—"}</span>
           </div>
 
           <div style="font-size:0.78rem;color:var(--ink-mute);margin:8px 0">${best.rationale || ""}</div>
@@ -6879,8 +6925,8 @@
     try {
       const requestedSym = (state.symbol || "NIFTY").toUpperCase();
       const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(requestedSym)}&timeframe=${sentinelState.timeframe}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Sentinel", res, data))) return;
       // Discard stale in-flight response if index switched while fetch was running
       if (requestedSym !== (state.symbol || "").toUpperCase() ||
         (data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase())) {
@@ -7318,6 +7364,7 @@
         });
       }
     } catch (e) {
+      setFetchDegraded("Sentinel", e.message || "network error");
       console.error("Error loading sentinel tape:", e);
     }
   }
@@ -7835,7 +7882,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/signal-efficiency?symbol=${requestedSym}&period_type=${effState.period}&scope=${effState.scope}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Signal Efficiency", res, data))) return;
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
 
@@ -7980,6 +8028,7 @@
         }
       }
     } catch (e) {
+      setFetchDegraded("Signal Efficiency", e.message || "network error");
       console.error("Error loading signal efficiency:", e);
     }
   }
@@ -8043,7 +8092,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/market-intel?symbol=${requestedSym}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Market Intel", res, data))) return;
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
 
@@ -8188,6 +8238,7 @@
       renderMarketNewsList();
 
     } catch (e) {
+      setFetchDegraded("Market Intel", e.message || "network error");
       console.error("Error loading market intel:", e);
     }
   }
@@ -8196,8 +8247,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/options-analytics?symbol=${requestedSym}&window=${state.window}`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Options Analytics", res, data))) return;
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
 
@@ -8358,6 +8409,7 @@
         renderIVSkewCurve(data.iv_skew_curve);
       }
     } catch (e) {
+      setFetchDegraded("Options Analytics", e.message || "network error");
       console.error("Error loading options analytics:", e);
     }
   }
@@ -8435,7 +8487,8 @@
   async function loadJournal() {
     try {
       const res = await fetch(`/api/journal?symbol=${state.symbol}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Journal", res, data))) return;
 
       document.getElementById("journal-total-mtm").textContent = `${data.total_unrealized_mtm >= 0 ? "+" : ""}₹${data.total_unrealized_mtm.toLocaleString("en-IN")}`;
       document.getElementById("journal-total-mtm").style.color = data.total_unrealized_mtm >= 0 ? "var(--go)" : "var(--stop)";
@@ -8468,6 +8521,7 @@
         }
       }
     } catch (e) {
+      setFetchDegraded("Journal", e.message || "network error");
       console.error("Error loading journal:", e);
     }
   }
@@ -8476,7 +8530,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/scorecard?symbol=${requestedSym}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Scorecard", res, data))) return;
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
 
@@ -8550,6 +8605,7 @@
         });
       }
     } catch (e) {
+      setFetchDegraded("Scorecard", e.message || "network error");
       console.error("Error loading scorecard:", e);
     }
   }
@@ -8557,7 +8613,8 @@
   async function loadOps() {
     try {
       const res = await fetch(`/api/ops-calendar?symbol=${state.symbol}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Ops", res, data))) return;
 
       document.getElementById("ops-cb-state").textContent = data.circuit_breaker.state;
       document.getElementById("ops-poller-rtt").textContent = `${data.resilience.adaptive_poller_rtt_ms} ms`;
@@ -8590,6 +8647,7 @@
         });
       }
     } catch (e) {
+      setFetchDegraded("Ops", e.message || "network error");
       console.error("Error loading ops:", e);
     }
   }
@@ -8603,7 +8661,8 @@
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/session-commentary?symbol=${requestedSym}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!(await noteFetchResult("Commentary", res, data))) return;
       if ((data.symbol && data.symbol.toUpperCase() !== (state.symbol || "").toUpperCase()) ||
         requestedSym !== (state.symbol || "").toUpperCase()) return;
       state.commentaryData = data;
@@ -8762,6 +8821,7 @@
         }
       }
     } catch (e) {
+      setFetchDegraded("Commentary", e.message || "network error");
       console.error("Error loading commentary:", e);
     }
   }
@@ -9191,12 +9251,22 @@
         document.getElementById("val-iv-shock").textContent = `${ivS >= 0 ? "+" : ""}${ivS.toFixed(1)}%`;
         document.getElementById("val-decay-mins").textContent = `${dM} mins`;
 
-        // Black-76 Greek repricing derived from authentic contract model telemetry
-        const baseLtp = (state.teRepriceEntry && state.teRepriceEntry > 0) ? state.teRepriceEntry : 120.0;
-        const delta = (state.teRepriceDelta !== undefined) ? state.teRepriceDelta : 0.50;
-        const gamma = (state.teRepriceGamma !== undefined) ? state.teRepriceGamma : 0.0028;
-        const vega = (state.teRepriceVega !== undefined) ? state.teRepriceVega : 14.5;
-        const theta = (state.teRepriceTheta !== undefined) ? state.teRepriceTheta : -14.2;
+        // Black-76 Greek repricing — refuse invented LTP/greeks when telemetry missing
+        const baseLtp = (state.teRepriceEntry && state.teRepriceEntry > 0) ? state.teRepriceEntry : null;
+        const delta = (state.teRepriceDelta != null) ? state.teRepriceDelta : null;
+        const gamma = (state.teRepriceGamma != null) ? state.teRepriceGamma : null;
+        const vega = (state.teRepriceVega != null) ? state.teRepriceVega : null;
+        const theta = (state.teRepriceTheta != null) ? state.teRepriceTheta : null;
+        const ltpEl = document.getElementById("repriced-sample-ltp");
+        const pnlEl = document.getElementById("repriced-sample-pnl");
+        if (!(baseLtp > 0) || delta == null || gamma == null || vega == null || theta == null) {
+          if (ltpEl) ltpEl.textContent = "—";
+          if (pnlEl) {
+            pnlEl.textContent = "—";
+            pnlEl.style.color = "var(--ink-mute)";
+          }
+          return;
+        }
 
         const deltaPnL = sShift * delta + 0.5 * gamma * sShift * sShift;
         const vegaPnL = ivS * vega;
@@ -9205,9 +9275,7 @@
         const diff = repriced - baseLtp;
         const pct = baseLtp > 0 ? (diff / baseLtp) * 100.0 : 0.0;
 
-        const ltpEl = document.getElementById("repriced-sample-ltp");
         if (ltpEl) ltpEl.textContent = `₹${repriced.toFixed(2)}`;
-        const pnlEl = document.getElementById("repriced-sample-pnl");
         if (pnlEl) {
           pnlEl.textContent = `${diff >= 0 ? "+" : ""}₹${diff.toFixed(2)} · ${diff >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
           pnlEl.style.color = diff >= 0 ? "var(--go)" : "var(--stop)";

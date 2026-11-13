@@ -47,15 +47,56 @@
     if (alerts) alerts.textContent = "Alerts " + (data.active_alerts_count || 0);
   }
 
+  function paintSessionChecklist(data) {
+    const host = document.getElementById("admin-session-checklist");
+    const verdict = document.getElementById("admin-checklist-verdict");
+    if (!host) return;
+    const checks = data.checks || [];
+    host.innerHTML = checks.map(function (c) {
+      const mark = c.skipped ? "·" : (c.ok ? "✓" : "✗");
+      const color = c.skipped ? "var(--ink-mute)" : (c.ok ? "var(--go)" : "var(--stop)");
+      return "<div style=\"color:" + color + "\">" + mark + " <b>" + (c.label || c.id) + "</b>"
+        + " <span style=\"color:var(--ink-mute)\">— " + (c.detail || "") + "</span></div>";
+    }).join("");
+    if (verdict) {
+      if (data.pass) {
+        verdict.textContent = "PASS";
+        verdict.style.color = "var(--go)";
+        verdict.style.background = "var(--go-bg)";
+      } else {
+        verdict.textContent = "FAIL · " + ((data.failed || []).join(",") || "checks");
+        verdict.style.color = "var(--stop)";
+        verdict.style.background = "var(--stop-bg, rgba(239,68,68,0.12))";
+      }
+    }
+  }
+
+  async function loadSessionChecklist() {
+    try {
+      const res = await fetch("/api/admin/session-checklist");
+      if (!res.ok) return;
+      const data = await res.json();
+      paintSessionChecklist(data);
+    } catch (err) {
+      /* retried with admin chrome poll */
+    }
+  }
+
   async function refreshAdminChrome() {
     try {
       const res = await fetch("/api/admin/status");
-      if (!res.ok) return;
+      if (!res.ok) {
+        const alerts = document.getElementById("admin-kpi-alerts");
+        if (alerts) alerts.textContent = "Status HTTP " + res.status;
+        return;
+      }
       const data = await res.json();
       paintStatus(data);
       loadOps();
+      loadSessionChecklist();
     } catch (err) {
-      /* status is retried on the next poll */
+      const alerts = document.getElementById("admin-kpi-alerts");
+      if (alerts) alerts.textContent = "Status unreachable";
     }
   }
 

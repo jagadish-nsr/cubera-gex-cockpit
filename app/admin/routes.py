@@ -89,6 +89,16 @@ def register_admin_routes(app: FastAPI) -> None:
             "active_alerts_count": db.badge_count(),
         }
 
+    @app.get("/api/admin/session-checklist")
+    def admin_session_checklist():
+        """Automated first-30-min open checklist (docs/sli-slo.md)."""
+        try:
+            from web_server import APP_VERSION
+        except Exception:
+            APP_VERSION = None
+        from app.session_checklist import build_session_checklist
+        return build_session_checklist(version=APP_VERSION)
+
     @app.get("/api/admin/ops")
     def admin_ops(
         process: Optional[str] = Query(None),

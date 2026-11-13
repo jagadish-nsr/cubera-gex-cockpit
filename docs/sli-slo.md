@@ -1,0 +1,45 @@
+# SLIs / SLOs — Cubera GEX Cockpit
+
+Decision-support reliability. A silent miss (stale OI as live, empty Ideas while
+the UI looks healthy) is worse than a loud 503.
+
+## Service level indicators
+
+| SLI | Measurement | Where |
+|-----|-------------|--------|
+| **Liveness** | Process answers `GET /api/health` with version | CD probe |
+| **Readiness** | `ready=true` when F&O session open | `/api/health` + `app/readiness.py` |
+| **Chain freshness** | Max publish age across NIFTY/BN/SX ≤ 120s during ingest | readiness probes.chains |
+| **Spot freshness** | Spot quote age ≤ 45s during session | readiness probes.spots |
+| **Feed freshness** | WS last tick age ≤ 30s during 09:15–15:30 | readiness probes.feed / health daemon |
+| **Circuit health** | No OPEN circuit on any index | readiness probes.circuits |
+| **Ideas gate wiring** | After ~09:16, Ideas refuse reason ≠ `Missing session VWAP` for a live bar | Admin session checklist |
+| **Zero fabrication** | Execute / serialize / HTML seeds never invent premium/strike/spot | hard_gates + UI lessons |
+
+## Service level objectives (session)
+
+| SLO | Target | Window |
+|-----|--------|--------|
+| Readiness during continuous session | ≥ 99% of minutes `ready=true` (excluding known CB cooldown ≤ 120s) | 09:20–15:20 IST |
+| Spot feed silence CRITICAL alerts | 0 unexplained (>30s with WS started) | per session |
+| Watchdog mid-session restarts | 0 | per session |
+| Ideas VWAP blackout | 0 sessions with continuous `rec.refused` Missing session VWAP after first 1m bar | per session |
+| Fabricated paper ticket | 0 (route must 400) | always |
+
+## Operator session-open checklist (automated)
+
+Admin tab → Session Open Checklist (`GET /api/admin/session-checklist`):
+
+1. Health version present
+2. Readiness ready (or off-session)
+3. At least one fresh chain + spot
+4. Feed live when market open
+5. No OPEN circuits
+6. After 09:16 IST: Ideas batch present or refuse ≠ Missing session VWAP
+
+Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft flag when walls equal.
+
+## Error budget policy
+
+- Burn budget → investigate Admin Observability (chain p95, loop lag, CB) before changing model thresholds.
+- Do not lower CONT / VWAP gates to clear an Ideas blackout — fix wiring first (`app/hard_gates.py`).
