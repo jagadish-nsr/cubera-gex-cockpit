@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 
 import pytest
 
+from sentinel.engine import rvol as rvol_mod
 from sentinel.engine.rvol import (
     BASELINE_FIT_DAYS,
     BASELINE_HOLDOUT_DAY,
@@ -18,9 +19,20 @@ from sentinel.engine.rvol import (
     _get_tod_baseline,
     _index_key,
     compute_tod_rvol,
+    invalidate_live_curves,
 )
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+@pytest.fixture(autouse=True)
+def _force_frozen_curves(tmp_path, monkeypatch):
+    """Baseline arithmetic tests pin shipped frozen curves (ignore live journal)."""
+    missing = tmp_path / "no_rvol_baseline.json"
+    monkeypatch.setattr(rvol_mod, "_DEFAULT_PROFILE", missing)
+    invalidate_live_curves()
+    yield
+    invalidate_live_curves()
 
 
 def _ist(h: int, m: int) -> datetime:

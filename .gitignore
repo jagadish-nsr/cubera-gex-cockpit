@@ -23,6 +23,8 @@ data/journal/holidays/
 data/journal/*.pkl
 data/journal/backups/
 data/journal/dhan_sync_state.json
+data/journal/rvol_baseline.json
+data/journal/rvol_baseline.json.tmp
 data/journal/.*
 data/sentinel.db*
 

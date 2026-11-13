@@ -42,6 +42,8 @@ _gap_count = 0
 _gap_lock = threading.Lock()
 _wal_truncate_done: set[str] = set()
 _wal_truncate_lock = threading.Lock()
+_rvol_refit_done: set[str] = set()
+_rvol_refit_lock = threading.Lock()
 _task: asyncio.Task | None = None
 _wal_thread: threading.Thread | None = None
 _wal_thread_stop = threading.Event()
@@ -73,6 +75,8 @@ def reset_gap_cache() -> None:
         _gap_count = 0
     with _wal_truncate_lock:
         _wal_truncate_done.clear()
+    with _rvol_refit_lock:
+        _rvol_refit_done.clear()
 
 
 def _iso(now: datetime) -> str:
@@ -114,6 +118,7 @@ def evaluate_alerts(
     _wal_alert(root, stamp)
     if owns_sentinel_wal():
         _wal_truncate_post_close(root, now, stamp)
+        _rvol_baseline_post_close(root, now)
     if include_gaps:
         _gap_alert(root, now, stamp)
         _reclassify_backfill_only_gap_alerts(stamp)
@@ -265,6 +270,53 @@ def _wal_truncate_post_close(root: Path, now: datetime, stamp: str) -> None:
         log.warning("sentinel WAL TRUNCATE failed: %s", exc)
 
 
+def _rvol_baseline_post_close(root: Path, now: datetime) -> None:
+    """Once per trading day after 15:45 IST, refit TOD RVol U-curves from sentinel bars.
+
+    Rejected fits leave the prior ``data/journal/rvol_baseline.json`` untouched;
+    ``compute_tod_rvol`` keeps frozen curves until a validated write lands.
+    CONT / ABS / CVD gates are never modified here.
+    """
+    now = as_ist(now)
+    if not is_trading_day(now.date()):
+        return
+    if now.time().replace(tzinfo=None) < time(15, 45):
+        return
+    key = now.date().isoformat()
+    with _rvol_refit_lock:
+        if key in _rvol_refit_done:
+            return
+    db_path = root / "data" / "sentinel.db"
+    profile_path = root / "data" / "journal" / "rvol_baseline.json"
+    if not db_path.exists():
+        with _rvol_refit_lock:
+            _rvol_refit_done.add(key)
+        return
+    try:
+        from sentinel.engine.rvol_fit import refit_and_persist
+
+        report = refit_and_persist(db_path, profile_path, as_of=now.date())
+        with _rvol_refit_lock:
+            _rvol_refit_done.add(key)
+        if report.ok:
+            log.info(
+                "rvol baseline post-close refit ok (%s) → %s prevalence=%s",
+                key,
+                report.path,
+                {k: round(v, 3) for k, v in report.prevalence.items()},
+            )
+        else:
+            log.warning(
+                "rvol baseline post-close refit refused (%s): %s",
+                key,
+                report.reason,
+            )
+    except Exception as exc:
+        log.warning("rvol baseline post-close refit failed: %s", exc)
+        with _rvol_refit_lock:
+            _rvol_refit_done.add(key)
+
+
 def _wal_alert(root: Path, stamp: str) -> None:
     path = root / "data" / "sentinel.db-wal"
     db_path = root / "data" / "sentinel.db"
@@ -299,7 +351,7 @@ def _wal_alert(root: Path, stamp: str) -> None:
 
 
 def run_wal_maintenance(root: Path | None = None, now: datetime | None = None) -> None:
-    """PASSIVE size check + post-close TRUNCATE. Safe for ingest thread (A5)."""
+    """PASSIVE size check + post-close TRUNCATE + RVol baseline refit. Safe for ingest (A5)."""
     if not owns_sentinel_wal():
         return
     now = as_ist(now or now_ist())
@@ -307,6 +359,7 @@ def run_wal_maintenance(root: Path | None = None, now: datetime | None = None) -
     stamp = _iso(now)
     _wal_alert(root, stamp)
     _wal_truncate_post_close(root, now, stamp)
+    _rvol_baseline_post_close(root, now)
 
 
 def start_wal_maintenance_thread(*, interval_s: float = 60.0) -> None:
