@@ -65,5 +65,7 @@ Manual confirmations that stay human: GO FIRE under trend, BN shared-gamma soft 
 | Hard-gate wiring | `tests/test_hard_gates.py` (VWAP / FIRE premium / TE IV / blast pin / tab banners) | promote gate |
 | Lot/expiry VERIFY | `GET /api/admin/verify-exchange` | Admin Ops card |
 | Client reliability | `ReliabilityController` + telemetry chip + prefs catch audit | `tests/test_client_reliability.py` |
+| Chaos drill (:8660) | Fault inject → checklist FAIL; no live DB write | `scripts/chaos_drill.py` / `docs/chaos-drill.md` |
+| Pre-open soak | Dual serve health ≥ 30m, burn ≤ 10%, no watchdog | `scripts/pre_open_soak.py` |
 
 

@@ -125,6 +125,36 @@ def register_admin_routes(app: FastAPI) -> None:
         from app.verify_exchange import build_verify_drill
         return build_verify_drill()
 
+    @app.get("/api/admin/reliability-scorecard")
+    def admin_reliability_scorecard(session_date: Optional[str] = Query(None)):
+        """Session-eval reliability scorecard (Pillar G4). Never invents counts."""
+        try:
+            from web_server import APP_VERSION
+        except Exception:
+            APP_VERSION = None
+        from app.readiness import build_readiness
+        from app.reliability_scorecard import build_reliability_scorecard
+        from app.session_checklist import build_session_checklist
+        from app.admin.obs_snapshot import build_ops_payload
+        import config
+
+        health = {
+            "version": APP_VERSION,
+            "readiness": build_readiness(market_open=bool(config.is_market_open())),
+        }
+        try:
+            ops = build_ops_payload(window="15m", limit=50)
+        except Exception:
+            ops = {}
+        checklist = build_session_checklist(version=APP_VERSION)
+        return build_reliability_scorecard(
+            session_date=session_date,
+            version=APP_VERSION,
+            health=health,
+            ops=ops,
+            checklist=checklist,
+        )
+
     @app.get("/api/admin/ops")
     def admin_ops(
         process: Optional[str] = Query(None),

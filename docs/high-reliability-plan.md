@@ -257,6 +257,8 @@ Call the system highly reliable only when **all** are true for two consecutive f
 | [process-isolation-design.md](process-isolation-design.md) | Locked split contracts |
 | [sli-slo.md](sli-slo.md) | SLI/SLO numbers + degrade modes (Pillar C/D) |
 | [backup-restore.md](backup-restore.md) | Nightly backup + scratch restore runbook (Phase D) |
+| [chaos-drill.md](chaos-drill.md) | Chaos host :8660 + soak + scorecard (Pillar G) |
+| [session-evaluation-TEMPLATE.md](session-evaluation-TEMPLATE.md) | Session notes incl. reliability scorecard |
 | **This file** | Phase B+ high-reliability roadmap |
 | Session eval `docs/session-evaluation-YYYY-MM-DD.md` | Empirical burn evidence |
 
