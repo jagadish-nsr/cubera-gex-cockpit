@@ -43,9 +43,48 @@ def _key(symbol: str, window: str | None = None):
     return sym
 
 
+def _fetched_epoch(fetched) -> float | None:
+    """Normalize store ``fetched`` (datetime or epoch float) to unix seconds."""
+    if fetched is None:
+        return None
+    if hasattr(fetched, "timestamp"):
+        try:
+            return float(fetched.timestamp())
+        except Exception:
+            return None
+    try:
+        val = float(fetched)
+        return val if val > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def latest_any_window(symbol: str):
+    """Freshest in-memory snap for ``symbol`` across bare and windowed keys."""
+    sym = (symbol or "").upper().strip()
+    best = None
+    best_ts: float | None = None
+    for key, rec in list(_STORE.items()):
+        if key == sym or (isinstance(key, tuple) and len(key) >= 1 and key[0] == sym):
+            if not isinstance(rec, dict) or rec.get("data") is None:
+                continue
+            ts = _fetched_epoch(rec.get("fetched"))
+            if best is None or (ts is not None and (best_ts is None or ts > best_ts)):
+                best = rec
+                best_ts = ts
+    return best
+
+
 def latest(symbol: str, window: str | None = None):
-    """The most recently published snapshot dict for ``symbol`` (or None). Never blocks."""
-    return _STORE.get(_key(symbol, window))
+    """The most recently published snapshot dict for ``symbol`` (or None). Never blocks.
+
+    With ``window`` set, looks up that key only. With ``window=None``, returns the
+    freshest snap across the bare symbol and any ``(symbol, window)`` keys so
+    readiness probes match publishers that store under ``current_week``.
+    """
+    if window:
+        return _STORE.get(_key(symbol, window))
+    return latest_any_window(symbol)
 
 
 def _event(key) -> threading.Event:
@@ -151,16 +190,25 @@ def _persist_pickle(symbol: str, window: str | None, data) -> None:
     if any(k in src for k in ("demo", "synthetic", "mock", "test")):
         return
     try:
-        from app.latest_snap import snap_path_for, write_latest_snap
+        from app.latest_snap import snap_path_for, write_latest_snap, write_snap_meta
 
+        fetched_at = datetime.now(timezone.utc)
         write_latest_snap(
             snap_path_for(symbol, _SNAP_DIR),
             {
                 "data": data,
                 "symbol": symbol.upper(),
                 "window": window,
-                "fetched_at": datetime.now(timezone.utc),
+                "fetched_at": fetched_at,
             },
+        )
+        write_snap_meta(
+            symbol,
+            fetched_at_epoch=fetched_at.timestamp(),
+            window=window,
+            degraded=bool(getattr(data, "is_degraded", False)),
+            degraded_reason=str(getattr(data, "degraded_reason", "") or ""),
+            directory=_SNAP_DIR,
         )
     except Exception as exc:
         event(

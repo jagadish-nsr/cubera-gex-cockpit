@@ -15,6 +15,7 @@ Off-session, readiness is True (book comes from pickle/LKGS; Ideas stay closed).
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -37,6 +38,44 @@ MODE_CHAIN_DEGRADED = "CHAIN_DEGRADED"
 MODE_NOT_READY = "NOT_READY"
 
 
+def _ingest_external() -> bool:
+    return os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1"
+
+
+def _fetched_epoch(fetched) -> float | None:
+    from app.live_fetcher import _fetched_epoch as _lf_epoch
+    return _lf_epoch(fetched)
+
+
+def _chain_from_meta(symbol: str, out: dict[str, Any]) -> dict[str, Any]:
+    """EXTERNAL / memory-miss path: age from snap meta (no unpickle)."""
+    from app.latest_snap import read_snap_meta
+
+    meta = read_snap_meta(symbol)
+    if not meta:
+        out["reason"] = "no_published_chain"
+        return out
+    try:
+        fetched = float(meta["fetched_at_epoch"])
+    except (TypeError, ValueError, KeyError):
+        out["reason"] = "no_published_chain"
+        return out
+    age = max(0.0, time.time() - fetched) if fetched > 0 else None
+    out["has_snapshot"] = True
+    out["age_s"] = round(age, 1) if age is not None else None
+    out["degraded"] = bool(meta.get("degraded"))
+    out["source"] = meta.get("source") or "snap_meta"
+    if age is not None and age > CHAIN_STALE_S:
+        out["reason"] = f"chain_age_{int(age)}s"
+        return out
+    if out["degraded"]:
+        out["reason"] = str(meta.get("degraded_reason") or "lkgs_degraded")
+        out["ok"] = age is None or age <= CHAIN_DEGRADED_S
+        return out
+    out["ok"] = True
+    return out
+
+
 def _chain_probe(symbol: str) -> dict[str, Any]:
     out: dict[str, Any] = {
         "symbol": symbol,
@@ -49,29 +88,57 @@ def _chain_probe(symbol: str) -> dict[str, Any]:
     try:
         from app import live_fetcher
         rec = live_fetcher.latest(symbol)
-        if not rec or not rec.get("data"):
-            out["reason"] = "no_published_chain"
+        if rec and rec.get("data"):
+            fetched = _fetched_epoch(rec.get("fetched"))
+            age = (time.time() - fetched) if fetched is not None else None
+            out["has_snapshot"] = True
+            out["age_s"] = round(age, 1) if age is not None else None
+            out["source"] = "memory"
+            data = rec["data"]
+            degraded = bool(getattr(data, "is_degraded", False))
+            out["degraded"] = degraded
+            if age is not None and age > CHAIN_STALE_S:
+                out["reason"] = f"chain_age_{int(age)}s"
+                return out
+            if degraded:
+                out["reason"] = str(getattr(data, "degraded_reason", "") or "lkgs_degraded")
+                # Still usable as degraded book — ok=False only when too old or missing.
+                out["ok"] = age is None or age <= CHAIN_DEGRADED_S
+                return out
+            out["ok"] = True
             return out
-        fetched = float(rec.get("fetched") or 0.0)
-        age = (time.time() - fetched) if fetched > 0 else None
-        out["has_snapshot"] = True
-        out["age_s"] = round(age, 1) if age is not None else None
-        data = rec["data"]
-        degraded = bool(getattr(data, "is_degraded", False))
-        out["degraded"] = degraded
-        if age is not None and age > CHAIN_STALE_S:
-            out["reason"] = f"chain_age_{int(age)}s"
-            return out
-        if degraded:
-            out["reason"] = str(getattr(data, "degraded_reason", "") or "lkgs_degraded")
-            # Still usable as degraded book — ok=False only when too old or missing.
-            out["ok"] = age is None or age <= CHAIN_DEGRADED_S
-            return out
-        out["ok"] = True
-        return out
+        # Memory miss: shared pickle meta (EXTERNAL serve + combined cold start).
+        return _chain_from_meta(symbol, out)
     except Exception as exc:
         out["reason"] = f"chain_probe_error:{exc}"
         return out
+
+
+def _spot_from_sqlite(symbol: str, out: dict[str, Any]) -> dict[str, Any]:
+    """EXTERNAL path: spot age from ingest-persisted session_snapshots."""
+    from data.market_snapshot import as_of_datetime, get_snapshot
+
+    snap = get_snapshot(symbol)
+    if not snap:
+        out["reason"] = "no_spot_tick"
+        return out
+    spot = float(snap.get("spot") or 0.0)
+    out["spot"] = spot if spot > 0 else None
+    dt = as_of_datetime(snap.get("as_of") or snap.get("updated_at"))
+    if dt is None:
+        out["reason"] = "no_spot_tick"
+        return out
+    age = max(0.0, time.time() - dt.timestamp())
+    out["age_s"] = round(age, 1)
+    out["source"] = "sqlite"
+    if spot <= 0:
+        out["reason"] = "spot_missing"
+        return out
+    if age > SPOT_STALE_S:
+        out["reason"] = f"spot_age_{int(age)}s"
+        return out
+    out["ok"] = True
+    return out
 
 
 def _spot_probe(symbol: str) -> dict[str, Any]:
@@ -85,28 +152,37 @@ def _spot_probe(symbol: str) -> dict[str, Any]:
     try:
         from app.spot_ticker import _STORE, STALE_AFTER_S
         rec = _STORE.get(symbol)
-        if not rec:
+        if rec:
+            age = time.time() - float(rec.get("at") or 0.0)
+            out["age_s"] = round(age, 1)
+            quote = rec.get("quote") or {}
+            spot = float(quote.get("spot") or (rec.get("ohlc") or {}).get("ltp") or 0.0)
+            out["spot"] = spot if spot > 0 else None
+            out["source"] = rec.get("source") or "memory"
+            if age > STALE_AFTER_S:
+                out["reason"] = f"spot_age_{int(age)}s"
+            elif spot <= 0:
+                out["reason"] = "spot_missing"
+            else:
+                out["ok"] = True
+                return out
+            if out["ok"]:
+                return out
+            # Stale/missing local — EXTERNAL may still have a fresh SQLite print.
+            if not _ingest_external():
+                return out
+        elif not _ingest_external():
             out["reason"] = "no_spot_tick"
             return out
-        age = time.time() - float(rec.get("at") or 0.0)
-        out["age_s"] = round(age, 1)
-        quote = rec.get("quote") or {}
-        spot = float(quote.get("spot") or (rec.get("ohlc") or {}).get("ltp") or 0.0)
-        out["spot"] = spot if spot > 0 else None
-        if age > STALE_AFTER_S:
-            out["reason"] = f"spot_age_{int(age)}s"
-            return out
-        if spot <= 0:
-            out["reason"] = "spot_missing"
-            return out
-        out["ok"] = True
-        return out
+        return _spot_from_sqlite(symbol, out)
     except Exception as exc:
         out["reason"] = f"spot_probe_error:{exc}"
         return out
 
 
 def _feed_probe() -> dict[str, Any]:
+    if _ingest_external():
+        return _feed_probe_from_heartbeat()
     try:
         from app.ws_spot_feed import get_status
         st = get_status()
@@ -127,6 +203,7 @@ def _feed_probe() -> dict[str, Any]:
             "ok": ok,
             "reason": reason if not ok else "",
             "ws_error": st.get("ws_error"),
+            "source": "local",
         }
     except Exception as exc:
         return {
@@ -136,7 +213,65 @@ def _feed_probe() -> dict[str, Any]:
             "ok": False,
             "reason": f"feed_probe_error:{exc}",
             "ws_error": str(exc),
+            "source": "local",
         }
+
+
+def _feed_probe_from_heartbeat() -> dict[str, Any]:
+    """EXTERNAL serve: feed health comes from ingest heartbeat detail, not local WS."""
+    from app.ingest_heartbeat import read_beat
+
+    beat = read_beat()
+    if beat is None:
+        return {
+            "ws_connected": False,
+            "is_live": False,
+            "last_tick_age_s": None,
+            "ok": False,
+            "reason": "feed_detail_missing",
+            "ws_error": None,
+            "source": "ingest_heartbeat",
+        }
+    detail = beat.get("detail") if isinstance(beat.get("detail"), dict) else {}
+    if "ws_connected" not in detail and "is_live" not in detail:
+        return {
+            "ws_connected": False,
+            "is_live": False,
+            "last_tick_age_s": None,
+            "ok": False,
+            "reason": "feed_detail_missing",
+            "ws_error": None,
+            "source": "ingest_heartbeat",
+        }
+    age = detail.get("last_tick_age_s")
+    ws_connected = bool(detail.get("ws_connected"))
+    is_live = bool(detail.get("is_live"))
+    ok = is_live
+    reason = ""
+    if not ws_connected:
+        reason = "ws_disconnected"
+        ok = False
+    elif age is None and not is_live:
+        reason = "no_ticks"
+        ok = False
+    elif age is not None:
+        try:
+            age_f = float(age)
+            if age_f > FEED_STALE_S:
+                reason = f"feed_age_{int(age_f)}s"
+                ok = False
+            age = age_f
+        except (TypeError, ValueError):
+            age = None
+    return {
+        "ws_connected": ws_connected,
+        "is_live": is_live,
+        "last_tick_age_s": age,
+        "ok": ok,
+        "reason": reason if not ok else "",
+        "ws_error": detail.get("ws_error"),
+        "source": "ingest_heartbeat",
+    }
 
 
 def _circuit_probe(symbol: str) -> dict[str, Any]:
@@ -165,10 +300,9 @@ def _circuit_probe(symbol: str) -> dict[str, Any]:
 
 def _ingest_probe() -> dict[str, Any]:
     """When ingest is external, require a fresh heartbeat. Combined mode always ok if file fresh or absent-with-local-owner."""
-    import os
     from app.ingest_heartbeat import probe as beat_probe
 
-    external = os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1"
+    external = _ingest_external()
     beat = beat_probe(stale_after_s=INGEST_HEARTBEAT_STALE_S)
     beat["required"] = external
     if not external:

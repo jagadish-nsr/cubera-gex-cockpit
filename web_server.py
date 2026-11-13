@@ -965,7 +965,13 @@ def _ensure_chain_armer() -> None:
 
 
 def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
-    """Wake/start the single background chain fetcher. Never pulls Dhan on this thread."""
+    """Wake/start the single background chain fetcher. Never pulls Dhan on this thread.
+
+    EXTERNAL serve must not start chain threads — ingest owns publish; dual writers
+    violate process-isolation-design.md.
+    """
+    if os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1":
+        return
     from app.live_fetcher import ensure
     ensure(symbol, False, None, _CHAIN_INTERVAL_S, _CHAIN_LEAD_S, window=window)
 

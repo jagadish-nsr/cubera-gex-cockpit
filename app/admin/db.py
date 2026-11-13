@@ -609,6 +609,33 @@ def count_events_by_name(since_iso: str, names: list[str]) -> dict[str, int]:
     return out
 
 
+def list_readiness_minutes(session_date: str) -> list[dict]:
+    """``slo.readiness.minute`` rows for cash window 09:20–15:20 IST on ``session_date``."""
+    start = f"{session_date}T09:20:00+05:30"
+    end = f"{session_date}T15:20:00+05:30"
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT ts, message, fields_json
+                  FROM ops_events
+                 WHERE event = 'slo.readiness.minute'
+                   AND ts >= ? AND ts <= ?
+                 ORDER BY ts ASC, id ASC
+                """,
+                (start, end),
+            ).fetchall()
+        finally:
+            conn.close()
+    out = []
+    for row in rows:
+        item = _row_dict(row)
+        item["fields"] = _loads(item.pop("fields_json", None))
+        out.append(item)
+    return out
+
+
 def _percentile(vals: list[float], q: float) -> float:
     if not vals:
         return 0.0

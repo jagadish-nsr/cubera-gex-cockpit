@@ -42,15 +42,40 @@ def set_path_for_tests(path: Path | None) -> None:
     _path_override = path
 
 
+def _local_feed_detail() -> dict[str, Any]:
+    """WS feed fields for EXTERNAL serve to read via heartbeat (no local WS there)."""
+    try:
+        from app.ws_spot_feed import get_status
+        st = get_status() or {}
+        return {
+            "ws_connected": bool(st.get("ws_connected")),
+            "is_live": bool(st.get("is_live")),
+            "last_tick_age_s": st.get("last_tick_age_s"),
+            "ws_error": st.get("ws_error"),
+        }
+    except Exception as exc:
+        return {
+            "ws_connected": False,
+            "is_live": False,
+            "last_tick_age_s": None,
+            "ws_error": str(exc),
+        }
+
+
 def write_beat(*, role: str | None = None, detail: dict[str, Any] | None = None) -> Path:
-    """Atomically write a heartbeat JSON file. Returns the path written."""
+    """Atomically write a heartbeat JSON file. Returns the path written.
+
+    Always merges local WS feed status into ``detail`` so EXTERNAL serve readiness
+    can judge feed health without owning the Dhan socket.
+    """
     path = heartbeat_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    merged = {**_local_feed_detail(), **(detail or {})}
     payload = {
         "ts": time.time(),
         "pid": os.getpid(),
         "role": role or os.environ.get("COCKPIT_ROLE", "combined"),
-        "detail": detail or {},
+        "detail": merged,
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")

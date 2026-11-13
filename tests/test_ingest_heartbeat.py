@@ -48,7 +48,9 @@ def test_readiness_external_requires_heartbeat(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("COCKPIT_INGEST_EXTERNAL", "1")
     try:
         with mock.patch("app.live_fetcher.latest", return_value=None), \
+             mock.patch("app.latest_snap.read_snap_meta", return_value=None), \
              mock.patch("app.spot_ticker._STORE", {}), \
+             mock.patch("data.market_snapshot.get_snapshot", return_value=None), \
              mock.patch("app.ws_spot_feed.get_status", return_value={
                  "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,
              }), \
@@ -64,10 +66,15 @@ def test_readiness_external_requires_heartbeat(tmp_path: Path, monkeypatch):
         assert "ingest_heartbeat" in " ".join(payload["reasons"])
         assert payload["ready"] is False
 
-        hb.write_beat(role="ingest")
+        hb.write_beat(
+            role="ingest",
+            detail={"ws_connected": True, "is_live": True, "last_tick_age_s": 1.0},
+        )
         # Still not ready (no chain/spot) but ingest reason gone
         with mock.patch("app.live_fetcher.latest", return_value=None), \
+             mock.patch("app.latest_snap.read_snap_meta", return_value=None), \
              mock.patch("app.spot_ticker._STORE", {}), \
+             mock.patch("data.market_snapshot.get_snapshot", return_value=None), \
              mock.patch("app.ws_spot_feed.get_status", return_value={
                  "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,
              }), \

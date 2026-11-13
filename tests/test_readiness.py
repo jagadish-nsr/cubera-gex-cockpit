@@ -40,6 +40,7 @@ def test_readiness_pre_open_spot_mode():
 
 def test_readiness_session_fails_without_chain_or_spot():
     with mock.patch("app.live_fetcher.latest", return_value=None), \
+         mock.patch("app.latest_snap.read_snap_meta", return_value=None), \
          mock.patch("app.spot_ticker._STORE", {}), \
          mock.patch("app.ws_spot_feed.get_status", return_value={
              "ws_connected": False, "is_live": False, "last_tick_age_s": None, "ws_error": None,
@@ -60,6 +61,7 @@ def test_readiness_session_fails_without_chain_or_spot():
 
 def test_readiness_token_dead_mode():
     with mock.patch("app.live_fetcher.latest", return_value=None), \
+         mock.patch("app.latest_snap.read_snap_meta", return_value=None), \
          mock.patch("app.spot_ticker._STORE", {}), \
          mock.patch("app.ws_spot_feed.get_status", return_value={
              "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,

@@ -66,7 +66,7 @@ tape continuity.
 |-------|------|-----------|
 | A | WAL PASSIVE checkpoint + holiday fail-loud + deep `/api/health` | Done (v5.3.117) |
 | B | Extract ingest entrypoint `scripts/run_ingest.py`; serve skips broker lanes when `COCKPIT_INGEST_EXTERNAL=1`; dual `run_prod.sh` | Done |
-| C | Shared readiness: serve fails ready if ingest heartbeat stale > 90s (session) | Done (probes.ingest) |
+| C | Shared readiness: serve fails ready if ingest heartbeat stale > 90s (session); chain/spot/feed from pickle meta + SQLite + heartbeat detail (not local empty WS) | Done (probes.ingest + EXTERNAL shared probes) |
 | D | Optional: move Sentinel tick writer fully into ingest; serve opens DB read-only | Mid-session SQLite stalls leave HTTP responsive |
 
 ## Explicit non-goals
