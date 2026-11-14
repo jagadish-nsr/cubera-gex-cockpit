@@ -143,14 +143,24 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
             if not exp_raw:
                 continue  # cannot place on the expiry timeline -> skip this contract
             strike = side.get("strikePrice", row.get("strikePrice"))
-            rows.append({
+            out_row: dict = {
                 "expiry": _parse_nse_date(exp_raw),
                 "strike": float(strike),
                 "type": typ,
                 "oi": side.get("openInterest") or 0.0,
                 "iv": _iv(side),
                 "price": _mid(side),
-            })
+            }
+            # Optional vendor greeks (Dhan live bridge). NSE omits these; never invent.
+            # from_nse_results preserves them onto dash.contracts for 25Δ skew.
+            for _gk in ("delta", "theta", "vega"):
+                if _gk not in side or side[_gk] is None:
+                    continue
+                try:
+                    out_row[_gk] = float(side[_gk])
+                except (TypeError, ValueError):
+                    continue
+            rows.append(out_row)
     if not rows:
         raise ValueError("NSE payload produced no contracts")
     return rows, float(spot)

@@ -486,6 +486,26 @@ def _ddmmyyyy(iso: str) -> str:
     return f"{d}-{m}-{y}"
 
 
+def _side_greeks(side: dict) -> dict[str, float]:
+    """Copy Dhan ``greeks`` onto the NSE-shaped side dict when present and finite.
+
+    Live ``/v2/optionchain`` returns ``greeks.delta|theta|vega`` (and gamma). The
+    cockpit Options Analytics 25Δ skew needs ``delta`` on ``dash.contracts``;
+    without this pass-through the badge stays ``insufficient data`` even when IV
+    is live (13-Nov session). Missing/zero-absent greeks are omitted — never invented.
+    """
+    raw = side.get("greeks") if isinstance(side, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key in ("delta", "theta", "vega"):
+        v = _num(raw.get(key))
+        if v is None:
+            continue
+        out[key] = float(v)
+    return out
+
+
 def _to_nse_rows(dhan_json: dict, expiry_iso: str, lot_size: int = 1) -> tuple[list[dict], float | None]:
     """One Dhan chain response -> NSE-shaped rows for ONE expiry + the underlying spot.
 
@@ -512,21 +532,23 @@ def _to_nse_rows(dhan_json: dict, expiry_iso: str, lot_size: int = 1) -> tuple[l
             poi = oi_shares_to_lots(_num(s.get(_F["prev_oi"])), lot_size)
             ltp = _num(s.get(_F["ltp"]))
             pclose = _num(s.get(_F["prev_close"]))
+            side_payload = {
+                "openInterest": oi or 0.0,
+                "changeinOpenInterest": (oi - poi) if (oi is not None and poi is not None) else 0.0,
+                "totalTradedVolume": _num(s.get(_F["volume"])) or 0.0,
+                "impliedVolatility": _num(s.get(_F["iv"])) or 0.0,   # PERCENT (parser /100)
+                "lastPrice": ltp,
+                "buyPrice1": _num(s.get(_F["bid"])),                 # true bid/ask -> mid downstream
+                "sellPrice1": _num(s.get(_F["ask"])),
+                "change": (ltp - pclose) if (ltp is not None and pclose is not None) else None,
+                "strikePrice": strike,
+                "expiryDate": exp,
+            }
+            side_payload.update(_side_greeks(s))
             rows.append({
                 "strikePrice": strike,
                 "expiryDate": exp,
-                nse_side: {
-                    "openInterest": oi or 0.0,
-                    "changeinOpenInterest": (oi - poi) if (oi is not None and poi is not None) else 0.0,
-                    "totalTradedVolume": _num(s.get(_F["volume"])) or 0.0,
-                    "impliedVolatility": _num(s.get(_F["iv"])) or 0.0,   # PERCENT (parser /100)
-                    "lastPrice": ltp,
-                    "buyPrice1": _num(s.get(_F["bid"])),                 # true bid/ask -> mid downstream
-                    "sellPrice1": _num(s.get(_F["ask"])),
-                    "change": (ltp - pclose) if (ltp is not None and pclose is not None) else None,
-                    "strikePrice": strike,
-                    "expiryDate": exp,
-                },
+                nse_side: side_payload,
             })
     return rows, float(spot)
 

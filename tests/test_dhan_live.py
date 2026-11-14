@@ -49,6 +49,28 @@ def test_to_nse_rows_maps_fields_and_spot():
     assert ce["lastPrice"] == 120.0
     assert ce["change"] == 20.0                       # 120 - 100 (LTP - prev close)
     assert ce["expiryDate"] == "23-07-2026"           # ISO -> DD-MM-YYYY (parse_nse_date-friendly)
+    # Mini sample has no greeks — must not invent delta.
+    assert "delta" not in ce
+
+
+def test_to_nse_rows_passes_dhan_greeks():
+    """25Δ skew needs delta on the NSE-shaped side; drop = insufficient data badge."""
+    raw = _sample_chain()
+    raw["data"]["oc"]["24300.000000"]["ce"]["greeks"] = {
+        "delta": 0.42, "theta": -12.0, "gamma": 0.001, "vega": 8.0,
+    }
+    raw["data"]["oc"]["24300.000000"]["pe"]["greeks"] = {
+        "delta": -0.38, "theta": -10.0, "gamma": 0.001, "vega": 7.5,
+    }
+    rows, _ = dhan_live._to_nse_rows(raw, "2026-07-23")
+    ce = next(r["CE"] for r in rows if r["strikePrice"] == 24300.0 and "CE" in r)
+    pe = next(r["PE"] for r in rows if r["strikePrice"] == 24300.0 and "PE" in r)
+    assert ce["delta"] == pytest.approx(0.42)
+    assert pe["delta"] == pytest.approx(-0.38)
+    assert ce["theta"] == pytest.approx(-12.0)
+    assert pe["vega"] == pytest.approx(7.5)
+    # Engine gamma is recomputed from IV; do not forward Dhan gamma on the NSE side.
+    assert "gamma" not in ce
 
 
 def test_payload_feeds_existing_nse_parsers_identically():
@@ -68,6 +90,27 @@ def test_payload_feeds_existing_nse_parsers_identically():
     nc = per_strike_nearest_changes(payload)
     assert nc[24300.0]["call_dprem"] == 20.0
     assert nc[24300.0]["put_dprem"] == -10.0          # 60 - 70
+
+
+def test_parse_nse_preserves_delta_for_from_nse_results():
+    from data.nse import from_nse_results
+
+    raw = _sample_chain()
+    raw["data"]["oc"]["24300.000000"]["ce"]["greeks"] = {"delta": 0.25, "theta": -1.0, "vega": 2.0}
+    raw["data"]["oc"]["24300.000000"]["pe"]["greeks"] = {"delta": -0.25, "theta": -1.0, "vega": 2.0}
+    rows, spot = dhan_live._to_nse_rows(raw, "2026-07-23")
+    norm, _ = parse_nse_option_chain({"records": {"data": rows, "underlyingValue": spot}})
+    ce = next(r for r in norm if r["strike"] == 24300.0 and r["type"] == "C")
+    assert ce["delta"] == pytest.approx(0.25)
+    snap = from_nse_results(
+        norm, spot=spot, expiry_window="weekly", underlying="NIFTY",
+        dealer_sign_model="short_call_short_put",
+        fetched_at=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    assert "delta" in snap.contracts.columns
+    assert float(snap.contracts.loc[
+        (snap.contracts["strike"] == 24300.0) & (snap.contracts["type"] == "C"), "delta"
+    ].iloc[0]) == pytest.approx(0.25)
 
 
 def test_to_nse_rows_raises_on_bad_shape():
@@ -168,3 +211,26 @@ def test_real_fixture_parses():
     assert spot and spot > 0 and rows
     norm, sp = parse_nse_option_chain({"records": {"data": rows, "underlyingValue": spot}})
     assert len(norm) > 0
+    # Fixture carries greeks — delta must survive into normalized rows.
+    with_delta = [r for r in norm if r.get("delta") is not None]
+    assert len(with_delta) >= 50
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="run scripts/dhan_optionchain_smoke.py first")
+def test_real_fixture_feeds_25d_skew_not_insufficient_data():
+    """End-to-end: live Dhan bridge → contracts → skew badge must not stay dark."""
+    from analytics.iv_skew import skew_25delta
+    from data.nse import from_nse_results
+
+    j = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    rows, spot = dhan_live._to_nse_rows(j, "2026-07-23")
+    norm, _ = parse_nse_option_chain({"records": {"data": rows, "underlyingValue": spot}})
+    snap = from_nse_results(
+        norm, spot=spot, expiry_window="weekly", underlying="NIFTY",
+        dealer_sign_model="short_call_short_put",
+        fetched_at=datetime(2026, 7, 20, 10, 0, tzinfo=timezone.utc),
+    )
+    result = skew_25delta(snap.contracts, float(spot))
+    assert result["skew_label"] != "insufficient data"
+    assert result["skew_25d"] is not None
+    assert result["near_atm_iv"] is not None
