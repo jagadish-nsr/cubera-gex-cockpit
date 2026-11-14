@@ -3257,26 +3257,43 @@ async def get_target_engine(
         sym, spot, getattr(dash, "contracts", None), exp_str, horizon_val, dash.levels,
     )
     def _wing_payload(wing) -> dict | None:
-        """Serialize one CE/PE wing; missing wing stays None (never invent LTP)."""
+        """Serialize one CE/PE wing; missing wing stays None (never invent LTP).
+
+        Quote-only wings (targets_ok=False) still return ltp/iv/greeks; T/SL
+        fields stay null when Black-76 was not actionable.
+        """
         if wing is None:
             return None
+
+        def _r(val, nd: int):
+            if val is None:
+                return None
+            try:
+                return round(float(val), nd)
+            except (TypeError, ValueError):
+                return None
+
+        iv_dec = getattr(wing, "iv", None)
+        iv_pct = _r((float(iv_dec) * 100.0) if iv_dec is not None else None, 1)
+        pt = getattr(wing, "p_touch_tgt1", None)
         return {
-            "ltp": round(float(wing.ltp), 1),
-            "delta": round(float(wing.delta), 2),
-            "iv": round(float(wing.iv) * 100.0, 1),
+            "ltp": _r(wing.ltp, 1),
+            "delta": _r(getattr(wing, "delta", None), 2),
+            "iv": iv_pct,
             "live": bool(wing.is_ws_live),
-            "theta": round(float(wing.theta), 1),
-            "opt_sl": round(float(wing.opt_sl), 1),
-            "opt_tgt1": round(float(wing.opt_tgt1), 1),
-            "opt_tgt2": round(float(wing.opt_tgt2), 1),
-            "sl_pts": round(float(wing.sl_pts), 1),
-            "tgt1_pts": round(float(wing.tgt1_pts), 1),
-            "tgt2_pts": round(float(wing.tgt2_pts), 1),
-            "sl_inr": round(float(wing.sl_inr), 0),
-            "tgt1_inr": round(float(wing.tgt1_inr), 0),
-            "tgt2_inr": round(float(wing.tgt2_inr), 0),
-            "rr_str": wing.rr_str,
-            "p_touch_tgt1": round(float(wing.p_touch_tgt1) * 100, 0),
+            "theta": _r(getattr(wing, "theta", None), 1),
+            "targets_ok": bool(getattr(wing, "targets_ok", True)),
+            "opt_sl": _r(getattr(wing, "opt_sl", None), 1),
+            "opt_tgt1": _r(getattr(wing, "opt_tgt1", None), 1),
+            "opt_tgt2": _r(getattr(wing, "opt_tgt2", None), 1),
+            "sl_pts": _r(getattr(wing, "sl_pts", None), 1),
+            "tgt1_pts": _r(getattr(wing, "tgt1_pts", None), 1),
+            "tgt2_pts": _r(getattr(wing, "tgt2_pts", None), 1),
+            "sl_inr": _r(getattr(wing, "sl_inr", None), 0),
+            "tgt1_inr": _r(getattr(wing, "tgt1_inr", None), 0),
+            "tgt2_inr": _r(getattr(wing, "tgt2_inr", None), 0),
+            "rr_str": wing.rr_str if getattr(wing, "rr_str", None) else "—",
+            "p_touch_tgt1": _r((float(pt) * 100.0) if pt is not None else None, 0),
         }
 
     strike_ladder_rows = []

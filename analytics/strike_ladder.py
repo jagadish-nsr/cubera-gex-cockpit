@@ -31,48 +31,54 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 @dataclass
 class StrikeRowData:
-    """Repriced data for a single option contract leg (CE or PE)."""
+    """Repriced data for a single option contract leg (CE or PE).
+
+    When the chain/WS has a live print but Black-76 T1/SL is not actionable
+    vs that print, keep the quote (ltp/iv/greeks) and leave target fields
+    as None — never wipe the whole wing, never invent LTP×ratio targets.
+    """
     strike: float
     side: str                            # "CE" or "PE"
     ltp: float                           # Current entry premium
     is_ws_live: bool = False             # Whether tick was sourced live from WebSocket
     tick_age_s: Optional[float] = None   # Age of WS tick in seconds
-    iv: float = 0.15                     # Implied volatility decimal
-    
+    iv: float = 0.0                      # Implied volatility decimal (0 = unset)
+    targets_ok: bool = True              # False when quote shown but T/SL refused
+
     # Underlying spot levels
     spot_inval: float = 0.0              # Underlying spot level where trade invalidates
     tgt1_spot: float = 0.0               # Primary underlying spot target
     tgt2_spot: float = 0.0               # Secondary momentum extension spot target
 
-    # Repriced option premiums
-    opt_sl: float = 0.0                  # Repriced option premium at stop loss
-    opt_tgt1: float = 0.0                # Repriced option premium at Target 1
-    opt_tgt2: float = 0.0                # Repriced option premium at Target 2
+    # Repriced option premiums (None = not actionable; never invent)
+    opt_sl: Optional[float] = None
+    opt_tgt1: Optional[float] = None
+    opt_tgt2: Optional[float] = None
 
     # PnL in points
-    sl_pts: float = 0.0                  # Points risk (ltp - opt_sl)
-    tgt1_pts: float = 0.0                # Points reward at T1 (opt_tgt1 - ltp)
-    tgt2_pts: float = 0.0                # Points reward at T2 (opt_tgt2 - ltp)
+    sl_pts: Optional[float] = None
+    tgt1_pts: Optional[float] = None
+    tgt2_pts: Optional[float] = None
 
     # PnL in percentage
-    sl_pct: float = 0.0                  # % risk
-    tgt1_pct: float = 0.0                # % gain at T1
-    tgt2_pct: float = 0.0                # % gain at T2
+    sl_pct: Optional[float] = None
+    tgt1_pct: Optional[float] = None
+    tgt2_pct: Optional[float] = None
 
     # PnL in INR per lot
-    sl_inr: float = 0.0                  # Rupee risk per lot
-    tgt1_inr: float = 0.0                # Rupee reward at T1 per lot
-    tgt2_inr: float = 0.0                # Rupee reward at T2 per lot
+    sl_inr: Optional[float] = None
+    tgt1_inr: Optional[float] = None
+    tgt2_inr: Optional[float] = None
 
     # Risk Metrics & Probabilities
-    rr_ratio: float = 0.0                # Reward : Risk ratio
-    rr_str: str = "0.0:1"
-    p_touch_tgt1: float = 0.50           # Reflection-principle touch probability
-    p_touch_sl: float = 0.35
+    rr_ratio: Optional[float] = None
+    rr_str: str = "—"
+    p_touch_tgt1: Optional[float] = None
+    p_touch_sl: Optional[float] = None
 
     # Live Greeks
-    delta: float = 0.50
-    theta: float = -10.0
+    delta: Optional[float] = None
+    theta: Optional[float] = None
     is_atm: bool = False
 
 
@@ -530,12 +536,14 @@ def _reprice_ladder_leg(
         is_ws_live = True
         tick_age_s = max(0.0, time.time() - float(ws_quote.get("at", time.time())))
 
-    # Step B: Fallback to Option Chain DataFrame snapshot if WS quote is absent
+    # Step B: Fallback to Option Chain DataFrame snapshot if WS quote is absent.
+    # Match CE/C/CALL and PE/P/PUT — never require exact "CE" token only.
     strike_iv = atm_iv
     if exp_df is not None and not exp_df.empty:
+        typ = exp_df["type"].astype(str).str.upper()
         match = exp_df[
             (pd.to_numeric(exp_df["strike"], errors="coerce") == float(strike)) &
-            (exp_df["type"].astype(str).str.upper().isin([opt_type, type_prefix]))
+            (typ.str.startswith(type_prefix))
         ]
         if not match.empty:
             row = match.iloc[0]
@@ -562,8 +570,27 @@ def _reprice_ladder_leg(
         return None  # never invent 0.14 / default vol
     strike_iv = max(0.04, min(0.90, float(strike_iv)))
 
-    # Step E: Greeks
+    # Step E: Greeks (always from live quote + IV — even when T/SL refused)
     cur_greeks = greeks(spot, strike, T_now, strike_iv, 0.065, opt_type)
+
+    def _quote_only_wing() -> StrikeRowData:
+        """Keep chain/WS print visible; leave T/SL empty rather than wipe the wing."""
+        return StrikeRowData(
+            strike=strike,
+            side=side,
+            ltp=round(entry_ltp, 2),
+            is_ws_live=is_ws_live,
+            tick_age_s=round(tick_age_s, 1) if tick_age_s is not None else None,
+            iv=round(strike_iv, 4),
+            targets_ok=False,
+            spot_inval=round(inval_spot, 1),
+            tgt1_spot=round(tgt1_spot, 1),
+            tgt2_spot=round(tgt2_spot, 1),
+            delta=round(cur_greeks.delta, 3),
+            theta=round(cur_greeks.theta, 2),
+            is_atm=is_atm,
+            rr_str="—",
+        )
 
     # Step F: Scenario IV adjustments (vol compression on CE targets, vol expansion on PE targets)
     if is_call:
@@ -576,16 +603,21 @@ def _reprice_ladder_leg(
         iv_sl = max(0.04, strike_iv - 0.0080)
 
     # Step G: Black-76 forward repricing at map spots
-    p_tgt1_calc = reprice(tgt1_spot, strike, T_tgt1, iv_tgt1, 0.065, opt_type)
-    p_tgt2_calc = reprice(tgt2_spot, strike, T_tgt2, iv_tgt2, 0.065, opt_type)
-    p_sl_calc = reprice(inval_spot, strike, T_sl, iv_sl, 0.065, opt_type)
+    try:
+        p_tgt1_calc = reprice(tgt1_spot, strike, T_tgt1, iv_tgt1, 0.065, opt_type)
+        p_tgt2_calc = reprice(tgt2_spot, strike, T_tgt2, iv_tgt2, 0.065, opt_type)
+        p_sl_calc = reprice(inval_spot, strike, T_sl, iv_sl, 0.065, opt_type)
+    except Exception:
+        return _quote_only_wing()
 
-    # Step H: BS premiums only — refuse LTP×1.15/1.25/0.70 invent
+    # Step H: BS premiums only — refuse LTP×1.15/1.25/0.70 invent.
+    # Quote stays; null targets when not actionable (ATM/OTM CE often hits this
+    # when the bull map is a short call-wall hop + vol crush).
     tgt1_opt = round(float(p_tgt1_calc), 2)
     tgt2_opt = round(float(p_tgt2_calc), 2)
     sl_opt = round(float(p_sl_calc), 2)
     if tgt1_opt <= entry_ltp or tgt2_opt <= tgt1_opt or sl_opt >= entry_ltp or sl_opt <= 0:
-        return None
+        return _quote_only_wing()
 
     # Step I: Calculate PnL (pts, %, INR)
     tgt1_pts = round(tgt1_opt - entry_ltp, 2)
@@ -616,6 +648,7 @@ def _reprice_ladder_leg(
         is_ws_live=is_ws_live,
         tick_age_s=round(tick_age_s, 1) if tick_age_s is not None else None,
         iv=round(strike_iv, 4),
+        targets_ok=True,
         spot_inval=round(inval_spot, 1),
         tgt1_spot=round(tgt1_spot, 1),
         tgt2_spot=round(tgt2_spot, 1),
