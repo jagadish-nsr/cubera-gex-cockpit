@@ -73,14 +73,14 @@ def test_compute_strike_ladder_slicing_and_monotonicity():
 
 
 def test_atm_ce_keeps_chain_quote_when_targets_not_actionable():
-    """Regression: tight bull map + vol crush must not wipe ATM/OTM CE LTP."""
+    """Regression: extreme rich print still keeps quote even if T/SL refused."""
     spot = 25144.0
     atm = 25150.0
     expiry = "2026-11-17"
     rows = []
     for k in range(int(atm - 5 * 50), int(atm + 6 * 50), 50):
-        # Rich ATM CE print relative to a short call-wall hop → T1 often ≤ LTP.
-        ce = 180.0 if k >= atm - 50 else max(40.0, 300.0 - (atm - k) * 0.8)
+        # Pathologically rich ATM CE vs a tiny wall hop — may still refuse T/SL.
+        ce = 420.0 if k >= atm - 50 else max(40.0, 300.0 - (atm - k) * 0.8)
         pe = max(20.0, 40.0 + (k - (atm - 250)) * 0.4)
         rows.append({"expiry": expiry, "strike": float(k), "type": "CE", "ltp": ce, "iv": 0.12})
         rows.append({"expiry": expiry, "strike": float(k), "type": "PE", "ltp": pe, "iv": 0.14})
@@ -106,6 +106,43 @@ def test_atm_ce_keeps_chain_quote_when_targets_not_actionable():
         assert atm_row.ce.opt_sl is None
     # PE on same strike still present
     assert atm_row.pe is not None and atm_row.pe.ltp > 0
+
+
+def test_atm_ce_actionable_with_soft_chain_iv_and_short_wall_hop():
+    """Live-shape regression: soft chain IV + short call-wall hop must not FAIL ATM CE.
+
+    Pre-fix: chain IV ~11.7% under LTP-implied ~13%+ and a flat −0.75 crush
+    left BS(T1) ≤ LTP on a ~50–60pt hop → empty CE wing / non-actionable T1.
+    """
+    spot = 25144.0
+    atm = 25150.0
+    expiry = "2026-11-17"
+    rows = []
+    for k in range(int(atm - 5 * 50), int(atm + 6 * 50), 50):
+        # ATM CE ≈ live print; soft chain IV deliberately below LTP-implied.
+        ce = 138.2 if abs(k - atm) < 1 else max(25.0, 138.2 - abs(k - atm) * 0.55)
+        pe = max(15.0, 90.0 - abs(k - atm) * 0.35)
+        rows.append({"expiry": expiry, "strike": float(k), "type": "CE", "ltp": ce, "iv": 0.117})
+        rows.append({"expiry": expiry, "strike": float(k), "type": "PE", "ltp": pe, "iv": 0.13})
+    df = pd.DataFrame(rows)
+
+    bundle = compute_strike_ladder(
+        symbol="NIFTY",
+        spot=spot,
+        contracts_df=df,
+        expiry=expiry,
+        horizon_minutes=120,
+        levels=_levels(0.126, call_wall=25200.0, put_wall=25000.0),
+        auto_subscribe_ws=False,
+    )
+    atm_row = next(r for r in bundle.rows if r.is_atm)
+    assert atm_row.ce is not None
+    assert atm_row.ce.ltp == pytest.approx(138.2, abs=0.05)
+    # LTP-implied IV should lift off soft chain 11.7%.
+    assert atm_row.ce.iv > 0.12
+    assert atm_row.ce.targets_ok is True
+    assert atm_row.ce.opt_tgt1 is not None and atm_row.ce.opt_tgt1 > atm_row.ce.ltp
+    assert atm_row.ce.opt_sl is not None and atm_row.ce.opt_sl < atm_row.ce.ltp
 
 
 def test_compute_strike_ladder_ws_quote_integration(monkeypatch):

@@ -418,6 +418,13 @@ def compute_strike_ladder(
     _, T_tgt2 = calculate_horizon_t(now_dt, int(horizon_minutes * 1.5), expiry)
     _, T_sl = calculate_horizon_t(now_dt, int(horizon_minutes * 0.5), expiry)
 
+    # Black-76 forward: prefer live futures on levels when present.
+    try:
+        raw_fut = getattr(levels, "future_price", None) if levels else None
+        forward = float(raw_fut) if raw_fut is not None and float(raw_fut) > 0 else None
+    except (TypeError, ValueError):
+        forward = None
+
     # 5. Evaluate each strike in the 11-strike band
     rows: List[StrikeLadderRow] = []
     ws_active_count = 0
@@ -446,6 +453,7 @@ def compute_strike_ladder(
             lot_size=lot_size,
             is_atm=is_atm,
             get_ws_quote_fn=get_option_ws_quote,
+            forward=forward,
         )
 
         pe_data = _reprice_ladder_leg(
@@ -466,6 +474,7 @@ def compute_strike_ladder(
             lot_size=lot_size,
             is_atm=is_atm,
             get_ws_quote_fn=get_option_ws_quote,
+            forward=forward,
         )
         if ce_data is None and pe_data is None:
             continue
@@ -496,6 +505,18 @@ def compute_strike_ladder(
     )
 
 
+def _scale_iv_shift(base_shift: float, move_pts: float, sigma_h: float) -> float:
+    """Scale scenario IV shift by map-hop size in σ units.
+
+    Hops under ~0.5σ keep sticky IV (shift≈0). Full shift by ~1.5σ.
+    Stops blanking ATM CE on a nearby call-wall hop with a flat −0.75 crush.
+    """
+    if sigma_h <= 1e-6 or abs(base_shift) < 1e-9:
+        return 0.0
+    scale = max(0.0, min(1.0, (abs(move_pts) / sigma_h - 0.5) / 1.0))
+    return float(base_shift) * scale
+
+
 def _reprice_ladder_leg(
     symbol: str,
     strike: float,
@@ -514,11 +535,17 @@ def _reprice_ladder_leg(
     lot_size: int,
     is_atm: bool,
     get_ws_quote_fn: Any,
+    forward: Optional[float] = None,
 ) -> StrikeRowData:
     """Reprice a single CE or PE leg against live WebSocket tick or snapshot quote."""
     is_call = (side.upper() == "CE")
     type_prefix = "C" if is_call else "P"
     opt_type = "CE" if is_call else "PE"
+    # Black-76 F: prefer futures when live; cash spot otherwise.
+    try:
+        F0 = float(forward) if forward is not None and float(forward) > 0 else float(spot)
+    except (TypeError, ValueError):
+        F0 = float(spot)
 
     # Step A: Live WebSocket Quote lookup
     ws_quote = None
@@ -538,7 +565,7 @@ def _reprice_ladder_leg(
 
     # Step B: Fallback to Option Chain DataFrame snapshot if WS quote is absent.
     # Match CE/C/CALL and PE/P/PUT — never require exact "CE" token only.
-    strike_iv = atm_iv
+    chain_iv: Optional[float] = None
     if exp_df is not None and not exp_df.empty:
         typ = exp_df["type"].astype(str).str.upper()
         match = exp_df[
@@ -555,23 +582,28 @@ def _reprice_ladder_leg(
                         break
             raw_iv = row.get("iv")
             if raw_iv is not None and not (isinstance(raw_iv, float) and np.isnan(raw_iv)) and float(raw_iv) > 0:
-                strike_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
+                chain_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
 
     # Step C: No live print → refuse (never invent BS entry / LTP×ratio targets)
     if not entry_ltp or entry_ltp <= 0:
         return None
 
-    # Step D: Extract strike IV using inversion if not present
-    if not strike_iv or strike_iv <= 0.02 or math.isnan(strike_iv):
-        solved = implied_vol(entry_ltp, spot, strike, T_now, 0.065, opt_type)
-        strike_iv = solved if (solved and solved > 0.02) else atm_iv
+    # Step D: Prefer LTP-implied IV so BS(now) marks to the print.
+    # Soft/stale chain IV was blanking ATM CE: crushed theo stayed below rich LTP.
+    solved = implied_vol(entry_ltp, F0, strike, T_now, 0.065, opt_type)
+    if solved is not None and solved > 0.02 and not math.isnan(solved):
+        strike_iv = float(solved)
+    elif chain_iv is not None and chain_iv > 0.02:
+        strike_iv = float(chain_iv)
+    else:
+        strike_iv = float(atm_iv) if atm_iv and atm_iv > 0.02 else 0.0
 
     if not strike_iv or strike_iv <= 0.02 or math.isnan(strike_iv):
         return None  # never invent 0.14 / default vol
     strike_iv = max(0.04, min(0.90, float(strike_iv)))
 
     # Step E: Greeks (always from live quote + IV — even when T/SL refused)
-    cur_greeks = greeks(spot, strike, T_now, strike_iv, 0.065, opt_type)
+    cur_greeks = greeks(F0, strike, T_now, strike_iv, 0.065, opt_type)
 
     def _quote_only_wing() -> StrikeRowData:
         """Keep chain/WS print visible; leave T/SL empty rather than wipe the wing."""
@@ -592,31 +624,42 @@ def _reprice_ladder_leg(
             rr_str="—",
         )
 
-    # Step F: Scenario IV adjustments (vol compression on CE targets, vol expansion on PE targets)
-    if is_call:
-        iv_tgt1 = max(0.04, strike_iv - 0.0075)
-        iv_tgt2 = max(0.04, strike_iv - 0.0120)
-        iv_sl = max(0.04, strike_iv + 0.0120)
-    else:
-        iv_tgt1 = max(0.04, strike_iv + 0.0150)
-        iv_tgt2 = max(0.04, strike_iv + 0.0250)
-        iv_sl = max(0.04, strike_iv - 0.0080)
+    # Step F: Scenario IV shifts scaled by map-hop size (sticky under ~0.5σ).
+    # Forward at map spots: cash move applied on top of F0 (fut or spot).
+    d_tgt1 = float(tgt1_spot) - float(spot)
+    d_tgt2 = float(tgt2_spot) - float(spot)
+    d_sl = float(inval_spot) - float(spot)
+    F_tgt1 = max(1.0, F0 + d_tgt1)
+    F_tgt2 = max(1.0, F0 + d_tgt2)
+    F_sl = max(1.0, F0 + d_sl)
 
-    # Step G: Black-76 forward repricing at map spots
+    if is_call:
+        # Crush on rally / expand on stop — only when the hop is meaningful.
+        iv_tgt1 = max(0.04, strike_iv + _scale_iv_shift(-0.0075, d_tgt1, sigma_h))
+        iv_tgt2 = max(0.04, strike_iv + _scale_iv_shift(-0.0120, d_tgt2, sigma_h))
+        iv_sl = max(0.04, strike_iv + _scale_iv_shift(+0.0120, d_sl, sigma_h))
+    else:
+        iv_tgt1 = max(0.04, strike_iv + _scale_iv_shift(+0.0150, d_tgt1, sigma_h))
+        iv_tgt2 = max(0.04, strike_iv + _scale_iv_shift(+0.0250, d_tgt2, sigma_h))
+        iv_sl = max(0.04, strike_iv + _scale_iv_shift(-0.0080, d_sl, sigma_h))
+
+    # Step G: Black-76 forward repricing at map forwards
     try:
-        p_tgt1_calc = reprice(tgt1_spot, strike, T_tgt1, iv_tgt1, 0.065, opt_type)
-        p_tgt2_calc = reprice(tgt2_spot, strike, T_tgt2, iv_tgt2, 0.065, opt_type)
-        p_sl_calc = reprice(inval_spot, strike, T_sl, iv_sl, 0.065, opt_type)
+        p_now_theo = price(F0, strike, T_now, strike_iv, 0.065, opt_type)
+        p_tgt1_calc = reprice(F_tgt1, strike, T_tgt1, iv_tgt1, 0.065, opt_type)
+        p_tgt2_calc = reprice(F_tgt2, strike, T_tgt2, iv_tgt2, 0.065, opt_type)
+        p_sl_calc = reprice(F_sl, strike, T_sl, iv_sl, 0.065, opt_type)
     except Exception:
         return _quote_only_wing()
 
     # Step H: BS premiums only — refuse LTP×1.15/1.25/0.70 invent.
-    # Quote stays; null targets when not actionable (ATM/OTM CE often hits this
-    # when the bull map is a short call-wall hop + vol crush).
+    # Gate on model PnL vs mark (LTP ≈ BS(now) when IV is LTP-implied) and
+    # require BS(T1) > max(LTP, BS(now)) so rich prints don't false-fail.
     tgt1_opt = round(float(p_tgt1_calc), 2)
     tgt2_opt = round(float(p_tgt2_calc), 2)
     sl_opt = round(float(p_sl_calc), 2)
-    if tgt1_opt <= entry_ltp or tgt2_opt <= tgt1_opt or sl_opt >= entry_ltp or sl_opt <= 0:
+    mark = max(float(entry_ltp), float(p_now_theo))
+    if tgt1_opt <= mark or tgt2_opt <= tgt1_opt or sl_opt >= mark or sl_opt <= 0:
         return _quote_only_wing()
 
     # Step I: Calculate PnL (pts, %, INR)
