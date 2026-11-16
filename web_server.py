@@ -2605,17 +2605,57 @@ async def get_cockpit_data(
     standing_oi = _standing_oi(dash, spot, float(idx.band_pts))
     center = round(spot / step) * step
     strike_set = {center + (offset * step) for offset in range(-6, 7)}
+    session_day = _get_ist_now().strftime("%Y-%m-%d")
     try:
         from analytics.session_map import load_prior_marks
-        session_day = _get_ist_now().strftime("%Y-%m-%d")
         prior_marks = load_prior_marks(sym, session_day)
     except Exception as exc:
         log.debug("prior session marks: %s", exc)
         prior_marks = None
+    try:
+        from analytics.position_context import value_area_for
+        value_area = value_area_for(sym, session_day, spot, getattr(dash, "source", None))
+    except Exception as exc:
+        log.debug("value area: %s", exc)
+        value_area = {"text": "No prior value area.", "inside": None}
+    try:
+        from analytics.structural_tape import vp_and_zones_for
+        tape_struct = vp_and_zones_for(sym, session_day, spot, strike_step=step)
+    except Exception as exc:
+        log.debug("structural tape: %s", exc)
+        tape_struct = {
+            "volume_profile": None,
+            "session_vpoc": None,
+            "supply_demand": [],
+            "prior_day": None,
+            "session_day": None,
+        }
+    day_ohlc_raw = getattr(dash, "day_ohlc", None)
+    day_ohlc = day_ohlc_raw if isinstance(day_ohlc_raw, dict) else {}
+    vp_extra = []
+    vp_pack = tape_struct.get("volume_profile") or {}
+    if vp_pack.get("vpoc"):
+        vp_extra.append(vp_pack["vpoc"])
+    for node in (vp_pack.get("hvns") or []) + (vp_pack.get("lvns") or []):
+        if node.get("price"):
+            vp_extra.append(node["price"])
+    if vp_pack.get("vah"):
+        vp_extra.append(vp_pack["vah"])
+    if vp_pack.get("val"):
+        vp_extra.append(vp_pack["val"])
+    sess_vp = (tape_struct.get("session_vpoc") or {}).get("price")
+    if sess_vp:
+        vp_extra.append(sess_vp)
+    for zone in tape_struct.get("supply_demand") or []:
+        vp_extra.extend([zone.get("lo"), zone.get("hi"), zone.get("mid")])
     for key in (dash.levels.call_wall, dash.levels.put_wall, magnet_val, mp_val,
                 standing_oi.get("put_centre"), standing_oi.get("call_centre"),
                 (prior_marks or {}).get("high"), (prior_marks or {}).get("low"),
-                (prior_marks or {}).get("close")):
+                (prior_marks or {}).get("close"),
+                (value_area or {}).get("poc"), (value_area or {}).get("vah"),
+                (value_area or {}).get("val"),
+                day_ohlc.get("high"), day_ohlc.get("low"), day_ohlc.get("open"),
+                *vp_extra):
         if key and float(key) > 0:
             strike_set.add(round(float(key) / step) * step)
     ladder_strikes = sorted(strike_set)
@@ -2744,6 +2784,37 @@ async def get_cockpit_data(
             nearest = min(ladder, key=lambda row: abs(row["strike"] - level))
             if abs(nearest["strike"] - level) <= step:
                 nearest[flag] = True
+    try:
+        from analytics.structural_map import build_structural_map, mark_ladder_structural
+        structural_map = build_structural_map(
+            spot,
+            call_wall=None if expired_book else float(dash.levels.call_wall or 0) or None,
+            put_wall=None if expired_book else float(dash.levels.put_wall or 0) or None,
+            gamma_flip=flip_val,
+            magnet=magnet_val or None,
+            max_pain=mp_val,
+            prior_marks=prior_marks,
+            day_ohlc=day_ohlc,
+            value_area=value_area,
+            standing_oi=standing_oi,
+            volume_profile=tape_struct.get("volume_profile"),
+            session_vpoc=tape_struct.get("session_vpoc"),
+            supply_demand=tape_struct.get("supply_demand") or [],
+            strike_step=step,
+        )
+        mark_ladder_structural(ladder, structural_map, step)
+    except Exception as exc:
+        log.debug("structural map: %s", exc)
+        structural_map = {
+            "spot": spot,
+            "levels": [],
+            "overlaps": [],
+            "chips": [],
+            "summary": "Structural map unavailable.",
+            "overlap_tol": step,
+            "volume_profile": None,
+            "supply_demand": [],
+        }
     magnet_path = []
     watch = {"anchors": []}
     futures_state = None
@@ -3052,16 +3123,15 @@ async def get_cockpit_data(
             dash, idx, bias_score=bias_res.score, sentinel_signals=sigs, blast=gamma_blast,
         ),
         "standing_oi": standing_oi,
+        "structural_map": structural_map,
+        "value_area": value_area,
     }
     try:
-        from analytics.position_context import holdings_for, value_area_for
-        book_day = _get_ist_now().strftime("%Y-%m-%d")
+        from analytics.position_context import holdings_for
         payload["participant_holdings"] = holdings_for(None)
-        payload["value_area"] = value_area_for(sym, book_day, spot, getattr(dash, "source", None))
     except Exception as exc:
-        log.debug("holdings or value area: %s", exc)
+        log.debug("holdings: %s", exc)
         payload["participant_holdings"] = {"date": None, "rows": []}
-        payload["value_area"] = {"text": "No prior value area.", "inside": None}
     try:
         from app.session_reads import build_session_reads
         reads = build_session_reads(sym)
@@ -3802,6 +3872,37 @@ def _go_auto_stage_fingerprint(decision: dict) -> str:
     ])
 
 
+def _go_find_open_row(sym: str, decision: dict) -> dict | None:
+    """Match an OPEN staged row to a strip decision.
+
+    Prefer exact ``decision.id``; else fingerprint (UUID changes every poll);
+    else the sole OPEN in the same mode.
+    """
+    from data.journal import go_efficiency as go_eff
+
+    if not isinstance(decision, dict):
+        return None
+    opens = go_eff.list_open(sym, include_decision=True)
+    if not opens:
+        return None
+    did = str(decision.get("id") or "")
+    if did:
+        for row in opens:
+            if str(row.get("decision_id") or "") == did:
+                return row
+    fp = _go_auto_stage_fingerprint(decision)
+    if fp and fp.count("|") >= 2:
+        for row in opens:
+            snap = row.get("decision") or {}
+            if isinstance(snap, dict) and _go_auto_stage_fingerprint(snap) == fp:
+                return row
+    mode = str(decision.get("mode") or "")
+    same = [r for r in opens if str(r.get("mode") or "") == mode]
+    if len(same) == 1:
+        return same[0]
+    return None
+
+
 def _go_format_fire_message(decision: dict) -> str:
     evidence = decision.get("evidence") or []
     top = []
@@ -4402,6 +4503,93 @@ def _go_iv_rv(dash, sym: str) -> tuple[float | None, float | None]:
     return iv_pct, rv_pct
 
 
+def _go_structural_map(sym: str, dash) -> dict | None:
+    """Build the Home structural map for GO evidence. Soft-fail → None."""
+    try:
+        from analytics.structural_map import build_structural_map
+        from analytics.structural_tape import vp_and_zones_for
+        from analytics.session_map import load_prior_marks
+        from analytics.position_context import value_area_for
+
+        levels = getattr(dash, "levels", None)
+        if levels is None:
+            return None
+        spot = float(getattr(levels, "spot", 0) or 0)
+        if spot <= 0:
+            return None
+        idx = config.get_index(sym)
+        step = float(idx.strike_step)
+        session_day = _get_ist_now().strftime("%Y-%m-%d")
+        prior_marks = None
+        try:
+            prior_marks = load_prior_marks(sym, session_day)
+        except Exception:
+            prior_marks = None
+        value_area = {"text": "No prior value area.", "inside": None}
+        try:
+            value_area = value_area_for(sym, session_day, spot, getattr(dash, "source", None))
+        except Exception:
+            pass
+        try:
+            tape_struct = vp_and_zones_for(sym, session_day, spot, strike_step=step)
+        except Exception:
+            tape_struct = {
+                "volume_profile": None,
+                "session_vpoc": None,
+                "supply_demand": [],
+            }
+        day_ohlc_raw = getattr(dash, "day_ohlc", None)
+        day_ohlc = day_ohlc_raw if isinstance(day_ohlc_raw, dict) else {}
+        try:
+            standing_oi = _standing_oi(dash, spot, float(idx.band_pts))
+        except Exception:
+            standing_oi = {}
+        return build_structural_map(
+            spot,
+            call_wall=float(getattr(levels, "call_wall", 0) or 0) or None,
+            put_wall=float(getattr(levels, "put_wall", 0) or 0) or None,
+            gamma_flip=float(getattr(levels, "flip", 0) or 0) or None,
+            magnet=float(getattr(levels, "magnet", 0) or 0) or None,
+            max_pain=float(getattr(levels, "max_pain", 0) or 0) or None,
+            prior_marks=prior_marks,
+            day_ohlc=day_ohlc,
+            value_area=value_area,
+            standing_oi=standing_oi,
+            volume_profile=tape_struct.get("volume_profile"),
+            session_vpoc=tape_struct.get("session_vpoc"),
+            supply_demand=tape_struct.get("supply_demand") or [],
+            strike_step=step,
+        )
+    except Exception as exc:
+        log.debug("go structural_map: %s", exc)
+        return None
+
+
+def _go_opening_pack(sym: str, dash) -> dict:
+    """Opening watch + catalyst risk for GO. Soft-fail fields stay None."""
+    market_open = bool(config.is_market_open())
+    opening_watch = None
+    try:
+        pm = dict(get_pre_market_state(sym) or {})
+        _attach_opening_watch(pm, symbol=sym, dash=dash)
+        opening_watch = pm.get("opening_watch")
+    except Exception as exc:
+        log.debug("go opening_watch: %s", exc)
+    catalyst_risk = None
+    try:
+        from data.news import fetch_news
+        from analytics.market_intelligence import analyze_news
+
+        catalyst_risk = str(analyze_news(fetch_news()).catalyst_risk_level or "") or None
+    except Exception as exc:
+        log.debug("go catalyst_risk: %s", exc)
+    return {
+        "opening_watch": opening_watch,
+        "catalyst_risk_level": catalyst_risk,
+        "market_open": market_open,
+    }
+
+
 async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float):
     """Build one GoDecision from live dashboard + recommendation batch + Sentinel."""
     from analytics.go_desk import (
@@ -4425,6 +4613,8 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
     oi_stale = bool(getattr(levels, "oi_stale", False))
     tape = _go_sentinel_context(sym)
     lunch_chop = _go_lunch_chop_now()
+    structural_map = _go_structural_map(sym, dash)
+    opening_pack = _go_opening_pack(sym, dash)
 
     vol = "mid"
     try:
@@ -4525,6 +4715,10 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             leg_ltps_dated=leg_ltps_dated,
             near_atm_iv=near_iv,
             next_atm_iv=next_iv,
+            structural_map=structural_map,
+            opening_watch=opening_pack.get("opening_watch"),
+            catalyst_risk_level=opening_pack.get("catalyst_risk_level"),
+            market_open=bool(opening_pack.get("market_open", True)),
         )
     elif mode == "writer":
         step = int(idx.strike_step)
@@ -4556,6 +4750,10 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             credit_call=credit_call,
             credit_put=credit_put,
             margin_est_inr=margin_est,
+            structural_map=structural_map,
+            opening_watch=opening_pack.get("opening_watch"),
+            catalyst_risk_level=opening_pack.get("catalyst_risk_level"),
+            market_open=bool(opening_pack.get("market_open", True)),
         )
     else:
         bias = float(getattr(batch, "directional_bias_score", 0) or 0) if batch else 0.0
@@ -4574,9 +4772,11 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
         top_idea = max(ideas, key=lambda i: int(getattr(i, "quality_score", 0) or 0)) if ideas else None
         if top_idea is not None and getattr(top_idea, "strike", None):
             unusual = _go_unusual_at_strike(dash, float(top_idea.strike))
-        # Live ATM premium for sentinel-led packages (Ideas latch may be empty).
+        # Live premium at the delta-nudged strike (latch/ATM ± OTM steps).
         chain_ltp = None
         try:
+            from analytics.go_desk import nudge_strike_for_delta
+
             step = float(idx.strike_step)
             spot_f = float(getattr(levels, "spot", 0) or 0)
             atm = round(spot_f / step) * step if step and spot_f > 0 else 0.0
@@ -4589,6 +4789,12 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
                 strike_g = float(getattr(top_idea, "strike", 0) or 0) or atm
             else:
                 strike_g = atm
+            strike_g = nudge_strike_for_delta(
+                strike_g,
+                side=side_guess,
+                strike_step=step,
+                delta_pref=float(delta_pref or 0.50),
+            )
             if strike_g > 0:
                 chain_ltp = _chain_leg_ltp(getattr(dash, "contracts", None), float(strike_g), side_guess)
         except Exception as exc:
@@ -4640,7 +4846,24 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             chain_ltp=chain_ltp,
             confirming_types=list(tape.get("recent_types") or []),
             trigger_speed=tape.get("trigger_speed"),
+            structural_map=structural_map,
+            opening_watch=opening_pack.get("opening_watch"),
+            catalyst_risk_level=opening_pack.get("catalyst_risk_level"),
+            market_open=bool(opening_pack.get("market_open", True)),
         )
+        # Refill leg LTP from the live chain at the final (possibly nudged) strike.
+        try:
+            for leg in getattr(decision, "contracts", None) or []:
+                if getattr(leg, "strike", None) and getattr(leg, "opt_type", None):
+                    px = _chain_leg_ltp(
+                        getattr(dash, "contracts", None),
+                        float(leg.strike),
+                        str(leg.opt_type),
+                    )
+                    if px is not None and float(px) > 0:
+                        leg.ltp = float(px)
+        except Exception as exc:
+            log.debug("go leg ltp refill: %s", exc)
     return decision
 
 
@@ -4699,6 +4922,7 @@ async def get_go_feed(
     symbol: Optional[str] = None,
     window: Optional[str] = None,
     mode: Optional[str] = None,
+    delta_pref: Optional[float] = None,
 ):
     """Ranked FIRE/SCOUT feed (Phase 0: primary + structure/writer alternates)."""
     from analytics.go_desk import rank_feed
@@ -4706,7 +4930,7 @@ async def get_go_feed(
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     md = (mode or _GO_PREFS.get("mode") or "directional").lower()
-    dp = float(_GO_PREFS.get("delta_pref") or 0.50)
+    dp = float(delta_pref if delta_pref is not None else _GO_PREFS.get("delta_pref") or 0.50)
     primary = await _compose_go_decision(sym, win, md, dp)
     feed = [primary]
     for alt in ("directional", "structure", "writer"):
@@ -5007,8 +5231,8 @@ async def post_go_action(payload: dict = Body(...)):
 
     sym = str(decision.get("symbol") or _ACTIVE_STATE["symbol"]).upper()
     idx = config.get_index(sym)
-    open_rows = {r["decision_id"]: r for r in go_eff.list_open(sym)}
-    open_row = open_rows.get(decision.get("id"))
+    # UUID changes every poll — resolve OPEN by id, then fingerprint / sole mode.
+    open_row = _go_find_open_row(sym, decision)
 
     if action == "trail":
         # Mark trail intent on open row if present; else journal note via skip-style event
@@ -5019,7 +5243,7 @@ async def post_go_action(payload: dict = Body(...)):
             trail = evaluate_trail(entry_ltp=entry_abs, mark_ltp=mark_abs)
             if trail.get("armed"):
                 updated = go_eff.mark_open(
-                    decision["id"],
+                    str(open_row.get("decision_id") or decision["id"]),
                     mark_premium=float(open_row.get("mark_premium") or open_row["entry_premium"]),
                     trail=trail,
                 )
@@ -5086,8 +5310,10 @@ async def post_go_action(payload: dict = Body(...)):
             if open_row.get("mark_premium") is not None
             else (open_row.get("entry_premium") or 0)
         )
+        # Close the OPEN row by its staged decision_id (may differ from strip UUID).
+        close_id = str(open_row.get("decision_id") or decision.get("id") or "")
         settled = go_eff.close_open(
-            decision["id"],
+            close_id,
             status="CLOSED",
             exit_premium=exit_px,
             exit_spot=open_row.get("mark_spot"),

@@ -600,6 +600,49 @@ def test_go_action_flatten_stages_journal(monkeypatch):
     assert data["trade_id"]
     assert data["legs"]
     assert all(L["action"] == "BUY" for L in data["legs"])
+    assert data.get("pnl") is not None
+    assert go_eff.list_open("NIFTY") == []
+
+
+def test_go_action_flatten_resolves_open_by_fingerprint(monkeypatch):
+    """Strip UUID changes every poll — flatten must still settle the OPEN row."""
+    staged = _fire_decision("directional").to_dict()
+    staged["risk"]["credit_or_debit"] = -72
+    staged["contracts"] = [{"action": "BUY", "opt_type": "CE", "strike": 25500, "ltp": 72}]
+    go_eff.record_event("STAGE", staged, trade_id="pt_fp")
+    go_eff.mark_open(staged["id"], mark_premium=-80.0, mark_spot=25520)
+
+    # New poll → new decision id, same legs/strategy fingerprint
+    strip = dict(staged)
+    strip["id"] = "brand-new-strip-uuid"
+    st, _, body = asyncio.run(asgi_request(
+        "POST", "/api/go/action",
+        body={"decision": strip, "action": "flatten"},
+    ))
+    assert st == 200
+    data = json.loads(body)
+    assert data["status"] == "staged"
+    assert data.get("pnl") is not None
+    assert data["pnl"].get("status") in ("CLOSED", "TRAIL_STOP") or data["pnl"].get("net_pnl_inr") is not None
+    assert go_eff.list_open("NIFTY") == []
+
+
+def test_go_feed_accepts_delta_pref_query(monkeypatch):
+    calls = []
+
+    async def _compose(sym, win, mode, delta_pref):
+        calls.append(float(delta_pref))
+        return _fire_decision(mode if mode in ("directional", "structure", "writer") else "directional")
+
+    monkeypatch.setattr(web_server, "_compose_go_decision", _compose)
+    st, _, body = asyncio.run(asgi_request(
+        "GET", "/api/go/feed?symbol=NIFTY&mode=directional&delta_pref=0.25"
+    ))
+    assert st == 200
+    assert calls
+    assert all(c == 0.25 for c in calls)
+    data = json.loads(body)
+    assert len(data.get("items") or []) >= 1
 
 
 def test_go_prefs_webhook_and_notify_dedupe(monkeypatch):

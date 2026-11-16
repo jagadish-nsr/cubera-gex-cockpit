@@ -307,6 +307,407 @@ def _shared_gamma_strike(put_wall: float, call_wall: float, step: float) -> bool
     return abs(float(call_wall) - float(put_wall)) < float(step)
 
 
+def delta_otm_steps(delta_pref: float) -> int:
+    """Listed steps OTM from the Ideas latch / ATM for the delta chip.
+
+    0.50 → 0 (ATM/latch). 0.35 → 1 step. 0.25 → 2 steps.
+    Soft preference — not a live δ solve from the smile.
+    """
+    try:
+        d = float(delta_pref)
+    except (TypeError, ValueError):
+        return 0
+    if d <= 0.30:
+        return 2
+    if d <= 0.40:
+        return 1
+    return 0
+
+
+def nudge_strike_for_delta(
+    strike: float,
+    *,
+    side: str,
+    strike_step: float,
+    delta_pref: float,
+) -> float:
+    """Shift ``strike`` OTM by ``delta_otm_steps`` for CE (+step) / PE (−step)."""
+    try:
+        base = float(strike)
+        step = float(strike_step)
+    except (TypeError, ValueError):
+        return float(strike or 0)
+    n = delta_otm_steps(delta_pref)
+    if n <= 0 or base <= 0 or step <= 0:
+        return base
+    side_u = str(side or "CE").upper()
+    return base + (n * step if side_u == "CE" else -n * step)
+
+
+def _price_in_level(level: dict, price: float, tol: float = 0.0) -> bool:
+    """True when ``price`` sits inside a band (or within ``tol`` of a point)."""
+    if not level or price is None:
+        return False
+    try:
+        px = float(price)
+    except (TypeError, ValueError):
+        return False
+    lo, hi = level.get("lo"), level.get("hi")
+    try:
+        if lo is not None and hi is not None:
+            return (float(lo) - tol) <= px <= (float(hi) + tol)
+        anchor = float(level.get("price") or 0)
+    except (TypeError, ValueError):
+        return False
+    return abs(anchor - px) <= tol
+
+
+def _unmitigated_sd_levels(structural_map: dict | None) -> list[dict]:
+    """Supply/demand bands that are still live (mitigated=False)."""
+    if not structural_map or not isinstance(structural_map, dict):
+        return []
+    out: list[dict] = []
+    for lv in list(structural_map.get("levels") or []):
+        if not isinstance(lv, dict):
+            continue
+        lid = str(lv.get("id") or "")
+        side = str(lv.get("side") or "").lower()
+        if not (lid.startswith("supply_") or lid.startswith("demand_") or side in ("supply", "demand")):
+            continue
+        if bool(lv.get("mitigated")):
+            continue
+        out.append(lv)
+    # Fall back to raw supply_demand list when levels were not expanded.
+    if not out:
+        for zone in list(structural_map.get("supply_demand") or []):
+            if not isinstance(zone, dict):
+                continue
+            if bool(zone.get("mitigated")):
+                continue
+            side = str(zone.get("side") or "").lower()
+            if side not in ("supply", "demand"):
+                continue
+            out.append(
+                {
+                    "id": f"{side}_raw",
+                    "side": side,
+                    "lo": zone.get("lo"),
+                    "hi": zone.get("hi"),
+                    "price": zone.get("mid") or zone.get("price"),
+                    "mitigated": False,
+                    "label": f"{side.title()} zone",
+                }
+            )
+    return out
+
+
+def assess_structural_context(
+    structural_map: dict | None,
+    *,
+    spot: float,
+    side: str | None = None,
+    strike: float | None = None,
+    short_call: float | None = None,
+    short_put: float | None = None,
+    strike_step: float = 50.0,
+    sentinel_type: str | None = None,
+    strategy_key: str | None = None,
+) -> dict[str, Any]:
+    """Map Home structural zones onto GO soft/hard + invalidation hints.
+
+    Zone conflict sizes down; hard only when spot is clearly trapped in an
+    opposing unmitigated S/D band without a break template. Missing map is
+    not invented as a pass or a block — evidence notes unavailable.
+    """
+    soft: list[str] = []
+    hard: list[str] = []
+    if not structural_map or not isinstance(structural_map, dict):
+        return {
+            "available": False,
+            "pass": True,
+            "soft": soft,
+            "hard": hard,
+            "summary": "Structural map unavailable — weight excluded.",
+            "opposing_zone": None,
+            "overlap_near": [],
+            "invalidation_level": None,
+        }
+
+    step = float(strike_step or 50.0)
+    tol = max(step * 0.25, 1.0)
+    side_u = str(side or "").upper()
+    sent_u = str(sentinel_type or strategy_key or "").upper()
+    is_break = "BREAK" in sent_u
+    zones = _unmitigated_sd_levels(structural_map)
+    overlaps = [o for o in list(structural_map.get("overlaps") or []) if isinstance(o, dict)]
+
+    opposing: dict | None = None
+    probe_prices = [p for p in (spot, strike) if p is not None and float(p or 0) > 0]
+    for zone in zones:
+        zside = str(zone.get("side") or "").lower()
+        hits = any(_price_in_level(zone, float(p), tol=tol) for p in probe_prices)
+        if not hits:
+            continue
+        if side_u == "CE" and zside == "supply":
+            opposing = zone
+            soft.append("supply_overhead")
+            break
+        if side_u == "PE" and zside == "demand":
+            opposing = zone
+            soft.append("demand_underfoot")
+            break
+
+    if short_call is not None and float(short_call) > 0:
+        for zone in zones:
+            if str(zone.get("side") or "").lower() == "supply" and _price_in_level(
+                zone, float(short_call), tol=tol
+            ):
+                soft.append("short_call_in_supply")
+                break
+    if short_put is not None and float(short_put) > 0:
+        for zone in zones:
+            if str(zone.get("side") or "").lower() == "demand" and _price_in_level(
+                zone, float(short_put), tol=tol
+            ):
+                soft.append("short_put_in_demand")
+                break
+
+    overlap_near: list[dict] = []
+    anchor = float(strike or spot or 0)
+    if anchor > 0:
+        for row in overlaps:
+            mid = row.get("mid")
+            try:
+                mid_f = float(mid) if mid is not None else None
+            except (TypeError, ValueError):
+                mid_f = None
+            if mid_f is None:
+                continue
+            if abs(mid_f - anchor) <= step:
+                overlap_near.append(row)
+        if len(overlap_near) >= 1:
+            soft.append("structural_overlap_near")
+
+    # Hard: spot clearly inside opposing band (not just edge) and no break template.
+    if opposing is not None and not is_break and spot > 0:
+        lo = opposing.get("lo")
+        hi = opposing.get("hi")
+        try:
+            if lo is not None and hi is not None:
+                lo_f, hi_f = float(lo), float(hi)
+                interior_lo = lo_f + tol
+                interior_hi = hi_f - tol
+                if interior_lo < interior_hi and interior_lo <= float(spot) <= interior_hi:
+                    hard.append("structural_zone_conflict")
+        except (TypeError, ValueError):
+            pass
+
+    inval = None
+    if opposing is not None:
+        try:
+            if side_u == "CE":
+                inval = float(opposing.get("hi") or opposing.get("price") or 0) or None
+            elif side_u == "PE":
+                inval = float(opposing.get("lo") or opposing.get("price") or 0) or None
+            else:
+                inval = float(opposing.get("price") or 0) or None
+        except (TypeError, ValueError):
+            inval = None
+
+    passed = opposing is None and "structural_zone_conflict" not in hard
+    summary = str(structural_map.get("summary") or "")
+    if opposing is not None:
+        label = opposing.get("label") or opposing.get("id") or "opposing zone"
+        summary = f"Opposing {label} near entry — size down."
+    elif overlap_near:
+        summary = f"{len(overlap_near)} structural overlap(s) near entry."
+    elif not summary:
+        summary = "No opposing unmitigated S/D at entry."
+
+    return {
+        "available": True,
+        "pass": passed,
+        "soft": soft,
+        "hard": hard,
+        "summary": summary,
+        "opposing_zone": opposing,
+        "overlap_near": overlap_near,
+        "invalidation_level": inval,
+    }
+
+
+def assess_opening_context(
+    opening_watch: dict | None,
+    *,
+    catalyst_risk_level: str | None = None,
+    side: str | None = None,
+    market_open: bool = True,
+    mode: str = "directional",
+) -> dict[str, Any]:
+    """Premarket / opening watch → catalyst_clear + optional OPEN_AUCTION_PLAN.
+
+    HIGH_SHOCK and NO BOOK TRADE clear the catalyst flag. Writers hard-block on
+    that; directional sizes HALF (spec 4.2) unless a break template is already
+    carrying the tape. STAGED watches aligned with the GO side set enter_rule.
+    """
+    soft: list[str] = []
+    hard: list[str] = []
+    watch = opening_watch if isinstance(opening_watch, dict) else {}
+    status = str(watch.get("status") or "").upper()
+    regime = str(watch.get("regime") or "").upper()
+    favored = str(watch.get("favored_play") or "")
+    fav_u = favored.upper()
+    side_hint = str(watch.get("side_hint") or "NONE").upper()
+    side_u = str(side or "").upper()
+    risk = str(catalyst_risk_level or "").upper()
+    mode_u = str(mode or "directional").lower()
+
+    no_book = any(tok in fav_u for tok in ("NO BOOK", "MAP ONLY — NO FADE", "MAP ONLY — NO BOUNCE"))
+    high_shock = risk == "HIGH_SHOCK"
+    catalyst_clear = not (high_shock or no_book)
+
+    if high_shock:
+        soft.append("high_shock_catalyst")
+    if no_book:
+        soft.append("opening_no_book")
+    if not catalyst_clear and mode_u == "writer":
+        hard.append("high_shock_catalyst")
+
+    enter: EnterRule | None = None
+    if status == "STAGED" and not market_open:
+        soft.append("auction_plan_active")
+        if side_hint in ("CE", "PE") and side_u in ("CE", "PE") and side_hint != side_u:
+            soft.append("auction_side_conflict")
+        else:
+            enter = "OPEN_AUCTION_PLAN"
+    elif status == "STAGED" and market_open:
+        # Rare: market flagged open but watch still STAGED — keep plan soft only.
+        soft.append("auction_plan_stale")
+
+    if side_hint in ("CE", "PE") and side_u in ("CE", "PE") and side_hint != side_u and status in (
+        "STAGED",
+        "SUPERSEDED",
+    ):
+        if "auction_side_conflict" not in soft:
+            soft.append("auction_side_conflict")
+
+    passed = catalyst_clear and "auction_side_conflict" not in soft
+    return {
+        "available": bool(watch) or bool(risk),
+        "pass": passed,
+        "soft": soft,
+        "hard": hard,
+        "catalyst_clear": catalyst_clear,
+        "enter_rule": enter,
+        "status": status or None,
+        "regime": regime or None,
+        "side_hint": side_hint,
+        "favored_play": favored or None,
+        "catalyst_risk_level": risk or None,
+        "summary": (
+            f"Opening {status or 'n/a'} · {regime or '—'} · catalyst "
+            f"{'clear' if catalyst_clear else 'blocked'}"
+        ),
+    }
+
+
+def _apply_structural_opening(
+    *,
+    evidence: list[EvidenceItem],
+    soft: list[str],
+    hard: list[str],
+    invalidation: dict,
+    context: dict,
+    structural: dict | None,
+    opening: dict | None,
+    size: SizeTier,
+    enter: EnterRule,
+) -> tuple[SizeTier, EnterRule]:
+    """Merge structural/opening assessments into evidence, flags, size, enter."""
+    size_out = size
+    enter_out = enter
+
+    if structural is not None:
+        available = bool(structural.get("available"))
+        evidence.append(
+            _ev(
+                "structural_zones",
+                "Structural S/D / overlap",
+                {
+                    "summary": structural.get("summary"),
+                    "opposing": (structural.get("opposing_zone") or {}).get("id")
+                    if structural.get("opposing_zone")
+                    else None,
+                    "overlaps_near": len(structural.get("overlap_near") or []),
+                },
+                "no opposing unmitigated zone at entry" if available else "unavailable — not invented",
+                bool(structural.get("pass")) if available else False,
+                0.0,
+                "structural_map",
+                note="" if available else "map missing — weight excluded",
+            )
+        )
+        for flag in structural.get("soft") or []:
+            if flag not in soft:
+                soft.append(flag)
+        for flag in structural.get("hard") or []:
+            if flag not in hard:
+                hard.append(flag)
+        context["structural_summary"] = structural.get("summary")
+        inval_lv = structural.get("invalidation_level")
+        if inval_lv and isinstance(invalidation, dict):
+            invalidation.setdefault("structural_level", float(inval_lv))
+            rule = str(invalidation.get("rule") or "")
+            if "structural" not in rule.lower():
+                invalidation["rule"] = (rule + " · structural zone").strip(" ·")
+
+    if opening is not None:
+        available = bool(opening.get("available"))
+        evidence.append(
+            _ev(
+                "opening_watch",
+                "Opening watch / catalyst",
+                {
+                    "status": opening.get("status"),
+                    "regime": opening.get("regime"),
+                    "side_hint": opening.get("side_hint"),
+                    "catalyst_risk": opening.get("catalyst_risk_level"),
+                    "catalyst_clear": opening.get("catalyst_clear"),
+                },
+                "catalyst clear; auction side aligned" if available else "unavailable — not invented",
+                bool(opening.get("pass")) if available else False,
+                0.0,
+                "pre_open_watch|market_intelligence",
+                note="" if available else "opening pack missing — weight excluded",
+            )
+        )
+        for flag in opening.get("soft") or []:
+            if flag not in soft:
+                soft.append(flag)
+        for flag in opening.get("hard") or []:
+            if flag not in hard:
+                hard.append(flag)
+        context["opening_status"] = opening.get("status")
+        context["catalyst_clear"] = opening.get("catalyst_clear")
+        if opening.get("enter_rule") == "OPEN_AUCTION_PLAN":
+            enter_out = "OPEN_AUCTION_PLAN"
+
+    # Soft risk → HALF (do not invent SCOUT demotion beyond existing gates).
+    size_risk = {
+        "supply_overhead",
+        "demand_underfoot",
+        "short_call_in_supply",
+        "short_put_in_demand",
+        "high_shock_catalyst",
+        "opening_no_book",
+        "auction_side_conflict",
+        "structural_zone_conflict",
+    }
+    if size_out == "FULL" and any(f in soft or f in hard for f in size_risk):
+        size_out = "HALF"
+    return size_out, enter_out
+
+
 def _pick_best_idea(ideas: list[Any]) -> Any | None:
     if not ideas:
         return None
@@ -377,12 +778,17 @@ def build_directional_decision(
     chain_ltp: float | None = None,
     confirming_types: list[str] | None = None,
     trigger_speed: str | None = None,
+    structural_map: dict | None = None,
+    opening_watch: dict | None = None,
+    catalyst_risk_level: str | None = None,
+    market_open: bool = True,
 ) -> GoDecision:
     """Build directional GO from idea/sentinel confluence inputs.
 
     ``chain_ltp`` fills the ATM (or idea) premium when the latch has no LTP —
     required for sentinel-led FIRE (risk + auto-stage).
     ``trigger_speed`` (e.g. MICRO_BURST) demotes unconfirmed CONT below FIRE.
+    ``structural_map`` / ``opening_watch`` feed soft zone + auction evidence.
     """
     weights = dict(DIRECTIONAL_WEIGHTS)
     evidence: list[EvidenceItem] = []
@@ -556,20 +962,23 @@ def build_directional_decision(
 
     if idea is not None:
         side = str(getattr(idea, "side", "CE") or "CE").upper()
-        strike = float(getattr(idea, "strike", 0) or 0)
-        # Soft delta preference: nudge one step OTM when δ≈0.35/0.25 requested
-        if delta_pref <= 0.30 and strike > 0 and step > 0:
-            strike = strike + step if side == "CE" else strike - step
-        elif delta_pref <= 0.40 and strike > 0 and step > 0:
-            # mild OTM
-            strike = strike + step if side == "CE" else strike - step
+        latch_strike = float(getattr(idea, "strike", 0) or 0)
+        strike = nudge_strike_for_delta(
+            latch_strike, side=side, strike_step=step, delta_pref=delta_pref
+        )
+        # Idea LTP prices the latch strike only — drop it when we stepped OTM.
         ltp = float(getattr(idea, "current_ltp", 0) or 0)
+        if abs(strike - latch_strike) > 1e-6:
+            try:
+                ltp = float(chain_ltp) if chain_ltp is not None and float(chain_ltp) > 0 else 0.0
+            except (TypeError, ValueError):
+                ltp = 0.0
         contracts = [
             GoLeg(
                 action="BUY",
                 opt_type=side,
                 strike=strike,
-                delta_target=float(getattr(idea, "delta_approx", 0) or 0) or delta_pref,
+                delta_target=delta_pref,
                 ltp=ltp or None,
             )
         ]
@@ -614,6 +1023,9 @@ def build_directional_decision(
     elif sent >= SCOUT_MIN and sentinel_type:
         side = "CE" if "BULL" in str(sentinel_type).upper() else "PE"
         atm = round(spot / step) * step if step else spot
+        strike = nudge_strike_for_delta(
+            float(atm), side=side, strike_step=step, delta_pref=delta_pref
+        )
         try:
             ltp_fill = float(chain_ltp) if chain_ltp is not None and float(chain_ltp) > 0 else 0.0
         except (TypeError, ValueError):
@@ -622,7 +1034,7 @@ def build_directional_decision(
             GoLeg(
                 action="BUY",
                 opt_type=side,
-                strike=float(atm),
+                strike=float(strike),
                 delta_target=delta_pref,
                 ltp=ltp_fill or None,
             )
@@ -712,6 +1124,45 @@ def build_directional_decision(
             f"{' (micro burst)' if str(trigger_speed or '').upper() == 'MICRO_BURST' else ''}"
             f". Need same-side ABS/CVD. "
         ) + thesis
+
+    entry_side = None
+    entry_strike = None
+    if contracts:
+        entry_side = contracts[0].opt_type
+        entry_strike = contracts[0].strike
+    elif side_guess:
+        entry_side = side_guess
+    structural = assess_structural_context(
+        structural_map,
+        spot=spot,
+        side=entry_side,
+        strike=entry_strike,
+        strike_step=step,
+        sentinel_type=sentinel_type,
+        strategy_key=strategy_key,
+    )
+    opening = assess_opening_context(
+        opening_watch,
+        catalyst_risk_level=catalyst_risk_level,
+        side=entry_side,
+        market_open=market_open,
+        mode="directional",
+    )
+    size, enter = _apply_structural_opening(
+        evidence=evidence,
+        soft=soft,
+        hard=hard,
+        invalidation=invalidation,
+        context=context,
+        structural=structural,
+        opening=opening,
+        size=size,
+        enter=enter,
+    )
+    # Re-evaluate state after structural/opening hard blocks land.
+    if hard and state != "HOLD":
+        state = state_from_score(score, hard)
+
     if state == "HOLD":
         size = "SCOUT"
         thesis = thesis if hard else "Score below SCOUT — stand aside."
@@ -768,6 +1219,10 @@ def build_structure_decision(
     leg_ltps_dated: dict[tuple[str, float, str], float] | None = None,
     near_atm_iv: float | None = None,
     next_atm_iv: float | None = None,
+    structural_map: dict | None = None,
+    opening_watch: dict | None = None,
+    catalyst_risk_level: str | None = None,
+    market_open: bool = True,
 ) -> GoDecision:
     weights = dict(STRUCTURE_WEIGHTS)
     evidence: list[EvidenceItem] = []
@@ -943,6 +1398,44 @@ def build_structure_decision(
     )
     if "No trade" in str(name) or not contracts:
         hard.append("no_structure")
+
+    short_c = next((c.strike for c in contracts if c.action == "SELL" and c.opt_type == "CE"), None)
+    short_p = next((c.strike for c in contracts if c.action == "SELL" and c.opt_type == "PE"), None)
+    struct_side = None
+    for c in contracts:
+        if c.action == "BUY":
+            struct_side = c.opt_type
+            break
+    invalidation = {"rule": "corridor break, flip cross, or blast active"}
+    structural = assess_structural_context(
+        structural_map,
+        spot=spot,
+        side=struct_side,
+        strike=float(contracts[0].strike) if contracts else None,
+        short_call=short_c,
+        short_put=short_p,
+        strike_step=step,
+        strategy_key=strategy_key,
+    )
+    opening = assess_opening_context(
+        opening_watch,
+        catalyst_risk_level=catalyst_risk_level,
+        side=struct_side,
+        market_open=market_open,
+        mode="structure",
+    )
+    enter: EnterRule = "NOW_CLOSE"
+    size, enter = _apply_structural_opening(
+        evidence=evidence,
+        soft=soft,
+        hard=hard,
+        invalidation=invalidation,
+        context=context,
+        structural=structural,
+        opening=opening,
+        size=size,
+        enter=enter,
+    )
     state = state_from_score(score, hard)
     if state == "HOLD" and hard:
         thesis = f"HOLD — {', '.join(hard)}. " + thesis
@@ -959,8 +1452,8 @@ def build_structure_decision(
         evidence=evidence,
         soft_flags=soft,
         hard_blocks=hard,
-        invalidation={"rule": "corridor break, flip cross, or blast active"},
-        enter_rule="NOW_CLOSE",
+        invalidation=invalidation,
+        enter_rule=enter,
         size_tier=size if state != "HOLD" else "SCOUT",
         contracts=contracts,
         risk=risk,
@@ -998,6 +1491,10 @@ def build_writer_decision(
     credit_put: float | None = None,
     margin_est_inr: float | None = None,
     alert_headline: str | None = None,
+    structural_map: dict | None = None,
+    opening_watch: dict | None = None,
+    catalyst_risk_level: str | None = None,
+    market_open: bool = True,
 ) -> GoDecision:
     weights = dict(WRITER_WEIGHTS)
     evidence: list[EvidenceItem] = []
@@ -1011,6 +1508,16 @@ def build_writer_decision(
     magnet = float(getattr(levels, "magnet", 0) or 0)
     step = float(strike_step or 50)
     vr = (vol_regime or "mid").lower()
+
+    opening = assess_opening_context(
+        opening_watch,
+        catalyst_risk_level=catalyst_risk_level,
+        side=None,
+        market_open=market_open,
+        mode="writer",
+    )
+    if opening_watch is not None or catalyst_risk_level is not None:
+        catalyst_clear = bool(catalyst_clear) and bool(opening.get("catalyst_clear", True))
 
     if spot <= 0:
         hard.append("placeholder_or_missing_spot")
@@ -1112,9 +1619,33 @@ def build_writer_decision(
         hard_blocks=hard,
         strategy_key="WRITE_OTM",
     )
+    invalidation = {"rule": "wall shift inside short, blast active, or CVD break through wall"}
+    structural = assess_structural_context(
+        structural_map,
+        spot=spot,
+        short_call=sc if sc > 0 else None,
+        short_put=sp if sp > 0 else None,
+        strike_step=step,
+        strategy_key="WRITE_OTM",
+    )
+    size: SizeTier = "FULL" if provisional == "FIRE" else "SCOUT"
+    enter: EnterRule = "NOW_CLOSE"
+    size, enter = _apply_structural_opening(
+        evidence=evidence,
+        soft=soft,
+        hard=hard,
+        invalidation=invalidation,
+        context=context,
+        structural=structural,
+        opening=opening if (opening_watch is not None or catalyst_risk_level is not None) else None,
+        size=size,
+        enter=enter,
+    )
     state = state_from_score(score, hard)
     if state == "HOLD" and hard:
         thesis = f"HOLD — {', '.join(hard)}. " + thesis
+    if state != "FIRE":
+        size = "SCOUT"
 
     return GoDecision(
         id=str(uuid.uuid4()),
@@ -1128,9 +1659,9 @@ def build_writer_decision(
         evidence=evidence,
         soft_flags=soft,
         hard_blocks=hard,
-        invalidation={"rule": "wall shift inside short, blast active, or CVD break through wall"},
-        enter_rule="NOW_CLOSE",
-        size_tier="FULL" if state == "FIRE" else "SCOUT",
+        invalidation=invalidation,
+        enter_rule=enter,
+        size_tier=size,
         contracts=contracts,
         risk=risk,
         targets={},

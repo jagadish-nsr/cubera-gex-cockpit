@@ -1378,6 +1378,132 @@ body {
   margin-left: 6px;
 }
 
+/* Structural map — compact focus list (Cockpit · between chart and ladder) */
+.structural-map-card {
+  border-color: color-mix(in srgb, var(--spark) 28%, var(--line));
+  padding: 12px 14px;
+}
+.structural-map-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.structural-map-head h3 {
+  font-size: 0.95rem;
+  font-weight: 750;
+  margin: 0;
+}
+.structural-map-spot-pill {
+  font-size: 0.72rem;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--spark);
+  background: var(--spark-bg);
+  border: 1px solid color-mix(in srgb, var(--spark) 28%, transparent);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.structural-map-summary {
+  margin: 0 0 8px;
+  font-size: 0.74rem;
+  color: var(--ink-mute);
+  line-height: 1.35;
+}
+.structural-map-focus {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.structural-map-row {
+  display: grid;
+  grid-template-columns: minmax(88px, 120px) minmax(0, 1fr) 70px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  font-size: 0.82rem;
+}
+.structural-map-row:first-child {
+  border-top: 0;
+}
+.structural-map-row.is-overlap {
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface-2));
+}
+.structural-map-row .sm-price {
+  font-family: var(--mono);
+  font-weight: 700;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+.structural-map-row .sm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+.structural-map-row .sm-tag {
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--ink-mute);
+  white-space: nowrap;
+}
+.structural-map-row .sm-tag.tone-stop {
+  color: var(--stop);
+  border-color: color-mix(in srgb, var(--stop) 35%, transparent);
+  background: var(--stop-bg);
+}
+.structural-map-row .sm-tag.tone-go {
+  color: var(--go);
+  border-color: color-mix(in srgb, var(--go) 35%, transparent);
+  background: var(--go-bg);
+}
+.structural-map-row .sm-tag.tone-spark {
+  color: var(--spark);
+  border-color: color-mix(in srgb, var(--spark) 35%, transparent);
+  background: var(--spark-bg);
+}
+.structural-map-row .sm-tag.tone-warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  background: var(--warn-bg);
+}
+.structural-map-row .sm-tag.tone-purple {
+  color: var(--purple);
+  border-color: color-mix(in srgb, var(--purple) 35%, transparent);
+  background: var(--purple-bg);
+}
+.structural-map-row .sm-dist {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  text-align: right;
+}
+.structural-map-empty {
+  font-size: 0.78rem;
+  color: var(--ink-mute);
+  padding: 10px 12px;
+}
+@media (max-width: 480px) {
+  .structural-map-row {
+    grid-template-columns: minmax(72px, 96px) minmax(0, 1fr) 58px;
+    gap: 6px;
+    padding: 7px 8px;
+  }
+}
+
 /* Target Engine Symmetrical Dual-Wing Ladder */
 .dual-wing-ladder {
   width: 100%;
@@ -3509,10 +3635,18 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 .go-open-panel {
   margin-bottom: 8px;
 }
+.go-open-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
 .go-open-row {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
+  align-items: center;
   gap: 8px;
   font-family: var(--mono);
   font-size: 0.72rem;
@@ -3521,6 +3655,15 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
 }
 .go-open-greeks {
   color: var(--spark);
+}
+.go-open-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.go-open-actions .btn {
+  font-size: 0.68rem;
+  padding: 2px 8px;
 }
 .go-smile-line {
   display: flex;

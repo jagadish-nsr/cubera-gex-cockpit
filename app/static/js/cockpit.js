@@ -25,6 +25,8 @@
     goMode: localStorage.getItem("cubera_go_mode") || "directional",
     goDelta: parseFloat(localStorage.getItem("cubera_go_delta") || "0.50"),
     lastGoDecision: null,
+    goWhyOpen: false,
+    goDeskWhyOpen: {},
     goDeskItems: [],
     headerExecRich: false,
     tapeLatch: null,
@@ -2760,6 +2762,158 @@
     }
   };
 
+  function paintStructuralMap(smap) {
+    const spotEl = document.getElementById("structural-map-spot");
+    const summaryEl = document.getElementById("structural-map-summary");
+    const focusEl = document.getElementById("structural-map-focus");
+    const map = smap || {};
+    const levels = Array.isArray(map.levels) ? map.levels : [];
+    const spot = map.spot != null ? Number(map.spot) : null;
+    const tol = Number(map.overlap_tol) > 0 ? Number(map.overlap_tol) : 50;
+
+    // Chart: VPOC + nearest supply/demand only (walls/flip already on tape).
+    const echo = { supply: null, demand: null, vpoc: 0 };
+    levels.forEach((lv) => {
+      if (lv.id === "vpoc") echo.vpoc = Number(lv.price) || 0;
+      if (lv.kind === "sd" && lv.side === "supply" && !echo.supply) {
+        echo.supply = { mid: Number(lv.price) || 0 };
+      }
+      if (lv.kind === "sd" && lv.side === "demand" && !echo.demand) {
+        echo.demand = { mid: Number(lv.price) || 0 };
+      }
+    });
+    if (typeof cockpitChartState !== "undefined") {
+      cockpitChartState.structuralEcho = echo;
+    }
+
+    if (spotEl) {
+      spotEl.textContent = spot != null ? `₹${spot.toLocaleString("en-IN")}` : "—";
+    }
+    if (!focusEl) return;
+
+    const TAG = {
+      call_wall: "CW",
+      put_wall: "PW",
+      gamma_flip: "Flip",
+      magnet: "Mag",
+      max_pain: "MP",
+      prior_high: "PDH",
+      prior_low: "PDL",
+      prior_close: "PDC",
+      day_high: "DayH",
+      day_low: "DayL",
+      day_open: "Open",
+      put_oi: "PutOI",
+      call_oi: "CallOI",
+      value_area: "VA",
+      vp_value_area: "VPVA",
+      vpoc: "VPOC",
+      session_vpoc: "sVPOC",
+    };
+    const tagOf = (lv) => {
+      if (TAG[lv.id]) return TAG[lv.id];
+      if (String(lv.id || "").startsWith("hvn_")) return "HVN";
+      if (String(lv.id || "").startsWith("lvn_")) return "LVN";
+      if (String(lv.id || "").startsWith("supply_")) return "Supply";
+      if (String(lv.id || "").startsWith("demand_")) return "Demand";
+      return lv.label || lv.id || "?";
+    };
+    const toneOf = (tag) => {
+      if (tag === "CW" || tag === "Supply") return "stop";
+      if (tag === "PW" || tag === "Demand") return "go";
+      if (tag === "Flip" || tag === "VPOC" || tag === "HVN" || tag === "sVPOC") return "spark";
+      if (tag === "VA" || tag === "VPVA" || tag === "Mag") return "purple";
+      if (tag === "PDH" || tag === "PDL" || tag === "PDC" || tag === "DayH" || tag === "DayL" || tag === "Open") return "warn";
+      return "mute";
+    };
+
+    // One node per level (bands keep range for display when they dominate a cluster).
+    const nodes = [];
+    levels.forEach((lv) => {
+      const px = Number(lv.price);
+      if (!Number.isFinite(px) || px <= 0) return;
+      // Skip wide VP/TPO value-area bands as their own row noise — edges show via VPOC/VA tags on mid.
+      if (lv.id === "vp_value_area") return;
+      nodes.push({
+        id: lv.id,
+        tag: tagOf(lv),
+        price: px,
+        lo: lv.lo != null ? Number(lv.lo) : null,
+        hi: lv.hi != null ? Number(lv.hi) : null,
+        kind: lv.kind,
+        side: lv.side,
+      });
+    });
+
+    if (!nodes.length) {
+      if (summaryEl) summaryEl.textContent = "No structural levels on this read.";
+      focusEl.innerHTML = '<div class="structural-map-empty">No structural levels on this read.</div>';
+      return;
+    }
+
+    // Cluster on point anchors only (band width must not swallow the ladder).
+    nodes.sort((a, b) => a.price - b.price);
+    const clusters = [];
+    nodes.forEach((n) => {
+      const last = clusters[clusters.length - 1];
+      if (last && Math.abs(n.price - last.anchor) <= tol) {
+        last.nodes.push(n);
+        const sum = last.nodes.reduce((acc, x) => acc + x.price, 0);
+        last.anchor = sum / last.nodes.length;
+      } else {
+        clusters.push({ nodes: [n], anchor: n.price });
+      }
+    });
+
+    clusters.forEach((c) => {
+      const tags = [];
+      const seen = new Set();
+      c.nodes.forEach((n) => {
+        if (seen.has(n.tag)) return;
+        seen.add(n.tag);
+        tags.push(n.tag);
+      });
+      c.tags = tags;
+      c.confluence = tags.length >= 2;
+      c.dist = spot != null ? c.anchor - spot : 0;
+      c.abs = Math.abs(c.dist);
+      // Show a range only when this cluster is a single S/D or VA band.
+      const band = c.nodes.find((n) =>
+        (n.tag === "Supply" || n.tag === "Demand" || n.tag === "VA")
+        && n.lo != null && n.hi != null && (n.hi - n.lo) > tol * 0.5
+      );
+      c.priceText = band
+        ? `${Math.round(band.lo).toLocaleString("en-IN")}–${Math.round(band.hi).toLocaleString("en-IN")}`
+        : `${Math.round(c.anchor).toLocaleString("en-IN")}`;
+      const sign = c.dist >= 0 ? "+" : "";
+      c.distText = spot != null ? `${sign}${Math.round(c.dist).toLocaleString("en-IN")} pts` : "";
+    });
+
+    // Nearest neighborhoods to spot, confluence first within similar distance.
+    clusters.sort((a, b) => {
+      if (a.confluence !== b.confluence) return a.confluence ? -1 : 1;
+      return a.abs - b.abs;
+    });
+    const focus = clusters.slice(0, 10);
+    // Display top→bottom as high→low price for a map feel.
+    focus.sort((a, b) => b.anchor - a.anchor);
+
+    const nConf = clusters.filter((c) => c.confluence).length;
+    if (summaryEl) {
+      summaryEl.textContent =
+        `${nodes.length} marks → ${clusters.length} zones · ${nConf} confluence · showing ${focus.length} nearest`;
+    }
+
+    focusEl.innerHTML = focus.map((c) => {
+      const tags = c.tags.map((t) => `<span class="sm-tag tone-${toneOf(t)}">${t}</span>`).join("");
+      return `<div class="structural-map-row ${c.confluence ? "is-overlap" : ""}">
+        <span class="sm-price">${c.priceText}</span>
+        <span class="sm-tags">${tags}</span>
+        <span class="sm-dist">${c.distText}</span>
+      </div>`;
+    }).join("");
+  }
+
   function paintSessionReads(data) {
     const flow = data.positioning_flow || {};
     const chop = data.choppiness || {};
@@ -2825,6 +2979,10 @@
     const levels = document.getElementById("go-posture-levels");
     const card = document.getElementById("go-primary-card");
     if (!strip || !card || !decision) return;
+
+    // Preserve Why pack open across coalesced GO refreshes (innerHTML wipe).
+    const prevWhy = card.querySelector("details.go-why");
+    if (prevWhy) state.goWhyOpen = !!prevWhy.open;
 
     const st = decision.state || "HOLD";
     strip.className = "go-posture-strip go-state-" + String(st).toLowerCase();
@@ -2908,7 +3066,7 @@
         <button type="button" class="btn btn-secondary" id="go-skip-btn">Skip FIRE</button>
       </div>
       <div id="go-manage-row" class="go-manage-row"></div>
-      <details class="go-why">
+      <details class="go-why"${state.goWhyOpen ? " open" : ""}>
         <summary>Why — evidence pack (double-check)</summary>
         <table><thead><tr><th>Factor</th><th>Value</th><th>Threshold</th><th>Result</th><th>Source</th></tr></thead>
         <tbody>${whyRows || "<tr><td colspan='5'>No evidence</td></tr>"}</tbody></table>
@@ -2919,6 +3077,12 @@
     const skipBtn = document.getElementById("go-skip-btn");
     if (stageBtn) stageBtn.onclick = () => stageGoDecision();
     if (skipBtn) skipBtn.onclick = () => skipGoDecision();
+    const whyEl = card.querySelector("details.go-why");
+    if (whyEl) {
+      whyEl.addEventListener("toggle", () => {
+        state.goWhyOpen = !!whyEl.open;
+      });
+    }
     enrichGoManagePanel(decision);
   }
 
@@ -3013,23 +3177,29 @@
           ? renderGoPayoffSvg(data.payoff)
           : "";
         pEl.innerHTML = payoffSvg + renderGoSmileLine(data.smile);
-        fetch(`/api/go/whatif?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(mode)}`)
-          .then((r) => r.json())
-          .then((wf) => {
-            if (!pEl) return;
-            if (wf.error) {
+        // Skip what-if when HOLD / no contracts — empty scenarios are noise.
+        const hasContracts = (decision.contracts || []).length > 0
+          || ((data.payoff && (data.payoff.points || []).length) > 0);
+        if (hasContracts) {
+          fetch(`/api/go/whatif?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(mode)}`)
+            .then((r) => r.json())
+            .then((wf) => {
+              if (!pEl) return;
+              if (wf.error) {
+                pEl.insertAdjacentHTML("beforeend",
+                  `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">${wf.message || wf.error}</div>`);
+                return;
+              }
+              const rows = (wf.whatif && wf.whatif.scenarios) || [];
+              if (!rows.length) return;
+              const mid = rows.filter((s) => Math.abs(s.shock_pct) <= 1.0);
+              if (!mid.length) return;
               pEl.insertAdjacentHTML("beforeend",
-                `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">${wf.message || wf.error}</div>`);
-              return;
-            }
-            const rows = (wf.whatif && wf.whatif.scenarios) || [];
-            if (!rows.length) return;
-            const mid = rows.filter((s) => Math.abs(s.shock_pct) <= 1.0);
-            pEl.insertAdjacentHTML("beforeend",
-              `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">What-if (Black-76)</div>
-               <table class="go-legs"><thead><tr><th>Shock</th><th>Spot</th><th>P&amp;L ₹</th></tr></thead>
-               <tbody>${mid.map((s) => `<tr><td>${s.shock_pct}%</td><td>${s.spot}</td><td>${s.pnl_inr}</td></tr>`).join("")}</tbody></table>`);
-          }).catch((err) => notePrefCatch("GO whatif", err));
+                `<div class="go-muted" style="font-size:0.68rem;margin-top:6px">What-if (Black-76)</div>
+                 <table class="go-legs"><thead><tr><th>Shock</th><th>Spot</th><th>P&amp;L ₹</th></tr></thead>
+                 <tbody>${mid.map((s) => `<tr><td>${s.shock_pct}%</td><td>${s.spot}</td><td>${s.pnl_inr}</td></tr>`).join("")}</tbody></table>`);
+            }).catch((err) => notePrefCatch("GO whatif", err));
+        }
       }
       if (mEl) {
         const acts = data.manage_actions || [];
@@ -3056,11 +3226,58 @@
         showToast(data.detail || "Manage action failed");
         return;
       }
-      if (data.trade_id) showToast(`${action} staged · ${data.trade_id} — confirm at broker`);
-      else showToast(data.detail || data.status || action);
+      if (action === "flatten" && data.pnl && data.pnl.net_pnl_inr != null) {
+        const n = Number(data.pnl.net_pnl_inr);
+        const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+        showToast(`Flatten settled · net ${n < 0 ? "−" : n > 0 ? "+" : ""}${s}`);
+      } else if (data.trade_id) {
+        showToast(`${action} staged · ${data.trade_id} — confirm at broker`);
+      } else {
+        showToast(data.detail || data.status || action);
+      }
+      loadGoOpenPanel();
       if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
     } catch (e) {
       showToast("Manage action failed");
+    }
+  }
+
+  async function closeGoOpen(decisionId) {
+    if (!decisionId) return;
+    try {
+      const res = await fetch("/api/go/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision_id: decisionId, exit_reason: "MANUAL" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.detail || "Close failed");
+        return;
+      }
+      const pnl = data.pnl || {};
+      if (pnl.net_pnl_inr != null) {
+        const n = Number(pnl.net_pnl_inr);
+        const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+        showToast(`Closed · net ${n < 0 ? "−" : n > 0 ? "+" : ""}${s}`);
+      } else {
+        showToast("Closed staged GO");
+      }
+      loadGoOpenPanel();
+      loadGoAlerts();
+      if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
+    } catch (e) {
+      showToast("Close failed");
+    }
+  }
+
+  async function refreshGoOpenMarks() {
+    try {
+      await fetch(`/api/go/alerts?symbol=${encodeURIComponent(state.symbol)}&refresh=true`);
+      loadGoOpenPanel();
+      showToast("Open marks refreshed");
+    } catch (e) {
+      showToast("Mark refresh failed");
     }
   }
 
@@ -3232,7 +3449,10 @@
         root.innerHTML = "";
         return;
       }
-      root.innerHTML = `<div class="go-muted" style="margin-bottom:4px">Open staged · live Greeks</div>` +
+      root.innerHTML = `<div class="go-open-head">
+          <span class="go-muted">Open staged · live Greeks</span>
+          <button type="button" class="btn btn-secondary go-open-refresh-marks" style="font-size:0.68rem;padding:2px 8px">Refresh marks</button>
+        </div>` +
         opens.slice(0, 4).map((o) => {
           const net = (o.greeks && o.greeks.net) || {};
           const gLine = net.delta != null
@@ -3245,11 +3465,20 @@
             const s = `₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
             mtm = ` · MTM ${n < 0 ? "−" : n > 0 ? "+" : ""}${s}`;
           }
-          return `<div class="go-open-row">
+          const did = o.decision_id || "";
+          return `<div class="go-open-row" data-decision-id="${did}">
             <span>${o.mode} · ${o.strategy_key || "—"} · MFE ${o.mfe ?? "—"} / MAE ${o.mae ?? "—"}${trail}${mtm}</span>
             <span class="go-open-greeks">${gLine}</span>
+            <span class="go-open-actions">
+              <button type="button" class="btn btn-secondary go-open-close" data-decision-id="${did}" title="Settle paper P&amp;L at last mark — no broker send">Close</button>
+            </span>
           </div>`;
         }).join("");
+      const refreshBtn = root.querySelector(".go-open-refresh-marks");
+      if (refreshBtn) refreshBtn.onclick = () => refreshGoOpenMarks();
+      root.querySelectorAll(".go-open-close").forEach((btn) => {
+        btn.onclick = () => closeGoOpen(btn.getAttribute("data-decision-id"));
+      });
     } catch (e) { /* non-fatal */ }
   }
 
@@ -3484,6 +3713,8 @@
     if (t.hasAttribute("data-go-mode")) {
       state.goMode = t.getAttribute("data-go-mode");
       localStorage.setItem("cubera_go_mode", state.goMode);
+      state.goWhyOpen = false;
+      state.goDeskWhyOpen = {};
       fetch("/api/go/prefs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3540,6 +3771,7 @@
       if (state.spot > 0) data.spot = state.spot;
       const valueLine = document.getElementById("value-area-line");
       if (valueLine) valueLine.textContent = (data.value_area && data.value_area.text) || "No prior value area.";
+      paintStructuralMap(data.structural_map);
       paintParticipantHoldings(data.participant_holdings);
       paintSessionReads(data);
       syncCockpitPreBellCard(data.is_pre_bell_ephemeral);
@@ -3926,6 +4158,10 @@
           if (row.is_prior_high) badgeHtml += '<span class="ladder-badge">PRIOR HIGH</span>';
           if (row.is_prior_low) badgeHtml += '<span class="ladder-badge">PRIOR LOW</span>';
           if (row.is_prior_close) badgeHtml += '<span class="ladder-badge">PRIOR CLOSE</span>';
+          if (row.is_structural_overlap) badgeHtml += '<span class="ladder-badge" style="background:rgba(245,158,11,.18);color:var(--warn)">OVERLAP</span>';
+          if (row.is_vpoc) badgeHtml += '<span class="ladder-badge" style="background:rgba(56,189,248,.12);color:var(--spark)">VPOC</span>';
+          if (row.is_supply) badgeHtml += '<span class="ladder-badge" style="background:rgba(239,68,68,.12);color:var(--stop)">SUPPLY</span>';
+          if (row.is_demand) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.12);color:var(--go)">DEMAND</span>';
           const doiText = (row.call_doi == null && row.put_doi == null)
             ? "—"
             : `${row.call_doi == null ? "—" : (row.call_doi > 0 ? "+" : "") + Number(row.call_doi).toLocaleString("en-IN")} / ${row.put_doi == null ? "—" : (row.put_doi > 0 ? "+" : "") + Number(row.put_doi).toLocaleString("en-IN")}`;
@@ -4280,6 +4516,7 @@
     cw: 0,
     pw: 0,
     flip: 0,
+    structuralEcho: {},
     dragInitialized: false,
   };
 
@@ -4294,6 +4531,12 @@
   let cockpitCwLine = null;
   let cockpitPwLine = null;
   let cockpitFlipLine = null;
+  let cockpitPdhLine = null;
+  let cockpitPdlLine = null;
+  let cockpitPocLine = null;
+  let cockpitVpocLine = null;
+  let cockpitSupplyLine = null;
+  let cockpitDemandLine = null;
 
   function updateCockpitChart(data) {
     if (data && data.kpis) {
@@ -4627,10 +4870,18 @@
       }));
       cockpitDeltaSeries.setData(deltaData);
 
-      // GEX Walls
+      // GEX walls/flip + sparse structural echo (VPOC, S/D mids only)
       if (cockpitCwLine) cockpitCandleSeries.removePriceLine(cockpitCwLine);
       if (cockpitPwLine) cockpitCandleSeries.removePriceLine(cockpitPwLine);
       if (cockpitFlipLine) cockpitCandleSeries.removePriceLine(cockpitFlipLine);
+      if (cockpitPdhLine) { cockpitCandleSeries.removePriceLine(cockpitPdhLine); cockpitPdhLine = null; }
+      if (cockpitPdlLine) { cockpitCandleSeries.removePriceLine(cockpitPdlLine); cockpitPdlLine = null; }
+      if (cockpitPocLine) { cockpitCandleSeries.removePriceLine(cockpitPocLine); cockpitPocLine = null; }
+      if (cockpitVpocLine) cockpitCandleSeries.removePriceLine(cockpitVpocLine);
+      if (cockpitSupplyLine) cockpitCandleSeries.removePriceLine(cockpitSupplyLine);
+      if (cockpitDemandLine) cockpitCandleSeries.removePriceLine(cockpitDemandLine);
+      cockpitCwLine = cockpitPwLine = cockpitFlipLine = null;
+      cockpitVpocLine = cockpitSupplyLine = cockpitDemandLine = null;
 
       if (data.call_wall > 0) {
         cockpitChartState.cw = data.call_wall;
@@ -4662,6 +4913,37 @@
           lineStyle: 2,
           axisLabelVisible: true,
           title: "Gamma Flip",
+        });
+      }
+      const echo = cockpitChartState.structuralEcho || {};
+      if (echo.vpoc > 0) {
+        cockpitVpocLine = cockpitCandleSeries.createPriceLine({
+          price: echo.vpoc,
+          color: "#38bdf8",
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: true,
+          title: "VPOC",
+        });
+      }
+      if (echo.supply && echo.supply.mid > 0) {
+        cockpitSupplyLine = cockpitCandleSeries.createPriceLine({
+          price: echo.supply.mid,
+          color: "#ef4444",
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: true,
+          title: "Supply",
+        });
+      }
+      if (echo.demand && echo.demand.mid > 0) {
+        cockpitDemandLine = cockpitCandleSeries.createPriceLine({
+          price: echo.demand.mid,
+          color: "#22c55e",
+          lineWidth: 1,
+          lineStyle: 3,
+          axisLabelVisible: true,
+          title: "Demand",
         });
       }
 
@@ -6023,6 +6305,14 @@
       feed.innerHTML = `<div class="go-muted">No GO items. Refresh after the book loads.</div>`;
       return;
     }
+    // Capture open Why packs before wipe (refresh otherwise collapses them).
+    const prevOpen = {};
+    feed.querySelectorAll("article.go-desk-card").forEach((art) => {
+      const idx = art.getAttribute("data-go-idx");
+      const why = art.querySelector("details.go-why");
+      if (idx != null && why) prevOpen[idx] = !!why.open;
+    });
+    state.goDeskWhyOpen = Object.assign({}, state.goDeskWhyOpen || {}, prevOpen);
     feed.innerHTML = list.map((d, idx) => {
       const st = d.state || "HOLD";
       const cls = st === "FIRE" ? "is-fire" : (st === "SCOUT" ? "is-scout" : "");
@@ -6073,7 +6363,7 @@
             <button type="button" class="btn btn-primary go-desk-stage" data-go-idx="${idx}">Stage journal</button>
             <button type="button" class="btn btn-secondary go-desk-skip" data-go-idx="${idx}">Skip FIRE</button>
           </div>
-          <details class="go-why">
+          <details class="go-why"${state.goDeskWhyOpen && state.goDeskWhyOpen[String(idx)] ? " open" : ""}>
             <summary>Why — evidence pack</summary>
             <table><thead><tr><th>Factor</th><th>Value</th><th>Threshold</th><th>Result</th></tr></thead>
             <tbody>${evidence || "<tr><td colspan='4'>No evidence</td></tr>"}</tbody></table>
@@ -6099,13 +6389,22 @@
         skipGoDecision();
       });
     });
+    feed.querySelectorAll("article.go-desk-card details.go-why").forEach((why) => {
+      why.addEventListener("toggle", () => {
+        const art = why.closest("article.go-desk-card");
+        const idx = art && art.getAttribute("data-go-idx");
+        if (idx == null) return;
+        if (!state.goDeskWhyOpen) state.goDeskWhyOpen = {};
+        state.goDeskWhyOpen[idx] = !!why.open;
+      });
+    });
   }
 
   async function loadGoDeskFeed() {
     const feed = document.getElementById("go-desk-feed");
     if (!feed) return;
     try {
-      const url = `/api/go/feed?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode || "directional")}`;
+      const url = `/api/go/feed?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}&mode=${encodeURIComponent(state.goMode || "directional")}&delta_pref=${encodeURIComponent(state.goDelta)}`;
       const res = await fetch(url);
       const data = await res.json().catch(() => ({}));
       if (!(await noteFetchResult("GO Desk", res, data))) {

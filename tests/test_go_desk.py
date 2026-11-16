@@ -7,14 +7,18 @@ from types import SimpleNamespace
 from analytics.go_desk import (
     FIRE_MIN,
     SCOUT_MIN,
+    assess_opening_context,
+    assess_structural_context,
     book_side,
     build_directional_decision,
     build_structure_decision,
     build_writer_decision,
     continuation_confirmed,
     decisive_gate,
+    delta_otm_steps,
     evidence_pack_complete,
     is_continuation_key,
+    nudge_strike_for_delta,
     rank_feed,
     sides_conflict,
     state_from_score,
@@ -740,3 +744,215 @@ def test_working_fire_advisory_strip_softened_and_conflict():
     assert "conflicts" in conflict["message"]
 
     assert working_fire_advisory(strip_decision={"state": "FIRE"}, open_rows=[]) is None
+
+
+def _supply_map(lo=25350.0, hi=25450.0, mitigated=False):
+    """Minimal structural_map with one unmitigated supply band around 25400."""
+    return {
+        "spot": 25400.0,
+        "summary": "test map",
+        "levels": [
+            {
+                "id": "supply_0",
+                "label": "Supply zone",
+                "side": "supply",
+                "lo": lo,
+                "hi": hi,
+                "price": (lo + hi) / 2.0,
+                "mitigated": mitigated,
+            }
+        ],
+        "overlaps": [],
+        "supply_demand": [],
+    }
+
+
+def test_assess_structural_ce_into_supply_soft_and_hard():
+    # Spot 25400 sits in interior of 25350–25450 (tol=12.5 → interior 25362.5–25437.5).
+    ctx = assess_structural_context(
+        _supply_map(),
+        spot=25400.0,
+        side="CE",
+        strike=25500.0,
+        strike_step=50,
+    )
+    assert ctx["available"] is True
+    assert "supply_overhead" in ctx["soft"]
+    assert "structural_zone_conflict" in ctx["hard"]
+    assert ctx["pass"] is False
+    assert ctx["invalidation_level"] == 25450.0
+
+    # Break template: soft only — no hard trap block.
+    br = assess_structural_context(
+        _supply_map(),
+        spot=25400.0,
+        side="CE",
+        strike=25500.0,
+        strike_step=50,
+        sentinel_type="STRIKE_BREAK_BULL",
+    )
+    assert "supply_overhead" in br["soft"]
+    assert "structural_zone_conflict" not in br["hard"]
+
+    # Mitigated supply is ignored.
+    mit = assess_structural_context(
+        _supply_map(mitigated=True),
+        spot=25400.0,
+        side="CE",
+        strike=25500.0,
+        strike_step=50,
+    )
+    assert mit["pass"] is True
+    assert mit["soft"] == []
+
+
+def test_directional_hold_on_structural_zone_conflict():
+    # Spot trapped in supply interior → hard HOLD (not a silent FIRE vs Home map).
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25400.0, cw=25800.0, pw=25000.0),
+        trade_ideas=[_idea(90, side="CE", strike=25400.0)],
+        sentinel_score=90,
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=80,
+        oi_ts="t",
+        structural_map=_supply_map(lo=25350.0, hi=25450.0),
+        market_open=True,
+    )
+    assert "supply_overhead" in d.soft_flags
+    assert "structural_zone_conflict" in d.hard_blocks
+    assert d.state == "HOLD"
+    assert any(e.factor == "structural_zones" for e in d.evidence)
+    assert d.invalidation.get("structural_level") == 25450.0
+
+
+def test_directional_half_on_supply_with_break_template():
+    # Break template: opposing supply is soft only → size HALF, state can still FIRE.
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25400.0, cw=25800.0, pw=25000.0),
+        trade_ideas=[_idea(90, side="CE", strike=25500.0, play_badge="STRIKE_BREAK")],
+        sentinel_score=90,
+        sentinel_type="STRIKE_BREAK_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=80,
+        oi_ts="t",
+        structural_map=_supply_map(lo=25350.0, hi=25450.0),
+        market_open=True,
+    )
+    assert "supply_overhead" in d.soft_flags
+    assert "structural_zone_conflict" not in d.hard_blocks
+    assert d.state == "FIRE"
+    assert d.size_tier == "HALF"
+
+
+def test_assess_opening_auction_plan_and_no_book():
+    staged = {
+        "status": "STAGED",
+        "regime": "CALL_WALL_HOLD",
+        "favored_play": "WATCH HOLD ABOVE CALL STRIKE",
+        "side_hint": "CE",
+    }
+    ctx = assess_opening_context(staged, side="CE", market_open=False, mode="directional")
+    assert ctx["enter_rule"] == "OPEN_AUCTION_PLAN"
+    assert "auction_plan_active" in ctx["soft"]
+    assert ctx["catalyst_clear"] is True
+
+    no_book = {
+        "status": "STAGED",
+        "regime": "AUCTION_BALANCED",
+        "favored_play": "NO BOOK TRADE",
+        "side_hint": "NONE",
+    }
+    blocked = assess_opening_context(no_book, side="CE", market_open=False, mode="writer")
+    assert blocked["catalyst_clear"] is False
+    assert "opening_no_book" in blocked["soft"]
+    assert "high_shock_catalyst" in blocked["hard"]
+
+
+def test_directional_open_auction_enter_rule():
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25000.0, cw=25600.0, pw=24400.0),
+        trade_ideas=[_idea(90)],
+        sentinel_score=90,
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=80,
+        oi_ts="t",
+        opening_watch={
+            "status": "STAGED",
+            "regime": "CALL_WALL_HOLD",
+            "favored_play": "WATCH HOLD ABOVE CALL STRIKE",
+            "side_hint": "CE",
+        },
+        market_open=False,
+    )
+    assert d.enter_rule == "OPEN_AUCTION_PLAN"
+    assert "auction_plan_active" in d.soft_flags
+
+
+def test_delta_pref_shifts_strike_otm():
+    # Latch 25500 CE: 0.50→25500, 0.35→25550, 0.25→25600 (Nifty step 50).
+    assert delta_otm_steps(0.50) == 0
+    assert delta_otm_steps(0.35) == 1
+    assert delta_otm_steps(0.25) == 2
+    assert nudge_strike_for_delta(25500, side="CE", strike_step=50, delta_pref=0.50) == 25500
+    assert nudge_strike_for_delta(25500, side="CE", strike_step=50, delta_pref=0.35) == 25550
+    assert nudge_strike_for_delta(25500, side="CE", strike_step=50, delta_pref=0.25) == 25600
+    assert nudge_strike_for_delta(25500, side="PE", strike_step=50, delta_pref=0.25) == 25400
+
+    base = dict(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25000.0, cw=25600.0, pw=24400.0),
+        trade_ideas=[_idea(90, side="CE", strike=25500.0)],
+        sentinel_score=90,
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=80,
+        oi_ts="t",
+        confirming_types=["ABSORPTION_BULL"],
+    )
+    d50 = build_directional_decision(**base, delta_pref=0.50)
+    d35 = build_directional_decision(**base, delta_pref=0.35)
+    d25 = build_directional_decision(**base, delta_pref=0.25)
+    assert d50.contracts[0].strike == 25500
+    assert d35.contracts[0].strike == 25550
+    assert d25.contracts[0].strike == 25600
+    assert d25.contracts[0].delta_target == 0.25
+
+
+def test_writer_catalyst_from_high_shock_risk_level():
+    d = build_writer_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(),
+        vol_regime="calm",
+        iv=20,
+        rv=12,
+        oi_ts="t",
+        short_call=25700,
+        short_put=25100,
+        margin_est_inr=100000,
+        catalyst_risk_level="HIGH_SHOCK",
+        opening_watch={"status": "SUPERSEDED", "favored_play": "MAP ONLY", "side_hint": "NONE"},
+        market_open=True,
+    )
+    assert d.state == "HOLD"
+    assert "high_shock_catalyst" in d.hard_blocks
+    assert d.context.get("catalyst_clear") is False

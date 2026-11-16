@@ -8,7 +8,7 @@
   <meta name="description"
     content="Sub-millisecond institutional options analytics, GEX gamma ladders, orderflow tape, AI commentary, and paper-trade journal for NIFTY, BANKNIFTY, and SENSEX.">
   <link rel="icon" type="image/svg+xml" href="/static/img/cubera-logo-mark.svg">
-  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.39">
+  <link rel="stylesheet" href="/static/css/cockpit.css?v=5.43">
   <script>
     // Early theme initialization to prevent flash of wrong theme (FOUC)
     (function () {
@@ -817,10 +817,21 @@
               <span style="color:#22c55e">🟩 <b>Put gamma (<span id="cockpit-legend-pw-val">--</span>)</b></span>
               <span style="color:#eab308">🟨 <b>Call−put balance (<span
                     id="cockpit-legend-flip-val">--</span>)</b></span>
+              <span style="color:#94a3b8">⬜ <b>VPOC · Supply / Demand</b></span>
               <span style="color:#c084fc">🟣 <b>VWAP Session Mean</b></span>
               <span style="color:#facc15">🟡 <b>EMA 9 &amp; 21 Ribbon</b></span>
             </div>
           </div>
+
+          <!-- Structural reaction map: compact focus list · between chart and ladder -->
+          <section class="ladder-card structural-map-card" id="structural-map-card" aria-label="Structural reaction map">
+            <div class="structural-map-head">
+              <h3>Structural map</h3>
+              <span id="structural-map-spot" class="structural-map-spot-pill">Spot —</span>
+            </div>
+            <p id="structural-map-summary" class="structural-map-summary">Price neighborhoods with source tags. Confluence first.</p>
+            <div id="structural-map-focus" class="structural-map-focus" aria-label="Priority reaction levels"></div>
+          </section>
 
           <!-- Gamma Price Ladder -->
           <div class="ladder-card">
@@ -3212,7 +3223,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.65"></script>
+  <script src="/static/js/cockpit.js?v=6.69"></script>
 </body>
 
 </html>
