@@ -195,6 +195,25 @@ def write_token(token: str) -> None:
         except Exception:
             pass
 
+    after_token_refresh()
+
+
+def after_token_refresh() -> dict:
+    """Reconnect the spot feed so a mid-session paste is used without a restart.
+
+    Chain HTTP already re-reads the token per call. The WS URL was built with
+    the old JWT until the socket drops — force that drop here.
+    """
+    out: dict = {"ws_reconnect": False, "error": None}
+    try:
+        from app.ws_spot_feed import request_reconnect
+        request_reconnect("token_refresh")
+        out["ws_reconnect"] = True
+    except Exception as exc:
+        out["error"] = str(exc)
+        log.warning("after_token_refresh: WS reconnect failed: %s", exc)
+    return out
+
 
 def token_status() -> dict:
     """Non-secret status of the current Dhan token for the UI: whether one is present, where it

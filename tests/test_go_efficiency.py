@@ -8,7 +8,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def tmp_go_eff_db(tmp_path, monkeypatch):
     import data.journal.go_efficiency as ge
+    import data.journal.store as paper
     monkeypatch.setattr(ge, "_DB_PATH", tmp_path / "go_efficiency.db")
+    monkeypatch.setattr(paper, "_DB_PATH", tmp_path / "paper.db")
     ge._LAST_EMIT_FP.clear()
     ge.ensure_schema()
     yield
@@ -338,6 +340,44 @@ def test_trail_stop_auto_settles_pnl():
     summary = summarize("NIFTY")
     assert summary["pnl"]["closed_count"] == 1
     assert summary["pnl"]["net_pnl_inr"] == 395.5
+
+
+def test_trail_stop_closes_the_paper_row(tmp_path):
+    """A trail that only updates go_open left the paper ledger OPEN on 16 Nov."""
+    from data.journal.go_efficiency import record_event, mark_open
+    from data.journal.store import get_trade, open_trade
+
+    paper = open_trade(
+        symbol="NIFTY",
+        strategy_name="STRIKE_BREAK",
+        legs=[{"action": "BUY", "type": "CE", "strike": 25450, "ltp": 46.53}],
+        entry_spot=25280.0,
+        entry_levels={"spot": 25280.0},
+        entry_regime={"book": "call-heavy"},
+        entry_net_premium=-46.53,
+        lot_size=65,
+    )
+    decision = {
+        "id": "d_paper_trail",
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 88,
+        "strategy_key": "STRIKE_BREAK",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 25450, "ltp": 46.53}],
+        "risk": {"credit_or_debit": -46.53},
+        "context": {"spot": 25280, "lot_size": 65},
+    }
+    record_event("STAGE", decision, trade_id=paper.trade_id)
+    armed = mark_open("d_paper_trail", mark_premium=-(46.53 * 1.30))
+    assert armed["status"] == "OPEN"
+    assert get_trade(paper.trade_id).status == "OPEN"
+    stopped = mark_open("d_paper_trail", mark_premium=-40.0)
+    assert stopped["status"] == "TRAIL_STOP"
+    closed = get_trade(paper.trade_id)
+    assert closed.status == "CLOSED"
+    assert closed.exit_reason == "TRAIL_STOP"
+    assert closed.exit_net_premium == -round(46.53 * 1.10, 2)
 
 
 def test_session_efficiency_slice_today():

@@ -116,6 +116,29 @@ def test_fit_provenance_documented():
     assert BASELINE_HOLDOUT_DAY not in BASELINE_FIT_DAYS
 
 
+def test_open_limb_is_near_the_trough_by_ten():
+    """09:45 is 30 minutes in. The open spike is gone; the level is near the trough.
+
+    Frozen Bank Nifty: trough 1,416.5, open peak 21,415.
+    frac = 30/45, (1/3)^2 ≈ 0.111, level ≈ 1,416.5 + 19,998.5 * 0.111 ≈ 3,639.
+    """
+    curve = _CURVES["BANKNIFTY"]
+    level = _curve_at(30, curve)
+    span = curve.open_peak - curve.trough
+    assert level < curve.trough + 0.25 * span
+    assert level == pytest.approx(3638.6, abs=1.0)
+
+
+def test_banknifty_0945_impulse_clears_the_unchanged_volume_gate():
+    """16 Nov 09:45 Bank Nifty printed 7,004 lots, delta 0.435, oi_fresh, above VWAP.
+
+    The old 3-hour limb put the baseline near 13,336 (RVol 0.53). The 45-minute
+    limb must clear 1.5 on the frozen curve. The classifier gate stays 1.5.
+    """
+    r = compute_tod_rvol(_ist(9, 45), volume=7004.0, instrument="BANKNIFTY-FUT")
+    assert r >= 1.5
+
+
 def test_classifier_continuation_rvol_gate_unchanged():
     """Guardrail: recalibration must not silently lower CONT RVol in classifier."""
     from sentinel.engine import classifier as clf

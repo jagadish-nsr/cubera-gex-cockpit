@@ -1056,7 +1056,7 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
         ("STRUCTURE", "Institutional Structure Play (Δ ~0.40)"),
         ("STRIKE BREAK", "Convex break at a gamma strike (Δ ~0.28)"),
         ("ICEBERG FADE", "OrderFlow Iceberg Absorption Fade (Δ ~0.50)"),
-        ("VANNA-CHARM", "0DTE Vanna-Charm Compression (Δ ~0.20)"),
+        ("VANNA-CHARM", "Vanna-Charm compression (0DTE name on expiry day, Δ ~0.20)"),
         ("VOL DISPERSION", "Vol Dispersion / Long Gamma Blast (Δ ~0.50)"),
         ("RATIO REVERSAL", "Zero-Cost Ratio Risk Reversal (Δ ~0.40)"),
     ]

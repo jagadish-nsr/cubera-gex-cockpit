@@ -1791,6 +1791,17 @@ def compute_position_size(
     )
 
 
+def vanna_charm_label(dte_days: float) -> tuple[str, list[str]]:
+    """0DTE is the expiry session. A Monday before Tuesday expiry is 1 DTE."""
+    try:
+        dte = float(dte_days)
+    except (TypeError, ValueError):
+        dte = 99.0
+    if dte < 1:
+        return "0DTE Vanna-Charm Theta Compression", ["0DTE Charm Decay", "Between gamma strikes"]
+    return "Vanna-Charm Theta Compression", ["Charm decay", "Between gamma strikes"]
+
+
 def _format_option_symbol(symbol: str, expiry_tag: str, strike: float, side: str) -> str:
     """Format institutional option symbol e.g. 'NIFTY 13 OCT 22700 CE'."""
     if expiry_tag:
@@ -2264,7 +2275,8 @@ def _evaluate_ce_strategies(
     # 5. CE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
         sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-        ce_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", ce_vc_doi)
+        vc_name, vc_tags = vanna_charm_label(dte_days)
+        ce_vc_score, _, _ = _score(vc_name, ce_vc_doi)
         ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
         ce_vc_tgt1_spot = round(max(spot + (step * 0.5), flip if flip > spot else spot + (sigma_90 * 0.6)), 0)
         ce_vc_tgt2_spot = round(max(call_wall, ce_vc_tgt1_spot + (sigma_90 * 0.8)), 0)
@@ -2282,7 +2294,7 @@ def _evaluate_ce_strategies(
                 TradeIdea(
                     symbol=symbol,
                     side="CE",
-                    play_type="0DTE Vanna-Charm Theta Compression",
+                    play_type=vc_name,
                     play_badge="VANNA-CHARM",
                     strike=ce_vanna_k,
                     option_symbol=_format_option_symbol(symbol, expiry_tag, ce_vanna_k, "CE"),
@@ -2304,7 +2316,7 @@ def _evaluate_ce_strategies(
                         f"Charm decay while spot sits between the gamma strikes. "
                         f"The corridor is a map, not a dealer pin.{trend_tag}"
                     ),
-                    catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                    catalyst_tags=vc_tags,
                     is_ws_live=ce_vc_ws,
                     p_touch_target_1=ce_vc_pt1,
                     p_touch_sl=ce_vc_psl,
@@ -2730,7 +2742,8 @@ def _evaluate_pe_strategies(
     # 5. PE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
         sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
-        pe_vc_score, _, _ = _score("0DTE Vanna-Charm Theta Compression", pe_vc_doi)
+        vc_name, vc_tags = vanna_charm_label(dte_days)
+        pe_vc_score, _, _ = _score(vc_name, pe_vc_doi)
         pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
         pe_vc_tgt1_spot = round(min(spot - (step * 0.5), flip if flip < spot else spot - (sigma_90 * 0.6)), 0)
         pe_vc_tgt2_spot = round(min(put_wall, pe_vc_tgt1_spot - (sigma_90 * 0.8)), 0)
@@ -2748,7 +2761,7 @@ def _evaluate_pe_strategies(
                 TradeIdea(
                     symbol=symbol,
                     side="PE",
-                    play_type="0DTE Vanna-Charm Theta Compression",
+                    play_type=vc_name,
                     play_badge="VANNA-CHARM",
                     strike=pe_vanna_k,
                     option_symbol=_format_option_symbol(symbol, expiry_tag, pe_vanna_k, "PE"),
@@ -2770,7 +2783,7 @@ def _evaluate_pe_strategies(
                         f"Charm decay while spot sits between the gamma strikes. "
                         f"The corridor is a map, not a dealer pin.{trend_tag}"
                     ),
-                    catalyst_tags=["0DTE Charm Decay", "Between gamma strikes"],
+                    catalyst_tags=vc_tags,
                     is_ws_live=pe_vc_ws,
                     p_touch_target_1=pe_vc_pt1,
                     p_touch_sl=pe_vc_psl,
@@ -3104,7 +3117,7 @@ def generate_trade_recommendations(
     2. STRUCTURE: Institutional Structure Play (Delta ~0.40)
     3. STRIKE BREAK: Convex break at a gamma strike (Delta ~0.28)
     4. ICEBERG FADE: OrderFlow Iceberg Absorption Fade (Delta ~0.50)
-    5. VANNA-CHARM: 0DTE Vanna-Charm Theta Compression (Delta ~0.20)
+    5. VANNA-CHARM: Vanna-Charm Theta Compression; the 0DTE name is expiry day only (Delta ~0.20)
     6. VOL DISPERSION: Volatility Dispersion / Long Gamma Explosion (Delta ~0.50)
     7. RATIO REVERSAL: Zero-Cost Ratio Risk Reversal (Delta ~0.40)
 

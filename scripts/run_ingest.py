@@ -47,9 +47,12 @@ def main() -> None:
 
     start_wal_maintenance_thread()
 
-    from app.ingest_heartbeat import beat_forever
+    # boot_broker_ingest_lanes already started the heartbeat writer thread.
+    # Hold the process with a second writer only if that thread died.
+    from app.ingest_heartbeat import beat_forever, start_writer
 
     log.info("Ingest armed — writing heartbeat; Ctrl-C to stop")
+    start_writer(role="ingest")  # idempotent if already alive
     try:
         beat_forever(role="ingest")
     except KeyboardInterrupt:

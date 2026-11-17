@@ -3893,7 +3893,9 @@
           const cw = Number(pm.call_wall || (data.kpis && data.kpis.call_wall && data.kpis.call_wall.val) || 0);
           const pw = Number(pm.put_wall || (data.kpis && data.kpis.put_wall && data.kpis.put_wall.val) || 0);
           wallsEl.textContent = cw > 0 && pw > 0
-            ? `${cw.toLocaleString("en-IN")} / ${pw.toLocaleString("en-IN")}`
+            ? (Math.abs(cw - pw) < 1
+              ? `${cw.toLocaleString("en-IN")} shared gamma strike`
+              : `${cw.toLocaleString("en-IN")} / ${pw.toLocaleString("en-IN")}`)
             : "—";
         }
         const playEl = document.getElementById("pm-favored-play");

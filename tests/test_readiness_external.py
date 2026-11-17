@@ -146,6 +146,44 @@ def test_external_stale_heartbeat_not_ready(tmp_path: Path, monkeypatch):
         hb.set_path_for_tests(None)
 
 
+def test_external_ignores_zombie_memory_and_ages_meta(tmp_path: Path, monkeypatch):
+    """17 Nov: serve memory froze at 09:01 while ingest meta stayed fresh."""
+    monkeypatch.setenv("COCKPIT_INGEST_EXTERNAL", "1")
+    live_fetcher._STORE.clear()
+
+    class _Dash:
+        is_degraded = False
+        degraded_reason = ""
+        source = "dhan"
+
+    # Zombie: ~20 minutes old in memory
+    live_fetcher._STORE[("NIFTY", "current_week")] = {
+        "data": _Dash(),
+        "fetched": time.time() - 1200.0,
+        "as_of": None,
+        "err": None,
+        "window": "current_week",
+    }
+    meta = {
+        "fetched_at_epoch": time.time() - 4.0,
+        "window": "current_week",
+        "degraded": False,
+        "degraded_reason": "",
+        "source": "snap_meta",
+    }
+    try:
+        with mock.patch("app.latest_snap.read_snap_meta", return_value=meta):
+            probe = _chain_probe("NIFTY")
+        assert probe["ok"] is True
+        assert probe["source"] == "snap_meta"
+        assert probe["age_s"] is not None and probe["age_s"] < 60
+        # Memory path would have been chain_age_1200s — must not win on EXTERNAL.
+        assert "chain_age_12" not in str(probe.get("reason") or "")
+    finally:
+        live_fetcher._STORE.clear()
+        monkeypatch.delenv("COCKPIT_INGEST_EXTERNAL", raising=False)
+
+
 def test_ensure_chain_ingest_noop_when_external(monkeypatch):
     monkeypatch.setenv("COCKPIT_INGEST_EXTERNAL", "1")
     called = []

@@ -86,6 +86,12 @@ def _chain_probe(symbol: str) -> dict[str, Any]:
         "reason": "",
     }
     try:
+        # EXTERNAL serve does not own the chain. In-process memory here is a
+        # leftover (17 Nov: frozen at 09:01 while ingest published all day).
+        # Age the book from ingest's snap meta only.
+        if _ingest_external():
+            return _chain_from_meta(symbol, out)
+
         from app import live_fetcher
         rec = live_fetcher.latest(symbol)
         if rec and rec.get("data"):
@@ -107,7 +113,7 @@ def _chain_probe(symbol: str) -> dict[str, Any]:
                 return out
             out["ok"] = True
             return out
-        # Memory miss: shared pickle meta (EXTERNAL serve + combined cold start).
+        # Memory miss: shared pickle meta (combined cold start).
         return _chain_from_meta(symbol, out)
     except Exception as exc:
         out["reason"] = f"chain_probe_error:{exc}"

@@ -70,7 +70,13 @@ def write_beat(*, role: str | None = None, detail: dict[str, Any] | None = None)
     """
     path = heartbeat_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # EXTERNAL serve ages the feed from these keys. An empty detail is
+    # feed_detail_missing for the whole session (17 Nov). Always publish them.
     merged = {**_local_feed_detail(), **(detail or {})}
+    merged.setdefault("ws_connected", False)
+    merged.setdefault("is_live", False)
+    merged.setdefault("last_tick_age_s", None)
+    merged.setdefault("ws_error", None)
     payload = {
         "ts": time.time(),
         "pid": os.getpid(),

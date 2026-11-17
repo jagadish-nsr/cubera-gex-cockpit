@@ -334,7 +334,12 @@ async def _start_ingest_lanes():
 
     if external:
         # Serve does not own Dhan threads. Readiness watches ingest.heartbeat.
+        # Mirror ingest pickles into memory so a zombie leftover cannot age forever.
         log.info("COCKPIT_INGEST_EXTERNAL=1 — skipping broker ingest lanes (HTTP/read only)")
+        def _mirror():
+            from app.snap_mirror import start_background
+            start_background()
+        _run_lane("snap.mirror", _mirror)
         return
 
     boot_broker_ingest_lanes()
@@ -1752,8 +1757,33 @@ def _compute_active_directional_bias(dash: Any, sym: str) -> BiasResult:
         return BiasResult(score=0.0, regime="Neutral ⏳", signals=[], headline="Neutral equilibrium")
 
 
-def _chain_leg_ltp(contracts_df, strike: float, right: str) -> Optional[float]:
-    """Last price of one listed leg. None when the chain has no positive print."""
+def _expiry_ord(value) -> int:
+    """Sort key for a listed expiry. Unknown forms sort last, not first."""
+    text = str(value or "").strip().upper().replace("-", "").replace(" ", "")
+    months = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    }
+    if len(text) == 8 and text.isdigit():
+        return int(text)
+    if len(text) >= 9 and text[:2].isdigit() and text[-4:].isdigit():
+        mon = months.get(text[2:5])
+        if mon:
+            return int(text[-4:]) * 10000 + mon * 100 + int(text[:2])
+    return 10**12
+
+
+def _chain_leg_ltp(
+    contracts_df,
+    strike: float,
+    right: str,
+    expiry: str | None = None,
+) -> Optional[float]:
+    """Last price of one listed leg. None when the chain has no positive print.
+
+    Several expiries share a strike. The front expiry is the leg that was
+    staged. A later expiry's premium is not this contract's mark.
+    """
     if contracts_df is None or not hasattr(contracts_df, "empty") or contracts_df.empty:
         return None
     if "strike" not in contracts_df.columns or "type" not in contracts_df.columns:
@@ -1768,6 +1798,14 @@ def _chain_leg_ltp(contracts_df, strike: float, right: str) -> Optional[float]:
         return None
     if sub.empty:
         return None
+    if "expiry" in sub.columns and len(sub) > 1:
+        if expiry:
+            named = sub[sub["expiry"].astype(str) == str(expiry)]
+            if not named.empty:
+                sub = named
+        if len(sub) > 1:
+            front = min(sub["expiry"].unique(), key=_expiry_ord)
+            sub = sub[sub["expiry"] == front]
     for col in ("ltp", "last_price", "close", "premium", "mid"):
         if col in sub.columns:
             val = float(sub[col].iloc[0] or 0)
@@ -2422,14 +2460,22 @@ async def save_dhan_token(payload: dict = Body(...)):
         write_token(tok)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    from app.dhan_sync import request_sync
-    sync = request_sync("token", window=_ACTIVE_STATE.get("window") or "current_week")
+    # write_token already requests a WS reconnect. EXTERNAL serve has no broker
+    # lanes — skip Dhan sync there; ingest will pick up the new token on its next
+    # pull / reconnect.
+    external = os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1"
+    sync: dict = {"status": "skipped", "reason": "external_serve"}
+    if not external:
+        from app.dhan_sync import request_sync
+        sync = request_sync("token", window=_ACTIVE_STATE.get("window") or "current_week")
     if sync.get("status") == "started":
-        message = "Dhan token saved. Syncing the book from Dhan."
+        message = "Dhan token saved. Feed reconnecting; syncing the book from Dhan."
     elif sync.get("status") == "already_running":
-        message = "Dhan token saved. A sync is already running."
+        message = "Dhan token saved. Feed reconnecting; a sync is already running."
+    elif external:
+        message = "Dhan token saved. Spot feed will reconnect; ingest uses the new token on the next pull."
     else:
-        message = "Dhan token saved."
+        message = "Dhan token saved. Spot feed reconnecting."
     return {"status": "saved", "message": message, "sync": sync}
 
 
@@ -2556,8 +2602,13 @@ async def get_cockpit_data(
         flip_sub = "No zero-crossing in ±10%"
 
     put_role = str(getattr(dash.view, "put_wall_role", "") or "")
-    call_sub = "Call-gamma concentration"
-    if "below" in put_role:
+    call_wall_px = float(dash.levels.call_wall or 0)
+    put_wall_px = float(dash.levels.put_wall or 0)
+    shared_gamma = call_wall_px > 0 and abs(call_wall_px - put_wall_px) < 1.0
+    call_sub = "Shared gamma strike" if shared_gamma else "Call-gamma concentration"
+    if shared_gamma:
+        put_sub = "Same strike"
+    elif "below" in put_role:
         put_sub = "Put-gamma concentration · below balance"
     elif put_role == "unknown" or not put_role:
         put_sub = "Put-gamma concentration"
@@ -4237,9 +4288,9 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
         net = 0.0
         priced = 0
         for leg in legs:
-            opt = str(leg.get("opt_type") or "CE")
+            opt = str(leg.get("opt_type") or leg.get("type") or "CE")
             strike = float(leg.get("strike") or 0)
-            px = _chain_leg_ltp(contracts_df, strike, opt)
+            px = _chain_leg_ltp(contracts_df, strike, opt, expiry=leg.get("expiry") or None)
             if px is None:
                 continue
             priced += 1
@@ -7342,7 +7393,15 @@ async def log_market_alert(payload: dict = Body(...)):
     )
 
     try:
-        save_commentary_entry(entry, symbol=sym)
+        saved = save_commentary_entry(entry, symbol=sym)
+        if saved is False:
+            return {
+                "status": "ok",
+                "deduped": True,
+                "entry_id": entry_id,
+                "ttl": "30m",
+                "logged_at": _fmt_ist_clock(now_ist),
+            }
         return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": _fmt_ist_clock(now_ist)}
     except Exception as e:
         log.warning("Error saving commentary market alert: %s", e)

@@ -145,6 +145,25 @@ def test_append_if_due_dedup(tmp_path, monkeypatch):
     assert len(ts.load_day(row["date_ist"])) == 2
 
 
+def test_third_identical_spot_is_not_appended(tmp_path, monkeypatch):
+    """16 Nov repeated 25,220.05 at 15:16, 15:22 and 15:27. The third print is stuck."""
+    monkeypatch.setattr(ts, "TS_DIR", tmp_path)
+    row = ts.build_row(load_dashboard(window="all", use_demo=True))
+    stamps = (
+        "2026-11-16T09:46:00Z",
+        "2026-11-16T09:51:00Z",
+        "2026-11-16T09:56:00Z",
+    )
+    written = []
+    for stamp in stamps:
+        nxt = dict(row)
+        nxt["timestamp_utc"] = stamp
+        _, ok = ts.append_if_due(nxt, min_gap_minutes=0)
+        written.append(ok)
+    assert written == [True, True, False]
+    assert len(ts.load_day(row["date_ist"])) == 2
+
+
 def _published_pickle(path, fetched):
     import pickle
     from types import SimpleNamespace

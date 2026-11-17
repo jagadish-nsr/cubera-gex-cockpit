@@ -285,7 +285,7 @@ def test_save_token_persists_through_write_token_and_starts_sync(monkeypatch):
     result = asyncio.run(save_dhan_token({"token": "aaa.bbb.ccc"}))
     assert seen == {"token": "aaa.bbb.ccc", "trigger": "token", "window": "current_week"}
     assert result["sync"]["status"] == "started"
-    assert "Syncing" in result["message"]
+    assert "syncing" in result["message"].lower()
 
 
 def test_save_token_rejects_an_empty_or_malformed_token(monkeypatch):

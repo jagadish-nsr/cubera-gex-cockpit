@@ -139,6 +139,67 @@ def test_near_spot_previous_close_does_not_replace_the_prior_session(tmp_path, m
     assert snap["open"] == 75178.24
 
 
+def test_first_copy_of_spot_is_not_stored_as_the_prior_close(tmp_path, monkeypatch):
+    """16 Nov Sensex stored 82,104.79 as both the close and the previous close."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(
+        symbol="SENSEX",
+        spot=82104.79,
+        prev_close=82104.79,
+        as_of="2026-11-16T10:10:20+00:00",
+        source="session-close",
+    )
+    snap = get_snapshot("SENSEX")
+    assert snap["spot"] == 82104.79
+    assert snap["prev_close"] is None
+    save_snapshot(
+        symbol="SENSEX",
+        spot=82104.79,
+        prev_close=81592.45,
+        as_of="2026-11-16T10:12:00+00:00",
+        source="auction",
+    )
+    assert get_snapshot("SENSEX")["prev_close"] == 81592.45
+
+
+def test_close_snapshot_names_the_session_wall_pair(tmp_path):
+    """The day lived on 25,300 / 25,200. The last chain was the wide Dhan pair."""
+    from data.market_snapshot import walls_for_close
+
+    day = tmp_path / "timeseries" / "NIFTY"
+    day.mkdir(parents=True)
+    path = day / "2026-11-16.csv"
+    rows = ["timestamp_utc,call_wall,put_wall,source"]
+    rows += ["t,25300,25200,nse (Dhan fallback)"] * 41
+    rows += ["t,25500,25000,dhan"] * 12
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    call_wall, put_wall, source = walls_for_close(
+        "NIFTY", "2026-11-16", 25500, 25000, "dhan", root=tmp_path,
+    )
+    assert (call_wall, put_wall) == (25300.0, 25200.0)
+    assert source == "session-close:nse-fallback"
+    shared_call, shared_put, shared_source = walls_for_close(
+        "BANKNIFTY", "2026-11-16", 61000, 61000, "dhan", root=tmp_path,
+    )
+    assert (shared_call, shared_put) == (61000, 61000)
+    assert shared_source == "session-close:dhan:shared-gamma"
+
+
+def test_equal_walls_are_one_shared_strike(tmp_path, monkeypatch):
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(
+        symbol="BANKNIFTY",
+        spot=61575.9,
+        call_wall=61000,
+        put_wall=61000,
+        as_of="2026-11-16T10:10:20+00:00",
+        source="session-close:dhan:shared-gamma",
+    )
+    snap = get_snapshot("BANKNIFTY")
+    assert snap["shared_gamma_strike"] == 61000
+    assert snap["wall_note"] == "shared gamma strike"
+
+
 def test_save_snapshot_does_not_invent_walls(tmp_path, monkeypatch):
     monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "walls.db")
     save_snapshot(

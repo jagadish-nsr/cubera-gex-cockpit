@@ -90,6 +90,7 @@ _STATUS: dict = {
     "started_at": None,
 }
 _STOP = threading.Event()
+_RECONNECT = threading.Event()
 _THREAD: threading.Thread | None = None
 _THREAD_LOCK = threading.Lock()
 
@@ -512,6 +513,9 @@ def _run(symbols: tuple[str, ...]) -> None:
 
         try:
             while not _STOP.is_set():
+                if _RECONNECT.is_set():
+                    _STATUS["ws_error"] = "Reconnecting after token refresh"
+                    break
                 if not config.is_spot_ingest_open():
                     _STATUS["ws_error"] = "Spot ingest asleep (pre-open 09:00 – FNO close)"
                     break
@@ -599,7 +603,11 @@ def _run(symbols: tuple[str, ...]) -> None:
                 pass
 
         if not _STOP.is_set():
-            _STOP.wait(3)   # brief pause before reconnect
+            # Token refresh reconnects immediately; otherwise brief pause.
+            if _RECONNECT.is_set():
+                _RECONNECT.clear()
+            else:
+                _STOP.wait(3)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────────────────────────
@@ -612,6 +620,7 @@ def ensure_running(symbols: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")) 
         if _THREAD is not None and _THREAD.is_alive():
             return
         _STOP.clear()
+        _RECONNECT.clear()
         _THREAD = threading.Thread(
             target=_run,
             args=(symbols,),
@@ -624,6 +633,19 @@ def ensure_running(symbols: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "SENSEX")) 
 def stop() -> None:
     """Ask the WS feed thread to exit cleanly. Safe to call multiple times."""
     _STOP.set()
+    _RECONNECT.set()  # wake any reconnect wait
+
+
+def request_reconnect(reason: str = "token_refresh") -> None:
+    """Drop the open socket so the loop reconnects with a fresh token.
+
+    Safe when the feed is not running — starts the thread so the next connect
+    reads the token from disk. Does not tear the process down.
+    """
+    _RECONNECT.set()
+    _STATUS["ws_error"] = f"Reconnect requested ({reason})"
+    if _THREAD is None or not _THREAD.is_alive():
+        ensure_running()
 
 
 def is_ws_live(max_silence_s: float = 10.0) -> bool:

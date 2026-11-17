@@ -31,6 +31,11 @@ _OPEN_SLOT = 0
 _MID_SLOT = 180   # 12:15 IST
 _CLOSE_SLOT = 375  # 15:30 IST
 _RIGHT_SPAN = float(_CLOSE_SLOT - _MID_SLOT)  # 195
+# The 09:15 print is the open peak. By 10:00 volume is already near the
+# trough (16 Nov: Nifty 09:45 median ~26k while a 3-hour quadratic was still
+# ~93k, so Bank Nifty's 09:45 impulse printed RVol 0.53). Decay the open
+# limb over 45 minutes. The 1.5 continuation gate is unchanged.
+_OPEN_DECAY_SLOT = 45
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_PROFILE = _ROOT / "data" / "journal" / "rvol_baseline.json"
@@ -97,11 +102,13 @@ def _mins_from_open(time_str: str) -> int:
 
 
 def _curve_at(mins_from_open: int, curve: UCurve) -> float:
-    """Asymmetric quadratic U evaluated at minutes-from-09:15."""
+    """Open limb decays by 10:00, trough holds to 12:15, close limb rises after."""
     t = int(mins_from_open)
-    if t <= _MID_SLOT:
-        frac = t / float(_MID_SLOT)  # 0 at open, 1 at mid
+    if t <= _OPEN_DECAY_SLOT:
+        frac = t / float(_OPEN_DECAY_SLOT)  # 0 at 09:15, 1 at 10:00
         level = curve.trough + (curve.open_peak - curve.trough) * ((1.0 - frac) ** 2)
+    elif t <= _MID_SLOT:
+        level = curve.trough
     else:
         frac = (t - _MID_SLOT) / _RIGHT_SPAN  # 0 at mid, 1 at close
         frac = min(1.0, max(0.0, frac))

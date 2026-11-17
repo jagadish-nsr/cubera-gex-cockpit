@@ -16,6 +16,7 @@ from analytics.go_desk import (
     continuation_confirmed,
     decisive_gate,
     delta_otm_steps,
+    edge_keeps_scout,
     evidence_pack_complete,
     is_continuation_key,
     nudge_strike_for_delta,
@@ -108,6 +109,34 @@ def test_directional_fire_with_idea():
     assert d.size_tier == "FULL"
     assert "continuation_unconfirmed" not in d.soft_flags
     assert d.context.get("continuation_confirmed") is True
+
+
+def test_one_percent_touch_with_negative_ev_stays_scout():
+    """16 Nov 09:17 STRIKE_BREAK was FIRE with touch 0.01 and EV -6.3."""
+    assert edge_keeps_scout(SimpleNamespace(p_touch_target_1=0.01, net_ev_pts=-6.3))
+    assert not edge_keeps_scout(SimpleNamespace(p_touch_target_1=0.55, net_ev_pts=12.0))
+    assert not edge_keeps_scout(SimpleNamespace())
+    idea = _idea(score=82, play_badge="STRIKE_BREAK")
+    idea.p_touch_target_1 = 0.01
+    idea.net_ev_pts = -6.3
+    d = build_directional_decision(
+        symbol="NIFTY",
+        lot_size=65,
+        strike_step=50,
+        levels=_levels(spot=25650, cw=25600, pw=25200, flip=25400, magnet=25450),
+        trade_ideas=[idea],
+        sentinel_score=80,
+        sentinel_type="CONTINUATION_BULL",
+        cvd_aligned=True,
+        above_vwap=True,
+        breadth_aligned=True,
+        target_confluence=70,
+        oi_ts="2026-11-10T10:42:00+05:30",
+        chain_ok=True,
+        confirming_types=["ABSORPTION_BULL"],
+    )
+    assert d.state == "SCOUT"
+    assert "improbable_negative_ev" in d.soft_flags
 
 
 def test_continuation_unconfirmed_stays_scout():

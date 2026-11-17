@@ -56,6 +56,111 @@ def init_db() -> None:
         conn.commit()
 
 
+def _attach_shared_gamma(item: dict) -> None:
+    """Equal call and put walls are one concentration, not two levels."""
+    try:
+        cw = float(item.get("call_wall") or 0)
+        pw = float(item.get("put_wall") or 0)
+    except (TypeError, ValueError):
+        return
+    if cw > 0 and pw > 0 and abs(cw - pw) < 1.0:
+        item["shared_gamma_strike"] = cw
+        item["wall_note"] = "shared gamma strike"
+
+
+def _book_source_label(source: str) -> str:
+    text = (source or "").lower()
+    if "fallback" in text or text.startswith("nse"):
+        return "nse-fallback"
+    if "dhan" in text:
+        return "dhan"
+    return (source or "unknown").split()[0][:24] or "unknown"
+
+
+def modal_session_walls(
+    symbol: str,
+    session_date: str,
+    root: Path | None = None,
+) -> dict[str, Any] | None:
+    """The wall pair the session actually printed, and the source that printed it.
+
+    A close snapshot that takes the last chain can store a wide grid from one
+    feed while the day lived on another pair. The pair with the most rows is
+    the session book.
+    """
+    import csv
+
+    path = (root or Path("data/journal")) / "timeseries" / symbol.upper() / f"{session_date}.csv"
+    if not path.is_file():
+        return None
+    counts: dict[tuple[str, str], int] = {}
+    sources: dict[tuple[str, str], dict[str, int]] = {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                cw = str(row.get("call_wall") or "").strip()
+                pw = str(row.get("put_wall") or "").strip()
+                if not cw or not pw:
+                    continue
+                key = (cw, pw)
+                counts[key] = counts.get(key, 0) + 1
+                src = str(row.get("source") or "")
+                sources.setdefault(key, {})
+                sources[key][src] = sources[key].get(src, 0) + 1
+    except OSError:
+        return None
+    if not counts:
+        return None
+    key, n = max(counts.items(), key=lambda item: item[1])
+    if n < 5:
+        return None
+    src_counts = sources.get(key) or {}
+    top_src = max(src_counts, key=src_counts.get) if src_counts else ""
+    try:
+        call_wall = float(key[0])
+        put_wall = float(key[1])
+    except ValueError:
+        return None
+    return {
+        "call_wall": call_wall,
+        "put_wall": put_wall,
+        "n": n,
+        "source": _book_source_label(top_src),
+    }
+
+
+def walls_for_close(
+    symbol: str,
+    session_date: str,
+    chain_call: float | None,
+    chain_put: float | None,
+    chain_source: str,
+    root: Path | None = None,
+) -> tuple[float | None, float | None, str]:
+    """One wall pair for the close snapshot, with the book that produced it named."""
+    modal = modal_session_walls(symbol, session_date, root=root)
+    call_wall, put_wall = chain_call, chain_put
+    label = _book_source_label(chain_source)
+    if modal is not None:
+        same = (
+            call_wall is not None
+            and put_wall is not None
+            and abs(float(call_wall) - modal["call_wall"]) < 1
+            and abs(float(put_wall) - modal["put_wall"]) < 1
+        )
+        if not same:
+            call_wall = modal["call_wall"]
+            put_wall = modal["put_wall"]
+            label = modal["source"]
+    source = f"session-close:{label}"
+    try:
+        if call_wall is not None and put_wall is not None and abs(float(call_wall) - float(put_wall)) < 1:
+            source += ":shared-gamma"
+    except (TypeError, ValueError):
+        pass
+    return call_wall, put_wall, source
+
+
 def prev_close_copied_from_spot(prev_close: float, spot: float) -> bool:
     """True when the feed has written today's print into the previous-close field.
 
@@ -129,14 +234,19 @@ def save_snapshot(
         # A closing print sometimes copies the settle into prev_close. Keep the
         # previous close already stored when the new value is that copy and the
         # stored close is still a different session.
+        # A feed that copies today's print into prev_close must not become the
+        # stored prior, including the first write of the day (16 Nov Sensex
+        # stored 82,104.79 as both spot and previous close).
         if (
-            ex.get("prev_close")
-            and new_pc is not None
+            new_pc is not None
             and new_spot is not None
             and prev_close_copied_from_spot(float(new_pc), float(new_spot))
-            and not prev_close_copied_from_spot(float(ex["prev_close"]), float(new_spot))
         ):
-            new_pc = ex["prev_close"]
+            kept = ex.get("prev_close")
+            if kept and not prev_close_copied_from_spot(float(kept), float(new_spot)):
+                new_pc = float(kept)
+            else:
+                new_pc = None
         new_open = float(open_px) if open_px is not None and open_px > min_valid else ex.get("open")
         new_high = float(high) if high is not None and high > min_valid else ex.get("high")
         new_low = float(low) if low is not None and low > min_valid else ex.get("low")
@@ -179,7 +289,9 @@ def get_snapshot(symbol: str) -> dict[str, Any] | None:
     with _LOCK, _get_connection() as conn:
         row = conn.execute("SELECT * FROM session_snapshots WHERE symbol = ?", (sym,)).fetchone()
         if row and row["spot"] and row["spot"] > 0:
-            return dict(row)
+            item = dict(row)
+            _attach_shared_gamma(item)
+            return item
 
     # Bootstrap from persistent disk caches if SQLite row not yet present
     bootstrapped = _bootstrap_from_disk(sym)
@@ -201,6 +313,7 @@ def get_snapshot(symbol: str) -> dict[str, Any] | None:
             as_of=bootstrapped.get("as_of"),
             source="disk-bootstrap",
         )
+        _attach_shared_gamma(bootstrapped)
         return bootstrapped
     return None
 

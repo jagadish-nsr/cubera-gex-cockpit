@@ -155,11 +155,32 @@ def ensure_commentary_schema() -> None:
             pass
 
 
-def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None:
-    """Persist commentary entry and attached suggestion bites in a single WAL transaction."""
+def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> bool:
+    """Persist commentary entry and attached suggestion bites in a single WAL transaction.
+
+    The same headline for the same symbol inside one minute is one print.
+    Returns False when this call was that repeat.
+    """
     ensure_commentary_schema()
     from commentary.models import to_ist
-    entry_ts_str = to_ist(entry.ts).isoformat()
+    entry_ts = to_ist(entry.ts)
+    entry_ts_str = entry_ts.isoformat()
+    with _WRITE_LOCK, _get_write_conn() as conn:
+        prior = conn.execute(
+            """
+            SELECT ts FROM commentary_entries
+            WHERE symbol = ? AND headline = ?
+            ORDER BY ts DESC LIMIT 1
+            """,
+            (symbol.upper(), entry.headline),
+        ).fetchone()
+    if prior and prior["ts"]:
+        try:
+            prev_ts = to_ist(datetime.fromisoformat(str(prior["ts"])))
+            if abs((entry_ts - prev_ts).total_seconds()) < 60:
+                return False
+        except (TypeError, ValueError):
+            pass
     bites_data = [
         {
             "id": b.id,
@@ -247,6 +268,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> None
         _RECENT_ENTRIES_CACHE.insert(0, cached_entry)
         if len(_RECENT_ENTRIES_CACHE) > 100:
             _RECENT_ENTRIES_CACHE.pop()
+    return True
 
 
 def find_session_gap(symbol: str, session_date: str) -> dict[str, Any] | None:

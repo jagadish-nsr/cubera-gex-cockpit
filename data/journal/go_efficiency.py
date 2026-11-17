@@ -8,12 +8,15 @@ Settles cost-aware ₹ P&L on close / TRAIL_STOP (same model as journal store).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "go_efficiency.db"
@@ -176,6 +179,22 @@ def _row_lot_legs(row: sqlite3.Row, decision: dict | None = None) -> tuple[int, 
             dj = {}
     lot2, legs2 = _lot_and_legs(dj if isinstance(dj, dict) else {})
     return (lot or lot2), (n_legs or legs2)
+
+
+def _close_linked_paper(trade_id: str | None, *, exit_premium: float) -> None:
+    """The paper ledger is what the desk reads. A trail that only updates go_open
+    leaves the same trade OPEN at the entry premium."""
+    if not trade_id:
+        return
+    try:
+        from data.journal.store import close_trade, get_trade
+
+        existing = get_trade(str(trade_id))
+        if existing is None or existing.status != "OPEN":
+            return
+        close_trade(str(trade_id), float(exit_premium), exit_reason="TRAIL_STOP")
+    except Exception:
+        log.warning("paper close failed for %s", trade_id, exc_info=True)
 
 
 def _write_settlement(
@@ -556,6 +575,11 @@ def mark_open(
                     "closed_at": settled["closed_at"],
                 })
             conn.commit()
+            if status == "TRAIL_STOP" and row["net_pnl_inr"] is None:
+                _close_linked_paper(
+                    row["trade_id"],
+                    exit_premium=float(settle_premium),
+                )
             return out
         finally:
             conn.close()

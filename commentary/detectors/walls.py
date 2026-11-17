@@ -92,7 +92,7 @@ class WallGexShiftDetector(BaseDetector):
                             facts={
                                 "spot": spot,
                                 "flip_level": flip,
-                                "regime": "POSITIVE_GAMMA" if gex_sign > 0 else "NEGATIVE_GAMMA",
+                                "regime": "CALL_HEAVY" if gex_sign > 0 else "PUT_HEAVY",
                             },
                             magnitude_sigma=0.8,
                         )
@@ -107,8 +107,8 @@ class WallGexShiftDetector(BaseDetector):
                     type="REGIME_CHANGE",
                     facts={
                         "spot": spot,
-                        "old_regime": "POSITIVE_GAMMA" if self._prev_gex_sign > 0 else "NEGATIVE_GAMMA",
-                        "new_regime": "POSITIVE_GAMMA" if gex_sign > 0 else "NEGATIVE_GAMMA",
+                        "old_regime": "CALL_HEAVY" if self._prev_gex_sign > 0 else "PUT_HEAVY",
+                        "new_regime": "CALL_HEAVY" if gex_sign > 0 else "PUT_HEAVY",
                         "flip_level": flip,
                     },
                     magnitude_sigma=0.85,

@@ -218,7 +218,7 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
             f"PCR {row['pcr_oi']}  news {row['news_count']}(impact {row['news_impact']})"
             f"{published_tag}")
     if not written:
-        return f"{head}  -> skipped (a row < {min_gap:g} min old exists){blast_tag}", data
+        return f"{head}  -> skipped (gap or a third identical spot){blast_tag}", data
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
     # row so the two captures never drift (skip writes nothing on either side). Routed to the
     # feed's own journal (Dhan -> oi_strikes_dhan) so sources never mix.

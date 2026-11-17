@@ -65,13 +65,6 @@ class StoryStateManager:
         elif event.type in ("WALL_BREAK", "ORB_BREAK_DOWN") and event.facts.get("wall_type") == "PUT_WALL":
             new_bias = "bearish"
             new_conf = 0.75
-        elif event.type == "REGIME_CHANGE":
-            if "POSITIVE" in str(event.facts.get("new_regime")):
-                new_bias = "range"
-                new_conf = 0.65
-            else:
-                new_bias = "breakout"
-                new_conf = 0.70
         elif event.type == "MAX_PAIN_PINNING":
             new_bias = "range"
             new_conf = 0.80

@@ -6,6 +6,15 @@ from typing import Any
 from commentary.models import Event, SuggestionBite
 
 
+def _book_words(regime: str) -> str:
+    text = str(regime or "").upper()
+    if "CALL" in text or "POSITIVE" in text:
+        return "call-heavy"
+    if "PUT" in text or "NEGATIVE" in text:
+        return "put-heavy"
+    return "unchanged"
+
+
 def render_event_template(event: Event, context: dict[str, Any] | None = None) -> tuple[str, str]:
     """Generate deterministic headline and body for any event without LLM dependencies.
     
@@ -70,15 +79,18 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
     elif evt_type == "FLIP_LEVEL_CROSS":
         spot = f.get("spot", 0.0)
         flip = f.get("flip_level", 0.0)
-        regime = f.get("regime", "")
+        book = _book_words(str(f.get("regime", "")))
         headline = f"Gamma Flip Crossed at ₹{flip:,.0f}"
-        body = f"Spot ₹{spot:,.1f} crossed the Gamma Flip level (₹{flip:,.0f}), shifting market dynamics into {regime}."
+        body = (
+            f"Spot ₹{spot:,.1f} crossed the Gamma Flip level (₹{flip:,.0f}). "
+            f"The book is {book}. That is not a fade or a chase."
+        )
 
     elif evt_type == "REGIME_CHANGE":
-        new_reg = f.get("new_regime", "")
+        book = _book_words(str(f.get("new_regime", "")))
         spot = f.get("spot", 0.0)
-        headline = f"Regime Shift: {new_reg}"
-        body = f"The book label is now {new_reg} at spot ₹{spot:,.1f}. Call-heavy and put-heavy are not a fade or a chase."
+        headline = f"Book is {book}"
+        body = f"The book is {book} at spot ₹{spot:,.1f}. Call-heavy and put-heavy are not a fade or a chase."
 
     elif evt_type == "ORB_ESTABLISHED":
         h = f.get("orb_high", 0.0)

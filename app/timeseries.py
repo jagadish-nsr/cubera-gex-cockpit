@@ -432,6 +432,36 @@ def last_capture_utc(date_ist: str, symbol: str | None = None) -> datetime | Non
     return _parse_utc(df["timestamp_utc"].iloc[-1])
 
 
+def _spot_is_frozen(row: dict, symbol: str | None) -> bool:
+    """True when this spot already printed twice. A third copy is a stuck feed.
+
+    16 Nov Nifty timeseries repeated 25,220.05 at 15:16, 15:22 and 15:27 while
+    the session-close snapshot was 25,291.
+    """
+    try:
+        spot = float(row.get("spot") or 0)
+    except (TypeError, ValueError):
+        return False
+    if spot <= 0:
+        return False
+    path = ts_path_for(row.get("date_ist") or "", symbol)
+    if not path.exists():
+        return False
+    try:
+        import csv
+        with path.open(encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError:
+        return False
+    tail = []
+    for prev in rows[-2:]:
+        try:
+            tail.append(float(prev.get("spot") or 0))
+        except (TypeError, ValueError):
+            return False
+    return len(tail) == 2 and all(abs(prev - spot) < 0.05 for prev in tail)
+
+
 def append_if_due(row: dict, min_gap_minutes: float = 10.0,
                   symbol: str | None = None) -> tuple[Path, bool]:
     """Append unless a row was already saved < min_gap_minutes ago (dedup guard).
@@ -442,6 +472,8 @@ def append_if_due(row: dict, min_gap_minutes: float = 10.0,
     per-index (it reads this symbol's day file).
     """
     date_ist = row["date_ist"]
+    if _spot_is_frozen(row, symbol):
+        return ts_path_for(date_ist, symbol), False
     if min_gap_minutes > 0:
         last = last_capture_utc(date_ist, symbol)
         now = _parse_utc(row["timestamp_utc"])

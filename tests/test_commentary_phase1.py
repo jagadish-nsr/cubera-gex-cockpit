@@ -318,7 +318,7 @@ def test_walls_and_gex_detector():
         net_gex_sign=-1,
     )
     evts_regime = detector.detect(pit_regime, state)
-    assert any(e.type == "REGIME_CHANGE" and e.facts["new_regime"] == "NEGATIVE_GAMMA" for e in evts_regime)
+    assert any(e.type == "REGIME_CHANGE" and e.facts["new_regime"] == "PUT_HEAVY" for e in evts_regime)
 
 
 def test_session_structure_detector():

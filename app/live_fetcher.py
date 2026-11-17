@@ -110,6 +110,79 @@ def force(symbol: str, window: str | None = None) -> None:
         _event(k).set()
 
 
+def drop_symbol(symbol: str) -> int:
+    """Remove in-memory snaps for ``symbol`` (all windows). Returns how many keys dropped.
+
+    EXTERNAL serve uses this to clear a zombie publish so the next paint falls
+    through to LKGS / mirrored pickle instead of aging a frozen 09:01 book.
+    """
+    sym = (symbol or "").upper().strip()
+    dropped = 0
+    with _LOCK:
+        for key in list(_STORE.keys()):
+            if key == sym or (isinstance(key, tuple) and key and key[0] == sym):
+                _STORE.pop(key, None)
+                dropped += 1
+    return dropped
+
+
+def adopt_disk_snap(symbol: str, *, directory: Path | None = None) -> bool:
+    """Load ingest's pickle into memory when it is newer than the local store.
+
+    Never writes disk. Safe for EXTERNAL serve on a background thread — not on
+    the asyncio event loop (unpickle holds the GIL).
+    """
+    import pickle
+
+    from app.latest_snap import read_snap_meta, snap_path_for
+
+    sym = (symbol or "").upper().strip()
+    root = directory or _SNAP_DIR
+    meta = read_snap_meta(sym, directory=root)
+    if not meta:
+        return False
+    try:
+        meta_ts = float(meta["fetched_at_epoch"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    current = latest(sym)
+    cur_ts = _fetched_epoch((current or {}).get("fetched")) if current else None
+    if cur_ts is not None and cur_ts >= meta_ts - 0.5:
+        return False
+    path = snap_path_for(sym, root)
+    if not path.is_file():
+        return False
+    try:
+        with path.open("rb") as handle:
+            wrapper = pickle.load(handle)
+    except Exception as exc:
+        log.warning("adopt_disk_snap %s failed: %s", sym, exc)
+        return False
+    data = wrapper.get("data") if isinstance(wrapper, dict) else wrapper
+    if data is None:
+        return False
+    window = None
+    if isinstance(wrapper, dict):
+        window = wrapper.get("window") or meta.get("window")
+    fetched = None
+    if isinstance(wrapper, dict):
+        fetched = wrapper.get("fetched_at")
+    if fetched is None:
+        fetched = datetime.fromtimestamp(meta_ts, tz=timezone.utc)
+    elif getattr(fetched, "tzinfo", None) is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    store_key = _key(sym, window)
+    with _LOCK:
+        _STORE[store_key] = {
+            "data": data,
+            "as_of": fetched.astimezone(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None),
+            "fetched": fetched,
+            "err": None,
+            "window": window,
+        }
+    return True
+
+
 def _live_quote_spot(symbol: str) -> float:
     """Latest index print, or 0 when the ticker has nothing fresh."""
     try:
@@ -237,18 +310,33 @@ def _persist_session_close(symbol: str, data) -> None:
             vix = float(raw["last"])
         fetched = getattr(data, "fetched_at", None)
         as_of = fetched.isoformat() if hasattr(fetched, "isoformat") else None
+        from data.market_snapshot import walls_for_close
+        session_day = None
+        if hasattr(fetched, "astimezone"):
+            session_day = fetched.astimezone(
+                timezone(timedelta(hours=5, minutes=30))
+            ).date().isoformat()
+        elif isinstance(as_of, str) and len(as_of) >= 10:
+            session_day = as_of[:10]
+        call_wall, put_wall, source = walls_for_close(
+            symbol,
+            session_day or "",
+            getattr(lv, "call_wall", None),
+            getattr(lv, "put_wall", None),
+            src,
+        )
         save_snapshot(
             symbol,
             spot=getattr(lv, "spot", None),
-            call_wall=getattr(lv, "call_wall", None),
-            put_wall=getattr(lv, "put_wall", None),
+            call_wall=call_wall,
+            put_wall=put_wall,
             gamma_flip=getattr(lv, "flip", None),
             max_pain=getattr(lv, "max_pain", None),
             net_gex=getattr(lv, "total_net_gex", None),
             pcr=getattr(lv, "pcr_oi", None),
             vix=vix,
             as_of=as_of,
-            source="session-close",
+            source=source,
         )
     except Exception as exc:
         log.warning("session-close snapshot failed for %s: %s", symbol, exc)

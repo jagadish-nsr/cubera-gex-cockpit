@@ -277,6 +277,24 @@ def decisive_gate(
     return blocks
 
 
+def edge_keeps_scout(idea: Any) -> bool:
+    """A published ~1% touch with negative expected value stays SCOUT.
+
+    Missing touch or EV is not this gate. A zero default must not demote a
+    pack that never priced the touch.
+    """
+    if idea is None:
+        return False
+    raw_p = getattr(idea, "p_touch_target_1", None)
+    raw_ev = getattr(idea, "net_ev_pts", None)
+    if raw_p is None or raw_ev is None:
+        return False
+    try:
+        return float(raw_p) <= 0.05 and float(raw_ev) < 0
+    except (TypeError, ValueError):
+        return False
+
+
 def state_from_score(score: float, hard_blocks: list[str]) -> GoState:
     if hard_blocks:
         return "HOLD"
@@ -1162,6 +1180,13 @@ def build_directional_decision(
     # Re-evaluate state after structural/opening hard blocks land.
     if hard and state != "HOLD":
         state = state_from_score(score, hard)
+    if state == "FIRE" and edge_keeps_scout(idea):
+        state = "SCOUT"
+        size = "SCOUT"
+        soft.append("improbable_negative_ev")
+        thesis = (
+            "SCOUT — touch probability is about 1% and expected value is negative. "
+        ) + thesis
 
     if state == "HOLD":
         size = "SCOUT"
