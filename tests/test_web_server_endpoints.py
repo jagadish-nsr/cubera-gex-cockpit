@@ -1033,14 +1033,23 @@ class TestOffMarketPersistence:
             assert "dial" in te_data
             assert "targets" in te_data
             assert "scenario_set" in te_data
-            assert "dominant_scenario" in te_data["scenario_set"]
-            assert "probabilities" in te_data["scenario_set"]
-            assert "bull" in te_data["targets"]
-            assert "p_touch_target" in te_data["targets"]["bull"]
-            assert "p_close_beyond" in te_data["targets"]["bull"]
-            assert "forecast_iv" in te_data["targets"]["bull"]
             assert "candidates" in te_data
-            assert len(te_data["candidates"]) > 0
+            # Full TE when the off-market book has usable ATM IV; otherwise the
+            # structured refuse (no fabricated 0.15) — never a blank or 5xx.
+            if te_data.get("error") == "target_engine_unavailable":
+                assert te_data["scenario_set"] is None
+                assert te_data["dial"] is None
+                assert te_data["targets"] == {}
+                assert te_data["candidates"] == []
+                assert "message" in te_data and te_data["message"]
+            else:
+                assert "dominant_scenario" in te_data["scenario_set"]
+                assert "probabilities" in te_data["scenario_set"]
+                assert "bull" in te_data["targets"]
+                assert "p_touch_target" in te_data["targets"]["bull"]
+                assert "p_close_beyond" in te_data["targets"]["bull"]
+                assert "forecast_iv" in te_data["targets"]["bull"]
+                assert len(te_data["candidates"]) > 0
 
             # 2. /api/recommendations
             rec_status, _, rec_content = asyncio.run(
