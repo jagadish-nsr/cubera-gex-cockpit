@@ -1,9 +1,10 @@
 """Orchestrator: OptionsSnapshot -> Levels.
 
-Single source of truth for gamma: we RECOMPUTE per-contract gamma from IV at the
-current spot (gex.bs.bs_gamma) using parity-implied r/q, rather than trusting the
-vendor's static gamma. Vendor gamma is kept only as an optional cross-check.
-Every assumption used is carried onto the Levels object so cli.py can log it.
+Single source of truth for gamma and delta: we RECOMPUTE per-contract greeks
+from IV at the current spot (gex.bs.bs_gamma / bs_delta) using parity-implied
+r/q, rather than trusting the vendor's static greeks. Vendor values are kept
+only as an optional cross-check. Every assumption used is carried onto the
+Levels object so cli.py can log it.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import pandas as pd
 from data.parity import attach_parity_rates
 from data.schema import OptionsSnapshot
 from gex import core
-from gex.bs import bs_gamma
+from gex.bs import bs_delta, bs_gamma
 from gex.flip import FlipResult, gamma_flip_profile
 
 
@@ -45,6 +46,11 @@ class Levels:
     pcr_oi: float | None = None
     pcr_near: float | None = None
     near_book_expired: bool = False
+    # DEX map (inventory, not a direction forecast)
+    total_net_dex: float = 0.0
+    call_delta_wall: float = 0.0
+    put_delta_wall: float = 0.0
+    underlying: str = "NIFTY"
 
 
 def compute_levels(
@@ -126,7 +132,7 @@ def compute_levels(
             flags.append(f"{still} contracts still lack IV after inversion — excluded")
             usable = usable[usable["iv"].notna()].copy()
 
-    # 3. Recompute gamma at current spot from IV (single source of truth).
+    # 3. Recompute gamma and delta at current spot from IV (single source of truth).
     usable["gamma"] = bs_gamma(
         spot,
         usable["strike"].to_numpy(float),
@@ -134,6 +140,15 @@ def compute_levels(
         usable["iv"].to_numpy(float),
         usable["r"].to_numpy(float),
         usable["q"].to_numpy(float),
+    )
+    usable["delta"] = bs_delta(
+        spot,
+        usable["strike"].to_numpy(float),
+        usable["T"].to_numpy(float),
+        usable["iv"].to_numpy(float),
+        usable["r"].to_numpy(float),
+        usable["q"].to_numpy(float),
+        option_type=usable["type"].to_numpy(),
     )
 
     # 3b. Expiry weight per contract (near-dated gamma weighted up). Explicit +
@@ -151,13 +166,20 @@ def compute_levels(
             + " — near-dated walls weighted up"
         )
 
-    # 4. Per-strike GEX, walls, magnet, regime.
-    per_strike = core.per_strike_gex(
+    # 4. Per-strike GEX + DEX, walls, magnet, regime.
+    per_gex = core.per_strike_gex(
         usable[["strike", "type", "gamma", "oi", "weight"]],
         spot=spot,
         contract_size=contract_size,
         dealer_sign_model=snapshot.dealer_sign_model,
     )
+    per_dex = core.per_strike_dex(
+        usable[["strike", "type", "delta", "oi", "weight"]],
+        spot=spot,
+        contract_size=contract_size,
+        dealer_sign_model=snapshot.dealer_sign_model,
+    )
+    per_strike = core.merge_gex_dex(per_gex, per_dex)
 
     # 5. Gamma flip as a zero-crossing profile (recomputes gamma over the grid).
     flip_res = gamma_flip_profile(
@@ -221,11 +243,13 @@ def compute_levels(
 
     sign_model = snapshot.dealer_sign_model
     from config import strike_step_for
-    named = core.live_walls(per_strike, spot, strike_step_for(snapshot.underlying))
+    named = core.live_walls(per_gex, spot, strike_step_for(snapshot.underlying))
     if named["near_book_expired"]:
         flags.append(
             "near book expired — gamma near spot is gone, so no wall is named"
         )
+    call_d_wall = core.call_delta_wall(per_dex) if not per_dex.empty else 0.0
+    put_d_wall = core.put_delta_wall(per_dex) if not per_dex.empty else 0.0
     return Levels(
         spot=spot,
         call_wall=float(named["call_wall"] or 0.0),
@@ -233,8 +257,8 @@ def compute_levels(
         magnet=float(named["magnet"] or 0.0),
         flip=flip_res.flip,
         max_pain=mp,
-        total_net_gex=core.writer_imbalance_net(per_strike, sign_model),
-        regime=core.regime(per_strike, sign_model),
+        total_net_gex=core.writer_imbalance_net(per_gex, sign_model),
+        regime=core.regime(per_gex, sign_model),
         dealer_sign_model=snapshot.dealer_sign_model,
         expiry_window=snapshot.expiry_window,
         oi_timestamp=snapshot.oi_timestamp,
@@ -249,7 +273,98 @@ def compute_levels(
         pcr_oi=calc_pcr_oi,
         pcr_near=calc_pcr_near,
         near_book_expired=bool(named["near_book_expired"]),
+        total_net_dex=core.total_net_dex(per_dex) if not per_dex.empty else 0.0,
+        call_delta_wall=float(call_d_wall or 0.0),
+        put_delta_wall=float(put_d_wall or 0.0),
+        underlying=str(getattr(snapshot, "underlying", None) or "NIFTY"),
     )
+
+
+def ensure_dex(
+    levels: Levels,
+    contracts: pd.DataFrame | None,
+    contract_size: int | None,
+) -> Levels:
+    """Backfill DEX on a Levels object pickled before DEX shipped.
+
+    Live ``compute_levels`` already fills these. Off-session / mirrored snaps
+    often still carry a pre-DEX ``Levels`` with ``total_net_dex=0`` and no
+    ``net_dex`` column — the cockpit then shows ``DEX 0``. Recompute δ from IV
+    (r/q from columns when present, else 0) and attach without touching GEX.
+    """
+    existing = float(getattr(levels, "total_net_dex", 0.0) or 0.0)
+    ps = getattr(levels, "per_strike", None)
+    has_col = ps is not None and hasattr(ps, "columns") and "net_dex" in ps.columns
+    if abs(existing) > 0 and has_col:
+        return levels
+    if contract_size is None or int(contract_size) <= 0:
+        return levels
+    if contracts is None or getattr(contracts, "empty", True):
+        return levels
+
+    need = {"strike", "type", "oi", "iv", "T"}
+    if need - set(contracts.columns):
+        return levels
+
+    usable = contracts.copy()
+    usable = usable[usable["iv"].notna() & (usable["iv"].astype(float) > 0)]
+    usable = usable[usable["T"].notna() & (usable["T"].astype(float) > 0)]
+    if usable.empty:
+        return levels
+    if "r" not in usable.columns:
+        usable["r"] = 0.0
+    else:
+        usable["r"] = usable["r"].fillna(0.0)
+    if "q" not in usable.columns:
+        usable["q"] = 0.0
+    else:
+        usable["q"] = usable["q"].fillna(0.0)
+    if "weight" not in usable.columns:
+        usable["weight"] = 1.0
+
+    spot = float(levels.spot)
+    usable["delta"] = bs_delta(
+        spot,
+        usable["strike"].to_numpy(float),
+        usable["T"].to_numpy(float),
+        usable["iv"].to_numpy(float),
+        usable["r"].to_numpy(float),
+        usable["q"].to_numpy(float),
+        option_type=usable["type"].to_numpy(),
+    )
+    sign = getattr(levels, "dealer_sign_model", None) or core.SIGN_MODEL
+    try:
+        per_dex = core.per_strike_dex(
+            usable[["strike", "type", "delta", "oi", "weight"]],
+            spot=spot,
+            contract_size=int(contract_size),
+            dealer_sign_model=sign,
+        )
+    except ValueError:
+        return levels
+    if per_dex.empty:
+        return levels
+
+    if ps is None or not hasattr(ps, "columns"):
+        levels.per_strike = per_dex
+    elif "net_dex" not in ps.columns:
+        levels.per_strike = core.merge_gex_dex(ps, per_dex)
+    else:
+        # Column present but aggregate was zero — refresh from recompute
+        levels.per_strike = core.merge_gex_dex(
+            ps.drop(columns=["call_dex", "put_dex", "net_dex"], errors="ignore"),
+            per_dex,
+        )
+
+    levels.total_net_dex = core.total_net_dex(per_dex)
+    levels.call_delta_wall = float(core.call_delta_wall(per_dex))
+    levels.put_delta_wall = float(core.put_delta_wall(per_dex))
+    flags = list(getattr(levels, "flags", None) or [])
+    note = "DEX backfilled on serve (pre-DEX snapshot)"
+    if note not in flags:
+        flags.append(note)
+        levels.flags = flags
+    return levels
 
 
 def _fill_missing_iv(contracts: pd.DataFrame, spot: float) -> pd.DataFrame:

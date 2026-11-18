@@ -1,13 +1,15 @@
-"""Vectorised Black-Scholes gamma and implied-vol inversion.
+"""Vectorised Black-Scholes gamma/delta and implied-vol inversion.
 
-Gamma is recomputed here for the flip profile (gex-math skill: never reuse a
-vendor's static gamma across hypothetical spots). All functions are pure and
-operate elementwise on numpy arrays.
+Gamma and delta are recomputed here for the exposure maps (gex-math skill:
+never reuse a vendor's static greek across hypothetical spots). All functions
+are pure and operate elementwise on numpy arrays.
 
-BS gamma with continuous dividend yield q:
+BS with continuous dividend yield q:
 
     d1    = [ln(S/K) + (r - q + sigma^2 / 2) * T] / (sigma * sqrt(T))
     gamma = e^(-q*T) * N'(d1) / (S * sigma * sqrt(T))
+    call δ = e^(-q*T) * N(d1)
+    put  δ = call δ - e^(-q*T)
 
 gamma is identical for calls and puts at the same (S, K, T, sigma, r, q).
 """
@@ -18,12 +20,8 @@ import numpy as np
 from scipy.stats import norm
 
 
-def bs_gamma(S, K, T, sigma, r=0.0, q=0.0):
-    """Per-1-share Black-Scholes gamma. Inputs broadcast as numpy arrays.
-
-    Degenerate inputs (T<=0, sigma<=0, S<=0, K<=0) yield gamma 0 rather than
-    nan/inf — an expired or zero-vol contract contributes no hedging gamma.
-    """
+def _bs_d1(S, K, T, sigma, r=0.0, q=0.0):
+    """Shared d1 / validity mask for gamma and delta. Degenerate -> invalid."""
     S = np.asarray(S, dtype=float)
     K = np.asarray(K, dtype=float)
     T = np.asarray(T, dtype=float)
@@ -32,16 +30,44 @@ def bs_gamma(S, K, T, sigma, r=0.0, q=0.0):
     q = np.asarray(q, dtype=float)
 
     valid = (T > 0) & (sigma > 0) & (S > 0) & (K > 0)
-    # Compute on a safe copy to avoid divide-by-zero warnings, then mask.
     Ts = np.where(valid, T, 1.0)
     sig = np.where(valid, sigma, 1.0)
     Ss = np.where(valid, S, 1.0)
     Ks = np.where(valid, K, 1.0)
-
     sqrtT = np.sqrt(Ts)
     d1 = (np.log(Ss / Ks) + (r - q + 0.5 * sig**2) * Ts) / (sig * sqrtT)
-    gamma = np.exp(-q * Ts) * norm.pdf(d1) / (Ss * sig * sqrtT)
+    return d1, Ts, Ss, sig, q, valid
+
+
+def bs_gamma(S, K, T, sigma, r=0.0, q=0.0):
+    """Per-1-share Black-Scholes gamma. Inputs broadcast as numpy arrays.
+
+    Degenerate inputs (T<=0, sigma<=0, S<=0, K<=0) yield gamma 0 rather than
+    nan/inf — an expired or zero-vol contract contributes no hedging gamma.
+    """
+    d1, Ts, Ss, sig, q_arr, valid = _bs_d1(S, K, T, sigma, r, q)
+    gamma = np.exp(-q_arr * Ts) * norm.pdf(d1) / (Ss * sig * np.sqrt(Ts))
     return np.where(valid, gamma, 0.0)
+
+
+def bs_delta(S, K, T, sigma, r=0.0, q=0.0, option_type="C"):
+    """Per-1-share Black-Scholes delta. ``option_type`` is 'C' or 'P' (broadcastable).
+
+    Degenerate inputs yield delta 0 — same fail-soft rule as ``bs_gamma``.
+    """
+    d1, Ts, _, _, q_arr, valid = _bs_d1(S, K, T, sigma, r, q)
+    disc_q = np.exp(-q_arr * Ts)
+    call_delta = disc_q * norm.cdf(d1)
+    put_delta = call_delta - disc_q
+
+    typ = np.asarray(option_type)
+    if typ.dtype.kind in ("U", "S", "O"):
+        is_call = np.char.upper(np.asarray(typ, dtype=str)) == "C"
+    else:
+        is_call = np.asarray(typ) == "C"
+    # Scalar option_type broadcasts cleanly via where.
+    delta = np.where(is_call, call_delta, put_delta)
+    return np.where(valid, delta, 0.0)
 
 
 def bs_call_price(S, K, T, sigma, r=0.0, q=0.0):

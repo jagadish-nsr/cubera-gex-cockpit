@@ -1,11 +1,13 @@
 ---
 name: gex-math
-description: Compute gamma exposure (GEX), walls, gamma flip, and max pain from an NSE index option chain. Use whenever implementing or modifying GEX calculations.
+description: Compute gamma exposure (GEX), delta exposure (DEX), walls, gamma flip, and max pain from an NSE index option chain. Use whenever implementing or modifying GEX/DEX calculations.
 ---
 
-# GEX math (Nifty book balance)
+# GEX / DEX math (Nifty book balance)
 
 One convention: `short_call_short_put`. There is no second sign model.
+Recompute γ and δ from IV (`bs_gamma` / `bs_delta`); do not reuse vendor greeks
+across hypothetical spots.
 
 ## Per-strike rupee GEX
 - magnitude[k] = gamma[k] * OI_lots[k] * lot_size * spot^2 * 0.01
@@ -16,6 +18,14 @@ One convention: `short_call_short_put`. There is no second sign model.
 
 `lot_size` is `Index.lot_size` from `config.INDICES`: Nifty 65 (every Tuesday), Bank Nifty 30 (last Tuesday of the month), Sensex 20 (every Thursday). A holiday moves that expiry to the previous trading day. OI must already be in lots.
 `spot^2 * 0.01` is the rupee hedge for a 1% move. Do not use 100 as the multiplier.
+
+## Per-strike rupee DEX
+- scale = spot * 0.01 * lot_size
+- inventory[k] = −delta[k] * OI_lots[k] * scale  (δ already signed)
+- call_dex / put_dex from that inventory; net_dex = call_dex + put_dex
+- Call/put δ-walls = max |call_dex| / |put_dex|
+- Aggregate net DEX is an inventory map, not a direction call
+- Hand-checkable unit test: `tests/test_fixture_dex.py`
 
 ## Derived levels
 - Call wall = strike with the largest call-gamma magnitude.
@@ -36,6 +46,8 @@ The flip is the price where the two books balance. It is not a long-gamma pin.
 - book balance < 0 → NEGATIVE, put-heavy book.
 - Do not map that sign to "fade" or "momentum".
 - Calm versus wild is absolute GEX rank, a separate number.
+- Gated hedge-pressure note may fire near a named wall; never "dealers will
+  defend"; never from DEX sign alone.
 
 ## Non-negotiables
 - Reject any sign model other than `short_call_short_put`.

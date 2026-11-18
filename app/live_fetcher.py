@@ -161,6 +161,11 @@ def adopt_disk_snap(symbol: str, *, directory: Path | None = None) -> bool:
     data = wrapper.get("data") if isinstance(wrapper, dict) else wrapper
     if data is None:
         return False
+    try:
+        from app.data_access import _ensure_bundle_dex
+        data = _ensure_bundle_dex(data)
+    except Exception as dex_exc:
+        log.debug("adopt_disk_snap DEX backfill %s: %s", sym, dex_exc)
     window = None
     if isinstance(wrapper, dict):
         window = wrapper.get("window") or meta.get("window")

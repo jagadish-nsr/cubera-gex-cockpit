@@ -1,4 +1,4 @@
-"""Book-balance view of Nifty GEX. Does not turn the ratio into a pin forecast.
+"""Book-balance view of Nifty GEX (+ optional DEX / hedge-pressure notes).
 
 The regime sign and the flip are the same object: call-gamma magnitude minus
 put-gamma magnitude (see gex.core.writer_imbalance_net and gex.flip). On NSE
@@ -11,6 +11,10 @@ a dealer is long gamma and will fade the tape.
   - Disagreement between the aggregate sign and the local side is a CONFLICT:
     de-size. Walls are concentration strikes, not floors or ceilings.
 
+Gated hedge-pressure (option A): a second line when spot is near a named wall
+or magnet. Conditional under short_call_short_put. Never "dealers will defend."
+DEX sign alone never triggers that line.
+
 Calm versus wild vol is a separate, sign-free |GEX| read. This module does not
 emit it.
 """
@@ -19,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from regime.playbook import one_sentence
+from regime.playbook import hedge_pressure_sentence, one_sentence
 
 
 @dataclass
@@ -45,6 +49,12 @@ class RegimeView:
     mode_label: str = ""             # CALL-HEAVY | PUT-HEAVY | CAUTION | NEUTRAL
     mode_plain: str = ""             # one-sentence plain-English description
     notes: list[str] = field(default_factory=list)
+    total_net_dex: float | None = None
+    call_delta_wall: float | None = None
+    put_delta_wall: float | None = None
+    dex_conflict: bool = False
+    hedge_pressure: str | None = None
+    hedge_pressure_strike: float | None = None
 
 
 def classify(
@@ -56,6 +66,13 @@ def classify(
     total_net_gex: float,
     magnet: float | None = None,
     max_pain: float | None = None,
+    *,
+    total_net_dex: float | None = None,
+    call_delta_wall: float | None = None,
+    put_delta_wall: float | None = None,
+    proximity_pts: float = 100.0,
+    cover_known: bool = False,
+    cover_frac: float | None = None,
 ) -> RegimeView:
     notes: list[str] = []
 
@@ -97,15 +114,43 @@ def classify(
             "(de-size; the ratio is not stable)."
         )
 
+    # --- GEX vs DEX inventory conflict (de-size; not a direction call) -----
+    # Call-heavy gamma books tend to carry negative short-call DEX; put-heavy
+    # books tend to carry positive short-put DEX. Opposite pairing → caution.
+    dex_conflict = False
+    if total_net_dex is not None and total_net_dex != 0 and regime in ("POSITIVE", "NEGATIVE"):
+        if regime == "POSITIVE" and total_net_dex > 0:
+            dex_conflict = True
+        elif regime == "NEGATIVE" and total_net_dex < 0:
+            dex_conflict = True
+    if dex_conflict:
+        notes.append(
+            "CONFLICT: GEX regime and net DEX signs disagree under short_call_short_put "
+            "(de-size; inventory map is mixed)."
+        )
+
     # --- bias: name the book. Do not prescribe a fade or a chase. ---------
     if conflict:
         bias = "book/flip conflict, de-size and wait for confirmation"
+    elif dex_conflict:
+        bias = "GEX/DEX conflict, de-size and wait for confirmation"
     elif regime == "FLAT":
         bias = "call and put gamma balanced"
     elif regime == "POSITIVE" and (in_pos is None or in_pos):
         bias = "call gamma larger than put gamma"
     else:
         bias = "put gamma larger than call gamma"
+
+    # --- gated hedge-pressure (option A). Never from DEX sign alone. ------
+    hp_strike = _nearest_pressure_strike(
+        spot, call_wall, put_wall, magnet, proximity_pts=proximity_pts,
+    )
+    hedge_pressure = None
+    if hp_strike is not None:
+        hedge_pressure = hedge_pressure_sentence(
+            hp_strike, cover_known=cover_known, cover_frac=cover_frac,
+        )
+        notes.append(f"Hedge-pressure gate open at {hp_strike:g} (≤{proximity_pts:g} pts).")
 
     # --- plain-language mode (for non-experts) ----------------------------
     mode_label, mode_plain = _plain_mode(
@@ -134,9 +179,44 @@ def classify(
         mode_label=mode_label,
         mode_plain=mode_plain,
         notes=notes,
+        total_net_dex=total_net_dex,
+        call_delta_wall=call_delta_wall,
+        put_delta_wall=put_delta_wall,
+        dex_conflict=dex_conflict,
+        hedge_pressure=hedge_pressure,
+        hedge_pressure_strike=hp_strike,
     )
     view.headline = one_sentence(view)
+    assert "dealers will defend" not in (view.headline or "").lower()
+    assert "dealers will defend" not in (view.hedge_pressure or "").lower()
     return view
+
+
+def _nearest_pressure_strike(
+    spot: float,
+    call_wall: float,
+    put_wall: float,
+    magnet: float | None,
+    *,
+    proximity_pts: float,
+) -> float | None:
+    """Closest named concentration strike within proximity_pts, else None.
+
+    Requires a real positive strike. Near-book-expired walls at 0 do not gate.
+    """
+    candidates: list[float] = []
+    for k in (call_wall, put_wall, magnet):
+        if k is None:
+            continue
+        kf = float(k)
+        if kf > 0:
+            candidates.append(kf)
+    if not candidates or proximity_pts <= 0:
+        return None
+    nearest = min(candidates, key=lambda k: abs(k - spot))
+    if abs(nearest - spot) <= float(proximity_pts):
+        return nearest
+    return None
 
 
 def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magnet):
@@ -163,7 +243,7 @@ def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magne
             return (
                 "CALL-HEAVY (above call strike)",
                 f"Spot is above the call-gamma strike {call_wall:,.0f}. "
-                "That strike is where call gamma peaks, not a ceiling dealers must defend.",
+                "That strike is where call gamma peaks — not an unconditional defend level.",
             )
         return (
             "CALL-HEAVY (below put strike)",
@@ -179,8 +259,17 @@ def _plain_mode(regime, conflict, in_pos, spot, call_wall, put_wall, flip, magne
     )
 
 
-def from_levels(levels) -> RegimeView:
+def from_levels(levels, *, cover_known: bool = False, cover_frac: float | None = None) -> RegimeView:
     """Adapter: build a RegimeView from a gex.levels.Levels object."""
+    from config import strike_step_for
+
+    symbol = str(getattr(levels, "underlying", None) or "NIFTY")
+    try:
+        step = float(strike_step_for(symbol))
+    except Exception:
+        step = 50.0
+    proximity = max(2.0 * step, 100.0)
+
     return classify(
         spot=levels.spot,
         call_wall=levels.call_wall,
@@ -190,4 +279,10 @@ def from_levels(levels) -> RegimeView:
         total_net_gex=levels.total_net_gex,
         magnet=levels.magnet,
         max_pain=levels.max_pain,
+        total_net_dex=getattr(levels, "total_net_dex", None),
+        call_delta_wall=getattr(levels, "call_delta_wall", None),
+        put_delta_wall=getattr(levels, "put_delta_wall", None),
+        proximity_pts=proximity,
+        cover_known=cover_known,
+        cover_frac=cover_frac,
     )

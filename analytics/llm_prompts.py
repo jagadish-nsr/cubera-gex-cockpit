@@ -70,18 +70,122 @@ def alert_tape_messages(alert: dict[str, Any]) -> list[dict[str, str]]:
     }
     system = (
         _DESK_RULES
-        + " Rewrite ONLY the desk prose for 'headline' and 'drivers'. "
+        + " Rewrite ONLY the desk prose for 'headline' and 'drivers' so a trader "
+        "scanning the cockpit instantly knows: where spot sits vs the book, "
+        "why this stance, and what would invalidate it. "
+        "Speak in plain desk English (not jargon soup). "
         "Return exactly two lines: "
-        "HEADLINE: <one short line> "
-        "DRIVERS: <one or two short sentences>. "
+        "HEADLINE: <one short line naming location + stance implication> "
+        "DRIVERS: <one or two short sentences tying zone/drivers to trigger/kill "
+        "without repeating the trigger/kill strings verbatim unless needed>. "
         "You must not change stance, confidence, trigger, or kill. "
-        "Do not invent wall levels or scores."
+        "Do not invent wall levels or scores. Do not say fade/momentum from regime alone."
     )
     user = json.dumps(payload, ensure_ascii=False)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def positioning_card_messages(flow: dict[str, Any]) -> list[dict[str, str]]:
+    """Trader-facing rewrite of the Index futures positioning card."""
+    payload = {
+        "headline": flow.get("headline"),
+        "overnight_line": flow.get("overnight_line"),
+        "live_line": flow.get("live_line"),
+        "overnight_state": flow.get("overnight_state"),
+        "live_label": flow.get("live_label"),
+        "alert": flow.get("alert"),
+        "file_date": flow.get("file_date"),
+    }
+    system = (
+        _DESK_RULES
+        + " Rewrite the Index futures positioning card for a trader scanning the cockpit. "
+        "Explain overnight participant book vs live futures price/OI in plain English. "
+        "Do not invent a direction call or fade/momentum. "
+        "Keep state labels and any numbers exactly as given. "
+        "Return exactly three lines: "
+        "HEADLINE: <one short line> "
+        "OVERNIGHT: <one sentence> "
+        "LIVE: <one sentence>."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def parse_positioning_rewrite(text: str) -> tuple[str, str, str] | None:
+    if not text or not str(text).strip():
+        return None
+    headline = overnight = live = ""
+    for raw in str(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("headline:"):
+            headline = line.split(":", 1)[1].strip()
+        elif low.startswith("overnight:"):
+            overnight = line.split(":", 1)[1].strip()
+        elif low.startswith("live:"):
+            live = line.split(":", 1)[1].strip()
+    if headline and (overnight or live):
+        return headline, overnight, live
+    parts = [p.strip() for p in str(text).strip().split("\n") if p.strip()]
+    if len(parts) >= 3:
+        return parts[0][:160], parts[1][:400], parts[2][:400]
+    return None
+
+
+def choppiness_card_messages(chop: dict[str, Any]) -> list[dict[str, str]]:
+    """Trader-facing rewrite of the How price moved card."""
+    payload = {
+        "state": chop.get("state"),
+        "headline": chop.get("headline"),
+        "line": chop.get("line"),
+        "chop": chop.get("chop"),
+        "efficiency": chop.get("efficiency"),
+        "vwap_crosses": chop.get("vwap_crosses"),
+        "n_5m": chop.get("n_5m"),
+        "n_1m": chop.get("n_1m"),
+    }
+    system = (
+        _DESK_RULES
+        + " Rewrite the 'How price moved' card for a trader. "
+        "Say whether the path is boxed, directional, or mixed, and what that means "
+        "for watching the next stretch — not a trade instruction. "
+        "Keep every chop/efficiency/VWAP number exactly as given. "
+        "Return exactly two lines: "
+        "HEADLINE: <one short line> "
+        "LINE: <one or two short sentences>."
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def parse_choppiness_rewrite(text: str) -> tuple[str, str] | None:
+    if not text or not str(text).strip():
+        return None
+    headline = line = ""
+    for raw in str(text).splitlines():
+        row = raw.strip()
+        if not row:
+            continue
+        low = row.lower()
+        if low.startswith("headline:"):
+            headline = row.split(":", 1)[1].strip()
+        elif low.startswith("line:"):
+            line = row.split(":", 1)[1].strip()
+    if headline and line:
+        return headline, line
+    parts = [p.strip() for p in str(text).strip().split("\n") if p.strip()]
+    if len(parts) >= 2:
+        return parts[0][:160], " ".join(parts[1:])[:500]
+    return None
 
 
 _QA_DESK_RULES = (
@@ -101,6 +205,26 @@ _QA_DESK_RULES = (
 )
 
 
+_FAQ_TRADER_FOCUS: dict[str, str] = {
+    "futures_positioning": (
+        " Explain index futures positioning for a trader: overnight participant "
+        "read vs live futures price/OI pair (long build-up, short build-up, "
+        "short covering, long unwinding). Say what it means for inventory pressure "
+        "without calling a direction. Note Sensex has no NSE participant file."
+    ),
+    "price_move": (
+        " Explain how price moved this session vs prior close and the day range. "
+        "Locate spot versus call/put walls and flip when those numbers are present. "
+        "Describe path (up/down/chop), not a forecast."
+    ),
+    "alert_tape": (
+        " Rephrase the cockpit alert tape for a trader: stance, zone, why it "
+        "matters now, trigger and kill as the watchlist. Keep stance/confidence/"
+        "trigger/kill exactly as in the payload."
+    ),
+}
+
+
 def session_qa_messages(
     context: dict[str, Any],
     question: str,
@@ -114,9 +238,14 @@ def session_qa_messages(
     if faq_id:
         focus = (
             f" This is FAQ id '{faq_id}'. Stay on that topic. "
-            "If a heuristic_brief is supplied, rewrite it for clarity only — "
-            "keep every number, stance, kill, trigger, and leg exactly as given."
+            "If a heuristic_brief is supplied, rephrase it into clear trader desk prose — "
+            "what it means on the tape right now — while keeping every number, stance, "
+            "kill, trigger, futures state label, and leg exactly as given. "
+            "No markdown. Two to four short sentences unless the brief is a list."
         )
+        extra = _FAQ_TRADER_FOCUS.get(str(faq_id))
+        if extra:
+            focus += extra
     system = _QA_DESK_RULES + focus
     payload: dict[str, Any] = {
         "question": question,

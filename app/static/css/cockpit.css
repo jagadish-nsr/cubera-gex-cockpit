@@ -1080,6 +1080,14 @@ body {
   min-width: 0;
 }
 
+#tab-cockpit .session-read-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
 #tab-cockpit .session-read small {
   display: block;
   font-size: 11px;
@@ -1087,6 +1095,26 @@ body {
   letter-spacing: 0.03em;
   text-transform: uppercase;
   color: var(--ink-mute);
+}
+
+#tab-cockpit .session-read-llm-source,
+.session-qa-chip-genai {
+  flex: 0 0 auto;
+  font-size: 0.58rem;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--ink-mute);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+#tab-cockpit .session-read-llm-source.is-genai,
+.session-qa-chip-genai {
+  color: var(--spark);
+  border-color: color-mix(in srgb, var(--spark) 45%, var(--line));
 }
 
 #tab-cockpit .session-read b {

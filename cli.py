@@ -108,8 +108,12 @@ def _print_table(levels, n_contracts: int, idx) -> None:
     print(f"  {idx.label} GEX LEVELS  --  decision-support only, not financial advice")
     print("=" * 66)
     print(f"  PLAYBOOK: {view.headline}")
+    if getattr(view, "hedge_pressure", None):
+        print(f"  HEDGE PRESSURE: {view.hedge_pressure}")
     if view.conflict:
         print("  ** REGIME/FLIP CONFLICT — de-size **")
+    if getattr(view, "dex_conflict", False):
+        print("  ** GEX/DEX CONFLICT — de-size **")
     print("-" * 66)
     print(f"  spot            : {L.spot:,.2f}")
     print(f"  regime          : {L.regime}  (total net GEX = {L.total_net_gex:,.0f})")
@@ -118,6 +122,9 @@ def _print_table(levels, n_contracts: int, idx) -> None:
     print(f"  gamma flip       : {flip}")
     print(f"  magnet (peak GEX): {L.magnet:,.2f}")
     print(f"  max pain         : {L.max_pain:,.2f}")
+    print(f"  net DEX          : {getattr(L, 'total_net_dex', 0.0):,.0f}  (inventory map, not direction)")
+    print(f"  call δ-wall      : {getattr(L, 'call_delta_wall', 0.0):,.2f}")
+    print(f"  put δ-wall       : {getattr(L, 'put_delta_wall', 0.0):,.2f}")
     print("-" * 66)
     print("  ASSUMPTIONS (logged on every output):")
     print(f"    index          : {idx.symbol} ({idx.label})")
@@ -142,6 +149,7 @@ def _print_table(levels, n_contracts: int, idx) -> None:
             print(f"    ! {f}")
     print("=" * 66)
     print("\n  Book balance only. Walls are gamma concentration, not floors, ceilings, or breakout triggers.")
+    print("  DEX is an inventory map under short_call_short_put. Hedge-pressure notes are conditional.")
 
 
 def main():

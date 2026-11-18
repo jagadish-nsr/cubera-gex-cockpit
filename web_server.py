@@ -1163,13 +1163,35 @@ def _overlay_live_spot(dash, sym: str):
     return dash
 
 
-def _refresh_book_view(dash):
-    """Recompute the playbook from levels so a pickled snapshot does not keep the old pin wording."""
+def _ensure_dash_dex(dash):
+    """Backfill DEX on pre-DEX pickled Levels so the Writer-imbalance subtitle is not stuck at 0."""
     if dash is None or getattr(dash, "levels", None) is None:
         return dash
     try:
+        from gex.levels import ensure_dex
+        import config as _cfg
+        sym = str(getattr(dash, "symbol", None) or "NIFTY")
+        lot = int(_cfg.get_index(sym).lot_size)
+        dash.levels = ensure_dex(dash.levels, getattr(dash, "contracts", None), lot)
+    except Exception as exc:
+        log.debug("DEX ensure skipped: %s", exc)
+    return dash
+
+
+def _refresh_book_view(dash, *, cover_known: bool = False, cover_frac=None):
+    """Recompute the playbook from levels so a pickled snapshot does not keep the old pin wording.
+
+    Optional blast ``cover_frac`` strengthens the gated hedge-pressure note (observed
+    covering), never an unconditional defend claim.
+    """
+    if dash is None or getattr(dash, "levels", None) is None:
+        return dash
+    try:
+        _ensure_dash_dex(dash)
         from regime.classify import from_levels
-        dash.view = from_levels(dash.levels)
+        dash.view = from_levels(
+            dash.levels, cover_known=bool(cover_known), cover_frac=cover_frac,
+        )
     except Exception as exc:
         log.debug("book view refresh skipped: %s", exc)
     return dash
@@ -2635,8 +2657,12 @@ async def get_cockpit_data(
         _kick_commentary_eval(sym, dash)
 
     # 8 KPI cards (including Max Pain and IOAS Directional Bias)
+    _ensure_dash_dex(dash)
     flip_val = _extract_active_gamma_flip(dash, sym)
     net_gex_val = float(getattr(dash.levels, "total_net_gex", 0.0) or 0.0)
+    net_dex_val = float(getattr(dash.levels, "total_net_dex", 0.0) or 0.0)
+    call_d_wall = float(getattr(dash.levels, "call_delta_wall", 0.0) or 0.0)
+    put_d_wall = float(getattr(dash.levels, "put_delta_wall", 0.0) or 0.0)
     pcr_val = _extract_active_pcr(dash)
     mp_raw = getattr(dash.levels, "max_pain", None)
     try:
@@ -2701,6 +2727,17 @@ async def get_cockpit_data(
         },
         "regime": {"val": str(dash.view.regime or "NEUTRAL").upper(), "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}"},
         "net_gex": {"val": _fmt_gex(net_gex_val), "sub": "Writer imbalance (call−put GEX)"},
+        "net_dex": {
+            "val": _fmt_gex(net_dex_val),
+            "sub": "Inventory δ map (not direction)",
+            "raw": net_dex_val,
+            "call_delta_wall": call_d_wall or None,
+            "put_delta_wall": put_d_wall or None,
+        },
+        "hedge_pressure": {
+            "val": getattr(dash.view, "hedge_pressure", None),
+            "sub": "Conditional under short_call_short_put",
+        },
         "pcr_oi": {"val": None if pcr_val is None else f"{pcr_val:.2f}", "sub": pcr_sub},
     }
 
@@ -2822,14 +2859,17 @@ async def get_cockpit_data(
             call_gex = float(prow.get("call_gex") or 0.0)
             put_gex = float(prow.get("put_gex") or 0.0)
             net_stk_gex = float(prow.get("net_gex") or 0.0)
+            net_stk_dex = float(prow.get("net_dex") or 0.0)
         elif stk in strike_oi_map:
             call_gex = strike_oi_map[stk]["C"]
             put_gex = strike_oi_map[stk]["P"]
             net_stk_gex = call_gex - put_gex
+            net_stk_dex = 0.0
         else:
             call_gex = 0.0
             put_gex = 0.0
             net_stk_gex = 0.0
+            net_stk_dex = 0.0
 
         oi_cell = strike_oi_map.get(stk) or next(
             (v for k, v in strike_oi_map.items() if abs(k - stk) < 0.51),
@@ -2844,11 +2884,18 @@ async def get_cockpit_data(
             "call_gex": call_gex,
             "put_gex": put_gex,
             "net_gex": net_stk_gex,
+            "net_dex": net_stk_dex,
             "call_oi": c_oi,
             "put_oi": p_oi,
             "net_oi": c_oi - p_oi,
             "is_call_wall": _same_strike(stk, dash.levels.call_wall or 0, step),
             "is_put_wall": _same_strike(stk, dash.levels.put_wall or 0, step),
+            "is_call_delta_wall": _same_strike(
+                stk, getattr(dash.levels, "call_delta_wall", 0) or 0, step
+            ),
+            "is_put_delta_wall": _same_strike(
+                stk, getattr(dash.levels, "put_delta_wall", 0) or 0, step
+            ),
             "is_gamma_flip": (stk == closest_flip_stk) if is_flip_in_band else False,
             "is_max_pain": (stk == closest_mp_stk) if is_mp_in_band else False,
             "is_magnet": (stk == closest_magnet_stk) if is_magnet_in_band else False,
@@ -2953,6 +3000,24 @@ async def get_cockpit_data(
                 journal_blast_read(sym, spot, gamma_blast, getattr(dash, "fetched_at", None))
         except Exception as journal_exc:
             log.debug("gamma blast score journal: %s", journal_exc)
+        # Re-open the gated hedge-pressure note with observed cover when available.
+        try:
+            _refresh_book_view(
+                dash,
+                cover_known=bool(gamma_blast.get("cover_known")),
+                cover_frac=gamma_blast.get("cover_frac"),
+            )
+            kpis["hedge_pressure"] = {
+                "val": getattr(dash.view, "hedge_pressure", None),
+                "sub": "Conditional under short_call_short_put",
+            }
+            if getattr(dash.view, "dex_conflict", False):
+                kpis["regime"] = {
+                    "val": str(dash.view.regime or "NEUTRAL").upper(),
+                    "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}",
+                }
+        except Exception as hp_exc:
+            log.debug("hedge-pressure cover refresh: %s", hp_exc)
     except Exception as exc:
         log.warning("Gamma blast dynamic evaluation fallback: %s", exc)
         gamma_blast = {
@@ -3239,9 +3304,10 @@ async def get_cockpit_data(
         payload["participant_holdings"] = {"date": None, "rows": []}
     try:
         from app.session_reads import build_session_reads
+        from analytics.session_read_polish import polish_choppiness, polish_positioning_flow
         reads = build_session_reads(sym)
-        payload["positioning_flow"] = reads["positioning_flow"]
-        payload["choppiness"] = reads["choppiness"]
+        payload["positioning_flow"] = polish_positioning_flow(reads["positioning_flow"])
+        payload["choppiness"] = polish_choppiness(reads["choppiness"])
     except Exception as exc:
         log.debug("session reads: %s", exc)
         payload["positioning_flow"] = {
@@ -3249,11 +3315,15 @@ async def get_cockpit_data(
             "headline": "Positioning unavailable.",
             "overnight_line": "The participant file or the futures journal could not be read.",
             "live_line": "",
+            "text_source": "heuristic",
+            "llm_model": None,
         }
         payload["choppiness"] = {
             "state": "not_ready",
             "headline": "Not enough bars yet",
             "line": "The one-minute bars could not be read.",
+            "text_source": "heuristic",
+            "llm_model": None,
         }
     try:
         skew_for_conf = None

@@ -144,17 +144,24 @@ def build_session_reads(symbol: str, now: datetime | None = None) -> dict:
         fresh = file_date == previous_session_date(session).isoformat()
     aligned = align_clocks(overnight, live, file_is_previous_session=fresh)
     chop = compute_choppiness_meter(bars)
+    flow = {
+        "alert": aligned["alert"],
+        "headline": aligned["headline"],
+        "overnight_line": overnight["line"],
+        "live_line": live["line"],
+        "overnight_state": overnight["state"],
+        "live_label": live["label"],
+        "file_date": file_date,
+        "file_is_previous_session": fresh,
+        "tape": live["tape"],
+        "text_source": "heuristic",
+        "llm_model": None,
+    }
+    if isinstance(chop, dict):
+        chop = dict(chop)
+        chop.setdefault("text_source", "heuristic")
+        chop.setdefault("llm_model", None)
     return {
-        "positioning_flow": {
-            "alert": aligned["alert"],
-            "headline": aligned["headline"],
-            "overnight_line": overnight["line"],
-            "live_line": live["line"],
-            "overnight_state": overnight["state"],
-            "live_label": live["label"],
-            "file_date": file_date,
-            "file_is_previous_session": fresh,
-            "tape": live["tape"],
-        },
+        "positioning_flow": flow,
         "choppiness": chop,
     }

@@ -562,7 +562,10 @@
           </div>
           <div class="cockpit-split session-reads">
             <article class="session-read" id="card-positioning">
-              <small>Index futures positioning</small>
+              <div class="session-read-head">
+                <small>Index futures positioning</small>
+                <span id="positioning-llm-source" class="session-read-llm-source" title="Prose source">Heuristic</span>
+              </div>
               <b id="positioning-headline">—</b>
               <p id="positioning-overnight">Overnight FII book and today's anonymous futures tape.</p>
               <p id="positioning-live"></p>
@@ -583,7 +586,10 @@
               <div class="direction-confluence-grid" id="confluence-grid"></div>
             </section>
             <article class="session-read" id="card-choppiness">
-              <small>How price moved</small>
+              <div class="session-read-head">
+                <small>How price moved</small>
+                <span id="chop-llm-source" class="session-read-llm-source" title="Prose source">Heuristic</span>
+              </div>
               <b id="chop-headline">—</b>
               <p id="chop-line">Waiting for enough bars to describe the path.</p>
             </article>
@@ -863,6 +869,7 @@
                   <th>Call Gamma Exposure</th>
                   <th>Put Gamma Exposure</th>
                   <th>Net GEX</th>
+                  <th title="Delta exposure inventory map (not direction)">Net DEX</th>
                   <th>ΔOI call / put</th>
                 </tr>
               </thead>

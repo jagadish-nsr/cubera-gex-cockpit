@@ -33,7 +33,10 @@ amplify a continuation — the retail “gamma blast” story. This codebase:
 3. **Grades** a *past* crossing for sustain vs pin/cap (research scorer).
 
 It does **not** say “dealers will defend this wall.” Open interest is not
-buyer-versus-seller flow. Who hedges on NSE is unmeasured.
+buyer-versus-seller flow. Who hedges on NSE is unmeasured. Blast “defending”
+means *observed* writer OI cover after a wall event (`cover_frac`). That is
+distinct from the regime playbook’s gated hedge-pressure hypothesis (conditional
+under `short_call_short_put`, never from DEX sign alone).
 
 ---
 

@@ -35,7 +35,16 @@ Historical notes under `docs/` that compare an old long-call/short-put reading
 are research records. They are not instructions for the engine.
 
 Who actually delta-hedges on NSE is still unmeasured. Open interest is not
-buyer-versus-seller flow. Do not write "dealers will defend this wall."
+buyer-versus-seller flow. **Never** write unconditional "dealers will defend
+this wall." A gated hedge-pressure note is allowed only when spot is near a
+named high-|GEX| wall/magnet, it states the `short_call_short_put` assumption,
+names that NSE hedging is unmeasured and that OI lags, and never fires from
+DEX sign alone. Observed writer OI cover (gamma-blast `cover_frac`) may
+strengthen that note; it is still not a fade forecast.
+
+DEX (delta exposure) is a first-order inventory map under the same sign model
+(recomputed δ from IV, scale `spot × 0.01 × lot`). It is not a direction call.
+GEX↔DEX sign disagreement → de-size, same spirit as book/flip conflict.
 
 Files under `docs/` and `scripts/analyze_*.py` that mention
 `long_call_short_put`, model A or model B, an SPX parent, or flipping
@@ -65,8 +74,9 @@ US pin reading.
 - **Stops beyond the gamma strikes, never at the magnet.**
 - **Point-in-time correctness in backtests** (the label at a bar uses only data
   available at that bar).
-- **GEX is a positioning map, not a predictor.** Headlines override. De-size
-  when the aggregate book and the local side of the flip disagree.
+- **GEX and DEX are positioning maps, not predictors.** Headlines override.
+  De-size when the aggregate book and the local side of the flip disagree, or
+  when GEX regime and net DEX signs conflict under `short_call_short_put`.
 
 ## Workflow
 - Small, reviewable commits. One logical change each.

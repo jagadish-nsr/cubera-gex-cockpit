@@ -190,3 +190,4 @@ def test_alert_prompt_includes_stance_and_kill():
     })
     blob = msgs[1]["content"]
     assert "CALL WATCH" in blob and "24500" in blob
+    assert "trader" in msgs[0]["content"].lower()

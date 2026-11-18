@@ -246,6 +246,25 @@ def _proxy_vanna(proxy_symbol: str, live_source: str | None,
         return None
 
 
+def _ensure_bundle_dex(bundle):
+    """Backfill DEX on pre-DEX pickled Levels; no-op when already populated."""
+    if bundle is None or getattr(bundle, "levels", None) is None:
+        return bundle
+    try:
+        from gex.levels import ensure_dex
+        sym = str(getattr(bundle, "symbol", None) or "NIFTY")
+        lot = int(config.get_index(sym).lot_size)
+        bundle.levels = ensure_dex(
+            bundle.levels, getattr(bundle, "contracts", None), lot,
+        )
+        # Refresh playbook so hedge-pressure / DEX conflict see the new fields.
+        from regime.classify import from_levels
+        bundle.view = from_levels(bundle.levels)
+    except Exception:
+        pass
+    return bundle
+
+
 def _bundle_from_journal_pickle(raw, reason: str):
     """Last persisted book, or None when the file is empty, synthetic, or not a book.
 
@@ -278,6 +297,7 @@ def _bundle_from_journal_pickle(raw, reason: str):
             fetched = fetched.replace(tzinfo=timezone.utc)
         age = (datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds()
         bundle.staleness_seconds = max(0.0, age)
+    bundle = _ensure_bundle_dex(bundle)
     return apply_derivative_freeze(bundle, force_freeze=True)
 
 
@@ -477,12 +497,16 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         nc = per_strike_nearest_changes(payload, spot=spot, band_pts=idx.band_pts)
         gex = (dict(zip(levels.per_strike["strike"], levels.per_strike["net_gex"]))
                if levels.per_strike is not None else {})
+        dex = {}
+        if levels.per_strike is not None and "net_dex" in levels.per_strike.columns:
+            dex = dict(zip(levels.per_strike["strike"], levels.per_strike["net_dex"]))
         for s in oi_strikes:
             k = s["strike"]
             p = prem.get(k, {})
             s["call_ltp"] = p.get("call_ltp")
             s["put_ltp"] = p.get("put_ltp")
             s["net_gex"] = gex.get(k)
+            s["net_dex"] = dex.get(k)
             c = nc.get(k, {})
             s["call_doi_near"] = c.get("call_doi_near")
             s["put_doi_near"] = c.get("put_doi_near")

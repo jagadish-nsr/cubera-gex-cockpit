@@ -187,3 +187,80 @@ def regime(
     if total < 0:
         return "NEGATIVE"
     return "FLAT"
+
+
+# ---------------------------------------------------------------------------
+# Delta exposure (DEX) — first-order inventory map under the same sign model.
+# scale = spot * 0.01 * lot  → rupees per 1% move. Not a direction forecast.
+# ---------------------------------------------------------------------------
+
+
+def _dex_scale(spot: float, contract_size: int) -> float:
+    return float(spot) * 0.01 * float(contract_size)
+
+
+def per_strike_dex(
+    contracts: pd.DataFrame,
+    spot: float,
+    contract_size: int,
+    dealer_sign_model: str = SIGN_MODEL,
+) -> pd.DataFrame:
+    """Aggregate contract rows into per-strike call/put/net DEX.
+
+    ``delta`` is already signed (+call / −put). Under short_call_short_put the
+    dealer inventory greek is −δ·OI·scale on each leg, so short calls contribute
+    negative DEX and short puts contribute positive DEX.
+    """
+    _require_sign(dealer_sign_model)
+
+    required = {"strike", "type", "delta", "oi"}
+    missing = required - set(contracts.columns)
+    if missing:
+        raise ValueError(f"contracts missing columns: {sorted(missing)}")
+
+    df = contracts.copy()
+    df["type"] = df["type"].str.upper()
+    bad = set(df["type"].unique()) - {"C", "P"}
+    if bad:
+        raise ValueError(f"contract type must be 'C' or 'P'; got {sorted(bad)}")
+
+    scale = _dex_scale(spot, contract_size)
+    w = df["weight"] if "weight" in df.columns else 1.0
+    # Signed inventory δ after short-both: −δ × OI × scale × weight
+    df["_inv"] = -df["delta"] * df["oi"] * scale * w
+    df["_call"] = df["_inv"].where(df["type"] == "C", 0.0)
+    df["_put"] = df["_inv"].where(df["type"] == "P", 0.0)
+
+    grouped = df.groupby("strike", as_index=False).agg(
+        call_dex=("_call", "sum"),
+        put_dex=("_put", "sum"),
+    )
+    grouped["net_dex"] = grouped["call_dex"] + grouped["put_dex"]
+    return grouped.sort_values("strike").reset_index(drop=True)
+
+
+def call_delta_wall(per_strike: pd.DataFrame) -> float:
+    """Strike with the largest |call_dex| (call-delta concentration)."""
+    idx = per_strike["call_dex"].abs().idxmax()
+    return float(per_strike.loc[idx, "strike"])
+
+
+def put_delta_wall(per_strike: pd.DataFrame) -> float:
+    """Strike with the largest |put_dex| (put-delta concentration)."""
+    idx = per_strike["put_dex"].abs().idxmax()
+    return float(per_strike.loc[idx, "strike"])
+
+
+def total_net_dex(per_strike: pd.DataFrame) -> float:
+    """Σ net_dex — inventory map, not a fade/chase signal."""
+    return float(per_strike["net_dex"].sum())
+
+
+def merge_gex_dex(per_gex: pd.DataFrame, per_dex: pd.DataFrame) -> pd.DataFrame:
+    """Left-join DEX columns onto the GEX per-strike frame (outer on strike)."""
+    cols = ["strike", "call_dex", "put_dex", "net_dex"]
+    return (
+        per_gex.merge(per_dex[cols], on="strike", how="outer")
+        .sort_values("strike")
+        .reset_index(drop=True)
+    )

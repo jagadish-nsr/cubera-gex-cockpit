@@ -2956,6 +2956,16 @@
     }).join("");
   }
 
+  function _paintLlmSourceBadge(el, payload) {
+    if (!el) return;
+    const src = String((payload && payload.text_source) || "heuristic").toLowerCase();
+    const isGenai = src === "genai";
+    const model = (payload && payload.llm_model) ? ` · ${payload.llm_model}` : "";
+    el.textContent = isGenai ? `GenAI${model}` : "Heuristic";
+    el.classList.toggle("is-genai", isGenai);
+    el.title = isGenai ? "Prose rephrased by local/cloud LLM from stamped facts" : "Deterministic template prose";
+  }
+
   function paintSessionReads(data) {
     const flow = data.positioning_flow || {};
     const chop = data.choppiness || {};
@@ -2969,8 +2979,10 @@
     if (overnight) overnight.textContent = flow.overnight_line || "";
     if (live) live.textContent = flow.live_line || "";
     if (card) card.classList.toggle("alert-on", Boolean(flow.alert));
+    _paintLlmSourceBadge(document.getElementById("positioning-llm-source"), flow);
     if (chopHead) chopHead.textContent = chop.headline || "—";
     if (chopLine) chopLine.textContent = chop.line || "";
+    _paintLlmSourceBadge(document.getElementById("chop-llm-source"), chop);
   }
 
   function paintParticipantHoldings(book) {
@@ -3876,15 +3888,23 @@
       if (data.kpis.regime) {
         document.getElementById("kpi-regime").textContent = data.kpis.regime.val;
         const regimeMode = document.getElementById("kpi-regime-mode");
-        regimeMode.textContent = data.kpis.regime.sub;
-        regimeMode.title = data.kpis.regime.sub;
+        const hp = data.kpis.hedge_pressure && data.kpis.hedge_pressure.val;
+        const regimeSub = hp
+          ? `Hedge pressure: ${hp}`
+          : (data.kpis.regime.sub || "");
+        regimeMode.textContent = regimeSub;
+        regimeMode.title = regimeSub;
       }
       if (data.kpis.net_gex) {
         document.getElementById("kpi-net-gex").textContent = data.kpis.net_gex.val;
         const netSub = document.getElementById("kpi-net-gex-sub");
-        if (netSub && data.kpis.net_gex.sub) {
-          netSub.textContent = data.kpis.net_gex.sub;
-          netSub.title = data.kpis.net_gex.sub;
+        if (netSub) {
+          const dex = data.kpis.net_dex;
+          const sub = dex && dex.val
+            ? `${data.kpis.net_gex.sub || "Call−put GEX"} · DEX ${dex.val}`
+            : (data.kpis.net_gex.sub || "");
+          netSub.textContent = sub;
+          netSub.title = sub;
         }
       }
       if (data.kpis.pcr_oi) {
@@ -4203,6 +4223,8 @@
           let badgeHtml = "";
           if (row.is_call_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(239,68,68,.15);color:var(--stop)">CALL WALL</span>';
           if (row.is_put_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.15);color:var(--go)">PUT WALL</span>';
+          if (row.is_call_delta_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(249,115,22,.15);color:#f97316">CALL δ-WALL</span>';
+          if (row.is_put_delta_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(14,165,233,.15);color:#0ea5e9">PUT δ-WALL</span>';
           if (row.is_gamma_flip) badgeHtml += '<span class="ladder-badge" style="background:rgba(56,189,248,.15);color:var(--spark)">GAMMA FLIP</span>';
           if (row.is_max_pain) badgeHtml += '<span class="ladder-badge" style="background:rgba(234,179,8,.15);color:var(--warn)">MAX PAIN</span>';
           if (row.is_magnet) badgeHtml += '<span class="ladder-badge" style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET</span>';
@@ -4219,6 +4241,8 @@
           const doiText = (row.call_doi == null && row.put_doi == null)
             ? "—"
             : `${row.call_doi == null ? "—" : (row.call_doi > 0 ? "+" : "") + Number(row.call_doi).toLocaleString("en-IN")} / ${row.put_doi == null ? "—" : (row.put_doi > 0 ? "+" : "") + Number(row.put_doi).toLocaleString("en-IN")}`;
+          const netDex = Number(row.net_dex || 0);
+          const dexText = `${netDex >= 0 ? "+" : ""}${netDex.toLocaleString("en-IN")}`;
 
           tr.innerHTML = `
             <td>₹${row.strike.toLocaleString("en-IN")}</td>
@@ -4226,6 +4250,7 @@
             <td style="color:var(--stop)">${row.call_gex.toLocaleString("en-IN")}</td>
             <td style="color:var(--go)">${row.put_gex.toLocaleString("en-IN")}</td>
             <td style="color:${row.net_gex >= 0 ? "var(--go)" : "var(--stop)"}">${row.net_gex >= 0 ? "+" : ""}${row.net_gex.toLocaleString("en-IN")}</td>
+            <td style="color:${netDex >= 0 ? "var(--go)" : "var(--stop)"};font-family:var(--mono)">${dexText}</td>
             <td style="font-family:var(--mono)">${doiText}</td>
           `;
           tbody.appendChild(tr);
@@ -9607,12 +9632,13 @@
     }
   }
 
-  async function ensureSessionQaFaqs() {
+  async function ensureSessionQaFaqs(force) {
     const host = document.getElementById("session-qa-faqs");
     if (!host) return;
+    if (force) state.sessionQaFaqs = null;
     if (!state.sessionQaFaqs) {
       try {
-        const res = await fetch("/api/session-qa/faqs");
+        const res = await fetch(`/api/session-qa/faqs?_=${Date.now()}`);
         const data = await res.json().catch(() => ({}));
         state.sessionQaFaqs = Array.isArray(data.faqs) ? data.faqs : [];
       } catch (e) {
@@ -9620,10 +9646,13 @@
         state.sessionQaFaqs = [];
       }
     }
-    host.innerHTML = (state.sessionQaFaqs || []).map((f) =>
-      `<button type="button" class="btn btn-secondary session-qa-chip" data-faq-id="${_sessionQaEscape(f.id)}"
-        style="font-size:0.7rem;padding:4px 9px">${_sessionQaEscape(f.label)}</button>`
-    ).join("");
+    host.innerHTML = (state.sessionQaFaqs || []).map((f) => {
+      const genai = f.genai
+        ? ' <span class="session-qa-chip-genai" title="LLM rephrases this answer">GenAI</span>'
+        : "";
+      return `<button type="button" class="btn btn-secondary session-qa-chip" data-faq-id="${_sessionQaEscape(f.id)}"
+        style="font-size:0.7rem;padding:4px 9px;display:inline-flex;align-items:center;gap:6px">${_sessionQaEscape(f.label)}${genai}</button>`;
+    }).join("");
     host.querySelectorAll(".session-qa-chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.getAttribute("data-faq-id");
@@ -9699,7 +9728,7 @@
 
   async function loadCommentary() {
     try {
-      ensureSessionQaFaqs();
+      ensureSessionQaFaqs(true);
       renderSessionQaThread();
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/session-commentary?symbol=${requestedSym}`);
