@@ -7686,15 +7686,20 @@ async def get_session_commentary(symbol: Optional[str] = None):
 
     cards = []
     if session_entries:
+        # Newest first: DB already returns ts DESC; keep that after session filter + dedupe.
         clean_entries = []
         seen_texts = set()
-        for e in session_entries:
+        for e in sorted(
+            session_entries,
+            key=lambda row: str(row.get("ts") or ""),
+            reverse=True,
+        ):
             t_key = f"{e.get('headline', '')}_{e.get('body', '')[:35]}"
             if t_key not in seen_texts:
                 seen_texts.add(t_key)
                 clean_entries.append(e)
 
-        for e in reversed(clean_entries):
+        for e in clean_entries:
             raw_hl = e.get("headline", "")
             raw_body = e.get("body", "")
             topic = extract_topic_header(raw_hl, e)

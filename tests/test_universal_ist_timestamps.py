@@ -142,8 +142,8 @@ def test_storage_roundtrip_normalizes_to_ist(tmp_path, monkeypatch):
     test_db = tmp_path / "ist_test.db"
     import commentary.storage.db as comm_db
     monkeypatch.setattr(comm_db, "_DB_PATH", test_db)
-    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", [])
-    monkeypatch.setattr(comm_db, "_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", {})
+    monkeypatch.setattr(comm_db, "_CACHE_SYNC_TS", {})
     ensure_commentary_schema()
 
     # Pass UTC timestamp into entry

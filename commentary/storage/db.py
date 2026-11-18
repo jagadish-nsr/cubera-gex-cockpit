@@ -39,19 +39,18 @@ _DB_PATH = ROOT / "data" / "journal" / "commentary.db"
 _WRITE_LOCK = threading.Lock()
 IST = timezone(timedelta(hours=5, minutes=30))
 
-_RECENT_ENTRIES_CACHE: list[dict[str, Any]] = []
+# Per-symbol recent rows. A single shared list used to return Nifty when the
+# UI asked for Bank Nifty inside the 3s TTL window.
+_RECENT_ENTRIES_CACHE: dict[str, list[dict[str, Any]]] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_INITIALIZED = False
-_CACHE_SYNC_TS = 0.0
+_CACHE_SYNC_TS: dict[str, float] = {}
 
 
 def clear_commentary_cache() -> None:
     """Force flush in-memory commentary cache so next read syncs from SQLite."""
-    global _CACHE_INITIALIZED, _CACHE_SYNC_TS
     with _CACHE_LOCK:
         _RECENT_ENTRIES_CACHE.clear()
-        _CACHE_INITIALIZED = False
-        _CACHE_SYNC_TS = 0.0
+        _CACHE_SYNC_TS.clear()
 
 
 def _now_ist_str() -> str:
@@ -250,11 +249,12 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> bool
                 ),
             )
 
-    # Update in-memory cache
+    # Update in-memory cache for this symbol only
+    sym_key = symbol.upper()
     cached_entry = {
         "entry_id": entry.id,
         "ts": entry_ts_str,
-        "symbol": symbol.upper(),
+        "symbol": sym_key,
         "phase": entry.phase,
         "headline": entry.headline,
         "body": entry.body,
@@ -265,9 +265,11 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> bool
         "facts": facts_dict,
     }
     with _CACHE_LOCK:
-        _RECENT_ENTRIES_CACHE.insert(0, cached_entry)
-        if len(_RECENT_ENTRIES_CACHE) > 100:
-            _RECENT_ENTRIES_CACHE.pop()
+        bucket = _RECENT_ENTRIES_CACHE.setdefault(sym_key, [])
+        bucket.insert(0, cached_entry)
+        if len(bucket) > 100:
+            bucket.pop()
+        _CACHE_SYNC_TS[sym_key] = time.time()
     return True
 
 
@@ -304,17 +306,18 @@ def find_session_gap(symbol: str, session_date: str) -> dict[str, Any] | None:
 
 def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> list[dict[str, Any]]:
     """Retrieve recent commentary entries with low-latency cache backed by SQLite WAL."""
-    global _CACHE_INITIALIZED, _CACHE_SYNC_TS
     ensure_commentary_schema()
     from commentary.models import to_ist
 
+    sym_key = symbol.upper()
     now_t = time.time()
     with _CACHE_LOCK:
-        if _CACHE_INITIALIZED and (now_t - _CACHE_SYNC_TS < 3.0) and _RECENT_ENTRIES_CACHE:
-            filtered = [e for e in _RECENT_ENTRIES_CACHE if e.get("symbol", "").upper() == symbol.upper()]
-            return filtered[:limit]
+        cached = _RECENT_ENTRIES_CACHE.get(sym_key) or []
+        sync_ts = _CACHE_SYNC_TS.get(sym_key, 0.0)
+        if cached and (now_t - sync_ts < 3.0):
+            return cached[:limit]
 
-    # Load from DB to populate cache
+    # Load from DB to populate this symbol's cache bucket
     try:
         with _get_read_conn() as conn:
             rows = conn.execute(
@@ -323,7 +326,7 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
                 WHERE symbol = ?
                 ORDER BY ts DESC LIMIT ?
                 """,
-                (symbol.upper(), limit),
+                (sym_key, limit),
             ).fetchall()
 
             entries: list[dict[str, Any]] = []
@@ -367,10 +370,8 @@ def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> lis
                 })
 
             with _CACHE_LOCK:
-                _RECENT_ENTRIES_CACHE.clear()
-                _RECENT_ENTRIES_CACHE.extend(entries)
-                _CACHE_INITIALIZED = True
-                _CACHE_SYNC_TS = time.time()
+                _RECENT_ENTRIES_CACHE[sym_key] = list(entries)
+                _CACHE_SYNC_TS[sym_key] = time.time()
 
             return entries
     except Exception as exc:

@@ -17,8 +17,8 @@ def test_storage_schema_and_save_entry(tmp_path, monkeypatch):
     test_db = tmp_path / "commentary_test.db"
     import commentary.storage.db as comm_db
     monkeypatch.setattr(comm_db, "_DB_PATH", test_db)
-    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", [])
-    monkeypatch.setattr(comm_db, "_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", {})
+    monkeypatch.setattr(comm_db, "_CACHE_SYNC_TS", {})
     ensure_commentary_schema()
     now = dt.datetime.now(dt.timezone.utc)
 
@@ -68,8 +68,8 @@ def test_same_headline_inside_one_minute_is_one_print(tmp_path, monkeypatch):
     from commentary.models import CommentaryEntry
 
     monkeypatch.setattr(comm_db, "_DB_PATH", tmp_path / "commentary_test.db")
-    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", [])
-    monkeypatch.setattr(comm_db, "_CACHE_INITIALIZED", False)
+    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", {})
+    monkeypatch.setattr(comm_db, "_CACHE_SYNC_TS", {})
     now = dt.datetime(2026, 11, 16, 4, 0, tzinfo=dt.timezone.utc)
     first = CommentaryEntry(
         id="alert-1",
@@ -107,3 +107,40 @@ def test_pinned_commentary_cache():
     cache = get_pinned_commentary_cache()
     assert "REC-TEST-999" in cache
     assert cache["REC-TEST-999"] == "Target 1 approached (+42 pts)"
+
+
+def test_recent_entries_cache_is_per_symbol(tmp_path, monkeypatch):
+    """Switching index must not reuse another symbol's 3s cache bucket."""
+    import commentary.storage.db as comm_db
+
+    monkeypatch.setattr(comm_db, "_DB_PATH", tmp_path / "commentary_cache_iso.db")
+    monkeypatch.setattr(comm_db, "_RECENT_ENTRIES_CACHE", {})
+    monkeypatch.setattr(comm_db, "_CACHE_SYNC_TS", {})
+    ensure_commentary_schema()
+    now = dt.datetime(2026, 11, 18, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
+    nifty = CommentaryEntry(
+        id="nifty-1",
+        ts=now,
+        phase="morning",
+        event_ids=[],
+        headline="Nifty wall test",
+        body="nifty body",
+    )
+    bank = CommentaryEntry(
+        id="bn-1",
+        ts=now,
+        phase="morning",
+        event_ids=[],
+        headline="Bank Nifty wall test",
+        body="bn body",
+    )
+    assert save_commentary_entry(nifty, symbol="NIFTY") is True
+    assert save_commentary_entry(bank, symbol="BANKNIFTY") is True
+
+    nifty_rows = get_recent_commentary_entries("NIFTY", limit=10)
+    bank_rows = get_recent_commentary_entries("BANKNIFTY", limit=10)
+    assert [r["entry_id"] for r in nifty_rows] == ["nifty-1"]
+    assert [r["entry_id"] for r in bank_rows] == ["bn-1"]
+    assert all(r["symbol"] == "NIFTY" for r in nifty_rows)
+    assert all(r["symbol"] == "BANKNIFTY" for r in bank_rows)
+    comm_db.clear_commentary_cache()
