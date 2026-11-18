@@ -25,19 +25,24 @@ def _worker_score(args):
     fetched = datetime(2026, 11, 9, 8, 15, tzinfo=timezone.utc)  # 13:45 IST
     wrote = 0
     for i in range(n):
+        triggered = i % 2 == 0
         ok = gb.journal_blast_read(
             "NIFTY",
             25000.0 + proc_id + i * 0.01,
             {
                 "score": 50 + (proc_id % 40),
-                "state": "TRIGGERED" if i % 2 == 0 else "NO_TRIGGER",
+                "state": "TRIGGERED" if triggered else "NO_TRIGGER",
                 "primary_strike": 25000,
-                "badge": "GAMMA BLAST: ACTIVE",
+                "badge": "GAMMA BLAST: ACTIVE" if triggered else "GAMMA BLAST: INACTIVE",
                 "call_wall": 25000,
                 "put_wall": 24900,
                 "in_blast_window": True,
                 "cover_frac": -0.1,
                 "cover_known": True,
+                "cover_side": "call",
+                "ignition_pts": 20,
+                "proximity_pts": 30,
+                "regime_pts": 10,
             },
             fetched,
         )

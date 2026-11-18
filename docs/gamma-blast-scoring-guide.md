@@ -284,7 +284,7 @@ must not leave TRIGGERED and NO_TRIGGER in the same minute.
 | Consumer | Behavior |
 |----------|----------|
 | Cockpit UI + audio | Badge/score colors; COILING → heartbeat; TRIGGERED/ACTIVE → intensity-linked engine rev |
-| `analytics/market_alert.py` | Expiry + score ≥ 60 prefixes alert badge; no direction scoring |
+| `analytics/market_alert.py` | `blast_signal_trusted` only: expiry + score ≥ 60 + cover_known + ignition/proximity/regime + TRIGGERED/COMPRESS; stalled spot refused; no direction scoring |
 | `app/blast_risk.py` | Expiry COILING → size × **0.75**; ACTIVE → × **0.50**; PIN/COMPRESS → × **0.40**; ACTIVE+FAKE/WEAK sustain → × **0.45**; tags / risk lines; optional short-near-magnet quality **penalty** only — **never** boosts CE/PE quality for blast |
 | `analytics/trade_ideas.py` / `structures/suggest.py` | Same live eval; de-size + annotate; shorts nudged off magnet / primary strike |
 
@@ -303,7 +303,13 @@ scope** of current production behavior.
 6. Map score → state with 60 / 35 cutoffs.
 
 If the card says ACTIVE with no covering tape, that is a bug relative to §2.4
-(`not cover_known` ⇒ max 59).
+(`not cover_known` ⇒ max 59). Journaling also **refuses** incomplete TRIGGERED
+rows and may **upgrade** an incomplete same-minute COILING print when a complete
+card arrives.
+
+**Late sticky spot (final 20 minutes before F&O close):** if spot has not moved
+for ≥ 60s, primary strike freezes and ACTIVE demotes to COILING (score ≤ 58).
+Applies to Nifty, Bank Nifty, and Sensex.
 
 ---
 
@@ -314,6 +320,7 @@ If the card says ACTIVE with no covering tape, that is a bug relative to §2.4
 - Covering needs a few minutes of absolute OI history — first prints after restart stay COILING at best.
 - Score is **not** a direction call and must not be used to raise directional quality.
 - Morning build in `*_doi` is intentionally ignored for defense/fuel.
+- Strike step comes from `config.strike_step_for` (Nifty 50, Sensex/Bank Nifty 100).
 
 ---
 

@@ -333,11 +333,21 @@ OI_TAPE_DIR = (
     Path(__file__).resolve().parents[1] / "data" / "journal" / "gamma_blast_oi_tape"
 )
 
+# Late-session sticky spot (Nov 17 Nifty: 15:16–15:28 locked while K thrashed).
+_SPOT_SAMPLES: dict[str, list[tuple[datetime, float]]] = {}
+_STALL_FREEZE: dict[str, dict] = {}  # symbol -> {primary, since, spot}
+_SPOT_SAMPLE_GAP = timedelta(seconds=5)
+_SPOT_STALL_HOLD = timedelta(seconds=60)
+_SPOT_STALL_KEEP = timedelta(minutes=5)
+_LATE_STALL_BEFORE_CLOSE_MIN = 20  # final 20 minutes of F&O session
+
 
 def reset_strike_oi_history() -> None:
     """Drop the in-process strike-OI tape. Tests start from an empty book."""
     with _OI_LOCK:
         _OI_HISTORY.clear()
+        _SPOT_SAMPLES.clear()
+        _STALL_FREEZE.clear()
 
 
 def _oi_tape_path(symbol: str) -> Path:
@@ -570,6 +580,7 @@ def _blast_card(
     sustain_score=None,
     sustain_grade=None,
     pin_geometry=None,
+    spot_stalled=None,
 ) -> dict:
     """Uniform blast-card payload so journals always see the same keys."""
     return {
@@ -589,7 +600,143 @@ def _blast_card(
         "sustain_score": sustain_score,
         "sustain_grade": sustain_grade,
         "pin_geometry": pin_geometry,
+        "spot_stalled": bool(spot_stalled) if spot_stalled is not None else False,
     }
+
+
+
+def blast_components_complete(blast: dict | None) -> bool:
+    """True when afternoon fields needed for a trusted ACTIVE print are present."""
+    gb = blast or {}
+    if gb.get("ignition_pts") is None or gb.get("proximity_pts") is None or gb.get("regime_pts") is None:
+        return False
+    if gb.get("cover_known") is not True:
+        return False
+    if gb.get("primary_strike") is None:
+        return False
+    return True
+
+
+def blast_signal_trusted(blast: dict | None) -> bool:
+    """Gate for EXPIRY BLAST alert prefix and other loud consumers.
+
+    Requires expiry, complete cover/component fields, score ≥ 60, and
+    TRIGGERED / ACTIVE / COMPRESS. Never a bare score from a component-blind
+    or stalled print. Symbol-agnostic (Nifty / Bank Nifty / Sensex).
+    """
+    gb = blast or {}
+    if not gb.get("is_expiry"):
+        return False
+    if gb.get("spot_stalled"):
+        return False
+    try:
+        score = int(gb.get("score") or 0)
+    except (TypeError, ValueError):
+        return False
+    if score < 60:
+        return False
+    state = str(gb.get("state") or "").upper()
+    badge = str(gb.get("badge") or "").upper()
+    active_like = state == "TRIGGERED" or ": ACTIVE" in badge or "COMPRESS" in badge
+    if not active_like:
+        return False
+    return blast_components_complete(gb)
+
+
+def _note_spot_sample(symbol: str, spot: float, now: datetime) -> None:
+    """Remember recent spots for late-session stall detection."""
+    if spot <= 0 or now is None:
+        return
+    key = (symbol or "NIFTY").upper()
+    wall = _as_ist_naive(now)
+    with _OI_LOCK:
+        hist = list(_SPOT_SAMPLES.get(key) or [])
+        if hist and wall - hist[-1][0] < _SPOT_SAMPLE_GAP:
+            hist[-1] = (wall, float(spot))
+        else:
+            hist.append((wall, float(spot)))
+        cutoff = wall - _SPOT_STALL_KEEP
+        _SPOT_SAMPLES[key] = [(ts, s) for ts, s in hist if ts >= cutoff]
+
+
+def _spot_is_stalled(symbol: str, spot: float, now: datetime, step: float) -> bool:
+    """True when spot has not moved materially for ``_SPOT_STALL_HOLD``."""
+    if spot <= 0 or now is None:
+        return False
+    key = (symbol or "NIFTY").upper()
+    wall = _as_ist_naive(now)
+    eps = max(5.0, float(step) * 0.1)
+    with _OI_LOCK:
+        hist = list(_SPOT_SAMPLES.get(key) or [])
+    recent = [(ts, s) for ts, s in hist if wall - ts <= _SPOT_STALL_KEEP]
+    if len(recent) < 2:
+        return False
+    oldest_ok = None
+    for ts, s in recent:
+        if abs(float(s) - float(spot)) <= eps:
+            if oldest_ok is None:
+                oldest_ok = ts
+        else:
+            oldest_ok = None
+    if oldest_ok is None:
+        return False
+    return (wall - oldest_ok) >= _SPOT_STALL_HOLD
+
+
+def _apply_late_spot_stall(
+    *,
+    symbol: str,
+    spot: float,
+    now: datetime,
+    step: float,
+    fno_close_min: int,
+    primary_strike,
+    state: str,
+    badge: str,
+    score: int,
+    description: str,
+) -> tuple:
+    """Freeze primary / demote ACTIVE when spot is sticky in the final 20 minutes."""
+    _note_spot_sample(symbol, spot, now)
+    ist_min = now.hour * 60 + now.minute
+    in_late = ist_min >= max(0, int(fno_close_min) - _LATE_STALL_BEFORE_CLOSE_MIN)
+    stalled = bool(in_late and _spot_is_stalled(symbol, spot, now, step))
+    key = (symbol or "NIFTY").upper()
+    if not stalled:
+        with _OI_LOCK:
+            _STALL_FREEZE.pop(key, None)
+        return primary_strike, state, badge, score, description, False
+
+    with _OI_LOCK:
+        freeze = _STALL_FREEZE.get(key)
+        if (
+            freeze is None
+            or abs(float(freeze.get("spot") or 0) - float(spot)) > max(5.0, step * 0.1)
+        ):
+            freeze = {
+                "primary": primary_strike,
+                "spot": float(spot),
+                "since": _as_ist_naive(now),
+            }
+            _STALL_FREEZE[key] = freeze
+        frozen_primary = freeze.get("primary")
+
+    if frozen_primary is not None:
+        primary_strike = frozen_primary
+    stall_note = (
+        f" Spot stalled near ₹{spot:,.0f} in the final session window — "
+        "primary frozen (sticky tape, not a fresh expansion)."
+    )
+    if state == "TRIGGERED" or int(score) >= 60:
+        score = min(int(score), 58)
+        state = "COILING"
+        if "PIN" in (badge or "").upper() or "COMPRESS" in (badge or "").upper():
+            badge = "GAMMA PIN: COILING"
+        else:
+            badge = "GAMMA BLAST: COILING / IMMINENT"
+    if "stalled" not in (description or "").lower():
+        description = f"{description}{stall_note}"
+    return primary_strike, state, badge, score, description, True
 
 
 def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
@@ -709,7 +856,11 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         except Exception:
             pass
 
-    step = 50.0 if symbol.upper() == "NIFTY" else 100.0
+    try:
+        from config import strike_step_for
+        step = float(strike_step_for(symbol))
+    except Exception:
+        step = 50.0 if str(symbol or "").upper() == "NIFTY" else 100.0
 
     # 3. Wall Proximity & Target Strike
     cw_dist = call_wall - spot if call_wall > 0 else 9999.0
@@ -846,6 +997,10 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
 
     score = max(12, min(96, raw_score))
 
+    # Hard rule: never report TRIGGERED without a known covering tape.
+    if not cover_known and score >= 60:
+        score = 59
+
     # Collapsed walls (call == put) are pin/compress geometry — same score math,
     # different badge so ACTIVE is not read as an expansion cue.
     pin_geometry = (
@@ -871,7 +1026,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
     sustain_score = None if sustain is None else sustain.get("score")
     sustain_grade = None if sustain is None else sustain.get("grade")
 
-    if score >= 60:
+    if score >= 60 and cover_known:
         state = "TRIGGERED"
         if pin_geometry:
             badge = "GAMMA PIN: COMPRESS"
@@ -908,6 +1063,19 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
             f"(research grade {sustain_score}/100 — not a direction call)."
         )
 
+    primary_strike, state, badge, score, desc, spot_stalled = _apply_late_spot_stall(
+        symbol=symbol,
+        spot=spot,
+        now=dt_ist,
+        step=step,
+        fno_close_min=fno_close,
+        primary_strike=primary_strike,
+        state=state,
+        badge=badge,
+        score=int(score),
+        description=desc,
+    )
+
     return _blast_card(
         state=state,
         badge=badge,
@@ -925,6 +1093,7 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
         sustain_score=sustain_score,
         sustain_grade=sustain_grade,
         pin_geometry=pin_geometry,
+        spot_stalled=spot_stalled,
     )
 
 
@@ -935,6 +1104,7 @@ _SCORE_FIELDS = (
     "cover_frac", "cover_known", "cover_side",
     "ignition_pts", "proximity_pts", "regime_pts",
     "pin_geometry", "sustain_score", "sustain_grade",
+    "spot_stalled",
 )
 _score_written: dict[str, tuple] = {}
 BLAST_SCORE_DIR = (
@@ -981,18 +1151,62 @@ def _migrate_score_csv_header(path: Path) -> None:
     tmp.replace(path)
 
 
+def _row_components_complete(row: dict) -> bool:
+    """CSV / card row has the afternoon fields a trusted TRIGGERED print needs."""
+    if row.get("ignition_pts") in (None, ""):
+        return False
+    if row.get("proximity_pts") in (None, ""):
+        return False
+    if row.get("regime_pts") in (None, ""):
+        return False
+    ck = row.get("cover_known")
+    if ck in (None, "", 0, "0", False, "False", "false"):
+        return False
+    if row.get("primary_strike") in (None, ""):
+        return False
+    return True
+
+
+def _rewrite_score_csv(path: Path, rows: list[dict]) -> None:
+    """Atomic rewrite of a daily score CSV under the caller's flock."""
+    import csv
+
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({k: row.get(k, "") for k in _SCORE_FIELDS})
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except OSError:
+            pass
+    tmp.replace(path)
+
+
 def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) -> bool:
     """Append one card reading per IST minute (headless + UI share this path).
 
     Cross-process safe: an on-disk flock + CSV scan enforce one row per
     symbol per minute even when web_server, log_timeseries, and
     log_gamma_blast all evaluate the same card. Returns True when a row
-    was written. Directory: ``data/journal/gamma_blast_score/<SYMBOL>``.
+    was written. Incomplete TRIGGERED prints are refused; a complete print
+    may replace an incomplete same-minute row. Directory:
+    ``data/journal/gamma_blast_score/<SYMBOL>``.
     """
     import csv
 
     if not result or result.get("score") is None:
         return False
+
+    # Fail loud: never journal ACTIVE/TRIGGERED without covering components.
+    state = str(result.get("state") or "").upper()
+    badge = str(result.get("badge") or "").upper()
+    active_like = state == "TRIGGERED" or ": ACTIVE" in badge or "COMPRESS" in badge
+    if active_like and not blast_components_complete(result):
+        return False
+
     if fetched_at is None:
         fetched_at = datetime.now(timezone.utc)
     elif getattr(fetched_at, "tzinfo", None) is None:
@@ -1002,9 +1216,6 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
     day = ist.strftime("%Y-%m-%d")
     key = (day, minute)
     sym = (symbol or "NIFTY").upper()
-    if _score_written.get(sym) == key:
-        # Fast path — still verify on disk under lock below when racing writers.
-        pass
 
     levels = result.get("levels") or {}
     call_wall = result.get("call_wall", levels.get("call_wall") if isinstance(levels, dict) else None)
@@ -1045,16 +1256,30 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
         "pin_geometry": _fmt(result.get("pin_geometry")),
         "sustain_score": _fmt(result.get("sustain_score")),
         "sustain_grade": result.get("sustain_grade") or "",
+        "spot_stalled": _fmt(bool(result.get("spot_stalled"))),
     }
 
-    # Cross-process critical section: flock → scan minute → migrate → append.
-    # In-memory `_score_written` is only a hint; the CSV scan under flock is authority.
+    # Cross-process critical section: flock → load → replace-or-append.
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         locked = _flock_exclusive(lock_file)
-        if _score_minute_present(path, minute):
+        _migrate_score_csv_header(path)
+        existing: list[dict] = []
+        if path.exists() and path.stat().st_size > 0:
+            with path.open("r", newline="", encoding="utf-8") as handle:
+                existing = list(csv.DictReader(handle))
+        same = [r for r in existing if (r.get("time_ist") or "") == minute]
+        if same:
+            prior = same[0]
+            if (not _row_components_complete(prior)) and _row_components_complete(row):
+                kept = [r for r in existing if (r.get("time_ist") or "") != minute]
+                kept.append(row)
+                kept.sort(key=lambda r: (r.get("time_ist") or "", r.get("timestamp_utc") or ""))
+                _rewrite_score_csv(path, kept)
+                _score_written[sym] = key
+                return True
             _score_written[sym] = key
             return False
-        _migrate_score_csv_header(path)
+
         new_file = not path.exists() or path.stat().st_size == 0
         with path.open("a", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=_SCORE_FIELDS, extrasaction="ignore")
@@ -1068,7 +1293,6 @@ def journal_blast_read(symbol: str, spot: float, result: dict, fetched_at=None) 
                 pass
         _score_written[sym] = key
         if not locked:
-            # flock unavailable: still wrote, but another process may race this minute.
             pass
         return True
 

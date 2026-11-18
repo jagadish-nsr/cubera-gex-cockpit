@@ -1343,6 +1343,23 @@
    * Drive live gamma-blast audio from dashboard/tick state.
    * COILING → heartbeat loop; TRIGGERED → engine rev with score+spot intensity; else silence.
    */
+  function blastSignalTrusted(blast) {
+    // Mirrors app.gammablast.blast_signal_trusted — Nifty / Sensex / BN.
+    const gb = blast || {};
+    if (!gb.is_expiry) return false;
+    if (gb.spot_stalled) return false;
+    const score = Number(gb.score || 0);
+    if (!(score >= 60)) return false;
+    const rawState = String(gb.state || "").toUpperCase();
+    const badge = String(gb.badge || "").toUpperCase();
+    const activeLike = rawState === "TRIGGERED" || badge.includes(": ACTIVE") || badge.includes("COMPRESS");
+    if (!activeLike) return false;
+    if (gb.cover_known !== true && gb.cover_known !== 1 && gb.cover_known !== "1") return false;
+    if (gb.primary_strike == null || gb.primary_strike === "") return false;
+    if (gb.ignition_pts == null || gb.proximity_pts == null || gb.regime_pts == null) return false;
+    return true;
+  }
+
   function syncGammaBlastAudio(blast, spot) {
     if (state.blastPreviewActive) return;
     if (!state.soundEnabled) {
@@ -1354,8 +1371,8 @@
     const rawState = String(gb.state || "").toUpperCase();
     const badge = String(gb.badge || "").toUpperCase();
     const isCoiling = rawState === "COILING" || badge.includes("COILING");
-    // ACTIVE badge / TRIGGERED state only — score alone is not enough (map, not a pin)
-    const isActive = rawState === "TRIGGERED" || badge.includes(": ACTIVE");
+    // Trusted ACTIVE only — component-blind / stalled prints stay quiet or coiling.
+    const isActive = blastSignalTrusted(gb);
 
     if (isActive) {
       const intensity = computeBlastSirenIntensity(gb.score, spot);
@@ -5204,7 +5221,7 @@
     const regime = String(kpis.regime ? kpis.regime.val : "NEUTRAL").toUpperCase();
     const blast = dash.gamma_blast || {};
     const blastScore = Number(blast.score || 0);
-    const isExpiryBlast = Boolean(blast.is_expiry) && blastScore >= 60;
+    const isExpiryBlast = blastSignalTrusted(blast);
     const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);

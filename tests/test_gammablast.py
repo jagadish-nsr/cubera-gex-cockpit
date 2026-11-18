@@ -436,3 +436,147 @@ def test_secondary_sustain_grade_pin_forces_fake_path():
     assert "FAKE" in pinned["grade"] or "WEAK" in pinned["grade"]
     assert secondary_sustain_grade(cover_frac=-0.1, cover_known=False) is None
 
+
+def test_blast_signal_trusted_requires_components():
+    from app.gammablast import blast_signal_trusted
+
+    bare = {"score": 72, "is_expiry": True, "state": "TRIGGERED", "badge": "GAMMA BLAST: ACTIVE"}
+    assert blast_signal_trusted(bare) is False
+    full = {
+        **bare,
+        "cover_known": True,
+        "primary_strike": 25000,
+        "ignition_pts": 20,
+        "proximity_pts": 30,
+        "regime_pts": 10,
+    }
+    assert blast_signal_trusted(full) is True
+    assert blast_signal_trusted({**full, "spot_stalled": True}) is False
+    assert blast_signal_trusted({**full, "is_expiry": False}) is False
+
+
+def test_journal_refuses_incomplete_triggered(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    import app.gammablast as gb
+
+    monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path)
+    gb._score_written.clear()
+    fetched = datetime(2026, 11, 17, 7, 40, tzinfo=timezone.utc)  # 13:10 IST
+    bad = {
+        "score": 96,
+        "state": "TRIGGERED",
+        "badge": "GAMMA BLAST: ACTIVE",
+        "in_blast_window": True,
+        "cover_known": False,
+        "call_wall": 25400,
+        "put_wall": 25400,
+    }
+    assert gb.journal_blast_read("NIFTY", 25370.0, bad, fetched) is False
+    assert not (tmp_path / "NIFTY" / "2026-11-17.csv").exists()
+
+
+def test_journal_upgrades_incomplete_coiling_to_complete_triggered(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    import csv
+    import app.gammablast as gb
+
+    monkeypatch.setattr(gb, "BLAST_SCORE_DIR", tmp_path)
+    gb._score_written.clear()
+    fetched = datetime(2026, 11, 17, 8, 48, tzinfo=timezone.utc)  # 14:18 IST
+    incomplete = {
+        "score": 48,
+        "state": "COILING",
+        "badge": "GAMMA BLAST: COILING / IMMINENT",
+        "in_blast_window": True,
+        "primary_strike": 25450,
+        "call_wall": 25450,
+        "put_wall": 25450,
+    }
+    assert gb.journal_blast_read("SENSEX", 84500.0, incomplete, fetched) is True
+    complete = {
+        "score": 66,
+        "state": "TRIGGERED",
+        "badge": "GAMMA PIN: COMPRESS",
+        "in_blast_window": True,
+        "primary_strike": 84500,
+        "call_wall": 84500,
+        "put_wall": 84500,
+        "cover_known": True,
+        "cover_frac": -0.12,
+        "cover_side": "call",
+        "ignition_pts": 16,
+        "proximity_pts": 30,
+        "regime_pts": 0,
+        "pin_geometry": True,
+    }
+    gb._score_written.clear()
+    assert gb.journal_blast_read("SENSEX", 84505.0, complete, fetched) is True
+    rows = list(csv.DictReader((tmp_path / "SENSEX" / "2026-11-17.csv").open()))
+    assert len(rows) == 1
+    assert rows[0]["state"] == "TRIGGERED"
+    assert rows[0]["cover_known"] == "1"
+    assert rows[0]["ignition_pts"] == "16"
+
+
+def test_late_spot_stall_freezes_active_nifty_and_sensex(tmp_path, monkeypatch):
+    """Final-20m sticky spot demotes ACTIVE and freezes primary (Nov 17 gap)."""
+    from datetime import datetime, timedelta, timezone
+    import app.gammablast as gb
+    from app.gammablast import blast_signal_trusted
+
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
+    for sym, wall, sticky in (("NIFTY", 25450.0, 25413.0), ("SENSEX", 84500.0, 84480.0)):
+        reset_strike_oi_history()
+        t0 = datetime(2026, 11, 17, 9, 50, tzinfo=timezone.utc)  # 15:20 IST
+        first = _breach_dash(100_000.0, 0.0, t0)
+        first.levels.call_wall = wall
+        first.levels.put_wall = wall
+        first.levels.spot = sticky
+        first.oi_strikes = [{"strike": wall, "call_oi": 100_000.0, "put_oi": 1.0}]
+        evaluate_dashboard_gamma_blast(first, sym)
+        step = 100.0 if sym == "SENSEX" else 50.0
+        res = None
+        for i in range(16):
+            sample = _breach_dash(70_000.0, 0.0, t0 + timedelta(seconds=90 + i * 5))
+            sample.levels.call_wall = wall + i * step
+            sample.levels.put_wall = sample.levels.call_wall
+            sample.levels.spot = sticky
+            sample.oi_strikes = [
+                {"strike": wall, "call_oi": 70_000.0, "put_oi": 1.0},
+                {"strike": float(sample.levels.call_wall), "call_oi": 70_000.0, "put_oi": 1.0},
+            ]
+            res = evaluate_dashboard_gamma_blast(sample, sym)
+        assert res is not None
+        assert res["spot_stalled"] is True
+        assert res["state"] != "TRIGGERED"
+        assert res["score"] < 60
+        assert res["primary_strike"] == wall
+        assert "stalled" in res["description"].lower()
+        assert blast_signal_trusted(res) is False
+
+
+def test_sensex_pin_trigger_uses_100_step(tmp_path, monkeypatch):
+    from datetime import datetime
+    import app.gammablast as gb
+    from app.gammablast import blast_signal_trusted
+
+    monkeypatch.setattr(gb, "OI_TAPE_DIR", tmp_path)
+    reset_strike_oi_history()
+    t0 = datetime(2026, 11, 12, 8, 0)
+    first = _breach_dash(100_000.0, 0.0, t0)
+    first.levels.call_wall = 84500.0
+    first.levels.put_wall = 84500.0
+    first.levels.spot = 84510.0
+    first.oi_strikes = [{"strike": 84500.0, "call_oi": 100_000.0, "put_oi": 1.0}]
+    evaluate_dashboard_gamma_blast(first, "SENSEX")
+    second = _breach_dash(75_000.0, 0.0, datetime(2026, 11, 12, 8, 10))
+    second.levels.call_wall = 84500.0
+    second.levels.put_wall = 84500.0
+    second.levels.spot = 84510.0
+    second.oi_strikes = [{"strike": 84500.0, "call_oi": 75_000.0, "put_oi": 1.0}]
+    res = evaluate_dashboard_gamma_blast(second, "SENSEX")
+    assert res["state"] == "TRIGGERED"
+    assert res["badge"] == "GAMMA PIN: COMPRESS"
+    assert res["cover_known"] is True
+    assert blast_signal_trusted(res) is True
+

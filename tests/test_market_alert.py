@@ -332,7 +332,17 @@ def test_expiry_blast_is_overlay_not_flip_accelerator():
                 "gamma_flip": {"val": 22420},
                 "regime": {"val": "NEGATIVE"},
             },
-            "gamma_blast": {"score": 72, "is_expiry": True},
+            "gamma_blast": {
+                "score": 72,
+                "is_expiry": True,
+                "state": "TRIGGERED",
+                "badge": "GAMMA BLAST: ACTIVE",
+                "cover_known": True,
+                "primary_strike": 22400,
+                "ignition_pts": 20,
+                "proximity_pts": 30,
+                "regime_pts": 10,
+            },
             "market_breadth": {"advances": 7, "declines": 7, "ratio": 1.0},
             "orderflow_alerts": [],
         },
@@ -346,6 +356,69 @@ def test_expiry_blast_is_overlay_not_flip_accelerator():
     assert "Call-heavy" not in alert["drivers"]
     assert "BIG MOVE COMING" not in alert["badge"]
     assert "short-gamma hedging" not in alert["body"]
+
+
+def test_expiry_blast_prefix_refuses_component_blind_score():
+    """Nov 17 gap: bare score ≥ 60 without cover/components must not prefix."""
+    now = datetime(2026, 10, 23, 14, 10, tzinfo=IST).timestamp()
+    alert = evaluate_market_alert(
+        {
+            "spot": 22410,
+            "strike_step": 50,
+            "is_market_open": True,
+            "as_of_time": "14:10:00 IST",
+            "kpis": {
+                "call_wall": {"val": 22700},
+                "put_wall": {"val": 22300},
+                "gamma_flip": {"val": 22420},
+                "regime": {"val": "NEGATIVE"},
+            },
+            "gamma_blast": {
+                "score": 72,
+                "is_expiry": True,
+                "state": "TRIGGERED",
+                "badge": "GAMMA BLAST: ACTIVE",
+                "cover_known": False,
+            },
+            "orderflow_alerts": [],
+        },
+        now_ts=now,
+    )
+    assert "EXPIRY BLAST" not in alert["badge"]
+
+
+def test_expiry_blast_prefix_works_for_sensex_pin():
+    now = datetime(2026, 11, 12, 14, 20, tzinfo=IST).timestamp()
+    alert = evaluate_market_alert(
+        {
+            "spot": 84500,
+            "strike_step": 100,
+            "is_market_open": True,
+            "as_of_time": "14:20:00 IST",
+            "kpis": {
+                "call_wall": {"val": 84500},
+                "put_wall": {"val": 84500},
+                "gamma_flip": {"val": 84400},
+                "regime": {"val": "NEUTRAL"},
+            },
+            "gamma_blast": {
+                "score": 66,
+                "is_expiry": True,
+                "state": "TRIGGERED",
+                "badge": "GAMMA PIN: COMPRESS",
+                "cover_known": True,
+                "primary_strike": 84500,
+                "ignition_pts": 18,
+                "proximity_pts": 28,
+                "regime_pts": 0,
+                "pin_geometry": True,
+            },
+            "orderflow_alerts": [],
+        },
+        now_ts=now,
+    )
+    assert "EXPIRY BLAST" in alert["badge"]
+    assert "66" in alert["badge"]
 
 
 def test_call_wall_watch_needs_bullish_tape():

@@ -434,8 +434,21 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     step = _f(dash.get("strike_step"), 50.0)
     regime = str((kpis.get("regime") or {}).get("val") or "NEUTRAL").upper()
     blast = dash.get("gamma_blast") or {}
-    blast_score = int(blast.get("score") or 0)
-    is_expiry_blast = bool(blast.get("is_expiry")) and blast_score >= 60
+    try:
+        blast_score = int(blast.get("score") or 0)
+    except (TypeError, ValueError):
+        blast_score = 0
+    # Gate the loud EXPIRY BLAST prefix on a trusted print (cover_known +
+    # component fields + TRIGGERED/COMPRESS). Bare score ≥ 60 from a
+    # component-blind or stalled card must not spam the alert tape
+    # (Nifty 17 Nov: alerts at 13:02 while first-print was NO_TRIGGER 32).
+    try:
+        from app.gammablast import blast_signal_trusted
+        is_expiry_blast = blast_signal_trusted(blast)
+    except Exception:
+        is_expiry_blast = bool(blast.get("is_expiry")) and blast_score >= 60 and (
+            blast.get("cover_known") is True
+        )
     breadth = dash.get("market_breadth") or {}
     now_ts = float(now_ts if now_ts is not None else datetime.now(tz=IST).timestamp())
 
