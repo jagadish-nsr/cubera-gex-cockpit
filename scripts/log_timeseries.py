@@ -485,7 +485,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Intraday index GEX time-series capture.")
     ap.add_argument("--once", action="store_true", help="single snapshot then exit")
     ap.add_argument("--symbol", default=None,
-                    help="index to capture (NIFTY/BANKNIFTY); default NIFTY")
+                    help="index to capture (NIFTY/BANKNIFTY/SENSEX); "
+                         "default: all three")
     ap.add_argument("--loop", type=float, default=5.0, help="interval in minutes (loop mode)")
     ap.add_argument("--min-gap", type=float, default=4.0,
                     help="dedup guard: skip if a row was saved < this many minutes ago "
@@ -496,20 +497,30 @@ def main() -> None:
     from app.obs import boot, shutdown
     boot("log_timeseries", loop=True)
 
+    from scripts.log_gamma_blast import BLAST_SYMBOLS
+
+    def _symbols() -> tuple[str, ...]:
+        return (args.symbol.upper(),) if args.symbol else BLAST_SYMBOLS
+
     if args.once:
         ist = _ist_now()
         if not args.ignore_session and not _in_session(ist):
             _print(f"{ist:%Y-%m-%d %H:%M} IST  outside NSE session - skipped")
             shutdown(ok=True, message="outside session")
             return                                  # clean exit: weekend / off-window fire
-        try:
-            msg, data = capture_once(min_gap=args.min_gap, symbol=args.symbol)
-            _print(msg)
-            _note_capture(msg, data)
-        except Exception as e:  # noqa: BLE001 - surface and exit non-zero for schedulers
-            _print(f"capture FAILED: {e}")
-            _note_capture("", error=e)
-            shutdown(ok=False, error=str(e))
+        data = None
+        failed = 0
+        for sym in _symbols():
+            try:
+                msg, data = capture_once(min_gap=args.min_gap, symbol=sym)
+                _print(msg)
+                _note_capture(msg, data)
+            except Exception as e:  # noqa: BLE001 - one index must not abort the others
+                failed += 1
+                _print(f"[{sym}] capture FAILED: {e}")
+                _note_capture("", error=e)
+        if data is None:
+            shutdown(ok=False, error=f"all captures failed ({failed})")
             sys.exit(1)
         # Stay up through the F&O close when any of the three indices expires today.
         # The lock ignores the later 15-minute fires so they do not stack a second loop.
@@ -523,29 +534,33 @@ def main() -> None:
                 if _is_expiry_day(data) or extra:
                     _print(f"{ist:%H:%M} IST  expiry blast — 1-min capture until the F&O close")
                     _run_blast_window(args.symbol, not_today)
+        if failed and args.symbol:
+            shutdown(ok=False, error="capture failed")
+            sys.exit(1)
         return
 
     # Never let the guard block the loop's own cadence: keep it below the interval.
     gap = min(args.min_gap, max(1.0, args.loop - 1.0)) if args.min_gap > 0 else 0.0
     base_interval = max(args.loop, 1.0) * 60.0
     _print(f"Time-series capture: every {args.loop:g} min during NSE hours "
-           "(09:15-15:30 IST); auto 1-min in the gamma-blast window on expiry days. "
+           f"({', '.join(_symbols())}); auto 1-min in the gamma-blast window on expiry days. "
            "Ctrl+C to stop.")
     try:
         while True:
             ist = _ist_now()
             interval = base_interval
             if args.ignore_session or _in_session(ist):
-                try:
-                    msg, data = capture_once(min_gap=gap, symbol=args.symbol)
-                    _print(msg)
-                    _note_capture(msg, data)
-                    # Tighten to 1-min cadence in the blast window on expiry days.
-                    if _is_expiry_day(data) and _in_blast_window(ist):
-                        interval = 60.0
-                except Exception as e:  # noqa: BLE001 - one bad pull must not stop the day
-                    _print(f"{ist:%H:%M} IST  capture FAILED (kept looping): {e}")
-                    _note_capture("", error=e)
+                for sym in _symbols():
+                    try:
+                        msg, data = capture_once(min_gap=gap, symbol=sym)
+                        _print(msg)
+                        _note_capture(msg, data)
+                        # Tighten to 1-min cadence in the blast window on expiry days.
+                        if _is_expiry_day(data) and _in_blast_window(ist):
+                            interval = 60.0
+                    except Exception as e:  # noqa: BLE001 - one bad pull must not stop the day
+                        _print(f"{ist:%H:%M} IST  [{sym}] capture FAILED (kept looping): {e}")
+                        _note_capture("", error=e)
             else:
                 _print(f"{ist:%Y-%m-%d %H:%M} IST  outside NSE session - idle")
             _time.sleep(interval)

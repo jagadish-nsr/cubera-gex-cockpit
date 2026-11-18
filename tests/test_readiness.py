@@ -109,6 +109,40 @@ def test_readiness_stale_chain_flagged():
     assert payload["degrade_mode"] == "CHAIN_DEGRADED"
 
 
+def test_readiness_nse_scrape_with_fresh_chain_is_soft_mode():
+    """Fresh books on the NSE scrape path must not burn ready minutes."""
+    class _Dash:
+        is_degraded = False
+        degraded_reason = ""
+        source = "nse (Dhan fallback)"
+
+    fresh = {"data": _Dash(), "fetched": time.time() - 5.0}
+    with mock.patch("app.live_fetcher.latest", return_value=fresh), \
+         mock.patch("app.spot_ticker._STORE", {
+             "NIFTY": {"at": time.time(), "quote": {"spot": 25000.0}, "ohlc": {"ltp": 25000.0}, "source": "ws"},
+             "BANKNIFTY": {"at": time.time(), "quote": {"spot": 52000.0}, "ohlc": {"ltp": 52000.0}, "source": "ws"},
+             "SENSEX": {"at": time.time(), "quote": {"spot": 81000.0}, "ohlc": {"ltp": 81000.0}, "source": "ws"},
+         }), \
+         mock.patch("app.ws_spot_feed.get_status", return_value={
+             "ws_connected": True, "is_live": True, "last_tick_age_s": 1.0, "ws_error": None,
+         }), \
+         mock.patch("data.dhan.token_status", return_value=_fresh_token()), \
+         mock.patch("app.readiness._ingest_probe", return_value={
+             "ok": True, "age_s": 1.0, "pid": 1, "role": "ingest", "reason": "", "required": True,
+         }), \
+         mock.patch("resilience.get_circuit_breaker") as cb_fn:
+        class _CB:
+            state = type("S", (), {"value": "CLOSED"})()
+            consecutive_failures = 0
+            cooldown_remaining = 0.0
+        cb_fn.return_value = _CB()
+        payload = build_readiness(market_open=True)
+    assert payload["ready"] is True
+    assert payload["degrade_mode"] == "BOOK_NSE_SCRAPE"
+    assert payload["probes"]["nse_fallback"]["active"] is True
+    assert not any(str(r).startswith("book_from_nse_scrape") for r in payload["reasons"])
+
+
 def test_health_endpoint_includes_readiness():
     import asyncio
     import json

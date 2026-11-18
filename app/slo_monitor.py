@@ -91,6 +91,7 @@ def record_readiness_minute(
         market_open=market_open,
         ready=ready,
         reasons=",".join(reasons)[:200],
+        degrade_mode=str(readiness.get("degrade_mode") or "")[:40],
         streak=streak,
         feed_age_s=feed.get("last_tick_age_s"),
         ingest_age_s=ingest.get("age_s"),

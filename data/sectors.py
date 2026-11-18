@@ -28,6 +28,10 @@ Two sources, and the choice is deliberate:
 from __future__ import annotations
 
 import time
+from pathlib import Path
+
+# Absolute path — relative cwd writes from pytest were poisoning the off-hours UI with stubs.
+_SECTOR_CACHE_PATH = Path(__file__).resolve().parents[1] / "data" / ".cache" / "last_sector_snap.json"
 
 # (NSE index name in /api/allIndices, short display label, Dhan IDX_I security id)
 # Ids verified against the Dhan scrip master (SEM_EXM_EXCH_ID=NSE, SEM_INSTRUMENT_NAME=INDEX).
@@ -90,6 +94,19 @@ _refreshing = False
 
 def _row(label: str, pct, last, group: str, weight=None) -> dict:
     return {"label": label, "pct": pct, "last": last, "group": group, "weight": weight}
+
+
+def _known_sector_labels() -> set[str]:
+    return {label for _n, label, _id, _w in SECTORS} | {label for _n, label, _id, _w in BROAD}
+
+
+def valid_sector_rows(rows) -> bool:
+    """Reject pytest stubs (e.g. lone ``{"label": "A", "last": 1}``) that poisoned the UI cache."""
+    if not isinstance(rows, list) or len(rows) < 5:
+        return False
+    known = _known_sector_labels()
+    labels = {str(r.get("label") or "") for r in rows if isinstance(r, dict)}
+    return len(labels & known) >= 5
 
 
 def fetch_sectors_nse(session=None, timeout: int = 10) -> list[dict] | None:
@@ -188,15 +205,15 @@ def _pull(prefer_dhan: bool = False, session=None) -> bool:
             return False
         rows.sort(key=lambda r: (r["pct"] is None, -(r["pct"] or 0.0)))   # leaders first
         _cache.update(at=time.time(), rows=rows, src=src)
-        try:
-            from pathlib import Path
-            import json
-            cache_file = Path("data/.cache/last_sector_snap.json")
-            cache_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(cache_file, "w") as f:
-                json.dump({"rows": rows, "source": src}, f)
-        except Exception:
-            pass
+        if valid_sector_rows(rows):
+            try:
+                import json
+                _SECTOR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                tmp = _SECTOR_CACHE_PATH.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps({"rows": rows, "source": src}, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(_SECTOR_CACHE_PATH)
+            except Exception:
+                pass
         return True
     finally:
         _refreshing = False
@@ -216,21 +233,26 @@ def fetch_sector_snap(prefer_dhan: bool = False, session=None, blocking: bool = 
     import config
     # Off market hours: do not make API calls for sector snapshot unless blocking=True (tests/scripts)
     if not config.is_market_open() and not blocking:
-        if _cache["rows"] is None:
-            from pathlib import Path
-            import json
-            cache_file = Path("data/.cache/last_sector_snap.json")
-            if cache_file.exists():
+        # Off-hours: serve memory only if it looks real; else try disk; never serve pytest stubs.
+        rows = _cache["rows"]
+        src = _cache["src"]
+        if not valid_sector_rows(rows):
+            rows = src = None
+            if _SECTOR_CACHE_PATH.exists():
                 try:
-                    with open(cache_file, "r") as f:
-                        cached_data = json.load(f)
-                    if cached_data and "rows" in cached_data:
-                        _cache.update(at=time.time(), rows=cached_data["rows"], src=cached_data.get("source", "cached"))
+                    import json
+                    cached_data = json.loads(_SECTOR_CACHE_PATH.read_text(encoding="utf-8"))
+                    disk_rows = (cached_data or {}).get("rows")
+                    if valid_sector_rows(disk_rows):
+                        rows = disk_rows
+                        src = str((cached_data or {}).get("source") or "cached")
+                        _cache.update(at=time.time(), rows=rows, src=src)
                 except Exception:
                     pass
-        if _cache["rows"] is None:
-            return None
-        return {"rows": _cache["rows"], "source": _cache["src"], "weights_as_of": WEIGHTS_AS_OF}
+            if not valid_sector_rows(rows):
+                _cache.update(rows=None, src=None)
+                return None
+        return {"rows": rows, "source": src, "weights_as_of": WEIGHTS_AS_OF}
 
     stale = (time.time() - _cache["at"]) >= _TTL_S
     if blocking:

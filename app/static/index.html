@@ -667,6 +667,7 @@
                 <span class="alert-live-pulse-dot"></span>
                 <span id="alert-tape-timestamp" class="alert-tape-timestamp">--:--:-- IST</span>
                 <span id="alert-tape-badge" class="alert-tape-badge">STARTING</span>
+                <span id="alert-tape-llm-source" class="alert-tape-llm-source" title="Prose source">Heuristic</span>
               </div>
               <div class="alert-tape-message">
                 <div id="alert-tape-track" class="alert-tape-track">
@@ -2489,6 +2490,31 @@
             </div>
           </div>
 
+          <!-- Pre-Open News Digest (paragraph only; articles in Real-Time News) -->
+          <div id="pre-open-digest-card" class="mi-digest-card">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+              <div>
+                <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px;color:var(--spark)">
+                  Pre-Open News Digest
+                </div>
+                <div id="pre-open-digest-status" style="font-size:0.72rem;color:var(--ink-mute);margin-top:2px">
+                  Loading overnight read…
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <span id="pre-open-digest-source" style="font-size:0.66rem;color:var(--ink-mute);font-weight:700">Heuristic</span>
+                <span id="pre-open-digest-risk" class="sentinel-chip go" style="font-size:0.70rem">LOW</span>
+              </div>
+            </div>
+            <div id="pre-open-digest-narrative" style="font-size:0.84rem;color:var(--ink);line-height:1.55">
+              —
+            </div>
+            <div style="margin-top:8px;font-size:0.68rem;color:var(--ink-mute);line-height:1.4">
+              One overnight paragraph (US / Asia / geopolitics-trade / India). Linked articles stay in Real-Time News.
+              Grounded rewrite only when CUBERA_LLM digest is enabled — not a trade signal.
+            </div>
+          </div>
+
           <!-- 2-Column Workstation Layout -->
           <div class="mi-grid-2col">
             <!-- Left Column: Sector Performance Leaderboard -->
@@ -2523,8 +2549,8 @@
             <div class="repricer-card" style="margin-bottom:0">
               <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">📰 Real-Time Financial News &
                 Catalysts</div>
-              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Aggregated from Economic Times &
-                Times of India</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">Market movers only (global cues,
+                geopolitics, trade/macro, India sectors, Nifty heavyweights) · ET & LiveMint · titles link to source</div>
 
               <!-- Category Filter Pills -->
               <div id="news-category-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
@@ -2541,6 +2567,36 @@
                 style="margin-top:10px;background:var(--surface-2);border-radius:6px;padding:9px 12px;font-size:0.70rem;color:var(--ink-mute);line-height:1.45;border:1px solid var(--line)">
                 <b style="color:var(--ink-2)">Phase B confound control:</b> A headline burst with keyword-weighted
                 impact of 6 or more flags an outside shock. The positioning map does not override the headline.
+              </div>
+            </div>
+          </div>
+
+          <!-- Nifty-50 Heavyweights (separate from sector board) -->
+          <div class="mi-grid-2col" style="margin-top:14px">
+            <div class="repricer-card" style="margin-bottom:0">
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">Nifty 50 Heavyweight Performance
+                (~Index Weights)</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">
+                Top constituents by approximate Nifty weight · LTP % vs prior close · sector board above is unchanged
+              </div>
+              <div id="heavyweight-table-container" class="sector-table">
+                <div style="padding:12px;color:var(--ink-mute);font-size:0.78rem">Loading heavyweights…</div>
+              </div>
+              <div
+                style="margin-top:12px;font-size:0.68rem;color:var(--ink-mute);display:flex;justify-content:space-between">
+                <span id="heavyweight-source-label">Source: —</span>
+                <span id="heavyweight-weights-label">Weights as of: —</span>
+              </div>
+            </div>
+
+            <div class="repricer-card" style="margin-bottom:0">
+              <div class="eyebrow" style="font-size:0.74rem;letter-spacing:0.5px">Heavyweight Company News &amp;
+                Events</div>
+              <div style="font-size:0.72rem;color:var(--ink-mute);margin-bottom:10px">
+                Headlines tagged to these names (corporate / earnings / stock-specific) · global tape stays above
+              </div>
+              <div id="company-news-container" class="news-feed-scroll">
+                <div style="padding:12px;color:var(--ink-mute);font-size:0.78rem">No company headlines yet.</div>
               </div>
             </div>
           </div>
@@ -2954,6 +3010,34 @@
                 <option value="1.25">1.25x</option>
                 <option value="1.5">1.5x</option>
               </select>
+            </div>
+          </div>
+
+          <!-- Session Desk Ask (FAQ + free-form) -->
+          <div id="session-qa-panel" class="ladder-card" style="margin-bottom:14px;padding:14px 16px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">
+              <div>
+                <div style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">
+                  Session Desk Ask
+                </div>
+                <div style="font-size:0.9rem;font-weight:700;color:var(--ink);margin-top:2px">
+                  Grounded on this session’s book — you confirm
+                </div>
+              </div>
+              <div id="session-qa-meta" style="font-size:0.72rem;color:var(--ink-mute)"></div>
+            </div>
+            <div id="session-qa-faqs" style="display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 10px"></div>
+            <div style="display:flex;gap:8px;align-items:stretch">
+              <input id="session-qa-input" class="form-control" type="text"
+                placeholder="Ask about walls, stance, GO, catalysts…"
+                style="flex:1;min-width:0;font-size:0.85rem"
+                autocomplete="off" />
+              <button id="session-qa-ask-btn" class="btn btn-primary" style="font-size:0.78rem;white-space:nowrap"
+                type="button">Ask</button>
+            </div>
+            <div id="session-qa-thread" style="display:flex;flex-direction:column;gap:10px;margin-top:12px;max-height:280px;overflow-y:auto"></div>
+            <div style="font-size:0.68rem;color:var(--ink-mute);margin-top:10px">
+              Decision support from stamped session facts — you confirm; chat never stages orders.
             </div>
           </div>
 

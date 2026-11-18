@@ -771,6 +771,53 @@ def continuation_confirmed(
     return False
 
 
+def sentinel_spot_targets(
+    *,
+    side: str,
+    entry: float | None,
+    spot: float,
+    t1_pts: float | None,
+    t2_pts: float | None = None,
+    invalidation: float | None = None,
+) -> dict:
+    """Spot T1/T2/SL from a live Sentinel signal — never LTP×ratio fiction.
+
+    Ideas latch still owns premium ``t1``/``t2``/``sl``. Sentinel-led GO fills
+    ``spot_t*`` so the card is not blank when the Ideas publisher is dark.
+    """
+    side_u = str(side or "CE").upper()
+    bull = side_u == "CE"
+    try:
+        entry_f = float(entry) if entry is not None and float(entry) > 0 else float(spot or 0)
+    except (TypeError, ValueError):
+        entry_f = float(spot or 0)
+    if entry_f <= 0:
+        return {}
+    out: dict = {"source": "sentinel_spot", "unit": "spot", "entry_spot": round(entry_f, 1)}
+    try:
+        t1 = float(t1_pts) if t1_pts is not None else 0.0
+    except (TypeError, ValueError):
+        t1 = 0.0
+    if t1 > 0:
+        out["spot_t1"] = round(entry_f + t1 if bull else entry_f - t1, 1)
+        out["t1_pts"] = round(t1, 1)
+    try:
+        t2 = float(t2_pts) if t2_pts is not None else 0.0
+    except (TypeError, ValueError):
+        t2 = 0.0
+    if t2 > 0:
+        out["spot_t2"] = round(entry_f + t2 if bull else entry_f - t2, 1)
+        out["t2_pts"] = round(t2, 1)
+    try:
+        inv = float(invalidation) if invalidation is not None else 0.0
+    except (TypeError, ValueError):
+        inv = 0.0
+    if inv > 0:
+        out["spot_sl"] = round(inv, 1)
+    out["trail_rule"] = "spot_invalidation"
+    return out if ("spot_t1" in out or "spot_sl" in out) else {}
+
+
 def build_directional_decision(
     *,
     symbol: str,
@@ -800,6 +847,10 @@ def build_directional_decision(
     opening_watch: dict | None = None,
     catalyst_risk_level: str | None = None,
     market_open: bool = True,
+    sentinel_entry: float | None = None,
+    sentinel_target_1_pts: float | None = None,
+    sentinel_target_2_pts: float | None = None,
+    sentinel_invalidation: float | None = None,
 ) -> GoDecision:
     """Build directional GO from idea/sentinel confluence inputs.
 
@@ -807,6 +858,8 @@ def build_directional_decision(
     required for sentinel-led FIRE (risk + auto-stage).
     ``trigger_speed`` (e.g. MICRO_BURST) demotes unconfirmed CONT below FIRE.
     ``structural_map`` / ``opening_watch`` feed soft zone + auction evidence.
+    Sentinel spot targets (``sentinel_target_1_pts`` …) fill ``targets.spot_t*``
+    when Ideas latch is absent — never fabricate option premium multiples.
     """
     weights = dict(DIRECTIONAL_WEIGHTS)
     evidence: list[EvidenceItem] = []
@@ -1064,21 +1117,43 @@ def build_directional_decision(
             "confirming_types": list(confirming_types or []),
         }
         if ltp_fill > 0:
-            # Live premium only — no invented T1/T2/SL ratios (those come from Ideas/TE).
-            targets = {}
+            # Live premium + Sentinel spot levels — never invent LTP×ratio option T1/SL.
             wall_inval = (pw if side == "CE" else cw) or 0.0
+            try:
+                sig_inval = float(sentinel_invalidation) if sentinel_invalidation else 0.0
+            except (TypeError, ValueError):
+                sig_inval = 0.0
+            inval_level = sig_inval if sig_inval > 0 else float(wall_inval or 0)
             invalidation = {
-                "rule": f"Sentinel {sentinel_type} invalidation / spot through opposite gamma strike",
-                "spot_level": float(wall_inval) if wall_inval > 0 else 0.0,
+                "rule": (
+                    f"Sentinel {sentinel_type} invalidation"
+                    if sig_inval > 0
+                    else f"Sentinel {sentinel_type} invalidation / spot through opposite gamma strike"
+                ),
+                "spot_level": float(inval_level) if inval_level > 0 else 0.0,
             }
+            targets = sentinel_spot_targets(
+                side=side,
+                entry=sentinel_entry,
+                spot=spot,
+                t1_pts=sentinel_target_1_pts,
+                t2_pts=sentinel_target_2_pts,
+                invalidation=inval_level if inval_level > 0 else None,
+            )
             risk = {
                 "max_loss_inr": round(ltp_fill * float(lot_size), 0),
                 "credit_or_debit": -ltp_fill,
             }
-            thesis = (
-                f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f} filled "
-                "(no fabricated option targets)."
-            )
+            if targets.get("spot_t1"):
+                thesis = (
+                    f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f}; "
+                    f"spot T1 {targets['spot_t1']:.0f} (signal pts, not option premium)."
+                )
+            else:
+                thesis = (
+                    f"Sentinel {sentinel_type} — Ideas latch absent; live ATM premium ₹{ltp_fill:.1f} filled "
+                    "(spot targets unavailable on signal)."
+                )
         else:
             thesis = (
                 f"Sentinel {sentinel_type} without a Trade Ideas latch — "

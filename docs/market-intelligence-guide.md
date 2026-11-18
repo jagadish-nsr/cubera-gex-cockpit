@@ -1,6 +1,6 @@
 # 🧭 Market Intelligence: Sectorial Performance & News Sentiment Guide
 
-> **Module:** Market Intelligence Engine (Tab 5 · `analytics/market_intelligence.py`, `data/sectors.py`, `data/news.py`)  
+> **Module:** Market Intelligence Engine (Tab 5 · `analytics/market_intelligence.py`, `data/sectors.py`, `data/heavyweights.py`, `data/news.py`)  
 > **Market Microstructure:** Institutional Breadth Integration & Exogenous Catalyst Control (Phase B)  
 > **Applicable Indices:** NIFTY 50, BANK NIFTY, SENSEX  
 > **Terminal View:** Served directly inside Tab 5 or standalone at `/?view=market_intelligence_guide`  
@@ -47,7 +47,9 @@ The analytical engine categorizes intraday market structure into 5 distinct regi
 ## 3. Financial News Aggregation & Impact Scoring
 
 ### RSS News Pipeline
-- Sources: Economic Times (Markets & Economy) and Times of India (Top Stories).
+- Sources: Economic Times (Markets, Economy, Stocks) and LiveMint (Markets). General top-stories feeds (e.g. TOI) are omitted — they flooded the desk with non-market noise. Moneycontrol is omitted (host 403).
+- Each headline carries a source **URL** (`<link>`, else http(s) `<guid>`) for further reading.
+- **Market-mover gate**: only global cues, geopolitics, trade/macro policy, Indian sector tape, and Nifty-50 heavyweight headlines survive. Court awards, lifestyle, and local crime wire are dropped (token-aware — `award` ≠ `war`, `crashed` ≠ `market crash`).
 - Parsed via pure stdlib XML and cached for 5 minutes (`300s TTL`) to eliminate latency.
 - Fail-soft architecture: Network hiccups drop only the failing feed and never stall option chain calculations.
 
@@ -60,9 +62,22 @@ The analytical engine categorizes intraday market structure into 5 distinct regi
   - `Markets & Economy`: Broader market trends, indices, FII/DII institutional flows.
 - **Sentiment**: Keyword-scored as `🟢 BULLISH`, `🔴 BEARISH`, or `⚪ NEUTRAL`.
 - **Impact Scoring**: Weighted heuristic (3 = high shock, 2 = medium, 1 = normal).
+- **Entity tags**: Optional related Nifty heavyweights / sector labels (keyword map). Heuristic only.
 
 ### Phase B Confound Control
 Days with an aggregate fresh headline impact score $\ge 6$ or breaking shock catalysts are automatically flagged as **News-Dominated Days**. On these days the headline is the dominant fact. The positioning map does not override it.
+
+### Pre-Open News Digest
+- **One readable overnight paragraph** (US / Asia / geopolitics-trade / India), built through morning briefing and **sealed near cash pre-open**.
+- Not an article list — linked headlines stay in **Real-Time News & Catalysts**.
+- Overnight window: since prior cash close (~15:30 IST). Persisted under `data/journal/pre_open_digest_YYYY-MM-DD.json`.
+
+### Shared LLM prose (optional)
+- Shared client ([`analytics/llm_client.py`](../analytics/llm_client.py)) rewrites digest narrative and can polish alert-tape headline/drivers.
+- **Default provider: local Ollama** (`CUBERA_LLM_PROVIDER=ollama`, `OLLAMA_HOST=http://localhost:11434`, `OLLAMA_MODEL=…`). Optional `gemini` with `GEMINI_API_KEY`.
+- Ranking, mover gate, alert stance/grade/trigger/kill stay deterministic. Model sees only those facts.
+- Per-feature gates: `CUBERA_LLM`, `CUBERA_LLM_DIGEST`, `CUBERA_LLM_ALERT_TAPE`, `CUBERA_LLM_QA`. Fail-soft → heuristic text. UI shows Heuristic vs GenAI.
+- Never commit cloud API keys.
 
 ---
 
@@ -83,5 +98,8 @@ Positioned immediately below the Executive Telemetry header for instant glanceab
    - **News Catalyst Sentiment**: Sentiment label with aggregate impact score and count of fresh stories.
    - **Spot Move Alignment**: Verifies if spot direction is confirmed or desynced from sector breadth.
 3. **Actionable Trader Takeaways**: Specific tactical bullet points based on the synthesis.
-4. **Sector Performance Leaderboard**: Visual horizontal performance bars for all 11 sectors + benchmark broad indices (Midcap, Smallcap, Nifty 50) with last traded prices, percentage change, and weights.
-5. **Interactive Financial News Stream**: Filterable by category pills (`ALL`, `Energy & Crude`, `Macro & Policy`, etc.) with timestamps, age in minutes, sentiment tags, and impact scores.
+4. **Pre-Open News Digest**: One overnight paragraph (US / Asia / geo-trade / India); sealed near open. Articles are not listed here.
+5. **Sector Performance Leaderboard**: Visual horizontal performance bars for all 11 sectors + benchmark broad indices (Midcap, Smallcap, Nifty 50) with last traded prices, percentage change, and weights.
+6. **Real-Time News & Catalysts**: Filterable linked headlines (the article tape).
+7. **Nifty 50 Heavyweight Performance** (separate board): curated top constituents with hand `~` weights + Dhan `NSE_EQ` LTP/%. Sector board above is unchanged.
+8. **Heavyweight Company News & Events**: same RSS tape filtered to headlines tagged to those names (corporate / stock-specific). Global mover feed stays in #6.

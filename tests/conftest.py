@@ -6,6 +6,12 @@ import analytics.trade_ideas as ti
 
 
 @pytest.fixture(autouse=True)
+def disable_live_llm(monkeypatch):
+    """Keep unit tests off live Ollama/Gemini unless a test re-enables CUBERA_LLM."""
+    monkeypatch.setenv("CUBERA_LLM", "0")
+
+
+@pytest.fixture(autouse=True)
 def guard_live_recommendations_db(tmp_path, monkeypatch):
     """Safety guard: Never allow any unit test to touch or mutate data/journal/recommendations.db."""
     test_db = tmp_path / "suite_test_recommendations.db"

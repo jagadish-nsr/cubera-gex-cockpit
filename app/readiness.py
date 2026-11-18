@@ -35,6 +35,7 @@ MODE_OFF_SESSION = "OFF_SESSION"
 MODE_TOKEN_DEAD = "TOKEN_DEAD"
 MODE_FEED_DOWN = "FEED_DOWN"
 MODE_CHAIN_DEGRADED = "CHAIN_DEGRADED"
+MODE_BOOK_NSE_SCRAPE = "BOOK_NSE_SCRAPE"
 MODE_NOT_READY = "NOT_READY"
 
 
@@ -405,8 +406,11 @@ def _resolve_degrade_mode(
     if not feed.get("ok"):
         return MODE_FEED_DOWN
     any_degraded = any(c.get("degraded") for c in chains.values())
-    if any_degraded or nse.get("active") or "no_fresh_chain" in reasons:
+    if any_degraded or "no_fresh_chain" in reasons:
         return MODE_CHAIN_DEGRADED
+    # Fresh book on the NSE scrape path is a source warning, not a dark chain.
+    if nse.get("active"):
+        return MODE_BOOK_NSE_SCRAPE
     if reasons:
         return MODE_NOT_READY
     return MODE_OK
@@ -486,7 +490,10 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
         reasons.append(ingest.get("reason") or "ingest_heartbeat_stale")
     if not token.get("ok"):
         reasons.append(token.get("reason") or "token_dead")
-    if nse.get("active"):
+    # NSE scrape with a fresh chain is a source note on degrade_mode, not a
+    # readiness burn. Only fail ready when scrape is the only book *and*
+    # nothing is fresh.
+    if nse.get("active") and not any_chain_ok:
         reasons.append(nse.get("reason") or "nse_fallback")
 
     mode = _resolve_degrade_mode(

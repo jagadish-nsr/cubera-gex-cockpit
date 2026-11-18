@@ -27,9 +27,10 @@ def test_readiness_minute_increments_streak():
         "ready": False,
         "market_open": True,
         "reasons": ["no_fresh_chain"],
+        "degrade_mode": "CHAIN_DEGRADED",
         "probes": {"feed": {}, "ingest": {}, "chains": {}, "circuits": {}},
     }
-    with mock.patch("app.obs.event"):
+    with mock.patch("app.obs.event") as ev:
         for i in range(NOT_READY_STREAK_CRIT):
             # unique minutes
             roll = record_readiness_minute(
@@ -38,6 +39,11 @@ def test_readiness_minute_increments_streak():
             )
             assert roll["recorded"] is True
             assert roll["streak"] == i + 1
+        # Last call must journal degrade_mode for post-mortems.
+        kwargs = ev.call_args.kwargs if ev.call_args else {}
+        assert kwargs.get("degrade_mode") == "CHAIN_DEGRADED" or (
+            ev.call_args and "CHAIN_DEGRADED" in str(ev.call_args)
+        )
     assert not_ready_streak() == NOT_READY_STREAK_CRIT
 
 

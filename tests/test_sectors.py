@@ -93,15 +93,32 @@ def test_snap_sorts_leaders_first_and_parks_unknowns_last(monkeypatch):
     _reset()
 
 
-def test_snap_falls_back_to_dhan_and_never_raises(monkeypatch):
+def test_snap_falls_back_to_dhan_and_never_raises(monkeypatch, tmp_path):
     _reset()
+    monkeypatch.setattr(sec, "_SECTOR_CACHE_PATH", tmp_path / "last_sector_snap.json")
     monkeypatch.setattr(sec, "fetch_sectors_nse", lambda *a, **k: None)
     monkeypatch.setattr(sec, "fetch_sectors_dhan",
                         lambda *a, **k: [{"label": "A", "pct": 1.0, "last": 1, "group": "sector"}])
     assert sec.fetch_sector_snap(blocking=True)["source"] == "dhan"
+    assert not (tmp_path / "last_sector_snap.json").exists()  # stub must not hit disk
     _reset()
     monkeypatch.setattr(sec, "fetch_sectors_dhan", lambda *a, **k: None)
     assert sec.fetch_sector_snap(blocking=True) is None   # both dead → panel just doesn't render
+    _reset()
+
+
+def test_poisoned_disk_cache_is_rejected_off_hours(tmp_path, monkeypatch):
+    _reset()
+    poison = tmp_path / "last_sector_snap.json"
+    poison.write_text(
+        '{"rows": [{"label": "A", "pct": 1.0, "last": 1, "group": "sector", "weight": 30.0}],'
+        ' "source": "nse"}'
+    )
+    monkeypatch.setattr(sec, "_SECTOR_CACHE_PATH", poison)
+    import config
+    monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    assert sec.fetch_sector_snap() is None
+    assert sec.valid_sector_rows([{"label": "A", "pct": 1.0}]) is False
     _reset()
 
 
@@ -125,10 +142,11 @@ def test_weights_are_plausible_and_ordered():
     assert all(0 < v <= 40 for v in w.values())
 
 
-def test_snap_never_blocks_the_caller(monkeypatch):
+def test_snap_never_blocks_the_caller(monkeypatch, tmp_path):
     """The chain and futures pull are the load-bearing data — this context panel must never sit on
     the fetch path. A cold call returns immediately (None) and refreshes in the background."""
     _reset()
+    monkeypatch.setattr(sec, "_SECTOR_CACHE_PATH", tmp_path / "last_sector_snap.json")
     import time
     calls = []
 

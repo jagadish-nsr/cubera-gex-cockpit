@@ -330,6 +330,96 @@ def _risk_line(trigger: str, kill: str, *, watch: bool) -> str:
     return f"Trigger: {trigger} Kill: {kill}.{stop}".replace("..", ".")
 
 
+_FORBIDDEN_ALERT_PHRASES = (
+    "buy now", "sell now", "market order", "auto-exec", "auto exec",
+    "place order", "enter long", "enter short",
+)
+
+
+def _alert_rewrite_ok(alert: dict, headline: str, drivers: str) -> bool:
+    """Reject rewrites that drop stance/kill or invent execution language."""
+    if not headline or not drivers or len(drivers) < 20:
+        return False
+    low = f"{headline} {drivers}".lower()
+    if any(p in low for p in _FORBIDDEN_ALERT_PHRASES):
+        return False
+    stance = str(alert.get("stance") or "")
+    # Stance/kill stay on structured fields; rewrite must not contradict by claiming another stance.
+    other = {"STAY OUT", "CALL WATCH", "PUT WATCH"} - {stance}
+    if any(s.lower() in low for s in other):
+        return False
+    return True
+
+
+# Cache polished prose so cockpit-data polls don't re-hit Ollama every few seconds.
+_ALERT_LLM_CACHE: dict[str, tuple[float, dict]] = {}
+_ALERT_LLM_CACHE_TTL_S = 120.0
+
+
+def _alert_polish_cache_key(alert: dict) -> str:
+    return "|".join([
+        str(alert.get("scenario") or ""),
+        str(alert.get("stance") or ""),
+        str(alert.get("confidence") or ""),
+        str(alert.get("headline") or ""),
+        str(alert.get("drivers") or ""),
+        str(alert.get("zone") or ""),
+    ])
+
+
+def _maybe_llm_polish_alert(alert: dict) -> dict:
+    """Optional LLM polish of headline/drivers; fail-soft to template."""
+    if not isinstance(alert, dict):
+        return alert
+    alert = dict(alert)
+    alert.setdefault("text_source", "heuristic")
+    alert.setdefault("llm_model", None)
+    try:
+        from analytics.llm_client import complete_chat, llm_enabled, model_name
+        from analytics.llm_prompts import alert_tape_messages, parse_alert_tape_rewrite
+        if not llm_enabled("alert_tape"):
+            return alert
+        import time as _time
+        key = _alert_polish_cache_key(alert)
+        now = _time.time()
+        hit = _ALERT_LLM_CACHE.get(key)
+        if hit and (now - hit[0]) < _ALERT_LLM_CACHE_TTL_S:
+            cached = dict(hit[1])
+            # Keep live timestamp/badge/theme from this evaluation.
+            for k in ("timestamp", "badge", "theme", "outcome", "body", "risk",
+                      "action", "trigger", "kill", "through_pts", "signal_type",
+                      "signal_score"):
+                if k in alert:
+                    cached[k] = alert[k]
+            return cached
+        raw = complete_chat(
+            alert_tape_messages(alert),
+            purpose="alert_tape",
+            temperature=0.2,
+            max_tokens=320,
+            timeout_s=90.0,
+        )
+        parsed = parse_alert_tape_rewrite(raw or "")
+        if not parsed:
+            return alert
+        headline, drivers = parsed
+        if not _alert_rewrite_ok(alert, headline, drivers):
+            return alert
+        alert["headline"] = headline
+        alert["drivers"] = drivers
+        alert["diagnostics"] = drivers
+        alert["text_source"] = "genai"
+        alert["llm_model"] = model_name()
+        _ALERT_LLM_CACHE[key] = (now, dict(alert))
+        if len(_ALERT_LLM_CACHE) > 64:
+            # Drop oldest entries.
+            for old_key, _ in sorted(_ALERT_LLM_CACHE.items(), key=lambda kv: kv[1][0])[:16]:
+                _ALERT_LLM_CACHE.pop(old_key, None)
+        return alert
+    except Exception:  # noqa: BLE001
+        return alert
+
+
 def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | None:
     """Compose one alert-tape message from cockpit payload fields."""
     if not dash:
@@ -409,7 +499,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         drivers_full = _say(drivers, reason_bits)
         risk = _risk_line(trigger, kill, watch=watch)
         badge_out = f"{badge} · {confidence}"
-        return pack(
+        return _maybe_llm_polish_alert(pack(
             scenario=scenario,
             badge=badge_out,
             theme=theme,
@@ -425,7 +515,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             body=outcome,
             action=risk,
             diagnostics=drivers_full,
-        )
+        ))
 
     if is_morning:
         pm = dash.get("pre_market") or {}

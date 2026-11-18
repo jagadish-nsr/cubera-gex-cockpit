@@ -522,7 +522,7 @@
         const ts = Number(struct.target_spot).toLocaleString("en-IN", { maximumFractionDigits: 1 });
         const buyT = struct.target_buy_pts != null
           ? ` · long ${Number(struct.buy_strike).toFixed(0)} target ~₹${Number(struct.target_buy_pts).toFixed(1)}`
-          : "";
+          : " · long premium unpriced";
         const netT = struct.target_net_pts != null
           ? ` · vertical ~₹${Number(struct.target_net_pts).toFixed(1)}`
           : "";
@@ -1697,6 +1697,8 @@
       if (dm === "OK" && brief && brief.ready !== false) return MODES.OK;
       if (dm === "TOKEN_DEAD" || dm === "NOT_READY") return MODES.NOT_READY;
       if (dm === "FEED_DOWN" || dm === "CHAIN_DEGRADED") return MODES.DEGRADED;
+      // Fresh book on NSE scrape: ready stays true; do not paint loud DEGRADED.
+      if (dm === "BOOK_NSE_SCRAPE" && brief && brief.ready !== false) return MODES.OK;
       if (brief && brief.ready === false) return MODES.NOT_READY;
       return MODES.DEGRADED;
     }
@@ -3011,6 +3013,16 @@
     const risk = decision.risk || {};
     const tgt = decision.targets || {};
     const inval = decision.invalidation || {};
+    const goT1 = (tgt.t1 != null && Number(tgt.t1) > 0)
+      ? ("₹" + Number(tgt.t1).toFixed(1))
+      : (tgt.spot_t1 != null && Number(tgt.spot_t1) > 0
+        ? ("spot " + Number(tgt.spot_t1).toFixed(0))
+        : "—");
+    const goT2 = (tgt.t2 != null && Number(tgt.t2) > 0)
+      ? ("₹" + Number(tgt.t2).toFixed(1))
+      : (tgt.spot_t2 != null && Number(tgt.spot_t2) > 0
+        ? ("spot " + Number(tgt.spot_t2).toFixed(0))
+        : "—");
     const evidence = decision.evidence || [];
     const whyRows = evidence.map((e) => {
       const ok = e.pass ? `<span class="go-pass">PASS</span>` : `<span class="go-fail">FAIL</span>`;
@@ -3050,8 +3062,8 @@
         <div class="go-metric"><small>BEs lo / hi</small><b>${beLine}</b></div>
         <div class="go-metric"><small>Max loss</small><b>${maxLossLabel}</b></div>
         <div class="go-metric"><small>Max profit</small><b>${maxProfitLabel}</b></div>
-        <div class="go-metric"><small>T1</small><b>${tgt.t1 != null ? "₹" + Number(tgt.t1).toFixed(1) : "—"}</b></div>
-        <div class="go-metric"><small>T2</small><b>${tgt.t2 != null ? "₹" + Number(tgt.t2).toFixed(1) : "—"}</b></div>
+        <div class="go-metric"><small>T1</small><b>${goT1}</b></div>
+        <div class="go-metric"><small>T2</small><b>${goT2}</b></div>
         <div class="go-metric"><small>Spot inval</small><b>${inval.spot_level != null ? Number(inval.spot_level).toFixed(0) : "—"}</b></div>
         <div class="go-metric"><small>Trail</small><b>${tgt.trail_rule || "—"}</b></div>
         <div class="go-metric"><small>EV / touch</small><b>${tgt.ev != null ? Number(tgt.ev).toFixed(1) : "—"} / ${tgt.touch_p != null ? Number(tgt.touch_p).toFixed(2) : "—"}</b></div>
@@ -5545,7 +5557,11 @@
   }
 
   function updateMarketAlertTape(dash) {
-    const candidate = evaluateMarketAlertState(dash);
+    // Prefer server-composed alert (may include GenAI-polished headline/drivers).
+    const serverAlert = dash && dash.market_alert && typeof dash.market_alert === "object"
+      ? dash.market_alert
+      : null;
+    const candidate = serverAlert || evaluateMarketAlertState(dash);
     const container = document.getElementById("cockpit-alert-tape");
     if (!container || !candidate) return;
 
@@ -5575,9 +5591,20 @@
     if (tsEl) tsEl.textContent = alert.timestamp;
     const badgeEl = document.getElementById("alert-tape-badge");
     if (badgeEl) badgeEl.textContent = alert.badge;
+    const llmSrcEl = document.getElementById("alert-tape-llm-source");
+    if (llmSrcEl) {
+      const src = String(alert.text_source || "heuristic").toLowerCase();
+      const model = alert.llm_model ? ` · ${alert.llm_model}` : "";
+      const isGenai = src === "genai";
+      llmSrcEl.textContent = isGenai ? `GenAI${model}` : "Heuristic";
+      llmSrcEl.classList.toggle("is-genai", isGenai);
+      llmSrcEl.title = isGenai
+        ? `Headline/drivers polished by ${alert.llm_model || "LLM"} (stance/trigger/kill stay engine-owned)`
+        : "Deterministic alert prose (LLM off, failed, or rejected)";
+    }
 
     const track = document.getElementById("alert-tape-track");
-    const paintSig = `${alert.scenario}|${alert.theme}|${alert.outcome}|${alert.drivers}|${alert.risk}`;
+    const paintSig = `${alert.scenario}|${alert.theme}|${alert.outcome}|${alert.drivers}|${alert.risk}|${alert.text_source || ""}`;
     if (track && state.lastTapePaintSig !== paintSig) {
       state.lastTapePaintSig = paintSig;
       const tapeEsc = (value) => String(value || "")
@@ -6356,7 +6383,7 @@
             <div class="go-metric"><small>BEs lo / hi</small><b>${beLine}</b></div>
             <div class="go-metric"><small>Max loss / margin</small><b>${maxLoss}</b></div>
             <div class="go-metric"><small>Max profit</small><b>${maxProfit}</b></div>
-            <div class="go-metric"><small>T1</small><b>${tgt.t1 != null ? "₹" + Number(tgt.t1).toFixed(1) : "—"}</b></div>
+            <div class="go-metric"><small>T1</small><b>${(tgt.t1 != null && Number(tgt.t1) > 0) ? ("₹" + Number(tgt.t1).toFixed(1)) : ((tgt.spot_t1 != null && Number(tgt.spot_t1) > 0) ? ("spot " + Number(tgt.spot_t1).toFixed(0)) : "—")}</b></div>
             <div class="go-metric"><small>Spot inval</small><b>${(d.invalidation && d.invalidation.spot_level) != null ? Number(d.invalidation.spot_level).toFixed(0) : "—"}</b></div>
             ${ivRv != null ? `<div class="go-metric"><small>IV−RV</small><b>${ivRv}</b></div>` : ""}
             <div class="go-metric"><small>Trail</small><b>${tgt.trail_rule || "—"}</b></div>
@@ -8732,6 +8759,76 @@
     renderMarketNewsList();
   };
 
+  function _escapeHtml(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function _newsTitleHtml(title, url) {
+    const t = _escapeHtml(title);
+    const u = String(url || "").trim();
+    if (u.startsWith("http://") || u.startsWith("https://")) {
+      return `<a href="${_escapeHtml(u)}" target="_blank" rel="noopener noreferrer">${t}</a>`;
+    }
+    return t;
+  }
+
+  function _chipRow(sectors, stocks) {
+    const chips = [];
+    (sectors || []).forEach((s) => chips.push(`<span class="mi-digest-chip">${_escapeHtml(s)}</span>`));
+    (stocks || []).forEach((s) => chips.push(`<span class="mi-digest-chip">${_escapeHtml(s)}</span>`));
+    if (!chips.length) return "";
+    return `<div class="mi-digest-chips">${chips.join("")}</div>`;
+  }
+
+  function renderPreOpenDigest(digest, sessionPhase) {
+    const card = document.getElementById("pre-open-digest-card");
+    const statusEl = document.getElementById("pre-open-digest-status");
+    const riskEl = document.getElementById("pre-open-digest-risk");
+    const srcEl = document.getElementById("pre-open-digest-source");
+    const narrEl = document.getElementById("pre-open-digest-narrative");
+    if (!card || !statusEl || !narrEl) return;
+
+    const d = digest || {};
+    const phase = String(sessionPhase || "");
+    const preOpen = (
+      phase === "PRE_MARKET_SETUP" ||
+      phase === "PRE_MARKET_ENTRY" ||
+      phase === "PRE_MARKET_DISCOVERY"
+    );
+    card.classList.toggle("is-live-preopen", preOpen && !d.sealed);
+    card.classList.toggle("is-sealed", Boolean(d.sealed));
+
+    const win = d.window_label || "";
+    const asOf = d.as_of_ist || "";
+    if (d.sealed) {
+      statusEl.textContent = `Morning brief (sealed ${asOf || "—"}) · ${win}`;
+    } else if (preOpen) {
+      statusEl.textContent = `Pre-open read · ${win}${asOf ? " · as of " + asOf : ""}`;
+    } else {
+      statusEl.textContent = win ? `${win}${asOf ? " · as of " + asOf : ""}` : "Overnight read";
+    }
+
+    if (riskEl) {
+      const risk = String(d.catalyst_risk || "LOW");
+      riskEl.className = "sentinel-chip " + (
+        risk === "HIGH_SHOCK" ? "stop" : (risk === "MODERATE" ? "warn" : "go")
+      );
+      riskEl.textContent = risk.replace(/_/g, " ");
+    }
+
+    if (srcEl) {
+      const src = String(d.narrative_source || "heuristic").toLowerCase();
+      const model = d.llm_model ? ` · ${d.llm_model}` : "";
+      srcEl.textContent = src === "genai" ? `GenAI${model}` : "Heuristic";
+    }
+
+    narrEl.textContent = d.narrative || d.one_liner || "Overnight tape unavailable.";
+  }
+
   function renderMarketNewsList() {
     const newsContainer = document.getElementById("news-feed-container");
     if (!newsContainer) return;
@@ -8753,6 +8850,8 @@
       const freshBadge = h.is_fresh ? '<span style="color:var(--spark);font-weight:700;margin-left:5px">⚡ Fresh</span>' : '';
       const impactBadge = (h.impact && h.impact > 0) ? `<span style="background:var(--surface-3);color:var(--ink-2);padding:1px 6px;border-radius:3px;font-size:0.66rem;font-weight:700">Impact ${h.impact}</span>` : '';
       const pubTime = h.pub_time_ist ? `${h.pub_time_ist} (${h.age_min || 0}m ago)` : '';
+      const titleHtml = _newsTitleHtml(h.title, h.url);
+      const chips = _chipRow(h.related_sectors, h.related_stocks);
 
       return `
         <div class="news-card">
@@ -8767,7 +8866,8 @@
               ${impactBadge}
             </div>
           </div>
-          <div class="news-title">${h.title}</div>
+          <div class="news-title">${titleHtml}</div>
+          ${chips}
         </div>
       `;
     }).join('');
@@ -8910,6 +9010,87 @@
       if (srcEl && data.sector_source) srcEl.textContent = `Source: ${data.sector_source}`;
       const wtEl = document.getElementById("sector-weights-label");
       if (wtEl && data.weights_as_of) wtEl.textContent = `Weights as of: ${formatValidStamp(data.weights_as_of)}`;
+
+      // Nifty-50 Heavyweight Performance (separate board)
+      const hwContainer = document.getElementById("heavyweight-table-container");
+      if (hwContainer) {
+        const rows = Array.isArray(data.heavyweights) ? data.heavyweights : [];
+        if (!rows.length) {
+          hwContainer.innerHTML = `<div style="padding:12px;color:var(--ink-mute);font-size:0.78rem">Heavyweight tape unavailable (waiting on Dhan equity quotes or off-hours cache).</div>`;
+        } else {
+          hwContainer.innerHTML = rows.map(s => {
+            const pctVal = s.pct;
+            let pctStr = "—";
+            let barPct = 0.0;
+            let valColor = "var(--ink-mute)";
+            let isPos = true;
+            if (pctVal !== null && pctVal !== undefined) {
+              pctStr = (pctVal >= 0 ? "+" : "") + Number(pctVal).toFixed(2) + "%";
+              valColor = pctVal > 0 ? "var(--go)" : (pctVal < 0 ? "var(--stop)" : "var(--ink-mute)");
+              isPos = pctVal >= 0;
+              barPct = Math.min(50.0, Math.abs(pctVal) * 15.0);
+            }
+            const wtStr = (s.weight !== null && s.weight !== undefined) ? `~${Number(s.weight).toFixed(1)}%` : "";
+            const pxStr = s.last ? `₹${Number(s.last).toLocaleString('en-IN', { maximumFractionDigits: 1 })}` : "";
+            const barHtml = isPos
+              ? `<div class="sector-bar-fill pos" style="width:${barPct.toFixed(1)}%"></div>`
+              : `<div class="sector-bar-fill neg" style="width:${barPct.toFixed(1)}%"></div>`;
+            const sym = s.symbol ? `<span style="font-size:0.62rem;color:var(--ink-mute);margin-left:4px;font-family:var(--mono)">${s.symbol}</span>` : "";
+            return `
+              <div class="sector-row">
+                <div><b style="color:var(--ink)">${s.label || s.symbol || "—"}</b>${sym}<span style="font-size:0.66rem;color:var(--ink-mute);margin-left:4px">${wtStr}</span></div>
+                <div style="font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono)">${pxStr}</div>
+                <div class="sector-bar-track">${barHtml}</div>
+                <div style="font-weight:700;color:${valColor};text-align:right;font-family:var(--mono)">${pctStr}</div>
+              </div>
+            `;
+          }).join('');
+        }
+      }
+      const hwSrcEl = document.getElementById("heavyweight-source-label");
+      if (hwSrcEl) hwSrcEl.textContent = `Source: ${data.heavyweight_source || "—"}`;
+      const hwWtEl = document.getElementById("heavyweight-weights-label");
+      if (hwWtEl && data.heavyweight_weights_as_of) {
+        hwWtEl.textContent = `Weights as of: ${formatValidStamp(data.heavyweight_weights_as_of)}`;
+      }
+
+      // Company / corporate news for heavyweights only
+      const coNewsEl = document.getElementById("company-news-container");
+      if (coNewsEl) {
+        const coNews = Array.isArray(data.company_news) ? data.company_news : [];
+        if (!coNews.length) {
+          coNewsEl.innerHTML = `<div style="padding:16px;text-align:center;color:var(--ink-mute);font-size:0.78rem">No heavyweight-tagged headlines in the current tape.</div>`;
+        } else {
+          coNewsEl.innerHTML = coNews.map(h => {
+            const sentCls = h.sentiment === "BULLISH" ? "bull" : (h.sentiment === "BEARISH" ? "bear" : "neutral");
+            const freshBadge = h.is_fresh ? '<span style="color:var(--spark);font-weight:700;margin-left:5px">⚡ Fresh</span>' : '';
+            const impactBadge = (h.impact && h.impact > 0) ? `<span style="background:var(--surface-3);color:var(--ink-2);padding:1px 6px;border-radius:3px;font-size:0.66rem;font-weight:700">Impact ${h.impact}</span>` : '';
+            const pubTime = h.pub_time_ist ? `${h.pub_time_ist} (${h.age_min || 0}m ago)` : '';
+            const titleHtml = _newsTitleHtml(h.title, h.url);
+            const chips = _chipRow(h.related_sectors, h.matched_heavyweights || h.related_stocks);
+            return `
+              <div class="news-card">
+                <div class="news-meta">
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <span class="news-chip ${sentCls}">${h.sentiment || "NEUTRAL"}</span>
+                    <span style="color:var(--ink-mute);font-family:var(--mono)">${pubTime}</span>
+                    ${freshBadge}
+                  </div>
+                  <div style="display:flex;align-items:center;gap:6px">
+                    <span style="font-size:0.68rem;color:var(--ink-mute)">${h.category || ''}</span>
+                    ${impactBadge}
+                  </div>
+                </div>
+                <div class="news-title">${titleHtml}</div>
+                ${chips}
+              </div>
+            `;
+          }).join('');
+        }
+      }
+
+      // Pre-Open Digest (overnight paragraph; articles stay in Real-Time News)
+      renderPreOpenDigest(data.pre_open_digest, data.session_phase);
 
       // News Stream Headlines & Categories
       state.intelHeadlines = data.news_headlines || [];
@@ -9341,9 +9522,145 @@
 
   state.commentaryFilter = "ALL";
   state.commentaryData = null;
+  state.sessionQaFaqs = null;
+  state.sessionQaThread = [];
+  state.sessionQaBusy = false;
+
+  function _sessionQaEscape(s) {
+    return String(s ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderSessionQaThread() {
+    const thread = document.getElementById("session-qa-thread");
+    const meta = document.getElementById("session-qa-meta");
+    if (!thread) return;
+    const rows = state.sessionQaThread || [];
+    if (!rows.length) {
+      thread.innerHTML = '<div style="font-size:0.78rem;color:var(--ink-mute)">Pick an FAQ chip or type a question about this session.</div>';
+      if (meta) meta.textContent = "";
+      return;
+    }
+    thread.innerHTML = rows.map((r) => {
+      if (r.role === "user") {
+        return `<div style="align-self:flex-end;max-width:92%;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:0.82rem">${_sessionQaEscape(r.text)}</div>`;
+      }
+      const badge = r.source === "genai" ? "GenAI" : (r.source === "refuse" ? "Refuse" : "Heuristic");
+      const badgeColor = r.source === "genai" ? "var(--spark)" : (r.source === "refuse" ? "var(--stop)" : "var(--ink-mute)");
+      return `<div style="align-self:flex-start;max-width:96%;background:rgba(0,0,0,0.18);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px;font-size:0.68rem;color:var(--ink-mute)">
+          <span style="font-weight:800;color:${badgeColor}">${badge}</span>
+          ${r.faq_id ? `<span>FAQ · ${_sessionQaEscape(r.faq_id)}</span>` : ""}
+          ${r.model ? `<span>${_sessionQaEscape(r.model)}</span>` : ""}
+          ${r.context_as_of ? `<span>as-of ${_sessionQaEscape(r.context_as_of)}</span>` : ""}
+        </div>
+        <div style="font-size:0.82rem;line-height:1.5;color:var(--ink);white-space:pre-wrap">${_sessionQaEscape(r.text)}</div>
+      </div>`;
+    }).join("");
+    thread.scrollTop = thread.scrollHeight;
+    const last = [...rows].reverse().find((r) => r.role === "assistant");
+    if (meta && last) {
+      meta.textContent = `${last.source || ""}${last.context_as_of ? " · " + last.context_as_of : ""}`;
+    }
+  }
+
+  async function ensureSessionQaFaqs() {
+    const host = document.getElementById("session-qa-faqs");
+    if (!host) return;
+    if (!state.sessionQaFaqs) {
+      try {
+        const res = await fetch("/api/session-qa/faqs");
+        const data = await res.json().catch(() => ({}));
+        state.sessionQaFaqs = Array.isArray(data.faqs) ? data.faqs : [];
+      } catch (e) {
+        console.warn("session-qa faqs:", e);
+        state.sessionQaFaqs = [];
+      }
+    }
+    host.innerHTML = (state.sessionQaFaqs || []).map((f) =>
+      `<button type="button" class="btn btn-secondary session-qa-chip" data-faq-id="${_sessionQaEscape(f.id)}"
+        style="font-size:0.7rem;padding:4px 9px">${_sessionQaEscape(f.label)}</button>`
+    ).join("");
+    host.querySelectorAll(".session-qa-chip").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-faq-id");
+        const faq = (state.sessionQaFaqs || []).find((x) => x.id === id);
+        askSessionQa({ faq_id: id, question: faq ? faq.question : "" });
+      });
+    });
+  }
+
+  async function askSessionQa({ question, faq_id } = {}) {
+    if (state.sessionQaBusy) return;
+    const input = document.getElementById("session-qa-input");
+    const q = (question != null ? String(question) : (input ? input.value : "")).trim();
+    if (!q && !faq_id) return;
+    state.sessionQaBusy = true;
+    const askBtn = document.getElementById("session-qa-ask-btn");
+    if (askBtn) askBtn.disabled = true;
+    const displayQ = q || (faq_id ? `FAQ: ${faq_id}` : "…");
+    state.sessionQaThread.push({ role: "user", text: displayQ });
+    renderSessionQaThread();
+    if (input && question == null) input.value = "";
+    try {
+      const history = (state.sessionQaThread || [])
+        .filter((r) => r.role === "user" || r.role === "assistant")
+        .slice(-6)
+        .map((r) => ({ role: r.role, content: r.text }));
+      // Drop the just-pushed user turn from history echo (API gets current question).
+      if (history.length && history[history.length - 1].role === "user") history.pop();
+      const res = await fetch("/api/session-qa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: (state.symbol || "NIFTY").toUpperCase(),
+          question: q || undefined,
+          faq_id: faq_id || undefined,
+          history,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.sessionQaThread.push({
+          role: "assistant",
+          text: data.detail || data.error || `Ask failed (${res.status})`,
+          source: "refuse",
+        });
+      } else {
+        state.sessionQaThread.push({
+          role: "assistant",
+          text: data.answer || "(empty)",
+          source: data.source || "heuristic",
+          faq_id: data.faq_id || null,
+          model: data.model || null,
+          context_as_of: data.context_as_of || null,
+        });
+      }
+      if (state.sessionQaThread.length > 24) {
+        state.sessionQaThread = state.sessionQaThread.slice(-24);
+      }
+    } catch (e) {
+      state.sessionQaThread.push({
+        role: "assistant",
+        text: e.message || "network error",
+        source: "refuse",
+      });
+    } finally {
+      state.sessionQaBusy = false;
+      if (askBtn) askBtn.disabled = false;
+      renderSessionQaThread();
+    }
+  }
+
+  window.askSessionQa = askSessionQa;
 
   async function loadCommentary() {
     try {
+      ensureSessionQaFaqs();
+      renderSessionQaThread();
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/session-commentary?symbol=${requestedSym}`);
       const data = await res.json().catch(() => ({}));
@@ -10111,6 +10428,21 @@
         if (speedSel) utterance.rate = parseFloat(speedSel.value);
         state.speechSynth.speak(utterance);
         showToast("Broadcasting commentary audio...", "🎙️");
+      });
+    }
+
+    // Session Desk Ask
+    const btnSessionQa = document.getElementById("session-qa-ask-btn");
+    if (btnSessionQa) {
+      btnSessionQa.addEventListener("click", () => askSessionQa());
+    }
+    const sessionQaInput = document.getElementById("session-qa-input");
+    if (sessionQaInput) {
+      sessionQaInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          askSessionQa();
+        }
       });
     }
 

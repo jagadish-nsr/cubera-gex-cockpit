@@ -55,6 +55,9 @@ class NewsItem:
     category: str = "Markets & Economy"
     sentiment: str = "NEUTRAL"
     is_fresh: bool = False
+    url: str = ""
+    related_sectors: list[str] = field(default_factory=list)
+    related_stocks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -261,6 +264,12 @@ def analyze_news(news_data: dict | None) -> NewsIntelligence:
 
     for h in raw_hls:
         if isinstance(h, dict):
+            rel_sec = h.get("related_sectors") or []
+            rel_stk = h.get("related_stocks") or []
+            if not isinstance(rel_sec, list):
+                rel_sec = []
+            if not isinstance(rel_stk, list):
+                rel_stk = []
             item = NewsItem(
                 title=str(h.get("title", "")),
                 pub_time_ist=str(h.get("pub_time_ist", "")),
@@ -270,6 +279,9 @@ def analyze_news(news_data: dict | None) -> NewsIntelligence:
                 category=str(h.get("category", "Markets & Economy")),
                 sentiment=str(h.get("sentiment", "NEUTRAL")),
                 is_fresh=bool(h.get("is_fresh", False)),
+                url=str(h.get("url", "") or ""),
+                related_sectors=[str(x) for x in rel_sec],
+                related_stocks=[str(x) for x in rel_stk],
             )
             news_items.append(item)
             sent = item.sentiment if item.sentiment in sent_counts else "NEUTRAL"

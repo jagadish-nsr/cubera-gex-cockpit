@@ -349,13 +349,40 @@ def test_sentinel_led_can_fire_when_ideas_empty_and_premium_filled():
         oi_ts="2026-11-12T11:06:00+05:30",
         chain_ok=True,
         chain_ltp=95.0,
+        sentinel_entry=82100.0,
+        sentinel_target_1_pts=80.0,
+        sentinel_target_2_pts=140.0,
+        sentinel_invalidation=82250.0,
     )
     assert d.state == "FIRE"
     assert d.strategy_key == "ABSORPTION_BEAR"
     assert d.contracts and d.contracts[0].ltp == 95.0
     assert float(d.risk.get("max_loss_inr") or 0) > 0
-    assert d.targets == {} or not d.targets.get("t1")  # no fabricated LTP×ratio targets
+    assert not d.targets.get("t1")  # no fabricated LTP×ratio premium targets
+    assert d.targets.get("source") == "sentinel_spot"
+    assert d.targets.get("spot_t1") == 82020.0  # entry − 80 for PE
+    assert d.targets.get("spot_sl") == 82250.0
+    assert d.invalidation.get("spot_level") == 82250.0
     assert "Ideas latch absent" in d.thesis or "sentinel" in d.thesis.lower()
+
+
+def test_sentinel_spot_targets_helper_is_hand_checkable():
+    from analytics.go_desk import sentinel_spot_targets
+
+    pe = sentinel_spot_targets(
+        side="PE", entry=62000.0, spot=61950.0, t1_pts=100.0, t2_pts=200.0, invalidation=62150.0,
+    )
+    assert pe["spot_t1"] == 61900.0
+    assert pe["spot_t2"] == 61800.0
+    assert pe["spot_sl"] == 62150.0
+    assert "t1" not in pe
+    ce = sentinel_spot_targets(
+        side="CE", entry=25200.0, spot=25210.0, t1_pts=50.0, invalidation=25150.0,
+    )
+    assert ce["spot_t1"] == 25250.0
+    assert ce["spot_sl"] == 25150.0
+    empty = sentinel_spot_targets(side="CE", entry=0.0, spot=0.0, t1_pts=50.0)
+    assert empty == {}
 
 
 def test_sentinel_led_stays_scout_without_premium():

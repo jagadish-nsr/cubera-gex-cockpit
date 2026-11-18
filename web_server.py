@@ -24,7 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 import pandas as pd
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -4366,6 +4366,10 @@ def _go_sentinel_context(sym: str) -> dict:
             "tape_ok": True,
             "recent_types": [],
             "trigger_speed": None,
+            "entry_price": None,
+            "target_1_pts": None,
+            "target_2_pts": None,
+            "invalidation_level": None,
         }
     # Prefer confirmed 1m bars over MICRO_BURST when scores tie — micro is SCOUT-only.
     def _sig_rank(s) -> tuple:
@@ -4409,6 +4413,14 @@ def _go_sentinel_context(sym: str) -> dict:
         for s in sigs
         if float(getattr(s, "score", 0) or 0) >= 70
     )
+    def _sig_float(name: str) -> float | None:
+        try:
+            v = getattr(best, name, None)
+            f = float(v) if v is not None else 0.0
+            return f if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+
     return {
         "score": score,
         "type": typ or None,
@@ -4420,6 +4432,10 @@ def _go_sentinel_context(sym: str) -> dict:
         "break_ok": bool(break_ok),
         "recent_types": recent_types,
         "trigger_speed": trigger_speed,
+        "entry_price": _sig_float("entry_price"),
+        "target_1_pts": _sig_float("target_1_pts"),
+        "target_2_pts": _sig_float("target_2_pts"),
+        "invalidation_level": _sig_float("invalidation_level"),
     }
 
 
@@ -4901,6 +4917,10 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             opening_watch=opening_pack.get("opening_watch"),
             catalyst_risk_level=opening_pack.get("catalyst_risk_level"),
             market_open=bool(opening_pack.get("market_open", True)),
+            sentinel_entry=tape.get("entry_price"),
+            sentinel_target_1_pts=tape.get("target_1_pts"),
+            sentinel_target_2_pts=tape.get("target_2_pts"),
+            sentinel_invalidation=tape.get("invalidation_level"),
         )
         # Refill leg LTP from the live chain at the final (possibly nudged) strike.
         try:
@@ -6563,15 +6583,22 @@ async def get_signal_efficiency(
 
 @app.get("/api/market-intel")
 async def get_market_intel(symbol: Optional[str] = None):
-    """Market Intelligence Tab: Macro verdict, 4 KPIs, Actionable Trader Takeaways, Sector leaderboard, Filterable news feed."""
+    """Market Intelligence Tab: Macro verdict, Pre-Open Digest, sectors, heavyweights, news."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     try:
         from data.sectors import fetch_sector_snap
+        from data.heavyweights import fetch_heavyweight_snap, filter_heavyweight_news
         from data.news import fetch_news
+        from data.pre_post_market import get_current_session_phase
         from analytics.market_intelligence import compute_market_intelligence
+        from analytics.pre_open_digest import enrich_headlines_with_tags, resolve_pre_open_digest
 
         sec_snap = fetch_sector_snap()
+        hw_snap = fetch_heavyweight_snap()
         news_snap = fetch_news()
+        if news_snap and isinstance(news_snap, dict):
+            news_snap = dict(news_snap)
+            news_snap["headlines"] = enrich_headlines_with_tags(news_snap.get("headlines") or [])
 
         # Compute authentic spot change pct from dashboard day_ohlc / levels
         dash = await _aload_active_dashboard(sym, "weekly")
@@ -6588,6 +6615,11 @@ async def get_market_intel(symbol: Optional[str] = None):
         intel = compute_market_intelligence(sec_snap, news_snap, spot_chg_pct=spot_chg)
         sec = intel.sector
         news = intel.news
+
+        phase_code, _, _ = get_current_session_phase()
+        pre_open_digest = resolve_pre_open_digest(
+            news_snap, sec_snap, session_phase=phase_code,
+        )
 
         # Risk chip
         risk_chip_cls = "stop" if news.catalyst_risk_level == "HIGH_SHOCK" else ("warn" if news.catalyst_risk_level == "MODERATE" else "go")
@@ -6616,17 +6648,29 @@ async def get_market_intel(symbol: Optional[str] = None):
         headlines = [
             {
                 "title": h.title,
+                "url": h.url,
                 "pub_time_ist": h.pub_time_ist,
                 "age_min": h.age_min,
                 "impact": h.impact,
                 "category": h.category,
                 "sentiment": h.sentiment,
                 "is_fresh": h.is_fresh,
+                "related_sectors": list(h.related_sectors or []),
+                "related_stocks": list(h.related_stocks or []),
             }
             for h in news.headlines
         ]
 
         categories = ["ALL"] + sorted(list({h.category for h in news.headlines if h.category}))
+
+        hw_rows = []
+        hw_source = None
+        hw_weights_as_of = None
+        if hw_snap and isinstance(hw_snap, dict):
+            hw_rows = list(hw_snap.get("rows") or [])
+            hw_source = str(hw_snap.get("source") or "").upper() or None
+            hw_weights_as_of = hw_snap.get("weights_as_of")
+        company_news = filter_heavyweight_news(headlines)
 
         breadth_color = "var(--go)" if sec.breadth_pct >= 60 else ("var(--stop)" if sec.breadth_pct <= 40 else "var(--ink-mute)")
         contrib_color = "var(--go)" if sec.weighted_contribution > 0 else ("var(--stop)" if sec.weighted_contribution < 0 else "var(--ink-mute)")
@@ -6635,6 +6679,7 @@ async def get_market_intel(symbol: Optional[str] = None):
 
         return {
             "symbol": sym,
+            "session_phase": phase_code,
             "macro_verdict": intel.macro_verdict,
             "executive_narrative": intel.executive_narrative,
             "risk_label": risk_label,
@@ -6642,6 +6687,7 @@ async def get_market_intel(symbol: Optional[str] = None):
             "catalyst_risk_level": news.catalyst_risk_level,
             "alignment": intel.alignment,
             "actionable_points": intel.actionable_points,
+            "pre_open_digest": pre_open_digest,
             "kpis": {
                 "sector_breadth": {
                     "ratio_str": sec.breadth_ratio_str,
@@ -6668,6 +6714,10 @@ async def get_market_intel(symbol: Optional[str] = None):
             "broad_indices": broad_indices,
             "sector_source": sec.source.upper(),
             "weights_as_of": sec.weights_as_of,
+            "heavyweights": hw_rows,
+            "heavyweight_source": hw_source,
+            "heavyweight_weights_as_of": hw_weights_as_of,
+            "company_news": company_news,
             "news_headlines": headlines,
             "news_categories": categories,
         }
@@ -6675,6 +6725,7 @@ async def get_market_intel(symbol: Optional[str] = None):
         log.exception("Error in get_market_intel: %s", e)
         return {
             "symbol": sym,
+            "session_phase": None,
             "macro_verdict": "⚖️ Balanced Sector Dispersion: 9/11 Green Amid Bearish Catalysts",
             "executive_narrative": "Sector breadth and the news tape. Gamma strikes are a concentration map, not a floor or a ceiling.",
             "risk_label": "🟢 LOW EXOGENOUS RISK",
@@ -6686,6 +6737,22 @@ async def get_market_intel(symbol: Optional[str] = None):
                 "📊 Primary sector driver today is Auto (+1.15%).",
                 "🗞️ Dominant news themes: Markets & Economy, Corporate & Earnings.",
             ],
+            "pre_open_digest": {
+                "status": "UNAVAILABLE",
+                "sealed": False,
+                "narrative": "Pre-open digest unavailable.",
+                "one_liner": "Pre-open digest unavailable.",
+                "narrative_source": "heuristic",
+                "llm_model": None,
+                "top_events": [],
+                "sections": [],
+                "sector_drivers": [],
+                "window_label": "",
+                "as_of_ist": "",
+                "catalyst_risk": "LOW",
+                "event_count": 0,
+                "overnight_impact": 0,
+            },
             "kpis": {
                 "sector_breadth": {"ratio_str": "9/11 Green", "sub": "82% Green (Broad Advance)", "color": "var(--go)"},
                 "weighted_contrib": {"val_str": "+0.48%", "sub": "Rotation: Cyclical Leadership", "color": "var(--go)"},
@@ -6696,6 +6763,10 @@ async def get_market_intel(symbol: Optional[str] = None):
             "broad_indices": [],
             "sector_source": "NSE",
             "weights_as_of": "2025-07",
+            "heavyweights": [],
+            "heavyweight_source": None,
+            "heavyweight_weights_as_of": None,
+            "company_news": [],
             "news_headlines": [],
             "news_categories": ["ALL"],
         }
@@ -7413,6 +7484,50 @@ def _next_session_levels(call_wall, put_wall):
     if not call_wall or not put_wall:
         return None
     return f"{call_wall:,.0f} call-gamma / {put_wall:,.0f} put-gamma"
+
+
+@app.get("/api/session-qa/faqs")
+async def get_session_qa_faqs():
+    """Curated Session Desk FAQ chips (stable ids + labels)."""
+    from analytics.session_qa import list_session_faqs
+    return {"faqs": list_session_faqs()}
+
+
+@app.post("/api/session-qa")
+async def post_session_qa(request: Request):
+    """Grounded Session Desk ask: FAQ deterministic-first, free-form via local LLM."""
+    from analytics.session_qa import (
+        acquire_qa_slot,
+        ask_session_qa,
+        release_qa_slot,
+    )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = str(body.get("symbol") or _ACTIVE_STATE.get("symbol") or "NIFTY").upper()
+    question = body.get("question")
+    faq_id = body.get("faq_id")
+    history = body.get("history") if isinstance(body.get("history"), list) else None
+
+    ok, reason = acquire_qa_slot(sym)
+    if not ok:
+        raise HTTPException(status_code=429, detail=reason)
+    try:
+        # Offload blocking Ollama / gather work from the event loop.
+        result = await asyncio.to_thread(
+            ask_session_qa,
+            sym,
+            question=str(question) if question is not None else None,
+            faq_id=str(faq_id) if faq_id else None,
+            history=history,
+        )
+        return result
+    finally:
+        release_qa_slot(sym)
 
 
 @app.get("/api/session-commentary")
