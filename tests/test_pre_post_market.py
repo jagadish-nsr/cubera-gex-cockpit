@@ -565,6 +565,16 @@ class TestPrePostMarket(unittest.TestCase):
         self.assertIn("location only", sx_flat["briefing"])
         self.assertNotEqual(sx_flat["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
 
+        # 18-Nov Nifty shape: open below shared CW=PW must not invent CASCADE.
+        nf_shared = classify_opening_gap(
+            gap_pts=-64.25, gap_pct=-0.25, spot=25323.15,
+            call_wall=25400.0, put_wall=25400.0, flip=25387.4,
+        )
+        self.assertEqual(nf_shared["regime"], "PUT_WALL_BREAKDOWN_TEST")
+        self.assertIn("SHARED", nf_shared["badge"])
+        self.assertEqual(nf_shared["favored_play"], "WATCH THE SHARED GAMMA STRIKE")
+        self.assertNotEqual(nf_shared["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
+
         # 8. Gap up above the balance, still under the call strike. Not a fade.
         gup_res = classify_opening_gap(gap_pts=100.0, gap_pct=0.45, spot=22550.0, call_wall=22700.0, put_wall=22300.0, flip=22450.0)
         self.assertEqual(gup_res["regime"], "GAP_UP_INTO_POS_GAMMA")

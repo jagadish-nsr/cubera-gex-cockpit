@@ -423,6 +423,14 @@ def build_pre_open_watch(
     fav_u = favored.upper()
     if "MAP ONLY" in fav_u or "NO FADE" in fav_u or "NO BOUNCE" in fav_u or "NO BOOK" in fav_u:
         allow_structure = False
+    # Equal CW/PW (shared gamma): location only — never a CE/PE debit card.
+    shared_gamma = cw > 0 and pw > 0 and abs(cw - pw) < 1.0
+    if shared_gamma:
+        allow_structure = False
+        side_hint = "NONE"
+        if regime in _CE_STRUCTURE_REGIMES | _PE_STRUCTURE_REGIMES:
+            title = "Shared gamma strike — map only"
+            favored = "WATCH THE SHARED GAMMA STRIKE"
     trigger, invalidation = _trigger_invalidation(
         regime, open_px=open_px, cw=cw, pw=pw, flip=flip, prev=prev,
     )
@@ -451,6 +459,26 @@ def build_pre_open_watch(
             "Confirm only after a post-09:15 hold/fail. Do not stage on the auction print alone."
         )
 
+    caution_bits = [
+        "No auto-execution. MAP ONLY regimes never invent a fade/bounce structure.",
+        "Short strike (if any) sits beyond the gamma concentration.",
+        "The 5m high/low is an IV noise estimate, not a target or stop.",
+    ]
+    if shared_gamma:
+        caution_bits.append(
+            "Call and put gamma share one strike — map location only, not a squeeze/cascade structure."
+        )
+    if structure is not None:
+        priced = str(structure.get("premium_note") or "") == "priced"
+        structure["structure_ready"] = bool(priced)
+        if not priced:
+            caution_bits.append(
+                "Structure strikes are mapped but ATM IV was missing — premiums unpriced; "
+                "not a ready debit card until IV/chain prices print."
+            )
+            if "unpriced" not in title.lower():
+                title = f"{title} · premiums unpriced"
+
     watch = PreOpenWatch(
         status=status,
         symbol=sym,
@@ -461,11 +489,7 @@ def build_pre_open_watch(
         trigger=trigger,
         invalidation=invalidation,
         confirm_after=confirm_after,
-        caution=(
-            "No auto-execution. MAP ONLY regimes never invent a fade/bounce structure. "
-            "Short strike (if any) sits beyond the gamma concentration. "
-            "The 5m high/low is an IV noise estimate, not a target or stop."
-        ),
+        caution=" ".join(caution_bits),
         structure=structure,
         first_5m_estimate=first_5m,
         open_txt=_inr(open_px),
@@ -477,6 +501,7 @@ def build_pre_open_watch(
             "prev_close": prev,
             "gap_pts": float(pm.get("gap_pts") or 0),
             "gap_pct": float(pm.get("gap_pct") or 0),
+            "shared_gamma": shared_gamma,
         },
     )
     return watch.to_dict()

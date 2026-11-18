@@ -1459,8 +1459,10 @@ def classify_opening_gap(
     at_call = call_wall > 0 and (call_wall - 15.0) <= spot < (call_wall + 10.0)
     through_put = put_wall > 0 and spot <= put_wall - 10.0
     at_put = put_wall > 0 and (put_wall - 10.0) < spot <= (put_wall + 15.0)
+    # Same strike for call and put gamma — GO soft-flags this; never invent squeeze/cascade.
+    shared_gamma = call_wall > 0 and put_wall > 0 and abs(call_wall - put_wall) < 1.0
 
-    if through_call and gap_pct >= 0.15:
+    if through_call and gap_pct >= 0.15 and not shared_gamma:
         regime = "CALL_WALL_BREACH_SQUEEZE"
         badge = "🚀 OPEN ABOVE CALL-GAMMA STRIKE"
         color = "var(--go)"
@@ -1469,16 +1471,23 @@ def classify_opening_gap(
             f"That is a location on the book ({book}; balance {flip_txt}). It is not a dealer squeeze."
         )
         favored_play = "WATCH HOLD ABOVE CALL STRIKE"
-    elif at_call:
+    elif at_call or (through_call and shared_gamma and gap_pct >= 0.15):
         regime = "SHORT_GAMMA_WALL_TEST"
-        badge = "🚨 AT CALL-GAMMA STRIKE"
+        badge = "⚖️ SHARED GAMMA STRIKE" if shared_gamma else "🚨 AT CALL-GAMMA STRIKE"
         color = "var(--warn)"
-        briefing = (
-            f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
-            f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
-        )
-        favored_play = "WATCH THE CALL STRIKE"
-    elif through_put and gap_pct <= -0.15:
+        if shared_gamma:
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} vs shared call/put-gamma ₹{call_wall:,.0f}. "
+                f"Book is {book} (balance {flip_txt}). One strike is not a squeeze or a cascade."
+            )
+            favored_play = "WATCH THE SHARED GAMMA STRIKE"
+        else:
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
+                f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
+            )
+            favored_play = "WATCH THE CALL STRIKE"
+    elif through_put and gap_pct <= -0.15 and not shared_gamma:
         regime = "PUT_WALL_BREAKDOWN_CASCADE"
         badge = "🔴 OPEN BELOW PUT-GAMMA STRIKE"
         color = "var(--stop)"
@@ -1487,15 +1496,22 @@ def classify_opening_gap(
             f"Book is {book} (balance {flip_txt}). It is not a cascade and not a floor that failed."
         )
         favored_play = "WATCH HOLD BELOW PUT STRIKE"
-    elif at_put:
+    elif at_put or (through_put and shared_gamma and gap_pct <= -0.15):
         regime = "PUT_WALL_BREAKDOWN_TEST"
-        badge = "⚠️ AT PUT-GAMMA STRIKE"
+        badge = "⚖️ SHARED GAMMA STRIKE" if shared_gamma else "⚠️ AT PUT-GAMMA STRIKE"
         color = "var(--stop)"
-        briefing = (
-            f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
-            f"Book is {book} (balance {flip_txt}). A touch is not a defense."
-        )
-        favored_play = "WATCH THE PUT STRIKE"
+        if shared_gamma:
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} vs shared call/put-gamma ₹{put_wall:,.0f}. "
+                f"Book is {book} (balance {flip_txt}). One strike is not a cascade."
+            )
+            favored_play = "WATCH THE SHARED GAMMA STRIKE"
+        else:
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
+                f"Book is {book} (balance {flip_txt}). A touch is not a defense."
+            )
+            favored_play = "WATCH THE PUT STRIKE"
     elif through_call:
         # Above call-gamma without an upside gap — map only.
         wall_note = (

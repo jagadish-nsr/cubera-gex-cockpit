@@ -106,6 +106,9 @@ def test_call_wall_breach_structure_null_without_iv_still_has_strikes():
     assert w["side_hint"] == "CE"
     assert w["structure"] is not None
     assert w["structure"]["premium_note"] == "unpriced"
+    assert w["structure"]["structure_ready"] is False
+    assert "unpriced" in w["title"].lower()
+    assert "unpriced" in w["caution"].lower()
     assert w["structure"]["buy_strike"] == 24600.0
     assert w["structure"]["short_strike"] == 24650.0
 
@@ -117,6 +120,8 @@ def test_put_cascade_pe_structure():
             favored_play="WATCH HOLD BELOW PUT STRIKE",
             discovered_spot=24250.0,
             gap_pts=-150.0,
+            call_wall=24600.0,
+            put_wall=24300.0,
         ),
         symbol="NIFTY",
         market_open=False,
@@ -126,8 +131,34 @@ def test_put_cascade_pe_structure():
     assert w["side_hint"] == "PE"
     assert w["structure"] is not None
     assert w["structure"]["side"] == "PE"
+    assert w["structure"]["structure_ready"] is True
     assert w["structure"]["buy_strike"] == 24300.0
     assert w["structure"]["short_strike"] == 24250.0  # beyond PW by one step down
+
+
+def test_shared_gamma_demotes_cascade_structure():
+    """18-Nov Nifty: equal walls must not stage a PE debit from CASCADE."""
+    w = build_pre_open_watch(
+        _discovered_pm(
+            gap_regime="PUT_WALL_BREAKDOWN_CASCADE",
+            favored_play="WATCH HOLD BELOW PUT STRIKE",
+            discovered_spot=25323.15,
+            prev_close=25387.4,
+            gap_pts=-64.25,
+            gap_pct=-0.25,
+            call_wall=25400.0,
+            put_wall=25400.0,
+            gamma_flip=25387.4,
+        ),
+        symbol="NIFTY",
+        market_open=False,
+        atm_iv=0.14,
+        dte_days=2.0,
+    )
+    assert w["side_hint"] == "NONE"
+    assert w["structure"] is None
+    assert w["map_strip"]["shared_gamma"] is True
+    assert "shared" in w["title"].lower() or "shared" in w["caution"].lower()
 
 
 def test_short_gamma_wall_test_map_only_structure_null():

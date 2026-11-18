@@ -509,14 +509,19 @@
       ? `<span style="font-size:0.65rem;color:var(--ink-faint);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">MAP</span>`
       : `<span style="font-size:0.65rem;color:var(--spark);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono)">${side}</span>`;
     const struct = watch.structure;
+    const sharedGamma = !!(watch.map_strip && watch.map_strip.shared_gamma);
     let structHtml;
     if (struct && struct.buy_strike != null) {
-      const debit = struct.premium_note === "priced" && struct.net_debit_pts != null
+      const ready = struct.structure_ready === true || struct.premium_note === "priced";
+      const debit = ready && struct.net_debit_pts != null
         ? ` · debit ~${Number(struct.net_debit_pts).toFixed(1)} pts`
-        : " · premium unpriced";
+        : " · premiums unpriced — not a ready debit card";
       const maxLoss = struct.max_loss_inr != null
         ? ` · max loss ~₹${Number(struct.max_loss_inr).toLocaleString("en-IN")}`
         : "";
+      const readyBadge = ready
+        ? `<span style="font-size:0.65rem;color:var(--go);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono);margin-left:6px">PRICED</span>`
+        : `<span style="font-size:0.65rem;color:var(--warn);background:var(--surface-3);padding:1px 6px;border-radius:4px;border:1px solid var(--line);font-family:var(--mono);margin-left:6px">UNPRICED</span>`;
       let tgtLine = "";
       if (struct.target_spot != null) {
         const ts = Number(struct.target_spot).toLocaleString("en-IN", { maximumFractionDigits: 1 });
@@ -529,15 +534,18 @@
         tgtLine = `<div style="margin-top:4px">Target spot ~₹${ts}${buyT}${netT}</div>
           <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${struct.target_note || "Illustrative target — not a Trade Idea T1."}</div>`;
       }
-      structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure (illustrative)</b>
+      structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure (illustrative)</b>${readyBadge}
         <div>${struct.name || "Debit vertical"} — long ${Number(struct.buy_strike).toFixed(0)} / short ${Number(struct.short_strike).toFixed(0)} ${struct.side || ""}${debit}${maxLoss}</div>
         <div style="font-size:0.74rem;color:var(--ink-mute);margin-top:4px">${struct.rationale || ""}</div>
         ${tgtLine}
         <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${struct.expiry_note || ""}</div>
       </div>`;
     } else {
+      const mapNote = sharedGamma
+        ? "Shared gamma strike — map only; no squeeze/cascade structure from equal walls."
+        : "Map only — no structure candidate from the auction print.";
       structHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Structure</b>
-        <div>Map only — no structure candidate from the auction print.</div></div>`;
+        <div>${mapNote}</div></div>`;
     }
     const f5 = watch.first_5m_estimate;
     let f5Html;
