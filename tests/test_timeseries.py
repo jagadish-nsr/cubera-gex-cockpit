@@ -230,3 +230,52 @@ def test_empty_chain_records_the_published_book(monkeypatch):
     msg, data = log_ts.capture_once(symbol="NIFTY")
     assert data is book
     assert "[published book]" in msg
+
+
+def test_capture_prefers_published_book_over_live_fetch(monkeypatch):
+    """18-Nov gap: live fetch starved BN/SX — prefer fresh pickle first."""
+    import scripts.log_timeseries as log_ts
+
+    fetched = datetime.now(timezone.utc)
+    books = {
+        "BANKNIFTY": SimpleNamespace(
+            symbol="BANKNIFTY", source="dhan", fetched_at=fetched, expiries=[],
+            levels=SimpleNamespace(spot=62000.0, near_book_expired=False),
+        ),
+        "SENSEX": SimpleNamespace(
+            symbol="SENSEX", source="dhan", fetched_at=fetched, expiries=[],
+            levels=SimpleNamespace(spot=82000.0, near_book_expired=False),
+        ),
+    }
+
+    def _live(**kwargs):
+        raise AssertionError("live fetch must not run when pickle is fresh")
+
+    written: list[str] = []
+
+    def _append(row, min_gap_minutes=10.0, symbol=None):
+        written.append(str(symbol))
+        return SimpleNamespace(name="2026-11-18.csv"), True
+
+    monkeypatch.setattr(log_ts, "load_dashboard", _live)
+    monkeypatch.setattr(
+        log_ts, "published_book",
+        lambda symbol, max_age_s=180: books.get(str(symbol or "").upper()),
+    )
+    monkeypatch.setattr(log_ts, "build_row", lambda data: {
+        "date_ist": "2026-11-18", "time_ist": "10:18", "spot": float(data.levels.spot),
+        "regime": "POSITIVE", "mode_label": "CALL-HEAVY",
+        "put_wall": 61000, "call_wall": 62000, "magnet": 61500,
+        "pcr_oi": 1.0, "news_count": 0, "news_impact": 0,
+    })
+    monkeypatch.setattr(log_ts, "append_if_due", _append)
+    monkeypatch.setattr(log_ts, "build_strike_rows", lambda data: [])
+    monkeypatch.setattr(log_ts, "append_strike_rows", lambda *a, **k: None)
+    monkeypatch.setattr(log_ts, "_is_expiry_day", lambda data: False)
+    monkeypatch.setattr("app.futures_buildup.capture_futures_from_ws", lambda **k: None)
+
+    for sym in ("BANKNIFTY", "SENSEX"):
+        msg, data = log_ts.capture_once(symbol=sym)
+        assert data.symbol == sym
+        assert "[published book]" in msg
+    assert written == ["BANKNIFTY", "SENSEX"]

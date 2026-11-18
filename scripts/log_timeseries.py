@@ -172,24 +172,32 @@ def published_book(symbol: str, max_age_s: float = _PUBLISHED_BOOK_MAX_AGE_S):
 
 
 def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str, object]:
-    """One live pull -> 5-min time-series row (+ per-strike OI, deduped). On an
+    """One pull -> 5-min time-series row (+ per-strike OI, deduped). On an
     expiry day inside the blast window it ALSO appends a 1-min gamma-blast row from
     the SAME pull. Returns (log line, DashboardData) so the caller can decide
     whether to enter the bundled 1-min blast loop.
 
-    An empty chain uses the live process's published book when that file is
-    under three minutes old. The journal then matches the book on screen.
+    Prefer the live cockpit's ``latest_snap_{SYMBOL}.pkl`` when fresh so the
+    cron fire covers Nifty + Bank Nifty + Sensex without re-fighting Dhan
+    (18-Nov: only Nifty CSV wrote while BN/SX hung on live fetches). Fall back
+    to a live ``load_dashboard`` only when the pickle is missing/stale; empty
+    chains still reuse the published book.
     """
     from_published = False
-    try:
-        data = load_dashboard(symbol=symbol)  # live NSE, single fetch
-    except Exception as exc:
-        if "no contracts" not in str(exc):
-            raise
-        data = published_book(symbol or "NIFTY")
-        if data is None:
-            raise
+    sym = (symbol or "NIFTY").upper()
+    data = published_book(sym)
+    if data is not None:
         from_published = True
+    else:
+        try:
+            data = load_dashboard(symbol=sym)  # live fetch — last resort
+        except Exception as exc:
+            if "no contracts" not in str(exc):
+                raise
+            data = published_book(sym)
+            if data is None:
+                raise
+            from_published = True
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     row = build_row(data)
     path, written = append_if_due(row, min_gap_minutes=min_gap, symbol=data.symbol)

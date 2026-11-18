@@ -1941,6 +1941,59 @@ def _calc_horizon_sigma(spot: float, eff_iv: float, horizon_minutes: float, step
         return step * 0.5
 
 
+def book_is_nse_scrape(source: str | None) -> bool:
+    """True when the chain came from NSE scrape / Dhan→NSE fallback — not pure Dhan."""
+    src = str(source or "").lower().replace("_", "-")
+    if not src:
+        return False
+    if "fallback" in src or "scrape" in src:
+        return True
+    return src.startswith("nse")
+
+
+def soft_tape_from_bias(bias_result: Any | None) -> bool:
+    """True when directional bias is clearly risk-off (soft-down session)."""
+    if bias_result is None:
+        return False
+    raw = None
+    if isinstance(bias_result, dict):
+        raw = bias_result.get("directional_bias_score", bias_result.get("score"))
+    else:
+        raw = getattr(bias_result, "directional_bias_score", None)
+        if raw is None:
+            raw = getattr(bias_result, "score", None)
+    try:
+        return float(raw) <= -float(BIAS_STRONG)
+    except (TypeError, ValueError):
+        return False
+
+
+def conviction_tier_from_score(
+    score: float,
+    *,
+    source: str = "",
+    soft_tape: bool = False,
+) -> str:
+    """Map quality score → HIGH / MEDIUM / LOW.
+
+    HIGH is reserved for clean Dhan books on a non-soft tape. NSE scrape /
+    fallback and soft-down sessions (18-Nov HIGH closed 1-for-8 vs SL) cap at
+    MEDIUM even when the raw score clears 85 — do not dress a degraded book as
+    Grade A+.
+    """
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        s = 0.0
+    if book_is_nse_scrape(source) or soft_tape:
+        return "MEDIUM" if s >= 75 else "LOW"
+    if s > 85:
+        return "HIGH"
+    if s >= 75:
+        return "MEDIUM"
+    return "LOW"
+
+
 def _apply_ev_quality_gate(
     score: int,
     ev: float,
@@ -3523,6 +3576,7 @@ def generate_trade_recommendations(
                     rec_row = rec_store.get_recommendation_record(t.rec_id)
             except Exception:
                 rec_row = None
+        soft_tape = soft_tape_from_bias(bias_result)
         if t.is_bookmarked:
             stored_tier = str((rec_row or {}).get("conviction_tier") or t.conviction_tier or "").upper()
             if stored_tier in ("HIGH", "MEDIUM", "LOW"):
@@ -3535,7 +3589,20 @@ def generate_trade_recommendations(
             t.triggered_at = resolve_unpinned_trigger(
                 stored_trigger, now_ist, config.is_market_open(),
             )
-            t.conviction_tier = "HIGH" if t.quality_score > 85 else ("MEDIUM" if t.quality_score >= 75 else "LOW")
+            t.conviction_tier = conviction_tier_from_score(
+                t.quality_score, source=source, soft_tape=soft_tape,
+            )
+            if t.conviction_tier != "HIGH" and (
+                book_is_nse_scrape(source) or soft_tape
+            ) and float(t.quality_score or 0) > 85:
+                # Surface why Grade A+ was capped — desk must not treat scrape/soft as HIGH.
+                reason = "NSE-scrape book" if book_is_nse_scrape(source) else "soft-down bias"
+                note = f"Conviction capped MEDIUM ({reason})"
+                if note not in str(t.rationale or ""):
+                    t.rationale = f"{t.rationale} · {note}".strip(" ·")
+                if t.conviction_label and "HIGH CONVICTION" in str(t.conviction_label):
+                    t.conviction_label = "TACTICAL OPPORTUNITY (Grade B+ · capped)"
+                    t.conviction_color = "var(--spark)"
 
         if rec_row:
             if float(rec_row.get("initial_spot") or 0.0) > 0 and t.initial_spot <= 0:

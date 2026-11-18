@@ -4,7 +4,10 @@ import pytest
 import config
 from analytics.trade_ideas import (
     apply_tactical_watch,
+    book_is_nse_scrape,
+    conviction_tier_from_score,
     generate_trade_recommendations,
+    soft_tape_from_bias,
     TradeIdea,
     RecommendationBatch,
 )
@@ -1225,5 +1228,20 @@ def test_placeholder_chain_is_withheld_unless_the_quote_confirms_it():
     assert not config.withhold_placeholder_ideas("NIFTY", 22650, 22678)
     assert config.placeholder_disagrees_with_quote("BANKNIFTY", 54000, 58000)
     assert not config.chain_spot_is_placeholder("SENSEX", 73606)
+
+
+def test_conviction_tier_caps_high_on_nse_scrape_and_soft_tape():
+    """18-Nov: HIGH 1-for-8 vs SL on soft-down / scrape books — never dress as HIGH."""
+    assert book_is_nse_scrape("nse")
+    assert book_is_nse_scrape("dhan-nse-fallback")
+    assert not book_is_nse_scrape("dhan")
+    assert soft_tape_from_bias(type("B", (), {"directional_bias_score": -1.5})())
+    assert not soft_tape_from_bias(type("B", (), {"directional_bias_score": -0.2})())
+
+    assert conviction_tier_from_score(90, source="dhan") == "HIGH"
+    assert conviction_tier_from_score(90, source="nse") == "MEDIUM"
+    assert conviction_tier_from_score(90, source="dhan", soft_tape=True) == "MEDIUM"
+    assert conviction_tier_from_score(80, source="dhan") == "MEDIUM"
+    assert conviction_tier_from_score(70, source="nse-fallback") == "LOW"
 
 

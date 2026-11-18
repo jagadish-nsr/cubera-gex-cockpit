@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Launcher for the scheduled task — appends ONE intraday Nifty GEX snapshot
+# Launcher for the scheduled task — one fire for Nifty + Bank Nifty + Sensex.
+# Prefers fresh latest_snap_*.pkl from the dual ingest (see log_timeseries.capture_once).
 cd "$(dirname "$0")" || exit
 mkdir -p data/journal
 # brief settle so Wi-Fi reconnects if we just woke from sleep (~5s)
