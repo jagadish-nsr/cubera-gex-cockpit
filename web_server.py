@@ -2420,6 +2420,60 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     }
 
 
+@app.get("/api/premarket/path")
+async def get_premarket_path(symbol: Optional[str] = None, date: Optional[str] = None):
+    """Read-only path events + scored efficiency for one index/session."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    try:
+        from analytics.premarket_path import list_path_events, ensure_path_schema
+        from data.pre_post_market import get_persisted_auction_record
+        ensure_path_schema()
+        rec = get_persisted_auction_record(sym, date) or {}
+        events = list_path_events(sym, date or rec.get("trade_date"))
+        return {
+            "symbol": sym,
+            "trade_date": date or rec.get("trade_date"),
+            "gap_regime": rec.get("gap_regime"),
+            "thesis_outcome": rec.get("thesis_outcome"),
+            "path_efficiency_pct": rec.get("path_efficiency_pct"),
+            "path_mfe_pts": rec.get("path_mfe_pts"),
+            "path_mae_pts": rec.get("path_mae_pts"),
+            "path_scored_at": rec.get("path_scored_at"),
+            "path_score_detail": (
+                json.loads(rec["path_score_detail_json"])
+                if rec.get("path_score_detail_json") else None
+            ),
+            "events": events,
+        }
+    except Exception as exc:
+        log.warning("premarket path API: %s", exc)
+        return JSONResponse(status_code=500, content={"error": str(exc), "symbol": sym})
+
+
+@app.get("/api/premarket/regime-stats")
+async def get_premarket_regime_stats(
+    symbol: Optional[str] = None,
+    regime: Optional[str] = None,
+    lookback: int = 40,
+):
+    """Same-regime path base rates for opening-watch confidence."""
+    sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    reg = (regime or "").upper().strip()
+    if not reg:
+        try:
+            from data.pre_post_market import get_persisted_auction_record
+            rec = get_persisted_auction_record(sym) or {}
+            reg = str(rec.get("gap_regime") or "")
+        except Exception:
+            reg = ""
+    try:
+        from analytics.premarket_path import regime_path_stats
+        return regime_path_stats(sym, reg, lookback_sessions=max(1, min(int(lookback), 120)))
+    except Exception as exc:
+        log.warning("premarket regime-stats API: %s", exc)
+        return JSONResponse(status_code=500, content={"error": str(exc), "symbol": sym})
+
+
 @app.get("/api/indices")
 async def get_indices():
     """List available trading indices with verified exchange lot sizes."""

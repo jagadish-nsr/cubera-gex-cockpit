@@ -3041,9 +3041,10 @@
             </div>
           </div>
 
-          <!-- Pre-Market Tactical Baseline Card -->
-          <div id="comm-pre-market-card" class="pre-bell-card" style="margin-bottom:14px">
-            <!-- Dynamically populated pre-market baseline -->
+          <!-- Post-Market Settlement (session end — top, matches newest-first stream) -->
+          <div id="comm-post-market-card" class="ladder-card"
+            style="margin-bottom:14px;border-top:3px solid var(--purple)">
+            <!-- Dynamically populated post-market wrap -->
           </div>
 
           <!-- Commentary Filter Bar -->
@@ -3060,15 +3061,14 @@
               onclick="window.loadCommentary()">🔄 Refresh Stream</button>
           </div>
 
-          <!-- Chronological Commentary Cards Stream -->
+          <!-- Chronological Commentary Cards Stream (newest first) -->
           <div id="commentary-stream-container" style="display:flex;flex-direction:column;gap:14px">
             <!-- Dynamically populated commentary cards -->
           </div>
 
-          <!-- Post-Market Settlement & Daily Close Scorecard -->
-          <div id="comm-post-market-card" class="ladder-card"
-            style="margin-top:20px;border-top:3px solid var(--purple)">
-            <!-- Dynamically populated post-market wrap -->
+          <!-- Pre-Market Tactical Baseline (session open — bottom) -->
+          <div id="comm-pre-market-card" class="pre-bell-card" style="margin-top:20px">
+            <!-- Dynamically populated pre-market baseline -->
           </div>
         </div>
 
@@ -3307,7 +3307,7 @@
 
   <!-- Client Application Script -->
   <script src="/static/js/admin.js?v=6"></script>
-  <script src="/static/js/cockpit.js?v=6.70"></script>
+  <script src="/static/js/cockpit.js?v=6.71"></script>
 </body>
 
 </html>

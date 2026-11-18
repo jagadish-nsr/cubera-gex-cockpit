@@ -561,6 +561,20 @@
       f5Html = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Est. first 5m range</b>
         <div style="color:var(--ink-mute)">5m range unavailable — no IV.</div></div>`;
     }
+    const hist = watch.history;
+    let histHtml = "";
+    if (hist && Number(hist.n) > 0) {
+      const hr = hist.hold_rate != null ? `${(100 * Number(hist.hold_rate)).toFixed(0)}%` : "—";
+      const eff = hist.mean_eff != null ? Number(hist.mean_eff).toFixed(0) : "—";
+      const conf = String(hist.confidence || "LOW");
+      histHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Same regime history</b>
+        <div style="font-family:var(--mono);font-size:0.74rem">Last ${hist.n}: hold ${hr} · mean eff ${eff} · ${conf}</div>
+        <div style="font-size:0.72rem;color:var(--ink-faint);margin-top:2px">${hist.note || ""}</div>
+      </div>`;
+    } else if (hist) {
+      histHtml = `<div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Same regime history</b>
+        <div style="color:var(--ink-mute);font-size:0.74rem">No scored paths yet for this regime.</div></div>`;
+    }
     return `
       <div class="pm-opening-watch" data-status="${status}" style="margin:${marginTop} 0 10px 0;background:var(--surface-2);padding:10px 12px;border-radius:8px;border:1px solid var(--line)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
@@ -576,6 +590,7 @@
           <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Trigger</b><div>${watch.trigger || ""}</div></div>
           <div style="margin-bottom:8px"><b style="color:var(--ink-mute);text-transform:uppercase;font-size:0.64rem">Invalidation</b><div>${watch.invalidation || ""}</div></div>
           ${f5Html}
+          ${histHtml}
           ${structHtml}
           <div style="font-size:0.74rem;color:var(--warn);border-top:1px solid var(--line);padding-top:8px">${watch.confirm_after || ""}</div>
           <div style="font-size:0.72rem;color:var(--ink-mute);margin-top:4px">${watch.caution || ""}</div>

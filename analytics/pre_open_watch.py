@@ -64,6 +64,7 @@ class PreOpenWatch:
     first_5m_estimate: dict | None = None
     open_txt: str = ""
     map_strip: dict = field(default_factory=dict)
+    history: dict | None = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -435,6 +436,34 @@ def build_pre_open_watch(
         regime, open_px=open_px, cw=cw, pw=pw, flip=flip, prev=prev,
     )
 
+    history: dict | None = None
+    try:
+        from analytics.premarket_path import regime_path_stats
+        history = regime_path_stats(sym, regime)
+    except Exception as exc:
+        log.debug("regime_path_stats skipped: %s", exc)
+        history = None
+
+    # Historical demotion: weak same-regime hold rate → map only (need n≥8).
+    # hold_rate may be 0.0 — do not use `or 1.0` (falsy float).
+    _hr = history.get("hold_rate") if history else None
+    if (
+        allow_structure
+        and history
+        and int(history.get("n") or 0) >= 8
+        and _hr is not None
+        and float(_hr) < 0.40
+    ):
+        allow_structure = False
+        side_hint = "NONE"
+        title = f"{title} · history demoted to map"
+        caution_hist = (
+            f"Same regime last {history['n']}: hold rate "
+            f"{100.0 * float(_hr):.0f}% — structure withheld."
+        )
+    else:
+        caution_hist = ""
+
     structure = None
     if allow_structure and side_hint in ("CE", "PE"):
         structure = _illustrative_vertical(
@@ -468,6 +497,8 @@ def build_pre_open_watch(
         caution_bits.append(
             "Call and put gamma share one strike — map location only, not a squeeze/cascade structure."
         )
+    if caution_hist:
+        caution_bits.append(caution_hist)
     if structure is not None:
         priced = str(structure.get("premium_note") or "") == "priced"
         structure["structure_ready"] = bool(priced)
@@ -478,6 +509,12 @@ def build_pre_open_watch(
             )
             if "unpriced" not in title.lower():
                 title = f"{title} · premiums unpriced"
+    if history and int(history.get("n") or 0) >= 8:
+        hr = float(history.get("hold_rate") or 0)
+        me = history.get("mean_eff")
+        if hr >= 0.55 and me is not None and float(me) >= 55:
+            history = dict(history)
+            history["confidence"] = "OK"
 
     watch = PreOpenWatch(
         status=status,
@@ -503,5 +540,6 @@ def build_pre_open_watch(
             "gap_pct": float(pm.get("gap_pct") or 0),
             "shared_gamma": shared_gamma,
         },
+        history=history,
     )
     return watch.to_dict()

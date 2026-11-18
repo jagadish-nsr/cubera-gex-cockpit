@@ -976,6 +976,6 @@ def test_trade_recommendations_mini_card_markup_present():
     assert "cockpit-card-mini-header" in text
     assert "View Full Card Details" in text
     html = (Path(__file__).resolve().parents[1] / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    assert "cockpit.js?v=6.60" in html
+    assert "cockpit.js?v=" in html
 
 

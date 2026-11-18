@@ -103,12 +103,42 @@ def init_pre_post_db() -> None:
             ("institutional_wrap", "TEXT"),
             ("open_source", "TEXT"),
             ("opening_watch_json", "TEXT"),
+            ("path_json", "TEXT"),
+            ("thesis_outcome", "TEXT"),
+            ("path_mfe_pts", "REAL"),
+            ("path_mae_pts", "REAL"),
+            ("path_efficiency_pct", "REAL"),
+            ("path_scored_at", "TEXT"),
+            ("path_score_detail_json", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE market_auctions_history ADD COLUMN {col} {col_type}")
             except Exception:
                 pass
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auctions_date_sym ON market_auctions_history(trade_date, symbol)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS premarket_path_events (
+                trade_date TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                ts_ist TEXT,
+                checkpoint TEXT NOT NULL,
+                spot REAL,
+                spot_vs_open_pts REAL,
+                spot_vs_flip_pts REAL,
+                spot_vs_cw_pts REAL,
+                spot_vs_pw_pts REAL,
+                gap_fill TEXT,
+                inside_5m_envelope INTEGER,
+                thesis_state TEXT,
+                note TEXT,
+                PRIMARY KEY (trade_date, symbol, seq)
+            )
+        """)
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_path_ckpt "
+            "ON premarket_path_events(trade_date, symbol, checkpoint)"
+        )
         conn.commit()
 
 
@@ -160,9 +190,14 @@ def persist_opening_watch_from_state(symbol: str, state: dict) -> dict | None:
         return None
     try:
         from analytics.pre_open_watch import build_pre_open_watch
+        from analytics.premarket_path import seal_discovery
         watch = build_pre_open_watch(state, symbol=symbol, market_open=False)
         if watch.get("status") == "STAGED":
             save_opening_watch(symbol, watch, trade_date=state.get("date"))
+        try:
+            seal_discovery(symbol, state)
+        except Exception as seal_exc:
+            log.debug("seal_discovery skipped for %s: %s", symbol, seal_exc)
         return watch
     except Exception as exc:
         log.debug("persist_opening_watch_from_state skipped for %s: %s", symbol, exc)
@@ -390,6 +425,11 @@ def save_post_market_state(symbol: str, state: dict) -> None:
                     now_iso,
                 ))
             conn.commit()
+        try:
+            from analytics.premarket_path import score_path
+            score_path(sym, trade_date)
+        except Exception as score_exc:
+            log.debug("score_path after settle skipped for %s: %s", sym, score_exc)
     except Exception as e:
         log.debug(f"Failed to save post-market state for {symbol}: {e}")
 
@@ -1237,6 +1277,11 @@ def ensure_pre_market_poller(symbol: str = "NIFTY") -> None:
 def ensure_pre_market_pollers() -> None:
     for s in ("NIFTY", "BANKNIFTY", "SENSEX"):
         ensure_pre_market_poller(s)
+    try:
+        from analytics.premarket_path import ensure_path_pollers
+        ensure_path_pollers()
+    except Exception as exc:
+        log.debug("path pollers: %s", exc)
 
 
 def _pre_market_loop(symbol: str) -> None:
