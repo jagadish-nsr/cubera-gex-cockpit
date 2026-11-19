@@ -334,6 +334,111 @@ def seal_discovery(symbol: str, state: dict) -> dict | None:
     )
 
 
+def reseal_discovery(symbol: str, state: dict) -> dict | None:
+    """Rewrite DISCOVERY after an LTP → official-open upgrade.
+
+    First seal is idempotent; when Dhan later publishes day-open the auction
+    row (spot, gap_regime) updates but the DISCOVERY path row used to stay
+    frozen on the provisional LTP print/regime. That made today's BN/SX notes
+    disagree with the auction gap_regime. Only rewrites DISCOVERY; later
+    checkpoints keep their spots (score_path uses auction discovered_spot).
+    """
+    if not state or not state.get("is_discovered"):
+        return None
+    spot = float(state.get("discovered_spot") or 0)
+    if spot <= 0:
+        return None
+    ensure_path_schema()
+    sym = config.index_key(symbol)
+    t_date = state.get("date") or datetime.now(IST).strftime("%Y-%m-%d")
+    note = f"regime={state.get('gap_regime') or ''}"
+    gfill = str(state.get("gap_fill_status") or "UNFILLED").upper()
+
+    get_conn, db_lock = _db()
+    with db_lock, get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM market_auctions_history WHERE trade_date = ? AND symbol = ?",
+            (t_date, sym),
+        ).fetchone()
+        if row is None:
+            return None
+        auction = dict(row)
+        open_px, cw, pw, flip, prev = _walls_from_row(auction)
+        # Prefer the just-upgraded state over a stale auction read race.
+        open_px = spot if spot > 0 else open_px
+        regime = str(state.get("gap_regime") or auction.get("gap_regime") or "")
+        step = float(config.strike_step_for(sym))
+        thesis = thesis_state_at(
+            regime,
+            open_px=open_px,
+            spot=spot,
+            cw=cw,
+            pw=pw,
+            flip=flip,
+            prev=float(state.get("prev_close") or prev or 0),
+            gap_fill=gfill,
+            step=step,
+        )
+        existing = conn.execute(
+            "SELECT seq, spot, note, thesis_state FROM premarket_path_events "
+            "WHERE trade_date = ? AND symbol = ? AND checkpoint = 'DISCOVERY'",
+            (t_date, sym),
+        ).fetchone()
+        if existing is None:
+            return None
+        old = dict(existing)
+        new_vs_open = 0.0  # DISCOVERY is the open print after reseal
+        new_vs_flip = round(spot - flip, 2) if flip else None
+        new_vs_cw = round(spot - cw, 2) if cw else None
+        new_vs_pw = round(spot - pw, 2) if pw else None
+        unchanged = (
+            abs(float(old.get("spot") or 0) - spot) < 0.05
+            and str(old.get("note") or "") == note
+            and str(old.get("thesis_state") or "") == thesis
+        )
+        if unchanged:
+            return None
+        now_ist = datetime.now(IST).isoformat(timespec="seconds")
+        conn.execute(
+            """
+            UPDATE premarket_path_events
+            SET ts_ist = ?, spot = ?,
+                spot_vs_open_pts = ?, spot_vs_flip_pts = ?,
+                spot_vs_cw_pts = ?, spot_vs_pw_pts = ?,
+                gap_fill = ?, thesis_state = ?, note = ?
+            WHERE trade_date = ? AND symbol = ? AND checkpoint = 'DISCOVERY'
+            """,
+            (
+                now_ist, spot,
+                new_vs_open, new_vs_flip, new_vs_cw, new_vs_pw,
+                gfill, thesis, note,
+                t_date, sym,
+            ),
+        )
+        conn.commit()
+        log.info(
+            "path DISCOVERY resealed %s %s spot %.2f→%.2f note %r→%r",
+            sym, t_date, float(old.get("spot") or 0), spot,
+            old.get("note"), note,
+        )
+        return {
+            "trade_date": t_date,
+            "symbol": sym,
+            "seq": old.get("seq"),
+            "ts_ist": now_ist,
+            "checkpoint": "DISCOVERY",
+            "spot": spot,
+            "spot_vs_open_pts": new_vs_open,
+            "spot_vs_flip_pts": new_vs_flip,
+            "spot_vs_cw_pts": new_vs_cw,
+            "spot_vs_pw_pts": new_vs_pw,
+            "gap_fill": gfill,
+            "thesis_state": thesis,
+            "note": note,
+            "resealed": True,
+        }
+
+
 def list_path_events(symbol: str, trade_date: str | None = None) -> list[dict]:
     ensure_path_schema()
     sym = config.index_key(symbol)

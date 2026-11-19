@@ -14,6 +14,7 @@ from analytics.premarket_path import (
     ensure_path_schema,
     list_path_events,
     regime_path_stats,
+    reseal_discovery,
     score_path,
     seal_discovery,
     thesis_state_at,
@@ -122,6 +123,78 @@ def test_seal_and_idempotent_checkpoints(path_db):
     assert b is None
     evs = list_path_events("NIFTY", date)
     assert [e["checkpoint"] for e in evs] == ["DISCOVERY", "T0915"]
+
+
+def test_reseal_discovery_after_ltp_to_dhan_open(path_db):
+    """Provisional LTP lock → official open must rewrite DISCOVERY spot/regime note."""
+    date = "2026-11-19"
+    # BN-shaped: shared wall, LTP print inflated gap into SHORT_GAMMA_WALL_TEST
+    ltp = _seed_auction(
+        "BANKNIFTY", date,
+        spot=62204.1, prev=62038.65, gap_pts=165.45, gap_pct=0.27,
+        regime="SHORT_GAMMA_WALL_TEST", favored="WATCH THE SHARED GAMMA STRIKE",
+        cw=62000.0, pw=62000.0, flip=61662.0,
+    )
+    first = seal_discovery("BANKNIFTY", ltp)
+    assert first is not None
+    assert first["spot"] == 62204.1
+    assert "SHORT_GAMMA" in (first.get("note") or "")
+
+    # Official day-open is flat → AUCTION_BALANCED (same as today's upgrade)
+    official = dict(ltp)
+    official.update({
+        "discovered_spot": 62081.3,
+        "gap_pts": 42.65,
+        "gap_pct": 0.07,
+        "gap_regime": "AUCTION_BALANCED",
+        "favored_play": "NO BOOK TRADE",
+        "open_source": "dhan-open",
+        "gap_fill_status": "FILLED",
+    })
+    ppm.save_pre_market_state("BANKNIFTY", official)
+    rewritten = reseal_discovery("BANKNIFTY", official)
+    assert rewritten is not None
+    assert rewritten.get("resealed") is True
+    assert rewritten["spot"] == 62081.3
+    assert rewritten["note"] == "regime=AUCTION_BALANCED"
+    assert rewritten["spot_vs_open_pts"] == 0.0
+
+    # Idempotent when nothing changed
+    assert reseal_discovery("BANKNIFTY", official) is None
+    # First-seal path still no-ops
+    assert seal_discovery("BANKNIFTY", official) is None
+
+    evs = list_path_events("BANKNIFTY", date)
+    assert len(evs) == 1
+    assert evs[0]["checkpoint"] == "DISCOVERY"
+    assert evs[0]["spot"] == 62081.3
+    assert evs[0]["note"] == "regime=AUCTION_BALANCED"
+
+
+def test_persist_opening_watch_reseals_on_upgrade(path_db):
+    date = "2026-11-19"
+    ltp = _seed_auction(
+        "SENSEX", date,
+        spot=82376.56, prev=82031.81, gap_pts=344.75, gap_pct=0.42,
+        regime="GAP_UP_INTO_POS_GAMMA", favored="MAP ONLY — NO FADE",
+        cw=82500.0, pw=82000.0, flip=81887.0,
+    )
+    assert seal_discovery("SENSEX", ltp) is not None
+    official = dict(ltp)
+    official.update({
+        "discovered_spot": 82067.75,
+        "gap_pts": 35.94,
+        "gap_pct": 0.04,
+        "gap_regime": "AUCTION_BALANCED",
+        "favored_play": "NO BOOK TRADE",
+        "open_source": "dhan-open",
+    })
+    ppm.save_pre_market_state("SENSEX", official)
+    ppm.persist_opening_watch_from_state("SENSEX", official)
+    disc = [e for e in list_path_events("SENSEX", date) if e["checkpoint"] == "DISCOVERY"]
+    assert len(disc) == 1
+    assert disc[0]["spot"] == 82067.75
+    assert disc[0]["note"] == "regime=AUCTION_BALANCED"
 
 
 def test_score_path_moderate_drift(path_db):

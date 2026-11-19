@@ -190,12 +190,15 @@ def persist_opening_watch_from_state(symbol: str, state: dict) -> dict | None:
         return None
     try:
         from analytics.pre_open_watch import build_pre_open_watch
-        from analytics.premarket_path import seal_discovery
+        from analytics.premarket_path import reseal_discovery, seal_discovery
         watch = build_pre_open_watch(state, symbol=symbol, market_open=False)
         if watch.get("status") == "STAGED":
             save_opening_watch(symbol, watch, trade_date=state.get("date"))
         try:
-            seal_discovery(symbol, state)
+            sealed = seal_discovery(symbol, state)
+            # LTP → dhan-open upgrade: first seal was idempotent; rewrite DISCOVERY.
+            if sealed is None:
+                reseal_discovery(symbol, state)
         except Exception as seal_exc:
             log.debug("seal_discovery skipped for %s: %s", symbol, seal_exc)
         return watch
@@ -1339,6 +1342,14 @@ def _post_market_loop(symbol: str) -> None:
             get_post_market_state(symbol, force_refresh=True, now=now)
         except Exception as exc:
             log.debug("post-market poller %s: %s", symbol, exc)
+        # Once per day after F&O close: settle leftover OPEN staged GOs.
+        # Run from the Nifty poller only so the three indices do not race.
+        if symbol.upper() == "NIFTY":
+            try:
+                from data.journal import go_efficiency as go_eff
+                go_eff.close_all_open_at_session_end(now=now)
+            except Exception as exc:
+                log.debug("go session-end close: %s", exc)
         time.sleep(30.0)
 
 
