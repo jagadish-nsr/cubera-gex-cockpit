@@ -978,7 +978,7 @@
 
   // -------------------------------------------------------------------------
   // Expiry Gamma Blast — heartbeat (coiling) + siren (active) Web Audio
-  // Live: COILING → looping heartbeat; TRIGGERED → intensity-linked siren.
+  // Live: IMMINENT coil → heartbeat; expansion ACTIVE → siren; plain COILING/PIN quiet.
   // -------------------------------------------------------------------------
 
   const BLAST_SIREN_MAX_GAIN = 0.22; // desk-safe ceiling — audible, not harsh
@@ -1172,7 +1172,7 @@
   }
 
   /**
-   * Looping coiling/imminent heartbeat. Soft, persistent while state stays COILING.
+   * Looping imminent-coil heartbeat. Soft; only while blastImminentCoil stays true.
    * Preview defaults to ~6 seconds then auto-stops. Pass durationMs: 0 for open-ended.
    */
   function startGammaBlastHeartbeat(opts) {
@@ -1341,22 +1341,47 @@
 
   /**
    * Drive live gamma-blast audio from dashboard/tick state.
-   * COILING → heartbeat loop; TRIGGERED → engine rev with score+spot intensity; else silence.
+   * IMMINENT (upper coil + covering) → heartbeat; expansion ACTIVE → siren; else silence.
    */
+  function blastIsPin(blast) {
+    const gb = blast || {};
+    if (gb.pin_geometry === true || gb.pin_geometry === 1 || gb.pin_geometry === "1") return true;
+    const badge = String(gb.badge || "").toUpperCase();
+    return badge.includes("GAMMA PIN") || badge.includes("COMPRESS");
+  }
+
   function blastSignalTrusted(blast) {
-    // Mirrors app.gammablast.blast_signal_trusted — Nifty / Sensex / BN.
+    // Expansion ACTIVE only — mirrors blast_expansion_trusted (not PIN/COMPRESS).
     const gb = blast || {};
     if (!gb.is_expiry) return false;
     if (gb.spot_stalled) return false;
+    if (blastIsPin(gb)) return false;
     const score = Number(gb.score || 0);
     if (!(score >= 60)) return false;
     const rawState = String(gb.state || "").toUpperCase();
     const badge = String(gb.badge || "").toUpperCase();
-    const activeLike = rawState === "TRIGGERED" || badge.includes(": ACTIVE") || badge.includes("COMPRESS");
-    if (!activeLike) return false;
+    if (rawState !== "TRIGGERED" && !badge.includes(": ACTIVE")) return false;
+    const grade = String(gb.sustain_grade || "").toUpperCase();
+    if (grade.includes("FAKE")) return false;
     if (gb.cover_known !== true && gb.cover_known !== 1 && gb.cover_known !== "1") return false;
     if (gb.primary_strike == null || gb.primary_strike === "") return false;
     if (gb.ignition_pts == null || gb.proximity_pts == null || gb.regime_pts == null) return false;
+    return true;
+  }
+
+  function blastImminentCoil(blast) {
+    // Heartbeat only for upper-coil + covering + non-pin (Sensex 19 Nov noise cut).
+    const gb = blast || {};
+    if (!gb.is_expiry || gb.spot_stalled) return false;
+    if (blastIsPin(gb)) return false;
+    const rawState = String(gb.state || "").toUpperCase();
+    const badge = String(gb.badge || "").toUpperCase();
+    if (rawState !== "COILING" && !badge.includes("COILING") && !badge.includes("IMMINENT")) return false;
+    if (gb.cover_known !== true && gb.cover_known !== 1 && gb.cover_known !== "1") return false;
+    const score = Number(gb.score || 0);
+    if (!(score >= 50 && score < 60)) return false;
+    const frac = Number(gb.cover_frac);
+    if (!Number.isFinite(frac) || frac >= -0.05) return false;
     return true;
   }
 
@@ -1368,11 +1393,9 @@
     }
 
     const gb = blast || {};
-    const rawState = String(gb.state || "").toUpperCase();
-    const badge = String(gb.badge || "").toUpperCase();
-    const isCoiling = rawState === "COILING" || badge.includes("COILING");
-    // Trusted ACTIVE only — component-blind / stalled prints stay quiet or coiling.
+    // Expansion ACTIVE siren only. PIN/COMPRESS and plain COILING stay quiet.
     const isActive = blastSignalTrusted(gb);
+    const isImminent = blastImminentCoil(gb);
 
     if (isActive) {
       const intensity = computeBlastSirenIntensity(gb.score, spot);
@@ -1384,7 +1407,7 @@
       return;
     }
 
-    if (isCoiling) {
+    if (isImminent) {
       state.blastSpotSpikeEma = 0;
       if (Number.isFinite(Number(spot)) && Number(spot) > 0) state.blastLastSpot = Number(spot);
       if (state.blastAudioMode === "coiling" && state.blastHeartbeatTimer) return;
@@ -5247,6 +5270,20 @@
     const blast = dash.gamma_blast || {};
     const blastScore = Number(blast.score || 0);
     const isExpiryBlast = blastSignalTrusted(blast);
+    const isExpiryPin = !isExpiryBlast && (() => {
+      const gb = blast || {};
+      if (!gb.is_expiry || gb.spot_stalled) return false;
+      if (!blastIsPin(gb)) return false;
+      const score = Number(gb.score || 0);
+      if (!(score >= 60)) return false;
+      const rawState = String(gb.state || "").toUpperCase();
+      const badge = String(gb.badge || "").toUpperCase();
+      if (rawState !== "TRIGGERED" && !badge.includes("COMPRESS")) return false;
+      if (gb.cover_known !== true && gb.cover_known !== 1 && gb.cover_known !== "1") return false;
+      if (gb.primary_strike == null || gb.primary_strike === "") return false;
+      if (gb.ignition_pts == null || gb.proximity_pts == null || gb.regime_pts == null) return false;
+      return true;
+    })();
     const breadth = dash.market_breadth || {};
     const adv = Number(breadth.advances || 0);
     const dec = Number(breadth.declines || 0);
@@ -5604,6 +5641,9 @@
     if (isExpiryBlast) {
       base.badge = `⚡ EXPIRY BLAST ${blastScore} · ${base.badge}`;
       base.drivers = `It is expiry day, and the blast score is ${blastScore} out of 100. That is a parity watch: it checks whether call and put prices still line up. It does not pay for a call or a put. ${base.drivers}`;
+    } else if (isExpiryPin) {
+      base.badge = `📍 EXPIRY PIN ${blastScore} · ${base.badge}`;
+      base.drivers = `Call and put gamma share a strike (pin/compress, score ${blastScore}). That is concentration on the book, not an expansion blast. ${base.drivers}`;
     }
 
     return voice({
@@ -9956,14 +9996,19 @@
 
       const topicCls = c.topic_class || (c.topic_theme ? `topic-${c.topic_theme}` : "topic-vwap");
       const timeStr = c.time_str || c.time || "";
-      const headline = c.topic || c.headline || "";
+      const headline = c.headline || c.topic || "";
       const icon = c.icon ? `<span style="margin-right:4px">${c.icon}</span>` : "";
+      const src = String(c.text_source || "heuristic").toLowerCase();
+      const isGenai = src === "genai" || c.template_fallback === false;
+      const model = c.llm_model ? ` · ${c.llm_model}` : "";
+      const llmBadge = `<span class="session-read-llm-source${isGenai ? " is-genai" : ""}" title="Story prose source">${isGenai ? `GenAI${model}` : "Heuristic"}</span>`;
 
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-          <div style="display:flex;align-items:center;gap:6px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
             <span class="comm-time-badge">${timeStr}</span>
             <span class="comm-topic-badge ${topicCls}">${icon}${c.topic || c.phase || "Structure"}</span>
+            ${llmBadge}
           </div>
           <div>${pinnedHtml}</div>
         </div>

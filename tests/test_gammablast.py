@@ -453,6 +453,61 @@ def test_blast_signal_trusted_requires_components():
     assert blast_signal_trusted(full) is True
     assert blast_signal_trusted({**full, "spot_stalled": True}) is False
     assert blast_signal_trusted({**full, "is_expiry": False}) is False
+    # PIN/COMPRESS and FAKE sustain are not expansion — no loud gate.
+    pin = {
+        **full,
+        "badge": "GAMMA PIN: COMPRESS",
+        "pin_geometry": True,
+    }
+    assert blast_signal_trusted(pin) is False
+    assert blast_signal_trusted({**full, "sustain_grade": "FAKE-leaning (pin/cap)"}) is False
+
+
+def test_blast_pin_and_imminent_helpers():
+    from app.gammablast import (
+        blast_expansion_trusted,
+        blast_imminent_coil,
+        blast_pin_trusted,
+        blast_signal_trusted,
+    )
+
+    pin = {
+        "score": 66,
+        "is_expiry": True,
+        "state": "TRIGGERED",
+        "badge": "GAMMA PIN: COMPRESS",
+        "cover_known": True,
+        "primary_strike": 84500,
+        "ignition_pts": 18,
+        "proximity_pts": 28,
+        "regime_pts": 0,
+        "pin_geometry": True,
+    }
+    assert blast_pin_trusted(pin) is True
+    assert blast_expansion_trusted(pin) is False
+    assert blast_signal_trusted(pin) is False
+
+    # Nearness without covering writers → quiet COILING, not imminent heartbeat.
+    quiet = {
+        "score": 48,
+        "is_expiry": True,
+        "state": "COILING",
+        "badge": "GAMMA BLAST: COILING",
+        "cover_known": True,
+        "cover_frac": 0.02,
+    }
+    assert blast_imminent_coil(quiet) is False
+    imminent = {
+        "score": 54,
+        "is_expiry": True,
+        "state": "COILING",
+        "badge": "GAMMA BLAST: IMMINENT",
+        "cover_known": True,
+        "cover_frac": -0.12,
+    }
+    assert blast_imminent_coil(imminent) is True
+    assert blast_imminent_coil({**imminent, "pin_geometry": True}) is False
+    assert blast_imminent_coil({**imminent, "score": 42}) is False
 
 
 def test_journal_refuses_incomplete_triggered(tmp_path, monkeypatch):
@@ -578,5 +633,8 @@ def test_sensex_pin_trigger_uses_100_step(tmp_path, monkeypatch):
     assert res["state"] == "TRIGGERED"
     assert res["badge"] == "GAMMA PIN: COMPRESS"
     assert res["cover_known"] is True
-    assert blast_signal_trusted(res) is True
+    # PIN is a concentration map — soft pin gate yes, expansion siren no.
+    from app.gammablast import blast_pin_trusted
+    assert blast_pin_trusted(res) is True
+    assert blast_signal_trusted(res) is False
 

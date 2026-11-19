@@ -387,7 +387,8 @@ def test_expiry_blast_prefix_refuses_component_blind_score():
     assert "EXPIRY BLAST" not in alert["badge"]
 
 
-def test_expiry_blast_prefix_works_for_sensex_pin():
+def test_expiry_pin_prefix_not_blast_siren():
+    """Sensex 19 Nov: PIN/COMPRESS must not take the EXPIRY BLAST siren prefix."""
     now = datetime(2026, 11, 12, 14, 20, tzinfo=IST).timestamp()
     alert = evaluate_market_alert(
         {
@@ -417,8 +418,10 @@ def test_expiry_blast_prefix_works_for_sensex_pin():
         },
         now_ts=now,
     )
-    assert "EXPIRY BLAST" in alert["badge"]
+    assert "EXPIRY BLAST" not in alert["badge"]
+    assert "EXPIRY PIN" in alert["badge"]
     assert "66" in alert["badge"]
+    assert "not an expansion blast" in alert["drivers"]
 
 
 def test_call_wall_watch_needs_bullish_tape():

@@ -184,9 +184,15 @@ score = clip(raw, 12, 96)
 
 | Score | `state` | Badge (typical) |
 |------:|---------|-----------------|
-| ≥ 60 | `TRIGGERED` | `GAMMA BLAST: ACTIVE` |
-| 35–59 | `COILING` | `GAMMA BLAST: COILING / IMMINENT` |
+| ≥ 60 | `TRIGGERED` | `GAMMA BLAST: ACTIVE` (or `GAMMA PIN: COMPRESS` when walls share a strike) |
+| 50–59 + covering tape | `COILING` | `GAMMA BLAST: IMMINENT` (non-pin only) |
+| 35–59 otherwise | `COILING` | `GAMMA BLAST: COILING` or `GAMMA PIN: COILING` |
 | < 35 | `NO_TRIGGER` | `GAMMA BLAST: INACTIVE` |
+
+**Alert ladder (Sensex 19 Nov noise cut):** plain COILING is a quiet map.
+Heartbeat audio only for IMMINENT (upper coil + covering, non-pin). Siren /
+`⚡ EXPIRY BLAST` only for trusted non-pin ACTIVE without FAKE sustain.
+Trusted PIN/COMPRESS gets a soft `📍 EXPIRY PIN` prefix — not the blast siren.
 
 Copy is **location language** (“through the call-gamma strike… not a measured hedge”),
 not “dealers defending.”
@@ -286,8 +292,8 @@ must not leave TRIGGERED and NO_TRIGGER in the same minute.
 
 | Consumer | Behavior |
 |----------|----------|
-| Cockpit UI + audio | Badge/score colors; COILING → heartbeat; TRIGGERED/ACTIVE → intensity-linked engine rev |
-| `analytics/market_alert.py` | `blast_signal_trusted` only: expiry + score ≥ 60 + cover_known + ignition/proximity/regime + TRIGGERED/COMPRESS; stalled spot refused; no direction scoring |
+| Cockpit UI + audio | IMMINENT → heartbeat; expansion ACTIVE → intensity-linked siren; plain COILING / PIN stay quiet |
+| `analytics/market_alert.py` | `blast_expansion_trusted` → `⚡ EXPIRY BLAST`; `blast_pin_trusted` → soft `📍 EXPIRY PIN`; stalled / incomplete / FAKE refused for siren; no direction scoring |
 | `app/blast_risk.py` | Expiry COILING → size × **0.75**; ACTIVE → × **0.50**; PIN/COMPRESS → × **0.40**; ACTIVE+FAKE/WEAK sustain → × **0.45**; tags / risk lines; optional short-near-magnet quality **penalty** only — **never** boosts CE/PE quality for blast |
 | `analytics/trade_ideas.py` / `structures/suggest.py` | Same live eval; de-size + annotate; shorts nudged off magnet / primary strike |
 

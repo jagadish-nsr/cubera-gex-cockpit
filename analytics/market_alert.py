@@ -438,16 +438,19 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         blast_score = int(blast.get("score") or 0)
     except (TypeError, ValueError):
         blast_score = 0
-    # Gate the loud EXPIRY BLAST prefix on a trusted print (cover_known +
-    # component fields + TRIGGERED/COMPRESS). Bare score ≥ 60 from a
-    # component-blind or stalled card must not spam the alert tape
-    # (Nifty 17 Nov: alerts at 13:02 while first-print was NO_TRIGGER 32).
+    # Loud EXPIRY BLAST only for non-pin expansion ACTIVE. PIN/COMPRESS is a
+    # concentration map (Sensex 19 Nov) — do not siren it as a blast.
+    is_expiry_blast = False
+    is_expiry_pin = False
     try:
-        from app.gammablast import blast_signal_trusted
-        is_expiry_blast = blast_signal_trusted(blast)
+        from app.gammablast import blast_expansion_trusted, blast_pin_trusted
+        is_expiry_blast = blast_expansion_trusted(blast)
+        is_expiry_pin = (not is_expiry_blast) and blast_pin_trusted(blast)
     except Exception:
         is_expiry_blast = bool(blast.get("is_expiry")) and blast_score >= 60 and (
             blast.get("cover_known") is True
+            and blast.get("pin_geometry") is not True
+            and "PIN" not in str(blast.get("badge") or "").upper()
         )
     breadth = dash.get("market_breadth") or {}
     now_ts = float(now_ts if now_ts is not None else datetime.now(tz=IST).timestamp())
@@ -838,6 +841,15 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             f"It is expiry day, and the blast score is {blast_score} out of 100. "
             "That is a parity watch: it checks whether call and put prices still line up. "
             "It does not pay for a call or a put. "
+            + base["drivers"]
+        )
+    elif is_expiry_pin:
+        # Soft map note only — not the blast siren prefix. Risk conditioner still
+        # de-sizes from the live card; this line must not sound like expansion.
+        base["badge"] = f"📍 EXPIRY PIN {blast_score} · " + str(base.get("badge") or "")
+        base["drivers"] = (
+            f"Call and put gamma share a strike (pin/compress, score {blast_score}). "
+            "That is concentration on the book, not an expansion blast. "
             + base["drivers"]
         )
 

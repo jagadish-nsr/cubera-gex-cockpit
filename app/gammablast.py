@@ -617,17 +617,54 @@ def blast_components_complete(blast: dict | None) -> bool:
     return True
 
 
-def blast_signal_trusted(blast: dict | None) -> bool:
-    """Gate for EXPIRY BLAST alert prefix and other loud consumers.
+def blast_is_pin(blast: dict | None) -> bool:
+    """Collapsed call==put walls / PIN badge — concentration map, not expansion."""
+    gb = blast or {}
+    if gb.get("pin_geometry") is True:
+        return True
+    badge = str(gb.get("badge") or "").upper()
+    return "GAMMA PIN" in badge or "COMPRESS" in badge
 
-    Requires expiry, complete cover/component fields, score ≥ 60, and
-    TRIGGERED / ACTIVE / COMPRESS. Never a bare score from a component-blind
-    or stalled print. Symbol-agnostic (Nifty / Bank Nifty / Sensex).
+
+def _blast_cover_frac(blast: dict | None) -> float | None:
+    gb = blast or {}
+    try:
+        if gb.get("cover_frac") in (None, ""):
+            return None
+        return float(gb.get("cover_frac"))
+    except (TypeError, ValueError):
+        return None
+
+
+def blast_pin_trusted(blast: dict | None) -> bool:
+    """Trusted PIN/COMPRESS print (complete components). Risk map only — not a blast siren."""
+    gb = blast or {}
+    if not gb.get("is_expiry") or gb.get("spot_stalled"):
+        return False
+    if not blast_is_pin(gb):
+        return False
+    try:
+        score = int(gb.get("score") or 0)
+    except (TypeError, ValueError):
+        return False
+    if score < 60:
+        return False
+    state = str(gb.get("state") or "").upper()
+    if state != "TRIGGERED" and "COMPRESS" not in str(gb.get("badge") or "").upper():
+        return False
+    return blast_components_complete(gb)
+
+
+def blast_expansion_trusted(blast: dict | None) -> bool:
+    """Loud EXPIRY BLAST / siren gate: trusted ACTIVE that is **not** pin/compress.
+
+    Sensex 19 Nov: 14/15 TRIGGERED first-prints were PIN:COMPRESS + FAKE sustain.
+    Those are location concentration, not an expansion cue — do not siren them.
     """
     gb = blast or {}
-    if not gb.get("is_expiry"):
+    if not gb.get("is_expiry") or gb.get("spot_stalled"):
         return False
-    if gb.get("spot_stalled"):
+    if blast_is_pin(gb):
         return False
     try:
         score = int(gb.get("score") or 0)
@@ -637,10 +674,50 @@ def blast_signal_trusted(blast: dict | None) -> bool:
         return False
     state = str(gb.get("state") or "").upper()
     badge = str(gb.get("badge") or "").upper()
-    active_like = state == "TRIGGERED" or ": ACTIVE" in badge or "COMPRESS" in badge
-    if not active_like:
+    if state != "TRIGGERED" and ": ACTIVE" not in badge:
+        return False
+    grade = str(gb.get("sustain_grade") or "").upper()
+    if "FAKE" in grade:
         return False
     return blast_components_complete(gb)
+
+
+def blast_imminent_coil(blast: dict | None) -> bool:
+    """True when COILING deserves an imminent heartbeat (not every nearness print).
+
+    Requires cover known, writers covering (ΔOI < 0), score in the upper coil
+    band, and not pin geometry. Low-score COILING stays a quiet map.
+    """
+    gb = blast or {}
+    if not gb.get("is_expiry") or gb.get("spot_stalled"):
+        return False
+    if blast_is_pin(gb):
+        return False
+    state = str(gb.get("state") or "").upper()
+    badge = str(gb.get("badge") or "").upper()
+    if state != "COILING" and "COILING" not in badge:
+        return False
+    if gb.get("cover_known") is not True:
+        return False
+    try:
+        score = int(gb.get("score") or 0)
+    except (TypeError, ValueError):
+        return False
+    if score < 50 or score >= 60:
+        return False
+    frac = _blast_cover_frac(gb)
+    if frac is None or frac >= -0.05:
+        return False
+    return True
+
+
+def blast_signal_trusted(blast: dict | None) -> bool:
+    """Loud alert/siren gate — expansion ACTIVE only (not PIN/COMPRESS).
+
+    Kept as the primary name used by market_alert / cockpit. PIN prints use
+    :func:`blast_pin_trusted` for risk annotation without the blast siren.
+    """
+    return blast_expansion_trusted(blast)
 
 
 def _note_spot_sample(symbol: str, spot: float, now: datetime) -> None:
@@ -733,7 +810,7 @@ def _apply_late_spot_stall(
         if "PIN" in (badge or "").upper() or "COMPRESS" in (badge or "").upper():
             badge = "GAMMA PIN: COILING"
         else:
-            badge = "GAMMA BLAST: COILING / IMMINENT"
+            badge = "GAMMA BLAST: COILING"
     if "stalled" not in (description or "").lower():
         description = f"{description}{stall_note}"
     return primary_strike, state, badge, score, description, True
@@ -1048,8 +1125,24 @@ def evaluate_dashboard_gamma_blast(dash, symbol: str = "NIFTY") -> dict:
                 f"Spot is within {abs(spot - call_wall):.0f} pts of the shared "
                 f"₹{call_wall:,.0f} gamma strike. Nearness is a map, not a coil that must break."
             )
+        elif (
+            score >= 50
+            and cover_known
+            and cover_frac is not None
+            and cover_frac < -0.05
+        ):
+            # Upper coil + covering tape = the only "imminent" language.
+            # Sensex 19 Nov spent much of the afternoon in 35–54 COILING without
+            # expansion; calling that IMMINENT trained the wrong alert habit.
+            badge = "GAMMA BLAST: IMMINENT"
+            target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
+            desc = (
+                f"Spot is within {abs(spot - (primary_strike or spot)):.0f} pts of the {target_name} "
+                f"with writers covering ({cover_frac:.0%}). That is an imminent watch on the map, "
+                "not a paid direction."
+            )
         else:
-            badge = "GAMMA BLAST: COILING / IMMINENT"
+            badge = "GAMMA BLAST: COILING"
             target_name = "Call Wall" if cw_testing else ("Put Wall" if pw_testing else "barrier")
             desc = f"Spot is within {abs(spot - (primary_strike or spot)):.0f} pts of the {target_name}. Nearness is a map, not a coil that must break."
     else:
