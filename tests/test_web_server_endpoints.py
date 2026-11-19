@@ -1036,7 +1036,7 @@ class TestOffMarketPersistence:
             assert "candidates" in te_data
             # Full TE when the off-market book has usable ATM IV; otherwise the
             # structured refuse (no fabricated 0.15) — never a blank or 5xx.
-            if te_data.get("error") == "target_engine_unavailable":
+            if te_data.get("error") in ("target_engine_unavailable", "near_book_expired"):
                 assert te_data["scenario_set"] is None
                 assert te_data["dial"] is None
                 assert te_data["targets"] == {}

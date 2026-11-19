@@ -76,7 +76,7 @@ Days with an aggregate fresh headline impact score $\ge 6$ or breaking shock cat
 - Shared client ([`analytics/llm_client.py`](../analytics/llm_client.py)) rewrites digest narrative and can polish alert-tape headline/drivers.
 - **Default provider: local Ollama** (`CUBERA_LLM_PROVIDER=ollama`, `OLLAMA_HOST=http://localhost:11434`, `OLLAMA_MODEL=…`). Optional `gemini` with `GEMINI_API_KEY`.
 - Ranking, mover gate, alert stance/grade/trigger/kill stay deterministic. Model sees only those facts.
-- Per-feature gates: `CUBERA_LLM`, `CUBERA_LLM_DIGEST`, `CUBERA_LLM_ALERT_TAPE`, `CUBERA_LLM_QA`, `CUBERA_LLM_SESSION_READS`. Fail-soft → heuristic text. UI shows Heuristic vs GenAI.
+- Per-feature gates: `CUBERA_LLM`, `CUBERA_LLM_DIGEST`, `CUBERA_LLM_ALERT_TAPE`, `CUBERA_LLM_QA`, `CUBERA_LLM_SESSION_READS`, `CUBERA_LLM_COMMENTARY`. Fail-soft → heuristic text. UI shows Heuristic vs GenAI.
 - Never commit cloud API keys.
 
 ---

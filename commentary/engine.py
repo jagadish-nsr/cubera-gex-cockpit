@@ -284,8 +284,36 @@ class SessionCommentaryEngine:
                 published_types.add(top_event.type)
 
                 self.story_mgr.update_thesis(top_event)
-                headline, body = self.narrator.narrate(top_event)
+                from analytics.session_qa import build_narrative_session_context
+                overrides: dict[str, Any] = {
+                    "symbol": symbol.upper(),
+                    "spot": spot,
+                    "prior_close": prev_close,
+                    "call_wall": call_wall,
+                    "put_wall": put_wall,
+                    "gamma_flip": flip,
+                    "max_pain": max_pain,
+                    "session_phase": state.phase,
+                    "phase": state.phase,
+                    "net_gex_sign": net_gex_sign,
+                    "atm_iv": atm_iv,
+                    "magnet": float(getattr(levels, "magnet", 0) or 0) or None,
+                    "regime": str(getattr(levels, "regime", "") or "") or None,
+                    "net_gex": float(getattr(levels, "total_net_gex", 0) or 0),
+                    "oi_timestamp": getattr(levels, "oi_timestamp", None),
+                    "oi_stale": bool(getattr(levels, "oi_stale", False)),
+                }
+                if pcr_val is not None:
+                    overrides["pcr"] = float(pcr_val)
+                thesis = getattr(state, "running_thesis", None)
+                session_ctx = build_narrative_session_context(
+                    symbol,
+                    overrides=overrides,
+                    story_thesis=thesis if isinstance(thesis, dict) else None,
+                )
+                headline, body = self.narrator.narrate(top_event, context=session_ctx)
                 entry_id = f"entry-{int(now_ist.timestamp())}-{top_event.type.lower()}"
+                used_template = self.narrator.last_text_source != "genai"
 
                 entry = CommentaryEntry(
                     id=entry_id,
@@ -295,6 +323,7 @@ class SessionCommentaryEngine:
                     headline=headline,
                     body=body,
                     verified=True,
+                    template_fallback=used_template,
                     tags=[top_event.type] + list(top_event.quality_flags),
                     facts={
                         "spot": spot,
@@ -304,6 +333,8 @@ class SessionCommentaryEngine:
                         "expected_move": float(getattr(levels, "expected_move", 100.0) or 100.0),
                         "event_type": top_event.type,
                         "event_facts": top_event.facts,
+                        "text_source": self.narrator.last_text_source,
+                        "llm_model": self.narrator.last_llm_model,
                     },
                 )
 
@@ -483,8 +514,23 @@ class SessionCommentaryEngine:
                 for pub_s in publishable[:2]:
                     ev = pub_s.event
                     temp_engine.story_mgr.update_thesis(ev)
-                    headline, body = temp_engine.narrator.narrate(ev)
+                    from analytics.session_qa import build_narrative_session_context
+                    session_ctx = build_narrative_session_context(
+                        sym,
+                        overrides={
+                            "symbol": sym,
+                            "spot": spot,
+                            "call_wall": cw,
+                            "put_wall": pw,
+                            "gamma_flip": flip,
+                            "session_phase": state.phase,
+                            "phase": state.phase,
+                        },
+                        story_thesis=getattr(state, "running_thesis", None),
+                    )
+                    headline, body = temp_engine.narrator.narrate(ev, context=session_ctx)
                     entry_id = f"entry-{int(as_of_dt.timestamp())}-{ev.type.lower()}"
+                    used_template = temp_engine.narrator.last_text_source != "genai"
 
                     entry = CommentaryEntry(
                         id=entry_id,
@@ -494,6 +540,7 @@ class SessionCommentaryEngine:
                         headline=headline,
                         body=body,
                         verified=True,
+                        template_fallback=used_template,
                         tags=[ev.type] + list(ev.quality_flags),
                         facts={
                             "spot": spot,
@@ -503,6 +550,8 @@ class SessionCommentaryEngine:
                             "expected_move": 120.0,
                             "event_type": ev.type,
                             "event_facts": ev.facts,
+                            "text_source": temp_engine.narrator.last_text_source,
+                            "llm_model": temp_engine.narrator.last_llm_model,
                         },
                     )
                     bites = temp_engine.bites_engine.generate_bites(pit_view, [pub_s])

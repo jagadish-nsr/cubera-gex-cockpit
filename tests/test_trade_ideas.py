@@ -167,6 +167,17 @@ def test_generate_recommendations_rejects_demo_book():
     assert batch.all_recommendations == []
 
 
+def test_generate_recommendations_near_book_expired_is_explicit():
+    data = MockDashboardData(spot=83000.0)
+    data.levels.call_wall = 0.0
+    data.levels.put_wall = 0.0
+    data.levels.flip = 0.0
+    data.levels.near_book_expired = True
+    batch = generate_trade_recommendations(data, min_score=0)
+    assert batch.all_recommendations == []
+    assert "0DTE near book rolled off" in batch.executive_summary
+
+
 def test_generate_recommendations_bias_influence():
     data = MockDashboardData(spot=24500.0)
 

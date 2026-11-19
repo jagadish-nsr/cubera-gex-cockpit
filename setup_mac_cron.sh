@@ -36,7 +36,7 @@ block() {
     local eod="$5"
     local label="$6"
     cat <<EOF
-# ${label} timeseries, every 15 min from 09:00 through the 15:00 hour IST, Mon-Fri
+# ${label} timeseries, every 5 min from 09:00 through the 15:00 hour IST, Mon-Fri
 ${ts} 9-15 * * 1-5 ${dir}/run_timeseries.sh
 # ${label} session logger, Mon-Fri
 ${morning} 9 * * 1-5 ${dir}/run_logger.sh
@@ -52,8 +52,8 @@ EOF
 
 NEW_BLOCK="$(cat <<EOF
 # BEGIN cubera-gex data collection
-$(block "${DEV_DIR}" '*/15' 20 0 0 dev)
-$(block "${PROD_DIR}" '3,18,33,48' 23 3 3 prod)
+$(block "${DEV_DIR}" '*/5' 20 0 0 dev)
+$(block "${PROD_DIR}" '3-59/5' 23 3 3 prod)
 # prod big-money futures tape, one process from 09:10 IST, Mon-Fri
 10 9 * * 1-5 ${PROD_DIR}/run_big_money.sh
 # prod gamma-blast option ticks from 12:55 IST, Mon-Fri (waits for the 13:00 freeze).

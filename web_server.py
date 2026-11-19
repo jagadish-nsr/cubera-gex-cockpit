@@ -3397,10 +3397,21 @@ async def get_target_engine(
         res = run_target_engine(dashboard_data=dash, horizon_minutes=horizon_val, persist=False)
     except ValueError as exc:
         log.warning("target_engine refuse %s: %s", sym, exc)
+        near_expired = bool(getattr(getattr(dash, "levels", None), "near_book_expired", False))
+        if near_expired:
+            msg = (
+                "0DTE near book rolled off — Target Engine needs live ATM IV "
+                "from the next listed expiry."
+            )
+            err = "near_book_expired"
+        else:
+            msg = str(exc)
+            err = "target_engine_unavailable"
         return {
             "symbol": sym,
-            "error": "target_engine_unavailable",
-            "message": str(exc),
+            "error": err,
+            "message": msg,
+            "near_book_expired": near_expired,
             "dial": None,
             "targets": {},
             "candidates": [],
@@ -4399,6 +4410,14 @@ def _go_position_alerts(sym: str, dash=None) -> list[dict]:
 async def _go_refresh_open_marks(sym: str, dash) -> int:
     """Reprice open staged GOs from live chain LTPs. Returns update count."""
     from data.journal import go_efficiency as go_eff
+
+    # Defensive: if F&O is already closed, settle orphans even when the
+    # post-market poller thread is not the path that hit this request.
+    try:
+        if not config.is_market_open():
+            go_eff.close_all_open_at_session_end()
+    except Exception as exc:
+        log.debug("go session-end close on mark refresh: %s", exc)
 
     contracts_df = getattr(dash, "contracts", None)
     if contracts_df is None:
@@ -7878,14 +7897,22 @@ async def get_session_commentary(symbol: Optional[str] = None):
                     "text": b_text,
                 })
 
+            facts = e.get("facts") if isinstance(e.get("facts"), dict) else {}
+            text_source = str((facts or {}).get("text_source") or "heuristic").lower()
+            if e.get("template_fallback") is False:
+                text_source = "genai"
             cards.append({
                 "time_str": time_str,
                 "topic": topic,
+                "headline": raw_hl,
                 "card_class": card_cls,
                 "topic_class": topic_cls,
                 "icon": icon,
                 "body": body,
                 "bites": bites,
+                "text_source": text_source,
+                "llm_model": (facts or {}).get("llm_model"),
+                "template_fallback": bool(e.get("template_fallback", text_source != "genai")),
             })
 
     if not cards:

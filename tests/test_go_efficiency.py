@@ -314,6 +314,41 @@ def test_close_open_settles_and_summarize_pnl():
     assert summary["pnl"]["gross_pnl_inr"] == 520.0
 
 
+def test_session_end_closes_open_orphans():
+    from datetime import datetime, timezone, timedelta
+    from data.journal.go_efficiency import (
+        record_event,
+        list_open,
+        close_all_open_at_session_end,
+        _SESSION_END_CLOSED_DATE,
+    )
+    import data.journal.go_efficiency as ge
+
+    ge._SESSION_END_CLOSED_DATE = None
+    decision = {
+        "id": "d_eod",
+        "symbol": "NIFTY",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 88,
+        "strategy_key": "EXHAUSTION_DOWN",
+        "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 25200, "ltp": 100}],
+        "risk": {"credit_or_debit": -100},
+        "context": {"spot": 25250, "lot_size": 65},
+    }
+    record_event("STAGE", decision, trade_id="pt_eod")
+    assert len(list_open("NIFTY")) == 1
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    after_close = datetime(2026, 11, 19, 15, 45, tzinfo=ist)
+    closed = close_all_open_at_session_end(now=after_close)
+    assert len(closed) == 1
+    assert closed[0]["exit_reason"] == "SESSION_END"
+    assert list_open("NIFTY") == []
+    # Idempotent same day
+    assert close_all_open_at_session_end(now=after_close) == []
+
+
 def test_trail_stop_auto_settles_pnl():
     from data.journal.go_efficiency import record_event, mark_open, summarize
 

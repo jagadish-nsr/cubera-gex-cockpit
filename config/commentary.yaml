@@ -120,10 +120,11 @@ bites:
     - "last chance"
 
 narrator:
-  max_words_per_entry: 60
+  max_words_per_entry: 80
   temperature: 0.2
   fallback_to_template_on_error: true
-  enable_llm_enhancement: false     # Can be toggled on when external provider is configured
+  # Also requires CUBERA_LLM=1 and CUBERA_LLM_COMMENTARY unset/1 (see analytics/llm_client.py).
+  enable_llm_enhancement: true
 
 profile:
   capital: 500000.0

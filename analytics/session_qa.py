@@ -542,6 +542,76 @@ def gather_session_context(symbol: str) -> dict[str, Any]:
     )
 
 
+def build_narrative_session_context(
+    symbol: str,
+    *,
+    overrides: dict[str, Any] | None = None,
+    story_thesis: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Slim desk pack for commentary LLM — book + alert + positioning + path.
+
+    ``overrides`` win for live levels already computed in the commentary engine
+    (spot/walls/flip) so the story stays on the same book as the detectors.
+    """
+    from config import index_key
+
+    sym = index_key(symbol)
+    try:
+        full = gather_session_context(sym)
+    except Exception as ex:  # noqa: BLE001
+        log.debug("narrative context gather failed: %s", ex)
+        full = {"symbol": sym}
+
+    keep = (
+        "symbol",
+        "sign_convention",
+        "spot",
+        "call_wall",
+        "put_wall",
+        "magnet",
+        "gamma_flip",
+        "max_pain",
+        "regime",
+        "net_gex",
+        "oi_timestamp",
+        "oi_stale",
+        "session_phase",
+        "as_of",
+        "lot_size",
+        "strike_step",
+        "market_alert",
+        "positioning",
+        "futures_state",
+        "price_move",
+        "digest",
+    )
+    slim: dict[str, Any] = {k: full[k] for k in keep if k in full and full[k] is not None}
+
+    go = full.get("go")
+    if isinstance(go, dict) and go:
+        slim["go"] = {
+            "state": go.get("state"),
+            "strategy_key": go.get("strategy_key"),
+            "thesis": str(go.get("thesis") or "")[:200],
+            "contracts": (go.get("contracts") or [])[:2],
+        }
+
+    if isinstance(story_thesis, dict) and story_thesis:
+        slim["running_thesis"] = {
+            "bias": story_thesis.get("bias"),
+            "confidence": story_thesis.get("confidence"),
+        }
+
+    if overrides:
+        for key, val in overrides.items():
+            if val is None:
+                continue
+            slim[key] = val
+    slim.setdefault("symbol", sym)
+    slim.setdefault("sign_convention", SIGN_CONVENTION)
+    return slim
+
+
 def render_faq_brief(faq_id: str, context: dict[str, Any]) -> str:
     """Deterministic answer from stamped facts. Always ends with CONFIRM_LINE."""
     ctx = context or {}

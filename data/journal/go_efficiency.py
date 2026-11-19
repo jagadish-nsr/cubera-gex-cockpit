@@ -181,7 +181,12 @@ def _row_lot_legs(row: sqlite3.Row, decision: dict | None = None) -> tuple[int, 
     return (lot or lot2), (n_legs or legs2)
 
 
-def _close_linked_paper(trade_id: str | None, *, exit_premium: float) -> None:
+def _close_linked_paper(
+    trade_id: str | None,
+    *,
+    exit_premium: float,
+    exit_reason: str = "TRAIL_STOP",
+) -> None:
     """The paper ledger is what the desk reads. A trail that only updates go_open
     leaves the same trade OPEN at the entry premium."""
     if not trade_id:
@@ -192,7 +197,7 @@ def _close_linked_paper(trade_id: str | None, *, exit_premium: float) -> None:
         existing = get_trade(str(trade_id))
         if existing is None or existing.status != "OPEN":
             return
-        close_trade(str(trade_id), float(exit_premium), exit_reason="TRAIL_STOP")
+        close_trade(str(trade_id), float(exit_premium), exit_reason=str(exit_reason or "TRAIL_STOP"))
     except Exception:
         log.warning("paper close failed for %s", trade_id, exc_info=True)
 
@@ -661,21 +666,79 @@ def close_open(
             if exit_spot is None and row["mark_spot"] is not None:
                 exit_spot = float(row["mark_spot"])
             lot, n_legs = _row_lot_legs(row)
+            reason = exit_reason or status
             settled = _write_settlement(
                 conn,
                 decision_id=decision_id,
                 entry_premium=entry,
                 exit_premium=float(exit_premium),
                 exit_spot=exit_spot,
-                exit_reason=exit_reason or status,
+                exit_reason=reason,
                 status=status,
                 lot_size=lot,
                 n_legs=n_legs,
             )
+            trade_id = row["trade_id"]
             conn.commit()
+            _close_linked_paper(
+                trade_id,
+                exit_premium=float(exit_premium),
+                exit_reason=reason,
+            )
             return settled
         finally:
             conn.close()
+
+
+_SESSION_END_CLOSED_DATE: str | None = None
+
+
+def close_all_open_at_session_end(
+    *,
+    now: Any | None = None,
+    force: bool = False,
+) -> list[dict[str, Any]]:
+    """After F&O close, settle every remaining OPEN GO at the last mark.
+
+    Paper/auto-stage leaves overnight orphans when trail never arms. Idempotent
+    once per IST calendar day unless ``force``.
+    """
+    global _SESSION_END_CLOSED_DATE
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    when = now or datetime.now(ist)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=ist)
+    else:
+        when = when.astimezone(ist)
+    day = when.strftime("%Y-%m-%d")
+    mins = when.hour * 60 + when.minute
+    try:
+        import config as _cfg
+        fno_close = int(getattr(_cfg, "FNO_CLOSE_MIN", 15 * 60 + 40))
+    except Exception:
+        fno_close = 15 * 60 + 40
+    if not force:
+        if mins < fno_close:
+            return []
+        if _SESSION_END_CLOSED_DATE == day:
+            return []
+
+    closed: list[dict[str, Any]] = []
+    for row in list_open():
+        settled = close_open(
+            row["decision_id"],
+            status="CLOSED",
+            exit_premium=None,
+            exit_spot=None,
+            exit_reason="SESSION_END",
+        )
+        if settled and not settled.get("already_closed"):
+            closed.append(settled)
+    _SESSION_END_CLOSED_DATE = day
+    if closed:
+        log.info("go session-end closed %d open position(s) on %s", len(closed), day)
+    return closed
 
 
 def list_open(symbol: str | None = None, *, include_decision: bool = False) -> list[dict[str, Any]]:

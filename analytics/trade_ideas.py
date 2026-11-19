@@ -3218,6 +3218,13 @@ def generate_trade_recommendations(
     except (TypeError, ValueError):
         call_wall = put_wall = flip = 0.0
     if call_wall <= 0 or put_wall <= 0 or flip <= 0:
+        near_expired = bool(getattr(levels, "near_book_expired", False)) if levels else False
+        if near_expired:
+            return _empty_recommendation_batch(
+                symbol,
+                "0DTE near book rolled off — walls/flip not named after expiry. "
+                "Ideas resume on the next listed book.",
+            )
         return _empty_recommendation_batch(
             symbol,
             "Missing call wall, put wall, or flip — ideas are not built on invented levels.",

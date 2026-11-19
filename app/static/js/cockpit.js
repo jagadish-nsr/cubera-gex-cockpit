@@ -1759,9 +1759,14 @@
       if (dm === "OFF_SESSION" || (brief && brief.market_open === false)) return MODES.OFF_SESSION;
       if (dm === "OK" && brief && brief.ready !== false) return MODES.OK;
       if (dm === "TOKEN_DEAD" || dm === "NOT_READY") return MODES.NOT_READY;
+      // Soft source / LKGS flags: ready stayed true — do not paint loud DEGRADED.
+      if (
+        (dm === "BOOK_NSE_SCRAPE" || dm === "CHAIN_DEGRADED")
+        && brief && brief.ready !== false
+      ) {
+        return MODES.OK;
+      }
       if (dm === "FEED_DOWN" || dm === "CHAIN_DEGRADED") return MODES.DEGRADED;
-      // Fresh book on NSE scrape: ready stays true; do not paint loud DEGRADED.
-      if (dm === "BOOK_NSE_SCRAPE" && brief && brief.ready !== false) return MODES.OK;
       if (brief && brief.ready === false) return MODES.NOT_READY;
       return MODES.DEGRADED;
     }

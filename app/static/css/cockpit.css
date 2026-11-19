@@ -1098,6 +1098,7 @@ body {
 }
 
 #tab-cockpit .session-read-llm-source,
+.session-read-llm-source,
 .session-qa-chip-genai {
   flex: 0 0 auto;
   font-size: 0.58rem;
@@ -1112,6 +1113,7 @@ body {
   white-space: nowrap;
 }
 #tab-cockpit .session-read-llm-source.is-genai,
+.session-read-llm-source.is-genai,
 .session-qa-chip-genai {
   color: var(--spark);
   border-color: color-mix(in srgb, var(--spark) 45%, var(--line));

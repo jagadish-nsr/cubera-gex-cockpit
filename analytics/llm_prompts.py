@@ -290,3 +290,66 @@ def parse_alert_tape_rewrite(text: str) -> tuple[str, str] | None:
     if len(parts) >= 2:
         return parts[0][:160], " ".join(parts[1:])[:500]
     return None
+
+
+def commentary_story_messages(
+    *,
+    event_type: str,
+    event_facts: dict[str, Any],
+    template_headline: str,
+    template_body: str,
+    session_context: dict[str, Any] | None = None,
+    max_words: int = 80,
+) -> list[dict[str, str]]:
+    """Rewrite a detector event into trader-meaningful session commentary."""
+    system = (
+        _DESK_RULES
+        + " You write Session Commentary story entries for an Indian index-options desk. "
+        "Rewrite the template HEADLINE and BODY into clearer trader prose. "
+        "Use session_context when it helps: spot/walls/flip/magnet/regime/net_gex, "
+        "OI as-of, price_move vs prior close, positioning/futures_state, market_alert "
+        "stance/trigger/kill, digest catalyst note, running_thesis, and GO summary. "
+        "Only cite values present in the payload. "
+        "Keep every event_facts number exactly (strikes, pts, pct, OI). "
+        "Do not invent catalysts, dealer defense, fade/momentum from regime alone, or new levels. "
+        "Walls are concentration, not floors/ceilings. "
+        "POSITIVE/NEGATIVE regime is call-heavy vs put-heavy under short_call_short_put. "
+        f"Keep the body under about {int(max_words)} words. Plain English. No markdown. "
+        "Return exactly two lines: "
+        "HEADLINE: <one short line> "
+        "BODY: <one or two short paragraphs as a single line>."
+    )
+    payload = {
+        "event_type": event_type,
+        "event_facts": event_facts or {},
+        "template_headline": template_headline,
+        "template_body": template_body,
+        "session_context": session_context or {},
+    }
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+
+
+def parse_commentary_story_rewrite(text: str) -> tuple[str, str] | None:
+    """Parse HEADLINE:/BODY: lines from commentary model output."""
+    if not text or not str(text).strip():
+        return None
+    headline = ""
+    body = ""
+    for raw in str(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("headline:"):
+            headline = line.split(":", 1)[1].strip()
+        elif low.startswith("body:"):
+            body = line.split(":", 1)[1].strip()
+    if headline and body:
+        return headline[:180], body[:900]
+    parts = [p.strip() for p in str(text).strip().split("\n") if p.strip()]
+    if len(parts) >= 2:
+        return parts[0][:180], " ".join(parts[1:])[:900]
+    return None
