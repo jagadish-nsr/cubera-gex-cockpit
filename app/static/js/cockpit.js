@@ -727,8 +727,8 @@
   }
 
   /**
-   * India temple bell (ghanta) — struck bronze, inharmonic partials.
-   * strikes=1 → tape alert; strikes=2 → wall-chase twin temple.
+   * Indian puja ghanti (hand bell) — bright brass ting with clapper attack.
+   * strikes=1 → tape alert; strikes=2 → wall-chase twin ting (aarti style).
    */
   function playIndiaTempleBell(strikes = 1, force = false) {
     if (!force && !state.alertBellEnabled) return;
@@ -750,30 +750,58 @@
         return;
       }
 
-      // ~A#3 / B3 temple-gong fundamental (Indian brass ghanta character)
-      const f0 = 233.08;
+      // Small brass puja ghanti — bright fundamental ~G5/A5, inharmonic shimmer
+      const f0 = 784.0; // G5
       const partials = [
-        { ratio: 0.50, gain: 0.20, decay: 5.5 },
-        { ratio: 1.00, gain: 0.62, decay: 5.0 },
-        { ratio: 1.19, gain: 0.36, decay: 4.0 },
-        { ratio: 1.50, gain: 0.22, decay: 3.2 },
-        { ratio: 2.00, gain: 0.14, decay: 2.5 },
-        { ratio: 2.76, gain: 0.09, decay: 1.9 },
-        { ratio: 3.40, gain: 0.05, decay: 1.3 },
-        { ratio: 4.10, gain: 0.03, decay: 0.9 },
+        { ratio: 1.00, gain: 0.48, decay: 2.8, type: "sine" },
+        { ratio: 2.01, gain: 0.28, decay: 2.2, type: "sine" },
+        { ratio: 2.76, gain: 0.18, decay: 1.7, type: "sine" },  // inharmonic
+        { ratio: 3.42, gain: 0.12, decay: 1.3, type: "triangle" },
+        { ratio: 4.15, gain: 0.08, decay: 1.0, type: "sine" },
+        { ratio: 5.40, gain: 0.05, decay: 0.7, type: "sine" },
+        { ratio: 6.80, gain: 0.03, decay: 0.45, type: "sine" },
       ];
       const nStrikes = Math.max(1, Math.min(2, Number(strikes) || 1));
-      const strikeAt = nStrikes >= 2 ? [0.0, 0.58] : [0.0];
+      // Puja aarti spacing — quick double ting
+      const strikeAt = nStrikes >= 2 ? [0.0, 0.28] : [0.0];
 
       strikeAt.forEach((at) => {
         const t0 = ctx.currentTime + at;
+
+        // Clapper / tongue strike (short noise burst)
+        try {
+          const dur = 0.035;
+          const buf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * dur)), ctx.sampleRate);
+          const data = buf.getChannelData(0);
+          for (let i = 0; i < data.length; i += 1) {
+            data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+          }
+          const noise = ctx.createBufferSource();
+          noise.buffer = buf;
+          const bp = ctx.createBiquadFilter();
+          bp.type = "bandpass";
+          bp.frequency.setValueAtTime(2400, t0);
+          bp.Q.setValueAtTime(4.5, t0);
+          const ng = ctx.createGain();
+          ng.gain.setValueAtTime(0.0001, t0);
+          ng.gain.linearRampToValueAtTime(0.35, t0 + 0.002);
+          ng.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.04);
+          noise.connect(bp);
+          bp.connect(ng);
+          ng.connect(ctx.destination);
+          noise.start(t0);
+          noise.stop(t0 + dur + 0.02);
+        } catch (e) { /* noise optional */ }
+
         partials.forEach((p) => {
           const osc = ctx.createOscillator();
           const g = ctx.createGain();
-          osc.type = "sine";
+          osc.type = p.type || "sine";
           osc.frequency.setValueAtTime(f0 * p.ratio, t0);
+          // Tiny pitch dip on strike (metal give)
+          osc.frequency.exponentialRampToValueAtTime(f0 * p.ratio * 0.997, t0 + 0.04);
           g.gain.setValueAtTime(0.0001, t0);
-          g.gain.linearRampToValueAtTime(p.gain, t0 + 0.01);
+          g.gain.linearRampToValueAtTime(p.gain, t0 + 0.004);
           g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
           osc.connect(g);
           g.connect(ctx.destination);
@@ -782,11 +810,11 @@
         });
       });
     } catch (e) {
-      console.warn("Error synthesizing India temple bell:", e);
+      console.warn("Error synthesizing India puja bell:", e);
     }
   }
 
-  // Tape / general alert bell — India temple (single strike)
+  // Tape / general alert bell — Indian puja ghanti (single ting)
   function playTraderBellRing() {
     playIndiaTempleBell(1);
   }
@@ -827,10 +855,10 @@
   window.testAlertBell = function () {
     initAudioContext();
     playIndiaTempleBell(1, true);
-    showToast("Auditioning India temple bell (alert)", "🛕");
+    showToast("Auditioning Indian puja ghanti (alert)", "🛕");
   };
 
-  /** Twin India temple strikes — cross-index wall-chase CALL/PUT WATCH. */
+  /** Twin puja-ghanti tings — cross-index wall-chase CALL/PUT WATCH. */
   function playTwinTempleBell(force = false) {
     playIndiaTempleBell(2, force);
   }
@@ -838,7 +866,7 @@
   window.testTwinTempleBell = function () {
     initAudioContext();
     playTwinTempleBell(true);
-    showToast("Auditioning twin India temple bell (wall-chase)", "🛕");
+    showToast("Auditioning twin Indian puja ghanti (wall-chase)", "🛕");
   };
 
   const ALERT_BELL_COOLDOWN_MS = 180000; // 3 min shared — stops all-day scenario flaps
