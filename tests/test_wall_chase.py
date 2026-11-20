@@ -6,7 +6,9 @@ from datetime import datetime, timezone, timedelta
 
 from analytics.wall_chase import (
     CHASE_TAPE_MIN_SCORE,
+    compute_chase_stretch,
     evaluate_wall_chase,
+    parse_strikes_from_headline,
     should_promote_extension_watch,
     tape_score_floor_for_zone,
     wall_events_from_commentary,
@@ -143,3 +145,35 @@ def test_wall_events_from_commentary_tags():
     assert len(evs) == 2
     assert evs[0]["side"] == "CALL"
     assert evs[0]["kind"] == "WALL_BREAK"
+    assert evs[0]["strike"] == 82700.0
+    assert evs[1]["old_strike"] == 82700.0
+    assert evs[1]["new_strike"] == 82800.0
+
+
+def test_parse_strikes_and_chase_stretch_sensex_shape():
+    assert parse_strikes_from_headline("Call Wall Broken at ₹82,600") == [82600.0]
+    assert parse_strikes_from_headline("Call Wall Migrated from ₹82,500 to ₹82,600") == [82500.0, 82600.0]
+    events = [
+        {"side": "CALL", "headline": "Call Wall Migrated from ₹82,500 to ₹82,600"},
+        {"side": "CALL", "headline": "Call Wall Broken at ₹82,600"},
+        {"side": "CALL", "headline": "Call Wall Migrated from ₹82,600 to ₹82,700"},
+    ]
+    stretch = compute_chase_stretch(
+        side="CALL",
+        spot=82753,
+        call_wall=82700,
+        put_wall=82500,
+        strike_step=100,
+        through_pts=53,
+        wall_events=events,
+        magnet=82600,
+        flip=82600,
+    )
+    assert stretch["first_wall"] == 82500.0
+    assert stretch["last_wall"] == 82700.0
+    assert stretch["wall_span_pts"] == 200.0
+    assert stretch["run_pts"] == 253.0  # 82753 - 82500
+    assert stretch["next_map_strike"] == 82800.0
+    assert stretch["stretch_to_next_pts"] == 47.0  # 82800 - 82753
+    assert stretch["potential_stretch_pts"] == 353.0  # run + one 100-pt step
+    assert "short_call_short_put" in stretch["note"]

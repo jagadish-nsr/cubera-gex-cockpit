@@ -582,6 +582,7 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert 'id="sidebar-audio-toggle"' in html
     assert "testSentinelBullishSound" in html
     assert "testSentinelBearishSound" in html
+    assert "testTwinTempleBell" in html
     assert "previewGammaBlastHeartbeat" in html
     assert "previewGammaBlastSiren" in html
     assert "stopGammaBlastPreview" in html
@@ -606,6 +607,11 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert "setAllAudioEnabled" in js
     assert "processSentinelSignals" in js
     assert "pollSentinelSignals" in js
+    assert "playTwinTempleBell" in js
+    assert "pollWallChaseWatch" in js
+    assert "processWallChaseWatches" in js
+    assert "testTwinTempleBell" in js
+    assert "/api/wall-chase-watch" in js
     # Gamma-blast audition + live COILING/ACTIVE wiring (heartbeat + engine rev)
     assert "previewGammaBlastHeartbeat" in js
     assert "previewGammaBlastSiren" in js
@@ -1257,6 +1263,35 @@ def test_dark_light_theme_mode_toggle():
     assert "cubera_theme" in js, "Theme localStorage persistence missing in cockpit.js"
 
 
-
-
+def test_wall_chase_watch_endpoint_all_indices():
+    """Cross-index wall-chase watch payload for browser notify (any selected index)."""
+    status, _, content = asyncio.run(asgi_request("GET", "/api/wall-chase-watch?window=current_week"))
+    assert status == 200
+    data = json.loads(content)
+    assert data.get("window") == "current_week"
+    assert "as_of" in data
+    assert "notify_count" in data
+    watches = data.get("watches") or []
+    assert len(watches) == 3
+    symbols = {w.get("symbol") for w in watches}
+    assert symbols == {"NIFTY", "BANKNIFTY", "SENSEX"}
+    for w in watches:
+        assert "notify" in w
+        assert "active" in w
+        assert "stance" in w
+        assert "side" in w
+        assert "n_events" in w
+        assert "stretch" in w
+        assert "magnet" in w
+        assert "flip" in w
+        assert isinstance(w["notify"], bool)
+        if w["notify"]:
+            st = w["stretch"] or {}
+            assert "run_pts" in st
+            assert "potential_stretch_pts" in st
+            assert "next_map_strike" in st
+            # Rising-edge publish into that index's Session Commentary
+            assert w.get("commentary") is None or w["commentary"].get("status") in (
+                "ok", "deduped", "error",
+            )
 

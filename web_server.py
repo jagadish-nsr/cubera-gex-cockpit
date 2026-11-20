@@ -3389,6 +3389,312 @@ async def get_cockpit_data(
     return payload
 
 
+def _slim_orderflow_alerts(symbol: str, *, limit: int = 12) -> list:
+    """Recent Sentinel rows for wall-chase watch (no outcome join required)."""
+    inst_id = f"{(symbol or 'NIFTY').upper()}-FUT"
+    out = []
+    try:
+        sigs = list_recent_signals(inst_id, limit=limit) or []
+    except Exception:
+        return out
+    for s in sigs:
+        out.append({
+            "event_id": getattr(s, "event_id", "") or f"{s.type}_{s.bar_start_ts}",
+            "type": s.type,
+            "category": s.category,
+            "bias": getattr(s, "bias", "") or (
+                "LONG" if s.category == "BULLISH"
+                else ("SHORT" if s.category == "BEARISH" else "NEUTRAL")
+            ),
+            "score": s.score,
+            "status": getattr(s, "status", None) or "ACTIVE",
+            "insight_text": getattr(s, "insight_text", "") or "",
+            "invalidation_level": getattr(s, "invalidation_level", 0.0) or 0.0,
+            "time": _fmt_bar_stamp(s.bar_start_ts) or str(s.bar_start_ts),
+            "ts": s.bar_start_ts.timestamp() if hasattr(s.bar_start_ts, "timestamp") else None,
+        })
+    return out
+
+
+# Rising-edge fingerprints already written to Session Commentary for wall-chase.
+_WALL_CHASE_COMMENTARY_SEEN: dict[str, str] = {}
+
+
+def _fmt_lvl(val: float) -> str:
+    try:
+        v = float(val or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if v <= 0:
+        return "—"
+    return f"{v:,.0f}"
+
+
+def _wall_chase_commentary_fingerprint(row: dict) -> str:
+    stretch = row.get("stretch") or {}
+    return "|".join([
+        str(row.get("side") or ""),
+        str(row.get("stance") or ""),
+        str(row.get("signal_type") or ""),
+        str(row.get("n_events") or 0),
+        str(row.get("zone") or ""),
+        str(stretch.get("first_wall") or ""),
+        str(stretch.get("last_wall") or ""),
+        str(stretch.get("run_pts") or ""),
+        str(stretch.get("next_map_strike") or ""),
+    ])
+
+
+def _log_wall_chase_to_commentary(row: dict) -> dict | None:
+    """Publish a rich wall-chase watch into that index's Session Commentary (rising edge)."""
+    sym = str(row.get("symbol") or "").upper()
+    if not sym or not row.get("notify"):
+        return None
+    fp = _wall_chase_commentary_fingerprint(row)
+    if _WALL_CHASE_COMMENTARY_SEEN.get(sym) == fp:
+        return {"status": "deduped", "symbol": sym}
+    _WALL_CHASE_COMMENTARY_SEEN[sym] = fp
+
+    stretch = row.get("stretch") or {}
+    now_ist = _get_ist_now()
+    side = str(row.get("side") or "")
+    n_ev = int(row.get("n_events") or 0)
+    stance = str(row.get("stance") or "WATCH")
+    badge = str(row.get("badge") or f"🏃 WALL CHASE ×{n_ev}")
+    headline = f"🏃 WALL CHASE ×{n_ev} · {stance} · {sym}"
+
+    stretch_line = (
+        f"Stretch (map ladder, not a forecast): first wall {_fmt_lvl(stretch.get('first_wall'))} → "
+        f"last {_fmt_lvl(stretch.get('last_wall'))} "
+        f"(span {stretch.get('wall_span_pts', 0)} pts). "
+        f"Run from first wall {stretch.get('run_pts', 0)} pts; "
+        f"through current wall {stretch.get('through_pts', 0)} pts. "
+        f"Next map strike {_fmt_lvl(stretch.get('next_map_strike'))} "
+        f"({stretch.get('stretch_to_next_pts', 0)} pts from spot). "
+        f"Potential stretch if one more step migrates: "
+        f"{stretch.get('potential_stretch_pts', 0)} pts "
+        f"(run so far + {stretch.get('strike_step', 0):.0f} strike step)."
+    )
+    map_line = (
+        f"Map: spot {_fmt_lvl(row.get('spot'))}; call wall {_fmt_lvl(row.get('call_wall'))}; "
+        f"put wall {_fmt_lvl(row.get('put_wall'))}; magnet {_fmt_lvl(row.get('magnet'))}; "
+        f"flip {_fmt_lvl(row.get('flip'))}; zone {row.get('zone') or '—'}."
+    )
+    tape_line = (
+        f"Tape: {row.get('signal_type') or '—'} "
+        f"score {int(row.get('signal_score') or 0)}; "
+        f"confidence {row.get('confidence') or '—'}."
+    )
+    events = stretch.get("event_headlines") or []
+    events_line = "Events: " + (" · ".join(events) if events else f"{side} ×{n_ev} in chase window")
+    note = str(stretch.get("note") or (
+        "Walls are OI/gamma concentration under short_call_short_put. "
+        "NSE hedging unmeasured; OI lags. Human confirms. No auto-execution."
+    ))
+
+    full_body = "\n\n".join(
+        part for part in (
+            f"Outcome: {row.get('outcome') or stance}",
+            f"Drivers: {row.get('drivers') or ''}".rstrip(),
+            f"Risk: {row.get('risk') or ''}".rstrip(),
+            map_line,
+            tape_line,
+            events_line,
+            stretch_line,
+            f"Trigger: {row.get('trigger') or '—'}",
+            f"Kill: {row.get('kill') or '—'}",
+            note,
+        ) if part and not part.endswith(": ")
+    )
+
+    from commentary.models import CommentaryEntry
+    from commentary.storage.db import save_commentary_entry
+
+    entry_id = f"wallchase-{sym.lower()}-{int(now_ist.timestamp())}"
+    entry = CommentaryEntry(
+        id=entry_id,
+        ts=now_ist,
+        phase="MARKET_ALERT",
+        event_ids=[f"evt-wallchase-{int(now_ist.timestamp())}"],
+        headline=headline,
+        body=full_body,
+        tags=["WALL_CHASE", "MARKET_STATE_ALERT", side or "WATCH"],
+        facts={
+            "scenario": str(row.get("scenario") or "WALL_CHASE"),
+            "badge": badge,
+            "stance": stance,
+            "confidence": str(row.get("confidence") or ""),
+            "zone": str(row.get("zone") or ""),
+            "side": side,
+            "n_events": n_ev,
+            "signal_type": str(row.get("signal_type") or ""),
+            "signal_score": int(row.get("signal_score") or 0),
+            "spot": row.get("spot"),
+            "call_wall": row.get("call_wall"),
+            "put_wall": row.get("put_wall"),
+            "magnet": row.get("magnet"),
+            "flip": row.get("flip"),
+            "trigger": row.get("trigger"),
+            "kill": row.get("kill"),
+            "stretch": stretch,
+            "ttl_minutes": 45,
+        },
+    )
+    try:
+        saved = save_commentary_entry(entry, symbol=sym)
+        return {
+            "status": "ok" if saved is not False else "deduped",
+            "entry_id": entry_id,
+            "symbol": sym,
+            "logged_at": _fmt_ist_clock(now_ist),
+        }
+    except Exception as exc:
+        log.warning("wall-chase commentary log %s: %s", sym, exc)
+        # Allow retry on next poll
+        _WALL_CHASE_COMMENTARY_SEEN.pop(sym, None)
+        return {"status": "error", "symbol": sym, "message": str(exc)}
+
+
+async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week") -> dict:
+    """Compose one cross-index wall-chase watch row (map + tape, no direction pay)."""
+    sym = (sym or "NIFTY").upper()
+    empty = {
+        "symbol": sym,
+        "active": False,
+        "notify": False,
+        "side": "",
+        "n_events": 0,
+        "stance": "STAY OUT",
+        "zone": "",
+        "badge": "",
+        "signal_type": "",
+        "signal_score": 0,
+        "spot": 0.0,
+        "call_wall": 0.0,
+        "put_wall": 0.0,
+        "magnet": 0.0,
+        "flip": 0.0,
+        "stretch": {},
+        "commentary": None,
+    }
+    try:
+        idx = config.get_index(sym)
+        dash = await _aload_active_dashboard(sym, window)
+        if dash is None or getattr(dash, "levels", None) is None:
+            return empty
+        spot = float(_extract_active_spot(dash, sym) or 0.0)
+        levels = dash.levels
+        cw = float(getattr(levels, "call_wall", 0.0) or 0.0)
+        pw = float(getattr(levels, "put_wall", 0.0) or 0.0)
+        flip = float(getattr(levels, "flip", 0.0) or 0.0)
+        magnet = float(getattr(levels, "magnet", 0.0) or 0.0)
+        step = float(getattr(idx, "strike_step", 50) or 50)
+        regime = str(getattr(getattr(dash, "view", None), "regime", "NEUTRAL") or "NEUTRAL")
+        from commentary.storage.db import get_recent_commentary_entries
+        from analytics.wall_chase import (
+            compute_chase_stretch,
+            wall_events_from_commentary,
+        )
+        from analytics.market_alert import classify_zone
+        wall_events = wall_events_from_commentary(
+            get_recent_commentary_entries(sym, limit=40) or []
+        )
+        now_ist = _get_ist_now()
+        payload = {
+            "symbol": sym,
+            "spot": spot,
+            "strike_step": step,
+            "is_market_open": bool(config.is_market_open()),
+            "as_of_time": now_ist.strftime("%H:%M:%S IST"),
+            "kpis": {
+                "call_wall": {"val": cw},
+                "put_wall": {"val": pw},
+                "gamma_flip": {"val": flip},
+                "regime": {"val": regime},
+            },
+            "orderflow_alerts": _slim_orderflow_alerts(sym),
+            "wall_events": wall_events,
+            "market_breadth": {},
+            "gamma_blast": {},
+        }
+        alert = evaluate_market_alert(payload) or {}
+        active = bool(alert.get("wall_chase"))
+        stance = str(alert.get("stance") or "STAY OUT")
+        notify = active and stance in ("CALL WATCH", "PUT WATCH")
+        side = str(alert.get("wall_chase_side") or "")
+        geo = classify_zone(spot, cw, pw, step)
+        stretch = compute_chase_stretch(
+            side=side,
+            spot=spot,
+            call_wall=cw,
+            put_wall=pw,
+            strike_step=step,
+            through_pts=float(alert.get("through_pts") or geo.get("through_pts") or 0.0),
+            wall_events=wall_events if not side else [
+                e for e in wall_events if str(e.get("side") or "").upper() in ("", side)
+            ],
+            magnet=magnet,
+            flip=flip,
+        )
+        row = {
+            "symbol": sym,
+            "active": active,
+            "notify": notify,
+            "side": side,
+            "n_events": int(alert.get("wall_chase_n") or 0),
+            "stance": stance,
+            "zone": str(alert.get("zone") or geo.get("zone") or ""),
+            "badge": str(alert.get("badge") or ""),
+            "scenario": str(alert.get("scenario") or ""),
+            "outcome": str(alert.get("outcome") or ""),
+            "drivers": str(alert.get("drivers") or "")[:400],
+            "risk": str(alert.get("risk") or ""),
+            "trigger": str(alert.get("trigger") or ""),
+            "kill": str(alert.get("kill") or ""),
+            "signal_type": str(alert.get("signal_type") or ""),
+            "signal_score": int(alert.get("signal_score") or 0),
+            "spot": round(spot, 2),
+            "call_wall": cw,
+            "put_wall": pw,
+            "magnet": magnet,
+            "flip": flip,
+            "confidence": str(alert.get("confidence") or ""),
+            "through_pts": float(alert.get("through_pts") or stretch.get("through_pts") or 0.0),
+            "stretch": stretch,
+            "commentary": None,
+        }
+        if notify:
+            row["commentary"] = _log_wall_chase_to_commentary(row)
+        elif sym in _WALL_CHASE_COMMENTARY_SEEN:
+            # Clear so the next rising edge re-publishes
+            _WALL_CHASE_COMMENTARY_SEEN.pop(sym, None)
+        return row
+    except Exception as exc:
+        log.debug("wall_chase_watch %s: %s", sym, exc)
+        return empty
+
+
+@app.get("/api/wall-chase-watch")
+async def get_wall_chase_watch(window: Optional[str] = None):
+    """Cross-index wall-chase watches for browser notifications (all three indices).
+
+    Independent of the cockpit's currently selected symbol. ``notify=true`` when
+    successive wall break/migrate + momentum tape promote CALL/PUT WATCH.
+    """
+    win = window or "current_week"
+    watches = list(await asyncio.gather(
+        _wall_chase_watch_for_symbol("NIFTY", window=win),
+        _wall_chase_watch_for_symbol("BANKNIFTY", window=win),
+        _wall_chase_watch_for_symbol("SENSEX", window=win),
+    ))
+    return {
+        "window": win,
+        "as_of": _get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST"),
+        "watches": watches,
+        "notify_count": sum(1 for w in watches if w.get("notify")),
+    }
+
+
 @app.get("/api/target-engine")
 @app.get("/api/target_engine")
 async def get_target_engine(

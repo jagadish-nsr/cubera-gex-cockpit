@@ -15,6 +15,7 @@ order-flow; the composite is a watch, not auto-execution.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -200,6 +201,133 @@ def evaluate_wall_chase(
     }
 
 
+_STRIKE_RE = re.compile(r"₹\s*([\d,]+(?:\.\d+)?)")
+
+
+def parse_strikes_from_headline(headline: str | None) -> list[float]:
+    """Pull ₹-prefixed strikes from wall break/migrate headlines."""
+    out: list[float] = []
+    for m in _STRIKE_RE.finditer(str(headline or "")):
+        try:
+            out.append(float(m.group(1).replace(",", "")))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def compute_chase_stretch(
+    *,
+    side: str,
+    spot: float,
+    call_wall: float,
+    put_wall: float,
+    strike_step: float,
+    through_pts: float = 0.0,
+    wall_events: list | None = None,
+    magnet: float = 0.0,
+    flip: float = 0.0,
+) -> dict:
+    """Map stretch of a wall-chase run — concentration ladder, not a paid forecast.
+
+    Returns first/last broken-or-migrated strikes in the chase window, points
+    already run from the first wall, and the next strike step on the ladder
+    (potential stretch if concentration keeps migrating one step).
+    """
+    side_u = str(side or "").upper()
+    spot_f = _f(spot)
+    step = max(_f(strike_step, 50.0), 1.0)
+    cw = _f(call_wall)
+    pw = _f(put_wall)
+    mag = _f(magnet)
+    flip_f = _f(flip)
+    through = round(_f(through_pts), 1)
+
+    strikes: list[float] = []
+    event_lines: list[str] = []
+    for ev in wall_events or []:
+        if side_u and str(ev.get("side") or "").upper() not in ("", side_u):
+            continue
+        hl = str(ev.get("headline") or "")
+        parsed = parse_strikes_from_headline(hl)
+        if not parsed and ev.get("strike") is not None:
+            parsed = [_f(ev.get("strike"))]
+        for old_new in ("old_strike", "new_strike", "from_strike", "to_strike"):
+            if ev.get(old_new) is not None:
+                parsed.append(_f(ev.get(old_new)))
+        strikes.extend(s for s in parsed if s > 0)
+        if hl:
+            event_lines.append(hl)
+
+    # Dedup while preserving order
+    seen: set[float] = set()
+    uniq: list[float] = []
+    for s in strikes:
+        if s in seen:
+            continue
+        seen.add(s)
+        uniq.append(s)
+
+    first_wall = 0.0
+    last_wall = 0.0
+    if uniq:
+        if side_u == "PUT":
+            first_wall = max(uniq)  # first broken put concentration is the higher strike
+            last_wall = min(uniq)   # migrate down
+        else:
+            first_wall = min(uniq)
+            last_wall = max(uniq)
+    elif side_u == "CALL" and cw > 0:
+        first_wall = last_wall = cw
+    elif side_u == "PUT" and pw > 0:
+        first_wall = last_wall = pw
+
+    wall_span_pts = round(abs(last_wall - first_wall), 1) if first_wall and last_wall else 0.0
+    if side_u == "CALL" and first_wall > 0 and spot_f > 0:
+        run_pts = round(spot_f - first_wall, 1)
+    elif side_u == "PUT" and first_wall > 0 and spot_f > 0:
+        run_pts = round(first_wall - spot_f, 1)
+    else:
+        run_pts = through
+
+    if side_u == "CALL" and last_wall > 0:
+        next_map = last_wall + step
+        stretch_to_next = round(next_map - spot_f, 1) if spot_f > 0 else step
+    elif side_u == "PUT" and last_wall > 0:
+        next_map = last_wall - step
+        stretch_to_next = round(spot_f - next_map, 1) if spot_f > 0 else step
+    else:
+        next_map = 0.0
+        stretch_to_next = 0.0
+
+    # Potential stretch = already run from first wall + one more ladder step
+    # (map geometry only — not a target or dealer defence claim).
+    potential_stretch_pts = round(max(run_pts, 0.0) + step, 1) if first_wall else round(through + step, 1)
+
+    return {
+        "side": side_u,
+        "first_wall": first_wall,
+        "last_wall": last_wall,
+        "wall_span_pts": wall_span_pts,
+        "run_pts": run_pts,
+        "through_pts": through,
+        "next_map_strike": next_map,
+        "stretch_to_next_pts": stretch_to_next,
+        "potential_stretch_pts": potential_stretch_pts,
+        "strike_step": step,
+        "spot": spot_f,
+        "call_wall": cw,
+        "put_wall": pw,
+        "magnet": mag,
+        "flip": flip_f,
+        "event_headlines": event_lines[:8],
+        "note": (
+            "Stretch is ladder geometry under short_call_short_put "
+            "(run from first broken/migrated wall + one strike step). "
+            "Not a paid CE/PE forecast; NSE hedging unmeasured; OI lags."
+        ),
+    }
+
+
 def should_promote_extension_watch(
     *,
     zone: str,
@@ -267,11 +395,20 @@ def wall_events_from_commentary(entries: list | None, *, limit: int = 40) -> lis
                 epoch = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 epoch = None
-        out.append({
+        strikes = parse_strikes_from_headline(headline)
+        row = {
             "kind": kind,
             "side": side,
             "headline": headline,
             "ts": epoch,
             "timestamp": ts if isinstance(ts, str) else None,
-        })
+            "strikes": strikes,
+        }
+        if len(strikes) == 1:
+            row["strike"] = strikes[0]
+        elif len(strikes) >= 2:
+            row["old_strike"] = strikes[0]
+            row["new_strike"] = strikes[-1]
+            row["strike"] = strikes[-1]
+        out.append(row)
     return out

@@ -34,6 +34,10 @@
     audioCtx: null,
     pendingAlertBell: false,
     pendingAlertBellTime: 0,
+    pendingTwinTempleBell: false,
+    pendingTwinTempleBellTime: 0,
+    wallChaseNotifySeen: {},
+    wallChaseNotifyLastPoll: 0,
     seenSentinelSignals: {},
     sentinelInitialized: {},
     lastSentinelSoundTime: 0,
@@ -663,12 +667,17 @@
   // Auto-unlock Web Audio on first user interaction anywhere on the page
   const audioUnlockEvents = ["click", "keydown", "touchstart", "pointerdown"];
   function handleFirstInteractionUnlock() {
+    ensureNotificationPermission();
     const ctx = initAudioContext();
     if (ctx) {
       ctx.resume().then(() => {
         if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
           state.pendingAlertBell = false;
           playTraderBellRing();
+        }
+        if (state.pendingTwinTempleBell && (Date.now() - state.pendingTwinTempleBellTime < 30000)) {
+          state.pendingTwinTempleBell = false;
+          playTwinTempleBell();
         }
       }).catch(() => { });
 
@@ -788,6 +797,182 @@
     playTraderBellRing();
     showToast("Auditioning 3.0s Louder Brass Bell Alert", "🔔");
   };
+
+  /**
+   * Twin temple big-bell — two strikes of a low temple-style partial stack.
+   * Used for cross-index wall-chase CALL/PUT WATCH (any selected index).
+   * Fundamental ~B3 with inharmonic partials (not a harmonic brass desk bell).
+   */
+  function playTwinTempleBell(force = false) {
+    if (!force && !state.alertBellEnabled) return;
+    try {
+      const ctx = initAudioContext();
+      if (!ctx) return;
+      if (ctx.state === "suspended") {
+        if (force) {
+          ctx.resume().then(() => playTwinTempleBell(true)).catch(() => { });
+        } else {
+          state.pendingTwinTempleBell = true;
+          state.pendingTwinTempleBellTime = Date.now();
+          ctx.resume().catch(() => { });
+        }
+        return;
+      }
+
+      const f0 = 246.94; // B3 — large temple-bell fundamental
+      // Inharmonic partials (struck bronze / temple character, not harmonic series)
+      const partials = [
+        { ratio: 0.50, gain: 0.22, decay: 5.2 },
+        { ratio: 1.00, gain: 0.58, decay: 4.6 },
+        { ratio: 1.19, gain: 0.34, decay: 3.8 },
+        { ratio: 1.50, gain: 0.20, decay: 3.0 },
+        { ratio: 2.00, gain: 0.14, decay: 2.4 },
+        { ratio: 2.76, gain: 0.09, decay: 1.8 },
+        { ratio: 3.40, gain: 0.05, decay: 1.2 },
+      ];
+      const strikes = [0.0, 0.55]; // twin strike spacing
+
+      strikes.forEach((strikeAt) => {
+        const t0 = ctx.currentTime + strikeAt;
+        partials.forEach((p) => {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(f0 * p.ratio, t0);
+          // Tiny strike shimmer then long temple decay
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.linearRampToValueAtTime(p.gain, t0 + 0.008);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
+          osc.connect(g);
+          g.connect(ctx.destination);
+          osc.start(t0);
+          osc.stop(t0 + p.decay + 0.05);
+        });
+      });
+    } catch (e) {
+      console.warn("Error synthesizing twin temple bell:", e);
+    }
+  }
+
+  window.testTwinTempleBell = function () {
+    initAudioContext();
+    playTwinTempleBell(true);
+    showToast("Auditioning twin temple big-bell (wall-chase)", "🛕");
+  };
+
+  function ensureNotificationPermission() {
+    if (typeof Notification === "undefined") return Promise.resolve("unsupported");
+    if (Notification.permission === "granted") return Promise.resolve("granted");
+    if (Notification.permission === "denied") return Promise.resolve("denied");
+    try {
+      return Notification.requestPermission();
+    } catch (e) {
+      return Promise.resolve("denied");
+    }
+  }
+
+  function wallChaseNotifyFingerprint(w) {
+    const st = (w && w.stretch) || {};
+    return [
+      String(w.side || ""),
+      String(w.stance || ""),
+      String(w.signal_type || ""),
+      String(w.n_events || 0),
+      String(w.zone || ""),
+      String(st.first_wall || ""),
+      String(st.last_wall || ""),
+      String(st.run_pts || ""),
+      String(st.next_map_strike || ""),
+    ].join("|");
+  }
+
+  function wallChaseStretchSummary(w) {
+    const st = (w && w.stretch) || {};
+    const run = st.run_pts != null ? `${st.run_pts} pts run` : "";
+    const pot = st.potential_stretch_pts != null
+      ? `potential ${st.potential_stretch_pts} pts (+1 step)`
+      : "";
+    const next = st.next_map_strike
+      ? `next map ${Number(st.next_map_strike).toLocaleString("en-IN")}`
+      : "";
+    return [run, next, pot].filter(Boolean).join(" · ");
+  }
+
+  function showWallChaseBrowserNotification(w) {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    const sym = String(w.symbol || "").toUpperCase();
+    const stance = String(w.stance || "WATCH");
+    const side = String(w.side || "");
+    const n = Number(w.n_events || 0);
+    const score = Number(w.signal_score || 0);
+    const zone = String(w.zone || "").replace(/_/g, " ");
+    const title = `${sym} · ${stance}`;
+    const body = [
+      side ? `Wall chase ${side} ×${n}` : "Wall chase",
+      zone ? zone : "",
+      score ? `tape ${score}` : "",
+      wallChaseStretchSummary(w),
+      w.badge || "",
+    ].filter(Boolean).join(" · ");
+    try {
+      const ntf = new Notification(title, {
+        body: body || "Cross-index wall-chase watch",
+        tag: `cubera-wall-chase-${sym}`,
+        renotify: true,
+        requireInteraction: false,
+        silent: false,
+      });
+      ntf.onclick = () => {
+        try { window.focus(); } catch (e) { /* ignore */ }
+        ntf.close();
+      };
+      setTimeout(() => { try { ntf.close(); } catch (e) { /* ignore */ } }, 12000);
+    } catch (e) {
+      console.warn("Wall-chase Notification failed:", e);
+    }
+  }
+
+  function processWallChaseWatches(watches) {
+    const list = Array.isArray(watches) ? watches : [];
+    let firedBell = false;
+    for (const w of list) {
+      const sym = String((w && w.symbol) || "").toUpperCase();
+      if (!sym) continue;
+      if (!w.notify) {
+        delete state.wallChaseNotifySeen[sym];
+        continue;
+      }
+      const fp = wallChaseNotifyFingerprint(w);
+      if (state.wallChaseNotifySeen[sym] === fp) continue;
+      state.wallChaseNotifySeen[sym] = fp;
+
+      const icon = String(w.side || "").toUpperCase() === "PUT" ? "🔴" : "🟢";
+      const scoreTxt = w.signal_score ? ` · tape ${w.signal_score}` : "";
+      const stretchTxt = wallChaseStretchSummary(w);
+      showToast(
+        `${sym} ${w.stance || "WATCH"}: wall chase ${w.side || ""} ×${w.n_events || 0}${scoreTxt}`
+          + (stretchTxt ? ` · ${stretchTxt}` : "")
+          + ((w.commentary && w.commentary.status === "ok") ? " · logged to commentary" : ""),
+        icon,
+      );
+      showWallChaseBrowserNotification(w);
+      if (!firedBell) {
+        firedBell = true;
+        playTwinTempleBell();
+      }
+    }
+  }
+
+  async function pollWallChaseWatch() {
+    try {
+      const win = state.window || "current_week";
+      const res = await fetch(`/api/wall-chase-watch?window=${encodeURIComponent(win)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      state.wallChaseNotifyLastPoll = Date.now();
+      processWallChaseWatches(data && data.watches);
+    } catch (e) { /* quiet — background poll */ }
+  }
 
   // -------------------------------------------------------------------------
   // OrderFlow Sentinel Signals Web Audio Synthesizers (Bullish & Bearish)
@@ -10994,6 +11179,10 @@
     }, 8000);
     setInterval(pollSentinelSignals, 8000);
     pollSentinelSignals();
+    // Cross-index wall-chase watches — notify + twin temple bell regardless of selected index
+    ensureNotificationPermission();
+    setInterval(pollWallChaseWatch, 12000);
+    pollWallChaseWatch();
     setInterval(() => {
       if (!isClientPreBellWindow()) syncCockpitPreBellCard(false);
     }, 1000);
