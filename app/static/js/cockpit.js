@@ -666,20 +666,21 @@
 
   // Auto-unlock Web Audio on first user interaction anywhere on the page
   const audioUnlockEvents = ["click", "keydown", "touchstart", "pointerdown"];
+  function flushPendingAlertBells() {
+    if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
+      state.pendingAlertBell = false;
+      playTraderBellRing();
+    }
+    if (state.pendingTwinTempleBell && (Date.now() - state.pendingTwinTempleBellTime < 30000)) {
+      state.pendingTwinTempleBell = false;
+      playTwinTempleBell();
+    }
+  }
+
   function handleFirstInteractionUnlock() {
-    ensureNotificationPermission();
     const ctx = initAudioContext();
     if (ctx) {
-      ctx.resume().then(() => {
-        if (state.pendingAlertBell && (Date.now() - state.pendingAlertBellTime < 30000)) {
-          state.pendingAlertBell = false;
-          playTraderBellRing();
-        }
-        if (state.pendingTwinTempleBell && (Date.now() - state.pendingTwinTempleBellTime < 30000)) {
-          state.pendingTwinTempleBell = false;
-          playTwinTempleBell();
-        }
-      }).catch(() => { });
+      ctx.resume().then(() => flushPendingAlertBells()).catch(() => { });
 
       if (ctx.state === "running") {
         audioUnlockEvents.forEach((evt) => {
@@ -687,6 +688,8 @@
         });
       }
     }
+    // Browser Notification permission (wall-chase cross-index) — after audio unlock.
+    ensureNotificationPermission();
   }
   audioUnlockEvents.forEach((evt) => {
     window.addEventListener(evt, handleFirstInteractionUnlock, { capture: true, passive: true });
