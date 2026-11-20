@@ -6077,6 +6077,14 @@
           outcome: alert.outcome,
           drivers: alert.drivers,
           risk: alert.risk,
+          kill: alert.kill,
+          trigger: alert.trigger,
+          zone: alert.zone,
+          spot: state.spot || (state.lastCockpitDash && state.lastCockpitDash.spot) || 0,
+          call_wall: state.lastCockpitDash && state.lastCockpitDash.kpis
+            && state.lastCockpitDash.kpis.call_wall && state.lastCockpitDash.kpis.call_wall.val,
+          put_wall: state.lastCockpitDash && state.lastCockpitDash.kpis
+            && state.lastCockpitDash.kpis.put_wall && state.lastCockpitDash.kpis.put_wall.val,
           body: alert.outcome,
           action_advice: alert.risk,
           diagnostics: alert.drivers,

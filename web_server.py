@@ -3395,7 +3395,73 @@ async def get_cockpit_data(
     except Exception as exc:
         log.debug("market_alert compose: %s", exc)
         payload["market_alert"] = None
+    try:
+        payload["watch_resolutions"] = _resolve_watch_episodes(
+            sym, float(payload.get("spot") or 0.0),
+        )
+    except Exception as exc:
+        log.debug("watch resolve: %s", exc)
+        payload["watch_resolutions"] = []
     return payload
+
+
+def _resolve_watch_episodes(sym: str, spot: float) -> list:
+    """Quietly resolve ACTIVE CALL/PUT WATCH episodes vs live spot; log once."""
+    from analytics.watch_episode import evaluate_open_watches_for_symbol
+    from commentary.models import CommentaryEntry
+    from commentary.storage.db import save_commentary_entry
+
+    now_ist = _get_ist_now()
+    resolved = evaluate_open_watches_for_symbol(
+        sym, spot=spot, now_ts=now_ist.timestamp(),
+    )
+    out = []
+    for ep in resolved:
+        status = ep.status
+        icon = (
+            "✅" if status == "TARGET_HIT"
+            else ("🛑" if status == "INVALIDATED" else "⌛")
+        )
+        headline = (
+            f"{icon} WATCH {status} · {ep.stance} · {ep.symbol} "
+            f"(triggered {ep.triggered_at})"
+        )
+        body = "\n\n".join(part for part in (
+            f"Triggered at: {ep.triggered_at} · spot {_fmt_lvl(ep.spot)}.",
+            f"Resolved at: {ep.resolved_at} · spot {_fmt_lvl(ep.resolve_spot)} · {status}.",
+            f"Invalidation (kill): {_fmt_lvl(ep.kill_level)} · Target: {_fmt_lvl(ep.target_level)}.",
+            f"MFE {ep.mfe_pts:+.1f} pts · MAE {ep.mae_pts:+.1f} pts.",
+            "Map/tape watch resolution — not an order fill. Human confirms.",
+        ) if part)
+        entry = CommentaryEntry(
+            id=f"watch-res-{ep.episode_id}",
+            ts=now_ist,
+            phase="MARKET_ALERT",
+            event_ids=[ep.episode_id],
+            headline=headline,
+            body=body,
+            tags=["WATCH_RESOLUTION", status, ep.side or "WATCH"],
+            facts={
+                "episode_id": ep.episode_id,
+                "triggered_at": ep.triggered_at,
+                "resolved_at": ep.resolved_at,
+                "watch_status": status,
+                "stance": ep.stance,
+                "side": ep.side,
+                "kill_level": ep.kill_level,
+                "target_level": ep.target_level,
+                "spot_trigger": ep.spot,
+                "spot_resolve": ep.resolve_spot,
+                "mfe_pts": ep.mfe_pts,
+                "mae_pts": ep.mae_pts,
+            },
+        )
+        try:
+            save_commentary_entry(entry, symbol=sym)
+        except Exception as exc:
+            log.debug("watch resolution commentary %s: %s", sym, exc)
+        out.append(ep.to_dict())
+    return out
 
 
 # Per-index rolling spot samples for map-lag run detection (in-process only).
@@ -3574,6 +3640,42 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
         "NSE hedging unmeasured; OI lags. Human confirms. No auto-execution."
     ))
 
+    from commentary.models import CommentaryEntry
+    from commentary.storage.db import save_commentary_entry
+
+    # Explicit watch ledger: triggered_at + kill/target for later resolution
+    episode = None
+    try:
+        from analytics.watch_episode import open_watch_episode
+        episode = open_watch_episode(
+            symbol=sym,
+            side=side or ("CALL" if "CALL" in stance else "PUT"),
+            stance=stance,
+            spot=float(row.get("spot") or 0.0),
+            now_ist=now_ist,
+            kill_text=str(row.get("kill") or ""),
+            trigger_text=str(row.get("trigger") or ""),
+            stretch=stretch if isinstance(stretch, dict) else {},
+            call_wall=float(row.get("call_wall") or 0.0),
+            put_wall=float(row.get("put_wall") or 0.0),
+            strike_step=float((stretch or {}).get("strike_step") or 50.0),
+            zone=str(row.get("zone") or ""),
+            source="WALL_CHASE",
+            extra_facts={
+                "n_events": n_ev,
+                "signal_type": str(row.get("signal_type") or ""),
+                "signal_score": int(row.get("signal_score") or 0),
+                "badge": badge,
+            },
+        )
+    except Exception as exc:
+        log.debug("watch episode open %s: %s", sym, exc)
+
+    triggered_line = (
+        f"Triggered at: {episode.triggered_at if episode else _fmt_ist_clock(now_ist)}. "
+        f"Invalidation (kill): {_fmt_lvl(episode.kill_level) if episode else '—'} "
+        f"· Target: {_fmt_lvl(episode.target_level) if episode else '—'}."
+    )
     full_body = "\n\n".join(
         part for part in (
             f"Outcome: {row.get('outcome') or stance}",
@@ -3583,14 +3685,12 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             tape_line,
             events_line,
             stretch_line,
+            triggered_line,
             f"Trigger: {row.get('trigger') or '—'}",
             f"Kill: {row.get('kill') or '—'}",
             note,
         ) if part and not part.endswith(": ")
     )
-
-    from commentary.models import CommentaryEntry
-    from commentary.storage.db import save_commentary_entry
 
     entry_id = f"wallchase-{sym.lower()}-{int(now_ist.timestamp())}"
     entry = CommentaryEntry(
@@ -3600,7 +3700,7 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
         event_ids=[f"evt-wallchase-{int(now_ist.timestamp())}"],
         headline=headline,
         body=full_body,
-        tags=["WALL_CHASE", "MARKET_STATE_ALERT", side or "WATCH"],
+        tags=["WALL_CHASE", "MARKET_STATE_ALERT", "WATCH_EPISODE", side or "WATCH"],
         facts={
             "scenario": str(row.get("scenario") or "WALL_CHASE"),
             "badge": badge,
@@ -3619,6 +3719,11 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             "trigger": row.get("trigger"),
             "kill": row.get("kill"),
             "stretch": stretch,
+            "triggered_at": episode.triggered_at if episode else _fmt_ist_clock(now_ist),
+            "kill_level": episode.kill_level if episode else None,
+            "target_level": episode.target_level if episode else None,
+            "episode_id": episode.episode_id if episode else None,
+            "watch_status": "ACTIVE",
             "ttl_minutes": 45,
         },
     )
@@ -3629,6 +3734,10 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             "entry_id": entry_id,
             "symbol": sym,
             "logged_at": _fmt_ist_clock(now_ist),
+            "triggered_at": episode.triggered_at if episode else _fmt_ist_clock(now_ist),
+            "episode_id": episode.episode_id if episode else None,
+            "kill_level": episode.kill_level if episode else None,
+            "target_level": episode.target_level if episode else None,
         }
     except Exception as exc:
         log.warning("wall-chase commentary log %s: %s", sym, exc)
@@ -7965,6 +8074,39 @@ async def resync_snapshot(payload: Optional[dict] = Body(default=None)):
     return request_sync("manual", window=win)
 
 
+@app.get("/api/watch-episodes")
+async def get_watch_episodes(symbol: Optional[str] = None, status: Optional[str] = None):
+    """CALL/PUT WATCH ledger: trigger timestamp, kill/target, ACTIVE/TARGET_HIT/INVALIDATED."""
+    from analytics.watch_episode import list_active_episodes, _journal_path, WatchEpisode
+    import json as _json
+    sym = (symbol or "").upper() or None
+    want = (status or "").upper() or None
+    episodes = []
+    if want in (None, "", "ACTIVE"):
+        episodes.extend(list_active_episodes(sym))
+    # Also surface recently resolved from journal when asked (or always last 40)
+    for path in sorted(_journal_path().glob("*.json"), reverse=True)[:80]:
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            ep = WatchEpisode(**{k: data[k] for k in WatchEpisode.__dataclass_fields__ if k in data})
+        except Exception:
+            continue
+        if sym and ep.symbol != sym:
+            continue
+        if want and ep.status != want:
+            continue
+        if ep.status == "ACTIVE" and any(e.episode_id == ep.episode_id for e in episodes):
+            continue
+        if ep.status != "ACTIVE":
+            episodes.append(ep)
+    episodes.sort(key=lambda e: e.triggered_ts, reverse=True)
+    return {
+        "as_of": _fmt_ist_clock(_get_ist_now()),
+        "count": len(episodes),
+        "episodes": [e.to_dict() for e in episodes[:40]],
+    }
+
+
 @app.post("/api/commentary/log-market-alert")
 async def log_market_alert(payload: dict = Body(...)):
     """Log an institutional market state transition alert into Session Commentary with 30m TTL."""
@@ -7981,15 +8123,45 @@ async def log_market_alert(payload: dict = Body(...)):
     from commentary.models import CommentaryEntry, to_ist
     from commentary.storage.db import save_commentary_entry
 
+    episode = None
+    if stance in ("CALL WATCH", "PUT WATCH"):
+        try:
+            from analytics.watch_episode import open_watch_episode
+            side = "CALL" if "CALL" in stance else "PUT"
+            episode = open_watch_episode(
+                symbol=sym,
+                side=side,
+                stance=stance,
+                spot=float(payload.get("spot") or 0.0),
+                now_ist=now_ist,
+                kill_text=str(payload.get("kill") or payload.get("risk") or ""),
+                trigger_text=str(payload.get("trigger") or ""),
+                call_wall=float(payload.get("call_wall") or 0.0),
+                put_wall=float(payload.get("put_wall") or 0.0),
+                zone=str(payload.get("zone") or ""),
+                source="ALERT_TAPE",
+            )
+        except Exception as exc:
+            log.debug("alert-tape watch episode: %s", exc)
+
     entry_id = f"alert-{sym.lower()}-{int(now_ist.timestamp())}"
+    triggered_bit = (
+        f"Triggered at: {episode.triggered_at}. "
+        f"Invalidation {_fmt_lvl(episode.kill_level)} · Target {_fmt_lvl(episode.target_level)}."
+        if episode else f"Triggered at: {_fmt_ist_clock(now_ist)}."
+    )
     full_body = "\n\n".join(
         part for part in (
             f"Outcome: {outcome}" if outcome else "",
             f"Drivers: {drivers}" if drivers else "",
             f"Risk: {risk}" if risk else "",
+            triggered_bit if stance in ("CALL WATCH", "PUT WATCH") else "",
         ) if part
     )
 
+    tags = ["MARKET_STATE_ALERT", scenario]
+    if episode:
+        tags.append("WATCH_EPISODE")
     entry = CommentaryEntry(
         id=entry_id,
         ts=now_ist,
@@ -7997,12 +8169,17 @@ async def log_market_alert(payload: dict = Body(...)):
         event_ids=[f"evt-{int(now_ist.timestamp())}"],
         headline=str(badge),
         body=full_body,
-        tags=["MARKET_STATE_ALERT", scenario],
+        tags=tags,
         facts={
             "scenario": scenario,
             "badge": badge,
             "ttl_minutes": 30,
             "diagnostics": drivers,
+            "triggered_at": episode.triggered_at if episode else _fmt_ist_clock(now_ist),
+            "kill_level": episode.kill_level if episode else None,
+            "target_level": episode.target_level if episode else None,
+            "episode_id": episode.episode_id if episode else None,
+            "watch_status": "ACTIVE" if episode else None,
             "stance": stance,
             "confidence": confidence,
         },
@@ -8018,7 +8195,21 @@ async def log_market_alert(payload: dict = Body(...)):
                 "ttl": "30m",
                 "logged_at": _fmt_ist_clock(now_ist),
             }
-        return {"status": "ok", "entry_id": entry_id, "ttl": "30m", "logged_at": _fmt_ist_clock(now_ist)}
+        out = {
+            "status": "ok",
+            "entry_id": entry_id,
+            "ttl": "30m",
+            "logged_at": _fmt_ist_clock(now_ist),
+        }
+        if episode:
+            out.update({
+                "triggered_at": episode.triggered_at,
+                "episode_id": episode.episode_id,
+                "kill_level": episode.kill_level,
+                "target_level": episode.target_level,
+                "watch_status": "ACTIVE",
+            })
+        return out
     except Exception as e:
         log.warning("Error saving commentary market alert: %s", e)
         return {"status": "error", "message": str(e)}

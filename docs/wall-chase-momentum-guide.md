@@ -33,7 +33,7 @@ Sensex 19 Nov ~13:40–14:35).
 | 4 | **Sentinel Tape** tab | `CONTINUATION_BULL/BEAR` or `CVD_DIVERGENCE_*`, score **≥ 65** in chase zones (hard floor **70** still applies to absorption / exhaustion / other types). CVD rising with the move. |
 | 5 | **Gamma blast card** | Treat as **risk map**, not the momentum trigger. PIN/COILING/FAKE defending does **not** cancel a wall-chase watch. |
 | 6 | **Browser push + Indian puja ghanti** | Cockpit polls `/api/wall-chase-watch` for **Nifty, Bank Nifty, and Sensex** every ~12s. Rising-edge CALL/PUT WATCH (side+stance only) fires toast/Notification + **twin puja-bell tings**, rate-limited **10 min/index** and shared **3 min** with the tape alert bell. Tape rings only on CALL/PUT WATCH stance flips (not every TAPE_*/zone scenario). Audition: 🛕 Puja Bell. |
-| 7 | **Session Commentary** | The same rising edge **publishes into that index’s Session Commentary** (tag `WALL_CHASE`): Outcome / Drivers / Risk, map (spot, walls, magnet, flip, zone), tape type+score, event headlines, trigger/kill, and **stretch** — run from first broken/migrated wall, span, next map strike, and potential stretch (= run so far + one strike step). Ladder geometry only; not a paid forecast. |
+| 7 | **Session Commentary** | Rising edge publishes `WALL_CHASE` / `WATCH_EPISODE` with explicit **Triggered at** (IST), **Invalidation (kill)** and **Target** levels. Later, spot vs those levels logs `WATCH_RESOLUTION` as **TARGET_HIT**, **INVALIDATED**, or **EXPIRED** (3h). Ledger: `GET /api/watch-episodes`. Not an order fill. |
 
 Kill / stop language on a call chase: **beyond the last broken call wall, never at the magnet.**
 

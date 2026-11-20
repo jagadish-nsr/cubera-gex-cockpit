@@ -1301,3 +1301,17 @@ def test_wall_chase_watch_endpoint_all_indices():
                 "ok", "deduped", "error",
             )
 
+
+def test_watch_episodes_endpoint():
+    """Watch ledger exposes trigger timestamp + kill/target status fields."""
+    status, _, content = asyncio.run(asgi_request("GET", "/api/watch-episodes"))
+    assert status == 200
+    data = json.loads(content)
+    assert "episodes" in data
+    assert "as_of" in data
+    for ep in data["episodes"]:
+        assert "triggered_at" in ep
+        assert "kill_level" in ep
+        assert "target_level" in ep
+        assert ep.get("status") in ("ACTIVE", "TARGET_HIT", "INVALIDATED", "EXPIRED")
+
