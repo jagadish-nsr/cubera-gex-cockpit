@@ -5168,7 +5168,31 @@
   // -------------------------------------------------------------------------
   const TAPE_HOLD_MS = 75000;
   const TAPE_SIGNAL_MIN_SCORE = 70;
+  // Soft floor for CONTINUATION_/CVD_DIVERGENCE_ in chase zones (2-week sample).
+  const CHASE_TAPE_MIN_SCORE = 65;
   const TAPE_SIGNAL_MAX_AGE_S = 300;
+  const CALL_CHASE_ZONES = { ABOVE_CALL_WALL: 1, ABOVE_MAGNET: 1, TEST_CALL: 1 };
+  const PUT_CHASE_ZONES = { BELOW_PUT_WALL: 1, BELOW_MAGNET: 1, TEST_PUT: 1 };
+
+  function isMomentumTapeType(type) {
+    const t = String(type || "").toUpperCase();
+    return t === "CONTINUATION_BULL" || t === "CONTINUATION_BEAR"
+      || t === "CVD_DIVERGENCE_BULL" || t === "CVD_DIVERGENCE_BEAR";
+  }
+
+  function chaseSideForZone(zone) {
+    const z = String(zone || "").toUpperCase();
+    if (CALL_CHASE_ZONES[z]) return "CALL";
+    if (PUT_CHASE_ZONES[z]) return "PUT";
+    return "";
+  }
+
+  function tapeScoreFloorForZone(zone, type) {
+    if (chaseSideForZone(zone) && isMomentumTapeType(type)) {
+      return Math.min(TAPE_SIGNAL_MIN_SCORE, CHASE_TAPE_MIN_SCORE);
+    }
+    return TAPE_SIGNAL_MIN_SCORE;
+  }
 
   function tapeInr(val) {
     return `₹${Math.round(Number(val) || 0).toLocaleString("en-IN")}`;
@@ -5220,20 +5244,21 @@
     return ist.getTime() / 1000;
   }
 
-  function pickFreshTapeSignal(alerts, nowTs) {
+  function pickFreshTapeSignal(alerts, nowTs, zone) {
     let best = null;
     let bestTs = -1;
     (alerts || []).forEach((alert) => {
       const status = String(alert.status || "NEW").toUpperCase();
       if (status === "FAILED" || status === "REPLACED") return;
-      if (Number(alert.score || 0) < TAPE_SIGNAL_MIN_SCORE) return;
+      const floor = tapeScoreFloorForZone(zone, alert.type);
+      if (Number(alert.score || 0) < floor) return;
       const ts = tapeAlertEpoch(alert, nowTs);
       if (ts == null) return;
       const age = nowTs - ts;
       if (age < 0 || age > TAPE_SIGNAL_MAX_AGE_S) return;
       if (ts >= bestTs) {
         bestTs = ts;
-        best = Object.assign({}, alert, { _ts: ts, _age_s: age });
+        best = Object.assign({}, alert, { _ts: ts, _age_s: age, _score_floor: floor });
       }
     });
     return best;
@@ -5313,13 +5338,56 @@
     const geo = classifyTapeZone(spot, cw, pw, step);
     const zone = geo.zone;
     const nearFlip = flip > 0 && Math.abs(spot - flip) <= step;
-    const sig = (isPreBell || isClosed) ? null : pickFreshTapeSignal(dash.orderflow_alerts, nowTs);
+    const wallChase = (() => {
+      // Prefer server-composed chase; else score dash.wall_events locally.
+      if (dash.market_alert && dash.market_alert.wall_chase) {
+        return {
+          active: true,
+          side: String(dash.market_alert.wall_chase_side || ""),
+          n: Number(dash.market_alert.wall_chase_n || 0),
+          window_s: 45 * 60,
+        };
+      }
+      const kept = [];
+      (dash.wall_events || []).forEach((ev) => {
+        const kind = String(ev.kind || ev.tag || "").toUpperCase();
+        const hl = String(ev.headline || "");
+        const isWall = kind.includes("WALL_BREAK") || kind.includes("WALL_MIGRATION")
+          || /broken|migrated/i.test(hl);
+        if (!isWall) return;
+        let ts = Number(ev.ts);
+        if (!Number.isFinite(ts) && ev.timestamp) {
+          const d = Date.parse(ev.timestamp);
+          if (Number.isFinite(d)) ts = d / 1000;
+        }
+        if (!Number.isFinite(ts)) return;
+        if (ts > 1e12) ts /= 1000;
+        const age = nowTs - ts;
+        if (age < 0 || age > 45 * 60) return;
+        let side = String(ev.side || "").toUpperCase();
+        if (side !== "CALL" && side !== "PUT") {
+          if (/call/i.test(hl)) side = "CALL";
+          else if (/put/i.test(hl)) side = "PUT";
+          else return;
+        }
+        kept.push({ side, ts });
+      });
+      const counts = { CALL: 0, PUT: 0 };
+      kept.forEach((e) => { counts[e.side] += 1; });
+      const side = counts.CALL >= counts.PUT ? "CALL" : "PUT";
+      const n = counts[side];
+      return { active: n >= 2, side: n >= 2 ? side : "", n, window_s: 45 * 60 };
+    })();
+    const sig = (isPreBell || isClosed) ? null : pickFreshTapeSignal(dash.orderflow_alerts, nowTs, zone);
     const pack = (fields) => Object.assign({
       timestamp: timeStr,
       zone,
       through_pts: Math.round((geo.through_pts || 0) * 10) / 10,
       signal_type: (sig && sig.type) || "",
       signal_score: sig ? Number(sig.score || 0) : 0,
+      wall_chase: Boolean(wallChase.active),
+      wall_chase_side: wallChase.side || "",
+      wall_chase_n: Number(wallChase.n || 0),
     }, fields);
 
     const bookLine = regime === "POSITIVE"
@@ -5368,9 +5436,11 @@
       }
       if (fresh) {
         bits += 1;
-        reasons.push(`Fresh orderflow print ≥${TAPE_SIGNAL_MIN_SCORE}: ${signalLabel(signal)}.`);
+        const floor = Number((signal && signal._score_floor) || TAPE_SIGNAL_MIN_SCORE);
+        reasons.push(`Fresh orderflow print ≥${floor}: ${signalLabel(signal)}.`);
       } else {
-        reasons.push(`No fresh orderflow print ≥${TAPE_SIGNAL_MIN_SCORE}.`);
+        const floor = chaseSideForZone(z) ? CHASE_TAPE_MIN_SCORE : TAPE_SIGNAL_MIN_SCORE;
+        reasons.push(`No fresh orderflow print ≥${floor}.`);
       }
       if ((stance === "CALL WATCH" || stance === "PUT WATCH") && agrees) {
         bits += 1;
@@ -5617,6 +5687,18 @@
       }
     }
 
+    // Extension promote: ABOVE_CALL / ABOVE_MAGNET + CONT tape → CALL WATCH (2-week sample).
+    const extLvl = tapeInr(cw || geo.magnet || pw);
+    if (base.stance === "STAY OUT" && sigSide === "CALL" && CALL_CHASE_ZONES[zone]) {
+      base.stance = "CALL WATCH";
+      base.trigger = `Hold above ${extLvl} with tape agreement; stop beyond the last broken call wall, never at the magnet.`;
+      base.kill = `Fail back below ${extLvl}`;
+    } else if (base.stance === "STAY OUT" && sigSide === "PUT" && PUT_CHASE_ZONES[zone]) {
+      base.stance = "PUT WATCH";
+      base.trigger = `Hold below ${tapeInr(pw || geo.magnet || cw)} with tape agreement; stop beyond the last broken put wall, never at the magnet.`;
+      base.kill = `Reclaim above ${tapeInr(pw || geo.magnet || cw)}`;
+    }
+
     if (sig) {
       const insight = String(sig.insight_text || signalLabel(sig)).replace(/\.+$/, "").trim();
       const inval = Number(sig.invalidation_level || 0);
@@ -5634,10 +5716,25 @@
       let kill = base.kill;
       if (inval > 0) kill = `Price gets back through ${tapeInr(inval)}`;
       base.scenario = "TAPE_" + String(sig.type || "SIGNAL");
-      base.badge = `📡 ${signalLabel(sig)} · ${base.badge.split(" ").slice(1).join(" ")}`;
+      base.badge = `📡 ${signalLabel(sig)} · ${base.badge}`;
       base.theme = theme;
       base.drivers = drivers;
       base.kill = kill;
+    }
+
+    if (wallChase.active && wallChase.side
+      && (sigSide === wallChase.side
+        || (wallChase.side === "CALL" && base.stance === "CALL WATCH")
+        || (wallChase.side === "PUT" && base.stance === "PUT WATCH"))) {
+      if (base.stance === "STAY OUT" && sigSide === wallChase.side) {
+        base.stance = wallChase.side === "CALL" ? "CALL WATCH" : "PUT WATCH";
+      }
+      if (!String(base.badge || "").includes("WALL CHASE")) {
+        base.badge = `🏃 WALL CHASE ×${wallChase.n || 0} · ${base.badge}`;
+      }
+      if (!String(base.drivers || "").includes("successive-concentration chase")) {
+        base.drivers = `Same-side wall break/migrate printed ${wallChase.n || 0}× in the last 45m (${wallChase.side}). That is a successive-concentration chase on the map, not a pin. ${base.drivers}`;
+      }
     }
 
     const stance = base.stance;

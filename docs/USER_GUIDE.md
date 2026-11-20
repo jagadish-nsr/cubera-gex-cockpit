@@ -33,36 +33,41 @@ Access any of the specialized technical guides directly in your browser or click
    - Real-time signal state badges (`ACTIVE`, `TARGET HIT`, `INVALIDATED`) governed by the **5-minute candle close invalidation rule**.
    - Strict Zero-Fabrication Contract: authentic historical snapshot loader reading intraday CSV journals and SQLite registry (`sentinel_db.db`), tick ledger, custom chart height slider, native fullscreen expansion, session reports, and standalone popout window (`/?view=sentinel_tape`).
 
-6. **[🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)**
+6. **[🏃 Wall-Chase Momentum — Successive Breaks & Tape Watch](/guide/wall_chase_guide)**
+   - When call (or put) walls **break/migrate repeatedly** with agreeing CONTINUATION / CVD tape → **CALL WATCH** / **PUT WATCH** and a `WALL CHASE ×N` badge on the alert tape.
+   - Soft tape floor **65** for those momentum types in chase zones (hard **70** still applies to absorption / exhaustion). Not a gamma-blast siren.
+   - Where to look: Home alert tape → GEX walls → Commentary `WALL_BREAK`/`WALL_MIGRATION` → Sentinel Tape.
+
+7. **[🧭 Market Intelligence: Sector Breadth & News Sentiment Guide](/?view=market_intelligence_guide)**
    - Real-time exchange sector breadth across all 11 constituent sectors with realistic index weights and 5 rotation regimes.
    - Live financial news aggregation (Economic Times & Times of India) with keyword impact scoring and Phase B confound control.
 
-7. **[🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)**
+8. **[🎙️ Session Commentary & Suggestion Bites Guide](/?view=session_commentary_guide)**
    - Technical guide for the story-first narrative engine: 6–15 curated entries per day translating positioning into human-readable newsroom prose.
    - Actionable Suggestion Bites (`ACT-IF`, `PREPARE`, `WATCH`), deterministic templates, strict numerical fact verification, and real-time pinned trade tracking.
 
-8. **[🌅 Pre/Post-Market & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)**
+9. **[🌅 Pre/Post-Market & Recommendations Lifecycle Guide](/?view=pre_post_market_guide)**
    - Microstructure guide covering the **Pre-Open Auction (09:00–09:15)**, 09:07:30 adaptive equilibrium discovery, audio chime, and the 7-minute Pre-Bell Alpha Window.
    - Cash Closing Auction Session (CAS) 30-min VWAP settlement and F&O extended close (15:40 IST).
    - Persistent bookmarked card lifecycle and SQLite off-market snapshot registry.
 
-9. **[📈 Signal Efficiency Analytics & Performance Guide](/?view=signal_efficiency_guide)**
-   - Statistical performance verification, Maximum Favorable Excursion (MFE), and Maximum Adverse Excursion (MAE).
-   - Sub-Tab 4: Target Engine Model Calibration Alpha ($Empirical - Theoretical$) and Black-76 Repriced ATM Option Expectancy Curve (+1m to +30m).
+10. **[📈 Signal Efficiency Analytics & Performance Guide](/?view=signal_efficiency_guide)**
+    - Statistical performance verification, Maximum Favorable Excursion (MFE), and Maximum Adverse Excursion (MAE).
+    - Sub-Tab 4: Target Engine Model Calibration Alpha ($Empirical - Theoretical$) and Black-76 Repriced ATM Option Expectancy Curve (+1m to +30m).
 
-10. **[📊 Data Dictionary & Calculations Reference](/?view=data_dictionary)**
+11. **[📊 Data Dictionary & Calculations Reference](/?view=data_dictionary)**
     - Comprehensive inventory of all raw data points fetched from **Dhan WebSocket** (`wss://api-feed.dhan.co`) and **Dhan REST APIs**.
     - Mathematical formulas for Gamma Exposure (GEX), Call/Put Walls, Gamma Flip, Max Pain, CVD, VWAP bands, Delta MTM option pricing, and dynamic position sizing.
 
-11. **[🧭 Participant Open Interest Guide](/?view=participant_guide)**
+12. **[🧭 Participant Open Interest Guide](/?view=participant_guide)**
     - Daily institutional positioning tracking FII, Proprietary Desk, and Client positioning drift from NSE clearing-corp EOD files.
 
-12. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
+13. **[🗺️ Indian GEX Playbook & Research Manual](/?view=gex_playbook)**
     - Book balance, expiry-day premium crossover, and the research record. Production uses one convention, `short_call_short_put`. Who hedges is unmeasured.
 
-13. **[⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)**
+14. **[⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade](/?view=gamma_blast_scoring_guide)**
     - How the cockpit blast score is built (expiry gate, 13:00 window, covering tape, proximity, regime) versus the research true-vs-fake grade after a strike cross.
-    - Risk-only use in recommendations (de-size / annotate) — not a CE/PE direction input.
+    - Risk-only use in recommendations (de-size / annotate) — not a CE/PE direction input. See also **Wall-Chase** when walls roll with tape.
 
 ---
 
@@ -128,7 +133,11 @@ The alert tape speaks every state as **Outcome**, **Drivers**, and **Risk** for 
 - **Drivers**: The underlying positioning, gamma concentrations, walls, and orderflow dynamics.
 - **Risk**: Explicit downside risk, theta decay exposure, or volatility traps.
 
-A fresh Sentinel print (score at least 70, no older than 5 minutes) is written in front of the headline badge, for example **ABSORPTION · TESTING PUT-WALL CONCENTRATION**. That prefix is omitted during the pre-open and after the close. On an expiry day, a gamma-blast evaluation is added to the badge and body for that index's own listed expiry. It does not change the structural headline or the meaning.
+A fresh Sentinel print (no older than 5 minutes) is written in front of the headline badge, for example **ABSORPTION · TESTING PUT-WALL CONCENTRATION**. Hard floor is **score ≥ 70** for most types; in chase zones (`TEST_CALL` / `ABOVE_CALL_WALL` / `ABOVE_MAGNET` and the put mirrors), **CONTINUATION_** and **CVD_DIVERGENCE_** qualify from **≥ 65**. That prefix is omitted during the pre-open and after the close.
+
+When ≥2 same-side wall break/migrate prints land inside ~45 minutes with agreeing momentum tape, the badge also carries **WALL CHASE ×N** and the stance can promote to **CALL WATCH** / **PUT WATCH** even when price is already through the wall (extension zones used to stay STAY OUT). Full field guide: [Wall-Chase Momentum](/guide/wall_chase_guide). Alert tape **Help ↗** opens the same manual.
+
+On an expiry day, a gamma-blast evaluation may prefix `⚡ EXPIRY BLAST` (expansion only) or soft `📍 EXPIRY PIN`. Blast is a location/parity map — it is not the wall-chase momentum trigger.
 
 ### Alert tape headlines
 
@@ -146,6 +155,7 @@ A fresh Sentinel print (score at least 70, no older than 5 minutes) is written i
 | **AT GEX MAGNET — NO WALL CORRIDOR** | Call and put concentration share one strike. There is no corridor. | Call and put concentration sit on the same strike, and spot is within one step of it. |
 | **BELOW GEX MAGNET — CONCENTRATION BEHIND PRICE** | Spot is through the only gamma cluster. It is not a pin. | That single cluster is more than one strike step above spot. |
 | **ABOVE GEX MAGNET — CONCENTRATION BEHIND PRICE** | Spot is through the only gamma cluster. It is not a squeeze. | That single cluster is more than one strike step below spot. |
+| **WALL CHASE ×N** (badge prefix) | Successive same-side wall break/migrate with agreeing CONTINUATION/CVD tape. Watch, not a pin. | ≥2 wall events in ~45m + chase zone + momentum tape ≥65. |
 | **WALL GEOMETRY UNCLEAR** | The strikes do not form a clean corridor around spot. | Walls are missing, inverted, or do not surround spot. |
 
 Session headlines override the live geometry. Morning briefing wins over the auction, the auction wins over the close, and the close wins over a live wall reading.

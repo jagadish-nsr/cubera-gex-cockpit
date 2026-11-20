@@ -1112,6 +1112,7 @@ class TestOffMarketPersistence:
         assert "guides" in data
         assert len(data["guides"]) == len(DOCS_MAP)
         assert any(g.get("id") == "gamma_blast_scoring_guide" for g in data["guides"])
+        assert any(g.get("id") == "wall_chase_guide" for g in data["guides"])
 
         # 2. /api/docs/{guide_id}
         status, _, content = asyncio.run(asgi_request("GET", "/api/docs/user_guide"))
@@ -1147,7 +1148,8 @@ class TestOffMarketPersistence:
         from web_server import DOCS_MAP, ROOT_DIR
 
         assert "gamma_blast_scoring_guide" in DOCS_MAP
-        assert len(DOCS_MAP) >= 13
+        assert "wall_chase_guide" in DOCS_MAP
+        assert len(DOCS_MAP) >= 14
         for doc_id, info in DOCS_MAP.items():
             doc_file = ROOT_DIR / info["file"]
             assert doc_file.exists(), f"Missing docs markdown file: {info['file']} for {doc_id}"

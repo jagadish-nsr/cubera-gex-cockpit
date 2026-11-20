@@ -18,6 +18,16 @@ SIGNAL_MAX_AGE_S = 300.0
 TAPE_HOLD_S = 75.0
 IST = timezone(timedelta(hours=5, minutes=30))
 
+# Soft floor for CONTINUATION_/CVD_DIVERGENCE_ in chase zones (2-week sample:
+# 6/20 STRONG wall-chase episodes peaked at 65–69 and missed CALL WATCH).
+from analytics.wall_chase import (  # noqa: E402
+    CHASE_TAPE_MIN_SCORE,
+    chase_side_for_zone,
+    evaluate_wall_chase,
+    should_promote_extension_watch,
+    tape_score_floor_for_zone,
+)
+
 
 def _f(val: Any, default: float = 0.0) -> float:
     try:
@@ -193,16 +203,28 @@ def pick_fresh_signal(
     *,
     min_score: int = SIGNAL_MIN_SCORE,
     max_age_s: float = SIGNAL_MAX_AGE_S,
+    zone: str | None = None,
 ) -> dict | None:
-    """Newest HIGH Sentinel print that is still live. Ignores FAILED/REPLACED."""
+    """Newest live Sentinel print. Ignores FAILED/REPLACED.
+
+    When ``zone`` is chase-friendly (through/testing a named wall), momentum
+    tape types (CONTINUATION_*/CVD_DIVERGENCE_*) qualify from
+    :data:`CHASE_TAPE_MIN_SCORE` (65). Other types keep the hard floor (70).
+    """
     best = None
     best_ts = -1.0
     for alert in alerts or []:
         status = str(alert.get("status") or "NEW").upper()
         if status in ("FAILED", "REPLACED"):
             continue
-        score = int(alert.get("score") or 0)
-        if score < min_score:
+        try:
+            score = int(alert.get("score") or 0)
+        except (TypeError, ValueError):
+            continue
+        floor = tape_score_floor_for_zone(
+            zone, str(alert.get("type") or ""), hard_min=min_score,
+        )
+        if score < floor:
             continue
         ts = _alert_epoch(alert, now_ts)
         if ts is None:
@@ -215,6 +237,7 @@ def pick_fresh_signal(
             best = dict(alert)
             best["_ts"] = ts
             best["_age_s"] = age
+            best["_score_floor"] = floor
     return best
 
 
@@ -298,11 +321,11 @@ def _grade_confidence(
 
     if fresh:
         bits += 1
-        reasons.append(
-            f"Fresh orderflow print ≥{SIGNAL_MIN_SCORE}: {_signal_label(sig)}."
-        )
+        floor = int((sig or {}).get("_score_floor") or SIGNAL_MIN_SCORE)
+        reasons.append(f"Fresh orderflow print ≥{floor}: {_signal_label(sig)}.")
     else:
-        reasons.append(f"No fresh orderflow print ≥{SIGNAL_MIN_SCORE}.")
+        floor = CHASE_TAPE_MIN_SCORE if chase_side_for_zone(zone) else SIGNAL_MIN_SCORE
+        reasons.append(f"No fresh orderflow print ≥{floor}.")
 
     if stance in ("CALL WATCH", "PUT WATCH") and agrees:
         bits += 1
@@ -471,7 +494,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     geo = classify_zone(spot, cw, pw, step)
     zone = geo["zone"]
     near_flip = flip > 0 and abs(spot - flip) <= step
-    sig = None if (is_pre_bell or is_closed) else pick_fresh_signal(dash.get("orderflow_alerts"), now_ts)
+    wall_chase = evaluate_wall_chase(dash.get("wall_events"), now_ts=now_ts)
+    sig = None if (is_pre_bell or is_closed) else pick_fresh_signal(
+        dash.get("orderflow_alerts"), now_ts, zone=zone,
+    )
     book = _book_line(regime)
     breadth_line = _breadth_sentence(breadth)
     if flip > 0 and near_flip:
@@ -491,6 +517,9 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "through_pts": round(float(geo.get("through_pts") or 0.0), 1),
             "signal_type": (sig or {}).get("type") or "",
             "signal_score": int((sig or {}).get("score") or 0),
+            "wall_chase": bool(wall_chase.get("active")),
+            "wall_chase_side": wall_chase.get("side") or "",
+            "wall_chase_n": int(wall_chase.get("n_events") or 0),
         }
         out.update(kwargs)
         return out
@@ -799,6 +828,26 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             base["stance"] = "PUT WATCH"
             base["trigger"] = f"Hold the bearish tape idea; clear {_inr(pw)} if walls are split."
 
+    # Extension / wall-chase promote (2-week sample): ABOVE_CALL / ABOVE_MAGNET
+    # with CONT_BULL must not stay STAY OUT — that blocked Sensex 19 Nov 14:00.
+    promoted = should_promote_extension_watch(
+        zone=zone, sig_side=sig_side, wall_chase=wall_chase,
+    )
+    if promoted and base.get("stance") == "STAY OUT":
+        base["stance"] = promoted
+        if promoted == "CALL WATCH":
+            base["trigger"] = (
+                f"Hold above {_inr(cw or magnet_raw)} with tape agreement; "
+                "stop beyond the last broken call wall, never at the magnet."
+            )
+            base["kill"] = f"Fail back below {_inr(cw or magnet_raw)}"
+        else:
+            base["trigger"] = (
+                f"Hold below {_inr(pw or magnet_raw)} with tape agreement; "
+                "stop beyond the last broken put wall, never at the magnet."
+            )
+            base["kill"] = f"Reclaim above {_inr(pw or magnet_raw)}"
+
     if sig:
         insight = str(sig.get("insight_text") or _signal_label(sig)).strip().rstrip(".")
         inval = _f(sig.get("invalidation_level"))
@@ -822,13 +871,36 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         kill = base["kill"]
         if inval > 0:
             kill = f"Price gets back through {_inr(inval)}"
+        # Keep any WALL CHASE prefix already on the badge; do not strip tokens.
+        zone_badge = str(base.get("badge") or "")
         base.update(
             scenario="TAPE_" + str(sig.get("type") or "SIGNAL"),
-            badge=f"📡 {_signal_label(sig)} · {base['badge'].split(' ', 1)[-1]}",
+            badge=f"📡 {_signal_label(sig)} · {zone_badge}",
             theme=theme,
             drivers=drivers,
             kill=kill,
         )
+
+    # Wall-chase badge after tape so the successive-break note stays visible.
+    if wall_chase.get("active"):
+        side_w = wall_chase.get("side") or ""
+        n_ev = int(wall_chase.get("n_events") or 0)
+        agrees_chase = (
+            (side_w == "CALL" and (sig_side == "CALL" or base.get("stance") == "CALL WATCH"))
+            or (side_w == "PUT" and (sig_side == "PUT" or base.get("stance") == "PUT WATCH"))
+        )
+        if agrees_chase or (sig_side and sig_side == side_w):
+            if base.get("stance") == "STAY OUT" and sig_side == side_w:
+                base["stance"] = "CALL WATCH" if side_w == "CALL" else "PUT WATCH"
+            if "WALL CHASE" not in str(base.get("badge") or ""):
+                base["badge"] = f"🏃 WALL CHASE ×{n_ev} · " + str(base.get("badge") or "")
+            if "successive-concentration chase" not in str(base.get("drivers") or ""):
+                base["drivers"] = (
+                    f"Same-side wall break/migrate printed {n_ev}× in the last "
+                    f"{int(wall_chase.get('window_s') or 0) // 60}m ({side_w}). "
+                    "That is a successive-concentration chase on the map, not a pin. "
+                    + str(base.get("drivers") or "")
+                )
 
     stance = base["stance"]
     conf, reasons = _grade_confidence(

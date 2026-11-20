@@ -7,6 +7,17 @@
 
 ---
 
+## 0. Wall-chase (alert tape)
+
+When GEX walls **break or migrate** repeatedly on one side and Sentinel prints
+**CONTINUATION_** / **CVD_DIVERGENCE_** agreeing with that side (score ≥ **65**
+in chase zones), the Home **alert tape** may show **WALL CHASE ×N** and promote
+to **CALL WATCH** / **PUT WATCH**. That path is documented in
+[Wall-Chase Momentum](/guide/wall_chase_guide). Hard score ≥ **70** still applies
+to absorption, exhaustion, and other non-momentum types.
+
+---
+
 ## 1. Core Order Flow Fundamentals
 
 To interpret the Live OrderFlow Stream signals accurately, understand the four underlying microstructure mechanics:

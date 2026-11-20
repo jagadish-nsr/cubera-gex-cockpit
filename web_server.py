@@ -3372,6 +3372,16 @@ async def get_cockpit_data(
             "cells": [],
         }
     try:
+        # Recent WALL_BREAK / WALL_MIGRATION commentary → wall-chase composite
+        # for market_alert (2-week sample: successive breaks + CONT tape).
+        from commentary.storage.db import get_recent_commentary_entries
+        from analytics.wall_chase import wall_events_from_commentary
+        recent_story = get_recent_commentary_entries(sym, limit=40) or []
+        payload["wall_events"] = wall_events_from_commentary(recent_story)
+    except Exception as exc:
+        log.debug("wall_events compose: %s", exc)
+        payload["wall_events"] = []
+    try:
         payload["market_alert"] = evaluate_market_alert(payload)
     except Exception as exc:
         log.debug("market_alert compose: %s", exc)
@@ -9162,6 +9172,11 @@ DOCS_MAP = {
         "title": "⚡ Gamma-Blast Scoring — Live Card & True-vs-Fake Grade",
         "file": "docs/gamma-blast-scoring-guide.md",
         "badge": "Expiry Blast Score (Map + Risk)",
+    },
+    "wall_chase_guide": {
+        "title": "🏃 Wall-Chase Momentum — Successive Breaks & Tape Watch",
+        "file": "docs/wall-chase-momentum-guide.md",
+        "badge": "Wall Chase × Tape (Map + Watch)",
     },
     "participant_guide": {
         "title": "🧭 Participant Open Interest & Institutional Drift",

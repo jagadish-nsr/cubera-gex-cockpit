@@ -2857,6 +2857,23 @@ details.collapsible-matrix:not([open]) .matrix-chevron {
   color: var(--spark);
   border-color: color-mix(in srgb, var(--spark) 45%, var(--line));
 }
+.alert-tape-help-link {
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+  text-decoration: none;
+  color: var(--spark);
+  border: 1px solid color-mix(in srgb, var(--spark) 40%, var(--line));
+  background: var(--surface-2);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.alert-tape-help-link:hover {
+  color: var(--ink);
+  border-color: var(--spark);
+}
 .alert-tape-badge {
   font-size: 0.72rem;
   font-weight: 850;

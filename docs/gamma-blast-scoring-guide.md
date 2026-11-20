@@ -293,7 +293,7 @@ must not leave TRIGGERED and NO_TRIGGER in the same minute.
 | Consumer | Behavior |
 |----------|----------|
 | Cockpit UI + audio | IMMINENT → heartbeat; expansion ACTIVE → intensity-linked siren; plain COILING / PIN stay quiet |
-| `analytics/market_alert.py` | `blast_expansion_trusted` → `⚡ EXPIRY BLAST`; `blast_pin_trusted` → soft `📍 EXPIRY PIN`; stalled / incomplete / FAKE refused for siren; no direction scoring |
+| `analytics/market_alert.py` | `blast_expansion_trusted` → `⚡ EXPIRY BLAST`; `blast_pin_trusted` → soft `📍 EXPIRY PIN`; stalled / incomplete / FAKE refused for siren; no direction scoring. **Wall-chase** (`🏃 WALL CHASE`) is a separate successive-break + tape watch — see [wall-chase-momentum-guide.md](wall-chase-momentum-guide.md). |
 | `app/blast_risk.py` | Expiry COILING → size × **0.75**; ACTIVE → × **0.50**; PIN/COMPRESS → × **0.40**; ACTIVE+FAKE/WEAK sustain → × **0.45**; tags / risk lines; optional short-near-magnet quality **penalty** only — **never** boosts CE/PE quality for blast |
 | `analytics/trade_ideas.py` / `structures/suggest.py` | Same live eval; de-size + annotate; shorts nudged off magnet / primary strike |
 
