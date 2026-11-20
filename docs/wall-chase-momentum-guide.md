@@ -56,7 +56,25 @@ cockpit alert-tape JS, cockpit payload `wall_events` from recent commentary.
 
 ---
 
-## 4. Worked shape (Sensex 19 Nov 14:00)
+## 4. Map-lag / open thrust (not wall-chase)
+
+Large spot burst while the wall-chase composite **fails** (Sensex 19 Nov
+09:30–10:00 ~+520: PUT migrates, CONT 45, ABSORPTION_BEAR 100, PINNED).
+
+| Gate | Quiet rule |
+|-----:|------------|
+| Move | ≥ **120 / 300 / 400** pts in ~30m (Nifty / BN / Sensex); after 10:45 IST ×1.5 |
+| Fail reasons | ≥ **2** of: &lt;2 same-side walls, soft/missing mom tape, conflict tape, non-chase zone |
+| Stance | Always **STAY OUT** — never CALL/PUT WATCH |
+| Noise | Soft badge `🗺 MAP LAG` + drivers only. **No** push, **no** temple bell, **no** commentary publish, **no** scenario hijack (no brass-bell flap) |
+| Suppress | Same-side wall-chase already qualifies → map-lag stays off |
+
+Week sample (12–19 Nov): morning-heavy; most “price ran, engine quiet” cases were
+LT2 walls + PINNED/conflict — not a second notify path.
+
+---
+
+## 5. Worked shape (Sensex 19 Nov 14:00)
 
 - Spot/FUT through / above rolling call walls 82,500 → 82,600 → 82,700 → 82,800
 - Commentary: wall migrate + WALL_BREAK
@@ -66,7 +84,7 @@ cockpit alert-tape JS, cockpit payload `wall_events` from recent commentary.
 
 ---
 
-## 5. Related manuals
+## 6. Related manuals
 
 - [Master User Guide — Alert tape](/guide/user_guide) — Outcome / Drivers / Risk
 - [OrderFlow Sentinel](/guide/orderflow_guide) — CONTINUATION / CVD signal types

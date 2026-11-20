@@ -27,6 +27,7 @@ from analytics.wall_chase import (  # noqa: E402
     should_promote_extension_watch,
     tape_score_floor_for_zone,
 )
+from analytics.map_lag_run import evaluate_map_lag_run  # noqa: E402
 
 
 def _f(val: Any, default: float = 0.0) -> float:
@@ -495,6 +496,17 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
     zone = geo["zone"]
     near_flip = flip > 0 and abs(spot - flip) <= step
     wall_chase = evaluate_wall_chase(dash.get("wall_events"), now_ts=now_ts)
+    map_lag = evaluate_map_lag_run(
+        symbol=str(dash.get("symbol") or "NIFTY"),
+        spot_path=dash.get("spot_path"),
+        zone=zone,
+        wall_events=dash.get("wall_events"),
+        orderflow_alerts=dash.get("orderflow_alerts"),
+        now_ts=now_ts,
+        wall_chase=wall_chase,
+    ) if not (is_pre_bell or is_closed) else {
+        "active": False, "side": "", "move_pts": 0.0, "reasons": [], "reason_n": 0,
+    }
     sig = None if (is_pre_bell or is_closed) else pick_fresh_signal(
         dash.get("orderflow_alerts"), now_ts, zone=zone,
     )
@@ -520,6 +532,10 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             "wall_chase": bool(wall_chase.get("active")),
             "wall_chase_side": wall_chase.get("side") or "",
             "wall_chase_n": int(wall_chase.get("n_events") or 0),
+            "map_lag": bool(map_lag.get("active")),
+            "map_lag_side": map_lag.get("side") or "",
+            "map_lag_move": float(map_lag.get("move_pts") or 0.0),
+            "map_lag_reasons": list(map_lag.get("reasons") or []),
         }
         out.update(kwargs)
         return out
@@ -899,6 +915,33 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
                     f"Same-side wall break/migrate printed {n_ev}× in the last "
                     f"{int(wall_chase.get('window_s') or 0) // 60}m ({side_w}). "
                     "That is a successive-concentration chase on the map, not a pin. "
+                    + str(base.get("drivers") or "")
+                )
+
+    # Map-lag / open thrust: quiet note only. Never promote WATCH, never own scenario
+    # (scenario ownership would ring the brass desk bell on every flap).
+    # If walls chased the *opposite* side of the price burst, demote that WATCH —
+    # Sensex 19 Nov open: PUT migrates + ABSORB_BEAR while spot ripped up.
+    if map_lag.get("active"):
+        side_m = str(map_lag.get("side") or "")
+        side_w = str(wall_chase.get("side") or "") if wall_chase.get("active") else ""
+        if side_m and side_w and side_m != side_w:
+            base["stance"] = "STAY OUT"
+            badge = str(base.get("badge") or "")
+            if "WALL CHASE" in badge:
+                # Drop the opp-side chase token; keep the rest of the badge.
+                parts = [p for p in badge.split(" · ") if "WALL CHASE" not in p]
+                base["badge"] = " · ".join(parts) if parts else badge
+        if base.get("stance") == "STAY OUT":
+            move = float(map_lag.get("move_pts") or 0.0)
+            why = ", ".join(str(x) for x in (map_lag.get("reasons") or [])[:3])
+            if "MAP LAG" not in str(base.get("badge") or ""):
+                base["badge"] = f"🗺 MAP LAG · " + str(base.get("badge") or "")
+            if "map-lag / open thrust" not in str(base.get("drivers") or "").lower():
+                base["drivers"] = (
+                    f"Map-lag / open thrust: spot ran {move:+.0f} pts ({side_m}) in ~30m "
+                    f"while the wall-chase composite failed ({why or 'walls/tape lag'}). "
+                    "Informational only — not a CALL/PUT WATCH. "
                     + str(base.get("drivers") or "")
                 )
 

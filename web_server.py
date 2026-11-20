@@ -3382,11 +3382,87 @@ async def get_cockpit_data(
         log.debug("wall_events compose: %s", exc)
         payload["wall_events"] = []
     try:
+        # Rolling spot trail for quiet map-lag / open-thrust detection (no notify).
+        payload["spot_path"] = _record_spot_trail(
+            sym, float(payload.get("spot") or 0.0),
+            now_ts=_get_ist_now().timestamp(),
+        )
+    except Exception as exc:
+        log.debug("spot_path compose: %s", exc)
+        payload["spot_path"] = []
+    try:
         payload["market_alert"] = evaluate_market_alert(payload)
     except Exception as exc:
         log.debug("market_alert compose: %s", exc)
         payload["market_alert"] = None
     return payload
+
+
+# Per-index rolling spot samples for map-lag run detection (in-process only).
+_SPOT_TRAIL: dict[str, list] = {}
+_SPOT_TRAIL_MAX = 48  # ~30–40m at cockpit poll cadence
+_SPOT_TRAIL_SEEDED: set[str] = set()
+
+
+def _seed_spot_trail_from_timeseries(sym: str, *, now_ts: float) -> None:
+    """One-shot seed from today's timeseries so map-lag works after a process restart."""
+    day_key = f"{sym}:{datetime.fromtimestamp(now_ts, tz=IST).strftime('%Y-%m-%d')}"
+    if day_key in _SPOT_TRAIL_SEEDED:
+        return
+    _SPOT_TRAIL_SEEDED.add(day_key)
+    try:
+        day = datetime.fromtimestamp(now_ts, tz=IST).strftime("%Y-%m-%d")
+        path = ROOT_DIR / "data" / "journal" / "timeseries" / sym / f"{day}.csv"
+        if not path.exists():
+            return
+        import csv
+        cutoff = float(now_ts) - (35 * 60)
+        rows = []
+        with path.open(newline="") as fh:
+            for r in csv.DictReader(fh):
+                t = str(r.get("time_ist") or "")
+                try:
+                    hh, mm = map(int, t.split(":")[:2])
+                    spot = float(r.get("spot") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if spot <= 0:
+                    continue
+                ts = datetime(
+                    int(day[:4]), int(day[5:7]), int(day[8:10]),
+                    hh, mm, tzinfo=IST,
+                ).timestamp()
+                if ts >= cutoff:
+                    rows.append([ts, spot])
+        if rows:
+            trail = _SPOT_TRAIL.setdefault(sym, [])
+            # Prefer file seed behind any live samples already recorded.
+            merged = rows + trail
+            merged.sort(key=lambda x: x[0])
+            dedup = []
+            for row in merged:
+                if not dedup or abs(dedup[-1][1] - row[1]) >= 0.5 or (row[0] - dedup[-1][0]) >= 15:
+                    dedup.append(row)
+            _SPOT_TRAIL[sym] = dedup[-_SPOT_TRAIL_MAX:]
+    except Exception as exc:
+        log.debug("spot_trail seed %s: %s", sym, exc)
+
+
+def _record_spot_trail(symbol: str, spot: float, *, now_ts: float) -> list:
+    """Append live spot and return the last ~30m path as [[ts, spot], ...]."""
+    sym = (symbol or "NIFTY").upper()
+    try:
+        spot_f = float(spot or 0.0)
+    except (TypeError, ValueError):
+        spot_f = 0.0
+    _seed_spot_trail_from_timeseries(sym, now_ts=now_ts)
+    trail = _SPOT_TRAIL.setdefault(sym, [])
+    if spot_f > 0:
+        if not trail or abs(trail[-1][1] - spot_f) >= 0.5 or (now_ts - trail[-1][0]) >= 20:
+            trail.append([float(now_ts), spot_f])
+    cutoff = float(now_ts) - (35 * 60)
+    _SPOT_TRAIL[sym] = [row for row in trail if row[0] >= cutoff][-_SPOT_TRAIL_MAX:]
+    return list(_SPOT_TRAIL[sym])
 
 
 def _slim_orderflow_alerts(symbol: str, *, limit: int = 12) -> list:
