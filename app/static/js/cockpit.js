@@ -21,6 +21,9 @@
     lastAlertScenarios: {},
     lastAlertScenario: null,
     lastAlertSoundTime: 0,
+    lastAlertStanceSound: {},
+    wallChaseNotifyBellAt: {},
+    wallChaseNotifyOffSince: {},
     lastCockpitDash: null,
     goMode: localStorage.getItem("cubera_go_mode") || "directional",
     goDelta: parseFloat(localStorage.getItem("cubera_go_delta") || "0.50"),
@@ -723,43 +726,69 @@
     setTimeout(() => playAudioTone(311.13, "triangle", 0.3), 150); // Eb4
   }
 
-  // Unified 3.0-Second Louder Brass Desk Bell Synthesizer (Pure Web Audio)
-  function playTraderBellRing() {
-    if (!state.alertBellEnabled) return;
+  /**
+   * India temple bell (ghanta) — struck bronze, inharmonic partials.
+   * strikes=1 → tape alert; strikes=2 → wall-chase twin temple.
+   */
+  function playIndiaTempleBell(strikes = 1, force = false) {
+    if (!force && !state.alertBellEnabled) return;
     try {
       const ctx = initAudioContext();
       if (!ctx) return;
       if (ctx.state === "suspended") {
-        ctx.resume().catch(() => { });
+        if (force) {
+          ctx.resume().then(() => playIndiaTempleBell(strikes, true)).catch(() => { });
+        } else {
+          state.pendingAlertBell = true;
+          state.pendingAlertBellTime = Date.now();
+          if (strikes >= 2) {
+            state.pendingTwinTempleBell = true;
+            state.pendingTwinTempleBellTime = Date.now();
+          }
+          ctx.resume().catch(() => { });
+        }
+        return;
       }
 
-      const now = ctx.currentTime;
-      const f0 = 987.77; // B5 authentic brass desk bell fundamental
+      // ~A#3 / B3 temple-gong fundamental (Indian brass ghanta character)
+      const f0 = 233.08;
       const partials = [
-        { freq: f0, gain: 0.55, decay: 3.0 },
-        { freq: f0 * 2.02, gain: 0.28, decay: 2.1 },
-        { freq: f0 * 3.01, gain: 0.16, decay: 1.4 },
-        { freq: f0 * 4.25, gain: 0.09, decay: 0.8 },
+        { ratio: 0.50, gain: 0.20, decay: 5.5 },
+        { ratio: 1.00, gain: 0.62, decay: 5.0 },
+        { ratio: 1.19, gain: 0.36, decay: 4.0 },
+        { ratio: 1.50, gain: 0.22, decay: 3.2 },
+        { ratio: 2.00, gain: 0.14, decay: 2.5 },
+        { ratio: 2.76, gain: 0.09, decay: 1.9 },
+        { ratio: 3.40, gain: 0.05, decay: 1.3 },
+        { ratio: 4.10, gain: 0.03, decay: 0.9 },
       ];
+      const nStrikes = Math.max(1, Math.min(2, Number(strikes) || 1));
+      const strikeAt = nStrikes >= 2 ? [0.0, 0.58] : [0.0];
 
-      partials.forEach((p) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(p.freq, now);
-
-        g.gain.setValueAtTime(0.001, now);
-        g.gain.linearRampToValueAtTime(p.gain, now + 0.002);
-        g.gain.exponentialRampToValueAtTime(0.0001, now + p.decay);
-
-        osc.connect(g);
-        g.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + p.decay + 0.05);
+      strikeAt.forEach((at) => {
+        const t0 = ctx.currentTime + at;
+        partials.forEach((p) => {
+          const osc = ctx.createOscillator();
+          const g = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(f0 * p.ratio, t0);
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.linearRampToValueAtTime(p.gain, t0 + 0.01);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
+          osc.connect(g);
+          g.connect(ctx.destination);
+          osc.start(t0);
+          osc.stop(t0 + p.decay + 0.05);
+        });
       });
     } catch (e) {
-      console.warn("Error synthesizing 3.0s alert bell:", e);
+      console.warn("Error synthesizing India temple bell:", e);
     }
+  }
+
+  // Tape / general alert bell — India temple (single strike)
+  function playTraderBellRing() {
+    playIndiaTempleBell(1);
   }
 
   function isAudioEnabled() {
@@ -797,71 +826,24 @@
 
   window.testAlertBell = function () {
     initAudioContext();
-    playTraderBellRing();
-    showToast("Auditioning 3.0s Louder Brass Bell Alert", "🔔");
+    playIndiaTempleBell(1, true);
+    showToast("Auditioning India temple bell (alert)", "🛕");
   };
 
-  /**
-   * Twin temple big-bell — two strikes of a low temple-style partial stack.
-   * Used for cross-index wall-chase CALL/PUT WATCH (any selected index).
-   * Fundamental ~B3 with inharmonic partials (not a harmonic brass desk bell).
-   */
+  /** Twin India temple strikes — cross-index wall-chase CALL/PUT WATCH. */
   function playTwinTempleBell(force = false) {
-    if (!force && !state.alertBellEnabled) return;
-    try {
-      const ctx = initAudioContext();
-      if (!ctx) return;
-      if (ctx.state === "suspended") {
-        if (force) {
-          ctx.resume().then(() => playTwinTempleBell(true)).catch(() => { });
-        } else {
-          state.pendingTwinTempleBell = true;
-          state.pendingTwinTempleBellTime = Date.now();
-          ctx.resume().catch(() => { });
-        }
-        return;
-      }
-
-      const f0 = 246.94; // B3 — large temple-bell fundamental
-      // Inharmonic partials (struck bronze / temple character, not harmonic series)
-      const partials = [
-        { ratio: 0.50, gain: 0.22, decay: 5.2 },
-        { ratio: 1.00, gain: 0.58, decay: 4.6 },
-        { ratio: 1.19, gain: 0.34, decay: 3.8 },
-        { ratio: 1.50, gain: 0.20, decay: 3.0 },
-        { ratio: 2.00, gain: 0.14, decay: 2.4 },
-        { ratio: 2.76, gain: 0.09, decay: 1.8 },
-        { ratio: 3.40, gain: 0.05, decay: 1.2 },
-      ];
-      const strikes = [0.0, 0.55]; // twin strike spacing
-
-      strikes.forEach((strikeAt) => {
-        const t0 = ctx.currentTime + strikeAt;
-        partials.forEach((p) => {
-          const osc = ctx.createOscillator();
-          const g = ctx.createGain();
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(f0 * p.ratio, t0);
-          // Tiny strike shimmer then long temple decay
-          g.gain.setValueAtTime(0.0001, t0);
-          g.gain.linearRampToValueAtTime(p.gain, t0 + 0.008);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + p.decay);
-          osc.connect(g);
-          g.connect(ctx.destination);
-          osc.start(t0);
-          osc.stop(t0 + p.decay + 0.05);
-        });
-      });
-    } catch (e) {
-      console.warn("Error synthesizing twin temple bell:", e);
-    }
+    playIndiaTempleBell(2, force);
   }
 
   window.testTwinTempleBell = function () {
     initAudioContext();
     playTwinTempleBell(true);
-    showToast("Auditioning twin temple big-bell (wall-chase)", "🛕");
+    showToast("Auditioning twin India temple bell (wall-chase)", "🛕");
   };
+
+  const ALERT_BELL_COOLDOWN_MS = 180000; // 3 min shared — stops all-day scenario flaps
+  const WALL_CHASE_BELL_COOLDOWN_MS = 600000; // 10 min per index
+  const WALL_CHASE_OFF_CLEAR_MS = 180000; // must stay off 3m before re-arm
 
   function ensureNotificationPermission() {
     if (typeof Notification === "undefined") return Promise.resolve("unsupported");
@@ -875,18 +857,8 @@
   }
 
   function wallChaseNotifyFingerprint(w) {
-    const st = (w && w.stretch) || {};
-    return [
-      String(w.side || ""),
-      String(w.stance || ""),
-      String(w.signal_type || ""),
-      String(w.n_events || 0),
-      String(w.zone || ""),
-      String(st.first_wall || ""),
-      String(st.last_wall || ""),
-      String(st.run_pts || ""),
-      String(st.next_map_strike || ""),
-    ].join("|");
+    // Side+stance only — stretch/n_events/zone flap every poll and re-armed the bell all day.
+    return [String(w.side || ""), String(w.stance || "")].join("|");
   }
 
   function wallChaseStretchSummary(w) {
@@ -938,30 +910,47 @@
   function processWallChaseWatches(watches) {
     const list = Array.isArray(watches) ? watches : [];
     let firedBell = false;
+    const now = Date.now();
     for (const w of list) {
       const sym = String((w && w.symbol) || "").toUpperCase();
       if (!sym) continue;
       if (!w.notify) {
-        delete state.wallChaseNotifySeen[sym];
+        if (!state.wallChaseNotifyOffSince[sym]) {
+          state.wallChaseNotifyOffSince[sym] = now;
+        }
+        // Only clear rising-edge latch after a sustained off period (avoid blip re-arms).
+        if (now - state.wallChaseNotifyOffSince[sym] >= WALL_CHASE_OFF_CLEAR_MS) {
+          delete state.wallChaseNotifySeen[sym];
+        }
         continue;
       }
+      delete state.wallChaseNotifyOffSince[sym];
       const fp = wallChaseNotifyFingerprint(w);
       if (state.wallChaseNotifySeen[sym] === fp) continue;
       state.wallChaseNotifySeen[sym] = fp;
 
+      const lastBell = state.wallChaseNotifyBellAt[sym] || 0;
+      const allowBell = (now - lastBell) >= WALL_CHASE_BELL_COOLDOWN_MS
+        && (now - (state.lastAlertSoundTime || 0)) >= ALERT_BELL_COOLDOWN_MS;
+
       const icon = String(w.side || "").toUpperCase() === "PUT" ? "🔴" : "🟢";
       const scoreTxt = w.signal_score ? ` · tape ${w.signal_score}` : "";
       const stretchTxt = wallChaseStretchSummary(w);
-      showToast(
-        `${sym} ${w.stance || "WATCH"}: wall chase ${w.side || ""} ×${w.n_events || 0}${scoreTxt}`
-          + (stretchTxt ? ` · ${stretchTxt}` : "")
-          + ((w.commentary && w.commentary.status === "ok") ? " · logged to commentary" : ""),
-        icon,
-      );
-      showWallChaseBrowserNotification(w);
-      if (!firedBell) {
-        firedBell = true;
-        playTwinTempleBell();
+      // Toast only on true rising edge; bell heavily rate-limited.
+      if (allowBell) {
+        showToast(
+          `${sym} ${w.stance || "WATCH"}: wall chase ${w.side || ""} ×${w.n_events || 0}${scoreTxt}`
+            + (stretchTxt ? ` · ${stretchTxt}` : "")
+            + ((w.commentary && w.commentary.status === "ok") ? " · logged to commentary" : ""),
+          icon,
+        );
+        showWallChaseBrowserNotification(w);
+        if (!firedBell) {
+          firedBell = true;
+          playTwinTempleBell();
+          state.wallChaseNotifyBellAt[sym] = now;
+          state.lastAlertSoundTime = now;
+        }
       }
     }
   }
@@ -6018,47 +6007,56 @@
       `;
     }
 
-    // Symbol-isolated state transition detection & 3.0s Louder Brass Bell Alert
+    // Ring only on meaningful stance transitions — not every TAPE_* / zone scenario flap
+    // (those flipped all day on 20 Nov and rang the bell every ~45s).
     const sym = (state.symbol || "NIFTY").toUpperCase();
     const lastScenario = state.lastAlertScenarios[sym] || null;
+    const stance = String(alert.stance || "STAY OUT");
+    const lastStance = state.lastAlertStanceSound[sym];
+    const stanceChanged = lastStance != null && lastStance !== stance;
+    // Entering CALL/PUT WATCH only — exits and TAPE_*/zone flaps stay silent.
+    const enteringWatch = stanceChanged
+      && (stance === "CALL WATCH" || stance === "PUT WATCH")
+      && lastStance !== "CALL WATCH"
+      && lastStance !== "PUT WATCH";
 
     if (alert.scenario !== lastScenario) {
-      const now = Date.now();
-      const isInitial = lastScenario === null;
       state.lastAlertScenarios[sym] = alert.scenario;
       state.lastAlertScenario = alert.scenario;
+    }
 
-      if (!isInitial) {
-        // Play 3.0-second louder brass bell
-        if (now - state.lastAlertSoundTime > 45000) {
-          if (!state.audioCtx || state.audioCtx.state === "suspended") {
-            state.pendingAlertBell = true;
-            state.pendingAlertBellTime = now;
-          }
-          playTraderBellRing();
-          state.lastAlertSoundTime = now;
+    if (enteringWatch) {
+      const now = Date.now();
+      if (now - state.lastAlertSoundTime > ALERT_BELL_COOLDOWN_MS) {
+        if (!state.audioCtx || state.audioCtx.state === "suspended") {
+          state.pendingAlertBell = true;
+          state.pendingAlertBellTime = now;
         }
-
-        // Post alert message with timestamp to Session Commentary timeline
-        fetch("/api/commentary/log-market-alert", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            symbol: sym,
-            scenario: alert.scenario,
-            badge: alert.badge,
-            headline: alert.badge,
-            stance: alert.stance,
-            confidence: alert.confidence,
-            outcome: alert.outcome,
-            drivers: alert.drivers,
-            risk: alert.risk,
-            body: alert.outcome,
-            action_advice: alert.risk,
-            diagnostics: alert.drivers,
-          }),
-        }).catch((err) => console.warn("Failed to log alert to commentary:", err));
+        playTraderBellRing();
+        state.lastAlertSoundTime = now;
       }
+
+      fetch("/api/commentary/log-market-alert", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: sym,
+          scenario: alert.scenario,
+          badge: alert.badge,
+          headline: alert.badge,
+          stance: alert.stance,
+          confidence: alert.confidence,
+          outcome: alert.outcome,
+          drivers: alert.drivers,
+          risk: alert.risk,
+          body: alert.outcome,
+          action_advice: alert.risk,
+          diagnostics: alert.drivers,
+        }),
+      }).catch((err) => console.warn("Failed to log alert to commentary:", err));
+    }
+    if (lastStance == null || stanceChanged) {
+      state.lastAlertStanceSound[sym] = stance;
     }
   }
 

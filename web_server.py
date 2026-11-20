@@ -3493,7 +3493,13 @@ def _slim_orderflow_alerts(symbol: str, *, limit: int = 12) -> list:
 
 
 # Rising-edge fingerprints already written to Session Commentary for wall-chase.
+# Side+stance only — stretch/zone/n_events flap every poll and spammed commentary
+# (198 CALL WATCH lines on 2026-11-20 across three indices).
 _WALL_CHASE_COMMENTARY_SEEN: dict[str, str] = {}
+_WALL_CHASE_COMMENTARY_AT: dict[str, float] = {}
+_WALL_CHASE_COMMENTARY_OFF_SINCE: dict[str, float] = {}
+_WALL_CHASE_COMMENTARY_COOLDOWN_S = 15 * 60
+_WALL_CHASE_COMMENTARY_OFF_CLEAR_S = 3 * 60
 
 
 def _fmt_lvl(val: float) -> str:
@@ -3507,17 +3513,9 @@ def _fmt_lvl(val: float) -> str:
 
 
 def _wall_chase_commentary_fingerprint(row: dict) -> str:
-    stretch = row.get("stretch") or {}
     return "|".join([
         str(row.get("side") or ""),
         str(row.get("stance") or ""),
-        str(row.get("signal_type") or ""),
-        str(row.get("n_events") or 0),
-        str(row.get("zone") or ""),
-        str(stretch.get("first_wall") or ""),
-        str(stretch.get("last_wall") or ""),
-        str(stretch.get("run_pts") or ""),
-        str(stretch.get("next_map_strike") or ""),
     ])
 
 
@@ -3526,10 +3524,18 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
     sym = str(row.get("symbol") or "").upper()
     if not sym or not row.get("notify"):
         return None
+    now_ts = _get_ist_now().timestamp()
+    _WALL_CHASE_COMMENTARY_OFF_SINCE.pop(sym, None)
     fp = _wall_chase_commentary_fingerprint(row)
     if _WALL_CHASE_COMMENTARY_SEEN.get(sym) == fp:
         return {"status": "deduped", "symbol": sym}
+    last_at = float(_WALL_CHASE_COMMENTARY_AT.get(sym) or 0.0)
+    if last_at and (now_ts - last_at) < _WALL_CHASE_COMMENTARY_COOLDOWN_S:
+        # Same episode family (side/stance may have flipped briefly) — hold the pen.
+        _WALL_CHASE_COMMENTARY_SEEN[sym] = fp
+        return {"status": "deduped", "symbol": sym, "reason": "cooldown"}
     _WALL_CHASE_COMMENTARY_SEEN[sym] = fp
+    _WALL_CHASE_COMMENTARY_AT[sym] = now_ts
 
     stretch = row.get("stretch") or {}
     now_ist = _get_ist_now()
@@ -3742,8 +3748,12 @@ async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week"
         if notify:
             row["commentary"] = _log_wall_chase_to_commentary(row)
         elif sym in _WALL_CHASE_COMMENTARY_SEEN:
-            # Clear so the next rising edge re-publishes
-            _WALL_CHASE_COMMENTARY_SEEN.pop(sym, None)
+            # Sustained off only — brief notify blips must not re-arm spam.
+            now_ts = _get_ist_now().timestamp()
+            off_since = _WALL_CHASE_COMMENTARY_OFF_SINCE.setdefault(sym, now_ts)
+            if (now_ts - off_since) >= _WALL_CHASE_COMMENTARY_OFF_CLEAR_S:
+                _WALL_CHASE_COMMENTARY_SEEN.pop(sym, None)
+                _WALL_CHASE_COMMENTARY_OFF_SINCE.pop(sym, None)
         return row
     except Exception as exc:
         log.debug("wall_chase_watch %s: %s", sym, exc)

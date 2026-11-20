@@ -608,10 +608,16 @@ def test_sentinel_signals_endpoint_and_alert_audio_controls():
     assert "processSentinelSignals" in js
     assert "pollSentinelSignals" in js
     assert "playTwinTempleBell" in js
+    assert "playIndiaTempleBell" in js
     assert "pollWallChaseWatch" in js
     assert "processWallChaseWatches" in js
     assert "testTwinTempleBell" in js
     assert "/api/wall-chase-watch" in js
+    assert "ALERT_BELL_COOLDOWN_MS" in js
+    assert "WALL_CHASE_BELL_COOLDOWN_MS" in js
+    # Must not ring on every scenario flap (20 Nov noise) — enter-WATCH gated
+    assert "enteringWatch" in js
+    assert 'stance === "CALL WATCH"' in js
     # Gamma-blast audition + live COILING/ACTIVE wiring (heartbeat + engine rev)
     assert "previewGammaBlastHeartbeat" in js
     assert "previewGammaBlastSiren" in js
