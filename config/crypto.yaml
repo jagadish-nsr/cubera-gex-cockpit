@@ -114,7 +114,9 @@ providers:
       feature_flag: exec.paper
 
 feature_flags:
-  # Per-asset gates (BTC default on; ETH/SOL off until enabled)
+  # Per-asset gates. BTC always on as the default active underlying.
+  # YAML keeps ETH/SOL off for Advisory; ./run_crypto_paper.sh turns them on
+  # (CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1) so the switcher works.
   assets.btc: true
   assets.eth: false
   assets.sol: false

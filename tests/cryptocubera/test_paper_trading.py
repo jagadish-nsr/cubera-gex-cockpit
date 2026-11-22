@@ -336,6 +336,56 @@ def test_env_paper_flags_map_without_live(monkeypatch, tmp_path):
     assert mode["mode"] == "paper_confirm"
 
 
+def test_env_paper_path_enables_eth_sol_keeps_live_off(monkeypatch, tmp_path):
+    """Paper helper env: ETH/SOL on, BTC default underlying, exec.live forced off."""
+    from crypto.config import get_active_underlying, is_asset_enabled, list_assets
+
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper_assets.db'}")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_AUTO", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_ETH", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_SOL", "1")
+    monkeypatch.delenv("CRYPTO_UNDERLYING", raising=False)
+    load_config(reload=True)
+
+    assert get_flag("exec.paper") is True
+    assert get_flag("exec.confirm") is True
+    assert get_flag("exec.live") is False
+    assert get_flag("exec.auto") is False
+    assert get_flag("assets.eth") is True
+    assert get_flag("assets.sol") is True
+    assert is_asset_enabled("BTC")
+    assert is_asset_enabled("ETH")
+    assert is_asset_enabled("SOL")
+    assert get_active_underlying() == "BTC"
+    enabled = {a["symbol"] for a in list_assets() if a.get("enabled")}
+    assert enabled >= {"BTC", "ETH", "SOL"}
+    mode = resolve_exec_mode()
+    assert mode["badge"] == "Paper Confirm"
+    assert "Live" not in mode["badge"]
+
+
+def test_run_crypto_paper_sh_exports_eth_sol_and_refuses_live():
+    """Helper script must force live=0 and default ETH/SOL on for paper ops."""
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "run_crypto_paper.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "CRYPTO_FLAG_EXEC_PAPER=1" in text
+    assert "CRYPTO_FLAG_EXEC_CONFIRM=1" in text
+    assert "CRYPTO_FLAG_EXEC_LIVE=0" in text
+    assert "CRYPTO_FLAG_EXEC_AUTO=0" in text
+    assert "CRYPTO_FLAG_ASSETS_ETH" in text
+    assert "CRYPTO_FLAG_ASSETS_SOL" in text
+    # Defaults to on when unset
+    assert 'CRYPTO_FLAG_ASSETS_ETH="${CRYPTO_FLAG_ASSETS_ETH:-1}"' in text
+    assert 'CRYPTO_FLAG_ASSETS_SOL="${CRYPTO_FLAG_ASSETS_SOL:-1}"' in text
+    # Must never enable live in the helper
+    assert "CRYPTO_FLAG_EXEC_LIVE=1" not in text
+
+
 def test_api_confirm_and_export(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 

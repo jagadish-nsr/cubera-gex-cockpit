@@ -7,12 +7,19 @@ Two decision-support surfaces share this repo:
 
 ```bash
 ./run_crypto.sh          # CryptoCubera → http://localhost:8760 (Advisory / mock)
-./run_crypto_paper.sh    # CryptoCubera local paper Confirm (sim; exec.live stays off)
+./run_crypto_paper.sh    # CryptoCubera local paper Confirm + ETH/SOL (sim; exec.live=0)
 # Live feeds: CRYPTO_LIVE_FEEDS=1 CRYPTO_FLAG_FEEDS_DERIBIT=1 CRYPTO_FLAG_FEEDS_DELTA=1 ./run_crypto.sh
 ./run_prod.sh            # NSE Cubera  → http://localhost:8640
 ```
 
-Paper runbook: **[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**.
+### CryptoCubera paper ops (ETH/SOL)
+
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760 (BTC default; ETH/SOL on)
+2. **Switch asset** — topbar BTC / ETH / SOL (or `PATCH /api/underlying`)
+3. **Confirm** — tap Confirm paper on a GO card (local sim fills)
+4. **Session export** — `curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json`
+
+Full checklist: **[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**. Prefer local paper only — keep `exec.live` off.
 
 **Not financial advice.** CryptoCubera defaults to Advisory; preferred Confirm path is local paper only (keep `exec.live` off).
 
