@@ -95,9 +95,13 @@ async def assets() -> dict[str, Any]:
 
 @router.patch("/underlying")
 async def patch_underlying(body: UnderlyingPatch) -> dict[str, Any]:
-    """Switch active underlying (BTC default; ETH/SOL require assets.* flags)."""
+    """Switch active underlying (BTC default; ETH/SOL require assets.* flags).
+
+    Restarts live collectors and clears prior-asset chain caches so spot/chain
+    match the selected asset (no BTC-like spot under an ETH/SOL label).
+    """
     try:
-        return get_service().switch_underlying(body.underlying, actor=body.actor)
+        return await get_service().switch_underlying(body.underlying, actor=body.actor)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

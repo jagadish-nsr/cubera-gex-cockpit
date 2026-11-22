@@ -133,27 +133,86 @@ def test_snapshot_switches_underlying():
     set_flag("assets.sol", True, actor="test")
     svc = CockpitService()
 
-    btc = asyncio.run(svc.snapshot())
-    assert btc["underlying"] == "BTC"
-    assert btc["spot"] > 10_000
-    assert btc["signal"]["status"] == "GO"
-    assert any(a["symbol"] == "ETH" and a["enabled"] for a in btc["assets"])
+    async def _run():
+        btc = await svc.snapshot()
+        assert btc["underlying"] == "BTC"
+        assert btc["spot"] > 10_000
+        assert btc["signal"]["status"] == "GO"
+        assert any(a["symbol"] == "ETH" and a["enabled"] for a in btc["assets"])
 
-    svc.switch_underlying("ETH", actor="test")
-    eth = asyncio.run(svc.snapshot())
-    assert eth["underlying"] == "ETH"
-    assert 1_000 < eth["spot"] < 10_000
-    assert eth["gex"]["underlying"] == "ETH"
-    assert eth["signal"]["instrument"].startswith("ETH")
-    assert eth["asset"]["deribit_perp"] == "ETH-PERPETUAL"
+        await svc.switch_underlying("ETH", actor="test")
+        eth = await svc.snapshot()
+        assert eth["underlying"] == "ETH"
+        assert 1_000 < eth["spot"] < 10_000
+        assert eth["gex"]["underlying"] == "ETH"
+        assert eth["signal"]["instrument"].startswith("ETH")
+        assert eth["asset"]["deribit_perp"] == "ETH-PERPETUAL"
 
-    svc.switch_underlying("SOL", actor="test")
-    sol = asyncio.run(svc.snapshot())
-    assert sol["underlying"] == "SOL"
-    assert sol["spot"] < 1_000
-    assert sol["signal"]["instrument"].startswith("SOL")
-    # Intel feed should not be empty (fixture + calendar)
-    assert isinstance(sol["news"], list)
+        await svc.switch_underlying("SOL", actor="test")
+        sol = await svc.snapshot()
+        assert sol["underlying"] == "SOL"
+        assert sol["spot"] < 1_000
+        assert sol["signal"]["instrument"].startswith("SOL")
+        # Intel feed should not be empty (fixture + calendar)
+        assert isinstance(sol["news"], list)
+
+    asyncio.run(_run())
+
+
+def test_live_cache_does_not_leak_btc_spot_to_eth(monkeypatch):
+    """Regression: Deribit live BTC cache must not stick after ETH switch.
+
+    First-session paper ops showed ~59k BTC-like spot under ETH-PERPETUAL
+    because fetch_chain reused get_deribit_chain() without an underlying check.
+    """
+    monkeypatch.delenv("CRYPTO_LIVE_FEEDS", raising=False)
+    set_flag("assets.eth", True, actor="test")
+    set_flag("feeds.deribit", True, actor="test")
+    set_flag("feeds.mock", True, actor="test")
+
+    from crypto.feeds.state import get_feed_state
+    from crypto.providers.deribit.chain import DeribitOptionChainProvider
+
+    async def _run():
+        btc = await MockOptionChainProvider().fetch_chain("BTC")
+        btc.source = "deribit-ws+rest"
+        state = get_feed_state(reload=True)
+        state.set_deribit_chain(btc)
+
+        # Direct provider path: ETH must not return the BTC cache
+        eth_snap = await DeribitOptionChainProvider().fetch_chain("ETH")
+        assert eth_snap.underlying == "ETH"
+        assert 1_000 < eth_snap.spot < 10_000
+        assert eth_snap.spot != btc.spot
+
+        # Full cockpit path after switch_underlying
+        state.set_deribit_chain(btc)
+        load_config()["underlying"] = "BTC"
+        svc = CockpitService()
+        await svc.switch_underlying("ETH", actor="test")
+        eth = await svc.snapshot()
+        assert eth["underlying"] == "ETH"
+        assert 1_000 < eth["spot"] < 10_000
+        assert eth["signal"]["instrument"].startswith("ETH")
+        assert eth["chain"]["underlying"] == "ETH"
+        # Cache for wrong asset must be cleared / ignored
+        assert get_feed_state().get_deribit_chain(for_underlying="BTC") is None
+
+    asyncio.run(_run())
+
+
+def test_feed_state_underlying_filter():
+    from crypto.feeds.state import get_feed_state
+
+    state = get_feed_state(reload=True)
+    btc = asyncio.run(MockOptionChainProvider().fetch_chain("BTC"))
+    btc.source = "deribit-ws+rest"
+    state.set_deribit_chain(btc)
+    assert state.get_deribit_chain(for_underlying="BTC") is not None
+    assert state.get_deribit_chain(for_underlying="ETH") is None
+    state.clear_for_underlying_switch()
+    assert state.get_deribit_chain() is None
+    assert state.recent_trades == []
 
 
 def test_asset_flag_env_override(monkeypatch):

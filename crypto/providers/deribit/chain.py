@@ -29,10 +29,12 @@ class DeribitOptionChainProvider:
         self._fallback = MockOptionChainProvider()
 
     async def fetch_chain(self, underlying: str = "BTC") -> OptionChainSnapshot:
+        want = (underlying or "BTC").strip().upper() or "BTC"
         if get_flag("feeds.deribit"):
-            live = get_feed_state().get_deribit_chain()
+            # Only reuse cache when it matches the active asset — never serve
+            # a BTC live book after the operator switches to ETH/SOL.
+            live = get_feed_state().get_deribit_chain(for_underlying=want)
             if live is not None and live.contracts:
-                # Refresh fetched_at copy so callers see current hand-off time
                 return live
 
             cfg = load_config()
@@ -40,28 +42,28 @@ class DeribitOptionChainProvider:
             spike = bool((cfg.get("live_spike") or {}).get("deribit_ws")) or bool(
                 (cfg.get("live_spike") or {}).get("deribit_ticker")
             )
-            # One-shot REST when live requested but collector cache empty
+            # One-shot REST when live requested but collector cache empty / wrong asset
             if spike or _live_env():
                 try:
                     from crypto.providers.deribit.rest_snapshot import build_chain_snapshot
 
                     dcfg = feeds.get("deribit") or {}
                     snap = await build_chain_snapshot(
-                        currency=underlying,
+                        currency=want,
                         base_url=dcfg.get("rest_url")
                         or (cfg.get("live_spike") or {}).get("deribit_base_url")
                         or "https://www.deribit.com/api/v2",
                         max_expiries=int(dcfg.get("max_expiries") or 2),
                         strike_band_pct=float(dcfg.get("strike_band_pct") or 0.08),
                     )
-                    if snap.contracts:
+                    if snap.contracts and str(snap.underlying or "").upper() == want:
                         get_feed_state().set_deribit_chain(snap)
                         return snap
                 except Exception as exc:  # noqa: BLE001
                     log.warning("Deribit REST snapshot failed; fixture fallback: %s", exc)
 
         # Legacy: optional public ticker overlay on fixture
-        snap = await self._fallback.fetch_chain(underlying)
+        snap = await self._fallback.fetch_chain(want)
         snap.source = "deribit-stub"
 
         cfg = load_config()
@@ -72,8 +74,8 @@ class DeribitOptionChainProvider:
         base = (cfg.get("live_spike") or {}).get(
             "deribit_base_url", "https://www.deribit.com/api/v2"
         )
-        asset = get_asset_config(underlying)
-        perp_name = str(asset.get("deribit_perp") or f"{underlying}-PERPETUAL")
+        asset = get_asset_config(want)
+        perp_name = str(asset.get("deribit_perp") or f"{want}-PERPETUAL")
         try:
             ticker = await self._public_ticker(base, perp_name)
             mark = float(ticker.get("mark_price") or ticker.get("last_price") or 0)

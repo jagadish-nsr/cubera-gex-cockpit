@@ -74,13 +74,46 @@ class LiveFeedState:
             h = self.health["delta"]
             h.mark_msg()
 
-    def get_deribit_chain(self) -> Optional[OptionChainSnapshot]:
-        with self._lock:
-            return self.deribit_chain
+    @staticmethod
+    def _matches_underlying(snap: Optional[OptionChainSnapshot], underlying: str | None) -> bool:
+        if snap is None:
+            return False
+        if underlying is None:
+            return True
+        want = str(underlying).strip().upper()
+        got = str(snap.underlying or "").strip().upper()
+        return bool(want) and got == want
 
-    def get_delta_chain(self) -> Optional[OptionChainSnapshot]:
+    def get_deribit_chain(
+        self, *, for_underlying: str | None = None
+    ) -> Optional[OptionChainSnapshot]:
+        """Return cached Deribit chain; optionally require matching underlying.
+
+        Asset switches must not reuse a BTC cache for ETH/SOL (spot would stay
+        BTC-like while the instrument label flips).
+        """
         with self._lock:
-            return self.delta_chain
+            snap = self.deribit_chain
+            if for_underlying is not None and not self._matches_underlying(snap, for_underlying):
+                return None
+            return snap
+
+    def get_delta_chain(
+        self, *, for_underlying: str | None = None
+    ) -> Optional[OptionChainSnapshot]:
+        with self._lock:
+            snap = self.delta_chain
+            if for_underlying is not None and not self._matches_underlying(snap, for_underlying):
+                return None
+            return snap
+
+    def clear_for_underlying_switch(self) -> None:
+        """Drop chain/tape caches so the next asset does not inherit the prior book."""
+        with self._lock:
+            self.deribit_chain = None
+            self.delta_chain = None
+            self.recent_trades = []
+            self.flow_inventory = FlowInventory()
 
     def append_trade(self, trade: TradePrint) -> None:
         with self._lock:
@@ -141,6 +174,7 @@ class LiveFeedState:
                 "stale_threshold_s": thr,
                 "deribit_chain": {
                     "present": self.deribit_chain is not None,
+                    "underlying": self.deribit_chain.underlying if self.deribit_chain else None,
                     "source": self.deribit_chain.source if self.deribit_chain else None,
                     "spot": self.deribit_chain.spot if self.deribit_chain else None,
                     "n_contracts": len(self.deribit_chain.contracts) if self.deribit_chain else 0,
@@ -154,6 +188,7 @@ class LiveFeedState:
                 },
                 "delta_chain": {
                     "present": self.delta_chain is not None,
+                    "underlying": self.delta_chain.underlying if self.delta_chain else None,
                     "source": self.delta_chain.source if self.delta_chain else None,
                     "n_contracts": len(self.delta_chain.contracts) if self.delta_chain else 0,
                 },

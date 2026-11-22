@@ -217,10 +217,32 @@ class CockpitService:
         self.registry = get_registry(reload=True)
         return result
 
-    def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
+    async def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
+        """Switch active asset and realign live feed/caches to that underlying.
+
+        Clears orderflow + Deribit/Delta chain caches, then restarts collectors
+        when live feeds are enabled so spot/chain match ETH/SOL (not a stale
+        BTC book with an ETH instrument label).
+        """
         result = set_underlying(symbol, actor=actor)
         # Clear per-asset tape state so ETH/SOL don't inherit BTC CVD
         self._orderflow_state = OrderflowState()
+        feed = get_feed_state()
+        feed.clear_for_underlying_switch()
+
+        from crypto.feeds.manager import get_feed_manager, live_feeds_requested
+
+        mgr = get_feed_manager()
+        # Restart collectors when live MD is (or was) running so Deribit
+        # currency / Delta symbols bind to the new asset. Cache clear above
+        # alone covers fixture / soft-fallback paths.
+        if mgr._started or live_feeds_requested():
+            try:
+                result["feeds"] = await mgr.restart_for_underlying(result["underlying"])
+            except Exception as exc:  # noqa: BLE001 — never block the switcher
+                result["feeds_error"] = str(exc)
+        else:
+            result["feeds"] = {"restarted": False, "cleared_cache": True}
         return result
 
 
