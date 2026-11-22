@@ -22,7 +22,21 @@ def _ser_dt(value: Any) -> Any:
     return value
 
 
+def _row_notes(payload: dict[str, Any] | None) -> str:
+    """Operator notes for Manual Decision / paper journal exports."""
+    if not payload:
+        return ""
+    notes = payload.get("notes")
+    if notes:
+        return str(notes)
+    decision = payload.get("decision") or {}
+    if isinstance(decision, dict) and decision.get("notes"):
+        return str(decision.get("notes"))
+    return ""
+
+
 def _row_to_dict(row: PaperTradeRow) -> dict[str, Any]:
+    payload = dict(row.payload or {})
     return {
         "id": row.id,
         "client_order_id": row.client_order_id,
@@ -40,11 +54,12 @@ def _row_to_dict(row: PaperTradeRow) -> dict[str, Any]:
         "realized_pnl_usd": row.realized_pnl_usd,
         "signal_status": row.signal_status,
         "mode": row.mode,
+        "notes": _row_notes(payload),
         "submitted_at": _ser_dt(row.submitted_at),
         "filled_at": _ser_dt(row.filled_at),
         "closed_at": _ser_dt(row.closed_at),
         "cancel_reason": row.cancel_reason,
-        "payload": dict(row.payload or {}),
+        "payload": payload,
     }
 
 
@@ -202,6 +217,7 @@ class TradeLedger:
             "fill_price",
             "realized_pnl_usd",
             "mode",
+            "notes",
             "submitted_at",
             "filled_at",
             "closed_at",

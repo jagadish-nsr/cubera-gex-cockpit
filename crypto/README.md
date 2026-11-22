@@ -1,6 +1,9 @@
 # CryptoCubera
 
-Modular crypto GEX decision-support cockpit. **Advisory by default.** Preferred path: **local paper Confirm** (sim fills; no live keys). Keep `exec.live` off. Optional Delta demo/testnet paper keys. Live Confirm exists but is fail-closed and out of preference. **No Auto.**
+Modular crypto GEX decision-support cockpit. **Advisory by default.** Modes:
+**Advisory** · **Paper** (local sim practice) · **Manual Decision** (copy/export
+levels for hand placement on Delta). Confirm **never** places live exchange
+orders. **No Auto.**
 
 Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), trade ledger, and the CryptoCubera UI.
 
@@ -54,7 +57,7 @@ Mock/fixture chain is the default. No API keys required for local sim.
 | SQLite store + session recording | `data/crypto/cubera.db` (path/rotate in `crypto/store/`; [docs/feed-recording.md](docs/feed-recording.md)) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
 | Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
-| Paper / Live Confirm exec | `crypto/exec/` + `providers/delta/execution.py` + `live_execution.py` |
+| Paper / Manual Decision exec | `crypto/exec/` (+ `decision.py`) + `providers/delta/execution.py` |
 | Inference scaffold (off) | `crypto/engine/inference.py` |
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
@@ -270,18 +273,22 @@ Alert tiers:
 - **BREAKING** — high impact score on unscheduled headlines → push-ready in-app payload
 - **WATCH** — digest
 
-## Paper trading and Confirm mode
+## Paper trading and Manual Decision
 
-**Preferred: local paper only.** Advisory remains the process default when flags are
-off. Paper Confirm never places live capital. Keep `exec.live` **off** — do not
-enable Live Confirm or set `DELTA_LIVE_*` unless you explicitly change that
-preference. Full checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
+Advisory remains the process default when flags are off. **Paper** Confirm may
+sim-fill for practice. **Manual Decision** (`exec.live` + `exec.confirm`) shows
+the GO card for hand placement — instrument, side, entry/target/stop, size,
+score, reasons, valid-until — with one-click **Copy levels** / **Export JSON**.
+Confirm logs the decision to the ledger and **never** POSTs to Delta.
+`exec.live_place` stays off and cannot unlock exchange place from Confirm.
+Full paper checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 
 | Flag | Default | Role |
 | --- | --- | --- |
 | `exec.paper` | **false** | Enable paper ledger + Delta demo/sim adapter + kill switch |
-| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a paper/sim bracket (when live is off) |
-| `exec.live` | **false** | **Keep off.** Live Confirm path (real capital; fail closed) |
+| `exec.confirm` | **false** | Paper: sim Confirm · Manual Decision: log decision / enable card actions |
+| `exec.live` | **false** | Manual Decision mode (decision card; no exchange POST) |
+| `exec.live_place` | **false** | Exchange POST from Confirm — always refused even if flipped on |
 | `exec.auto` | **false** | Always refused — Auto is not supported |
 
 ### One-command local paper (no keys)
@@ -294,19 +301,19 @@ CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 \
   python3 -m crypto.server --port 8760
 ```
 
-Mode badge → **Paper Confirm** (never Live on this path). ETH/SOL enabled for
-the switcher; BTC stays the default active underlying. Without `DELTA_PAPER_*`
-keys the adapter records **local sim fills**.
+Mode badge → **Paper** (never Live Auto). ETH/SOL enabled for the switcher;
+BTC stays the default active underlying. Without `DELTA_PAPER_*` keys the
+adapter records **local sim fills**.
 
 ### Smoke checklist
 
 1. Start `./run_crypto_paper.sh` → http://localhost:8760
-2. Topbar badge = **Paper Confirm**; assets BTC / ETH / SOL available
+2. Topbar badge = **Paper**; assets BTC / ETH / SOL available
 3. Switch asset (topbar or `PATCH /api/underlying`) if needed
-4. GO card → **Confirm paper**
+4. GO card → **Confirm paper** (practice) or enable Manual Decision (below)
 5. Ledger shows open intent (`GET /api/exec/ledger`)
 6. Kill switch (two taps) clears intents / flips Confirm off
-7. Export trades CSV/JSON from Operator or `/api/exec/ledger/export`
+7. Export trades CSV/JSON from Operator or `/api/exec/ledger/export` (includes notes)
 8. Export **session summary** (GO / confirms / vetoes / PnL): `/api/session/export` or `./run_crypto_session_summary.sh`
 
 ```bash
@@ -361,68 +368,50 @@ export DELTA_PAPER_API_SECRET=...
 
 The paper adapter **refuses** production hosts (`api.india.delta.exchange`, `api.delta.exchange`). Demo REST soft-fails to local sim so the ledger still records the intent.
 
-## Live Confirm on Delta India (out of preference — flag-gated)
+## Manual Decision (hand placement on Delta)
 
-**Keep this path off** unless you explicitly want real capital. Preferred operation
-is local paper Confirm above. Live Confirm places **real capital** on Delta
-Exchange India and is refuse-by-default until every safety check passes. **No Auto.**
-
-### Exact enable steps
-
-1. **Create production India trading API keys** on Delta Exchange India (separate from demo/`DELTA_PAPER_*`). Whitelist the **static public IP** of the host that will run CryptoCubera — Delta trading keys require IP whitelist.
-2. Export live credentials and acks (fail closed without these):
-
-```bash
-export DELTA_LIVE_API_KEY=...          # production India trading key
-export DELTA_LIVE_API_SECRET=...
-# optional; must be India production (testnet refused)
-# export DELTA_LIVE_REST_URL=https://api.india.delta.exchange
-
-# Explicit risk acknowledgement (exact string):
-export CRYPTO_LIVE_CONFIRM_ACK=I_UNDERSTAND_LIVE_RISK
-
-# After you have whitelisted this host's static IP on the Delta key:
-export DELTA_LIVE_IP_WHITELIST_ACK=1
-```
-
-3. Enable flags (env or Operator / `PATCH /api/flags`):
+**Decision support only.** Enable Manual Decision when you want the GO card as a
+trade ticket to place yourself on Delta — not for the app to send orders.
 
 ```bash
 CRYPTO_FLAG_EXEC_LIVE=1 \
 CRYPTO_FLAG_EXEC_CONFIRM=1 \
+CRYPTO_FLAG_EXEC_LIVE_PLACE=0 \
 python3 -m crypto.server --port 8760
 ```
 
-Leave `exec.paper` off for a pure live path, or keep it on as a fallback when the live gate fails (mode falls back to Paper Confirm — never silent live).
+Mode badge → **Manual Decision**. No `DELTA_LIVE_*` keys required for this path.
 
-4. Verify the gate before confirming:
+### How Manual Decision works
+
+1. GO card shows instrument, side, entry zone, target, stop, size, score, three
+   reasons, invalidation, and valid-until.
+2. **Copy levels** — clipboard text for pasting into Delta.
+3. **Export JSON** — download the same fields (`GET /api/exec/decision`).
+4. **Log decision** — Confirm writes a `manual_noted` ledger row (optional notes);
+   CSV/JSON export includes the `notes` column. **No exchange POST.**
+5. Place the bracket yourself on Delta. CryptoCubera does not auto-execute.
 
 ```bash
-curl -s localhost:8760/api/exec/live-gate | python3 -m json.tool
 curl -s localhost:8760/api/exec/status | python3 -m json.tool
-# mode_badge should be "Live Confirm" and can_confirm true only when gate.ok
+# mode badge / exec_mode.badge → "Manual Decision"
+curl -s localhost:8760/api/exec/decision | python3 -m json.tool
+curl -s -X POST localhost:8760/api/exec/confirm \
+  -H 'content-type: application/json' \
+  -d '{"actor":"cli","notes":"hand-placed at open"}' | python3 -m json.tool
 ```
 
-5. One-tap Confirm on a GO card (or API) submits a **live** bracket. Kill switch still two-tap cancels open intents and flips Confirm off.
-
-### Blockers (gate refuses live)
-
-| Check | How it fails |
-| --- | --- |
-| User live keys | Missing `DELTA_LIVE_API_KEY` / `DELTA_LIVE_API_SECRET` (paper keys do **not** unlock live) |
-| Ack | `CRYPTO_LIVE_CONFIRM_ACK` ≠ `I_UNDERSTAND_LIVE_RISK` |
-| IP whitelist ack | `DELTA_LIVE_IP_WHITELIST_ACK` not set after operator whitelists IP on Delta |
-| Host | `DELTA_LIVE_REST_URL` not `api.india.delta.exchange` (testnet refused) |
-| Flags | `exec.live` or `exec.confirm` off; or `exec.auto` on (always refused) |
-| Risk | Daily loss limit → Confirm flipped to Advisory |
+`exec.live_place` remains **false**. Confirm refuses exchange placement even if
+that flag is flipped on. Legacy live adapters / gates stay in-tree for diagnostics
+only — they are not used by Confirm.
 
 ### Risk + kill switch
 
 | Control | Behaviour |
 | --- | --- |
-| Size | From stop distance × `risk.risk_fraction` of `paper_equity_usd` (paper) or `live_equity_usd` (live), capped by GO `size_cap_usd` / `risk.size_cap_usd` |
+| Size | From stop distance × `risk.risk_fraction` of `paper_equity_usd`, capped by GO `size_cap_usd` / `risk.size_cap_usd` |
 | Daily loss | Realized PnL ≤ −`risk.daily_loss_limit_usd` → Confirm flips off (Advisory) |
-| Kill switch | Two taps in UI (arm → confirm) or `POST /api/exec/kill` twice (`confirmed: false` then `true`); cancels open intents and flips Confirm off |
+| Kill switch | Paper intents only — two taps cancel open paper intents and flip Confirm off |
 
 ```yaml
 risk:
@@ -435,7 +424,7 @@ risk:
 
 ### Non-goals (still out)
 
-Auto mode, short options, unattended production deploy without IP whitelist / live keys.
+Auto mode, exchange order placement from Confirm, short options.
 
 ## Enable live feeds (Phase 0)
 

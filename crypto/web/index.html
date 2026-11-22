@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CryptoCubera</title>
-  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory default; paper Confirm optional." />
+  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory / Paper / Manual Decision. Never auto-executes." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
@@ -106,19 +106,20 @@
       </div>
       <div class="flag-groups" id="flag-grid"></div>
       <div class="exec-row">
-        <button type="button" class="kill-btn" id="kill-btn" disabled title="Enable exec.paper (+ exec.confirm) for paper kill switch — keep exec.live off">Kill switch</button>
+        <button type="button" class="kill-btn" id="kill-btn" disabled title="Enable exec.paper (+ exec.confirm) for paper kill switch. Manual Decision does not place live orders.">Kill switch</button>
         <span class="exec-note" id="exec-note">Advisory · Confirm off</span>
       </div>
       <div class="ledger-row" id="ledger-row" hidden>
         <a class="ledger-link" href="/api/exec/ledger/export?format=csv">Export CSV</a>
         <a class="ledger-link" href="/api/exec/ledger/export?format=json">Export JSON</a>
+        <a class="ledger-link" href="/api/exec/decision">Decision JSON</a>
         <span class="exec-note" id="ledger-note"></span>
       </div>
     </section>
   </main>
 
   <footer class="foot">
-    <span>Decision support, not financial advice. Local paper Confirm preferred — keep exec.live off. No Auto.</span>
+    <span>Decision support, not financial advice. Modes: Advisory · Paper · Manual Decision. No Auto. Confirm never places live orders.</span>
     <span id="providers-line"></span>
   </footer>
 

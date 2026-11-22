@@ -183,49 +183,127 @@ function renderFlow(orderflow, gex) {
 }
 
 /**
- * Mode badge / copy: never say Live unless mode is live_confirm and the live
- * gate is open (ok !== false). Preferred path is local paper — exec.live off.
+ * Mode badge: Advisory / Paper / Manual Decision.
+ * Never show Live Auto / Live Confirm as a trading mode — Manual Decision is
+ * decision support for hand placement (no exchange POST from Confirm).
  */
 function resolveModeDisplay(data, exec) {
   const mode = (data && data.mode) || "advisory";
-  const gate = exec && exec.live_gate;
-  const gateOpen = gate ? gate.ok === true : null;
-  if (mode === "live_confirm" && gateOpen !== false) {
-    return { text: "Live Confirm", mode: "live_confirm", isLive: true };
+  if (mode === "manual_decision") {
+    return { text: "Manual Decision", mode: "manual_decision", isManual: true, isPaper: false };
   }
   if (mode === "paper_confirm") {
-    return { text: "Paper Confirm", mode: "paper_confirm", isLive: false };
+    return { text: "Paper", mode: "paper_confirm", isManual: false, isPaper: true };
   }
-  // Demote any Live* badge when gate closed or mode is not live_confirm.
   const server = (data && data.mode_badge) || "Advisory";
+  // Demote legacy Live* badges — never imply Live Auto.
   if (/^live\b/i.test(String(server).trim())) {
-    return { text: "Advisory", mode: "advisory", isLive: false };
+    return { text: "Manual Decision", mode: "manual_decision", isManual: true, isPaper: false };
+  }
+  if (/^paper\b/i.test(String(server).trim())) {
+    return { text: "Paper", mode: "paper_confirm", isManual: false, isPaper: true };
   }
   return {
     text: server || "Advisory",
-    mode: mode === "live_confirm" ? "advisory" : mode,
-    isLive: false,
+    mode: mode === "live_confirm" ? "manual_decision" : mode,
+    isManual: mode === "live_confirm",
+    isPaper: false,
   };
 }
 
 function paperStatusLine(signal, exec) {
   const ps = signal.paper_status || {};
-  const live = resolveModeDisplay(
+  const disp = resolveModeDisplay(
     { mode: signal.exec_mode, mode_badge: "" },
     exec
-  ).isLive;
-  const label = live ? "Live" : "Paper";
+  );
+  const label = disp.isManual ? "Manual" : disp.isPaper ? "Paper" : "Advisory";
   const latest = ps.latest_open;
   if (latest) {
     return `${label} · ${latest.status} · ${latest.instrument} · $${fmt(latest.size_usd, 0)} · ${latest.adapter || "sim"}`;
   }
   if (signal.can_confirm) {
-    return `${live ? "Live" : "Paper"} Confirm ready · adapter ${ps.adapter || "sim"} · open ${ps.open_intents ?? 0}`;
+    if (disp.isManual) {
+      return "Manual Decision ready · copy levels / export JSON · place by hand on Delta";
+    }
+    return `Paper Confirm ready · adapter ${ps.adapter || "sim"} · open ${ps.open_intents ?? 0}`;
   }
   if (ps.open_intents) {
     return `${label} · ${ps.open_intents} open intent(s) · Confirm off`;
   }
   return "Advisory · no open intent";
+}
+
+function decisionLevelsText(signal) {
+  const entry = Array.isArray(signal.entry_zone)
+    ? signal.entry_zone.map((x) => fmt(x, 0)).join(" – ")
+    : fmt(signal.entry_zone, 0);
+  const side = humanize(signal.side || "—").toUpperCase();
+  const lines = [
+    `${signal.instrument || "—"} ${side}`,
+    `Entry: ${entry}`,
+    `Target: ${signal.target != null ? fmt(signal.target, 0) : "—"}`,
+    `Stop: ${signal.stop != null ? fmt(signal.stop, 0) : "—"}`,
+    `Size cap: $${fmt(signal.size_cap_usd, 0)}`,
+    `Score: ${signal.score ?? 0}`,
+  ];
+  if (signal.valid_until) lines.push(`Valid until: ${signal.valid_until}`);
+  if (signal.invalidation) lines.push(`Invalidation: ${signal.invalidation}`);
+  const reasons = (signal.reasons || []).filter(Boolean).slice(0, 3);
+  if (reasons.length) {
+    lines.push("Reasons:");
+    reasons.forEach((r, i) => lines.push(`  ${i + 1}. ${r}`));
+  }
+  lines.push("");
+  lines.push(
+    "Manual Decision — place by hand on Delta. CryptoCubera does not auto-execute."
+  );
+  return lines.join("\n");
+}
+
+function decisionExportObject(signal) {
+  return {
+    mode: "manual_decision",
+    status: signal.status,
+    setup: signal.setup || "",
+    instrument: signal.instrument || "",
+    side: (signal.side || "").toLowerCase(),
+    entry_zone: signal.entry_zone,
+    target: signal.target,
+    stop: signal.stop,
+    size_cap_usd: signal.size_cap_usd,
+    score: signal.score,
+    reasons: (signal.reasons || []).slice(0, 3),
+    invalidation: signal.invalidation || "",
+    valid_until: signal.valid_until,
+    note: "Manual Decision — place by hand on Delta. CryptoCubera does not auto-execute.",
+  };
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
+function downloadJson(filename, obj) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function validUntilState(iso) {
@@ -253,31 +331,37 @@ function renderCard(signal, exec) {
   const entry = Array.isArray(signal.entry_zone)
     ? signal.entry_zone.map((x) => fmt(x, 0)).join(" – ")
     : fmt(signal.entry_zone, 0);
-  const liveMode = resolveModeDisplay(
-    { mode: signal.exec_mode || exec?.exec_mode?.mode, mode_badge: "" },
+  const modeDisp = resolveModeDisplay(
+    {
+      mode: signal.exec_mode || exec?.exec_mode?.mode,
+      mode_badge: exec?.exec_mode?.badge || "",
+    },
     exec
-  ).isLive;
+  );
+  const isManual = !!modeDisp.isManual;
   const confirmLabel = canConfirm
-    ? liveMode
-      ? "Confirm live"
+    ? isManual
+      ? "Log decision"
       : "Confirm paper"
     : "Confirm disabled";
   const confirmTitle = canConfirm
-    ? liveMode
-      ? "Submit LIVE bracket on Delta India — real capital"
+    ? isManual
+      ? "Log Manual Decision to the ledger — does not place on Delta"
       : "Submit paper/sim bracket (demo/sim only)"
-    : "Enable exec.paper + exec.confirm for local paper (keep exec.live off)";
+    : "Enable exec.paper + exec.confirm for Paper, or exec.live + exec.confirm for Manual Decision";
   const rr = riskReward(signal.entry_zone, signal.target, signal.stop);
   const rrPct = rr == null ? 0 : Math.min(100, Math.round((rr / 3) * 100));
   const until = validUntilState(signal.valid_until);
   const vetoes = (signal.reasons || []).filter(Boolean);
   const showVetoes = !isGo && vetoes.length;
+  const reasonsGo = isGo ? vetoes.slice(0, 3) : [];
 
   mount.innerHTML = `
-    <article class="go-card ${isGo ? "" : "is-nogo"}">
+    <article class="go-card ${isGo ? "" : "is-nogo"}${isManual ? " is-manual" : ""}">
       <div class="go-card-top">
         <div>
           <span class="go-badge ${isGo ? "go" : "nogo"}">${escapeHtml(signal.status)}</span>
+          ${isManual ? `<span class="go-mode-chip">Manual Decision</span>` : ""}
           <h3 class="go-name">${escapeHtml(humanize(signal.setup || "No setup"))}</h3>
           <p class="go-thesis">${escapeHtml(signal.instrument || "—")} · ${escapeHtml(humanize(signal.side || "—"))} · score ${escapeHtml(signal.score ?? 0)}</p>
         </div>
@@ -299,7 +383,7 @@ function renderCard(signal, exec) {
         </div>
         <div class="go-rr-bar" aria-hidden="true"><div class="go-rr-fill" style="width:${rrPct}%"></div></div>
         <div>
-          <div class="go-rr-k">Size cap</div>
+          <div class="go-rr-k">Size</div>
           <div class="go-rr-v">$${fmt(signal.size_cap_usd, 0)}</div>
         </div>
       </div>
@@ -312,13 +396,15 @@ function renderCard(signal, exec) {
             }</ul>`
           : signal.invalidation
             ? `<ul class="go-vetoes"><li>Invalidation: ${escapeHtml(signal.invalidation)}</li></ul>`
-            : isGo && vetoes.length
-              ? `<ul class="go-vetoes" style="background:rgba(46,196,182,0.08);border-color:rgba(46,196,182,0.28);color:var(--ink-dim)">${vetoes
+            : reasonsGo.length
+              ? `<ul class="go-reasons">${reasonsGo
                   .map((r) => `<li>${escapeHtml(r)}</li>`)
                   .join("")}</ul>`
               : ""
       }
       <div class="go-actions">
+        <button class="btn" type="button" id="copy-levels" title="Copy instrument, side, entry, target, stop, size, score, reasons">Copy levels</button>
+        <button class="btn" type="button" id="export-decision-json" title="Download Manual Decision JSON for hand placement">Export JSON</button>
         <button class="btn btn-primary" type="button" id="confirm-paper" ${canConfirm ? "" : "disabled"} title="${escapeHtml(confirmTitle)}">${escapeHtml(confirmLabel)}</button>
         <button class="btn" type="button" id="dismiss-card">Dismiss</button>
       </div>
@@ -340,6 +426,33 @@ function renderCard(signal, exec) {
     }
   });
 
+  $("#copy-levels")?.addEventListener("click", async () => {
+    const fb = $("#confirm-feedback");
+    try {
+      await copyText(decisionLevelsText(signal));
+      if (fb) {
+        fb.hidden = false;
+        fb.textContent = "Levels copied — paste into Delta when placing by hand.";
+      }
+    } catch (err) {
+      if (fb) {
+        fb.hidden = false;
+        fb.textContent = String(err.message || err);
+      }
+    }
+  });
+
+  $("#export-decision-json")?.addEventListener("click", () => {
+    const fb = $("#confirm-feedback");
+    const obj = decisionExportObject(signal);
+    const name = `manual-decision-${(signal.instrument || "card").replace(/\W+/g, "")}.json`;
+    downloadJson(name, obj);
+    if (fb) {
+      fb.hidden = false;
+      fb.textContent = `Exported ${name} — place by hand on Delta; no auto-execute.`;
+    }
+  });
+
   $("#confirm-paper")?.addEventListener("click", async () => {
     const fb = $("#confirm-feedback");
     try {
@@ -349,8 +462,13 @@ function renderCard(signal, exec) {
       });
       if (fb) {
         fb.hidden = false;
-        const t = result.trade || {};
-        fb.textContent = `Paper ${t.status || "submitted"} · ${t.client_order_id || ""} · $${fmt(t.size_usd, 0)} · ${t.adapter || "sim"}`;
+        if (result.exchange_post === false || result.decision) {
+          const t = result.trade || {};
+          fb.textContent = `Decision logged · ${t.client_order_id || ""} · $${fmt(t.size_usd, 0)} · place by hand (no exchange order)`;
+        } else {
+          const t = result.trade || {};
+          fb.textContent = `Paper ${t.status || "submitted"} · ${t.client_order_id || ""} · $${fmt(t.size_usd, 0)} · ${t.adapter || "sim"}`;
+        }
       }
       await loadSnapshot();
     } catch (err) {
@@ -585,7 +703,8 @@ function wireKillSwitch(exec) {
   btn.classList.toggle("is-armed", !!exec?.kill_switch_armed);
   if (!enabled) {
     btn.textContent = "Kill switch";
-    btn.title = "Enable exec.paper (+ exec.confirm) for paper kill switch — keep exec.live off";
+    btn.title =
+      "Enable exec.paper (+ exec.confirm) for paper kill switch. Manual Decision does not place live orders.";
     return;
   }
   if (exec.kill_switch_armed) {
@@ -620,13 +739,8 @@ async function loadSnapshot() {
     const liveOn = !!flags["exec.live"];
     paperPill.hidden = !(paperOn || liveOn);
     if (paperOn || liveOn) {
-      const adapter = exec.adapter || (modeDisp.isLive ? "live" : "sim");
-      // Never label the pill "live" unless the live gate is actually open.
-      const kind = modeDisp.isLive
-        ? "live"
-        : paperOn
-          ? "paper"
-          : "live-gated";
+      const adapter = exec.adapter || (modeDisp.isManual ? "manual" : "sim");
+      const kind = modeDisp.isManual ? "manual" : paperOn ? "paper" : "advisory";
       paperPill.textContent = `${kind} · ${adapter} · open ${exec.open_intents ?? 0}`;
     }
   }

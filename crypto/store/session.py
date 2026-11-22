@@ -76,8 +76,8 @@ def _row_to_dict(row: PaperSessionRow) -> dict[str, Any]:
 
 def _resolve_mode() -> str:
     if get_flag("exec.live", default=False):
-        # Preference forbids live, but still label honestly if someone flipped it.
-        return "live_confirm" if get_flag("exec.confirm") else "live"
+        # Manual Decision (decision-only) when confirm is on — never Live Auto.
+        return "manual_decision" if get_flag("exec.confirm") else "manual"
     if get_flag("exec.paper", default=False) and get_flag("exec.confirm", default=False):
         return "paper_confirm"
     if get_flag("exec.paper", default=False):

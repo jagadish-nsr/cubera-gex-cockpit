@@ -139,10 +139,14 @@ feature_flags:
   ui.operator_panel: true
   ui.asset_switcher: true
   # Preferred Confirm path: CRYPTO_FLAG_EXEC_PAPER=1 + CRYPTO_FLAG_EXEC_CONFIRM=1
-  # (or ./run_crypto_paper.sh). Keep exec.live false — local paper only.
+  # (or ./run_crypto_paper.sh). Paper = local sim practice.
+  # Manual Decision: CRYPTO_FLAG_EXEC_LIVE=1 + CRYPTO_FLAG_EXEC_CONFIRM=1
+  # → decision card (copy/export levels); Confirm never places on Delta.
   exec.paper: false
   exec.confirm: false
   exec.live: false
+  # Exchange POST from Confirm — always refused. Kept off; Manual Decision only.
+  exec.live_place: false
   # Auto is intentionally absent / always refused if ever set
   exec.auto: false
   # Inference scaffold — off by default (no live model / no GO from classifier)
