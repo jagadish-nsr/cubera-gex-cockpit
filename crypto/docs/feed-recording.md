@@ -1,8 +1,8 @@
 # Feed recording and paper session summary
 
-**Local paper only.** Ticks, GEX/orderflow features, and signals persist to
+**Paper ops recording.** Ticks, GEX/orderflow features, and signals persist to
 SQLite while the CryptoCubera server runs. A paper session bounds start→end for
-OOS review. Never enables `exec.live` / Live Confirm / Auto. No paid Tardis.
+OOS review. Never enables exchange place (`exec.live_place`) / Auto. No paid Tardis.
 
 ## What is recorded
 
@@ -40,9 +40,9 @@ WAL/SHM sidecars are cleared after a rotate. Disable with
 ## Recorded paper session
 
 ```bash
-# Prefer the paper launcher (exec.live forced off)
+# Prefer the paper launcher (Manual Decision; live_place/auto off)
 ./run_crypto_paper.sh
-# → http://localhost:8760
+# → http://localhost:8760 · Manual Decision
 # SQLite records every snapshot; a paper_sessions row opens on boot
 ```
 

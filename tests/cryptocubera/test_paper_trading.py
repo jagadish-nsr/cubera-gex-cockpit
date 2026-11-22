@@ -367,39 +367,74 @@ def test_env_paper_path_enables_eth_sol_keeps_live_off(monkeypatch, tmp_path):
     assert "Live" not in mode["badge"]
 
 
-def test_run_crypto_paper_sh_exports_eth_sol_and_refuses_live():
-    """Helper script must force live=0 and default ETH/SOL on for paper ops."""
+def test_run_crypto_paper_sh_manual_decision_default_and_eth_sol():
+    """Helper defaults to Manual Decision; paper sim optional; live_place/auto off."""
     from pathlib import Path
 
     script = Path(__file__).resolve().parents[2] / "run_crypto_paper.sh"
     text = script.read_text(encoding="utf-8")
-    assert "CRYPTO_FLAG_EXEC_PAPER=1" in text
     assert "CRYPTO_FLAG_EXEC_CONFIRM=1" in text
-    assert "CRYPTO_FLAG_EXEC_LIVE=0" in text
+    assert "CRYPTO_FLAG_EXEC_LIVE_PLACE=0" in text
     assert "CRYPTO_FLAG_EXEC_AUTO=0" in text
+    # Default Manual Decision path (copy/export)
+    assert "CRYPTO_FLAG_EXEC_LIVE=1" in text
+    assert "Manual Decision" in text
+    assert "copy/export" in text
+    # Paper sim optional via CRYPTO_PAPER_SIM
+    assert "CRYPTO_PAPER_SIM" in text
+    assert "CRYPTO_FLAG_EXEC_LIVE=0" in text  # only inside PAPER_SIM branch
     assert "CRYPTO_FLAG_ASSETS_ETH" in text
     assert "CRYPTO_FLAG_ASSETS_SOL" in text
-    # Defaults to on when unset
     assert 'CRYPTO_FLAG_ASSETS_ETH="${CRYPTO_FLAG_ASSETS_ETH:-1}"' in text
     assert 'CRYPTO_FLAG_ASSETS_SOL="${CRYPTO_FLAG_ASSETS_SOL:-1}"' in text
-    # Public Deribit/Delta MD on for paper; soft-fallback to mock if WS fails
     assert 'CRYPTO_LIVE_FEEDS="${CRYPTO_LIVE_FEEDS:-1}"' in text
     assert 'CRYPTO_FLAG_FEEDS_DERIBIT="${CRYPTO_FLAG_FEEDS_DERIBIT:-1}"' in text
     assert 'CRYPTO_FLAG_FEEDS_DELTA="${CRYPTO_FLAG_FEEDS_DELTA:-1}"' in text
     assert "soft-fallback to mock if WS fails" in text
-    # Gemma on for paper; soft-fallback when Ollama absent
     assert 'CRYPTO_FLAG_INTEL_GEMMA="${CRYPTO_FLAG_INTEL_GEMMA:-1}"' in text
     assert "mock/keywords" in text
-    # Must never enable live trading in the helper
-    assert "CRYPTO_FLAG_EXEC_LIVE=1" not in text
 
 
-def test_env_paper_path_enables_live_feeds_keeps_exec_live_off(monkeypatch, tmp_path):
-    """Paper helper env: public MD feeds on, exec.live forced off."""
-    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper_feeds.db'}")
+def test_env_manual_decision_paper_ops_default(monkeypatch, tmp_path):
+    """Default paper-ops env: Manual Decision + feeds/ETH/SOL/Gemma; live_place off."""
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_md_ops.db'}")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE_PLACE", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_AUTO", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "0")
+    monkeypatch.setenv("CRYPTO_LIVE_FEEDS", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_FEEDS_DERIBIT", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_FEEDS_DELTA", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_ETH", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_SOL", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_INTEL_GEMMA", "1")
+    load_config(reload=True)
+
+    assert get_flag("exec.live") is True
+    assert get_flag("exec.confirm") is True
+    assert get_flag("exec.live_place") is False
+    assert get_flag("exec.auto") is False
+    assert get_flag("exec.paper") is False
+    assert get_flag("feeds.deribit") is True
+    assert get_flag("feeds.delta") is True
+    assert get_flag("intel.gemma") is True
+    assert get_flag("assets.eth") is True
+    assert get_flag("assets.sol") is True
+    mode = resolve_exec_mode()
+    assert mode["badge"] == "Manual Decision"
+    assert mode["mode"] == "manual_decision"
+    assert mode["can_confirm"] is True
+    assert mode["live_place"] is False
+
+
+def test_env_paper_sim_optional_keeps_live_off(monkeypatch, tmp_path):
+    """CRYPTO_PAPER_SIM path: paper + confirm, exec.live off, feeds/gemma on."""
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper_sim.db'}")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "1")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE_PLACE", "0")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_AUTO", "0")
     monkeypatch.setenv("CRYPTO_LIVE_FEEDS", "1")
     monkeypatch.setenv("CRYPTO_FLAG_FEEDS_DERIBIT", "1")
@@ -412,6 +447,7 @@ def test_env_paper_path_enables_live_feeds_keeps_exec_live_off(monkeypatch, tmp_
     assert get_flag("feeds.deribit") is True
     assert get_flag("feeds.delta") is True
     assert get_flag("exec.live") is False
+    assert get_flag("exec.live_place") is False
     assert get_flag("exec.paper") is True
     assert get_flag("exec.confirm") is True
     assert get_flag("intel.gemma") is True
@@ -420,12 +456,12 @@ def test_env_paper_path_enables_live_feeds_keeps_exec_live_off(monkeypatch, tmp_
     assert "Live" not in mode["badge"]
 
 
-def test_env_paper_path_enables_gemma_keeps_live_off(monkeypatch, tmp_path):
-    """Paper helper env: intel.gemma on, exec.live forced off."""
+def test_env_paper_path_enables_gemma_manual_decision(monkeypatch, tmp_path):
+    """Paper-ops default: intel.gemma on with Manual Decision; live_place off."""
     monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper_gemma.db'}")
-    monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "1")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
-    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE_PLACE", "0")
     monkeypatch.setenv("CRYPTO_FLAG_EXEC_AUTO", "0")
     monkeypatch.setenv("CRYPTO_FLAG_ASSETS_ETH", "1")
     monkeypatch.setenv("CRYPTO_FLAG_ASSETS_SOL", "1")
@@ -433,11 +469,10 @@ def test_env_paper_path_enables_gemma_keeps_live_off(monkeypatch, tmp_path):
     load_config(reload=True)
 
     assert get_flag("intel.gemma") is True
-    assert get_flag("exec.live") is False
-    assert get_flag("exec.paper") is True
+    assert get_flag("exec.live") is True
+    assert get_flag("exec.live_place") is False
     mode = resolve_exec_mode()
-    assert mode["badge"] == "Paper"
-    assert "Live" not in mode["badge"]
+    assert mode["badge"] == "Manual Decision"
 
 
 def test_api_confirm_and_export(tmp_path, monkeypatch):

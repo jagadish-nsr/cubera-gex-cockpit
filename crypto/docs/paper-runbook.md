@@ -1,25 +1,27 @@
-# Local paper trading runbook
+# Local paper ops runbook
 
-**Preference: LOCAL PAPER PRACTICE.** Paper sim Confirm for practice. Manual
-Decision (`exec.live` + `exec.confirm`) is decision support for hand trades —
-copy/export levels; Confirm never places on Delta. Never enable Auto. Never
-require `DELTA_LIVE_*` keys for Manual Decision.
+**Preference: no auto trade placement.** Paper ops default to **Manual Decision**
+(copy/export levels; Log decision). Confirm never places on Delta.
+`exec.live_place` stays off. Paper sim is optional. Never enable Auto. Never
+require `DELTA_LIVE_*` keys.
 
-## One-command start
+## One-command start (Manual Decision)
 
 ```bash
-# from repo root — paper Confirm + ETH/SOL + Gemma + public Deribit/Delta MD
-# forces exec.live=0 (never live trading)
+# from repo root — Manual Decision + ETH/SOL + Gemma + public Deribit/Delta MD
+# forces exec.live_place=0 / exec.auto=0 (never exchange POST / never Auto)
 ./run_crypto_paper.sh
 # → http://localhost:8760
+# Badge: Manual Decision
 ```
 
 Equivalent:
 
 ```bash
-CRYPTO_FLAG_EXEC_PAPER=1 \
+CRYPTO_FLAG_EXEC_LIVE=1 \
 CRYPTO_FLAG_EXEC_CONFIRM=1 \
-CRYPTO_FLAG_EXEC_LIVE=0 \
+CRYPTO_FLAG_EXEC_LIVE_PLACE=0 \
+CRYPTO_FLAG_EXEC_AUTO=0 \
 CRYPTO_LIVE_FEEDS=1 \
 CRYPTO_FLAG_FEEDS_DERIBIT=1 \
 CRYPTO_FLAG_FEEDS_DELTA=1 \
@@ -31,11 +33,16 @@ python3 -m crypto.server --port 8760
 
 No trading API keys needed. Public market-data WebSockets are attempted;
 providers **soft-fall back to mock fixtures** if WS/REST fail so the desk stays
-up. Confirm records **local sim fills**. Optional Delta demo/testnet keys
-(`DELTA_PAPER_*` from https://testnet.delta.exchange/) are allowed; production
-India hosts are refused by the paper adapter.
+up. GO card actions: **Copy levels**, **Export JSON**, **Log decision**.
 
 Force mock-only MD: `CRYPTO_LIVE_FEEDS=0 ./run_crypto_paper.sh`.
+
+### Optional paper sim (local practice)
+
+```bash
+CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh
+# → Badge: Paper · local sim Confirm · exec.live=0
+```
 
 BTC remains the **default active underlying**. ETH and SOL are enabled for the
 topbar switcher (or `PATCH /api/underlying`).
@@ -60,73 +67,59 @@ Force keywords-only: `CRYPTO_FLAG_INTEL_GEMMA=0 ./run_crypto_paper.sh`.
 | Knob | Value | Why |
 | --- | --- | --- |
 | `exec.live_place` | **off** | Exchange POST from Confirm refused |
-| `DELTA_LIVE_API_KEY` / `SECRET` | unset | Not needed for paper or Manual Decision |
+| `DELTA_LIVE_API_KEY` / `SECRET` | unset | Not needed for Manual Decision or paper sim |
 | `exec.auto` | **off** | Auto is never supported |
 
-Mode badge on this paper helper path: **Paper** (or **Advisory**). Manual
-Decision is a separate flag combo. Never **Live Auto**. Public Deribit/Delta
+Mode badge on the default helper path: **Manual Decision**. Optional
+`CRYPTO_PAPER_SIM=1` → **Paper**. Never **Live Auto**. Public Deribit/Delta
 **feeds** are on for this helper; that is market data only, not live trading.
 
-## Ops checklist (paper + ETH/SOL + live MD)
+## Smoke checklist (short)
 
-1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760  
-   Badge = **Paper**. Assets BTC / ETH / SOL available; BTC selected.
-   Banner shows live feeds + Gemma (Ollama reachable or mock/keywords fallback).
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760  
+   Badge = **Manual Decision**. Assets BTC / ETH / SOL; BTC selected.
+2. **Feeds** — banner notes live MD (or soft-fallback);  
+   `curl -s localhost:8760/api/feeds | python3 -m json.tool`
+3. **GO card** — Copy levels / Export JSON (or `GET /api/exec/decision`)
+4. **Log decision** (optional) — Confirm / Log decision with notes;  
+   `curl -s -X POST localhost:8760/api/exec/confirm -H 'content-type: application/json' -d '{"actor":"cli","notes":"hand ticket"}'`
+5. **Session export** —  
+   `curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json`
+
+Paper sim smoke: `CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh` → badge **Paper** → Confirm paper → ledger.
+
+## Ops checklist (Manual Decision + ETH/SOL + live MD)
+
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760  
+   Badge = **Manual Decision**. Banner shows live feeds + Gemma.
    ```bash
+   curl -s localhost:8760/api/exec/status | python3 -m json.tool
+   # exec_mode.badge → "Manual Decision"
    curl -s localhost:8760/api/feeds | python3 -m json.tool
    ```
-   Soft-fallback: if Deribit/Delta WS miss, chain/perp providers serve mock
-   fixtures and the 2s live-stale veto does not apply to stub sources.
 2. **Switch asset** — topbar BTC → ETH → SOL, or:
    ```bash
    curl -s -X PATCH localhost:8760/api/underlying \
      -H 'content-type: application/json' \
      -d '{"underlying":"ETH","actor":"cli"}' | python3 -m json.tool
-   curl -s localhost:8760/api/assets | python3 -m json.tool
    ```
-3. **Confirm** — wait for a GO (or fixtures/replay); tap **Confirm paper**, or:
+3. **Copy / Export** — on a GO card, or:
+   ```bash
+   curl -s localhost:8760/api/exec/decision | python3 -m json.tool
+   ```
+4. **Log decision** (optional) — ledger row `manual_noted`; no exchange POST:
    ```bash
    curl -s -X POST localhost:8760/api/exec/confirm \
      -H 'content-type: application/json' \
-     -d '{"actor":"cli"}' | python3 -m json.tool
+     -d '{"actor":"cli","notes":"placed by hand"}' | python3 -m json.tool
    curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
    ```
-4. **Session export**
+5. **Session export**
    ```bash
    curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
    curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
    ./run_crypto_session_summary.sh json paper_session.json
    ```
-
-## Smoke checklist (extended)
-
-1. **Start** — `./run_crypto_paper.sh` → open http://localhost:8760
-2. **Mode badge** — topbar reads **Paper** (not Live Auto)
-3. **Assets** — switcher shows BTC / ETH / SOL; BTC is active by default
-4. **GO card** — wait for a GO (or use fixtures/replay); Confirm paper button enabled
-5. **Confirm** — one tap submits a paper/sim bracket
-6. **Ledger** — Operator → open intents / PnL note updates; or:
-   ```bash
-   curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
-   curl -s localhost:8760/api/exec/status | python3 -m json.tool
-   ```
-7. **Kill switch** — two taps (arm → confirm) cancels open intents and flips Confirm off
-8. **Export trades**
-   ```bash
-   curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
-   curl -s 'localhost:8760/api/exec/ledger/export?format=json' -o paper_trades.json
-   ```
-   Or use Operator → Export CSV / Export JSON.
-9. **Session summary** (GO / confirms / vetoes / PnL / tick counts)
-   ```bash
-   curl -s localhost:8760/api/session/summary | python3 -m json.tool
-   curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
-   curl -s 'localhost:8760/api/session/export?format=csv' -o paper_session.csv
-   # after stop (or anytime against the SQLite file):
-   ./run_crypto_session_summary.sh json paper_session.json
-   ```
-   Feed ticks + features keep landing in `data/crypto/cubera.db` for the whole
-   run. See [feed-recording.md](feed-recording.md).
 
 ## Kill via API
 
@@ -139,4 +132,4 @@ curl -s -X POST localhost:8760/api/exec/kill \
 
 ## Non-goals
 
-Live Confirm, Auto, production Delta India keys.
+Exchange order placement from Confirm, Auto, production Delta India keys.

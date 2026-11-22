@@ -138,10 +138,10 @@ feature_flags:
   ui.regime_strip: true
   ui.operator_panel: true
   ui.asset_switcher: true
-  # Preferred Confirm path: CRYPTO_FLAG_EXEC_PAPER=1 + CRYPTO_FLAG_EXEC_CONFIRM=1
-  # (or ./run_crypto_paper.sh). Paper = local sim practice.
-  # Manual Decision: CRYPTO_FLAG_EXEC_LIVE=1 + CRYPTO_FLAG_EXEC_CONFIRM=1
-  # → decision card (copy/export levels); Confirm never places on Delta.
+  # Preferred paper ops: ./run_crypto_paper.sh → Manual Decision
+  # (CRYPTO_FLAG_EXEC_LIVE=1 + CRYPTO_FLAG_EXEC_CONFIRM=1; live_place=0).
+  # Copy/export levels; Confirm never places on Delta.
+  # Optional paper sim: CRYPTO_PAPER_SIM=1 → exec.paper + confirm; live off.
   exec.paper: false
   exec.confirm: false
   exec.live: false

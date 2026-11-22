@@ -7,24 +7,27 @@ Two decision-support surfaces share this repo:
 
 ```bash
 ./run_crypto.sh          # CryptoCubera → http://localhost:8760 (Advisory / mock)
-./run_crypto_paper.sh    # paper Confirm + ETH/SOL + Gemma + public Deribit/Delta MD (exec.live=0)
+./run_crypto_paper.sh    # Manual Decision + ETH/SOL + Gemma + public MD (live_place=0)
+# Optional paper sim: CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh
 # Advisory live feeds only: CRYPTO_LIVE_FEEDS=1 CRYPTO_FLAG_FEEDS_DERIBIT=1 CRYPTO_FLAG_FEEDS_DELTA=1 ./run_crypto.sh
 ./run_prod.sh            # NSE Cubera  → http://localhost:8640
 ```
 
-### CryptoCubera paper ops (ETH/SOL + Gemma + live MD)
+### CryptoCubera paper ops (Manual Decision + ETH/SOL + Gemma + live MD)
 
-1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760 (BTC default; ETH/SOL on; `intel.gemma` on; public Deribit/Delta feeds on; soft-fallback to mock if WS fails)
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760 (badge **Manual Decision**; BTC default; ETH/SOL on; Gemma on; public Deribit/Delta feeds on; soft-fallback to mock if WS fails)
 2. **Switch asset** — topbar BTC / ETH / SOL (or `PATCH /api/underlying`)
-3. **Confirm** — tap Confirm paper on a GO card (local sim fills)
+3. **Copy / Export** — GO card → Copy levels / Export JSON (hand place on Delta); optional Log decision
 4. **Session export** — `curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json`
 
-Optional: `ollama serve` + `gemma2:12b` for real Gemma answers; without Ollama the
-paper path soft-falls back to keywords/templates. Full checklist:
-**[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**. Prefer local
-paper only — keep `exec.live` off (feeds ≠ live trading).
+Optional paper sim: `CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh`. Optional:
+`ollama serve` + `gemma2:12b` for real Gemma answers; without Ollama the paper
+path soft-falls back to keywords/templates. Full checklist:
+**[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**. Preference: no
+auto trade placement — `exec.live_place` stays off (feeds ≠ exchange POST).
 
-**Not financial advice.** CryptoCubera defaults to Advisory; preferred Confirm path is local paper only (keep `exec.live` off).
+**Not financial advice.** CryptoCubera defaults to Advisory; preferred paper-ops
+path is Manual Decision (copy/export). Paper sim OK. Auto stays off.
 
 > **NSE handoff:** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
 > NSE web cockpit: **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
