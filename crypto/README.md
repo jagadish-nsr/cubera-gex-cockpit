@@ -33,7 +33,7 @@ Mock/fixture chain is the default. No API keys required for local sim.
 | Provider registry | `crypto/providers/` |
 | Multi-asset (BTC / ETH / SOL) | `config/crypto.yaml` `assets:` + `assets.*` flags |
 | Feature flags | `config/crypto.yaml` + `PATCH /api/flags` |
-| SQLite store | `data/crypto/cubera.db` (schema in `crypto/store/`) |
+| SQLite store + session recording | `data/crypto/cubera.db` (path/rotate in `crypto/store/`; [docs/feed-recording.md](docs/feed-recording.md)) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
 | Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
 | Paper / Live Confirm exec | `crypto/exec/` + `providers/delta/execution.py` + `live_execution.py` |
@@ -42,7 +42,7 @@ Mock/fixture chain is the default. No API keys required for local sim.
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
 | Cockpit UI | `crypto/web/` (asset switcher in topbar) |
-| API | `GET /api/snapshot`, `/api/assets`, `PATCH /api/underlying`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| API | `GET /api/snapshot`, `/api/assets`, `PATCH /api/underlying`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/session*`, `/api/store/status`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
 
 ## Multi-asset (BTC · ETH · SOL)
 
@@ -279,7 +279,8 @@ keys the adapter records **local sim fills**.
 3. GO card → **Confirm paper**
 4. Ledger shows open intent (`GET /api/exec/ledger`)
 5. Kill switch (two taps) clears intents / flips Confirm off
-6. Export CSV/JSON from Operator or `/api/exec/ledger/export`
+6. Export trades CSV/JSON from Operator or `/api/exec/ledger/export`
+7. Export **session summary** (GO / confirms / vetoes / PnL): `/api/session/export` or `./run_crypto_session_summary.sh`
 
 ```bash
 curl -s -X POST localhost:8760/api/exec/confirm \
@@ -287,7 +288,25 @@ curl -s -X POST localhost:8760/api/exec/confirm \
 curl -s localhost:8760/api/exec/status | python3 -m json.tool
 curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
 curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
+curl -s localhost:8760/api/session/summary | python3 -m json.tool
+curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
 ```
+
+### Feed recording (local paper)
+
+While `./run_crypto_paper.sh` runs, ticks / GEX / orderflow / signals append to
+SQLite (`data/crypto/cubera.db`, repo-root resolved). A `paper_sessions` row
+opens on boot and closes on shutdown with a summary snapshot. Oversized DBs
+rotate to `cubera.<UTC-stamp>.db` (see `database.rotate_*` in config).
+
+```bash
+# During or after a paper run
+./run_crypto_session_summary.sh json paper_session.json
+python3 -m crypto.session_cli status
+curl -s localhost:8760/api/store/status | python3 -m json.tool
+```
+
+Details: [docs/feed-recording.md](docs/feed-recording.md).
 
 Or toggle flags from the Operator panel / API (still leave `exec.live` false):
 
@@ -410,7 +429,10 @@ curl -s localhost:8760/api/gex | python3 -m json.tool
 curl -s localhost:8760/api/engine/params | python3 -m json.tool
 ```
 
-Raw ticks land in SQLite `raw_ticks`. Live Deribit option trades accumulate into the flow-model inventory (`direction` = taker side).
+Raw ticks land in SQLite `raw_ticks` (WAL + busy timeout; write retries on lock).
+Live Deribit option trades accumulate into the flow-model inventory
+(`direction` = taker side). Paper session summary aggregates the same DB —
+see [docs/feed-recording.md](docs/feed-recording.md).
 
 ### Stale data
 

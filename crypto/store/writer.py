@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from crypto.store.db import get_session, init_db
 from crypto.store.schema import (
@@ -18,6 +21,33 @@ from crypto.store.schema import (
     SignalRow,
 )
 from crypto.providers.types import NewsEvent, OptionChainSnapshot, PerpSnapshot, utcnow
+
+log = logging.getLogger(__name__)
+
+T = TypeVar("T")
+_WRITE_RETRIES = 4
+_WRITE_BACKOFF_S = 0.05
+
+
+def _with_db_retry(fn: Callable[[], T], *, what: str) -> T:
+    """Retry briefly on SQLite lock contention; fail loud otherwise."""
+    last: Exception | None = None
+    for attempt in range(_WRITE_RETRIES):
+        try:
+            return fn()
+        except OperationalError as exc:
+            last = exc
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                log.error("Store write failed (%s): %s", what, exc)
+                raise
+            time.sleep(_WRITE_BACKOFF_S * (2**attempt))
+        except Exception as exc:  # noqa: BLE001
+            log.error("Store write failed (%s): %s", what, exc)
+            raise
+    assert last is not None
+    log.error("Store write failed after retries (%s): %s", what, last)
+    raise last
 
 
 class StoreWriter:
@@ -32,18 +62,21 @@ class StoreWriter:
         *,
         exchange_ts: Optional[datetime] = None,
     ) -> int:
-        with get_session() as s:
-            row = RawTick(
-                venue=venue,
-                channel=channel,
-                payload=payload,
-                recv_ts=utcnow(),
-                exchange_ts=exchange_ts,
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+        def _do() -> int:
+            with get_session() as s:
+                row = RawTick(
+                    venue=venue,
+                    channel=channel,
+                    payload=payload,
+                    recv_ts=utcnow(),
+                    exchange_ts=exchange_ts,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"tick:{venue}/{channel}")
 
     def write_chain(self, snap: OptionChainSnapshot) -> int:
         payload = {
@@ -66,43 +99,51 @@ class StoreWriter:
             ],
         }
         self.write_tick(snap.source, "option_chain", payload, exchange_ts=snap.exchange_ts)
-        with get_session() as s:
-            row = OptionChainRow(
-                underlying=snap.underlying,
-                source=snap.source,
-                spot=snap.spot,
-                snapshot=payload,
-                fetched_at=snap.fetched_at,
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+
+        def _do() -> int:
+            with get_session() as s:
+                row = OptionChainRow(
+                    underlying=snap.underlying,
+                    source=snap.source,
+                    spot=snap.spot,
+                    snapshot=payload,
+                    fetched_at=snap.fetched_at,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"chain:{snap.underlying}")
 
     def write_gex(self, feature: dict[str, Any]) -> int:
         computed_at = feature.get("computed_at") or utcnow()
         if isinstance(computed_at, datetime):
             pass
         by_strike = feature.get("by_strike") or {}
-        with get_session() as s:
-            row = GexFeature(
-                underlying=feature["underlying"],
-                spot=float(feature["spot"]),
-                flip=feature.get("flip"),
-                call_wall=feature.get("call_wall"),
-                put_wall=feature.get("put_wall"),
-                regime=feature["regime"],
-                convention_sign=feature["convention_sign"],
-                flow_sign=feature["flow_sign"],
-                models_agree=bool(feature["models_agree"]),
-                by_strike=by_strike,
-                computed_at=computed_at if isinstance(computed_at, datetime) else utcnow(),
-                source=feature.get("source") or "engine",
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+
+        def _do() -> int:
+            with get_session() as s:
+                row = GexFeature(
+                    underlying=feature["underlying"],
+                    spot=float(feature["spot"]),
+                    flip=feature.get("flip"),
+                    call_wall=feature.get("call_wall"),
+                    put_wall=feature.get("put_wall"),
+                    regime=feature["regime"],
+                    convention_sign=feature["convention_sign"],
+                    flow_sign=feature["flow_sign"],
+                    models_agree=bool(feature["models_agree"]),
+                    by_strike=by_strike,
+                    computed_at=computed_at if isinstance(computed_at, datetime) else utcnow(),
+                    source=feature.get("source") or "engine",
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"gex:{feature.get('underlying')}")
 
     def write_orderflow(self, perp: PerpSnapshot) -> int:
         """Persist from a PerpSnapshot (legacy / tests). Prefer write_orderflow_features."""
@@ -111,23 +152,27 @@ class StoreWriter:
             "index": perp.index,
         }
         self.write_tick(perp.venue, "perp", payload, exchange_ts=perp.fetched_at)
-        with get_session() as s:
-            row = OrderflowFeature(
-                symbol=perp.symbol,
-                venue=perp.venue,
-                cvd_1m=perp.cvd_1m,
-                cvd_5m=perp.cvd_5m,
-                cvd_15m=perp.cvd_15m,
-                book_imbalance=perp.book_imbalance,
-                funding_rate=perp.funding_rate,
-                open_interest=perp.open_interest,
-                computed_at=perp.fetched_at,
-                payload=payload,
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+
+        def _do() -> int:
+            with get_session() as s:
+                row = OrderflowFeature(
+                    symbol=perp.symbol,
+                    venue=perp.venue,
+                    cvd_1m=perp.cvd_1m,
+                    cvd_5m=perp.cvd_5m,
+                    cvd_15m=perp.cvd_15m,
+                    book_imbalance=perp.book_imbalance,
+                    funding_rate=perp.funding_rate,
+                    open_interest=perp.open_interest,
+                    computed_at=perp.fetched_at,
+                    payload=payload,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"orderflow:{perp.symbol}")
 
     def write_orderflow_features(self, features: dict[str, Any]) -> int:
         """Persist enriched orderflow features (CVD, OI Δ, funding/basis hooks)."""
@@ -151,23 +196,27 @@ class StoreWriter:
         }
         venue = str(features.get("venue") or "unknown")
         self.write_tick(venue, "orderflow", payload, exchange_ts=computed_at)
-        with get_session() as s:
-            row = OrderflowFeature(
-                symbol=str(features.get("symbol") or ""),
-                venue=venue,
-                cvd_1m=float(features.get("cvd_1m") or 0),
-                cvd_5m=float(features.get("cvd_5m") or 0),
-                cvd_15m=float(features.get("cvd_15m") or 0),
-                book_imbalance=float(features.get("book_imbalance") or 0),
-                funding_rate=float(features.get("funding_rate") or 0),
-                open_interest=float(features.get("open_interest") or 0),
-                computed_at=computed_at,
-                payload=payload,
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+
+        def _do() -> int:
+            with get_session() as s:
+                row = OrderflowFeature(
+                    symbol=str(features.get("symbol") or ""),
+                    venue=venue,
+                    cvd_1m=float(features.get("cvd_1m") or 0),
+                    cvd_5m=float(features.get("cvd_5m") or 0),
+                    cvd_15m=float(features.get("cvd_15m") or 0),
+                    book_imbalance=float(features.get("book_imbalance") or 0),
+                    funding_rate=float(features.get("funding_rate") or 0),
+                    open_interest=float(features.get("open_interest") or 0),
+                    computed_at=computed_at,
+                    payload=payload,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"orderflow_features:{features.get('symbol')}")
 
     def write_signal(self, card: dict[str, Any]) -> int:
         created_at = card.get("created_at") or utcnow()
@@ -176,23 +225,27 @@ class StoreWriter:
         card_json = {
             k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in card.items()
         }
-        with get_session() as s:
-            row = SignalRow(
-                status=card["status"],
-                setup=card.get("setup") or "",
-                instrument=card.get("instrument") or "",
-                side=card.get("side") or "",
-                score=int(card.get("score") or 0),
-                card=card_json,
-                veto_reasons=list(card.get("veto_reasons") or []),
-                model_version=card.get("model_version") or "rules-v0",
-                created_at=created_at if isinstance(created_at, datetime) else utcnow(),
-                valid_until=valid_until if isinstance(valid_until, datetime) else None,
-            )
-            s.add(row)
-            s.commit()
-            s.refresh(row)
-            return int(row.id)
+
+        def _do() -> int:
+            with get_session() as s:
+                row = SignalRow(
+                    status=card["status"],
+                    setup=card.get("setup") or "",
+                    instrument=card.get("instrument") or "",
+                    side=card.get("side") or "",
+                    score=int(card.get("score") or 0),
+                    card=card_json,
+                    veto_reasons=list(card.get("veto_reasons") or []),
+                    model_version=card.get("model_version") or "rules-v0",
+                    created_at=created_at if isinstance(created_at, datetime) else utcnow(),
+                    valid_until=valid_until if isinstance(valid_until, datetime) else None,
+                )
+                s.add(row)
+                s.commit()
+                s.refresh(row)
+                return int(row.id)
+
+        return _with_db_retry(_do, what=f"signal:{card.get('status')}")
 
     def write_events(self, events: list[NewsEvent]) -> int:
         n = 0

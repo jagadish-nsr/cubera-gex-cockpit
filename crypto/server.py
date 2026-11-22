@@ -50,6 +50,26 @@ app.include_router(router, prefix="/api")
 async def _startup() -> None:
     init_db()
     try:
+        from crypto.store.db import store_status
+        from crypto.store.session import recording_enabled, start_session
+
+        st = store_status()
+        log.info(
+            "Store ready path=%s size_bytes=%s rotate_max=%s",
+            st.get("path"),
+            st.get("size_bytes"),
+            st.get("rotate_max_bytes"),
+        )
+        if recording_enabled():
+            sess = start_session()
+            log.info(
+                "Recording session %s mode=%s (exec.live stays off)",
+                sess.get("session_id"),
+                sess.get("mode"),
+            )
+    except Exception as exc:  # noqa: BLE001 — never block UI boot
+        log.warning("Session recording failed to start: %s", exc)
+    try:
         from crypto.feeds.manager import get_feed_manager
 
         summary = await get_feed_manager().start()
@@ -67,6 +87,22 @@ async def _shutdown() -> None:
         await get_feed_manager().stop()
     except Exception as exc:  # noqa: BLE001
         log.debug("feed shutdown: %s", exc)
+    try:
+        from crypto.store.session import current_session, end_session, recording_enabled
+
+        if recording_enabled() and current_session() is not None:
+            result = end_session(write_summary=True)
+            summary = result.get("summary") or {}
+            log.info(
+                "Session closed id=%s go=%s confirms=%s vetoes=%s pnl=%s",
+                summary.get("session_id"),
+                summary.get("go_count"),
+                summary.get("confirms"),
+                summary.get("veto_signal_count"),
+                summary.get("realized_pnl_usd"),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Session end failed: %s", exc)
 
 
 @app.get("/")
