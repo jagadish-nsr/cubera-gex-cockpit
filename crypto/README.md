@@ -19,11 +19,15 @@ Or: `./run_crypto.sh` (Advisory / mock).
 
 ```bash
 ./run_crypto_paper.sh
-# → http://localhost:8760  ·  paper + confirm + ETH/SOL + gemma · exec.live=0 · BTC default
+# → http://localhost:8760  ·  paper + confirm + ETH/SOL + gemma
+#    + public Deribit/Delta MD · exec.live=0 · BTC default
 ```
 
-Gemma (`intel.gemma`) is **on** for this path. Without Ollama, classify/digests
-soft-fall back to keywords/templates (`mock_when_unavailable`). Keep `exec.live=0`.
+Public Deribit/Delta market-data feeds are **on** (`CRYPTO_LIVE_FEEDS=1` +
+`feeds.deribit` / `feeds.delta`). If WS/REST fail, providers soft-fall back to
+mock fixtures (stub sources keep mock stale rules). Gemma (`intel.gemma`) is
+**on**; without Ollama, classify/digests soft-fall back to keywords/templates
+(`mock_when_unavailable`). Keep `exec.live=0` — feeds ≠ live trading.
 
 ### Ops checklist
 
@@ -435,7 +439,12 @@ Auto mode, short options, unattended production deploy without IP whitelist / li
 
 ## Enable live feeds (Phase 0)
 
-Mock stays default. Live collectors need **both** an env gate and a feature flag:
+**Paper path (preferred):** `./run_crypto_paper.sh` already sets the env gate +
+Deribit/Delta flags (and still forces `exec.live=0`). Soft-fallback to mock if
+WS fails.
+
+**Advisory / manual:** Live collectors need **both** an env gate and a feature flag
+(YAML defaults keep them off for plain `./run_crypto.sh`):
 
 ```bash
 CRYPTO_LIVE_FEEDS=1 \
@@ -457,9 +466,12 @@ Live Deribit option trades accumulate into the flow-model inventory
 (`direction` = taker side). Paper session summary aggregates the same DB —
 see [docs/feed-recording.md](docs/feed-recording.md).
 
-### Stale data
+### Soft-fallback + stale data
 
-Signal path hard-vetoes when live chain/perp age **> 2s**. Mock path keeps a looser 30s check.
+When collectors miss or REST fails, Deribit/Delta providers serve mock fixtures
+(`*-stub` / fixture sources). Those sources are **not** treated as the live
+signal path — mock keeps a looser ~30s stale check so the paper desk stays
+usable offline. Real live chain/perp sources hard-veto when age **> 2s**.
 
 ### Glassnode hand-check
 

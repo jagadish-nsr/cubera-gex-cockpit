@@ -382,11 +382,42 @@ def test_run_crypto_paper_sh_exports_eth_sol_and_refuses_live():
     # Defaults to on when unset
     assert 'CRYPTO_FLAG_ASSETS_ETH="${CRYPTO_FLAG_ASSETS_ETH:-1}"' in text
     assert 'CRYPTO_FLAG_ASSETS_SOL="${CRYPTO_FLAG_ASSETS_SOL:-1}"' in text
+    # Public Deribit/Delta MD on for paper; soft-fallback to mock if WS fails
+    assert 'CRYPTO_LIVE_FEEDS="${CRYPTO_LIVE_FEEDS:-1}"' in text
+    assert 'CRYPTO_FLAG_FEEDS_DERIBIT="${CRYPTO_FLAG_FEEDS_DERIBIT:-1}"' in text
+    assert 'CRYPTO_FLAG_FEEDS_DELTA="${CRYPTO_FLAG_FEEDS_DELTA:-1}"' in text
+    assert "soft-fallback to mock if WS fails" in text
     # Gemma on for paper; soft-fallback when Ollama absent
     assert 'CRYPTO_FLAG_INTEL_GEMMA="${CRYPTO_FLAG_INTEL_GEMMA:-1}"' in text
     assert "mock/keywords" in text
-    # Must never enable live in the helper
+    # Must never enable live trading in the helper
     assert "CRYPTO_FLAG_EXEC_LIVE=1" not in text
+
+
+def test_env_paper_path_enables_live_feeds_keeps_exec_live_off(monkeypatch, tmp_path):
+    """Paper helper env: public MD feeds on, exec.live forced off."""
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper_feeds.db'}")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "0")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_AUTO", "0")
+    monkeypatch.setenv("CRYPTO_LIVE_FEEDS", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_FEEDS_DERIBIT", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_FEEDS_DELTA", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_ETH", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_ASSETS_SOL", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_INTEL_GEMMA", "1")
+    load_config(reload=True)
+
+    assert get_flag("feeds.deribit") is True
+    assert get_flag("feeds.delta") is True
+    assert get_flag("exec.live") is False
+    assert get_flag("exec.paper") is True
+    assert get_flag("exec.confirm") is True
+    assert get_flag("intel.gemma") is True
+    mode = resolve_exec_mode()
+    assert mode["badge"] == "Paper Confirm"
+    assert "Live" not in mode["badge"]
 
 
 def test_env_paper_path_enables_gemma_keeps_live_off(monkeypatch, tmp_path):

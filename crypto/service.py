@@ -20,7 +20,7 @@ from crypto.engine.inference import run_inference
 from crypto.engine.orderflow import OrderflowState, compute_orderflow_features
 from crypto.engine.signals import build_signal_card
 from crypto.engine.vetoes import stub_risk_state
-from crypto.feeds.manager import live_feeds_requested
+from crypto.feeds.manager import is_live_market_data_source
 from crypto.feeds.state import get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
 from crypto.intel.pipeline import (
@@ -109,14 +109,11 @@ class CockpitService:
             self.store.write_events([intel_to_news_event(e) for e in intel_events])
 
         blackout = bool(blackout_info.get("active"))
-        src = snap.source or ""
-        live_source = (
-            "deribit" in src
-            and "stub" not in src
-            and "fixture" not in src
-            and "mock" not in src
+        # Real live MD only — stub/fixture/mock soft-fallback keeps mock stale rules
+        # even when CRYPTO_LIVE_FEEDS=1 (WS/REST miss must not 2s-veto the paper desk).
+        live_path = bool(
+            get_flag("feeds.deribit") and is_live_market_data_source(snap.source)
         )
-        live_path = bool(get_flag("feeds.deribit") and (live_feeds_requested() or live_source))
         card = build_signal_card(
             gex,
             perp,
