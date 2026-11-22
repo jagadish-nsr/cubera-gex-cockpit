@@ -14,6 +14,12 @@ let resizeTimer = null;
 let assetSwitchInFlight = false;
 /** @type {ReturnType<typeof setTimeout>|null} */
 let assetFollowupTimer = null;
+/** @type {Record<string, true>} */
+const seenFlowAlertIds = Object.create(null);
+/** @type {boolean} */
+let flowAlertsSeeded = false;
+/** @type {number} */
+let lastFlowAlertSoundAt = 0;
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -530,16 +536,133 @@ function renderNews(news) {
   list.innerHTML = news
     .map((e, i) => {
       const tier = String(e.tier || "WATCH").toUpperCase();
+      const url = typeof e.url === "string" && e.url.startsWith("http") ? e.url : "";
+      const headline = url
+        ? `<a class="intel-headline-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(e.title)}</a>`
+        : `<p class="intel-headline">${escapeHtml(e.title)}</p>`;
+      const readMore = url
+        ? `<a class="intel-read" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Read</a>`
+        : "";
       return `
       <li class="intel-item" style="animation-delay:${0.02 + i * 0.04}s">
         <span class="intel-tier ${tierClass(tier)}">${escapeHtml(tier)}</span>
         <div class="intel-body">
-          <p class="intel-headline">${escapeHtml(e.title)}</p>
+          ${headline}
           <p class="intel-meta">${escapeHtml(e.event_type || "event")} · ${escapeHtml(
             e.impact_note || e.source || "—"
           )} · score ${Number(e.score || 0).toFixed(2)}</p>
         </div>
-        <div class="intel-action">${escapeHtml(e.engine_action || "")}</div>
+        <div class="intel-action">${readMore || escapeHtml(e.engine_action || "")}</div>
+      </li>`;
+    })
+    .join("");
+}
+
+function renderFurtherReading(intel) {
+  const wrap = $("#further-reading");
+  const list = $("#further-reading-list");
+  if (!wrap || !list) return;
+  const links = Array.isArray(intel?.further_reading) ? intel.further_reading : [];
+  if (!links.length) {
+    wrap.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  wrap.hidden = false;
+  list.innerHTML = links
+    .map((row) => {
+      const url = String(row.url || "");
+      if (!url.startsWith("http")) return "";
+      const note = row.note ? `<span class="further-reading-note">${escapeHtml(row.note)}</span>` : "";
+      return `<li><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+        row.title || url
+      )}</a>${note}</li>`;
+    })
+    .filter(Boolean)
+    .join("");
+}
+
+function showToast(message, tone = "neutral") {
+  const host = $("#toast-host");
+  if (!host) return;
+  const el = document.createElement("div");
+  el.className = `toast toast-${tone}`;
+  el.textContent = message;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 280);
+  }, 4200);
+}
+
+function playFlowAlertTone(bullish) {
+  const now = Date.now();
+  if (now - lastFlowAlertSoundAt < 2500) return;
+  lastFlowAlertSoundAt = now;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = bullish ? 880 : 420;
+    gain.gain.value = 0.0001;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const t0 = ctx.currentTime;
+    gain.gain.exponentialRampToValueAtTime(0.05, t0 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.28);
+    osc.start(t0);
+    osc.stop(t0 + 0.3);
+    osc.onended = () => ctx.close().catch(() => {});
+  } catch {
+    /* audio optional */
+  }
+}
+
+function renderFlowAlerts(alerts, underlying) {
+  const list = $("#flow-alert-list");
+  if (!list) return;
+  const rows = Array.isArray(alerts) ? alerts : [];
+  if (!rows.length) {
+    list.innerHTML = `<li class="flow-alert-empty">No crypto tape alerts for ${escapeHtml(
+      underlying || "—"
+    )} right now.</li>`;
+    return;
+  }
+
+  if (!flowAlertsSeeded) {
+    rows.forEach((a) => {
+      if (a?.alert_id) seenFlowAlertIds[a.alert_id] = true;
+    });
+    flowAlertsSeeded = true;
+  } else {
+    for (const a of rows) {
+      const id = a?.alert_id;
+      if (!id || seenFlowAlertIds[id]) continue;
+      seenFlowAlertIds[id] = true;
+      const tone = a.bullish ? "agree" : a.bearish ? "disagree" : "neutral";
+      showToast(`${a.title || a.type} · score ${a.score}`, tone);
+      playFlowAlertTone(!!a.bullish);
+    }
+  }
+
+  list.innerHTML = rows
+    .map((a, i) => {
+      const sideClass = a.bullish ? "bull" : a.bearish ? "bear" : "neutral";
+      const drivers = (a.drivers || []).slice(0, 3).join(" · ");
+      return `
+      <li class="flow-alert-item ${sideClass}" style="animation-delay:${0.02 + i * 0.04}s">
+        <span class="flow-alert-type">${escapeHtml(a.type || "ALERT")}</span>
+        <div class="flow-alert-body">
+          <p class="flow-alert-title">${escapeHtml(a.title || a.type)}</p>
+          <p class="flow-alert-detail">${escapeHtml(a.detail || "")}</p>
+          <p class="flow-alert-meta">${escapeHtml(a.underlying || "")} · score ${escapeHtml(
+            String(a.score ?? "—")
+          )}${drivers ? ` · ${escapeHtml(drivers)}` : ""}</p>
+        </div>
       </li>`;
     })
     .join("");
@@ -653,6 +776,9 @@ function renderAssetSwitcher(data) {
         // Clear busy before render so the switcher re-enables.
         assetSwitchInFlight = false;
         setAssetSwitcherBusy(mount, false, null);
+        // Reseed flow-alert toast IDs per underlying (crypto desk only).
+        Object.keys(seenFlowAlertIds).forEach((k) => delete seenFlowAlertIds[k]);
+        flowAlertsSeeded = false;
         // Prefer embedded snapshot from PATCH (avoids a second HTTP RTT).
         if (switched?.snapshot) {
           applySnapshot(switched.snapshot);
@@ -822,6 +948,10 @@ function applySnapshot(data) {
 
   setSection("#gex-section", !!flags["ui.gex_map"] && !!data.gex);
   setSection("#flow-section", !!flags["ui.regime_strip"] && !!data.orderflow);
+  setSection(
+    "#flow-alerts-section",
+    !!flags["ui.flow_alerts"] && Array.isArray(data.flow_alerts)
+  );
   setSection("#setups-section", !!flags["ui.go_cards"] && !!data.signal);
   setSection("#intel-section", !!flags["intel.news"]);
   setSection("#operator-section", !!flags["ui.operator_panel"]);
@@ -848,9 +978,15 @@ function applySnapshot(data) {
   }
 
   if (data.orderflow) renderFlow(data.orderflow, data.gex);
+  if (flags["ui.flow_alerts"]) {
+    renderFlowAlerts(data.flow_alerts || [], data.underlying);
+  }
   if (data.signal) renderCard(data.signal, exec);
   renderBlackout(data.intel || {});
-  if (flags["intel.news"]) renderNews(data.news || []);
+  if (flags["intel.news"]) {
+    renderNews(data.news || []);
+    renderFurtherReading(data.intel || {});
+  }
   if (flags["ui.operator_panel"]) renderFlags(flags);
 
   const p = data.providers || {};

@@ -48,6 +48,7 @@
     {
       "event_id": "fx-btc-hack-alert",
       "title": "Major DeFi protocol hack drains bridge liquidity — BTC and ETH wobble",
+    "url": "https://cryptopanic.com/",
       "source": "fixture-tape",
       "tier": "WATCH",
       "score": 0.0,
@@ -60,6 +61,7 @@
     {
       "event_id": "fx-funding-flip",
       "title": "Perp funding flipped positive after two negative prints",
+    "url": "https://docs.deribit.com/api-reference/market-data/public-ticker",
       "source": "fixture-tape",
       "tier": "WATCH",
       "score": 0.0,
@@ -70,6 +72,7 @@
     {
       "event_id": "fx-etf-flow",
       "title": "US spot BTC ETF complex saw net inflow yesterday (third-party)",
+    "url": "https://cryptopanic.com/",
       "source": "fixture-digest",
       "tier": "WATCH",
       "score": 0.0,

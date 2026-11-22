@@ -25,6 +25,7 @@ from crypto.config import (
     set_flag,
     set_underlying,
 )
+from crypto.engine.flow_alerts import FlowAlertState, evaluate_flow_alerts
 from crypto.engine.gex import compute_gex_features
 from crypto.engine.inference import run_inference
 from crypto.engine.orderflow import OrderflowState, compute_orderflow_features
@@ -33,6 +34,7 @@ from crypto.engine.vetoes import stub_risk_state
 from crypto.feeds.manager import is_live_market_data_source
 from crypto.feeds.state import get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
+from crypto.intel.further_reading import further_reading_links
 from crypto.intel.pipeline import (
     events_for_api,
     filter_events_for_asset,
@@ -112,6 +114,8 @@ class CockpitService:
         self.registry = get_registry()
         self.snapshot_cache = SnapshotCache()
         self._orderflow_by_asset: dict[str, OrderflowState] = {}
+        # CryptoCubera flow-alert cooldowns per underlying (never equity Sentinel).
+        self._flow_alert_by_asset: dict[str, FlowAlertState] = {}
         self._bg_tasks: set[asyncio.Task] = set()
         self._prewarm_done = False
         self._realign_task: asyncio.Task | None = None
@@ -123,6 +127,10 @@ class CockpitService:
         """Active-asset orderflow (compat for callers expecting a single state)."""
         u = get_active_underlying()
         return self._orderflow_by_asset.setdefault(u, OrderflowState())
+
+    def _flow_alert_state(self, underlying: str) -> FlowAlertState:
+        u = (underlying or "").strip().upper()
+        return self._flow_alert_by_asset.setdefault(u, FlowAlertState())
 
     def _track(self, task: asyncio.Task) -> None:
         self._bg_tasks.add(task)
@@ -285,6 +293,17 @@ class CockpitService:
 
         inference = run_inference(gex, orderflow)
 
+        flow_alerts_on = bool(get_flag("ui.flow_alerts", default=True))
+        flow_alerts: list[dict[str, Any]] = []
+        if flow_alerts_on:
+            flow_alerts = evaluate_flow_alerts(
+                gex,
+                orderflow,
+                underlying=underlying,
+                state=self._flow_alert_state(underlying),
+                apply_cooldown=True,
+            )
+
         chain_stale = is_stale(
             snap.fetched_at,
             threshold_s=float((cfg.get("feeds") or {}).get("stale_threshold_s") or STALE_THRESHOLD_S),
@@ -349,6 +368,7 @@ class CockpitService:
             "orderflow": _serialize_orderflow(orderflow)
             if get_flag("ui.regime_strip", default=True)
             else None,
+            "flow_alerts": flow_alerts if flow_alerts_on else [],
             "signal": signal_out,
             "inference": inference,
             "news": events_for_api(display_events) if intel_flag else [],
@@ -359,6 +379,9 @@ class CockpitService:
                 "flag": intel_flag,
                 "underlying": underlying,
                 "gemma": get_flag("intel.gemma", default=False),
+                "desk": "CryptoCubera",
+                "scope": "crypto",
+                "further_reading": further_reading_links() if intel_flag else [],
             },
             "execution": exec_status,
             "paper_trades_open": open_trades,

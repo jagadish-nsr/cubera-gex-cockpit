@@ -83,6 +83,14 @@
       <div class="flow-grid" id="flow-grid"></div>
     </section>
 
+    <section class="flow-alerts" id="flow-alerts-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Orderflow alerts</h2>
+        <p class="section-sub">CryptoCubera tape signals for BTC / ETH / SOL — decision support, never auto-place.</p>
+      </div>
+      <ul class="flow-alert-list" id="flow-alert-list" aria-live="polite"></ul>
+    </section>
+
     <section class="setups" id="setups-section" hidden>
       <div class="section-head">
         <h2 class="section-title">Setup</h2>
@@ -97,6 +105,10 @@
         <p class="section-sub">IMMINENT · BREAKING · WATCH — flags events, never places trades.</p>
       </div>
       <ul class="intel-list" id="intel-list"></ul>
+      <div class="further-reading" id="further-reading" hidden>
+        <h3 class="further-reading-title">Further reading</h3>
+        <ul class="further-reading-list" id="further-reading-list"></ul>
+      </div>
     </section>
 
     <section class="operator" id="operator-section" hidden>
@@ -117,6 +129,8 @@
       </div>
     </section>
   </main>
+
+  <div class="toast-host" id="toast-host" aria-live="polite" aria-atomic="true"></div>
 
   <footer class="foot">
     <span>Decision support, not financial advice. Modes: Advisory · Paper · Manual Decision. No Auto. Confirm never places live orders.</span>

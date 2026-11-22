@@ -271,15 +271,36 @@ async def inference_latest() -> dict[str, Any]:
 
 @router.get("/intel/feed")
 async def intel_feed() -> dict[str, Any]:
-    """Intelligence feed + blackout summary (flag-gated)."""
+    """Intelligence feed + blackout + further-reading (flag-gated)."""
     from crypto.config import get_flag
 
     if not get_flag("intel.news", default=True):
         raise HTTPException(status_code=404, detail="intel.news flag is off")
     snap = await get_service().snapshot()
+    intel = snap.get("intel") or {}
     return {
         "news": snap.get("news") or [],
-        "intel": snap.get("intel") or {},
+        "intel": intel,
+        "further_reading": intel.get("further_reading") or [],
+    }
+
+
+@router.get("/flow/alerts")
+async def flow_alerts() -> dict[str, Any]:
+    """CryptoCubera orderflow tape alerts for the active underlying (BTC/ETH/SOL).
+
+    Decision-support only — never places orders. Not the equity Sentinel tape.
+    """
+    from crypto.config import get_flag
+
+    if not get_flag("ui.flow_alerts", default=True):
+        raise HTTPException(status_code=404, detail="ui.flow_alerts flag is off")
+    snap = await get_service().snapshot()
+    return {
+        "underlying": snap.get("underlying"),
+        "desk": "CryptoCubera",
+        "scope": "crypto",
+        "alerts": snap.get("flow_alerts") or [],
     }
 
 

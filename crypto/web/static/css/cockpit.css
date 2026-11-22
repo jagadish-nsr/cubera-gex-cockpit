@@ -822,6 +822,106 @@ body {
   pointer-events: none;
 }
 
+/* —— Orderflow alerts (CryptoCubera tape) —— */
+.flow-alert-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.65rem;
+}
+.flow-alert-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem 1rem;
+  align-items: start;
+  padding: 0.9rem 1rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(21, 34, 49, 0.5);
+  animation: rise-in 0.45s var(--ease-out) both;
+}
+.flow-alert-item.bull {
+  border-color: rgba(74, 168, 120, 0.35);
+}
+.flow-alert-item.bear {
+  border-color: rgba(232, 93, 93, 0.35);
+}
+.flow-alert-type {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(143, 163, 181, 0.12);
+  color: var(--ink-dim);
+  border: 1px solid var(--line-strong);
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.flow-alert-item.bull .flow-alert-type {
+  background: rgba(74, 168, 120, 0.12);
+  color: var(--go, #4aa878);
+  border-color: rgba(74, 168, 120, 0.35);
+}
+.flow-alert-item.bear .flow-alert-type {
+  background: var(--nogo-dim);
+  color: var(--nogo);
+  border-color: rgba(232, 93, 93, 0.4);
+}
+.flow-alert-body { display: grid; gap: 0.2rem; min-width: 0; }
+.flow-alert-title {
+  margin: 0;
+  font-weight: 500;
+  font-size: 0.98rem;
+}
+.flow-alert-detail,
+.flow-alert-meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--ink-mute);
+}
+.flow-alert-empty {
+  color: var(--ink-mute);
+  font-size: 0.95rem;
+  padding: 0.5rem 0;
+}
+
+/* —— Toast host —— */
+.toast-host {
+  position: fixed;
+  right: 1rem;
+  bottom: 1.25rem;
+  z-index: 80;
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(22rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+.toast {
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: rgba(12, 20, 30, 0.92);
+  color: var(--ink);
+  font-size: 0.85rem;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.toast-agree { border-color: rgba(74, 168, 120, 0.45); }
+.toast-disagree { border-color: rgba(232, 93, 93, 0.45); }
+
 /* —— Intel —— */
 .intel-list {
   list-style: none;
@@ -877,6 +977,18 @@ body {
   font-weight: 500;
   font-size: 0.98rem;
 }
+.intel-headline-link {
+  margin: 0;
+  font-weight: 500;
+  font-size: 0.98rem;
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(143, 163, 181, 0.45);
+  text-underline-offset: 0.15em;
+}
+.intel-headline-link:hover {
+  color: var(--copper, #d9773a);
+}
 .intel-meta {
   font-family: var(--font-mono);
   font-size: 0.68rem;
@@ -888,10 +1000,54 @@ body {
   text-align: right;
   max-width: 9rem;
 }
+.intel-read {
+  color: var(--copper, #d9773a);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+.intel-read:hover { text-decoration: underline; }
 .intel-empty {
   color: var(--ink-mute);
   font-size: 0.95rem;
   padding: 0.5rem 0;
+}
+.further-reading {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+}
+.further-reading-title {
+  margin: 0 0 0.55rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.further-reading-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+.further-reading-list a {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: rgba(143, 163, 181, 0.4);
+  text-underline-offset: 0.12em;
+  font-size: 0.92rem;
+}
+.further-reading-list a:hover {
+  color: var(--copper, #d9773a);
+}
+.further-reading-note {
+  display: block;
+  margin-top: 0.12rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--ink-mute);
 }
 
 /* —— Operator / flags —— */

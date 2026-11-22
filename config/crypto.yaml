@@ -136,6 +136,8 @@ feature_flags:
   ui.gex_map: true
   ui.go_cards: true
   ui.regime_strip: true
+  # CryptoCubera orderflow tape alerts (BTC/ETH/SOL) — not equity Sentinel
+  ui.flow_alerts: true
   ui.operator_panel: true
   ui.asset_switcher: true
   # Preferred paper ops: ./run_crypto_paper.sh → Manual Decision
@@ -186,6 +188,20 @@ engine:
       cvd_1m_min: 20
       target_atr_mult: 1.5
       base_score: 62
+  # Crypto-native orderflow tape alerts (CRY-22). BTC/ETH/SOL only.
+  # Never wired to NSE Sentinel / Nifty / Bank Nifty / Sensex.
+  flow_alerts:
+    cvd_impulse_5m_min: 80
+    cvd_impulse_1m_min: 15
+    require_imbalance_align: true
+    divergence_15m_min: 40
+    divergence_1m_min: 10
+    wall_band_pct: 0.004
+    exhaustion_1m_min: 50
+    exhaustion_15m_oppose_min: 20
+    min_score: 60
+    cooldown_s: 90
+    max_alerts: 6
   vetoes:
     stale_threshold_s: 2.0
     # Stub hooks — raise to force NO-GO; not live risk telemetry
@@ -205,6 +221,24 @@ intel:
     # Overridden per active asset via assets.<U>.cryptopanic_currencies when set.
     currencies: BTC,ETH,SOL
     attribution: "Powered by CryptoPanic"
+  # Curated crypto further-reading (cockpit Intelligence section).
+  # Crypto desk only — do not add NSE equity index links here.
+  further_reading:
+    - title: "Deribit market data — ticker & greeks"
+      url: "https://docs.deribit.com/api-reference/market-data/public-ticker"
+      note: "Option chain greeks, IV, open interest (signal venue)."
+    - title: "Deribit options data collection"
+      url: "https://docs.deribit.com/articles/options-data-collection-best-practices"
+      note: "Best practices for streaming ticker / mark IV / chain."
+    - title: "Delta Exchange India API"
+      url: "https://docs.delta.exchange/"
+      note: "INR execution venue docs (orders never auto-placed here)."
+    - title: "CryptoPanic API"
+      url: "https://cryptopanic.com/developers/api/"
+      note: "Headline ingest used by the intelligence feed."
+    - title: "Glassnode studio (GEX cross-check)"
+      url: "https://studio.glassnode.com/"
+      note: "Cross-check dealer-flow gamma ideas; not the live feed."
 
 # Local Gemma 12B (Ollama-compatible). Language only — never creates GO / prices.
 # ./run_crypto_paper.sh enables intel.gemma by default; mock_when_unavailable soft-falls

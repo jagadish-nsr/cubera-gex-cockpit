@@ -58,14 +58,15 @@ No API keys required for Manual Decision. Paper sim optional via `CRYPTO_PAPER_S
 | Feature flags | `config/crypto.yaml` + `PATCH /api/flags` |
 | SQLite store + session recording | `data/crypto/cubera.db` (path/rotate in `crypto/store/`; [docs/feed-recording.md](docs/feed-recording.md)) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
-| Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
+| Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout, further_reading) |
+| Orderflow tape alerts | `crypto/engine/flow_alerts.py` (BTC/ETH/SOL; cockpit toasts) |
 | Paper / Manual Decision exec | `crypto/exec/` (+ `decision.py`) + `providers/delta/execution.py` |
 | Inference scaffold (off) | `crypto/engine/inference.py` |
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
 | Cockpit UI | `crypto/web/` (asset switcher in topbar) |
-| API | `GET /api/snapshot`, `/api/assets`, `PATCH /api/underlying`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/session*`, `/api/store/status`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| API | `GET /api/snapshot`, `/api/assets`, `PATCH /api/underlying`, `/api/flow/alerts`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/session*`, `/api/store/status`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
 
 ## Multi-asset (BTC · ETH · SOL)
 
@@ -116,6 +117,14 @@ Regime is **uncertain** (forces NO-GO) when the two models disagree on the near-
 
 Written to `orderflow_features`: CVD 1/5/15m (tape when available), book imbalance, OI Δ, funding, basis_bps, option signed-premium hooks.
 
+### Orderflow tape alerts (CRY-22)
+
+CryptoCubera-native alerts for **BTC / ETH / SOL** only (`crypto/engine/flow_alerts.py`):
+`CVD_IMPULSE_*`, `CVD_DIVERGENCE_*`, `WALL_ABSORPTION_*`, `TAPE_EXHAUSTION_*`.
+Cockpit section + toast/tone when a new alert appears. Flag: `ui.flow_alerts`.
+API: `GET /api/flow/alerts`. **Not** the equity Cubera cash-index tape package —
+do not import that code path here.
+
 ### Three setups → GO / NO-GO cards
 
 Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters — not calibrated edge):
@@ -143,6 +152,7 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 | `assets.eth` | **false** | Ethereum underlying |
 | `assets.sol` | **false** | Solana underlying |
 | `ui.asset_switcher` | true | Cockpit asset switcher |
+| `ui.flow_alerts` | true | CryptoCubera orderflow tape alerts (BTC/ETH/SOL) |
 | `engine.gex_flow_model` | true | Dual-model agreement gate |
 | `engine.signal_rules` | true | Setup evaluation |
 | `intel.news` | true | Intelligence feed + CryptoPanic/mock ingest |
@@ -189,7 +199,10 @@ Ingest → normalize → classify → score → `IMMINENT` / `BREAKING` / `WATCH
 | `crypto/intel/score.py` | Impact score; scheduled windows → IMMINENT |
 | `crypto/intel/calendar.py` | CPI / FOMC / expiry / Delta maintenance stubs |
 | `crypto/intel/blackout.py` | 30-minute hard-veto window for the signal path |
+| `crypto/intel/further_reading.py` | Curated crypto further-reading links (Deribit / Delta / CryptoPanic / Glassnode) |
 | `events` table | Persists scored events (`event_type`, `novelty`, `venues`, `occurs_at`, `blackout_until` + JSON payload) |
+
+Event rows expose `url` when the provider/fixture supplies one (clickable in the Intelligence list). Snapshot `intel.further_reading` is the curated desk reading list — crypto venues only.
 
 ### Local Gemma 12B language layer
 
