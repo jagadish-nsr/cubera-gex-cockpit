@@ -19,8 +19,11 @@ Or: `./run_crypto.sh` (Advisory / mock).
 
 ```bash
 ./run_crypto_paper.sh
-# → http://localhost:8760  ·  paper + confirm + ETH/SOL · exec.live=0 · BTC default
+# → http://localhost:8760  ·  paper + confirm + ETH/SOL + gemma · exec.live=0 · BTC default
 ```
+
+Gemma (`intel.gemma`) is **on** for this path. Without Ollama, classify/digests
+soft-fall back to keywords/templates (`mock_when_unavailable`). Keep `exec.live=0`.
 
 ### Ops checklist
 
@@ -134,7 +137,7 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 | `engine.signal_rules` | true | Setup evaluation |
 | `intel.news` | true | Intelligence feed + CryptoPanic/mock ingest |
 | `intel.calendar` | true | Macro / maintenance calendar stubs |
-| `intel.gemma` | **false** | Local Gemma 12B classify / GO prose / digests |
+| `intel.gemma` | **false** (paper helper → **on**) | Local Gemma 12B classify / GO prose / digests; mock/keywords if Ollama absent |
 | `inference.feature_export` | **false** | Export feature vector on snapshot |
 | `inference.regime_classifier` | **false** | Placeholder regime classifier (never creates GO) |
 
@@ -188,18 +191,21 @@ Language only — headlines, GO-card wording, digests. **No tools. Never creates
 | GO card reasons | exactly 3 lines | engine / template reasons |
 | Digests | morning / post_trade / veto | template digest |
 
-Point at a local Ollama-compatible runtime (Gemma 12B pulled locally):
+**Paper path (preferred):** `./run_crypto_paper.sh` already sets
+`CRYPTO_FLAG_INTEL_GEMMA=1`. Optional Ollama for real Gemma answers; without it
+the same flag soft-falls back via `mock_when_unavailable`.
 
 ```bash
-# 1) Run Ollama (or any /api/chat compatible host) with a 12B Gemma tag
+# Optional: local Gemma 12B
 ollama pull gemma2:12b
 ollama serve   # default http://localhost:11434
-
-# 2) Point CryptoCubera at it and enable the flag
 export CRYPTO_GEMMA_BASE_URL=http://localhost:11434   # or OLLAMA_HOST
 export CRYPTO_GEMMA_MODEL=gemma2:12b                  # or OLLAMA_MODEL
 export CRYPTO_GEMMA_TIMEOUT_S=8
-CRYPTO_FLAG_INTEL_GEMMA=1 python3 -m crypto.server --port 8760
+
+./run_crypto_paper.sh
+# or Advisory with flag only:
+# CRYPTO_FLAG_INTEL_GEMMA=1 python3 -m crypto.server --port 8760
 
 # Status + digest
 curl -s localhost:8760/api/intel/gemma | python3 -m json.tool
@@ -217,10 +223,11 @@ gemma:
   timeout_s: 8
   mock_when_unavailable: true
 feature_flags:
-  intel.gemma: false   # flip on when runtime is ready
+  intel.gemma: false   # Advisory default; paper helper sets CRYPTO_FLAG_INTEL_GEMMA=1
 ```
 
-Without a runtime, leave `intel.gemma` off (default) or keep it on with `mock_when_unavailable` — classify falls back to keywords; digests/GO prose use templates.
+Without a runtime on the paper path, keep the flag on — classify falls back to
+keywords; digests/GO prose use templates. Force off: `CRYPTO_FLAG_INTEL_GEMMA=0`.
 
 ### Enable without a CryptoPanic token (default)
 

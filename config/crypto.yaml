@@ -128,7 +128,8 @@ feature_flags:
   engine.signal_rules: true
   intel.news: true
   intel.calendar: true
-  # Local Gemma 12B language layer — off by default (keyword/template fallback)
+  # Local Gemma 12B language layer — off for Advisory; paper helper turns on
+  # (CRYPTO_FLAG_INTEL_GEMMA=1) with mock/keywords soft-fallback when Ollama is absent.
   intel.gemma: false
   ui.gex_map: true
   ui.go_cards: true
@@ -200,7 +201,8 @@ intel:
     attribution: "Powered by CryptoPanic"
 
 # Local Gemma 12B (Ollama-compatible). Language only — never creates GO / prices.
-# Point CRYPTO_GEMMA_BASE_URL (or OLLAMA_HOST) at your runtime; enable intel.gemma.
+# ./run_crypto_paper.sh enables intel.gemma by default; mock_when_unavailable soft-falls
+# back to keywords/templates when Ollama is down. Point CRYPTO_GEMMA_BASE_URL / OLLAMA_HOST.
 gemma:
   base_url: http://localhost:11434
   model: gemma2:12b

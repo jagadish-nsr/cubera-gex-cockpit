@@ -6,7 +6,7 @@
 ## One-command start
 
 ```bash
-# from repo root — paper Confirm + ETH/SOL; forces exec.live=0
+# from repo root — paper Confirm + ETH/SOL + Gemma; forces exec.live=0
 ./run_crypto_paper.sh
 # → http://localhost:8760
 ```
@@ -19,6 +19,7 @@ CRYPTO_FLAG_EXEC_CONFIRM=1 \
 CRYPTO_FLAG_EXEC_LIVE=0 \
 CRYPTO_FLAG_ASSETS_ETH=1 \
 CRYPTO_FLAG_ASSETS_SOL=1 \
+CRYPTO_FLAG_INTEL_GEMMA=1 \
 python3 -m crypto.server --port 8760
 ```
 
@@ -28,6 +29,21 @@ allowed; production India hosts are refused by the paper adapter.
 
 BTC remains the **default active underlying**. ETH and SOL are enabled for the
 topbar switcher (or `PATCH /api/underlying`).
+
+**Gemma:** `intel.gemma` defaults **on** in the paper helper. With
+`gemma.mock_when_unavailable: true`, missing Ollama soft-falls back to keyword
+classify and template digests/GO prose. Optional local runtime:
+
+```bash
+ollama pull gemma2:12b && ollama serve   # http://localhost:11434
+# optional overrides:
+# export CRYPTO_GEMMA_BASE_URL=http://localhost:11434
+# export CRYPTO_GEMMA_MODEL=gemma2:12b
+./run_crypto_paper.sh
+curl -s localhost:8760/api/intel/gemma | python3 -m json.tool
+```
+
+Force keywords-only: `CRYPTO_FLAG_INTEL_GEMMA=0 ./run_crypto_paper.sh`.
 
 ## What stays off
 
@@ -45,6 +61,7 @@ on this path.
 
 1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760  
    Badge = **Paper Confirm**. Assets BTC / ETH / SOL available; BTC selected.
+   Banner shows Gemma on (Ollama reachable or mock/keywords fallback).
 2. **Switch asset** — topbar BTC → ETH → SOL, or:
    ```bash
    curl -s -X PATCH localhost:8760/api/underlying \
