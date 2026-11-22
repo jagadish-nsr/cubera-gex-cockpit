@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Launch CryptoCubera in LOCAL PAPER Confirm mode (sim fills; no live keys).
-# Sets paper + ETH/SOL asset flags — never enables exec.live / live Confirm.
+# Launch CryptoCubera paper ops — Manual Decision by default (copy/export levels).
+# Preference: no auto trade placement. Confirm never POSTs to Delta.
+#
+# Default: Manual Decision (exec.live + exec.confirm); exec.live_place=0; exec.auto=0.
+# Optional paper sim: CRYPTO_PAPER_SIM=1 → Paper badge (local sim fills; live off).
 # Enables public Deribit/Delta market-data feeds (CRYPTO_LIVE_FEEDS=1 + feed
 # flags). Collectors soft-fall back to mock fixtures if WS/REST fails — cockpit
-# stays up. Still forces exec.live=0 (preference: no live trading).
-# Enables intel.gemma by default; soft-falls back to mock/keywords if Ollama
-# is absent (config gemma.mock_when_unavailable). BTC remains the default
-# active underlying; topbar switcher can flip to ETH/SOL.
+# stays up. ETH/SOL + Gemma as already (soft-fallback when Ollama absent).
+# BTC remains the default active underlying; topbar switcher can flip to ETH/SOL.
 # Records ticks / GEX / signals into SQLite and opens a paper session for summary export.
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,12 +15,28 @@ cd "${DIR}"
 mkdir -p data/crypto logs
 PORT="${CRYPTO_PORT:-8760}"
 
-# Local paper path only. Do not export CRYPTO_FLAG_EXEC_LIVE or DELTA_LIVE_*.
-export CRYPTO_FLAG_EXEC_PAPER=1
+# --- Execution mode ----------------------------------------------------------
+# Manual Decision (default): show/copy/export levels; Log decision; no exchange POST.
+# Paper sim (optional): CRYPTO_PAPER_SIM=1 → local sim Confirm practice.
 export CRYPTO_FLAG_EXEC_CONFIRM=1
-# Explicit refuse — preference: local paper trading only.
-export CRYPTO_FLAG_EXEC_LIVE=0
+export CRYPTO_FLAG_EXEC_LIVE_PLACE=0
 export CRYPTO_FLAG_EXEC_AUTO=0
+
+PAPER_SIM="${CRYPTO_PAPER_SIM:-0}"
+if [ "${PAPER_SIM}" = "1" ] || [ "${PAPER_SIM}" = "true" ] || [ "${PAPER_SIM}" = "on" ]; then
+  # Optional local sim practice — Paper badge; never live place.
+  export CRYPTO_FLAG_EXEC_PAPER=1
+  export CRYPTO_FLAG_EXEC_LIVE=0
+  MODE_BADGE="Paper (sim practice)"
+  MODE_NOTE="paper sim Confirm · CRYPTO_PAPER_SIM=1 · exec.live=0"
+else
+  # Default paper-ops path: Manual Decision (copy/export / Log decision).
+  export CRYPTO_FLAG_EXEC_LIVE=1
+  # Paper ledger optional alongside Manual Decision (off unless explicitly set).
+  export CRYPTO_FLAG_EXEC_PAPER="${CRYPTO_FLAG_EXEC_PAPER:-0}"
+  MODE_BADGE="Manual Decision"
+  MODE_NOTE="copy/export levels · Log decision · no exchange POST"
+fi
 
 # Multi-asset for paper ops (BTC always on; ETH/SOL enabled for switcher).
 # Override with CRYPTO_FLAG_ASSETS_ETH=0 / CRYPTO_FLAG_ASSETS_SOL=0 if needed.
@@ -67,15 +84,17 @@ export CRYPTO_RECORDING="${CRYPTO_RECORDING:-1}"
 # export CRYPTO_DB_URL=sqlite:///./data/crypto/cubera.db
 
 echo "======================================================================"
-echo "  CryptoCubera — LOCAL PAPER Confirm (sim / demo)"
+echo "  CryptoCubera — paper ops · ${MODE_BADGE}"
 echo "  URL  : http://localhost:${PORT}"
-echo "  Flags: exec.paper=1 exec.confirm=1  |  exec.live=0 (must stay off)"
+echo "  Mode : ${MODE_NOTE}"
+echo "  Flags: confirm=1 live_place=0 auto=0  |  live=${CRYPTO_FLAG_EXEC_LIVE} paper=${CRYPTO_FLAG_EXEC_PAPER}"
 echo "  Feeds: ${FEEDS_NOTE}"
 echo "  Assets: BTC (default) + ETH + SOL (switcher)"
 echo "  Gemma : intel.gemma ${GEMMA_NOTE}"
-echo "  Keys : none required (public MD + local sim). Optional DELTA_PAPER_* for testnet."
-echo "  Record: SQLite data/crypto/cubera.db + paper session summary"
-echo "  Smoke: start → feeds/API → switch asset → Confirm → session export"
+echo "  Keys : none required (public MD). No DELTA_LIVE_* for Manual Decision."
+echo "  Record: SQLite data/crypto/cubera.db + session summary"
+echo "  Smoke: start → badge → Copy/Export (or Confirm paper) → session export"
+echo "  Paper sim (optional): CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh"
 echo "  After : python3 -m crypto.session_cli summary -o paper_session.json"
 echo "======================================================================"
 exec python3 -m crypto.server --host 0.0.0.0 --port "${PORT}"

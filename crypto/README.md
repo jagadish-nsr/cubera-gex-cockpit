@@ -18,25 +18,26 @@ python3 -m crypto.server --port 8760
 
 Or: `./run_crypto.sh` (Advisory / mock).
 
-**Local paper Confirm (preferred):**
+**Paper ops (preferred — Manual Decision):**
 
 ```bash
 ./run_crypto_paper.sh
-# → http://localhost:8760  ·  paper + confirm + ETH/SOL + gemma
-#    + public Deribit/Delta MD · exec.live=0 · BTC default
+# → http://localhost:8760  ·  Manual Decision + ETH/SOL + gemma
+#    + public Deribit/Delta MD · live_place=0 · BTC default
+# Optional local sim: CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh
 ```
 
 Public Deribit/Delta market-data feeds are **on** (`CRYPTO_LIVE_FEEDS=1` +
 `feeds.deribit` / `feeds.delta`). If WS/REST fail, providers soft-fall back to
 mock fixtures (stub sources keep mock stale rules). Gemma (`intel.gemma`) is
 **on**; without Ollama, classify/digests soft-fall back to keywords/templates
-(`mock_when_unavailable`). Keep `exec.live=0` — feeds ≠ live trading.
+(`mock_when_unavailable`). Feeds ≠ exchange placement — `exec.live_place` stays off.
 
-### Ops checklist
+### Ops checklist (short smoke)
 
-1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760 · badge **Manual Decision**
 2. **Switch asset** — topbar BTC / ETH / SOL (BTC is the default active underlying)
-3. **Confirm** — GO card → Confirm paper (local sim fills; no live keys)
+3. **Copy / Export** — GO card → Copy levels / Export JSON (or `GET /api/exec/decision`)
 4. **Session export** — Operator export, or:
    ```bash
    curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
@@ -45,7 +46,7 @@ mock fixtures (stub sources keep mock stale rules). Gemma (`intel.gemma`) is
 
 Full smoke checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 
-Mock/fixture chain is the default. No API keys required for local sim.
+No API keys required for Manual Decision. Paper sim optional via `CRYPTO_PAPER_SIM=1`.
 
 ## What ships
 
@@ -79,9 +80,10 @@ Same GEX / setups / intel path per underlying. **BTC is the default** and always
 Per-asset provider params live under `assets:` in `config/crypto.yaml` (Deribit currency/perp, Delta symbols, fixture file, CryptoPanic currencies). Mock fixtures: `crypto/fixtures/{btc,eth,sol}_chain.json`.
 
 ```bash
-# Paper path already enables ETH/SOL — or set explicitly:
+# Paper ops already enables ETH/SOL — or set explicitly with Manual Decision:
 CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 \
-CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 CRYPTO_FLAG_EXEC_LIVE=0 \
+CRYPTO_FLAG_EXEC_LIVE=1 CRYPTO_FLAG_EXEC_CONFIRM=1 \
+CRYPTO_FLAG_EXEC_LIVE_PLACE=0 \
   python3 -m crypto.server --port 8760
 
 # Switch active underlying (BTC remains default until switched)
@@ -291,30 +293,32 @@ Full paper checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 | `exec.live_place` | **false** | Exchange POST from Confirm — always refused even if flipped on |
 | `exec.auto` | **false** | Always refused — Auto is not supported |
 
-### One-command local paper (no keys)
+### One-command paper ops (Manual Decision; no keys)
 
 ```bash
 ./run_crypto_paper.sh
 # or:
-CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 CRYPTO_FLAG_EXEC_LIVE=0 \
+CRYPTO_FLAG_EXEC_LIVE=1 CRYPTO_FLAG_EXEC_CONFIRM=1 \
+CRYPTO_FLAG_EXEC_LIVE_PLACE=0 CRYPTO_FLAG_EXEC_AUTO=0 \
 CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 \
   python3 -m crypto.server --port 8760
 ```
 
-Mode badge → **Paper** (never Live Auto). ETH/SOL enabled for the switcher;
-BTC stays the default active underlying. Without `DELTA_PAPER_*` keys the
-adapter records **local sim fills**.
+Mode badge → **Manual Decision** (never Live Auto). ETH/SOL enabled for the
+switcher; BTC stays the default active underlying. Copy/export levels; Confirm
+logs decisions only. Optional paper sim: `CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh`.
 
 ### Smoke checklist
 
 1. Start `./run_crypto_paper.sh` → http://localhost:8760
-2. Topbar badge = **Paper**; assets BTC / ETH / SOL available
+2. Topbar badge = **Manual Decision**; assets BTC / ETH / SOL available
 3. Switch asset (topbar or `PATCH /api/underlying`) if needed
-4. GO card → **Confirm paper** (practice) or enable Manual Decision (below)
-5. Ledger shows open intent (`GET /api/exec/ledger`)
-6. Kill switch (two taps) clears intents / flips Confirm off
-7. Export trades CSV/JSON from Operator or `/api/exec/ledger/export` (includes notes)
-8. Export **session summary** (GO / confirms / vetoes / PnL): `/api/session/export` or `./run_crypto_session_summary.sh`
+4. GO card → **Copy levels** / **Export JSON** (hand ticket for Delta)
+5. Optional **Log decision** → ledger `manual_noted` (`GET /api/exec/ledger`)
+6. Kill switch (two taps) clears Confirm path
+7. Export ledger CSV/JSON from Operator or `/api/exec/ledger/export` (includes notes)
+8. Export **session summary**: `/api/session/export` or `./run_crypto_session_summary.sh`
+9. Optional paper sim: `CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh` → badge **Paper** → Confirm paper
 
 ```bash
 curl -s -X POST localhost:8760/api/exec/confirm \
@@ -370,13 +374,16 @@ The paper adapter **refuses** production hosts (`api.india.delta.exchange`, `api
 
 ## Manual Decision (hand placement on Delta)
 
-**Decision support only.** Enable Manual Decision when you want the GO card as a
-trade ticket to place yourself on Delta — not for the app to send orders.
+**Decision support only.** Paper ops (`./run_crypto_paper.sh`) defaults here —
+GO card as a trade ticket to place yourself on Delta. The app never sends orders.
 
 ```bash
+./run_crypto_paper.sh
+# equivalent flags:
 CRYPTO_FLAG_EXEC_LIVE=1 \
 CRYPTO_FLAG_EXEC_CONFIRM=1 \
 CRYPTO_FLAG_EXEC_LIVE_PLACE=0 \
+CRYPTO_FLAG_EXEC_AUTO=0 \
 python3 -m crypto.server --port 8760
 ```
 
@@ -429,8 +436,9 @@ Auto mode, exchange order placement from Confirm, short options.
 ## Enable live feeds (Phase 0)
 
 **Paper path (preferred):** `./run_crypto_paper.sh` already sets the env gate +
-Deribit/Delta flags (and still forces `exec.live=0`). Soft-fallback to mock if
-WS fails.
+Deribit/Delta flags (and forces `exec.live_place=0` / `exec.auto=0`). Soft-fallback
+to mock if WS fails. Default mode is Manual Decision; `CRYPTO_PAPER_SIM=1` for
+local sim practice.
 
 **Advisory / manual:** Live collectors need **both** an env gate and a feature flag
 (YAML defaults keep them off for plain `./run_crypto.sh`):
