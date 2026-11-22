@@ -62,6 +62,22 @@ async def providers() -> dict[str, Any]:
     }
 
 
+@router.get("/feeds")
+async def feeds_status() -> dict[str, Any]:
+    from crypto.feeds.manager import get_feed_manager
+
+    return get_feed_manager().status()
+
+
+@router.get("/feeds/fields")
+async def feed_field_findings() -> dict[str, Any]:
+    """Documented aggressor-side and gamma-unit findings from Phase 0."""
+    from crypto.providers.delta.parsers import FIELD_FINDINGS as DELTA_FIELDS
+    from crypto.providers.deribit.parsers import FIELD_FINDINGS as DERIBIT_FIELDS
+
+    return {"deribit": DERIBIT_FIELDS, "delta": DELTA_FIELDS}
+
+
 @router.get("/gex")
 async def gex_only() -> dict[str, Any]:
     snap = await get_service().snapshot()

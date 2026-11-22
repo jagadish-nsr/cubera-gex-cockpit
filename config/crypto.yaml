@@ -11,37 +11,38 @@ database:
 
 providers:
   option_chain:
-    - name: mock
-      enabled: true
-      priority: 10
-      feature_flag: feeds.mock
+    # Lower priority number wins when multiple flags are on.
     - name: deribit
-      enabled: false
-      priority: 20
+      enabled: true
+      priority: 5
       feature_flag: feeds.deribit
       credentials_ref: DERIBIT_CLIENT_ID
       rate_limits:
         rest_per_min: 60
     - name: delta
-      enabled: false
-      priority: 30
+      enabled: true
+      priority: 6
       feature_flag: feeds.delta
       rate_limits:
         rest_units_per_5min: 20000
-
-  perp:
     - name: mock
       enabled: true
-      priority: 10
+      priority: 50
       feature_flag: feeds.mock
+
+  perp:
+    - name: deribit
+      enabled: true
+      priority: 5
+      feature_flag: feeds.deribit
     - name: binance
       enabled: false
       priority: 20
       feature_flag: feeds.perp_binance
-    - name: deribit
-      enabled: false
-      priority: 30
-      feature_flag: feeds.deribit
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: feeds.mock
 
   news:
     - name: mock
@@ -79,7 +80,24 @@ feature_flags:
   exec.paper: false
   exec.confirm: false
 
-# Optional live spike (public REST only). Never blocks the UI.
+# Live feed collectors (Phase 0). Off by default; also require CRYPTO_LIVE_FEEDS=1
+# (or live_spike.* below) so mock remains the quiet default.
+feeds:
+  stale_threshold_s: 2.0
+  deribit:
+    ws_url: wss://www.deribit.com/ws/api/v2
+    rest_url: https://www.deribit.com/api/v2
+    max_expiries: 2
+    strike_band_pct: 0.08
+  delta:
+    ws_url: wss://public-socket.india.delta.exchange
+    rest_url: https://api.india.delta.exchange
+    symbols: [BTCUSD]
+    snapshot_options: true
+
+# Optional live spike. Never blocks the UI.
 live_spike:
   deribit_ticker: false
+  deribit_ws: false
+  delta_ws: false
   deribit_base_url: https://www.deribit.com/api/v2

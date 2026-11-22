@@ -1,9 +1,10 @@
 """Deribit option-chain provider.
 
-By default returns the mock fixture (safe). When `feeds.deribit` and
-`live_spike.deribit_ticker` are on, spikes one public ticker read for BTC-PERPETUAL
-and overlays spot onto the fixture chain so the UI stays rich without a full
-book rebuild.
+Default: mock fixture (safe).
+When ``feeds.deribit`` is on:
+  1. Prefer live cache from the WS/REST collector.
+  2. Else one-shot REST snapshot (if CRYPTO_LIVE_FEEDS / live_spike).
+  3. Else legacy public ticker spike onto fixture (never blocks UI).
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 import httpx
 
 from crypto.config import get_flag, load_config
+from crypto.feeds.state import get_feed_state
 from crypto.providers.mock.chain import MockOptionChainProvider
 from crypto.providers.types import OptionChainSnapshot, utcnow
 
@@ -27,6 +29,38 @@ class DeribitOptionChainProvider:
         self._fallback = MockOptionChainProvider()
 
     async def fetch_chain(self, underlying: str = "BTC") -> OptionChainSnapshot:
+        if get_flag("feeds.deribit"):
+            live = get_feed_state().get_deribit_chain()
+            if live is not None and live.contracts:
+                # Refresh fetched_at copy so callers see current hand-off time
+                return live
+
+            cfg = load_config()
+            feeds = cfg.get("feeds") or {}
+            spike = bool((cfg.get("live_spike") or {}).get("deribit_ws")) or bool(
+                (cfg.get("live_spike") or {}).get("deribit_ticker")
+            )
+            # One-shot REST when live requested but collector cache empty
+            if spike or _live_env():
+                try:
+                    from crypto.providers.deribit.rest_snapshot import build_chain_snapshot
+
+                    dcfg = feeds.get("deribit") or {}
+                    snap = await build_chain_snapshot(
+                        currency=underlying,
+                        base_url=dcfg.get("rest_url")
+                        or (cfg.get("live_spike") or {}).get("deribit_base_url")
+                        or "https://www.deribit.com/api/v2",
+                        max_expiries=int(dcfg.get("max_expiries") or 2),
+                        strike_band_pct=float(dcfg.get("strike_band_pct") or 0.08),
+                    )
+                    if snap.contracts:
+                        get_feed_state().set_deribit_chain(snap)
+                        return snap
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Deribit REST snapshot failed; fixture fallback: %s", exc)
+
+        # Legacy: optional public ticker overlay on fixture
         snap = await self._fallback.fetch_chain(underlying)
         snap.source = "deribit-stub"
 
@@ -59,3 +93,14 @@ class DeribitOptionChainProvider:
             resp.raise_for_status()
             body = resp.json()
             return body.get("result") or {}
+
+
+def _live_env() -> bool:
+    import os
+
+    return os.environ.get("CRYPTO_LIVE_FEEDS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
