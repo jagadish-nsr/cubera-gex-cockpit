@@ -182,10 +182,38 @@ function renderFlow(orderflow, gex) {
     .join("");
 }
 
-function paperStatusLine(signal) {
+/**
+ * Mode badge / copy: never say Live unless mode is live_confirm and the live
+ * gate is open (ok !== false). Preferred path is local paper — exec.live off.
+ */
+function resolveModeDisplay(data, exec) {
+  const mode = (data && data.mode) || "advisory";
+  const gate = exec && exec.live_gate;
+  const gateOpen = gate ? gate.ok === true : null;
+  if (mode === "live_confirm" && gateOpen !== false) {
+    return { text: "Live Confirm", mode: "live_confirm", isLive: true };
+  }
+  if (mode === "paper_confirm") {
+    return { text: "Paper Confirm", mode: "paper_confirm", isLive: false };
+  }
+  // Demote any Live* badge when gate closed or mode is not live_confirm.
+  const server = (data && data.mode_badge) || "Advisory";
+  if (/^live\b/i.test(String(server).trim())) {
+    return { text: "Advisory", mode: "advisory", isLive: false };
+  }
+  return {
+    text: server || "Advisory",
+    mode: mode === "live_confirm" ? "advisory" : mode,
+    isLive: false,
+  };
+}
+
+function paperStatusLine(signal, exec) {
   const ps = signal.paper_status || {};
-  const mode = signal.exec_mode || "";
-  const live = mode === "live_confirm";
+  const live = resolveModeDisplay(
+    { mode: signal.exec_mode, mode_badge: "" },
+    exec
+  ).isLive;
   const label = live ? "Live" : "Paper";
   const latest = ps.latest_open;
   if (latest) {
@@ -225,7 +253,10 @@ function renderCard(signal, exec) {
   const entry = Array.isArray(signal.entry_zone)
     ? signal.entry_zone.map((x) => fmt(x, 0)).join(" – ")
     : fmt(signal.entry_zone, 0);
-  const liveMode = (signal.exec_mode || exec?.exec_mode?.mode) === "live_confirm";
+  const liveMode = resolveModeDisplay(
+    { mode: signal.exec_mode || exec?.exec_mode?.mode, mode_badge: "" },
+    exec
+  ).isLive;
   const confirmLabel = canConfirm
     ? liveMode
       ? "Confirm live"
@@ -235,7 +266,7 @@ function renderCard(signal, exec) {
     ? liveMode
       ? "Submit LIVE bracket on Delta India — real capital"
       : "Submit paper/sim bracket (demo/sim only)"
-    : "Enable exec.paper or exec.live + exec.confirm (and pass risk / live gate)";
+    : "Enable exec.paper + exec.confirm for local paper (keep exec.live off)";
   const rr = riskReward(signal.entry_zone, signal.target, signal.stop);
   const rrPct = rr == null ? 0 : Math.min(100, Math.round((rr / 3) * 100));
   const until = validUntilState(signal.valid_until);
@@ -255,7 +286,7 @@ function renderCard(signal, exec) {
           <strong>${escapeHtml(until.label)}</strong>
         </div>
       </div>
-      <p class="paper-status" id="paper-status">${escapeHtml(paperStatusLine(signal))}</p>
+      <p class="paper-status" id="paper-status">${escapeHtml(paperStatusLine(signal, exec))}</p>
       <div class="go-legs">
         <div class="go-leg entry"><span class="go-leg-k">Entry</span><span class="go-leg-v">${escapeHtml(entry)}</span></div>
         <div class="go-leg stop"><span class="go-leg-k">Stop</span><span class="go-leg-v">${fmt(signal.stop, 0)}</span></div>
@@ -554,7 +585,7 @@ function wireKillSwitch(exec) {
   btn.classList.toggle("is-armed", !!exec?.kill_switch_armed);
   if (!enabled) {
     btn.textContent = "Kill switch";
-    btn.title = "Enable exec.paper or exec.live to use kill switch";
+    btn.title = "Enable exec.paper (+ exec.confirm) for paper kill switch — keep exec.live off";
     return;
   }
   if (exec.kill_switch_armed) {
@@ -571,17 +602,11 @@ async function loadSnapshot() {
   const flags = data.flags || {};
   const exec = data.execution || {};
 
+  const modeDisp = resolveModeDisplay(data, exec);
   const badge = $("#mode-badge");
   if (badge) {
-    const badgeText =
-      data.mode_badge ||
-      (data.mode === "live_confirm"
-        ? "Live Confirm"
-        : data.mode === "paper_confirm"
-          ? "Paper Confirm"
-          : "Advisory");
-    badge.textContent = badgeText;
-    badge.dataset.mode = data.mode || "advisory";
+    badge.textContent = modeDisp.text;
+    badge.dataset.mode = modeDisp.mode;
   }
   const underlying = data.underlying || "BTC";
   $("#underlying-label").textContent = underlying;
@@ -595,9 +620,13 @@ async function loadSnapshot() {
     const liveOn = !!flags["exec.live"];
     paperPill.hidden = !(paperOn || liveOn);
     if (paperOn || liveOn) {
-      const adapter = exec.adapter || (liveOn ? "live" : "sim");
-      const kind =
-        data.mode === "live_confirm" ? "live" : paperOn ? "paper" : "live-gated";
+      const adapter = exec.adapter || (modeDisp.isLive ? "live" : "sim");
+      // Never label the pill "live" unless the live gate is actually open.
+      const kind = modeDisp.isLive
+        ? "live"
+        : paperOn
+          ? "paper"
+          : "live-gated";
       paperPill.textContent = `${kind} · ${adapter} · open ${exec.open_intents ?? 0}`;
     }
   }

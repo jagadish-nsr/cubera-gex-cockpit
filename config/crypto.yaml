@@ -125,6 +125,8 @@ feature_flags:
   ui.regime_strip: true
   ui.operator_panel: true
   ui.asset_switcher: true
+  # Preferred Confirm path: CRYPTO_FLAG_EXEC_PAPER=1 + CRYPTO_FLAG_EXEC_CONFIRM=1
+  # (or ./run_crypto_paper.sh). Keep exec.live false — local paper only.
   exec.paper: false
   exec.confirm: false
   exec.live: false
