@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CryptoCubera</title>
+  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory only." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/cockpit.css" />
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true">
+    <div class="atm-grid"></div>
+    <div class="atm-glow atm-glow-a"></div>
+    <div class="atm-glow atm-glow-b"></div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">CryptoCubera</span>
+    </div>
+    <div class="topbar-meta">
+      <span class="mode-badge" id="mode-badge">Advisory</span>
+      <span class="live-pill" id="source-pill">fixture</span>
+      <button type="button" class="icon-btn" id="refresh-btn" title="Refresh snapshot">↻</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <!-- Hero: brand + spot + GO status — one composition -->
+    <section class="hero" id="hero">
+      <div class="hero-brand">
+        <h1 class="hero-title">CryptoCubera</h1>
+        <p class="hero-lede">Gamma map. Ranked setups. You confirm.</p>
+      </div>
+      <div class="hero-status">
+        <div class="spot-block">
+          <span class="spot-label" id="underlying-label">BTC</span>
+          <span class="spot-value" id="spot-value">—</span>
+        </div>
+        <div class="go-status" id="go-status" data-status="loading">
+          <span class="go-status-label">Status</span>
+          <span class="go-status-value" id="go-status-value">…</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Full-bleed GEX visual plane -->
+    <section class="gex-plane" id="gex-section" hidden>
+      <div class="gex-plane-head">
+        <h2 class="section-title">GEX map</h2>
+        <p class="section-sub" id="gex-regime-line">Regime loading…</p>
+      </div>
+      <div class="gex-canvas-wrap">
+        <canvas id="gex-canvas" width="1200" height="420" role="img" aria-label="Strike versus gamma exposure"></canvas>
+        <div class="gex-levels" id="gex-levels"></div>
+      </div>
+    </section>
+
+    <!-- Regime & flow strip -->
+    <section class="flow-strip" id="flow-section" hidden>
+      <h2 class="section-title sr-only">Regime and flow</h2>
+      <div class="flow-grid" id="flow-grid"></div>
+    </section>
+
+    <!-- GO card (interactive only) -->
+    <section class="setups" id="setups-section" hidden>
+      <h2 class="section-title">Setup</h2>
+      <p class="section-sub">Rule-based card. Not a guaranteed call.</p>
+      <div id="go-card-mount"></div>
+    </section>
+
+    <!-- Intelligence -->
+    <section class="intel" id="intel-section" hidden>
+      <h2 class="section-title">Intelligence</h2>
+      <p class="section-sub">Flags events. Never places trades.</p>
+      <ul class="intel-list" id="intel-list"></ul>
+    </section>
+
+    <!-- Operator panel -->
+    <section class="operator" id="operator-section" hidden>
+      <h2 class="section-title">Operator</h2>
+      <p class="section-sub">Feature flags — toggle slices without redeploy.</p>
+      <div class="flag-grid" id="flag-grid"></div>
+      <div class="exec-row">
+        <button type="button" class="kill-btn" id="kill-btn" disabled title="Disabled until execution is wired">Kill switch</button>
+        <span class="exec-note" id="exec-note">Advisory · no live orders</span>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Decision support, not financial advice.</span>
+    <span id="providers-line"></span>
+  </footer>
+
+  <script src="/static/js/cockpit.js" type="module"></script>
+</body>
+</html>
