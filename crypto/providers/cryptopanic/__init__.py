@@ -1,0 +1,1 @@
+"""CryptoPanic news adapter stub."""

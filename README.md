@@ -1,12 +1,19 @@
-# gex — Nifty, Bank Nifty, and Sensex GEX
+# Cubera GEX Cockpit
 
-Decision support for NSE and BSE index options. Pulls the live chain, computes
-call-gamma and put-gamma concentration, the call−put balance (flip and signed
-total), and max pain, and prints a one-sentence book-balance line. **Not
-financial advice. No order execution.**
+Two decision-support surfaces share this repo:
 
-> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
-> The web cockpit is at **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
+1. **NSE / BSE index options** (Nifty, Bank Nifty, Sensex) — legacy Cubera cockpit below.
+2. **CryptoCubera** — modular crypto GEX foundation (Deribit signal venue / Delta execution path). See **[crypto/README.md](crypto/README.md)**.
+
+```bash
+./run_crypto.sh          # CryptoCubera → http://localhost:8760 (mock by default)
+./run_prod.sh            # NSE Cubera  → http://localhost:8640
+```
+
+**Not financial advice. No order execution** (crypto is Advisory-only in this foundation).
+
+> **NSE handoff:** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
+> NSE web cockpit: **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
 > Dev is **http://localhost:8650** (`./run_dev.sh`).
 > Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
 > on macOS use cron/launchd, or leave the server open (it self-captures while running).

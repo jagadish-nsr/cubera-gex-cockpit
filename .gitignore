@@ -21,6 +21,7 @@ data/journal/options_eod/
 data/journal/participant_oi/
 data/journal/holidays/
 data/journal/*.pkl
+data/journal/*.meta.json
 data/journal/backups/
 data/journal/dhan_sync_state.json
 data/journal/rvol_baseline.json
@@ -46,6 +47,13 @@ data/journal/dhan_futures/
 data/journal/dhan_intraday/
 data/market_snapshot.db
 data/sentinel.db*
+
+# CryptoCubera local store
+data/crypto/*.db
+data/crypto/*.db-*
+data/crypto/*.db-shm
+data/crypto/*.db-wal
+
 *.log
 bin/
 
