@@ -77,6 +77,8 @@ feature_flags:
   engine.signal_rules: true
   intel.news: true
   intel.calendar: true
+  # Local Gemma 12B language layer — off by default (keyword/template fallback)
+  intel.gemma: false
   ui.gex_map: true
   ui.go_cards: true
   ui.regime_strip: true
@@ -128,7 +130,7 @@ engine:
     # Prefer real intel blackout (calendar IMMINENT window). Stub still available.
     scheduled_event_within_30m_stub: false
 
-# Market intelligence (Phase 3 slice). Keyword rules only — no Gemma.
+# Market intelligence (Phase 3 slice). Keyword rules default; Gemma optional.
 intel:
   blackout_window_minutes: 30   # hard veto horizon (design plan)
   imminent_horizon_minutes: 60  # IMMINENT alert tier
@@ -137,6 +139,14 @@ intel:
     # Live only when CRYPTOPANIC_TOKEN is set; otherwise mock fixtures.
     currencies: BTC,ETH
     attribution: "Powered by CryptoPanic"
+
+# Local Gemma 12B (Ollama-compatible). Language only — never creates GO / prices.
+# Point CRYPTO_GEMMA_BASE_URL (or OLLAMA_HOST) at your runtime; enable intel.gemma.
+gemma:
+  base_url: http://localhost:11434
+  model: gemma2:12b
+  timeout_s: 8
+  mock_when_unavailable: true
 
 # Live feed collectors (Phase 0). Off by default; also require CRYPTO_LIVE_FEEDS=1
 # (or live_spike.* below) so mock remains the quiet default.

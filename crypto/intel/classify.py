@@ -1,6 +1,7 @@
-"""Keyword classification rules (no Gemma).
+"""Keyword classification rules (Gemma fallback path).
 
 Extracts event_type, assets, venues from untrusted headline text.
+Used when ``intel.gemma`` is off, or when Gemma times out / fails schema.
 Advisory only — never creates a GO.
 """
 
