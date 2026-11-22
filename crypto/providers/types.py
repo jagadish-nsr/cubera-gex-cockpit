@@ -82,6 +82,8 @@ class PerpSnapshot:
 
 @dataclass
 class NewsEvent:
+    """Provider-facing news row; intel pipeline normalizes to IntelEvent."""
+
     event_id: str
     title: str
     source: str
@@ -91,6 +93,18 @@ class NewsEvent:
     url: Optional[str] = None
     published_at: Optional[datetime] = None
     impact_note: str = ""
+    # Extended schema (optional on providers; filled by intel pipeline)
+    event_type: str = "other"
+    venues: list[str] = field(default_factory=list)
+    occurs_at: Optional[datetime] = None
+    blackout_start: Optional[datetime] = None
+    blackout_until: Optional[datetime] = None
+    novelty: float = 1.0
+    source_reliability: float = 0.0
+    prior_move_proxy: float = 0.0
+    market_confirmation: float = 0.0
+    engine_action: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

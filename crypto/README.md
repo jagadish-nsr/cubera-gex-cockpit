@@ -25,12 +25,13 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | Feature flags | `config/crypto.yaml` + `PATCH /api/flags` |
 | SQLite store | `data/crypto/cubera.db` (schema in `crypto/store/`) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
+| Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
 | Inference scaffold (off) | `crypto/engine/inference.py` |
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
 | Cockpit UI | `crypto/web/` |
-| API | `GET /api/snapshot`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| API | `GET /api/snapshot`, `/api/intel/feed`, `/api/intel/blackout`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
 
 ## Quant engine (rules baseline)
 
@@ -67,8 +68,8 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 
 - Live path: chain/perp age **> 2s** (`feeds.stale_threshold_s` / `engine.vetoes.stale_threshold_s`)
 - Convention/flow disagreement or uncertain regime
-- News blackout (IMMINENT high-score)
-- Stub hooks (off): daily loss, margin cap, venue down, scheduled event <30m — raise via `engine.vetoes.*_stub`
+- **News blackout** from intel: active blackout window or scheduled macro/maintenance/`IMMINENT` `occurs_at` inside **30 minutes** (not a score-only stub)
+- Stub hooks (off): daily loss, margin cap, venue down — raise via `engine.vetoes.*_stub`
 
 ### Feature flags
 
@@ -76,6 +77,8 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 | --- | --- | --- |
 | `engine.gex_flow_model` | true | Dual-model agreement gate |
 | `engine.signal_rules` | true | Setup evaluation |
+| `intel.news` | true | Intelligence feed + CryptoPanic/mock ingest |
+| `intel.calendar` | true | Macro / maintenance calendar stubs |
 | `inference.feature_export` | **false** | Export feature vector on snapshot |
 | `inference.regime_classifier` | **false** | Placeholder regime classifier (never creates GO) |
 
@@ -104,6 +107,56 @@ python3 -m crypto.replay_cli tests/cryptocubera/fixtures/replay_bundle.json
 ### Inference scaffold
 
 Off by default. When flagged, snapshot includes an advisory feature vector and/or placeholder regime label. **Inference cannot create a GO.**
+
+## Market intelligence and alerts
+
+Ingest → normalize → keyword-classify → score → `IMMINENT` / `BREAKING` / `WATCH`. Never places trades. Gemma is out of scope (keyword rules only).
+
+| Piece | Role |
+| --- | --- |
+| `crypto/intel/schema.py` | Normalized event (type, assets, venues, novelty, score, tier, blackout stamps) |
+| `crypto/intel/classify.py` | Keyword event_type / asset / venue tags |
+| `crypto/intel/score.py` | Impact score; scheduled windows → IMMINENT |
+| `crypto/intel/calendar.py` | CPI / FOMC / expiry / Delta maintenance stubs |
+| `crypto/intel/blackout.py` | 30-minute hard-veto window for the signal path |
+| `events` table | Persists scored events (`event_type`, `novelty`, `venues`, `occurs_at`, `blackout_until` + JSON payload) |
+
+### Enable without a CryptoPanic token (default)
+
+Mock fixtures + calendar stubs. UI works offline:
+
+```bash
+# intel.news defaults on in config/crypto.yaml
+python3 -m crypto.server --port 8760
+# → Intelligence section shows fixture + calendar events
+curl -s localhost:8760/api/intel/feed | python3 -m json.tool
+curl -s localhost:8760/api/intel/blackout | python3 -m json.tool
+```
+
+Disable the feed:
+
+```bash
+CRYPTO_FLAG_INTEL_NEWS=0 python3 -m crypto.server --port 8760
+# or: curl -X PATCH localhost:8760/api/flags -H 'content-type: application/json' \
+#        -d '{"name":"intel.news","value":false,"actor":"cli"}'
+```
+
+### Enable with a CryptoPanic token
+
+```bash
+export CRYPTOPANIC_TOKEN=your_token_here
+# optional plan path segment (default: developer)
+# export CRYPTOPANIC_API_PLAN=growth
+CRYPTO_FLAG_INTEL_NEWS=1 python3 -m crypto.server --port 8760
+```
+
+Live fetch fails soft back to mock fixtures. Credit live rows with a CryptoPanic attribution note when the API returns data. Without a token, the `cryptopanic` provider serves fixtures automatically.
+
+Alert tiers:
+
+- **IMMINENT** — scheduled event inside 60 minutes → engine action `blackout` (veto when inside 30 minutes)
+- **BREAKING** — high impact score on unscheduled headlines → push-ready in-app payload
+- **WATCH** — digest
 
 ## Enable live feeds (Phase 0)
 
@@ -167,4 +220,4 @@ python3 -m pytest tests/cryptocubera -q
 
 ## Non-goals (this slice)
 
-Live Auto/Confirm orders, Gemma, paid CoinGlass/Tardis, claiming OOS edge, multi-user auth, full walk-forward champion models.
+Live Auto/Confirm orders, Gemma, paid CoinGlass/Tardis, social scrapers, mobile push plumbing beyond in-app payloads, claiming OOS edge, multi-user auth, full walk-forward champion models.

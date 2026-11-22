@@ -45,15 +45,16 @@ providers:
       feature_flag: feeds.mock
 
   news:
-    - name: mock
-      enabled: true
-      priority: 10
-      feature_flag: intel.news
+    # CryptoPanic wins when enabled; without CRYPTOPANIC_TOKEN it serves mock fixtures.
     - name: cryptopanic
-      enabled: false
-      priority: 20
+      enabled: true
+      priority: 5
       feature_flag: intel.news
       credentials_ref: CRYPTOPANIC_TOKEN
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: intel.news
 
   execution:
     - name: mock
@@ -73,6 +74,7 @@ feature_flags:
   engine.gex_flow_model: true
   engine.signal_rules: true
   intel.news: true
+  intel.calendar: true
   ui.gex_map: true
   ui.go_cards: true
   ui.regime_strip: true
@@ -114,7 +116,18 @@ engine:
     risk_daily_loss_stub: false
     risk_margin_cap_stub: false
     venue_not_operational_stub: false
+    # Prefer real intel blackout (calendar IMMINENT window). Stub still available.
     scheduled_event_within_30m_stub: false
+
+# Market intelligence (Phase 3 slice). Keyword rules only — no Gemma.
+intel:
+  blackout_window_minutes: 30   # hard veto horizon (design plan)
+  imminent_horizon_minutes: 60  # IMMINENT alert tier
+  calendar_stubs: true
+  cryptopanic:
+    # Live only when CRYPTOPANIC_TOKEN is set; otherwise mock fixtures.
+    currencies: BTC,ETH
+    attribution: "Powered by CryptoPanic"
 
 # Live feed collectors (Phase 0). Off by default; also require CRYPTO_LIVE_FEEDS=1
 # (or live_spike.* below) so mock remains the quiet default.

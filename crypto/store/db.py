@@ -54,7 +54,34 @@ def get_engine(*, reload: bool = False) -> Engine:
 def init_db(*, reload: bool = False) -> Engine:
     engine = get_engine(reload=reload)
     Base.metadata.create_all(engine)
+    _migrate_events_columns(engine)
     return engine
+
+
+def _migrate_events_columns(engine: Engine) -> None:
+    """Add intel columns on existing SQLite ``events`` tables (create_all won't)."""
+    url = str(engine.url)
+    if not url.startswith("sqlite"):
+        return
+    from sqlalchemy import text
+
+    alters = [
+        ("event_type", "ALTER TABLE events ADD COLUMN event_type VARCHAR(32)"),
+        ("novelty", "ALTER TABLE events ADD COLUMN novelty FLOAT"),
+        ("venues", "ALTER TABLE events ADD COLUMN venues JSON"),
+        ("occurs_at", "ALTER TABLE events ADD COLUMN occurs_at DATETIME"),
+        ("blackout_until", "ALTER TABLE events ADD COLUMN blackout_until DATETIME"),
+    ]
+    with engine.begin() as conn:
+        existing = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(events)")).fetchall()
+        }
+        if not existing:
+            return
+        for col, sql in alters:
+            if col not in existing:
+                conn.execute(text(sql))
 
 
 def get_session() -> Session:

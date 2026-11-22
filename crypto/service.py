@@ -14,6 +14,7 @@ from crypto.engine.vetoes import stub_risk_state
 from crypto.feeds.manager import live_feeds_requested
 from crypto.feeds.state import get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
+from crypto.intel.pipeline import events_for_api, intel_to_news_event, run_intel_pipeline
 from crypto.providers.registry import get_registry
 from crypto.store.writer import StoreWriter
 
@@ -74,13 +75,19 @@ class CockpitService:
         orderflow = compute_orderflow_features(perp, state=self._orderflow_state)
         self.store.write_orderflow_features(orderflow)
 
-        news_events = []
-        if get_flag("intel.news", default=True):
-            news_p = self.registry.news()
-            news_events = await news_p.fetch_events()
-            self.store.write_events(news_events)
+        intel_flag = get_flag("intel.news", default=True)
+        news_p = self.registry.news() if intel_flag else None
+        include_cal = bool(get_flag("intel.calendar", default=True))
+        intel = await run_intel_pipeline(
+            news_p,
+            include_calendar=include_cal and intel_flag,
+        )
+        intel_events = intel["events"]
+        blackout_info = intel["blackout"]
+        if intel_events:
+            self.store.write_events([intel_to_news_event(e) for e in intel_events])
 
-        blackout = any(e.tier == "IMMINENT" and e.score >= 0.9 for e in news_events)
+        blackout = bool(blackout_info.get("active"))
         src = snap.source or ""
         live_source = (
             "deribit" in src
@@ -136,21 +143,13 @@ class CockpitService:
             else None,
             "signal": _serialize_card(card) if get_flag("ui.go_cards", default=True) else None,
             "inference": inference,
-            "news": [
-                {
-                    "event_id": e.event_id,
-                    "title": e.title,
-                    "source": e.source,
-                    "tier": e.tier,
-                    "score": e.score,
-                    "assets": e.assets,
-                    "impact_note": e.impact_note,
-                    "published_at": e.published_at.isoformat() if e.published_at else None,
-                }
-                for e in news_events
-            ]
-            if get_flag("intel.news", default=True)
-            else [],
+            "news": events_for_api(intel_events) if intel_flag else [],
+            "intel": {
+                "provider": intel.get("provider"),
+                "blackout": blackout_info,
+                "n_events": len(intel_events),
+                "flag": intel_flag,
+            },
             "execution": {
                 "can_trade": False,
                 "kill_switch_armed": False,

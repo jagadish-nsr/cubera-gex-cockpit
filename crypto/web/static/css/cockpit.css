@@ -551,6 +551,11 @@ html, body {
 .tier.BREAKING { color: var(--breaking); }
 .tier.WATCH { color: var(--watch); }
 
+.intel-blackout {
+  border-color: color-mix(in srgb, var(--imminent) 45%, transparent);
+  background: color-mix(in srgb, var(--imminent) 12%, transparent);
+}
+
 .intel-title {
   margin: 0;
   font-size: 0.98rem;
