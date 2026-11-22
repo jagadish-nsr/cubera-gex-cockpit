@@ -135,14 +135,31 @@ class FeedManager:
     async def stop(self) -> None:
         if self.deribit:
             await self.deribit.stop()
+            self.deribit = None
         if self.delta:
             await self.delta.stop()
+            self.delta = None
         self._started = False
+
+    async def restart_for_underlying(self, underlying: str | None = None) -> dict[str, Any]:
+        """Stop collectors, clear prior-asset caches, start for the active underlying.
+
+        Call after ``set_underlying`` so Deribit currency / Delta symbols match
+        ETH or SOL instead of keeping a BTC WS subscription.
+        """
+        want = (underlying or get_active_underlying() or "BTC").strip().upper()
+        log.info("Restarting live feeds for underlying=%s", want)
+        await self.stop()
+        self.state.clear_for_underlying_switch()
+        summary = await self.start()
+        summary["restarted_for"] = want
+        return summary
 
     def status(self) -> dict[str, Any]:
         return {
             "started": self._started,
             "live_env": live_feeds_requested(),
+            "underlying": get_active_underlying(),
             **self.state.status(),
         }
 
