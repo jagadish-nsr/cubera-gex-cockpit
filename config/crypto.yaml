@@ -57,6 +57,12 @@ providers:
       feature_flag: intel.news
 
   execution:
+    # Live Confirm (highest priority when exec.live on + gate passes).
+    - name: delta_live
+      enabled: true
+      priority: 1
+      feature_flag: exec.live
+      credentials_ref: DELTA_LIVE_API_KEY
     # Prefer Delta paper/demo when flagged; mock sim always available as fallback.
     - name: delta
       enabled: true
@@ -85,14 +91,18 @@ feature_flags:
   ui.operator_panel: true
   exec.paper: false
   exec.confirm: false
+  exec.live: false
+  # Auto is intentionally absent / always refused if ever set
+  exec.auto: false
   # Inference scaffold — off by default (no live model / no GO from classifier)
   inference.feature_export: false
   inference.regime_classifier: false
 
-# Paper risk (enforced for Confirm path; never live capital)
+# Risk (enforced for Confirm path). Live uses live_equity_usd when gated on.
 risk:
   paper_equity_usd: 10000
-  risk_fraction: 0.005          # 0.5% of paper equity per trade
+  live_equity_usd: 10000        # used only for Live Confirm sizing
+  risk_fraction: 0.005          # 0.5% of equity per trade
   daily_loss_limit_usd: 250     # hit → flip Confirm off (Advisory)
   size_cap_usd: 2500            # hard ceiling (also on GO card)
 
@@ -164,6 +174,8 @@ feeds:
     snapshot_options: true
     # Paper/demo trading only — never use production trading keys here.
     paper_rest_url: https://cdn-ind.testnet.deltaex.org
+    # Live Confirm REST (India production). Requires DELTA_LIVE_* + acks.
+    live_rest_url: https://api.india.delta.exchange
 
 # Optional live spike. Never blocks the UI.
 live_spike:

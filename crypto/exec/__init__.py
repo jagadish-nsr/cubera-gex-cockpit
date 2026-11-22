@@ -1,9 +1,6 @@
-"""Paper / Confirm execution path for CryptoCubera.
+"""Paper / Live Confirm execution path for CryptoCubera.
 
-Never places live capital. Delta demo/testnet only when credentials are set;
-otherwise a local sim adapter fills the bracket into the trade ledger.
+Advisory is default. Paper Confirm uses Delta demo/testnet or local sim.
+Live Confirm is flag-gated (``exec.live`` + ``exec.confirm``) and fail-closed
+without explicit live keys, ack, and IP-whitelist ack. Auto is refused.
 """
-
-from crypto.exec.service import ExecutionService, get_execution_service
-
-__all__ = ["ExecutionService", "get_execution_service"]

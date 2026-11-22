@@ -214,17 +214,31 @@ async def exec_status() -> dict[str, Any]:
 
 @router.post("/exec/confirm")
 async def exec_confirm(body: ConfirmBody | None = Body(default=None)) -> dict[str, Any]:
-    """One-tap Confirm: submit paper/sim bracket from a GO card. Never live capital."""
+    """One-tap Confirm: paper/sim or Live Confirm bracket from a GO card.
+
+    Live path requires ``exec.live`` + ``exec.confirm`` and the fail-closed
+    live gate (keys + ack + IP whitelist ack). Auto is never available.
+    """
     from crypto.config import get_flag
     from crypto.exec.service import get_execution_service
 
     body = body or ConfirmBody()
-    if not get_flag("exec.paper", default=False):
-        raise HTTPException(status_code=403, detail="exec.paper is off")
+    paper = get_flag("exec.paper", default=False)
+    live = get_flag("exec.live", default=False)
+    if not paper and not live:
+        raise HTTPException(
+            status_code=403,
+            detail="exec.paper and exec.live are off — Advisory only",
+        )
     if not get_flag("exec.confirm", default=False):
         raise HTTPException(
             status_code=403,
-            detail="exec.confirm is off — Advisory default; enable Confirm for paper submits",
+            detail="exec.confirm is off — Advisory default; enable Confirm to submit",
+        )
+    if get_flag("exec.auto", default=False):
+        raise HTTPException(
+            status_code=403,
+            detail="exec.auto is refused — Auto mode is not supported",
         )
 
     card = body.card
@@ -272,9 +286,17 @@ async def exec_ledger_export(format: str = "json") -> Any:
     raise HTTPException(status_code=400, detail="format must be json or csv")
 
 
+@router.get("/exec/live-gate")
+async def exec_live_gate() -> dict[str, Any]:
+    """Inspect Live Confirm safety gate (fail-closed checks)."""
+    from crypto.exec.live_gate import evaluate_live_gate
+
+    return evaluate_live_gate(require_flags=True).as_dict()
+
+
 @router.post("/exec/kill")
 async def exec_kill(body: KillBody | None = Body(default=None)) -> dict[str, Any]:
-    """Two-tap kill switch: first arms, second with confirmed=true cancels paper intents."""
+    """Two-tap kill switch: first arms, second with confirmed=true cancels open intents."""
     from crypto.exec.service import get_execution_service
 
     body = body or KillBody()

@@ -45,9 +45,15 @@ def _reset(tmp_path, monkeypatch):
     monkeypatch.delenv("DELTA_PAPER_API_KEY", raising=False)
     monkeypatch.delenv("DELTA_PAPER_API_SECRET", raising=False)
     monkeypatch.delenv("DELTA_PAPER_REST_URL", raising=False)
+    monkeypatch.delenv("DELTA_LIVE_API_KEY", raising=False)
+    monkeypatch.delenv("DELTA_LIVE_API_SECRET", raising=False)
+    monkeypatch.delenv("CRYPTO_LIVE_CONFIRM_ACK", raising=False)
+    monkeypatch.delenv("DELTA_LIVE_IP_WHITELIST_ACK", raising=False)
     load_config(reload=True)
     set_flag("exec.paper", False, actor="test")
     set_flag("exec.confirm", False, actor="test")
+    set_flag("exec.live", False, actor="test")
+    set_flag("exec.auto", False, actor="test")
     get_engine(reload=True)
     init_db(reload=True)
     reset_execution_service()
@@ -196,7 +202,7 @@ def test_confirm_requires_flags():
     async def _run():
         blocked = await svc.confirm_from_card(_go_card())
         assert blocked["ok"] is False
-        assert blocked["code"] == "paper_off"
+        assert blocked["code"] == "exec_off"
 
         set_flag("exec.paper", True, actor="test")
         blocked2 = await svc.confirm_from_card(_go_card())

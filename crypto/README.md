@@ -1,8 +1,8 @@
 # CryptoCubera
 
-Modular crypto GEX decision-support cockpit. **Advisory by default.** Optional paper Confirm on Delta demo/testnet or local sim — **never live capital**.
+Modular crypto GEX decision-support cockpit. **Advisory by default.** Optional paper Confirm on Delta demo/testnet or local sim. Optional **Live Confirm** on Delta India is flag-gated and fail-closed. **No Auto.**
 
-Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), paper ledger, and the CryptoCubera UI.
+Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), trade ledger, and the CryptoCubera UI.
 
 ## Quick start
 
@@ -26,7 +26,7 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | SQLite store | `data/crypto/cubera.db` (schema in `crypto/store/`) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
 | Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
-| Paper / Confirm exec | `crypto/exec/` + `providers/delta/execution.py` |
+| Paper / Live Confirm exec | `crypto/exec/` + `providers/delta/execution.py` + `live_execution.py` |
 | Inference scaffold (off) | `crypto/engine/inference.py` |
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
@@ -207,12 +207,14 @@ Alert tiers:
 
 ## Paper trading and Confirm mode
 
-Advisory remains the default. Paper Confirm never places live capital.
+Advisory remains the default. Paper Confirm never places live capital. Live Confirm is a separate gated path (below).
 
 | Flag | Default | Role |
 | --- | --- | --- |
 | `exec.paper` | **false** | Enable paper ledger + Delta demo/sim adapter + kill switch |
-| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a paper/sim bracket |
+| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a bracket (paper or live, depending on mode) |
+| `exec.live` | **false** | Enable Live Confirm path (requires keys + acks; fail closed) |
+| `exec.auto` | **false** | Always refused — Auto is not supported |
 
 ### Safe enable (local sim — no keys)
 
@@ -260,19 +262,73 @@ CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 \
 python3 -m crypto.server --port 8760
 ```
 
-The adapter **refuses** production hosts (`api.india.delta.exchange`, `api.delta.exchange`). Demo REST soft-fails to local sim so the ledger still records the intent.
+The paper adapter **refuses** production hosts (`api.india.delta.exchange`, `api.delta.exchange`). Demo REST soft-fails to local sim so the ledger still records the intent.
+
+## Live Confirm on Delta India (flag-gated)
+
+**Default remains Advisory / paper.** Live Confirm places **real capital** on Delta Exchange India. It is refuse-by-default until every safety check passes. **No Auto.**
+
+### Exact enable steps
+
+1. **Create production India trading API keys** on Delta Exchange India (separate from demo/`DELTA_PAPER_*`). Whitelist the **static public IP** of the host that will run CryptoCubera — Delta trading keys require IP whitelist.
+2. Export live credentials and acks (fail closed without these):
+
+```bash
+export DELTA_LIVE_API_KEY=...          # production India trading key
+export DELTA_LIVE_API_SECRET=...
+# optional; must be India production (testnet refused)
+# export DELTA_LIVE_REST_URL=https://api.india.delta.exchange
+
+# Explicit risk acknowledgement (exact string):
+export CRYPTO_LIVE_CONFIRM_ACK=I_UNDERSTAND_LIVE_RISK
+
+# After you have whitelisted this host's static IP on the Delta key:
+export DELTA_LIVE_IP_WHITELIST_ACK=1
+```
+
+3. Enable flags (env or Operator / `PATCH /api/flags`):
+
+```bash
+CRYPTO_FLAG_EXEC_LIVE=1 \
+CRYPTO_FLAG_EXEC_CONFIRM=1 \
+python3 -m crypto.server --port 8760
+```
+
+Leave `exec.paper` off for a pure live path, or keep it on as a fallback when the live gate fails (mode falls back to Paper Confirm — never silent live).
+
+4. Verify the gate before confirming:
+
+```bash
+curl -s localhost:8760/api/exec/live-gate | python3 -m json.tool
+curl -s localhost:8760/api/exec/status | python3 -m json.tool
+# mode_badge should be "Live Confirm" and can_confirm true only when gate.ok
+```
+
+5. One-tap Confirm on a GO card (or API) submits a **live** bracket. Kill switch still two-tap cancels open intents and flips Confirm off.
+
+### Blockers (gate refuses live)
+
+| Check | How it fails |
+| --- | --- |
+| User live keys | Missing `DELTA_LIVE_API_KEY` / `DELTA_LIVE_API_SECRET` (paper keys do **not** unlock live) |
+| Ack | `CRYPTO_LIVE_CONFIRM_ACK` ≠ `I_UNDERSTAND_LIVE_RISK` |
+| IP whitelist ack | `DELTA_LIVE_IP_WHITELIST_ACK` not set after operator whitelists IP on Delta |
+| Host | `DELTA_LIVE_REST_URL` not `api.india.delta.exchange` (testnet refused) |
+| Flags | `exec.live` or `exec.confirm` off; or `exec.auto` on (always refused) |
+| Risk | Daily loss limit → Confirm flipped to Advisory |
 
 ### Risk + kill switch
 
 | Control | Behaviour |
 | --- | --- |
-| Size | From stop distance × `risk.risk_fraction` of `risk.paper_equity_usd`, capped by GO `size_cap_usd` / `risk.size_cap_usd` |
-| Daily loss | Realized paper PnL ≤ −`risk.daily_loss_limit_usd` → Confirm flips off (Advisory) |
-| Kill switch | Two taps in UI (arm → confirm) or `POST /api/exec/kill` twice (`confirmed: false` then `true`); cancels open paper intents and flips Confirm off |
+| Size | From stop distance × `risk.risk_fraction` of `paper_equity_usd` (paper) or `live_equity_usd` (live), capped by GO `size_cap_usd` / `risk.size_cap_usd` |
+| Daily loss | Realized PnL ≤ −`risk.daily_loss_limit_usd` → Confirm flips off (Advisory) |
+| Kill switch | Two taps in UI (arm → confirm) or `POST /api/exec/kill` twice (`confirmed: false` then `true`); cancels open intents and flips Confirm off |
 
 ```yaml
 risk:
   paper_equity_usd: 10000
+  live_equity_usd: 10000
   risk_fraction: 0.005
   daily_loss_limit_usd: 250
   size_cap_usd: 2500
@@ -280,7 +336,7 @@ risk:
 
 ### Non-goals (still out)
 
-Live Confirm/Auto with real capital, production IP whitelist deploy, short options, Auto mode.
+Auto mode, short options, unattended production deploy without IP whitelist / live keys.
 
 ## Enable live feeds (Phase 0)
 
@@ -344,4 +400,4 @@ python3 -m pytest tests/cryptocubera -q
 
 ## Non-goals (this slice)
 
-Live Auto / live Confirm with real capital, production IP whitelist deploy, Gemma, paid CoinGlass/Tardis, social scrapers, mobile push plumbing beyond in-app payloads, claiming OOS edge, multi-user auth, full walk-forward champion models.
+Auto mode, Gemma, paid CoinGlass/Tardis, social scrapers, mobile push plumbing beyond in-app payloads, claiming OOS edge, multi-user auth, full walk-forward champion models.
