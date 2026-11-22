@@ -1,8 +1,15 @@
 /**
  * CryptoCubera cockpit client — snapshot + GEX canvas + flag toggles.
+ * Advisory UI only; no order placement.
  */
 
 const $ = (sel, root = document) => root.querySelector(sel);
+
+/** @type {object|null} */
+let lastGex = null;
+/** @type {ReturnType<typeof setInterval>|null} */
+let validTimer = null;
+let resizeTimer = null;
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -29,6 +36,37 @@ function fmtPct(n) {
   return `${(Number(n) * 100).toFixed(3)}%`;
 }
 
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Turn snake/kebab slugs into short display labels. */
+function humanize(s) {
+  if (s == null || s === "") return "—";
+  return String(s)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\w/, (c) => c.toUpperCase());
+}
+
+function riskReward(entryZone, target, stop) {
+  const mid = Array.isArray(entryZone)
+    ? (Number(entryZone[0]) + Number(entryZone[1] ?? entryZone[0])) / 2
+    : Number(entryZone);
+  const t = Number(target);
+  const s = Number(stop);
+  if (![mid, t, s].every((x) => Number.isFinite(x)) || mid === s) return null;
+  const reward = Math.abs(t - mid);
+  const risk = Math.abs(mid - s);
+  if (risk <= 0) return null;
+  return reward / risk;
+}
+
 function drawGex(canvas, gex) {
   if (!canvas || !gex?.by_strike?.length) return;
   const dpr = window.devicePixelRatio || 1;
@@ -41,7 +79,7 @@ function drawGex(canvas, gex) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const rows = gex.by_strike;
-  const pad = { t: 24, r: 16, b: 36, l: 16 };
+  const pad = { t: 28, r: 18, b: 40, l: 18 };
   const w = cssW - pad.l - pad.r;
   const h = cssH - pad.t - pad.b;
   const xs = rows.map((r) => r.strike);
@@ -53,70 +91,93 @@ function drawGex(canvas, gex) {
   const xOf = (strike) => pad.l + ((strike - minX) / (maxX - minX || 1)) * w;
   const yOf = (net) => pad.t + h / 2 - (net / maxAbs) * (h / 2) * 0.92;
 
-  // Zero line
-  ctx.strokeStyle = "rgba(20,32,42,0.18)";
+  // Soft zero band
+  ctx.fillStyle = "rgba(232, 238, 244, 0.03)";
+  ctx.fillRect(pad.l, pad.t + h / 2 - 1, w, 2);
+
+  ctx.strokeStyle = "rgba(232, 238, 244, 0.12)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(pad.l, pad.t + h / 2);
   ctx.lineTo(pad.l + w, pad.t + h / 2);
   ctx.stroke();
 
-  // Bars
-  const bw = Math.max(6, (w / rows.length) * 0.55);
+  const bw = Math.max(5, (w / rows.length) * 0.55);
   rows.forEach((r) => {
     const x = xOf(r.strike);
     const y0 = pad.t + h / 2;
     const y1 = yOf(r.net_gex);
-    ctx.fillStyle = r.net_gex >= 0 ? "rgba(13,124,124,0.72)" : "rgba(196,92,38,0.72)";
+    const pos = r.net_gex >= 0;
+    ctx.fillStyle = pos ? "rgba(46, 196, 182, 0.78)" : "rgba(217, 119, 58, 0.78)";
     ctx.fillRect(x - bw / 2, Math.min(y0, y1), bw, Math.abs(y1 - y0) || 1);
   });
 
-  // Spot / walls / flip markers
   const markers = [
-    { k: gex.spot, c: "#14202a", label: "spot" },
-    { k: gex.flip, c: "#0d7c7c", label: "flip" },
-    { k: gex.call_wall, c: "#065858", label: "call" },
-    { k: gex.put_wall, c: "#c45c26", label: "put" },
+    { k: gex.spot, c: "#e8eef4", label: "spot", dash: [] },
+    { k: gex.flip, c: "#e6b84d", label: "flip", dash: [4, 4] },
+    { k: gex.call_wall, c: "#2ec4b6", label: "call", dash: [4, 4] },
+    { k: gex.put_wall, c: "#d9773a", label: "put", dash: [4, 4] },
   ].filter((m) => m.k != null);
 
   markers.forEach((m) => {
     const x = xOf(m.k);
     ctx.strokeStyle = m.c;
-    ctx.setLineDash(m.label === "spot" ? [] : [4, 4]);
+    ctx.globalAlpha = 0.85;
+    ctx.setLineDash(m.dash);
     ctx.beginPath();
     ctx.moveTo(x, pad.t);
     ctx.lineTo(x, pad.t + h);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
     ctx.fillStyle = m.c;
     ctx.font = "600 11px JetBrains Mono, monospace";
     ctx.fillText(m.label, x + 4, pad.t + 12);
   });
 
-  // Axis labels
-  ctx.fillStyle = "rgba(58,74,86,0.9)";
+  ctx.fillStyle = "rgba(143, 163, 181, 0.95)";
   ctx.font = "500 11px JetBrains Mono, monospace";
-  ctx.fillText(fmt(minX), pad.l, cssH - 10);
-  ctx.fillText(fmt(maxX), pad.l + w - 48, cssH - 10);
+  ctx.fillText(fmt(minX), pad.l, cssH - 12);
+  const maxLabel = fmt(maxX);
+  ctx.fillText(maxLabel, pad.l + w - ctx.measureText(maxLabel).width, cssH - 12);
 }
 
 function renderFlow(orderflow, gex) {
   const grid = $("#flow-grid");
   if (!grid || !orderflow) return;
   const agree = gex?.models_agree;
+  const signCls = (s) =>
+    s === "positive" ? "agree" : s === "negative" ? "disagree" : "neutral";
   const cells = [
-    { k: "Convention", v: gex?.convention_sign || "—", cls: gex?.convention_sign === "positive" ? "pos" : gex?.convention_sign === "negative" ? "neg" : "" },
-    { k: "Flow model", v: gex?.flow_sign || "—", cls: gex?.flow_sign === "positive" ? "pos" : gex?.flow_sign === "negative" ? "neg" : "" },
-    { k: "Agreement", v: agree ? "agree" : "disagree", cls: agree ? "agree" : "neg" },
-    { k: "CVD 5m", v: fmt(orderflow.cvd_5m, 1), cls: orderflow.cvd_5m >= 0 ? "pos" : "neg" },
-    { k: "CVD 15m", v: fmt(orderflow.cvd_15m, 1), cls: orderflow.cvd_15m >= 0 ? "pos" : "neg" },
-    { k: "Book imb.", v: fmt(orderflow.book_imbalance, 2), cls: orderflow.book_imbalance >= 0 ? "pos" : "neg" },
-    { k: "Funding", v: fmtPct(orderflow.funding_rate), cls: "" },
-    { k: "Perp mark", v: fmt(orderflow.mark, 1), cls: "" },
+    { k: "Convention", v: humanize(gex?.convention_sign || "—"), cls: signCls(gex?.convention_sign) },
+    { k: "Flow model", v: humanize(gex?.flow_sign || "—"), cls: signCls(gex?.flow_sign) },
+    {
+      k: "Agreement",
+      v: agree == null ? "—" : agree ? "agree" : "disagree",
+      cls: agree ? "agree" : agree === false ? "disagree" : "neutral",
+    },
+    {
+      k: "CVD 5m",
+      v: fmt(orderflow.cvd_5m, 1),
+      cls: orderflow.cvd_5m >= 0 ? "agree" : "disagree",
+    },
+    {
+      k: "CVD 15m",
+      v: fmt(orderflow.cvd_15m, 1),
+      cls: orderflow.cvd_15m >= 0 ? "agree" : "disagree",
+    },
+    {
+      k: "Book imb.",
+      v: fmt(orderflow.book_imbalance, 2),
+      cls: orderflow.book_imbalance >= 0 ? "agree" : "disagree",
+    },
+    { k: "Funding", v: fmtPct(orderflow.funding_rate), cls: "neutral" },
+    { k: "Perp mark", v: fmt(orderflow.mark, 1), cls: "neutral" },
   ];
   grid.innerHTML = cells
     .map(
-      (c) => `<div class="flow-cell"><span class="k">${c.k}</span><span class="v ${c.cls}">${c.v}</span></div>`
+      (c) =>
+        `<div class="flow-tile"><span class="flow-k">${escapeHtml(c.k)}</span><span class="flow-v ${c.cls}">${escapeHtml(c.v)}</span></div>`
     )
     .join("");
 }
@@ -136,6 +197,23 @@ function paperStatusLine(signal) {
   return "Advisory · no paper intent";
 }
 
+function validUntilState(iso) {
+  if (!iso) return { label: "—", cls: "" };
+  const end = new Date(iso).getTime();
+  if (!Number.isFinite(end)) return { label: String(iso), cls: "" };
+  const ms = end - Date.now();
+  if (ms <= 0) return { label: "Expired", cls: "expired" };
+  const mins = Math.floor(ms / 60000);
+  const secs = Math.floor((ms % 60000) / 1000);
+  const label =
+    mins >= 60
+      ? `${Math.floor(mins / 60)}h ${mins % 60}m left`
+      : mins > 0
+        ? `${mins}m ${secs}s left`
+        : `${secs}s left`;
+  return { label, cls: mins < 5 ? "expiring" : "" };
+}
+
 function renderCard(signal, exec) {
   const mount = $("#go-card-mount");
   if (!mount || !signal) return;
@@ -143,41 +221,84 @@ function renderCard(signal, exec) {
   const canConfirm = !!signal.can_confirm && isGo;
   const entry = Array.isArray(signal.entry_zone)
     ? signal.entry_zone.map((x) => fmt(x, 0)).join(" – ")
-    : "—";
+    : fmt(signal.entry_zone, 0);
   const confirmLabel = canConfirm ? "Confirm paper" : "Confirm disabled";
   const confirmTitle = canConfirm
     ? "Submit paper/sim bracket (never live capital)"
     : "Enable exec.paper + exec.confirm (and stay inside daily loss)";
+  const rr = riskReward(signal.entry_zone, signal.target, signal.stop);
+  const rrPct = rr == null ? 0 : Math.min(100, Math.round((rr / 3) * 100));
+  const until = validUntilState(signal.valid_until);
+  const vetoes = (signal.reasons || []).filter(Boolean);
+  const showVetoes = !isGo && vetoes.length;
+
   mount.innerHTML = `
     <article class="go-card ${isGo ? "" : "is-nogo"}">
       <div class="go-card-top">
-        <span class="go-pill ${isGo ? "go" : "nogo"}">${signal.status}</span>
-        <span class="go-score">${signal.setup || "none"} · score ${signal.score ?? 0}</span>
+        <div>
+          <span class="go-badge ${isGo ? "go" : "nogo"}">${escapeHtml(signal.status)}</span>
+          <h3 class="go-name">${escapeHtml(humanize(signal.setup || "No setup"))}</h3>
+          <p class="go-thesis">${escapeHtml(signal.instrument || "—")} · ${escapeHtml(humanize(signal.side || "—"))} · score ${escapeHtml(signal.score ?? 0)}</p>
+        </div>
+        <div class="go-valid ${until.cls}" id="go-valid">
+          Valid until
+          <strong>${escapeHtml(until.label)}</strong>
+        </div>
       </div>
-      <p class="paper-status" id="paper-status">${paperStatusLine(signal)}</p>
-      <div class="go-grid">
-        <div><span class="k">Instrument</span><div class="v">${signal.instrument || "—"}</div></div>
-        <div><span class="k">Side</span><div class="v">${signal.side || "—"}</div></div>
-        <div><span class="k">Entry</span><div class="v">${entry}</div></div>
-        <div><span class="k">Target</span><div class="v">${fmt(signal.target, 0)}</div></div>
-        <div><span class="k">Stop</span><div class="v">${fmt(signal.stop, 0)}</div></div>
-        <div><span class="k">Size cap</span><div class="v">$${fmt(signal.size_cap_usd, 0)}</div></div>
+      <p class="paper-status" id="paper-status">${escapeHtml(paperStatusLine(signal))}</p>
+      <div class="go-legs">
+        <div class="go-leg entry"><span class="go-leg-k">Entry</span><span class="go-leg-v">${escapeHtml(entry)}</span></div>
+        <div class="go-leg stop"><span class="go-leg-k">Stop</span><span class="go-leg-v">${fmt(signal.stop, 0)}</span></div>
+        <div class="go-leg target"><span class="go-leg-k">Target</span><span class="go-leg-v">${fmt(signal.target, 0)}</span></div>
       </div>
-      <ul class="go-reasons">
-        ${(signal.reasons || []).map((r) => `<li>${r}</li>`).join("")}
-        ${signal.invalidation ? `<li>Invalidation: ${signal.invalidation}</li>` : ""}
-        ${signal.valid_until ? `<li>Valid until ${new Date(signal.valid_until).toLocaleString()}</li>` : ""}
-      </ul>
+      <div class="go-rr">
+        <div>
+          <div class="go-rr-k">Risk : reward</div>
+          <div class="go-rr-v">${rr == null ? "—" : `1 : ${rr.toFixed(2)}`}</div>
+        </div>
+        <div class="go-rr-bar" aria-hidden="true"><div class="go-rr-fill" style="width:${rrPct}%"></div></div>
+        <div>
+          <div class="go-rr-k">Size cap</div>
+          <div class="go-rr-v">$${fmt(signal.size_cap_usd, 0)}</div>
+        </div>
+      </div>
+      ${
+        showVetoes
+          ? `<ul class="go-vetoes">${vetoes.map((r) => `<li>${escapeHtml(r)}</li>`).join("")}${
+              signal.invalidation
+                ? `<li>Invalidation: ${escapeHtml(signal.invalidation)}</li>`
+                : ""
+            }</ul>`
+          : signal.invalidation
+            ? `<ul class="go-vetoes"><li>Invalidation: ${escapeHtml(signal.invalidation)}</li></ul>`
+            : isGo && vetoes.length
+              ? `<ul class="go-vetoes" style="background:rgba(46,196,182,0.08);border-color:rgba(46,196,182,0.28);color:var(--ink-dim)">${vetoes
+                  .map((r) => `<li>${escapeHtml(r)}</li>`)
+                  .join("")}</ul>`
+              : ""
+      }
       <div class="go-actions">
-        <button class="btn" type="button" id="confirm-paper" ${canConfirm ? "" : "disabled"} title="${confirmTitle}">${confirmLabel}</button>
-        <button class="btn ghost" type="button" id="dismiss-card">Dismiss</button>
+        <button class="btn btn-primary" type="button" id="confirm-paper" ${canConfirm ? "" : "disabled"} title="${escapeHtml(confirmTitle)}">${escapeHtml(confirmLabel)}</button>
+        <button class="btn" type="button" id="dismiss-card">Dismiss</button>
       </div>
       <p class="confirm-feedback" id="confirm-feedback" hidden></p>
     </article>
   `;
+
+  // Animate RR fill after paint
+  requestAnimationFrame(() => {
+    const fill = mount.querySelector(".go-rr-fill");
+    if (fill) fill.style.width = `${rrPct}%`;
+  });
+
   $("#dismiss-card")?.addEventListener("click", () => {
     mount.innerHTML = `<p class="section-sub">Card dismissed. Refresh to reload the latest signal.</p>`;
+    if (validTimer) {
+      clearInterval(validTimer);
+      validTimer = null;
+    }
   });
+
   $("#confirm-paper")?.addEventListener("click", async () => {
     const fb = $("#confirm-feedback");
     try {
@@ -200,65 +321,144 @@ function renderCard(signal, exec) {
     }
   });
   void exec;
+
+  if (validTimer) clearInterval(validTimer);
+  if (signal.valid_until) {
+    validTimer = setInterval(() => {
+      const el = $("#go-valid");
+      if (!el) return;
+      const next = validUntilState(signal.valid_until);
+      el.className = `go-valid ${next.cls}`;
+      const strong = el.querySelector("strong");
+      if (strong) strong.textContent = next.label;
+    }, 1000);
+  }
 }
 
-function renderNews(news, intelMeta) {
+function renderBlackout(intelMeta) {
+  const banner = $("#blackout-banner");
+  const copy = $("#blackout-copy");
+  if (!banner) return;
+  const blackout = intelMeta?.blackout;
+  if (blackout?.active) {
+    banner.hidden = false;
+    if (copy) {
+      copy.textContent =
+        (blackout.reasons || []).slice(0, 2).join(" · ") || "IMMINENT window — signal veto active";
+    }
+  } else {
+    banner.hidden = true;
+  }
+}
+
+function renderNews(news) {
   const list = $("#intel-list");
   if (!list) return;
-  const blackout = intelMeta?.blackout;
-  const banner =
-    blackout?.active
-      ? `<li class="intel-blackout"><span class="tier IMMINENT">BLACKOUT</span><div><p class="intel-title">Signal veto active</p><p class="intel-note">${(blackout.reasons || []).slice(0, 2).join(" · ") || "IMMINENT window"}</p></div></li>`
-      : "";
-  if (!news?.length && !banner) {
-    list.innerHTML = `<li><p class="intel-title">No events</p></li>`;
+  if (!news?.length) {
+    list.innerHTML = `<li class="intel-empty">No scored events in the current window.</li>`;
     return;
   }
-  const rows = (news || [])
-    .map(
-      (e) => `
-      <li>
-        <span class="tier ${e.tier}">${e.tier}</span>
-        <div>
-          <p class="intel-title">${e.title}</p>
-          <p class="intel-note">${e.event_type || "event"} · ${e.impact_note || e.source} · score ${Number(e.score || 0).toFixed(2)}${e.engine_action ? ` · ${e.engine_action}` : ""}</p>
+  const tierClass = (t) => {
+    const u = String(t || "WATCH").toUpperCase();
+    if (u === "IMMINENT") return "imminent";
+    if (u === "BREAKING") return "breaking";
+    return "watch";
+  };
+  list.innerHTML = news
+    .map((e, i) => {
+      const tier = String(e.tier || "WATCH").toUpperCase();
+      return `
+      <li class="intel-item" style="animation-delay:${0.02 + i * 0.04}s">
+        <span class="intel-tier ${tierClass(tier)}">${escapeHtml(tier)}</span>
+        <div class="intel-body">
+          <p class="intel-headline">${escapeHtml(e.title)}</p>
+          <p class="intel-meta">${escapeHtml(e.event_type || "event")} · ${escapeHtml(
+            e.impact_note || e.source || "—"
+          )} · score ${Number(e.score || 0).toFixed(2)}</p>
         </div>
-      </li>`
-    )
+        <div class="intel-action">${escapeHtml(e.engine_action || "")}</div>
+      </li>`;
+    })
     .join("");
-  list.innerHTML = banner + rows;
 }
+
+const FLAG_GROUPS = [
+  { id: "feeds", title: "Feeds", match: (k) => k.startsWith("feeds.") },
+  { id: "engine", title: "Engine", match: (k) => k.startsWith("engine.") },
+  { id: "intel", title: "Intelligence", match: (k) => k.startsWith("intel.") },
+  { id: "ui", title: "Interface", match: (k) => k.startsWith("ui.") },
+  {
+    id: "exec",
+    title: "Execution",
+    match: (k) => k.startsWith("exec.") || k.startsWith("paper."),
+  },
+  {
+    id: "other",
+    title: "Other",
+    match: (k) =>
+      !k.startsWith("feeds.") &&
+      !k.startsWith("engine.") &&
+      !k.startsWith("intel.") &&
+      !k.startsWith("ui.") &&
+      !k.startsWith("exec.") &&
+      !k.startsWith("paper."),
+  },
+];
 
 function renderFlags(flags) {
   const grid = $("#flag-grid");
   if (!grid || !flags) return;
   const keys = Object.keys(flags).sort();
-  grid.innerHTML = keys
-    .map((name) => {
-      const on = !!flags[name];
+
+  const groups = FLAG_GROUPS.map((g) => ({
+    ...g,
+    keys: keys.filter(g.match),
+  })).filter((g) => g.keys.length);
+
+  grid.innerHTML = groups
+    .map((g, gi) => {
+      const onCount = g.keys.filter((k) => flags[k]).length;
       return `
-        <label class="flag-row">
-          <span>${name}</span>
-          <span class="toggle">
-            <input type="checkbox" data-flag="${name}" ${on ? "checked" : ""} />
-            <span></span>
-          </span>
-        </label>`;
+      <section class="flag-group" style="animation-delay:${gi * 0.05}s">
+        <div class="flag-group-head">
+          <h3 class="flag-group-title">${escapeHtml(g.title)}</h3>
+          <span class="flag-group-count">${onCount}/${g.keys.length} on</span>
+        </div>
+        <div class="flag-group-body">
+          ${g.keys
+            .map((name) => {
+              const on = !!flags[name];
+              return `
+              <div class="flag-row">
+                <span class="flag-name">${escapeHtml(name)}</span>
+                <button type="button" class="flag-toggle" role="switch"
+                  aria-checked="${on}" aria-pressed="${on}"
+                  data-flag="${escapeHtml(name)}"
+                  title="Toggle ${escapeHtml(name)}"></button>
+              </div>`;
+            })
+            .join("")}
+        </div>
+      </section>`;
     })
     .join("");
 
-  grid.querySelectorAll("input[data-flag]").forEach((el) => {
-    el.addEventListener("change", async () => {
-      const name = el.getAttribute("data-flag");
+  grid.querySelectorAll(".flag-toggle").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const name = btn.getAttribute("data-flag");
+      const next = btn.getAttribute("aria-pressed") !== "true";
+      btn.setAttribute("aria-pressed", String(next));
+      btn.setAttribute("aria-checked", String(next));
       try {
         await api("/api/flags", {
           method: "PATCH",
-          body: JSON.stringify({ name, value: el.checked, actor: "operator-ui" }),
+          body: JSON.stringify({ name, value: next, actor: "operator-ui" }),
         });
         await loadSnapshot();
       } catch (err) {
         console.error(err);
-        el.checked = !el.checked;
+        btn.setAttribute("aria-pressed", String(!next));
+        btn.setAttribute("aria-checked", String(!next));
       }
     });
   });
@@ -267,7 +467,18 @@ function renderFlags(flags) {
 function setSection(id, on) {
   const el = $(id);
   if (!el) return;
+  const wasHidden = el.hidden;
   el.hidden = !on;
+  if (on && wasHidden) el.classList.add("reveal");
+}
+
+function setLivePill(source) {
+  const pill = $("#source-pill");
+  if (!pill) return;
+  const label = source || "—";
+  pill.textContent = label;
+  const live = /live|ws|websocket|binance|bybit|okx/i.test(label) && !/fixture|mock|sample/i.test(label);
+  pill.dataset.live = live ? "true" : "false";
 }
 
 function wireKillSwitch(exec) {
@@ -296,13 +507,15 @@ async function loadSnapshot() {
   const exec = data.execution || {};
 
   const badge = $("#mode-badge");
-  const badgeText = data.mode_badge || (data.mode === "paper_confirm" ? "Paper Confirm" : "Advisory");
-  badge.textContent = badgeText;
-  badge.dataset.mode = data.mode || "advisory";
-
+  if (badge) {
+    const badgeText =
+      data.mode_badge || (data.mode === "paper_confirm" ? "Paper Confirm" : "Advisory");
+    badge.textContent = badgeText;
+    badge.dataset.mode = data.mode || "advisory";
+  }
   $("#underlying-label").textContent = data.underlying || "BTC";
   $("#spot-value").textContent = fmt(data.spot, 1);
-  $("#source-pill").textContent = data.chain?.source || data.providers?.option_chain || "—";
+  setLivePill(data.chain?.source || data.providers?.option_chain || "—");
 
   const paperPill = $("#paper-pill");
   if (paperPill) {
@@ -316,8 +529,21 @@ async function loadSnapshot() {
 
   const status = data.signal?.status || "NO-GO";
   const goEl = $("#go-status");
-  goEl.dataset.status = status;
+  if (goEl.dataset.status !== status) {
+    goEl.dataset.status = status;
+  } else {
+    goEl.dataset.status = status;
+  }
   $("#go-status-value").textContent = status;
+
+  const heroMeta = $("#hero-meta");
+  const heroSetup = $("#hero-setup");
+  if (data.signal?.setup && data.signal.setup !== "none") {
+    heroMeta.hidden = false;
+    heroSetup.textContent = `${humanize(data.signal.setup)} · ${humanize(data.signal.side || "—")}`;
+  } else {
+    heroMeta.hidden = true;
+  }
 
   setSection("#gex-section", !!flags["ui.gex_map"] && !!data.gex);
   setSection("#flow-section", !!flags["ui.regime_strip"] && !!data.orderflow);
@@ -326,23 +552,30 @@ async function loadSnapshot() {
   setSection("#operator-section", !!flags["ui.operator_panel"]);
 
   if (data.gex) {
-    const regime = data.gex.regime?.replaceAll("_", " ") || "—";
-    $("#gex-regime-line").textContent = `${regime} · models ${data.gex.models_agree ? "agree" : "disagree"} · ${data.gex.source}`;
+    lastGex = data.gex;
+    const regime = humanize(data.gex.regime || "—");
+    $("#gex-regime-line").textContent = `${regime} · models ${
+      data.gex.models_agree ? "agree" : "disagree"
+    } · ${data.gex.source || "—"}`;
     drawGex($("#gex-canvas"), data.gex);
     $("#gex-levels").innerHTML = [
-      ["Spot", fmt(data.gex.spot, 1)],
-      ["Flip", fmt(data.gex.flip, 0)],
-      ["Call wall", fmt(data.gex.call_wall, 0)],
-      ["Put wall", fmt(data.gex.put_wall, 0)],
-      ["Magnet", fmt(data.gex.magnet, 0)],
+      ["Spot", fmt(data.gex.spot, 1), ""],
+      ["Flip", fmt(data.gex.flip, 0), "level-flip"],
+      ["Call wall", fmt(data.gex.call_wall, 0), "level-call"],
+      ["Put wall", fmt(data.gex.put_wall, 0), "level-put"],
+      ["Magnet", fmt(data.gex.magnet, 0), ""],
     ]
-      .map(([k, v]) => `<span><strong>${k}</strong> ${v}</span>`)
+      .map(
+        ([k, v, cls]) =>
+          `<span class="${cls}"><strong>${k}</strong> ${v}</span>`
+      )
       .join("");
   }
 
   if (data.orderflow) renderFlow(data.orderflow, data.gex);
   if (data.signal) renderCard(data.signal, exec);
-  if (flags["intel.news"]) renderNews(data.news || [], data.intel || {});
+  renderBlackout(data.intel || {});
+  if (flags["intel.news"]) renderNews(data.news || []);
   if (flags["ui.operator_panel"]) renderFlags(flags);
 
   const p = data.providers || {};
@@ -366,7 +599,16 @@ async function loadSnapshot() {
 }
 
 function boot() {
-  $("#refresh-btn")?.addEventListener("click", () => loadSnapshot().catch(console.error));
+  $("#refresh-btn")?.addEventListener("click", () => {
+    const btn = $("#refresh-btn");
+    if (btn) btn.disabled = true;
+    loadSnapshot()
+      .catch(console.error)
+      .finally(() => {
+        if (btn) btn.disabled = false;
+      });
+  });
+
   $("#kill-btn")?.addEventListener("click", async () => {
     const btn = $("#kill-btn");
     if (!btn || btn.disabled) return;
@@ -381,12 +623,18 @@ function boot() {
       console.error(err);
     }
   });
+
   window.addEventListener("resize", () => {
-    // redraw from last snapshot via soft refresh
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (lastGex) drawGex($("#gex-canvas"), lastGex);
+    }, 120);
   });
+
   loadSnapshot().catch((err) => {
     console.error(err);
     $("#go-status-value").textContent = "ERR";
+    $("#go-status").dataset.status = "NO-GO";
     $("#spot-value").textContent = "offline";
   });
 }
