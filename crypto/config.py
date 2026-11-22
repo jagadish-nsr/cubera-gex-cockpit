@@ -78,6 +78,7 @@ def load_config(path: Path | str | None = None, *, reload: bool = False) -> dict
             "label": "Bitcoin",
             "feature_flag": "assets.btc",
             "fixture": "btc_chain.json",
+            "currency": "BTCUSD",
             "deribit_currency": "BTC",
             "deribit_perp": "BTC-PERPETUAL",
             "delta_symbols": ["BTCUSD"],
@@ -153,9 +154,29 @@ def get_asset_config(symbol: str | None = None) -> dict[str, Any]:
     meta.setdefault("delta_symbols", [f"{sym}USD"])
     meta.setdefault("binance_perp", f"{sym}USDT")
     meta.setdefault("cryptopanic_currencies", sym)
+    # Quote / Manual Decision currency = Delta pair (BTCUSD / ETHUSD / SOLUSD).
+    deltas = list(meta.get("delta_symbols") or [f"{sym}USD"])
+    meta.setdefault("currency", deltas[0] if deltas else f"{sym}USD")
     meta["symbol"] = sym
     meta["enabled"] = is_asset_enabled(sym)
     return meta
+
+
+def get_quote_currency(symbol: str | None = None) -> str:
+    """Delta India quote pair for the underlying (e.g. BTCUSD).
+
+    Used on GO cards and Manual Decision copy — not Deribit's BTC/ETH/SOL
+    option-currency code, and never an equity index symbol.
+    """
+    meta = get_asset_config(symbol)
+    cur = str(meta.get("currency") or "").strip().upper()
+    if cur:
+        return cur
+    deltas = list(meta.get("delta_symbols") or [])
+    if deltas:
+        return str(deltas[0]).strip().upper()
+    sym = str(meta.get("symbol") or DEFAULT_UNDERLYING).strip().upper()
+    return f"{sym}USD"
 
 
 def list_assets() -> list[dict[str, Any]]:
@@ -177,6 +198,7 @@ def list_assets() -> list[dict[str, Any]]:
                 "feature_flag": meta.get("feature_flag"),
                 "enabled": bool(meta.get("enabled")),
                 "active": sym == active,
+                "currency": meta.get("currency"),
                 "deribit_currency": meta.get("deribit_currency"),
                 "deribit_perp": meta.get("deribit_perp"),
                 "delta_symbols": list(meta.get("delta_symbols") or []),

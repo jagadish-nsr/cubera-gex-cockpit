@@ -72,6 +72,8 @@ No API keys required for Manual Decision. Paper sim optional via `CRYPTO_PAPER_S
 
 Same GEX / setups / intel path per underlying. **BTC is the default** and always enabled. ETH and SOL are behind feature flags in YAML; **`./run_crypto_paper.sh` turns them on** for the paper path.
 
+Quote / Manual Decision **currency** (GO card instrument) is the Delta India pair: **BTCUSD · ETHUSD · SOLUSD**. Deribit still uses `BTC` / `ETH` / `SOL` only as the option-chain MD currency code.
+
 | Flag | YAML default | Paper helper | Role |
 | --- | --- | --- | --- |
 | `assets.btc` | **true** (locked on) | on | Bitcoin — default active underlying |

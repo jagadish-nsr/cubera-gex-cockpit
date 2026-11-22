@@ -84,7 +84,7 @@
   "signal_template": {
     "status": "GO",
     "setup": "positive_gamma_fade",
-    "instrument": "BTC-PERPETUAL",
+    "instrument": "BTCUSD",
     "side": "sell",
     "entry_zone": [97480, 97620],
     "target": 96800,

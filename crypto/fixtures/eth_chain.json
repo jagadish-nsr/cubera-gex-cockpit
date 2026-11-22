@@ -81,7 +81,7 @@
   "signal_template": {
     "status": "GO",
     "setup": "positive_gamma_fade",
-    "instrument": "ETH-PERPETUAL",
+    "instrument": "ETHUSD",
     "side": "sell",
     "entry_zone": [3255, 3265],
     "target": 3200,

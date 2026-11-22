@@ -339,9 +339,11 @@ class CockpitService:
             "asset": {
                 "symbol": underlying,
                 "label": asset.get("label") or underlying,
+                "currency": asset.get("currency"),
                 "deribit_perp": asset.get("deribit_perp"),
                 "delta_symbols": list(asset.get("delta_symbols") or []),
             },
+            "currency": asset.get("currency"),
             "assets": list_assets(),
             "spot": snap.spot,
             "providers": self.registry.active_summary(),

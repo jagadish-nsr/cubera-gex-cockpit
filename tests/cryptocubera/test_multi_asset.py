@@ -15,6 +15,7 @@ from crypto.config import (
     get_active_underlying,
     get_asset_config,
     get_flag,
+    get_quote_currency,
     is_asset_enabled,
     list_assets,
     load_config,
@@ -44,6 +45,24 @@ def _reset_config(tmp_path, monkeypatch):
     load_config()["underlying"] = "BTC"
     yield
     load_config(reload=True)
+
+
+def test_quote_currency_is_delta_pair():
+    assert get_quote_currency("BTC") == "BTCUSD"
+    assert get_quote_currency("ETH") == "ETHUSD"
+    assert get_quote_currency("SOL") == "SOLUSD"
+    assert get_asset_config("BTC")["currency"] == "BTCUSD"
+    assert get_asset_config("ETH")["currency"] == "ETHUSD"
+    assert get_asset_config("SOL")["currency"] == "SOLUSD"
+
+
+def test_go_card_instrument_uses_quote_currency():
+    gex = compute_gex_features(
+        asyncio.run(MockOptionChainProvider().fetch_chain("BTC"))
+    )
+    perp = asyncio.run(MockPerpProvider().fetch_perp("BTC-PERPETUAL"))
+    card = build_signal_card(gex, perp)
+    assert card["instrument"] == "BTCUSD"
 
 
 def test_btc_default_enabled():
@@ -145,14 +164,17 @@ def test_snapshot_switches_underlying():
         assert eth["underlying"] == "ETH"
         assert 1_000 < eth["spot"] < 10_000
         assert eth["gex"]["underlying"] == "ETH"
-        assert eth["signal"]["instrument"].startswith("ETH")
+        assert eth["signal"]["instrument"] == "ETHUSD"
+        assert eth["currency"] == "ETHUSD"
+        assert eth["asset"]["currency"] == "ETHUSD"
         assert eth["asset"]["deribit_perp"] == "ETH-PERPETUAL"
 
         await svc.switch_underlying("SOL", actor="test")
         sol = await svc.snapshot()
         assert sol["underlying"] == "SOL"
         assert sol["spot"] < 1_000
-        assert sol["signal"]["instrument"].startswith("SOL")
+        assert sol["signal"]["instrument"] == "SOLUSD"
+        assert sol["currency"] == "SOLUSD"
         # Intel feed should not be empty (fixture + calendar)
         assert isinstance(sol["news"], list)
 

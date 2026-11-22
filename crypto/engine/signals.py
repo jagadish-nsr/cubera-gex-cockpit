@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from crypto.config import get_flag, load_config
+from crypto.config import get_flag, get_quote_currency, load_config
 from crypto.engine.setups import SetupCandidate, engine_versions, evaluate_setups
 from crypto.engine.vetoes import VetoContext, apply_stub_hooks, evaluate_vetoes
 from crypto.providers.mock.fixtures import load_fixture
@@ -25,6 +25,11 @@ def _fixture_underlying(gex: dict[str, Any], perp: PerpSnapshot) -> str:
     for token in ("-PERPETUAL", "-PERP", "USD", "USDT"):
         sym = sym.replace(token, "")
     return (sym.split("-")[0] if sym else "BTC") or "BTC"
+
+
+def _card_instrument(gex: dict[str, Any], perp: PerpSnapshot) -> str:
+    """Delta quote pair for Manual Decision (BTCUSD / ETHUSD / SOLUSD)."""
+    return get_quote_currency(_fixture_underlying(gex, perp))
 
 
 def build_signal_card(
@@ -102,7 +107,7 @@ def build_signal_card(
                 reasons.append("Fixture demo reason.")
             return _go_card(
                 setup=str(tmpl.get("setup") or "positive_gamma_fade"),
-                instrument=str(tmpl.get("instrument") or perp.symbol),
+                instrument=str(tmpl.get("instrument") or _card_instrument(gex, perp)),
                 side=str(tmpl.get("side") or "sell"),
                 entry_zone=list(tmpl.get("entry_zone") or [perp.mark, perp.mark * 1.001]),
                 target=tmpl.get("target"),
@@ -144,7 +149,7 @@ def _card_from_candidate(
         reasons.append(f"Setup {cand.setup} matched configurable rules.")
     return _go_card(
         setup=cand.setup,
-        instrument=perp.symbol,
+        instrument=_card_instrument(gex, perp),
         side=cand.side,
         entry_zone=cand.entry_zone,
         target=cand.target,
@@ -218,7 +223,7 @@ def _nogo(
     return {
         "status": "NO-GO",
         "setup": (tmpl or {}).get("setup") or "none",
-        "instrument": perp.symbol,
+        "instrument": _card_instrument(gex, perp),
         "side": "",
         "entry_zone": [],
         "target": None,

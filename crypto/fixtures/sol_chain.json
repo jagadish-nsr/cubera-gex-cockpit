@@ -79,7 +79,7 @@
   "signal_template": {
     "status": "GO",
     "setup": "positive_gamma_fade",
-    "instrument": "SOL-PERPETUAL",
+    "instrument": "SOLUSD",
     "side": "sell",
     "entry_zone": [183.2, 184.0],
     "target": 178.0,

@@ -4,7 +4,8 @@
 
 # Active underlying (BTC default). Switch via PATCH /api/underlying or UI.
 underlying: BTC
-currency: USD
+# Quote / execution currency is per-asset (Delta India pairs below) — not a
+# single USD fiat code. Deribit still uses BTC/ETH/SOL for option-chain MD.
 mode: advisory  # advisory | confirm | auto (confirm/auto disabled until wired)
 
 # Per-asset provider params. Enable with assets.<symbol> flags (BTC always on).
@@ -13,6 +14,7 @@ assets:
     label: Bitcoin
     feature_flag: assets.btc
     fixture: btc_chain.json
+    currency: BTCUSD
     deribit_currency: BTC
     deribit_perp: BTC-PERPETUAL
     delta_symbols: [BTCUSD]
@@ -22,6 +24,7 @@ assets:
     label: Ethereum
     feature_flag: assets.eth
     fixture: eth_chain.json
+    currency: ETHUSD
     deribit_currency: ETH
     deribit_perp: ETH-PERPETUAL
     delta_symbols: [ETHUSD]
@@ -31,6 +34,7 @@ assets:
     label: Solana
     feature_flag: assets.sol
     fixture: sol_chain.json
+    currency: SOLUSD
     deribit_currency: SOL
     deribit_perp: SOL-PERPETUAL
     delta_symbols: [SOLUSD]
