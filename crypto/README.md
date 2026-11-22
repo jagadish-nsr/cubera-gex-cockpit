@@ -19,10 +19,21 @@ Or: `./run_crypto.sh` (Advisory / mock).
 
 ```bash
 ./run_crypto_paper.sh
-# → http://localhost:8760  ·  exec.paper + exec.confirm on · exec.live stays off
+# → http://localhost:8760  ·  paper + confirm + ETH/SOL · exec.live=0 · BTC default
 ```
 
-See [docs/paper-runbook.md](docs/paper-runbook.md) for the smoke checklist (GO → Confirm → ledger → kill → export).
+### Ops checklist
+
+1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760
+2. **Switch asset** — topbar BTC / ETH / SOL (BTC is the default active underlying)
+3. **Confirm** — GO card → Confirm paper (local sim fills; no live keys)
+4. **Session export** — Operator export, or:
+   ```bash
+   curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
+   ./run_crypto_session_summary.sh json paper_session.json
+   ```
+
+Full smoke checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 
 Mock/fixture chain is the default. No API keys required for local sim.
 
@@ -46,22 +57,24 @@ Mock/fixture chain is the default. No API keys required for local sim.
 
 ## Multi-asset (BTC · ETH · SOL)
 
-Same GEX / setups / intel path per underlying. **BTC is the default** and always enabled. ETH and SOL are behind feature flags.
+Same GEX / setups / intel path per underlying. **BTC is the default** and always enabled. ETH and SOL are behind feature flags in YAML; **`./run_crypto_paper.sh` turns them on** for the paper path.
 
-| Flag | Default | Role |
-| --- | --- | --- |
-| `assets.btc` | **true** (locked on) | Bitcoin — default active underlying |
-| `assets.eth` | false | Enable Ethereum chain + switcher |
-| `assets.sol` | false | Enable Solana chain + switcher |
-| `ui.asset_switcher` | true | Topbar BTC / ETH / SOL control |
+| Flag | YAML default | Paper helper | Role |
+| --- | --- | --- | --- |
+| `assets.btc` | **true** (locked on) | on | Bitcoin — default active underlying |
+| `assets.eth` | false | **on** | Enable Ethereum chain + switcher |
+| `assets.sol` | false | **on** | Enable Solana chain + switcher |
+| `ui.asset_switcher` | true | on | Topbar BTC / ETH / SOL control |
 
 Per-asset provider params live under `assets:` in `config/crypto.yaml` (Deribit currency/perp, Delta symbols, fixture file, CryptoPanic currencies). Mock fixtures: `crypto/fixtures/{btc,eth,sol}_chain.json`.
 
 ```bash
-# Enable ETH then SOL (env), keep BTC selected by default
-CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 python3 -m crypto.server --port 8760
+# Paper path already enables ETH/SOL — or set explicitly:
+CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 \
+CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 CRYPTO_FLAG_EXEC_LIVE=0 \
+  python3 -m crypto.server --port 8760
 
-# Or switch active underlying
+# Switch active underlying (BTC remains default until switched)
 curl -X PATCH localhost:8760/api/underlying \
   -H 'content-type: application/json' \
   -d '{"underlying":"ETH","actor":"cli"}'
@@ -266,21 +279,24 @@ preference. Full checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 ./run_crypto_paper.sh
 # or:
 CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 CRYPTO_FLAG_EXEC_LIVE=0 \
+CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 \
   python3 -m crypto.server --port 8760
 ```
 
-Mode badge → **Paper Confirm** (never Live on this path). Without `DELTA_PAPER_*`
+Mode badge → **Paper Confirm** (never Live on this path). ETH/SOL enabled for
+the switcher; BTC stays the default active underlying. Without `DELTA_PAPER_*`
 keys the adapter records **local sim fills**.
 
 ### Smoke checklist
 
 1. Start `./run_crypto_paper.sh` → http://localhost:8760
-2. Topbar badge = **Paper Confirm**
-3. GO card → **Confirm paper**
-4. Ledger shows open intent (`GET /api/exec/ledger`)
-5. Kill switch (two taps) clears intents / flips Confirm off
-6. Export trades CSV/JSON from Operator or `/api/exec/ledger/export`
-7. Export **session summary** (GO / confirms / vetoes / PnL): `/api/session/export` or `./run_crypto_session_summary.sh`
+2. Topbar badge = **Paper Confirm**; assets BTC / ETH / SOL available
+3. Switch asset (topbar or `PATCH /api/underlying`) if needed
+4. GO card → **Confirm paper**
+5. Ledger shows open intent (`GET /api/exec/ledger`)
+6. Kill switch (two taps) clears intents / flips Confirm off
+7. Export trades CSV/JSON from Operator or `/api/exec/ledger/export`
+8. Export **session summary** (GO / confirms / vetoes / PnL): `/api/session/export` or `./run_crypto_session_summary.sh`
 
 ```bash
 curl -s -X POST localhost:8760/api/exec/confirm \
