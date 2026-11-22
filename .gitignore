@@ -46,6 +46,13 @@ data/journal/dhan_futures/
 data/journal/dhan_intraday/
 data/market_snapshot.db
 data/sentinel.db*
+
+# CryptoCubera local store
+data/crypto/*.db
+data/crypto/*.db-*
+data/crypto/*.db-shm
+data/crypto/*.db-wal
+
 *.log
 bin/
 
