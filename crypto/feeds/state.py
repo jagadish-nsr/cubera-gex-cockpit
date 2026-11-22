@@ -55,6 +55,8 @@ class LiveFeedState:
         self.recent_trades: list[TradePrint] = []
         self.max_trades = 500
         self.flow_inventory = FlowInventory()
+        # Reject late writes from a dying BTC collector after ETH/SOL switch.
+        self.active_underlying: Optional[str] = None
         self.health: dict[str, VenueHealth] = {
             "deribit": VenueHealth(venue="deribit"),
             "delta": VenueHealth(venue="delta"),
@@ -62,14 +64,28 @@ class LiveFeedState:
         self.field_findings: dict[str, Any] = {}
         self.stale_threshold_s = STALE_THRESHOLD_S
 
+    def set_active_underlying(self, underlying: str | None) -> None:
+        with self._lock:
+            self.active_underlying = (
+                str(underlying).strip().upper() if underlying else None
+            )
+
     def set_deribit_chain(self, snap: OptionChainSnapshot) -> None:
         with self._lock:
+            if self.active_underlying and not self._matches_underlying(
+                snap, self.active_underlying
+            ):
+                return
             self.deribit_chain = snap
             h = self.health["deribit"]
             h.mark_msg()
 
     def set_delta_chain(self, snap: OptionChainSnapshot) -> None:
         with self._lock:
+            if self.active_underlying and not self._matches_underlying(
+                snap, self.active_underlying
+            ):
+                return
             self.delta_chain = snap
             h = self.health["delta"]
             h.mark_msg()
@@ -107,9 +123,11 @@ class LiveFeedState:
                 return None
             return snap
 
-    def clear_for_underlying_switch(self) -> None:
+    def clear_for_underlying_switch(self, *, underlying: str | None = None) -> None:
         """Drop chain/tape caches so the next asset does not inherit the prior book."""
         with self._lock:
+            if underlying is not None:
+                self.active_underlying = str(underlying).strip().upper() or None
             self.deribit_chain = None
             self.delta_chain = None
             self.recent_trades = []
@@ -172,6 +190,7 @@ class LiveFeedState:
             thr = self.stale_threshold_s
             return {
                 "stale_threshold_s": thr,
+                "active_underlying": self.active_underlying,
                 "deribit_chain": {
                     "present": self.deribit_chain is not None,
                     "underlying": self.deribit_chain.underlying if self.deribit_chain else None,

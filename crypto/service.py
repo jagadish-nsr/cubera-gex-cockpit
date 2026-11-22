@@ -220,29 +220,46 @@ class CockpitService:
     async def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
         """Switch active asset and realign live feed/caches to that underlying.
 
-        Clears orderflow + Deribit/Delta chain caches, then restarts collectors
-        when live feeds are enabled so spot/chain match ETH/SOL (not a stale
-        BTC book with an ETH instrument label).
+        Always primes a matching chain cache (short live REST or fixture) so the
+        next snapshot shows ETH/SOL spot/GEX without a hard reload. Restarts
+        collectors with a bounded stop timeout when live MD is on.
         """
         result = set_underlying(symbol, actor=actor)
+        want = result["underlying"]
         # Clear per-asset tape state so ETH/SOL don't inherit BTC CVD
         self._orderflow_state = OrderflowState()
-        feed = get_feed_state()
-        feed.clear_for_underlying_switch()
 
         from crypto.feeds.manager import get_feed_manager, live_feeds_requested
 
         mgr = get_feed_manager()
-        # Restart collectors when live MD is (or was) running so Deribit
-        # currency / Delta symbols bind to the new asset. Cache clear above
-        # alone covers fixture / soft-fallback paths.
-        if mgr._started or live_feeds_requested():
+        feed = get_feed_state()
+        feed.clear_for_underlying_switch(underlying=want)
+
+        try:
+            if mgr._started or live_feeds_requested():
+                # Bounded stop + prime + start — UI must not wait on stuck WS/REST.
+                result["feeds"] = await mgr.restart_for_underlying(want)
+            else:
+                # Offline / mock desk: still prime fixture so snapshot flips assets.
+                primed = await mgr.prime_chain_for_underlying(want)
+                result["feeds"] = {
+                    "restarted": False,
+                    "cleared_cache": True,
+                    "primed": primed,
+                }
+            primed = (result.get("feeds") or {}).get("primed") or {}
+            if primed.get("spot") is not None:
+                result["spot"] = primed["spot"]
+                result["chain_source"] = primed.get("source")
+        except Exception as exc:  # noqa: BLE001 — never block the switcher
+            result["feeds_error"] = str(exc)
+            # Last-resort fixture prime so the UI still leaves BTC data behind.
             try:
-                result["feeds"] = await mgr.restart_for_underlying(result["underlying"])
-            except Exception as exc:  # noqa: BLE001 — never block the switcher
-                result["feeds_error"] = str(exc)
-        else:
-            result["feeds"] = {"restarted": False, "cleared_cache": True}
+                primed = await mgr.prime_chain_for_underlying(want)
+                result["feeds"] = {"primed": primed, "error": str(exc)}
+                result["spot"] = primed.get("spot")
+            except Exception as exc2:  # noqa: BLE001
+                result["feeds_error"] = f"{exc}; prime failed: {exc2}"
         return result
 
 

@@ -215,6 +215,52 @@ def test_feed_state_underlying_filter():
     assert state.recent_trades == []
 
 
+def test_feed_state_rejects_stale_collector_write():
+    from crypto.feeds.state import get_feed_state
+
+    state = get_feed_state(reload=True)
+    state.set_active_underlying("ETH")
+    btc = asyncio.run(MockOptionChainProvider().fetch_chain("BTC"))
+    btc.source = "deribit-ws+rest"
+    state.set_deribit_chain(btc)  # dying BTC collector — must not stick
+    assert state.get_deribit_chain() is None
+    eth = asyncio.run(MockOptionChainProvider().fetch_chain("ETH"))
+    state.set_deribit_chain(eth)
+    assert state.get_deribit_chain(for_underlying="ETH") is not None
+    assert 1_000 < state.get_deribit_chain().spot < 10_000
+
+
+def test_switch_underlying_primes_spot_for_ui(monkeypatch):
+    """PATCH / switch must return matching spot so the UI can update without reload."""
+    monkeypatch.delenv("CRYPTO_LIVE_FEEDS", raising=False)
+    set_flag("assets.eth", True, actor="test")
+    set_flag("assets.sol", True, actor="test")
+    svc = CockpitService()
+
+    async def _run():
+        eth = await svc.switch_underlying("ETH", actor="test")
+        assert eth["underlying"] == "ETH"
+        assert eth.get("spot") is not None
+        assert 1_000 < eth["spot"] < 10_000
+        assert (eth.get("feeds") or {}).get("primed", {}).get("underlying") == "ETH"
+
+        snap = await svc.snapshot()
+        assert snap["underlying"] == "ETH"
+        assert abs(snap["spot"] - eth["spot"]) < 1e-6
+        assert snap["gex"]["underlying"] == "ETH"
+        assert snap["signal"]["instrument"].startswith("ETH")
+
+        sol = await svc.switch_underlying("SOL", actor="test")
+        assert sol["underlying"] == "SOL"
+        assert sol["spot"] < 1_000
+        snap2 = await svc.snapshot()
+        assert snap2["underlying"] == "SOL"
+        assert snap2["spot"] < 1_000
+        assert snap2["signal"]["instrument"].startswith("SOL")
+
+    asyncio.run(_run())
+
+
 def test_asset_flag_env_override(monkeypatch):
     monkeypatch.setenv("CRYPTO_FLAG_ASSETS_ETH", "1")
     load_config(reload=True)
