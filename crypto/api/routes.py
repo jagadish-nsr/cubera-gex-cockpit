@@ -92,3 +92,31 @@ async def latest_signal() -> dict[str, Any]:
     if snap.get("signal") is None:
         raise HTTPException(status_code=404, detail="ui.go_cards flag is off")
     return snap["signal"]
+
+
+@router.get("/engine/params")
+async def engine_params() -> dict[str, Any]:
+    """Expose configurable setup / veto parameters (starting values)."""
+    cfg = load_config()
+    eng = dict(cfg.get("engine") or {})
+    return {
+        "engine": eng,
+        "flags": {
+            "engine.gex_flow_model": list_flags().get("engine.gex_flow_model"),
+            "engine.signal_rules": list_flags().get("engine.signal_rules"),
+            "inference.feature_export": list_flags().get("inference.feature_export"),
+            "inference.regime_classifier": list_flags().get("inference.regime_classifier"),
+        },
+        "stale_threshold_s": (cfg.get("feeds") or {}).get("stale_threshold_s"),
+    }
+
+
+@router.get("/inference/latest")
+async def inference_latest() -> dict[str, Any]:
+    snap = await get_service().snapshot()
+    if snap.get("inference") is None:
+        raise HTTPException(
+            status_code=404,
+            detail="inference flags off (inference.feature_export / inference.regime_classifier)",
+        )
+    return snap["inference"]

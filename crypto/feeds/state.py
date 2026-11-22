@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional
 
+from crypto.engine.flow_inventory import FlowInventory
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
 from crypto.providers.types import OptionChainSnapshot, TradePrint, utcnow
 
@@ -53,6 +54,7 @@ class LiveFeedState:
         self.delta_chain: Optional[OptionChainSnapshot] = None
         self.recent_trades: list[TradePrint] = []
         self.max_trades = 500
+        self.flow_inventory = FlowInventory()
         self.health: dict[str, VenueHealth] = {
             "deribit": VenueHealth(venue="deribit"),
             "delta": VenueHealth(venue="delta"),
@@ -85,6 +87,11 @@ class LiveFeedState:
             self.recent_trades.append(trade)
             if len(self.recent_trades) > self.max_trades:
                 self.recent_trades = self.recent_trades[-self.max_trades :]
+            self.flow_inventory.ingest(trade)
+
+    def get_flow_inventory(self) -> FlowInventory:
+        with self._lock:
+            return self.flow_inventory
 
     def bump_ticks(self, venue: str, n: int = 1) -> None:
         with self._lock:
@@ -151,6 +158,7 @@ class LiveFeedState:
                     "n_contracts": len(self.delta_chain.contracts) if self.delta_chain else 0,
                 },
                 "recent_trades": len(self.recent_trades),
+                "flow_inventory": self.flow_inventory.summary(),
                 "health": {k: v.to_dict(threshold_s=thr) for k, v in self.health.items()},
                 "field_findings": dict(self.field_findings),
             }

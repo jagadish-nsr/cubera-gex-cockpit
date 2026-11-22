@@ -7,7 +7,10 @@ from typing import Any
 
 from crypto.config import get_flag, list_flags, load_config, set_flag
 from crypto.engine.gex import compute_gex_features
+from crypto.engine.inference import run_inference
+from crypto.engine.orderflow import OrderflowState, compute_orderflow_features
 from crypto.engine.signals import build_signal_card
+from crypto.engine.vetoes import stub_risk_state
 from crypto.feeds.manager import live_feeds_requested
 from crypto.feeds.state import get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
@@ -35,14 +38,22 @@ def _serialize_gex(gex: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _serialize_orderflow(of: dict[str, Any]) -> dict[str, Any]:
+    out = dict(of)
+    out["computed_at"] = _ser_dt(out.get("computed_at"))
+    return out
+
+
 class CockpitService:
     def __init__(self) -> None:
         self.store = StoreWriter()
         self.registry = get_registry()
+        self._orderflow_state = OrderflowState()
 
     async def snapshot(self) -> dict[str, Any]:
         cfg = load_config()
         underlying = cfg.get("underlying") or "BTC"
+        feed = get_feed_state()
 
         chain_p = self.registry.option_chain()
         perp_p = self.registry.perp()
@@ -50,10 +61,18 @@ class CockpitService:
         perp = await perp_p.fetch_perp(f"{underlying}-PERP")
 
         self.store.write_chain(snap)
-        self.store.write_orderflow(perp)
 
-        gex = compute_gex_features(snap)
+        # Signed-tape flow inventory from live Deribit trades (when present)
+        flow_inv = feed.get_flow_inventory()
+        use_inv = flow_inv if flow_inv.total_trades > 0 else None
+        gex = compute_gex_features(snap, flow_inventory=use_inv)
         self.store.write_gex(gex)
+
+        # Append recent option/perp prints into orderflow rolling state
+        if feed.recent_trades:
+            self._orderflow_state.append_trades(feed.recent_trades[-200:])
+        orderflow = compute_orderflow_features(perp, state=self._orderflow_state)
+        self.store.write_orderflow_features(orderflow)
 
         news_events = []
         if get_flag("intel.news", default=True):
@@ -73,13 +92,15 @@ class CockpitService:
         card = build_signal_card(
             gex,
             perp,
+            orderflow=orderflow,
             news_blackout=blackout,
             chain_fetched_at=snap.fetched_at,
             live_signal_path=live_path,
         )
         self.store.write_signal(card)
 
-        feed = get_feed_state()
+        inference = run_inference(gex, orderflow)
+
         chain_stale = is_stale(
             snap.fetched_at,
             threshold_s=float((cfg.get("feeds") or {}).get("stale_threshold_s") or STALE_THRESHOLD_S),
@@ -93,6 +114,11 @@ class CockpitService:
             "providers": self.registry.active_summary(),
             "provider_catalog": self.registry.list_providers(),
             "flags": list_flags(),
+            "engine": {
+                "model_version": (cfg.get("engine") or {}).get("model_version") or "rules-v1",
+                "rules_version": (cfg.get("engine") or {}).get("rules_version") or "setups-v1",
+                "veto_stubs": stub_risk_state(),
+            },
             "chain": {
                 "source": snap.source,
                 "spot": snap.spot,
@@ -105,23 +131,11 @@ class CockpitService:
             },
             "feeds": feed.status(),
             "gex": _serialize_gex(gex) if get_flag("ui.gex_map", default=True) else None,
-            "orderflow": {
-                "venue": perp.venue,
-                "symbol": perp.symbol,
-                "mark": perp.mark,
-                "index": perp.index,
-                "funding_rate": perp.funding_rate,
-                "open_interest": perp.open_interest,
-                "cvd_1m": perp.cvd_1m,
-                "cvd_5m": perp.cvd_5m,
-                "cvd_15m": perp.cvd_15m,
-                "book_imbalance": perp.book_imbalance,
-                "source": perp.source,
-                "fetched_at": perp.fetched_at.isoformat(),
-            }
+            "orderflow": _serialize_orderflow(orderflow)
             if get_flag("ui.regime_strip", default=True)
             else None,
             "signal": _serialize_card(card) if get_flag("ui.go_cards", default=True) else None,
+            "inference": inference,
             "news": [
                 {
                     "event_id": e.event_id,

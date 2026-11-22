@@ -105,6 +105,7 @@ class StoreWriter:
             return int(row.id)
 
     def write_orderflow(self, perp: PerpSnapshot) -> int:
+        """Persist from a PerpSnapshot (legacy / tests). Prefer write_orderflow_features."""
         payload = {
             "mark": perp.mark,
             "index": perp.index,
@@ -121,6 +122,46 @@ class StoreWriter:
                 funding_rate=perp.funding_rate,
                 open_interest=perp.open_interest,
                 computed_at=perp.fetched_at,
+                payload=payload,
+            )
+            s.add(row)
+            s.commit()
+            s.refresh(row)
+            return int(row.id)
+
+    def write_orderflow_features(self, features: dict[str, Any]) -> int:
+        """Persist enriched orderflow features (CVD, OI Δ, funding/basis hooks)."""
+        computed_at = features.get("computed_at") or utcnow()
+        if not isinstance(computed_at, datetime):
+            computed_at = utcnow()
+        payload = {
+            k: features[k]
+            for k in (
+                "mark",
+                "index",
+                "oi_delta",
+                "basis",
+                "basis_bps",
+                "tape_source",
+                "hooks",
+                "options_signed_call_premium",
+                "options_signed_put_premium",
+            )
+            if k in features
+        }
+        venue = str(features.get("venue") or "unknown")
+        self.write_tick(venue, "orderflow", payload, exchange_ts=computed_at)
+        with get_session() as s:
+            row = OrderflowFeature(
+                symbol=str(features.get("symbol") or ""),
+                venue=venue,
+                cvd_1m=float(features.get("cvd_1m") or 0),
+                cvd_5m=float(features.get("cvd_5m") or 0),
+                cvd_15m=float(features.get("cvd_15m") or 0),
+                book_imbalance=float(features.get("book_imbalance") or 0),
+                funding_rate=float(features.get("funding_rate") or 0),
+                open_interest=float(features.get("open_interest") or 0),
+                computed_at=computed_at,
                 payload=payload,
             )
             s.add(row)
