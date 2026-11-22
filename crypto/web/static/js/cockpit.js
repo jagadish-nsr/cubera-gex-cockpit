@@ -650,11 +650,16 @@ function renderAssetSwitcher(data) {
         if (switched?.spot != null && spot) {
           spot.textContent = fmt(switched.spot, spotDigits(underlying));
         }
-        // Clear busy before snapshot render so the switcher re-enables.
+        // Clear busy before render so the switcher re-enables.
         assetSwitchInFlight = false;
         setAssetSwitcherBusy(mount, false, null);
-        await loadSnapshot();
-        // Live WS may upgrade fixture → REST shortly after; one quiet follow-up.
+        // Prefer embedded snapshot from PATCH (avoids a second HTTP RTT).
+        if (switched?.snapshot) {
+          applySnapshot(switched.snapshot);
+        } else {
+          await loadSnapshot();
+        }
+        // Background feed realign may upgrade fixture → live; quiet follow-up.
         if (assetFollowupTimer) clearTimeout(assetFollowupTimer);
         assetFollowupTimer = setTimeout(() => {
           loadSnapshot().catch(() => {});
@@ -769,8 +774,7 @@ function wireKillSwitch(exec) {
   }
 }
 
-async function loadSnapshot() {
-  const data = await api("/api/snapshot");
+function applySnapshot(data) {
   const flags = data.flags || {};
   const exec = data.execution || {};
 
@@ -867,6 +871,12 @@ async function loadSnapshot() {
   }
 
   wireKillSwitch(exec);
+}
+
+async function loadSnapshot() {
+  const data = await api("/api/snapshot");
+  applySnapshot(data);
+  return data;
 }
 
 function boot() {

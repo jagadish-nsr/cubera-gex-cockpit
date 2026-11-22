@@ -52,7 +52,21 @@ async def health() -> dict[str, Any]:
 
 @router.get("/snapshot")
 async def snapshot() -> dict[str, Any]:
+    """Cockpit payload. Hot path is an in-memory cache hit (sub-ms compute)."""
     return await get_service().snapshot()
+
+
+@router.get("/cache/status")
+async def cache_status() -> dict[str, Any]:
+    """In-memory snapshot cache meta (CRY-21 latency diagnostics)."""
+    svc = get_service()
+    keys = svc.snapshot_cache.keys()
+    return {
+        "keys": keys,
+        "prewarm_done": svc._prewarm_done,
+        "entries": {k: svc.snapshot_cache.meta(k) for k in keys},
+        "note": "timing.compute_ms on /snapshot and PATCH /underlying excludes HTTP RTT",
+    }
 
 
 @router.get("/flags")
@@ -97,8 +111,10 @@ async def assets() -> dict[str, Any]:
 async def patch_underlying(body: UnderlyingPatch) -> dict[str, Any]:
     """Switch active underlying (BTC default; ETH/SOL require assets.* flags).
 
-    Restarts live collectors and clears prior-asset chain caches so spot/chain
-    match the selected asset (no BTC-like spot under an ETH/SOL label).
+    Hot path is in-memory: flips active asset and returns a cached snapshot
+    (``timing.compute_ms`` target < 1ms when warm). Feed realign runs in the
+    background. Response may include ``snapshot`` so the UI can render without
+    a second round-trip.
     """
     try:
         return await get_service().switch_underlying(body.underlying, actor=body.actor)

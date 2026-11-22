@@ -45,6 +45,7 @@ mock fixtures (stub sources keep mock stale rules). Gemma (`intel.gemma`) is
    ```
 
 Full smoke checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
+Snapshot/switch latency (CRY-21, compute vs HTTP RTT): [docs/latency.md](docs/latency.md).
 
 No API keys required for Manual Decision. Paper sim optional via `CRYPTO_PAPER_SIM=1`.
 

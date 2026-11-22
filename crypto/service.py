@@ -1,14 +1,24 @@
-"""Orchestrate providers → engine → durable store for one cockpit snapshot."""
+"""Orchestrate providers → engine → durable store for one cockpit snapshot.
+
+Hot path (CRY-21): ``snapshot()`` and ``switch_underlying()`` serve an
+in-memory per-asset cache with no I/O — target sub-millisecond compute.
+Background tasks refresh caches, persist to SQLite, and realign live feeds.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
 from datetime import datetime
 from typing import Any
 
+from crypto.cache.snapshot_cache import SnapshotCache
 from crypto.config import (
     get_active_underlying,
     get_asset_config,
     get_flag,
+    is_asset_enabled,
     list_assets,
     list_flags,
     load_config,
@@ -31,6 +41,11 @@ from crypto.intel.pipeline import (
 )
 from crypto.providers.registry import get_registry
 from crypto.store.writer import StoreWriter
+
+log = logging.getLogger(__name__)
+
+# Sub-ms budget is for pure memory hits; cold builds are measured separately.
+_SUB_MS_BUDGET_MS = 1.0
 
 
 def _ser_dt(value: Any) -> Any:
@@ -59,15 +74,66 @@ def _serialize_orderflow(of: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _timing(compute_ms: float, *, cache_hit: bool, path: str) -> dict[str, Any]:
+    return {
+        "compute_ms": round(compute_ms, 4),
+        "cache_hit": cache_hit,
+        "path": path,
+        "sub_ms": compute_ms < _SUB_MS_BUDGET_MS,
+        "note": "compute_ms excludes HTTP/JSON serialization RTT",
+    }
+
+
 class CockpitService:
     def __init__(self) -> None:
         self.store = StoreWriter()
         self.registry = get_registry()
-        self._orderflow_state = OrderflowState()
+        self.snapshot_cache = SnapshotCache()
+        self._orderflow_by_asset: dict[str, OrderflowState] = {}
+        self._bg_tasks: set[asyncio.Task] = set()
+        self._prewarm_done = False
+        self._realign_task: asyncio.Task | None = None
+        self._realign_generation = 0
+
+    @property
+    def _orderflow_state(self) -> OrderflowState:
+        """Active-asset orderflow (compat for callers expecting a single state)."""
+        u = get_active_underlying()
+        return self._orderflow_by_asset.setdefault(u, OrderflowState())
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _spawn(self, coro) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._track(loop.create_task(coro))
 
     async def snapshot(self) -> dict[str, Any]:
-        cfg = load_config()
+        """Return cockpit payload for the active underlying (cache-first, no I/O)."""
+        t0 = time.perf_counter()
         underlying = get_active_underlying()
+        cached = self.snapshot_cache.get(underlying)
+        if cached is not None:
+            cached["timing"] = _timing(
+                (time.perf_counter() - t0) * 1000.0, cache_hit=True, path="snapshot_cache"
+            )
+            return cached
+
+        # Cold path: build once, cache, return (may include I/O + store).
+        payload = await self._build_snapshot(underlying, persist=True)
+        build_ms = (time.perf_counter() - t0) * 1000.0
+        self.snapshot_cache.put(underlying, payload, build_ms=build_ms)
+        out = dict(payload)
+        out["timing"] = _timing(build_ms, cache_hit=False, path="snapshot_cold_build")
+        return out
+
+    async def _build_snapshot(self, underlying: str, *, persist: bool) -> dict[str, Any]:
+        """Full snapshot build for one underlying (I/O + optional SQLite persist)."""
+        cfg = load_config()
         asset = get_asset_config(underlying)
         feed = get_feed_state()
 
@@ -77,21 +143,30 @@ class CockpitService:
         perp_symbol = str(asset.get("deribit_perp") or f"{underlying}-PERPETUAL")
         perp = await perp_p.fetch_perp(perp_symbol)
 
-        self.store.write_chain(snap)
+        if persist:
+            self.store.write_chain(snap)
 
-        # Signed-tape flow inventory from live Deribit trades (when present)
         flow_inv = feed.get_flow_inventory()
-        use_inv = flow_inv if flow_inv.total_trades > 0 else None
+        # Only use flow inventory when it belongs to this underlying's tape.
+        use_inv = None
+        if flow_inv.total_trades > 0 and (
+            feed.active_underlying is None or feed.active_underlying == underlying
+        ):
+            use_inv = flow_inv
         gex = compute_gex_features(snap, flow_inventory=use_inv)
-        self.store.write_gex(gex)
+        if persist:
+            self.store.write_gex(gex)
 
-        # Append recent option/perp prints into orderflow rolling state
-        if feed.recent_trades:
-            self._orderflow_state.append_trades(feed.recent_trades[-200:])
+        of_state = self._orderflow_by_asset.setdefault(underlying, OrderflowState())
+        if feed.recent_trades and (
+            feed.active_underlying is None or feed.active_underlying == underlying
+        ):
+            of_state.append_trades(feed.recent_trades[-200:])
         orderflow = compute_orderflow_features(
-            perp, state=self._orderflow_state, underlying=underlying
+            perp, state=of_state, underlying=underlying
         )
-        self.store.write_orderflow_features(orderflow)
+        if persist:
+            self.store.write_orderflow_features(orderflow)
 
         intel_flag = get_flag("intel.news", default=True)
         news_p = self.registry.news() if intel_flag else None
@@ -102,15 +177,12 @@ class CockpitService:
             underlying=underlying,
         )
         intel_events = intel["events"]
-        # Display feed filtered to active asset; blackout already asset-aware
         display_events = filter_events_for_asset(intel_events, underlying)
         blackout_info = intel["blackout"]
-        if intel_events:
+        if persist and intel_events:
             self.store.write_events([intel_to_news_event(e) for e in intel_events])
 
         blackout = bool(blackout_info.get("active"))
-        # Real live MD only — stub/fixture/mock soft-fallback keeps mock stale rules
-        # even when CRYPTO_LIVE_FEEDS=1 (WS/REST miss must not 2s-veto the paper desk).
         live_path = bool(
             get_flag("feeds.deribit") and is_live_market_data_source(snap.source)
         )
@@ -125,9 +197,9 @@ class CockpitService:
         if get_flag("intel.gemma", default=False):
             from crypto.gemma.go_prose import explain_go_card
 
-            # Language only — never flips NO-GO → GO or invents levels.
             card = explain_go_card(card)
-        self.store.write_signal(card)
+        if persist:
+            self.store.write_signal(card)
 
         inference = run_inference(gex, orderflow)
 
@@ -210,56 +282,117 @@ class CockpitService:
             "paper_trades_open": open_trades,
         }
 
-    def toggle_flag(self, name: str, value: bool, actor: str = "operator") -> dict[str, Any]:
-        result = set_flag(name, value, actor=actor)
-        self.store.audit_flag(name, result["previous"], result["value"], actor)
-        # Refresh registry so provider picks respect new flags
-        self.registry = get_registry(reload=True)
-        return result
+    async def prewarm_snapshots(self, symbols: list[str] | None = None) -> dict[str, Any]:
+        """Build caches for enabled assets so the first UI click is a memory hit."""
+        want = symbols or [a["symbol"] for a in list_assets() if a.get("enabled")]
+        out: dict[str, Any] = {}
+        for sym in want:
+            if not is_asset_enabled(sym):
+                continue
+            t0 = time.perf_counter()
+            # Persist off the prewarm critical section — still write in build for recording.
+            payload = await self._build_snapshot(sym, persist=True)
+            build_ms = (time.perf_counter() - t0) * 1000.0
+            self.snapshot_cache.put(sym, payload, build_ms=build_ms)
+            out[sym] = {"build_ms": round(build_ms, 3), "spot": payload.get("spot")}
+            log.info("Snapshot cache prewarm %s in %.2fms spot=%s", sym, build_ms, payload.get("spot"))
+        self._prewarm_done = True
+        return out
 
-    async def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
-        """Switch active asset and realign live feed/caches to that underlying.
+    async def refresh_snapshot_cache(self, underlying: str, *, persist: bool = True) -> None:
+        """Background rebuild for one asset (live upgrade after switch)."""
+        try:
+            t0 = time.perf_counter()
+            payload = await self._build_snapshot(underlying, persist=persist)
+            build_ms = (time.perf_counter() - t0) * 1000.0
+            self.snapshot_cache.put(underlying, payload, build_ms=build_ms)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Background snapshot refresh failed for %s: %s", underlying, exc)
 
-        Always primes a matching chain cache (short live REST or fixture) so the
-        next snapshot shows ETH/SOL spot/GEX without a hard reload. Restarts
-        collectors with a bounded stop timeout when live MD is on.
+    async def _bg_realign_feeds(self, underlying: str, generation: int) -> None:
+        """Restart collectors for the new asset without blocking the switcher.
+
+        Debounced: a newer switch bumps ``_realign_generation`` so stale
+        realigns exit before doing heavy I/O.
         """
-        result = set_underlying(symbol, actor=actor)
-        want = result["underlying"]
-        # Clear per-asset tape state so ETH/SOL don't inherit BTC CVD
-        self._orderflow_state = OrderflowState()
-
+        # Brief yield so the HTTP response can flush before feed I/O.
+        await asyncio.sleep(0)
+        if generation != self._realign_generation:
+            return
         from crypto.feeds.manager import get_feed_manager, live_feeds_requested
 
         mgr = get_feed_manager()
         feed = get_feed_state()
-        feed.clear_for_underlying_switch(underlying=want)
-
+        feed.set_active_underlying(underlying)
         try:
+            if generation != self._realign_generation:
+                return
             if mgr._started or live_feeds_requested():
-                # Bounded stop + prime + start — UI must not wait on stuck WS/REST.
-                result["feeds"] = await mgr.restart_for_underlying(want)
+                await mgr.restart_for_underlying(underlying)
             else:
-                # Offline / mock desk: still prime fixture so snapshot flips assets.
-                primed = await mgr.prime_chain_for_underlying(want)
-                result["feeds"] = {
-                    "restarted": False,
-                    "cleared_cache": True,
-                    "primed": primed,
-                }
-            primed = (result.get("feeds") or {}).get("primed") or {}
-            if primed.get("spot") is not None:
-                result["spot"] = primed["spot"]
-                result["chain_source"] = primed.get("source")
-        except Exception as exc:  # noqa: BLE001 — never block the switcher
-            result["feeds_error"] = str(exc)
-            # Last-resort fixture prime so the UI still leaves BTC data behind.
-            try:
-                primed = await mgr.prime_chain_for_underlying(want)
-                result["feeds"] = {"primed": primed, "error": str(exc)}
-                result["spot"] = primed.get("spot")
-            except Exception as exc2:  # noqa: BLE001
-                result["feeds_error"] = f"{exc}; prime failed: {exc2}"
+                await mgr.prime_chain_for_underlying(underlying, prefer_live=False)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Background feed realign failed for %s: %s", underlying, exc)
+        if generation != self._realign_generation:
+            return
+        await self.refresh_snapshot_cache(underlying, persist=True)
+
+    def toggle_flag(self, name: str, value: bool, actor: str = "operator") -> dict[str, Any]:
+        result = set_flag(name, value, actor=actor)
+        self.store.audit_flag(name, result["previous"], result["value"], actor)
+        self.registry = get_registry(reload=True)
+        # Flag flips can change providers / UI sections — drop caches.
+        self.snapshot_cache.invalidate()
+        return result
+
+    async def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
+        """Switch active asset in memory; return cached snapshot (sub-ms when warm).
+
+        Feed restart + cache refresh run in the background. Manual Decision /
+        live_place / auto flags are untouched.
+        """
+        t0 = time.perf_counter()
+        result = set_underlying(symbol, actor=actor)
+        want = result["underlying"]
+        # Memory-only: drop prior-asset live chain so a BTC book cannot be read
+        # as ETH. Snapshot UI still comes from SnapshotCache (already warm).
+        get_feed_state().clear_for_underlying_switch(underlying=want)
+
+        cached = self.snapshot_cache.get(want)
+        cache_hit = cached is not None
+        if cached is None:
+            # Rare cold path (prewarm missed): build without awaiting feed restart.
+            cached = await self._build_snapshot(want, persist=False)
+            build_ms = (time.perf_counter() - t0) * 1000.0
+            self.snapshot_cache.put(want, cached, build_ms=build_ms)
+            cache_hit = False
+
+        compute_ms = (time.perf_counter() - t0) * 1000.0
+        result["spot"] = cached.get("spot")
+        result["chain_source"] = (cached.get("chain") or {}).get("source")
+        result["snapshot"] = cached
+        result["timing"] = _timing(
+            compute_ms,
+            cache_hit=cache_hit,
+            path="switch_cache" if cache_hit else "switch_cold_build",
+        )
+        result["feeds"] = {
+            "restarted": False,
+            "scheduled": True,
+            "note": "feed realign + cache refresh scheduled in background",
+        }
+
+        # Background: debounced feed realign + cache refresh (I/O off hot path).
+        self._realign_generation += 1
+        gen = self._realign_generation
+        if self._realign_task and not self._realign_task.done():
+            self._realign_task.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+            self._realign_task = loop.create_task(self._bg_realign_feeds(want, gen))
+            self._track(self._realign_task)
+        except RuntimeError:
+            pass
         return result
 
 

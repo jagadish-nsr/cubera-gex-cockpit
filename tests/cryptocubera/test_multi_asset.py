@@ -185,17 +185,21 @@ def test_live_cache_does_not_leak_btc_spot_to_eth(monkeypatch):
         assert 1_000 < eth_snap.spot < 10_000
         assert eth_snap.spot != btc.spot
 
-        # Full cockpit path after switch_underlying
+        # Full cockpit path after switch_underlying (snapshot cache / cold build)
         state.set_deribit_chain(btc)
         load_config()["underlying"] = "BTC"
         svc = CockpitService()
-        await svc.switch_underlying("ETH", actor="test")
+        sw = await svc.switch_underlying("ETH", actor="test")
+        assert sw["underlying"] == "ETH"
+        assert 1_000 < sw["spot"] < 10_000
         eth = await svc.snapshot()
         assert eth["underlying"] == "ETH"
         assert 1_000 < eth["spot"] < 10_000
         assert eth["signal"]["instrument"].startswith("ETH")
         assert eth["chain"]["underlying"] == "ETH"
-        # Cache for wrong asset must be cleared / ignored
+        # Active underlying gate rejects BTC writes after switch
+        assert get_feed_state().active_underlying == "ETH"
+        state.set_deribit_chain(btc)
         assert get_feed_state().get_deribit_chain(for_underlying="BTC") is None
 
     asyncio.run(_run())
@@ -242,7 +246,9 @@ def test_switch_underlying_primes_spot_for_ui(monkeypatch):
         assert eth["underlying"] == "ETH"
         assert eth.get("spot") is not None
         assert 1_000 < eth["spot"] < 10_000
-        assert (eth.get("feeds") or {}).get("primed", {}).get("underlying") == "ETH"
+        # Feed realign is background; snapshot payload is embedded for UI.
+        assert (eth.get("feeds") or {}).get("scheduled") is True
+        assert eth.get("snapshot", {}).get("underlying") == "ETH"
 
         snap = await svc.snapshot()
         assert snap["underlying"] == "ETH"

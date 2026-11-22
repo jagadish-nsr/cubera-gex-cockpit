@@ -77,6 +77,13 @@ async def _startup() -> None:
     except Exception as exc:  # noqa: BLE001 — never block UI boot
         log.warning("Live feed manager failed to start: %s", exc)
         log.info("CryptoCubera %s ready — store initialized (feeds idle)", __version__)
+    try:
+        from crypto.service import get_service
+
+        warmed = await get_service().prewarm_snapshots()
+        log.info("Snapshot cache prewarmed: %s", warmed)
+    except Exception as exc:  # noqa: BLE001 — never block UI boot
+        log.warning("Snapshot cache prewarm failed: %s", exc)
 
 
 @app.on_event("shutdown")
