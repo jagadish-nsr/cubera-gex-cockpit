@@ -1,6 +1,6 @@
 # CryptoCubera
 
-Modular crypto GEX decision-support cockpit. **Advisory by default.** Optional paper Confirm on Delta demo/testnet or local sim. Optional **Live Confirm** on Delta India is flag-gated and fail-closed. **No Auto.**
+Modular crypto GEX decision-support cockpit. **Advisory by default.** Preferred path: **local paper Confirm** (sim fills; no live keys). Keep `exec.live` off. Optional Delta demo/testnet paper keys. Live Confirm exists but is fail-closed and out of preference. **No Auto.**
 
 Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), trade ledger, and the CryptoCubera UI.
 
@@ -13,9 +13,18 @@ python3 -m crypto.server --port 8760
 # → http://localhost:8760
 ```
 
-Or: `./run_crypto.sh`
+Or: `./run_crypto.sh` (Advisory / mock).
 
-Mock/fixture mode is the default. The UI is reviewable without API keys.
+**Local paper Confirm (preferred):**
+
+```bash
+./run_crypto_paper.sh
+# → http://localhost:8760  ·  exec.paper + exec.confirm on · exec.live stays off
+```
+
+See [docs/paper-runbook.md](docs/paper-runbook.md) for the smoke checklist (GO → Confirm → ledger → kill → export).
+
+Mock/fixture chain is the default. No API keys required for local sim.
 
 ## What ships
 
@@ -239,43 +248,54 @@ Alert tiers:
 
 ## Paper trading and Confirm mode
 
-Advisory remains the default. Paper Confirm never places live capital. Live Confirm is a separate gated path (below).
+**Preferred: local paper only.** Advisory remains the process default when flags are
+off. Paper Confirm never places live capital. Keep `exec.live` **off** — do not
+enable Live Confirm or set `DELTA_LIVE_*` unless you explicitly change that
+preference. Full checklist: [docs/paper-runbook.md](docs/paper-runbook.md).
 
 | Flag | Default | Role |
 | --- | --- | --- |
 | `exec.paper` | **false** | Enable paper ledger + Delta demo/sim adapter + kill switch |
-| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a bracket (paper or live, depending on mode) |
-| `exec.live` | **false** | Enable Live Confirm path (requires keys + acks; fail closed) |
+| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a paper/sim bracket (when live is off) |
+| `exec.live` | **false** | **Keep off.** Live Confirm path (real capital; fail closed) |
 | `exec.auto` | **false** | Always refused — Auto is not supported |
 
-### Safe enable (local sim — no keys)
+### One-command local paper (no keys)
 
 ```bash
-CRYPTO_FLAG_EXEC_PAPER=1 \
-CRYPTO_FLAG_EXEC_CONFIRM=1 \
-python3 -m crypto.server --port 8760
+./run_crypto_paper.sh
+# or:
+CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 CRYPTO_FLAG_EXEC_LIVE=0 \
+  python3 -m crypto.server --port 8760
 ```
 
-Or toggle from the Operator panel / API:
+Mode badge → **Paper Confirm** (never Live on this path). Without `DELTA_PAPER_*`
+keys the adapter records **local sim fills**.
+
+### Smoke checklist
+
+1. Start `./run_crypto_paper.sh` → http://localhost:8760
+2. Topbar badge = **Paper Confirm**
+3. GO card → **Confirm paper**
+4. Ledger shows open intent (`GET /api/exec/ledger`)
+5. Kill switch (two taps) clears intents / flips Confirm off
+6. Export CSV/JSON from Operator or `/api/exec/ledger/export`
+
+```bash
+curl -s -X POST localhost:8760/api/exec/confirm \
+  -H 'content-type: application/json' -d '{"actor":"cli"}' | python3 -m json.tool
+curl -s localhost:8760/api/exec/status | python3 -m json.tool
+curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
+curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
+```
+
+Or toggle flags from the Operator panel / API (still leave `exec.live` false):
 
 ```bash
 curl -X PATCH localhost:8760/api/flags -H 'content-type: application/json' \
   -d '{"name":"exec.paper","value":true,"actor":"cli"}'
 curl -X PATCH localhost:8760/api/flags -H 'content-type: application/json' \
   -d '{"name":"exec.confirm","value":true,"actor":"cli"}'
-```
-
-Without `DELTA_PAPER_*` keys the adapter records **local sim fills**. Mode badge → **Paper Confirm**. GO card shows a Confirm button and paper status.
-
-```bash
-# One-tap Confirm (uses latest GO card, or pass card JSON)
-curl -s -X POST localhost:8760/api/exec/confirm \
-  -H 'content-type: application/json' \
-  -d '{"actor":"cli"}' | python3 -m json.tool
-
-curl -s localhost:8760/api/exec/status | python3 -m json.tool
-curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
-curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
 ```
 
 ### Delta demo / testnet keys (optional)
@@ -290,15 +310,16 @@ export DELTA_PAPER_API_SECRET=...
 # optional; defaults to India testnet
 # export DELTA_PAPER_REST_URL=https://cdn-ind.testnet.deltaex.org
 
-CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 \
-python3 -m crypto.server --port 8760
+./run_crypto_paper.sh
 ```
 
 The paper adapter **refuses** production hosts (`api.india.delta.exchange`, `api.delta.exchange`). Demo REST soft-fails to local sim so the ledger still records the intent.
 
-## Live Confirm on Delta India (flag-gated)
+## Live Confirm on Delta India (out of preference — flag-gated)
 
-**Default remains Advisory / paper.** Live Confirm places **real capital** on Delta Exchange India. It is refuse-by-default until every safety check passes. **No Auto.**
+**Keep this path off** unless you explicitly want real capital. Preferred operation
+is local paper Confirm above. Live Confirm places **real capital** on Delta
+Exchange India and is refuse-by-default until every safety check passes. **No Auto.**
 
 ### Exact enable steps
 

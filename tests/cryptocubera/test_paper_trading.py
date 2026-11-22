@@ -112,6 +112,19 @@ def test_resolve_mode_paper_confirm():
     assert mode["mode"] == "paper_confirm"
     assert mode["badge"] == "Paper Confirm"
     assert mode["can_confirm"] is True
+    assert mode["live"] is False
+
+
+def test_local_paper_never_live_badge_when_live_flag_off():
+    """Preferred path: paper + confirm with exec.live off → never Live Confirm."""
+    set_flag("exec.paper", True, actor="test")
+    set_flag("exec.confirm", True, actor="test")
+    set_flag("exec.live", False, actor="test")
+    mode = resolve_exec_mode(live_gate_ok=True)
+    assert mode["mode"] == "paper_confirm"
+    assert mode["badge"] == "Paper Confirm"
+    assert "Live" not in mode["badge"]
+    assert mode["live"] is False
 
 
 def test_daily_loss_flips_confirm_off():
@@ -288,6 +301,7 @@ def test_registry_picks_delta_when_paper_on():
 def test_snapshot_exposes_mode_badge_and_paper_status():
     set_flag("exec.paper", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
+    set_flag("exec.live", False, actor="test")
     set_flag("ui.go_cards", True, actor="test")
     get_registry(reload=True)
 
@@ -295,12 +309,31 @@ def test_snapshot_exposes_mode_badge_and_paper_status():
         snap = await CockpitService().snapshot()
         assert snap["mode"] == "paper_confirm"
         assert snap["mode_badge"] == "Paper Confirm"
+        assert "Live" not in snap["mode_badge"]
+        assert snap["flags"]["exec.live"] is False
         assert snap["execution"]["can_confirm"] is True
+        assert snap["execution"]["live_flag"] is False
+        assert snap["execution"]["live_gate"]["ok"] is False
         assert snap["signal"] is not None
         assert "paper_status" in snap["signal"]
         assert "can_confirm" in snap["signal"]
 
     asyncio.run(_run())
+
+
+def test_env_paper_flags_map_without_live(monkeypatch, tmp_path):
+    """CRYPTO_FLAG_EXEC_PAPER/CONFIRM enable paper; EXEC_LIVE=0 keeps live off."""
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'env_paper.db'}")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_PAPER", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_CONFIRM", "1")
+    monkeypatch.setenv("CRYPTO_FLAG_EXEC_LIVE", "0")
+    load_config(reload=True)
+    assert get_flag("exec.paper") is True
+    assert get_flag("exec.confirm") is True
+    assert get_flag("exec.live") is False
+    mode = resolve_exec_mode()
+    assert mode["badge"] == "Paper Confirm"
+    assert mode["mode"] == "paper_confirm"
 
 
 def test_api_confirm_and_export(tmp_path, monkeypatch):

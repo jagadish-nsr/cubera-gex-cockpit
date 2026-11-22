@@ -6,12 +6,15 @@ Two decision-support surfaces share this repo:
 2. **CryptoCubera** — modular crypto GEX foundation (Deribit signal venue / Delta execution path). See **[crypto/README.md](crypto/README.md)**.
 
 ```bash
-./run_crypto.sh          # CryptoCubera → http://localhost:8760 (mock by default)
+./run_crypto.sh          # CryptoCubera → http://localhost:8760 (Advisory / mock)
+./run_crypto_paper.sh    # CryptoCubera local paper Confirm (sim; exec.live stays off)
 # Live feeds: CRYPTO_LIVE_FEEDS=1 CRYPTO_FLAG_FEEDS_DERIBIT=1 CRYPTO_FLAG_FEEDS_DELTA=1 ./run_crypto.sh
 ./run_prod.sh            # NSE Cubera  → http://localhost:8640
 ```
 
-**Not financial advice. No order execution** (crypto is Advisory-only in this foundation).
+Paper runbook: **[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**.
+
+**Not financial advice.** CryptoCubera defaults to Advisory; preferred Confirm path is local paper only (keep `exec.live` off).
 
 > **NSE handoff:** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
 > NSE web cockpit: **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
