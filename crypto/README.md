@@ -1,8 +1,8 @@
 # CryptoCubera
 
-Modular crypto GEX decision-support cockpit. **Advisory only** — no live order placement.
+Modular crypto GEX decision-support cockpit. **Advisory by default.** Optional paper Confirm on Delta demo/testnet or local sim — **never live capital**.
 
-Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), and the CryptoCubera UI.
+Runs beside the existing NSE Cubera cockpit (`web_server.py`). This package owns providers, feature flags, durable storage, live feed collectors, the quant engine (rules baseline), paper ledger, and the CryptoCubera UI.
 
 ## Quick start
 
@@ -26,12 +26,13 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | SQLite store | `data/crypto/cubera.db` (schema in `crypto/store/`) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
 | Market intelligence | `crypto/intel/` (schema, classify, score, calendar, blackout) |
+| Paper / Confirm exec | `crypto/exec/` + `providers/delta/execution.py` |
 | Inference scaffold (off) | `crypto/engine/inference.py` |
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
 | Cockpit UI | `crypto/web/` |
-| API | `GET /api/snapshot`, `/api/intel/feed`, `/api/intel/blackout`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| API | `GET /api/snapshot`, `/api/intel/*`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
 
 ## Quant engine (rules baseline)
 
@@ -158,6 +159,83 @@ Alert tiers:
 - **BREAKING** — high impact score on unscheduled headlines → push-ready in-app payload
 - **WATCH** — digest
 
+## Paper trading and Confirm mode
+
+Advisory remains the default. Paper Confirm never places live capital.
+
+| Flag | Default | Role |
+| --- | --- | --- |
+| `exec.paper` | **false** | Enable paper ledger + Delta demo/sim adapter + kill switch |
+| `exec.confirm` | **false** | One-tap Confirm on a GO card submits a paper/sim bracket |
+
+### Safe enable (local sim — no keys)
+
+```bash
+CRYPTO_FLAG_EXEC_PAPER=1 \
+CRYPTO_FLAG_EXEC_CONFIRM=1 \
+python3 -m crypto.server --port 8760
+```
+
+Or toggle from the Operator panel / API:
+
+```bash
+curl -X PATCH localhost:8760/api/flags -H 'content-type: application/json' \
+  -d '{"name":"exec.paper","value":true,"actor":"cli"}'
+curl -X PATCH localhost:8760/api/flags -H 'content-type: application/json' \
+  -d '{"name":"exec.confirm","value":true,"actor":"cli"}'
+```
+
+Without `DELTA_PAPER_*` keys the adapter records **local sim fills**. Mode badge → **Paper Confirm**. GO card shows a Confirm button and paper status.
+
+```bash
+# One-tap Confirm (uses latest GO card, or pass card JSON)
+curl -s -X POST localhost:8760/api/exec/confirm \
+  -H 'content-type: application/json' \
+  -d '{"actor":"cli"}' | python3 -m json.tool
+
+curl -s localhost:8760/api/exec/status | python3 -m json.tool
+curl -s localhost:8760/api/exec/ledger | python3 -m json.tool
+curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
+```
+
+### Delta demo / testnet keys (optional)
+
+1. Create a **demo** account at https://testnet.delta.exchange/ (not production India).
+2. Generate API keys there. Do **not** use production keys.
+3. Export:
+
+```bash
+export DELTA_PAPER_API_KEY=...
+export DELTA_PAPER_API_SECRET=...
+# optional; defaults to India testnet
+# export DELTA_PAPER_REST_URL=https://cdn-ind.testnet.deltaex.org
+
+CRYPTO_FLAG_EXEC_PAPER=1 CRYPTO_FLAG_EXEC_CONFIRM=1 \
+python3 -m crypto.server --port 8760
+```
+
+The adapter **refuses** production hosts (`api.india.delta.exchange`, `api.delta.exchange`). Demo REST soft-fails to local sim so the ledger still records the intent.
+
+### Risk + kill switch
+
+| Control | Behaviour |
+| --- | --- |
+| Size | From stop distance × `risk.risk_fraction` of `risk.paper_equity_usd`, capped by GO `size_cap_usd` / `risk.size_cap_usd` |
+| Daily loss | Realized paper PnL ≤ −`risk.daily_loss_limit_usd` → Confirm flips off (Advisory) |
+| Kill switch | Two taps in UI (arm → confirm) or `POST /api/exec/kill` twice (`confirmed: false` then `true`); cancels open paper intents and flips Confirm off |
+
+```yaml
+risk:
+  paper_equity_usd: 10000
+  risk_fraction: 0.005
+  daily_loss_limit_usd: 250
+  size_cap_usd: 2500
+```
+
+### Non-goals (still out)
+
+Live Confirm/Auto with real capital, production IP whitelist deploy, short options, Auto mode.
+
 ## Enable live feeds (Phase 0)
 
 Mock stays default. Live collectors need **both** an env gate and a feature flag:
@@ -220,4 +298,4 @@ python3 -m pytest tests/cryptocubera -q
 
 ## Non-goals (this slice)
 
-Live Auto/Confirm orders, Gemma, paid CoinGlass/Tardis, social scrapers, mobile push plumbing beyond in-app payloads, claiming OOS edge, multi-user auth, full walk-forward champion models.
+Live Auto / live Confirm with real capital, production IP whitelist deploy, Gemma, paid CoinGlass/Tardis, social scrapers, mobile push plumbing beyond in-app payloads, claiming OOS edge, multi-user auth, full walk-forward champion models.

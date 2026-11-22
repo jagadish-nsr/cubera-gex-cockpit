@@ -1,1 +1,1 @@
-"""Delta Exchange India adapters — stubs for foundation."""
+"""Delta Exchange India adapters — market data + paper/demo execution."""

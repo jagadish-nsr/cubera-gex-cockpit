@@ -134,3 +134,31 @@ class FeatureFlagAudit(Base):
     value: Mapped[bool] = mapped_column(Boolean)
     actor: Mapped[str] = mapped_column(String(64))
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PaperTradeRow(Base):
+    """Paper / demo trade ledger — never live capital fills."""
+
+    __tablename__ = "paper_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    venue: Mapped[str] = mapped_column(String(64), index=True)
+    adapter: Mapped[str] = mapped_column(String(32))  # sim | demo
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    instrument: Mapped[str] = mapped_column(String(64))
+    side: Mapped[str] = mapped_column(String(8))
+    setup: Mapped[str] = mapped_column(String(64), default="")
+    entry: Mapped[float] = mapped_column(Float)
+    target: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size_usd: Mapped[float] = mapped_column(Float)
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    signal_status: Mapped[str] = mapped_column(String(8), default="GO")
+    mode: Mapped[str] = mapped_column(String(32), default="paper_confirm")
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
