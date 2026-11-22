@@ -79,6 +79,42 @@ feature_flags:
   ui.operator_panel: true
   exec.paper: false
   exec.confirm: false
+  # Inference scaffold — off by default (no live model / no GO from classifier)
+  inference.feature_export: false
+  inference.regime_classifier: false
+
+# Quant engine parameters (starting values — calibrate in walk-forward)
+engine:
+  atr_pct: 0.004
+  size_cap_usd: 2500
+  card_valid_minutes: 20
+  model_version: rules-v1
+  rules_version: setups-v1
+  setups:
+    negative_gamma_breakout:
+      cvd_5m_min: 50
+      require_imbalance_align: true
+      require_oi_confirm: false
+      target_atr_mult: 1.75
+      stop_atr_mult: 0.75
+      base_score: 65
+    positive_gamma_fade:
+      stretch_atr_mult: 1.5
+      entry_band_pct: 0.001
+      stop_atr_mult: 1.0
+      base_score: 68
+    flip_cross:
+      cross_band_pct: 0.0015
+      cvd_1m_min: 20
+      target_atr_mult: 1.5
+      base_score: 62
+  vetoes:
+    stale_threshold_s: 2.0
+    # Stub hooks — raise to force NO-GO; not live risk telemetry
+    risk_daily_loss_stub: false
+    risk_margin_cap_stub: false
+    venue_not_operational_stub: false
+    scheduled_event_within_30m_stub: false
 
 # Live feed collectors (Phase 0). Off by default; also require CRYPTO_LIVE_FEEDS=1
 # (or live_spike.* below) so mock remains the quiet default.
