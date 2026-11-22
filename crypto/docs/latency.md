@@ -55,6 +55,19 @@ curl -s localhost:8760/api/cache/status | python3 -m json.tool
 curl -s localhost:8760/api/snapshot | python3 -c "import sys,json; print(json.load(sys.stdin).get('timing'))"
 ```
 
+## Stale-serve guards
+
+| Risk | Guard |
+| --- | --- |
+| Wrong-asset body in cache | `put`/`get` reject mismatched `underlying`; corrupt entries dropped |
+| Cached live GO after chain ages | On hit, recompute `chain.age_s`/`stale`; if live source + stale → force **NO-GO** and schedule refresh (still sub-ms) |
+| Forever-serving one prewarm | Hard TTL **30s** on entry age → cache miss + rebuild |
+| Live-upgrade race after rapid switches | Debounced realign generation; refresh skips mismatched bodies |
+| Refresh stampede | Per-underlying `_refreshing` set |
+
+Fixture/mock soft-fallback sources do **not** use the live 2s hard veto (same as
+`is_live_market_data_source`), but still refresh age metadata on every hit.
+
 ## Non-goals
 
 - Sub-ms **wall-clock** including WAN/RTT

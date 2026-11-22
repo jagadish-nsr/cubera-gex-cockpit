@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from crypto.cache.snapshot_cache import SnapshotCache
@@ -46,6 +46,8 @@ log = logging.getLogger(__name__)
 
 # Sub-ms budget is for pure memory hits; cold builds are measured separately.
 _SUB_MS_BUDGET_MS = 1.0
+# Absolute ceiling: never serve a cache entry older than this (forces rebuild).
+_HARD_CACHE_MAX_AGE_S = 30.0
 
 
 def _ser_dt(value: Any) -> Any:
@@ -84,6 +86,26 @@ def _timing(compute_ms: float, *, cache_hit: bool, path: str) -> dict[str, Any]:
     }
 
 
+def _parse_iso_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _stale_threshold_s() -> float:
+    cfg = load_config()
+    return float((cfg.get("feeds") or {}).get("stale_threshold_s") or STALE_THRESHOLD_S)
+
+
 class CockpitService:
     def __init__(self) -> None:
         self.store = StoreWriter()
@@ -94,6 +116,7 @@ class CockpitService:
         self._prewarm_done = False
         self._realign_task: asyncio.Task | None = None
         self._realign_generation = 0
+        self._refreshing: set[str] = set()
 
     @property
     def _orderflow_state(self) -> OrderflowState:
@@ -112,16 +135,75 @@ class CockpitService:
             return
         self._track(loop.create_task(coro))
 
+    def _apply_cache_freshness(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Recompute live age/stale on a cached payload; never serve a live GO when stale.
+
+        Sub-ms: pure memory. Schedules a background refresh when data is aging or stale.
+        """
+        underlying = str(payload.get("underlying") or get_active_underlying()).upper()
+        thr = _stale_threshold_s()
+        chain = dict(payload.get("chain") or {})
+        fetched = _parse_iso_dt(chain.get("fetched_at"))
+        age = age_seconds(fetched)
+        stale = is_stale(fetched, threshold_s=thr)
+        chain["age_s"] = age
+        chain["stale"] = stale
+        payload["chain"] = chain
+
+        src = chain.get("source") or (payload.get("gex") or {}).get("source") or ""
+        live = is_live_market_data_source(src)
+        freshness: dict[str, Any] = {
+            "age_s": round(age, 4) if age != float("inf") else None,
+            "stale": stale,
+            "live_source": live,
+            "threshold_s": thr,
+            "refresh_scheduled": False,
+        }
+
+        if stale and live:
+            # Hard veto above models: do not leave a cached GO actionable.
+            sig = payload.get("signal")
+            if isinstance(sig, dict):
+                sig = dict(sig)
+                note = f"Cached chain stale ({age:.1f}s > {thr}s); refresh scheduled."
+                if sig.get("status") == "GO":
+                    sig["status"] = "NO-GO"
+                reasons = [note] + [r for r in (sig.get("reasons") or []) if r != note]
+                sig["reasons"] = reasons[:5]
+                vetoes = list(sig.get("veto_reasons") or [])
+                if note not in vetoes:
+                    vetoes.insert(0, note)
+                sig["veto_reasons"] = vetoes[:8]
+                payload["signal"] = sig
+            freshness["forced_nogo"] = True
+            freshness["refresh_scheduled"] = True
+            if underlying not in self._refreshing:
+                self._spawn(self.refresh_snapshot_cache(underlying, persist=True))
+        elif age > thr * 0.5:
+            freshness["refresh_scheduled"] = True
+            if underlying not in self._refreshing:
+                self._spawn(self.refresh_snapshot_cache(underlying, persist=True))
+
+        payload["cache_freshness"] = freshness
+        return payload
+
     async def snapshot(self) -> dict[str, Any]:
         """Return cockpit payload for the active underlying (cache-first, no I/O)."""
         t0 = time.perf_counter()
         underlying = get_active_underlying()
-        cached = self.snapshot_cache.get(underlying)
+        cached = self.snapshot_cache.get(underlying, max_age_s=_HARD_CACHE_MAX_AGE_S)
         if cached is not None:
-            cached["timing"] = _timing(
-                (time.perf_counter() - t0) * 1000.0, cache_hit=True, path="snapshot_cache"
-            )
-            return cached
+            # Defense: never serve a body tagged for another asset.
+            if str(cached.get("underlying") or "").upper() != underlying:
+                self.snapshot_cache.invalidate(underlying)
+            else:
+                cached = self._apply_cache_freshness(cached)
+                cached["timing"] = _timing(
+                    (time.perf_counter() - t0) * 1000.0,
+                    cache_hit=True,
+                    path="snapshot_cache",
+                )
+                return cached
 
         # Cold path: build once, cache, return (may include I/O + store).
         payload = await self._build_snapshot(underlying, persist=True)
@@ -299,15 +381,36 @@ class CockpitService:
         self._prewarm_done = True
         return out
 
-    async def refresh_snapshot_cache(self, underlying: str, *, persist: bool = True) -> None:
+    async def refresh_snapshot_cache(
+        self,
+        underlying: str,
+        *,
+        persist: bool = True,
+        generation: int | None = None,
+    ) -> None:
         """Background rebuild for one asset (live upgrade after switch)."""
+        want = (underlying or "").strip().upper()
+        if want in self._refreshing and generation is None:
+            return
+        self._refreshing.add(want)
         try:
+            if generation is not None and generation != self._realign_generation:
+                return
             t0 = time.perf_counter()
-            payload = await self._build_snapshot(underlying, persist=persist)
+            payload = await self._build_snapshot(want, persist=persist)
+            if str(payload.get("underlying") or "").upper() != want:
+                log.warning(
+                    "Dropping refresh with mismatched underlying want=%s got=%s",
+                    want,
+                    payload.get("underlying"),
+                )
+                return
             build_ms = (time.perf_counter() - t0) * 1000.0
-            self.snapshot_cache.put(underlying, payload, build_ms=build_ms)
+            self.snapshot_cache.put(want, payload, build_ms=build_ms)
         except Exception as exc:  # noqa: BLE001
-            log.warning("Background snapshot refresh failed for %s: %s", underlying, exc)
+            log.warning("Background snapshot refresh failed for %s: %s", want, exc)
+        finally:
+            self._refreshing.discard(want)
 
     async def _bg_realign_feeds(self, underlying: str, generation: int) -> None:
         """Restart collectors for the new asset without blocking the switcher.
@@ -335,7 +438,9 @@ class CockpitService:
             log.warning("Background feed realign failed for %s: %s", underlying, exc)
         if generation != self._realign_generation:
             return
-        await self.refresh_snapshot_cache(underlying, persist=True)
+        await self.refresh_snapshot_cache(
+            underlying, persist=True, generation=generation
+        )
 
     def toggle_flag(self, name: str, value: bool, actor: str = "operator") -> dict[str, Any]:
         result = set_flag(name, value, actor=actor)
@@ -358,14 +463,17 @@ class CockpitService:
         # as ETH. Snapshot UI still comes from SnapshotCache (already warm).
         get_feed_state().clear_for_underlying_switch(underlying=want)
 
-        cached = self.snapshot_cache.get(want)
-        cache_hit = cached is not None
-        if cached is None:
-            # Rare cold path (prewarm missed): build without awaiting feed restart.
+        cached = self.snapshot_cache.get(want, max_age_s=_HARD_CACHE_MAX_AGE_S)
+        cache_hit = cached is not None and str(cached.get("underlying") or "").upper() == want
+        if not cache_hit:
+            # Rare cold path (prewarm missed / wrong-asset / hard TTL): build without
+            # awaiting feed restart.
             cached = await self._build_snapshot(want, persist=False)
             build_ms = (time.perf_counter() - t0) * 1000.0
             self.snapshot_cache.put(want, cached, build_ms=build_ms)
             cache_hit = False
+        else:
+            cached = self._apply_cache_freshness(cached)
 
         compute_ms = (time.perf_counter() - t0) * 1000.0
         result["spot"] = cached.get("spot")
