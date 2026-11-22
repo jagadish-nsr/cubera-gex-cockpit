@@ -46,21 +46,25 @@
   },
   "news": [
     {
-      "event_id": "fx-btc-expiry-watch",
-      "title": "Deribit weekly options expiry in ~6h — elevated pin risk near 97k",
-      "source": "fixture-calendar",
-      "tier": "IMMINENT",
-      "score": 0.82,
-      "assets": ["BTC"],
-      "impact_note": "Near-dated gamma peaks at expiry; size down into the window."
+      "event_id": "fx-btc-hack-alert",
+      "title": "Major DeFi protocol hack drains bridge liquidity — BTC and ETH wobble",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["BTC", "ETH"],
+      "event_type": "hack",
+      "source_reliability": 0.92,
+      "prior_move_proxy": 0.85,
+      "impact_note": "Fixture breaking-class headline for classifier/score tests."
     },
     {
       "event_id": "fx-funding-flip",
       "title": "Perp funding flipped positive after two negative prints",
       "source": "fixture-tape",
       "tier": "WATCH",
-      "score": 0.41,
+      "score": 0.0,
       "assets": ["BTC"],
+      "event_type": "funding",
       "impact_note": "Mild long bias returning; not a standalone GO."
     },
     {
@@ -68,8 +72,9 @@
       "title": "US spot BTC ETF complex saw net inflow yesterday (third-party)",
       "source": "fixture-digest",
       "tier": "WATCH",
-      "score": 0.35,
+      "score": 0.0,
       "assets": ["BTC"],
+      "event_type": "etf_flow",
       "impact_note": "Cross-check only; not in the free live stack yet."
     }
   ],

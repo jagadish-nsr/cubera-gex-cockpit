@@ -120,3 +120,28 @@ async def inference_latest() -> dict[str, Any]:
             detail="inference flags off (inference.feature_export / inference.regime_classifier)",
         )
     return snap["inference"]
+
+
+@router.get("/intel/feed")
+async def intel_feed() -> dict[str, Any]:
+    """Intelligence feed + blackout summary (flag-gated)."""
+    from crypto.config import get_flag
+
+    if not get_flag("intel.news", default=True):
+        raise HTTPException(status_code=404, detail="intel.news flag is off")
+    snap = await get_service().snapshot()
+    return {
+        "news": snap.get("news") or [],
+        "intel": snap.get("intel") or {},
+    }
+
+
+@router.get("/intel/blackout")
+async def intel_blackout() -> dict[str, Any]:
+    """Current news/calendar blackout state for the veto path."""
+    from crypto.config import get_flag
+
+    if not get_flag("intel.news", default=True):
+        return {"active": False, "note": "intel.news flag off"}
+    snap = await get_service().snapshot()
+    return (snap.get("intel") or {}).get("blackout") or {"active": False}

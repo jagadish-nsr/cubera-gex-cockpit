@@ -80,9 +80,9 @@ def evaluate_vetoes(ctx: VetoContext) -> VetoResult:
                 vetoes.append(f"perp data stale ({age:.0f}s)")
 
     if ctx.news_blackout:
-        vetoes.append("news blackout window")
+        vetoes.append("news blackout window (IMMINENT / calendar)")
 
-    # Stub hooks (design-plan hard vetoes) — inactive until wired
+    # Stub hook still available; prefer real intel blackout via news_blackout
     if ctx.scheduled_event_within_30m:
         vetoes.append("scheduled macro/maintenance within 30m (stub)")
     if ctx.venue_not_operational:

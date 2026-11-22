@@ -158,25 +158,31 @@ function renderCard(signal) {
   });
 }
 
-function renderNews(news) {
+function renderNews(news, intelMeta) {
   const list = $("#intel-list");
   if (!list) return;
-  if (!news?.length) {
+  const blackout = intelMeta?.blackout;
+  const banner =
+    blackout?.active
+      ? `<li class="intel-blackout"><span class="tier IMMINENT">BLACKOUT</span><div><p class="intel-title">Signal veto active</p><p class="intel-note">${(blackout.reasons || []).slice(0, 2).join(" · ") || "IMMINENT window"}</p></div></li>`
+      : "";
+  if (!news?.length && !banner) {
     list.innerHTML = `<li><p class="intel-title">No events</p></li>`;
     return;
   }
-  list.innerHTML = news
+  const rows = (news || [])
     .map(
       (e) => `
       <li>
         <span class="tier ${e.tier}">${e.tier}</span>
         <div>
           <p class="intel-title">${e.title}</p>
-          <p class="intel-note">${e.impact_note || e.source} · score ${e.score}</p>
+          <p class="intel-note">${e.event_type || "event"} · ${e.impact_note || e.source} · score ${Number(e.score || 0).toFixed(2)}${e.engine_action ? ` · ${e.engine_action}` : ""}</p>
         </div>
       </li>`
     )
     .join("");
+  list.innerHTML = banner + rows;
 }
 
 function renderFlags(flags) {
@@ -257,7 +263,7 @@ async function loadSnapshot() {
 
   if (data.orderflow) renderFlow(data.orderflow, data.gex);
   if (data.signal) renderCard(data.signal);
-  if (flags["intel.news"]) renderNews(data.news || []);
+  if (flags["intel.news"]) renderNews(data.news || [], data.intel || {});
   if (flags["ui.operator_panel"]) renderFlags(flags);
 
   const p = data.providers || {};

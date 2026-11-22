@@ -205,13 +205,45 @@ class StoreWriter:
                     "assets": e.assets,
                     "url": e.url,
                     "impact_note": e.impact_note,
+                    "event_type": getattr(e, "event_type", None) or "other",
+                    "venues": list(getattr(e, "venues", None) or []),
+                    "novelty": float(getattr(e, "novelty", 1.0) or 1.0),
+                    "source_reliability": float(getattr(e, "source_reliability", 0.0) or 0.0),
+                    "prior_move_proxy": float(getattr(e, "prior_move_proxy", 0.0) or 0.0),
+                    "market_confirmation": float(getattr(e, "market_confirmation", 0.0) or 0.0),
+                    "engine_action": getattr(e, "engine_action", None) or "",
+                    "blackout_start": (
+                        e.blackout_start.isoformat()
+                        if getattr(e, "blackout_start", None)
+                        else None
+                    ),
+                    "blackout_until": (
+                        e.blackout_until.isoformat()
+                        if getattr(e, "blackout_until", None)
+                        else None
+                    ),
+                    "occurs_at": (
+                        e.occurs_at.isoformat() if getattr(e, "occurs_at", None) else None
+                    ),
+                    "raw": dict(getattr(e, "raw", None) or {}),
                 }
+                event_type = payload["event_type"]
+                novelty = payload["novelty"]
+                venues = payload["venues"]
+                occurs_at = getattr(e, "occurs_at", None)
+                blackout_until = getattr(e, "blackout_until", None)
                 if existing:
                     existing.title = e.title
                     existing.tier = e.tier
                     existing.score = e.score
                     existing.payload = payload
                     existing.source = e.source
+                    existing.event_type = event_type
+                    existing.novelty = novelty
+                    existing.venues = venues
+                    existing.occurs_at = occurs_at
+                    existing.blackout_until = blackout_until
+                    existing.published_at = e.published_at or existing.published_at
                 else:
                     s.add(
                         EventRow(
@@ -220,6 +252,11 @@ class StoreWriter:
                             source=e.source,
                             tier=e.tier,
                             score=e.score,
+                            event_type=event_type,
+                            novelty=novelty,
+                            venues=venues,
+                            occurs_at=occurs_at,
+                            blackout_until=blackout_until,
                             payload=payload,
                             published_at=e.published_at,
                         )
