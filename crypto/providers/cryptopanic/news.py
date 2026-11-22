@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 import httpx
 
+from crypto.config import get_active_underlying, get_asset_config, load_config
 from crypto.providers.mock.news import MockNewsProvider
 from crypto.providers.types import NewsEvent
 
@@ -46,6 +47,15 @@ class CryptoPanicNewsProvider:
     @property
     def live_enabled(self) -> bool:
         return bool(self.token)
+
+    def _currencies_param(self) -> str:
+        cfg = load_config()
+        intel = (cfg.get("intel") or {}).get("cryptopanic") or {}
+        asset = get_asset_config(get_active_underlying())
+        per_asset = str(asset.get("cryptopanic_currencies") or "").strip()
+        if per_asset:
+            return per_asset
+        return str(intel.get("currencies") or "BTC,ETH,SOL")
 
     async def fetch_events(self, limit: int = 20) -> list[NewsEvent]:
         if not self.live_enabled:
@@ -78,7 +88,7 @@ class CryptoPanicNewsProvider:
         params = {
             "auth_token": self.token,
             "public": "true",
-            "currencies": "BTC,ETH",
+            "currencies": self._currencies_param(),
             "kind": "news",
         }
         async with httpx.AsyncClient(timeout=self.timeout_s) as client:

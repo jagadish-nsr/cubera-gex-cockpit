@@ -120,6 +120,28 @@ def merge_and_dedupe(events: list[IntelEvent]) -> list[IntelEvent]:
     return list(by_id.values())
 
 
+_SHARED_EVENT_TYPES = {"macro", "maintenance", "regulation"}
+
+
+def event_relevant_to_asset(event: IntelEvent, underlying: str) -> bool:
+    """True if the event tags the active asset, is untagged, or is shared macro."""
+    u = (underlying or "").strip().upper()
+    assets = [a.upper() for a in (event.assets or [])]
+    if not assets:
+        return True
+    if u and u in assets:
+        return True
+    if (event.event_type or "").lower() in _SHARED_EVENT_TYPES:
+        return True
+    return False
+
+
+def filter_events_for_asset(
+    events: list[IntelEvent], underlying: str
+) -> list[IntelEvent]:
+    return [e for e in events if event_relevant_to_asset(e, underlying)]
+
+
 async def run_intel_pipeline(
     news_provider: Any | None,
     *,
@@ -127,10 +149,12 @@ async def run_intel_pipeline(
     include_calendar: bool = True,
     include_near_blackout: bool = False,
     limit: int = 40,
+    underlying: str | None = None,
 ) -> dict[str, Any]:
     """Fetch provider events, merge calendar stubs, classify, score, blackout.
 
     Returns ``{events, blackout, provider}``. Empty when ``intel.news`` is off.
+    When ``underlying`` is set, blackout uses asset-relevant events only.
     """
     now = now or utcnow()
     if now.tzinfo is None:
@@ -152,6 +176,7 @@ async def run_intel_pipeline(
     cfg = load_config()
     intel_cfg = cfg.get("intel") or {}
     blackout_window = int(intel_cfg.get("blackout_window_minutes") or 30)
+    active_u = (underlying or cfg.get("underlying") or "BTC").strip().upper()
 
     raw_events: list[IntelEvent] = []
     provider_name = None
@@ -189,11 +214,13 @@ async def run_intel_pipeline(
     scored.sort(key=lambda x: (tier_rank.get(x.tier, 9), -x.score))
     scored = scored[:limit]
 
-    blackout = blackout_summary(scored, now, window_minutes=blackout_window)
+    blackout_pool = filter_events_for_asset(scored, active_u)
+    blackout = blackout_summary(blackout_pool, now, window_minutes=blackout_window)
     return {
         "events": scored,
         "blackout": blackout,
         "provider": provider_name,
+        "underlying": active_u,
     }
 
 

@@ -63,12 +63,26 @@ def cvd_over_window(
     return cvd
 
 
+def _is_perp_symbol(symbol: str, underlying: str | None = None) -> bool:
+    s = (symbol or "").upper()
+    if "PERP" in s:
+        return True
+    u = (underlying or "").upper()
+    if u and (f"{u}USD" in s or f"{u}USDT" in s):
+        return True
+    # Legacy BTC default match when underlying omitted
+    if not u and ("BTCUSD" in s or "BTCUSDT" in s):
+        return True
+    return False
+
+
 def compute_orderflow_features(
     perp: PerpSnapshot,
     *,
     state: Optional[OrderflowState] = None,
     option_signed_premium: Optional[dict[str, float]] = None,
     now: Optional[datetime] = None,
+    underlying: str | None = None,
 ) -> dict[str, Any]:
     """Build orderflow feature dict for persistence + signal engine.
 
@@ -93,9 +107,7 @@ def compute_orderflow_features(
         oi_delta = state.note_snapshot(perp.mark, perp.index, perp.open_interest, fetched)
         # Prefer tape-derived CVD when we have perp prints in window
         perp_trades = [
-            t
-            for t in state.trades
-            if "PERP" in t.symbol.upper() or "BTCUSD" in t.symbol.upper()
+            t for t in state.trades if _is_perp_symbol(t.symbol, underlying)
         ]
         if perp_trades:
             cvd_1m = cvd_over_window(perp_trades, window_s=60, now=now)

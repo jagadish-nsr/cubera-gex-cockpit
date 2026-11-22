@@ -10,7 +10,7 @@ class MockOptionChainProvider:
     name = "mock"
 
     async def fetch_chain(self, underlying: str = "BTC") -> OptionChainSnapshot:
-        fx = load_fixture()
+        fx = load_fixture(underlying)
         contracts = [
             OptionContract(
                 instrument=c["instrument"],

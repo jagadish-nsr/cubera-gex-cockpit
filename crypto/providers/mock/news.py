@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from crypto.config import get_active_underlying
 from crypto.providers.mock.fixtures import load_fixture, parse_ts
 from crypto.providers.types import NewsEvent, utcnow
 
@@ -10,7 +11,8 @@ class MockNewsProvider:
     name = "mock"
 
     async def fetch_events(self, limit: int = 20) -> list[NewsEvent]:
-        rows = load_fixture().get("news") or []
+        underlying = get_active_underlying()
+        rows = load_fixture(underlying).get("news") or []
         now = utcnow()
         events: list[NewsEvent] = []
         for r in rows[:limit]:
@@ -34,7 +36,7 @@ class MockNewsProvider:
                     source_reliability=float(r.get("source_reliability") or 0.0),
                     prior_move_proxy=float(r.get("prior_move_proxy") or 0.0),
                     market_confirmation=float(r.get("market_confirmation") or 0.0),
-                    raw={"provider": "mock", "mode": "fixture"},
+                    raw={"provider": "mock", "mode": "fixture", "underlying": underlying},
                 )
             )
         return events

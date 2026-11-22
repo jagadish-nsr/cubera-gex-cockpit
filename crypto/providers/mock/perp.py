@@ -10,7 +10,10 @@ class MockPerpProvider:
     name = "mock"
 
     async def fetch_perp(self, symbol: str = "BTC-PERP") -> PerpSnapshot:
-        p = load_fixture()["perp"]
+        # Map BTC-PERP / ETH-PERPETUAL / SOL → fixture underlying
+        raw = (symbol or "BTC").upper().replace("-PERPETUAL", "").replace("-PERP", "")
+        underlying = raw.split("-")[0] if raw else "BTC"
+        p = load_fixture(underlying)["perp"]
         return PerpSnapshot(
             venue=p["venue"],
             symbol=symbol or p["symbol"],

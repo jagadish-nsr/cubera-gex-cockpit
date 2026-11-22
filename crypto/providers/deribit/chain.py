@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from crypto.config import get_flag, load_config
+from crypto.config import get_asset_config, get_flag, load_config
 from crypto.feeds.state import get_feed_state
 from crypto.providers.mock.chain import MockOptionChainProvider
 from crypto.providers.types import OptionChainSnapshot, utcnow
@@ -72,15 +72,17 @@ class DeribitOptionChainProvider:
         base = (cfg.get("live_spike") or {}).get(
             "deribit_base_url", "https://www.deribit.com/api/v2"
         )
+        asset = get_asset_config(underlying)
+        perp_name = str(asset.get("deribit_perp") or f"{underlying}-PERPETUAL")
         try:
-            ticker = await self._public_ticker(base, "BTC-PERPETUAL")
+            ticker = await self._public_ticker(base, perp_name)
             mark = float(ticker.get("mark_price") or ticker.get("last_price") or 0)
             if mark > 0:
                 snap.spot = mark
                 snap.source = "deribit-public-spike+fixture-chain"
                 snap.fetched_at = utcnow()
                 snap.exchange_ts = utcnow()
-                log.info("Deribit public spike: BTC-PERPETUAL mark=%.2f", mark)
+                log.info("Deribit public spike: %s mark=%.2f", perp_name, mark)
         except Exception as exc:  # noqa: BLE001 — never block UI
             log.warning("Deribit live spike failed; using fixture: %s", exc)
             snap.source = "deribit-stub-fallback"
