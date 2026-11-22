@@ -1,0 +1,237 @@
+{
+  "deribit_option_ticker": {
+    "timestamp": 1795322743913,
+    "state": "open",
+    "stats": {
+      "high": 0.0255,
+      "low": 0.0018,
+      "price_change": 158.0645,
+      "volume": 115.2,
+      "volume_delayed": 0.0,
+      "volume_realtime": 115.2,
+      "volume_delayed_usd": 0.0,
+      "volume_realtime_usd": 78798.5,
+      "volume_usd": 78798.5
+    },
+    "greeks": {
+      "delta": 0.59967,
+      "gamma": 0.0005,
+      "vega": 4.39422,
+      "theta": -148.92074,
+      "rho": 0.12949
+    },
+    "index_price": 59199.42,
+    "instrument_name": "BTC-22NOV26-59000-C",
+    "last_price": 0.008,
+    "settlement_price": 0.00509306,
+    "min_price": 0.0001,
+    "max_price": 0.04,
+    "open_interest": 121.0,
+    "mark_price": 0.0069,
+    "interest_rate": 0.0,
+    "best_ask_price": 0.0075,
+    "best_bid_price": 0.0065,
+    "estimated_delivery_price": 59199.42,
+    "mark_iv": 67.78,
+    "bid_iv": 61.81,
+    "ask_iv": 75.27,
+    "underlying_price": 59189.3,
+    "underlying_index": "BTC-22NOV26",
+    "best_ask_amount": 31.4,
+    "best_bid_amount": 15.0
+  },
+  "deribit_trades": [
+    {
+      "timestamp": 1795322619954,
+      "iv": 84.0,
+      "price": 0.0057,
+      "direction": "sell",
+      "index_price": 59193.85,
+      "instrument_name": "BTC-11DEC26-45000-P",
+      "trade_seq": 53,
+      "amount": 25.0,
+      "mark_price": 0.00581822,
+      "tick_direction": 2,
+      "block_trade_id": "BLOCK-307562",
+      "block_rfq_id": 61691,
+      "starbase_match_id": 250119014125154307,
+      "trade_id": "472415342",
+      "contracts": 25.0,
+      "starbase_timestamp": 1795322619954613516,
+      "block_trade_leg_count": 4
+    },
+    {
+      "timestamp": 1795322619954,
+      "iv": 60.71,
+      "price": 0.0373,
+      "direction": "buy",
+      "index_price": 59193.85,
+      "instrument_name": "BTC-11DEC26-57000-P",
+      "trade_seq": 27,
+      "amount": 25.0,
+      "mark_price": 0.03708379,
+      "tick_direction": 0,
+      "block_trade_id": "BLOCK-307562",
+      "block_rfq_id": 61691,
+      "starbase_match_id": 250119014125154305,
+      "trade_id": "472415341",
+      "contracts": 25.0,
+      "starbase_timestamp": 1795322619954612034,
+      "block_trade_leg_count": 4
+    }
+  ],
+  "deribit_ws_ticker": {
+    "jsonrpc": "2.0",
+    "method": "subscription",
+    "params": {
+      "channel": "ticker.BTC-22NOV26-59000-C.100ms",
+      "data": {
+        "timestamp": 1795322743913,
+        "state": "open",
+        "stats": {
+          "high": 0.0255,
+          "low": 0.0018,
+          "price_change": 158.0645,
+          "volume": 115.2,
+          "volume_delayed": 0.0,
+          "volume_realtime": 115.2,
+          "volume_delayed_usd": 0.0,
+          "volume_realtime_usd": 78798.5,
+          "volume_usd": 78798.5
+        },
+        "greeks": {
+          "delta": 0.59967,
+          "gamma": 0.0005,
+          "vega": 4.39422,
+          "theta": -148.92074,
+          "rho": 0.12949
+        },
+        "index_price": 59199.42,
+        "instrument_name": "BTC-22NOV26-59000-C",
+        "last_price": 0.008,
+        "settlement_price": 0.00509306,
+        "min_price": 0.0001,
+        "max_price": 0.04,
+        "open_interest": 121.0,
+        "mark_price": 0.0069,
+        "interest_rate": 0.0,
+        "best_ask_price": 0.0075,
+        "best_bid_price": 0.0065,
+        "estimated_delivery_price": 59199.42,
+        "mark_iv": 67.78,
+        "bid_iv": 61.81,
+        "ask_iv": 75.27,
+        "underlying_price": 59189.3,
+        "underlying_index": "BTC-22NOV26",
+        "best_ask_amount": 31.4,
+        "best_bid_amount": 15.0
+      }
+    }
+  },
+  "deribit_ws_trades": {
+    "jsonrpc": "2.0",
+    "method": "subscription",
+    "params": {
+      "channel": "trades.option.BTC.100ms",
+      "data": [
+        {
+          "timestamp": 1795322619954,
+          "iv": 84.0,
+          "price": 0.0057,
+          "direction": "sell",
+          "index_price": 59193.85,
+          "instrument_name": "BTC-11DEC26-45000-P",
+          "trade_seq": 53,
+          "amount": 25.0,
+          "mark_price": 0.00581822,
+          "tick_direction": 2,
+          "block_trade_id": "BLOCK-307562",
+          "block_rfq_id": 61691,
+          "starbase_match_id": 250119014125154307,
+          "trade_id": "472415342",
+          "contracts": 25.0,
+          "starbase_timestamp": 1795322619954613516,
+          "block_trade_leg_count": 4
+        },
+        {
+          "timestamp": 1795322619954,
+          "iv": 60.71,
+          "price": 0.0373,
+          "direction": "buy",
+          "index_price": 59193.85,
+          "instrument_name": "BTC-11DEC26-57000-P",
+          "trade_seq": 27,
+          "amount": 25.0,
+          "mark_price": 0.03708379,
+          "tick_direction": 0,
+          "block_trade_id": "BLOCK-307562",
+          "block_rfq_id": 61691,
+          "starbase_match_id": 250119014125154305,
+          "trade_id": "472415341",
+          "contracts": 25.0,
+          "starbase_timestamp": 1795322619954612034,
+          "block_trade_leg_count": 4
+        }
+      ]
+    }
+  },
+  "delta_ws_trade": {
+    "p": "72141.5",
+    "r": "t",
+    "s": 1.0,
+    "sy": "BTCUSD",
+    "t": 1775800366578410,
+    "ts": 1775800367003029,
+    "type": "trades"
+  },
+  "delta_ws_trade_maker_buyer": {
+    "p": "72140.0",
+    "r": "m",
+    "s": 2.0,
+    "sy": "BTCUSD",
+    "t": 1775800366578411,
+    "ts": 1775800367003030,
+    "type": "trades"
+  },
+  "delta_ws_ticker": {
+    "d": [
+      {
+        "g": [
+          "0.01939861",
+          "0.00006382",
+          "0.00718630",
+          "-81.48397021",
+          "0.72486575"
+        ],
+        "i": 27,
+        "m": "72124.5",
+        "s": "BTCUSD"
+      }
+    ],
+    "sp": "72154.6",
+    "sy": "BTCUSD",
+    "ts": 1775801092453559,
+    "type": "ticker"
+  },
+  "delta_rest_option": {
+    "symbol": "C-BTC-60000-241126",
+    "strike_price": "60000",
+    "contract_type": "call_options",
+    "oi": "12.5",
+    "volume": 3.0,
+    "close": 1200,
+    "mark_price": 1200,
+    "greeks": {
+      "delta": "0.55",
+      "gamma": "0.00012",
+      "theta": "-40",
+      "vega": "20",
+      "rho": "1"
+    },
+    "quotes": {
+      "best_bid": "1190",
+      "best_ask": "1210",
+      "mark_iv": "0.48"
+    }
+  }
+}

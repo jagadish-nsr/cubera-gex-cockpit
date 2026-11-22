@@ -8,6 +8,9 @@ from typing import Any
 from crypto.config import get_flag, list_flags, load_config, set_flag
 from crypto.engine.gex import compute_gex_features
 from crypto.engine.signals import build_signal_card
+from crypto.feeds.manager import live_feeds_requested
+from crypto.feeds.state import get_feed_state
+from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
 from crypto.providers.registry import get_registry
 from crypto.store.writer import StoreWriter
 
@@ -59,8 +62,28 @@ class CockpitService:
             self.store.write_events(news_events)
 
         blackout = any(e.tier == "IMMINENT" and e.score >= 0.9 for e in news_events)
-        card = build_signal_card(gex, perp, news_blackout=blackout)
+        src = snap.source or ""
+        live_source = (
+            "deribit" in src
+            and "stub" not in src
+            and "fixture" not in src
+            and "mock" not in src
+        )
+        live_path = bool(get_flag("feeds.deribit") and (live_feeds_requested() or live_source))
+        card = build_signal_card(
+            gex,
+            perp,
+            news_blackout=blackout,
+            chain_fetched_at=snap.fetched_at,
+            live_signal_path=live_path,
+        )
         self.store.write_signal(card)
+
+        feed = get_feed_state()
+        chain_stale = is_stale(
+            snap.fetched_at,
+            threshold_s=float((cfg.get("feeds") or {}).get("stale_threshold_s") or STALE_THRESHOLD_S),
+        )
 
         return {
             "brand": "CryptoCubera",
@@ -77,7 +100,10 @@ class CockpitService:
                 "dvol": snap.dvol,
                 "n_contracts": len(snap.contracts),
                 "fetched_at": snap.fetched_at.isoformat(),
+                "age_s": age_seconds(snap.fetched_at),
+                "stale": chain_stale,
             },
+            "feeds": feed.status(),
             "gex": _serialize_gex(gex) if get_flag("ui.gex_map", default=True) else None,
             "orderflow": {
                 "venue": perp.venue,

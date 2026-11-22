@@ -54,6 +54,15 @@ def load_config(path: Path | str | None = None, *, reload: bool = False) -> dict
 
     if os.environ.get("CRYPTO_LIVE_SPIKE_DERIBIT", "").lower() in {"1", "true", "yes"}:
         raw.setdefault("live_spike", {})["deribit_ticker"] = True
+        raw.setdefault("live_spike", {})["deribit_ws"] = True
+
+    if os.environ.get("CRYPTO_LIVE_FEEDS", "").lower() in {"1", "true", "yes", "on"}:
+        # Master live gate — still needs feeds.deribit / feeds.delta flags on.
+        raw.setdefault("live_spike", {})["deribit_ws"] = True
+        raw.setdefault("live_spike", {})["delta_ws"] = True
+
+    if os.environ.get("CRYPTO_LIVE_SPIKE_DELTA", "").lower() in {"1", "true", "yes", "on"}:
+        raw.setdefault("live_spike", {})["delta_ws"] = True
 
     _CONFIG = raw
     return raw

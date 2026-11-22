@@ -7,6 +7,7 @@ Two decision-support surfaces share this repo:
 
 ```bash
 ./run_crypto.sh          # CryptoCubera → http://localhost:8760 (mock by default)
+# Live feeds: CRYPTO_LIVE_FEEDS=1 CRYPTO_FLAG_FEEDS_DERIBIT=1 CRYPTO_FLAG_FEEDS_DELTA=1 ./run_crypto.sh
 ./run_prod.sh            # NSE Cubera  → http://localhost:8640
 ```
 

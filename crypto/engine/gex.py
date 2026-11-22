@@ -11,7 +11,8 @@ Flow model: signed customer volume proxy. Foundation uses call−put volume
 skew near spot as a stand-in until taker tape is recorded. A GO requires
 agreement when ``engine.gex_flow_model`` is on.
 
-Contract size = 1 (coin). Deribit gamma units VERIFY-live in Phase 0.
+Contract size = 1 (coin). Deribit ``greeks.gamma`` is standard BS ∂Δ/∂S
+per $1 underlying (Phase 0 confirmed vs docs); mark_iv is percent.
 """
 
 from __future__ import annotations
@@ -143,7 +144,7 @@ def compute_gex_features(snap: OptionChainSnapshot) -> dict[str, Any]:
         "contract_size": CONTRACT_SIZE,
         "note": (
             "Convention + flow volume proxy. Not a direction call. "
-            "Deribit gamma units VERIFY-live."
+            "Deribit greeks.gamma = BS ∂Δ/∂S per $1 underlying; mark_iv is percent."
         ),
     }
 

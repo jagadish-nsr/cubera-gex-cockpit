@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from crypto.config import get_flag
+from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
 from crypto.providers.mock.fixtures import load_fixture
 from crypto.providers.types import PerpSnapshot
 
@@ -19,6 +20,8 @@ def build_signal_card(
     perp: PerpSnapshot,
     *,
     news_blackout: bool = False,
+    chain_fetched_at: datetime | None = None,
+    live_signal_path: bool = False,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     vetoes: list[str] = []
@@ -32,10 +35,20 @@ def build_signal_card(
     if gex.get("regime") == "uncertain":
         vetoes.append("regime uncertain")
 
-    # Staleness: mock/fixture is always fresh; live sources checked by caller age
-    age_s = (now - perp.fetched_at).total_seconds() if perp.fetched_at else 0
-    if age_s > 30:
-        vetoes.append(f"perp data stale ({age_s:.0f}s)")
+    # Staleness: live signal path uses the design-plan 2s hard veto; mock stays loose.
+    if live_signal_path:
+        chain_age = age_seconds(chain_fetched_at, now=now)
+        if chain_fetched_at is not None and is_stale(
+            chain_fetched_at, threshold_s=STALE_THRESHOLD_S, now=now
+        ):
+            vetoes.append(f"chain data stale ({chain_age:.1f}s > {STALE_THRESHOLD_S}s)")
+        perp_age = age_seconds(perp.fetched_at, now=now)
+        if is_stale(perp.fetched_at, threshold_s=STALE_THRESHOLD_S, now=now):
+            vetoes.append(f"perp data stale ({perp_age:.1f}s > {STALE_THRESHOLD_S}s)")
+    else:
+        age_s = (now - perp.fetched_at).total_seconds() if perp.fetched_at else 0
+        if age_s > 30:
+            vetoes.append(f"perp data stale ({age_s:.0f}s)")
 
     if news_blackout:
         vetoes.append("news blackout window")

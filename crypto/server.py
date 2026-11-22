@@ -47,9 +47,26 @@ app.include_router(router, prefix="/api")
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     init_db()
-    log.info("CryptoCubera %s ready — store initialized", __version__)
+    try:
+        from crypto.feeds.manager import get_feed_manager
+
+        summary = await get_feed_manager().start()
+        log.info("CryptoCubera %s ready — feeds=%s", __version__, summary)
+    except Exception as exc:  # noqa: BLE001 — never block UI boot
+        log.warning("Live feed manager failed to start: %s", exc)
+        log.info("CryptoCubera %s ready — store initialized (feeds idle)", __version__)
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    try:
+        from crypto.feeds.manager import get_feed_manager
+
+        await get_feed_manager().stop()
+    except Exception as exc:  # noqa: BLE001
+        log.debug("feed shutdown: %s", exc)
 
 
 @app.get("/")
