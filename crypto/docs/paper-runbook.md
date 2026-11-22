@@ -6,7 +6,8 @@
 ## One-command start
 
 ```bash
-# from repo root — paper Confirm + ETH/SOL + Gemma; forces exec.live=0
+# from repo root — paper Confirm + ETH/SOL + Gemma + public Deribit/Delta MD
+# forces exec.live=0 (never live trading)
 ./run_crypto_paper.sh
 # → http://localhost:8760
 ```
@@ -17,15 +18,22 @@ Equivalent:
 CRYPTO_FLAG_EXEC_PAPER=1 \
 CRYPTO_FLAG_EXEC_CONFIRM=1 \
 CRYPTO_FLAG_EXEC_LIVE=0 \
+CRYPTO_LIVE_FEEDS=1 \
+CRYPTO_FLAG_FEEDS_DERIBIT=1 \
+CRYPTO_FLAG_FEEDS_DELTA=1 \
 CRYPTO_FLAG_ASSETS_ETH=1 \
 CRYPTO_FLAG_ASSETS_SOL=1 \
 CRYPTO_FLAG_INTEL_GEMMA=1 \
 python3 -m crypto.server --port 8760
 ```
 
-No API keys needed. Confirm records **local sim fills**. Optional Delta
-demo/testnet keys (`DELTA_PAPER_*` from https://testnet.delta.exchange/) are
-allowed; production India hosts are refused by the paper adapter.
+No trading API keys needed. Public market-data WebSockets are attempted;
+providers **soft-fall back to mock fixtures** if WS/REST fail so the desk stays
+up. Confirm records **local sim fills**. Optional Delta demo/testnet keys
+(`DELTA_PAPER_*` from https://testnet.delta.exchange/) are allowed; production
+India hosts are refused by the paper adapter.
+
+Force mock-only MD: `CRYPTO_LIVE_FEEDS=0 ./run_crypto_paper.sh`.
 
 BTC remains the **default active underlying**. ETH and SOL are enabled for the
 topbar switcher (or `PATCH /api/underlying`).
@@ -55,13 +63,19 @@ Force keywords-only: `CRYPTO_FLAG_INTEL_GEMMA=0 ./run_crypto_paper.sh`.
 | `exec.auto` | **off** | Auto is never supported |
 
 Mode badge must show **Advisory** or **Paper Confirm** — never **Live Confirm**
-on this path.
+on this path. Public Deribit/Delta **feeds** are on for this helper; that is
+market data only, not live trading.
 
-## Ops checklist (paper + ETH/SOL)
+## Ops checklist (paper + ETH/SOL + live MD)
 
 1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760  
    Badge = **Paper Confirm**. Assets BTC / ETH / SOL available; BTC selected.
-   Banner shows Gemma on (Ollama reachable or mock/keywords fallback).
+   Banner shows live feeds + Gemma (Ollama reachable or mock/keywords fallback).
+   ```bash
+   curl -s localhost:8760/api/feeds | python3 -m json.tool
+   ```
+   Soft-fallback: if Deribit/Delta WS miss, chain/perp providers serve mock
+   fixtures and the 2s live-stale veto does not apply to stub sources.
 2. **Switch asset** — topbar BTC → ETH → SOL, or:
    ```bash
    curl -s -X PATCH localhost:8760/api/underlying \

@@ -29,6 +29,22 @@ def live_feeds_requested() -> bool:
     return _env_truthy("CRYPTO_LIVE_FEEDS") or _env_truthy("CRYPTO_LIVE_SPIKE_DERIBIT")
 
 
+def is_live_market_data_source(source: str | None) -> bool:
+    """True only for real Deribit MD — stub/fixture/mock soft-fallback is not live.
+
+    Used so CRYPTO_LIVE_FEEDS=1 still keeps mock stale rules when WS/REST miss
+    and providers serve fixtures (paper desk must stay usable offline).
+    """
+    src = (source or "").lower()
+    return (
+        "deribit" in src
+        and "stub" not in src
+        and "fixture" not in src
+        and "mock" not in src
+        and "fallback" not in src
+    )
+
+
 class FeedManager:
     def __init__(self, state: LiveFeedState | None = None, store: StoreWriter | None = None) -> None:
         self.state = state or get_feed_state()

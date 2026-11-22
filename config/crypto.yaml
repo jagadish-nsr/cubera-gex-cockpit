@@ -121,6 +121,8 @@ feature_flags:
   assets.eth: false
   assets.sol: false
   feeds.mock: true
+  # Advisory default off; ./run_crypto_paper.sh sets CRYPTO_LIVE_FEEDS=1 +
+  # CRYPTO_FLAG_FEEDS_DERIBIT/DELTA=1. Soft-fallback to mock if WS/REST fails.
   feeds.deribit: false
   feeds.delta: false
   feeds.perp_binance: false
@@ -209,8 +211,10 @@ gemma:
   timeout_s: 8
   mock_when_unavailable: true
 
-# Live feed collectors (Phase 0). Off by default; also require CRYPTO_LIVE_FEEDS=1
-# (or live_spike.* below) so mock remains the quiet default.
+# Live feed collectors (Phase 0). YAML default off; also require CRYPTO_LIVE_FEEDS=1
+# (or live_spike.* below). ./run_crypto_paper.sh enables both env + Deribit/Delta
+# flags for public MD only — never turns on exec.live. Providers soft-fall back
+# to mock fixtures when WS/REST miss.
 feeds:
   stale_threshold_s: 2.0
   deribit:

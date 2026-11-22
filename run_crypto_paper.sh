@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Launch CryptoCubera in LOCAL PAPER Confirm mode (sim fills; no live keys).
 # Sets paper + ETH/SOL asset flags — never enables exec.live / live Confirm.
+# Enables public Deribit/Delta market-data feeds (CRYPTO_LIVE_FEEDS=1 + feed
+# flags). Collectors soft-fall back to mock fixtures if WS/REST fails — cockpit
+# stays up. Still forces exec.live=0 (preference: no live trading).
 # Enables intel.gemma by default; soft-falls back to mock/keywords if Ollama
 # is absent (config gemma.mock_when_unavailable). BTC remains the default
 # active underlying; topbar switcher can flip to ETH/SOL.
@@ -22,6 +25,24 @@ export CRYPTO_FLAG_EXEC_AUTO=0
 # Override with CRYPTO_FLAG_ASSETS_ETH=0 / CRYPTO_FLAG_ASSETS_SOL=0 if needed.
 export CRYPTO_FLAG_ASSETS_ETH="${CRYPTO_FLAG_ASSETS_ETH:-1}"
 export CRYPTO_FLAG_ASSETS_SOL="${CRYPTO_FLAG_ASSETS_SOL:-1}"
+
+# Public Deribit / Delta market-data feeds (not trading).
+# Soft-fallback: providers serve mock fixtures when WS/REST miss or fail.
+# Override with CRYPTO_LIVE_FEEDS=0 or CRYPTO_FLAG_FEEDS_DERIBIT=0 / DELTA=0.
+export CRYPTO_LIVE_FEEDS="${CRYPTO_LIVE_FEEDS:-1}"
+export CRYPTO_FLAG_FEEDS_DERIBIT="${CRYPTO_FLAG_FEEDS_DERIBIT:-1}"
+export CRYPTO_FLAG_FEEDS_DELTA="${CRYPTO_FLAG_FEEDS_DELTA:-1}"
+# Keep mock registered as last-resort provider (priority 50).
+export CRYPTO_FLAG_FEEDS_MOCK="${CRYPTO_FLAG_FEEDS_MOCK:-1}"
+
+FEEDS_NOTE="live env=${CRYPTO_LIVE_FEEDS} deribit=${CRYPTO_FLAG_FEEDS_DERIBIT} delta=${CRYPTO_FLAG_FEEDS_DELTA}"
+if [ "${CRYPTO_LIVE_FEEDS}" = "0" ] || [ "${CRYPTO_LIVE_FEEDS}" = "false" ] || [ "${CRYPTO_LIVE_FEEDS}" = "off" ]; then
+  FEEDS_NOTE="off (mock fixtures only)"
+elif [ "${CRYPTO_FLAG_FEEDS_DERIBIT}" = "0" ] && [ "${CRYPTO_FLAG_FEEDS_DELTA}" = "0" ]; then
+  FEEDS_NOTE="env on but venue flags off → mock"
+else
+  FEEDS_NOTE="${FEEDS_NOTE} · soft-fallback to mock if WS fails"
+fi
 
 # Gemma language layer (classify / GO prose / digests). On by default for paper.
 # Soft-fallback: mock_when_unavailable → keywords / templates when Ollama is down.
@@ -49,11 +70,12 @@ echo "======================================================================"
 echo "  CryptoCubera — LOCAL PAPER Confirm (sim / demo)"
 echo "  URL  : http://localhost:${PORT}"
 echo "  Flags: exec.paper=1 exec.confirm=1  |  exec.live=0 (must stay off)"
+echo "  Feeds: ${FEEDS_NOTE}"
 echo "  Assets: BTC (default) + ETH + SOL (switcher)"
 echo "  Gemma : intel.gemma ${GEMMA_NOTE}"
-echo "  Keys : none required (local sim). Optional DELTA_PAPER_* for testnet."
+echo "  Keys : none required (public MD + local sim). Optional DELTA_PAPER_* for testnet."
 echo "  Record: SQLite data/crypto/cubera.db + paper session summary"
-echo "  Smoke: start → switch asset → Confirm → session export"
+echo "  Smoke: start → feeds/API → switch asset → Confirm → session export"
 echo "  After : python3 -m crypto.session_cli summary -o paper_session.json"
 echo "======================================================================"
 exec python3 -m crypto.server --host 0.0.0.0 --port "${PORT}"
