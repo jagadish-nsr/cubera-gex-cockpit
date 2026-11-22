@@ -325,6 +325,7 @@ class ConfirmBody(BaseModel):
 
     card: dict[str, Any] | None = None
     actor: str = "operator"
+    notes: str = ""
 
 
 class KillBody(BaseModel):
@@ -339,12 +340,38 @@ async def exec_status() -> dict[str, Any]:
     return await get_execution_service().status()
 
 
+@router.get("/exec/decision")
+async def exec_decision() -> dict[str, Any]:
+    """Export the latest GO card as a Manual Decision (levels + JSON).
+
+    Decision support only — never places an exchange order.
+    Includes calendar/news blackout status when the intel layer is active.
+    """
+    from crypto.exec.service import get_execution_service
+
+    snap = await get_service().snapshot()
+    card = snap.get("signal")
+    if not card:
+        raise HTTPException(status_code=404, detail="No GO card available")
+    out = get_execution_service().decision_from_card(card)
+    blackout = (snap.get("intel") or {}).get("blackout") or {}
+    out["blackout"] = {
+        "active": bool(blackout.get("active")),
+        "reasons": list(blackout.get("reasons") or [])[:3],
+        "blackout_until": blackout.get("blackout_until"),
+        "note": blackout.get("note")
+        or "Calendar/news blackout forces NO-GO; never places trades.",
+    }
+    return out
+
+
 @router.post("/exec/confirm")
 async def exec_confirm(body: ConfirmBody | None = Body(default=None)) -> dict[str, Any]:
-    """One-tap Confirm: paper/sim or Live Confirm bracket from a GO card.
+    """Confirm a GO card: paper/sim practice, or Manual Decision log.
 
-    Live path requires ``exec.live`` + ``exec.confirm`` and the fail-closed
-    live gate (keys + ack + IP whitelist ack). Auto is never available.
+    ``exec.live`` + ``exec.confirm`` → Manual Decision (copy/export levels;
+    ledger note). Confirm **never** POSTs to Delta. Paper Confirm may sim-fill.
+    Auto is never available. ``exec.live_place`` cannot unlock exchange place.
     """
     from crypto.config import get_flag
     from crypto.exec.service import get_execution_service
@@ -375,7 +402,9 @@ async def exec_confirm(body: ConfirmBody | None = Body(default=None)) -> dict[st
     if not card:
         raise HTTPException(status_code=404, detail="No GO card available")
 
-    result = await get_execution_service().confirm_from_card(card, actor=body.actor)
+    result = await get_execution_service().confirm_from_card(
+        card, actor=body.actor, notes=body.notes or ""
+    )
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result)
     return result
@@ -391,7 +420,7 @@ async def exec_ledger(limit: int = 100, status: str | None = None) -> dict[str, 
 
 @router.get("/exec/ledger/export")
 async def exec_ledger_export(format: str = "json") -> Any:
-    """Export paper ledger as JSON or CSV (tax/reporting hygiene)."""
+    """Export paper / Manual Decision ledger as JSON or CSV (includes notes)."""
     from fastapi.responses import PlainTextResponse, Response
 
     from crypto.exec.service import get_execution_service
@@ -415,10 +444,20 @@ async def exec_ledger_export(format: str = "json") -> Any:
 
 @router.get("/exec/live-gate")
 async def exec_live_gate() -> dict[str, Any]:
-    """Inspect Live Confirm safety gate (fail-closed checks)."""
+    """Inspect legacy live-place safety gate (Confirm does not use this to trade).
+
+    Manual Decision does not require the gate. Exchange POST remains refused
+    from Confirm regardless of gate status.
+    """
     from crypto.exec.live_gate import evaluate_live_gate
 
-    return evaluate_live_gate(require_flags=True).as_dict()
+    out = evaluate_live_gate(require_flags=True).as_dict()
+    out["confirm_places_orders"] = False
+    out["note"] = (
+        "Manual Decision path does not place live orders. "
+        + str(out.get("note") or "")
+    ).strip()
+    return out
 
 
 @router.post("/exec/kill")

@@ -125,16 +125,24 @@ def resolve_exec_mode(
     daily_loss_hit: bool = False,
     live_gate_ok: Optional[bool] = None,
 ) -> dict[str, Any]:
-    """Advisory default; Paper/Live Confirm only when flags + risk (+ live gate) ok.
+    """Advisory default; Paper / Manual Decision when flags + risk allow.
 
-    Priority when both paper and live flags are on: Live Confirm if the live
-    gate passes; otherwise fall through to paper Confirm when paper is on.
-    Auto is never enabled.
+    ``exec.live`` + ``exec.confirm`` → **Manual Decision** (decision card for
+    placing by hand on Delta). Never Live Auto. Exchange POST is not part of
+    Confirm; optional ``exec.live_place`` stays off and is refused from Confirm.
+
+    When both paper and live flags are on with confirm: Manual Decision takes
+    priority for the badge (decision-only). Paper Confirm remains available
+    for practice when live is off. Auto is never enabled.
     """
     paper = get_flag("exec.paper", default=False)
     live = get_flag("exec.live", default=False)
     confirm = get_flag("exec.confirm", default=False)
     auto = get_flag("exec.auto", default=False)
+    live_place = get_flag("exec.live_place", default=False)
+    # live_gate_ok retained for call-site compatibility; Manual Decision
+    # does not require the gate (decision-only Confirm).
+    _ = live_gate_ok
 
     if auto:
         return {
@@ -144,6 +152,7 @@ def resolve_exec_mode(
             "live": live,
             "confirm": False,
             "can_confirm": False,
+            "live_place": False,
             "reason": "exec.auto is refused — Auto not supported; Confirm cleared path blocked",
         }
 
@@ -155,59 +164,42 @@ def resolve_exec_mode(
             "live": live,
             "confirm": False,
             "can_confirm": False,
+            "live_place": False,
             "reason": "daily loss limit — Confirm disabled",
         }
 
+    # Manual Decision: decision support for hand-placed trades (no exchange POST).
+    # Live keys / gate are NOT required — Confirm logs / exports levels only.
     if live and confirm:
-        gate_ok = live_gate_ok
-        if gate_ok is None:
-            from crypto.exec.live_gate import evaluate_live_gate
-
-            gate_ok = evaluate_live_gate(require_flags=True).ok
-        if gate_ok:
-            return {
-                "mode": "live_confirm",
-                "badge": "Live Confirm",
-                "paper": paper,
-                "live": True,
-                "confirm": True,
-                "can_confirm": True,
-                "reason": "live Confirm enabled (real capital — gated)",
-            }
-        # Live requested but gate failed — do not silently fall into live.
-        # Paper Confirm still available if paper flag is on.
-        if paper:
-            return {
-                "mode": "paper_confirm",
-                "badge": "Paper Confirm",
-                "paper": True,
-                "live": True,
-                "confirm": True,
-                "can_confirm": True,
-                "reason": (
-                    "exec.live on but live gate failed — using paper Confirm; "
-                    "fix DELTA_LIVE_* keys, ack, and IP whitelist ack for live"
-                ),
-            }
         return {
-            "mode": "advisory",
-            "badge": "Advisory",
-            "paper": False,
+            "mode": "manual_decision",
+            "badge": "Manual Decision",
+            "paper": paper,
             "live": True,
             "confirm": True,
-            "can_confirm": False,
-            "reason": "exec.live + exec.confirm on but live gate failed — fail closed",
+            "can_confirm": True,
+            "live_place": bool(live_place),
+            "reason": (
+                "Manual Decision — show/copy levels for hand placement on Delta; "
+                "Confirm does not place live orders"
+                + (
+                    " (exec.live_place is on but Confirm still refuses exchange POST)"
+                    if live_place
+                    else ""
+                )
+            ),
         }
 
     if paper and confirm:
         return {
             "mode": "paper_confirm",
-            "badge": "Paper Confirm",
+            "badge": "Paper",
             "paper": True,
             "live": False,
             "confirm": True,
             "can_confirm": True,
-            "reason": "paper Confirm enabled (demo/sim only)",
+            "live_place": False,
+            "reason": "Paper Confirm enabled (local sim / demo practice only)",
         }
 
     if live and not confirm:
@@ -218,6 +210,7 @@ def resolve_exec_mode(
             "live": True,
             "confirm": False,
             "can_confirm": False,
+            "live_place": False,
             "reason": "exec.live on; Confirm flag off — Advisory default",
         }
 
@@ -229,6 +222,7 @@ def resolve_exec_mode(
             "live": False,
             "confirm": False,
             "can_confirm": False,
+            "live_place": False,
             "reason": "paper ledger on; Confirm flag off — Advisory default",
         }
 
@@ -239,5 +233,6 @@ def resolve_exec_mode(
         "live": False,
         "confirm": False,
         "can_confirm": False,
+        "live_place": False,
         "reason": "Advisory only — exec.paper / exec.live off",
     }

@@ -110,7 +110,7 @@ def test_resolve_mode_paper_confirm():
     set_flag("exec.confirm", True, actor="test")
     mode = resolve_exec_mode()
     assert mode["mode"] == "paper_confirm"
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert mode["can_confirm"] is True
     assert mode["live"] is False
 
@@ -122,7 +122,7 @@ def test_local_paper_never_live_badge_when_live_flag_off():
     set_flag("exec.live", False, actor="test")
     mode = resolve_exec_mode(live_gate_ok=True)
     assert mode["mode"] == "paper_confirm"
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert "Live" not in mode["badge"]
     assert mode["live"] is False
 
@@ -308,7 +308,7 @@ def test_snapshot_exposes_mode_badge_and_paper_status():
     async def _run():
         snap = await CockpitService().snapshot()
         assert snap["mode"] == "paper_confirm"
-        assert snap["mode_badge"] == "Paper Confirm"
+        assert snap["mode_badge"] == "Paper"
         assert "Live" not in snap["mode_badge"]
         assert snap["flags"]["exec.live"] is False
         assert snap["execution"]["can_confirm"] is True
@@ -332,7 +332,7 @@ def test_env_paper_flags_map_without_live(monkeypatch, tmp_path):
     assert get_flag("exec.confirm") is True
     assert get_flag("exec.live") is False
     mode = resolve_exec_mode()
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert mode["mode"] == "paper_confirm"
 
 
@@ -363,7 +363,7 @@ def test_env_paper_path_enables_eth_sol_keeps_live_off(monkeypatch, tmp_path):
     enabled = {a["symbol"] for a in list_assets() if a.get("enabled")}
     assert enabled >= {"BTC", "ETH", "SOL"}
     mode = resolve_exec_mode()
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert "Live" not in mode["badge"]
 
 
@@ -416,7 +416,7 @@ def test_env_paper_path_enables_live_feeds_keeps_exec_live_off(monkeypatch, tmp_
     assert get_flag("exec.confirm") is True
     assert get_flag("intel.gemma") is True
     mode = resolve_exec_mode()
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert "Live" not in mode["badge"]
 
 
@@ -436,7 +436,7 @@ def test_env_paper_path_enables_gemma_keeps_live_off(monkeypatch, tmp_path):
     assert get_flag("exec.live") is False
     assert get_flag("exec.paper") is True
     mode = resolve_exec_mode()
-    assert mode["badge"] == "Paper Confirm"
+    assert mode["badge"] == "Paper"
     assert "Live" not in mode["badge"]
 
 

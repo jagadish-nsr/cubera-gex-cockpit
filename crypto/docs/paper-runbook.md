@@ -1,7 +1,9 @@
 # Local paper trading runbook
 
-**Preference: LOCAL PAPER TRADING ONLY.** Never enable Live Confirm. Never require
-`DELTA_LIVE_*` keys. Keep `exec.live` off.
+**Preference: LOCAL PAPER PRACTICE.** Paper sim Confirm for practice. Manual
+Decision (`exec.live` + `exec.confirm`) is decision support for hand trades —
+copy/export levels; Confirm never places on Delta. Never enable Auto. Never
+require `DELTA_LIVE_*` keys for Manual Decision.
 
 ## One-command start
 
@@ -57,19 +59,18 @@ Force keywords-only: `CRYPTO_FLAG_INTEL_GEMMA=0 ./run_crypto_paper.sh`.
 
 | Knob | Value | Why |
 | --- | --- | --- |
-| `exec.live` / `CRYPTO_FLAG_EXEC_LIVE` | **off** | Live Confirm places real capital |
-| `DELTA_LIVE_API_KEY` / `SECRET` | unset | Not needed for paper |
-| `CRYPTO_LIVE_CONFIRM_ACK` | unset | Live gate stays closed |
+| `exec.live_place` | **off** | Exchange POST from Confirm refused |
+| `DELTA_LIVE_API_KEY` / `SECRET` | unset | Not needed for paper or Manual Decision |
 | `exec.auto` | **off** | Auto is never supported |
 
-Mode badge must show **Advisory** or **Paper Confirm** — never **Live Confirm**
-on this path. Public Deribit/Delta **feeds** are on for this helper; that is
-market data only, not live trading.
+Mode badge on this paper helper path: **Paper** (or **Advisory**). Manual
+Decision is a separate flag combo. Never **Live Auto**. Public Deribit/Delta
+**feeds** are on for this helper; that is market data only, not live trading.
 
 ## Ops checklist (paper + ETH/SOL + live MD)
 
 1. **Start paper** — `./run_crypto_paper.sh` → http://localhost:8760  
-   Badge = **Paper Confirm**. Assets BTC / ETH / SOL available; BTC selected.
+   Badge = **Paper**. Assets BTC / ETH / SOL available; BTC selected.
    Banner shows live feeds + Gemma (Ollama reachable or mock/keywords fallback).
    ```bash
    curl -s localhost:8760/api/feeds | python3 -m json.tool
@@ -100,7 +101,7 @@ market data only, not live trading.
 ## Smoke checklist (extended)
 
 1. **Start** — `./run_crypto_paper.sh` → open http://localhost:8760
-2. **Mode badge** — topbar reads **Paper Confirm** (not Live)
+2. **Mode badge** — topbar reads **Paper** (not Live Auto)
 3. **Assets** — switcher shows BTC / ETH / SOL; BTC is active by default
 4. **GO card** — wait for a GO (or use fixtures/replay); Confirm paper button enabled
 5. **Confirm** — one tap submits a paper/sim bracket

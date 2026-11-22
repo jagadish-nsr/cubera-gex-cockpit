@@ -246,10 +246,11 @@ body {
   color: var(--teal);
 }
 
-.mode-badge[data-mode="live_confirm"] {
-  color: #8b1e1e;
-  background: rgba(180, 40, 40, 0.12);
-  border-color: rgba(180, 40, 40, 0.35);
+.mode-badge[data-mode="live_confirm"],
+.mode-badge[data-mode="manual_decision"] {
+  color: #c4a35a;
+  background: rgba(196, 163, 90, 0.14);
+  border-color: rgba(196, 163, 90, 0.4);
 }
 
 .mode-badge[data-mode="paper_confirm"] {
@@ -709,6 +710,36 @@ body {
   font-size: 0.92rem;
 }
 .go-vetoes li + li { margin-top: 0.25rem; }
+
+.go-reasons {
+  margin: 0.75rem 0 0;
+  padding: 0.75rem 0.85rem 0.75rem 1.4rem;
+  border-radius: var(--radius-sm);
+  background: rgba(46, 196, 182, 0.08);
+  border: 1px solid rgba(46, 196, 182, 0.28);
+  color: var(--ink-dim);
+  font-size: 0.92rem;
+}
+.go-reasons li + li { margin-top: 0.25rem; }
+
+.go-mode-chip {
+  display: inline-block;
+  margin-left: 0.45rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid rgba(196, 163, 90, 0.4);
+  color: #c4a35a;
+  background: rgba(196, 163, 90, 0.12);
+  vertical-align: middle;
+}
+
+.go-card.is-manual {
+  box-shadow: inset 0 0 0 1px rgba(196, 163, 90, 0.22);
+}
 
 .paper-status {
   margin: 0.65rem 0 0;

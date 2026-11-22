@@ -1,4 +1,4 @@
-"""Live Confirm on Delta — fail-closed gate, no Auto, mocked venue."""
+"""Manual Decision — decision-only Confirm; no exchange POST; no Auto."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ os.environ.pop("DELTA_LIVE_REST_URL", None)
 os.environ.pop("CRYPTO_LIVE_FEEDS", None)
 
 from crypto.config import get_flag, list_flags, load_config, set_flag
+from crypto.exec.decision import build_decision_payload, format_decision_levels
 from crypto.exec.live_gate import (
     LIVE_ACK_ENV,
     LIVE_ACK_VALUE,
@@ -62,12 +63,13 @@ def _arm_live_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset(tmp_path, monkeypatch):
-    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'live.db'}")
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'manual.db'}")
     _clear_live_env(monkeypatch)
     load_config(reload=True)
     set_flag("exec.paper", False, actor="test")
     set_flag("exec.confirm", False, actor="test")
     set_flag("exec.live", False, actor="test")
+    set_flag("exec.live_place", False, actor="test")
     set_flag("exec.auto", False, actor="test")
     get_engine(reload=True)
     init_db(reload=True)
@@ -90,37 +92,53 @@ def _go_card(**overrides):
         "size_cap_usd": 2500,
         "score": 70,
         "reasons": ["a", "b", "c"],
+        "invalidation": "through call wall",
+        "valid_until": "2026-11-22T13:00:00+00:00",
         "spot": 95100,
     }
     card.update(overrides)
     return card
 
 
-def test_flags_include_live_and_auto_off():
+def test_flags_include_live_place_off():
     flags = list_flags()
     assert "exec.live" in flags
     assert flags["exec.live"] is False
+    assert flags.get("exec.live_place") is False
     assert flags.get("exec.auto") is False
 
 
-def test_live_gate_fails_closed_without_keys():
+def test_decision_payload_has_required_fields():
+    payload = build_decision_payload(_go_card())
+    for key in (
+        "instrument",
+        "side",
+        "entry_zone",
+        "target",
+        "stop",
+        "size_usd",
+        "score",
+        "reasons",
+        "valid_until",
+        "mode",
+    ):
+        assert key in payload
+    assert payload["mode"] == "manual_decision"
+    assert "auto-execute" in payload["note"].lower() or "hand" in payload["note"].lower()
+    text = format_decision_levels(_go_card())
+    assert "BTCUSD" in text
+    assert "SELL" in text
+    assert "Entry:" in text
+    assert "Target:" in text
+    assert "Stop:" in text
+
+
+def test_live_gate_still_fails_closed_without_keys():
+    """Legacy gate kept for diagnostics; Manual Decision does not need it."""
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
     gate = evaluate_live_gate(require_flags=True)
     assert gate.ok is False
-    assert gate.code == "live_gate_failed"
-    assert any("DELTA_LIVE_API_KEY" in r for r in gate.reasons)
-
-
-def test_live_gate_fails_without_ack(monkeypatch):
-    monkeypatch.setenv("DELTA_LIVE_API_KEY", "k")
-    monkeypatch.setenv("DELTA_LIVE_API_SECRET", "s")
-    monkeypatch.setenv("DELTA_LIVE_IP_WHITELIST_ACK", "1")
-    set_flag("exec.live", True, actor="test")
-    set_flag("exec.confirm", True, actor="test")
-    gate = evaluate_live_gate(require_flags=True)
-    assert gate.ok is False
-    assert any(LIVE_ACK_ENV in r for r in gate.reasons)
 
 
 def test_live_gate_refuses_testnet_url(monkeypatch):
@@ -131,42 +149,25 @@ def test_live_gate_refuses_testnet_url(monkeypatch):
     assert reasons
 
 
-def test_live_gate_ok_when_fully_armed(monkeypatch):
-    _arm_live_env(monkeypatch)
+def test_resolve_mode_manual_decision_without_keys():
+    """Manual Decision needs flags only — no live keys for decision support."""
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
-    gate = evaluate_live_gate(require_flags=True)
-    assert gate.ok is True
-    assert gate.base_url.endswith("api.india.delta.exchange")
+    mode = resolve_exec_mode(live_gate_ok=False)
+    assert mode["mode"] == "manual_decision"
+    assert mode["badge"] == "Manual Decision"
+    assert mode["can_confirm"] is True
+    assert "Live Auto" not in mode["badge"]
+    assert "Live Confirm" not in mode["badge"]
 
 
-def test_paper_keys_do_not_unlock_live(monkeypatch):
-    monkeypatch.setenv("DELTA_PAPER_API_KEY", "paper-only")
-    monkeypatch.setenv("DELTA_PAPER_API_SECRET", "paper-secret")
-    set_flag("exec.live", True, actor="test")
-    set_flag("exec.confirm", True, actor="test")
-    gate = evaluate_live_gate(require_flags=True)
-    assert gate.ok is False
-    assert any("paper" in r.lower() for r in gate.reasons)
-
-
-def test_resolve_mode_live_confirm(monkeypatch):
+def test_resolve_mode_manual_even_when_gate_ok(monkeypatch):
     _arm_live_env(monkeypatch)
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
     mode = resolve_exec_mode(live_gate_ok=True)
-    assert mode["mode"] == "live_confirm"
-    assert mode["badge"] == "Live Confirm"
-    assert mode["can_confirm"] is True
-
-
-def test_resolve_mode_live_falls_back_to_paper_when_gate_fails():
-    set_flag("exec.live", True, actor="test")
-    set_flag("exec.paper", True, actor="test")
-    set_flag("exec.confirm", True, actor="test")
-    mode = resolve_exec_mode(live_gate_ok=False)
-    assert mode["mode"] == "paper_confirm"
-    assert mode["can_confirm"] is True
+    assert mode["mode"] == "manual_decision"
+    assert mode["badge"] == "Manual Decision"
 
 
 def test_resolve_mode_refuses_auto():
@@ -178,45 +179,38 @@ def test_resolve_mode_refuses_auto():
     assert "auto" in mode["reason"].lower()
 
 
-def test_live_confirm_refused_without_gate():
+def test_manual_confirm_logs_decision_no_exchange_post(monkeypatch):
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
-    svc = ExecutionService()
-
-    async def _run():
-        out = await svc.confirm_from_card(_go_card())
-        assert out["ok"] is False
-        assert out["code"] in {"confirm_blocked", "live_gate_failed"}
-
-    asyncio.run(_run())
-
-
-def test_live_confirm_submits_when_gate_ok(monkeypatch):
-    _arm_live_env(monkeypatch)
-    set_flag("exec.live", True, actor="test")
-    set_flag("exec.confirm", True, actor="test")
+    set_flag("exec.live_place", True, actor="test")  # still must not place
     get_registry(reload=True)
     svc = ExecutionService()
+    placed = {"n": 0}
 
     async def _fake_place(self, order):
-        return {
-            "ok": True,
-            "adapter": "live",
-            "status": "submitted",
-            "client_order_id": order["client_order_id"],
-            "fill_price": None,
-        }
+        placed["n"] += 1
+        return {"ok": True, "adapter": "live", "status": "submitted"}
 
     async def _run():
         with patch.object(DeltaLiveExecutionVenue, "place_bracket", _fake_place):
-            result = await svc.confirm_from_card(_go_card(), actor="pytest")
+            result = await svc.confirm_from_card(
+                _go_card(), actor="pytest", notes="hand entry at open"
+            )
         assert result["ok"] is True
+        assert result.get("exchange_post") is False
+        assert placed["n"] == 0
         trade = result["trade"]
-        assert trade["mode"] == "live_confirm"
-        assert trade["adapter"] == "live"
-        assert trade["status"] == "submitted"
-        assert trade["size_usd"] > 0
-        assert trade["size_usd"] <= 2500
+        assert trade["mode"] == "manual_decision"
+        assert trade["adapter"] == "manual"
+        assert trade["status"] == "manual_noted"
+        assert trade["notes"] == "hand entry at open"
+        assert "decision" in result
+        assert result["decision"]["instrument"] == "BTCUSD"
+        assert "Entry:" in result["levels_text"]
+        csv_blob = svc.ledger.export_csv()
+        assert "notes" in csv_blob
+        assert "hand entry at open" in csv_blob
+        assert len(svc.ledger.open_intents()) == 0
 
     asyncio.run(_run())
 
@@ -243,41 +237,7 @@ def test_live_venue_never_sim_fills_on_gate_fail():
     asyncio.run(_run())
 
 
-def test_kill_switch_works_with_live_flag(monkeypatch):
-    _arm_live_env(monkeypatch)
-    set_flag("exec.live", True, actor="test")
-    set_flag("exec.confirm", True, actor="test")
-    get_registry(reload=True)
-    svc = ExecutionService()
-
-    async def _fake_place(self, order):
-        return {
-            "ok": True,
-            "adapter": "live",
-            "status": "submitted",
-            "client_order_id": order["client_order_id"],
-            "fill_price": None,
-        }
-
-    async def _fake_cancel(self):
-        return {"ok": True, "cancelled": 1, "client_order_ids": []}
-
-    async def _run():
-        with patch.object(DeltaLiveExecutionVenue, "place_bracket", _fake_place):
-            await svc.confirm_from_card(_go_card())
-        assert len(svc.ledger.open_intents()) == 1
-        with patch.object(DeltaLiveExecutionVenue, "cancel_all", _fake_cancel):
-            arm = await svc.kill(confirmed=False, actor="pytest")
-            assert arm["armed"] is True
-            done = await svc.kill(confirmed=True, actor="pytest")
-        assert done["cancelled"] == 1
-        assert get_flag("exec.confirm") is False
-
-    asyncio.run(_run())
-
-
-def test_snapshot_live_confirm_badge(monkeypatch):
-    _arm_live_env(monkeypatch)
+def test_snapshot_manual_decision_badge():
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
     set_flag("ui.go_cards", True, actor="test")
@@ -285,18 +245,20 @@ def test_snapshot_live_confirm_badge(monkeypatch):
 
     async def _run():
         snap = await CockpitService().snapshot()
-        assert snap["mode"] == "live_confirm"
-        assert snap["mode_badge"] == "Live Confirm"
+        assert snap["mode"] == "manual_decision"
+        assert snap["mode_badge"] == "Manual Decision"
         assert snap["execution"]["can_confirm"] is True
-        assert snap["execution"]["live_gate"]["ok"] is True
+        assert snap["execution"].get("live_place_flag") is False
+        # Kill switch is paper-intent only
+        assert snap["execution"]["kill_switch_enabled"] is False
 
     asyncio.run(_run())
 
 
-def test_api_live_gate_and_confirm_blocked(tmp_path, monkeypatch):
+def test_api_decision_and_manual_confirm(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'api_live.db'}")
+    monkeypatch.setenv("CRYPTO_DB_URL", f"sqlite:///{tmp_path / 'api_manual.db'}")
     _clear_live_env(monkeypatch)
     load_config(reload=True)
     get_engine(reload=True)
@@ -304,6 +266,7 @@ def test_api_live_gate_and_confirm_blocked(tmp_path, monkeypatch):
     reset_execution_service()
     set_flag("exec.live", True, actor="test")
     set_flag("exec.confirm", True, actor="test")
+    set_flag("ui.go_cards", True, actor="test")
     get_registry(reload=True)
 
     from crypto.server import app
@@ -311,26 +274,50 @@ def test_api_live_gate_and_confirm_blocked(tmp_path, monkeypatch):
     client = TestClient(app)
     gate = client.get("/api/exec/live-gate")
     assert gate.status_code == 200
-    assert gate.json()["ok"] is False
+    assert gate.json().get("confirm_places_orders") is False
+
+    decision = client.get("/api/exec/decision")
+    assert decision.status_code == 200
+    body = decision.json()
+    assert body["ok"] is True
+    assert "levels_text" in body
+    assert body["decision"]["mode"] == "manual_decision"
 
     conf = client.post(
         "/api/exec/confirm",
-        json={"actor": "api-test", "card": _go_card()},
+        json={"actor": "api-test", "card": _go_card(), "notes": "manual note"},
     )
-    assert conf.status_code == 409
+    assert conf.status_code == 200
+    data = conf.json()
+    assert data["ok"] is True
+    assert data["exchange_post"] is False
+    assert data["trade"]["status"] == "manual_noted"
+    assert data["trade"]["notes"] == "manual note"
 
-    # Advisory default when live off
+    exported = client.get("/api/exec/ledger/export?format=csv")
+    assert exported.status_code == 200
+    assert "notes" in exported.text
+    assert "manual note" in exported.text
+
+
+def test_paper_confirm_still_sims_when_live_off():
+    set_flag("exec.paper", True, actor="test")
+    set_flag("exec.confirm", True, actor="test")
     set_flag("exec.live", False, actor="test")
-    set_flag("exec.paper", False, actor="test")
-    denied = client.post(
-        "/api/exec/confirm",
-        json={"actor": "api-test", "card": _go_card()},
-    )
-    assert denied.status_code == 403
+    get_registry(reload=True)
+    svc = ExecutionService()
+
+    async def _run():
+        result = await svc.confirm_from_card(_go_card(), actor="pytest")
+        assert result["ok"] is True
+        assert result["trade"]["mode"] == "paper_confirm"
+        assert result["trade"]["status"] == "sim_filled"
+        assert result.get("exchange_post") is not False or "decision" not in result
+
+    asyncio.run(_run())
 
 
-def test_live_sizing_uses_live_equity(monkeypatch):
-    # Ensure live equity helper is wired; size still capped
+def test_live_sizing_helper_still_works(monkeypatch):
     assert live_equity_usd() > 0
     sized = size_from_stop(
         entry=100_000,
