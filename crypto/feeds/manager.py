@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any, Optional
@@ -18,6 +19,11 @@ from crypto.providers.deribit.ws import DeribitWsCollector
 from crypto.store.writer import StoreWriter
 
 log = logging.getLogger(__name__)
+
+# Asset switch must stay snappy — never wait on a stuck REST/WS teardown.
+_STOP_TIMEOUT_S = 1.5
+# Optional live REST upgrade during prime (off on the switch path — WS follows up).
+_PRIME_LIVE_TIMEOUT_S = 1.25
 
 
 def _env_truthy(name: str) -> bool:
@@ -52,6 +58,7 @@ class FeedManager:
         self.deribit: Optional[DeribitWsCollector] = None
         self.delta: Optional[DeltaWsCollector] = None
         self._started = False
+        self._restart_task: Optional[asyncio.Task] = None
 
     def _persist(self, venue: str, channel: str, payload: dict[str, Any], exchange_ts: Any) -> None:
         if self.store is None:
@@ -90,6 +97,7 @@ class FeedManager:
         underlying = get_active_underlying()
         asset = get_asset_config(underlying)
         summary["underlying"] = underlying
+        self.state.set_active_underlying(underlying)
 
         if deribit_on:
             dcfg = feeds_cfg.get("deribit") or {}
@@ -132,27 +140,105 @@ class FeedManager:
             )
         return summary
 
-    async def stop(self) -> None:
+    async def stop(self, *, timeout_s: float = _STOP_TIMEOUT_S) -> None:
+        """Stop collectors; never block the asset switcher on a stuck REST/WS call."""
+
+        async def _stop_one(name: str, collector: Any) -> None:
+            try:
+                await asyncio.wait_for(collector.stop(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                log.warning("Timed out stopping %s collector after %.1fs", name, timeout_s)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Error stopping %s collector: %s", name, exc)
+
+        tasks = []
         if self.deribit:
-            await self.deribit.stop()
-            self.deribit = None
+            tasks.append(_stop_one("deribit", self.deribit))
         if self.delta:
-            await self.delta.stop()
-            self.delta = None
+            tasks.append(_stop_one("delta", self.delta))
+        if tasks:
+            await asyncio.gather(*tasks)
+        self.deribit = None
+        self.delta = None
         self._started = False
 
-    async def restart_for_underlying(self, underlying: str | None = None) -> dict[str, Any]:
-        """Stop collectors, clear prior-asset caches, start for the active underlying.
+    async def prime_chain_for_underlying(
+        self, underlying: str, *, prefer_live: bool = False
+    ) -> dict[str, Any]:
+        """Seed cache for the selected asset so snapshot/UI update without waiting on WS.
 
-        Call after ``set_underlying`` so Deribit currency / Delta symbols match
-        ETH or SOL instead of keeping a BTC WS subscription.
+        Always loads the per-asset fixture first (instant, correct spot/GEX). The
+        asset-switch path keeps ``prefer_live=False`` so PATCH returns in well under
+        a second; WS collectors (and a short UI follow-up refresh) upgrade to live.
+        """
+        want = (underlying or get_active_underlying() or "BTC").strip().upper()
+        self.state.set_active_underlying(want)
+
+        from crypto.providers.mock.chain import MockOptionChainProvider
+
+        snap = await MockOptionChainProvider().fetch_chain(want)
+        if get_flag("feeds.deribit", default=False):
+            snap.source = "deribit-stub"
+        self.state.set_deribit_chain(snap)
+        primed: dict[str, Any] = {
+            "underlying": want,
+            "spot": snap.spot,
+            "source": snap.source,
+            "n_contracts": len(snap.contracts),
+            "primed": "fixture",
+        }
+
+        if (
+            prefer_live
+            and get_flag("feeds.deribit", default=False)
+            and live_feeds_requested()
+        ):
+            cfg = load_config()
+            feeds = cfg.get("feeds") or {}
+            dcfg = feeds.get("deribit") or {}
+            try:
+                from crypto.providers.deribit.rest_snapshot import build_chain_snapshot
+
+                live = await asyncio.wait_for(
+                    build_chain_snapshot(
+                        currency=want,
+                        base_url=dcfg.get("rest_url")
+                        or (cfg.get("live_spike") or {}).get("deribit_base_url")
+                        or DERIBIT_REST,
+                        max_expiries=int(dcfg.get("max_expiries") or 2),
+                        strike_band_pct=float(dcfg.get("strike_band_pct") or 0.08),
+                    ),
+                    timeout=_PRIME_LIVE_TIMEOUT_S,
+                )
+                if live.contracts and str(live.underlying or "").upper() == want:
+                    self.state.set_deribit_chain(live)
+                    primed = {
+                        "underlying": want,
+                        "spot": live.spot,
+                        "source": live.source,
+                        "n_contracts": len(live.contracts),
+                        "primed": "live_rest",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                log.info("Live prime upgrade for %s missed (%s); keeping fixture", want, exc)
+
+        return primed
+
+    async def restart_for_underlying(self, underlying: str | None = None) -> dict[str, Any]:
+        """Stop collectors (bounded), prime the new asset cache, start collectors.
+
+        Priming happens before WS start so ``/api/snapshot`` immediately returns
+        the selected asset's spot/chain — no hard reload required.
         """
         want = (underlying or get_active_underlying() or "BTC").strip().upper()
         log.info("Restarting live feeds for underlying=%s", want)
-        await self.stop()
-        self.state.clear_for_underlying_switch()
+        await self.stop(timeout_s=_STOP_TIMEOUT_S)
+        self.state.clear_for_underlying_switch(underlying=want)
+        # Fixture prime only on the switch path — keep PATCH snappy; WS upgrades.
+        primed = await self.prime_chain_for_underlying(want, prefer_live=False)
         summary = await self.start()
         summary["restarted_for"] = want
+        summary["primed"] = primed
         return summary
 
     def status(self) -> dict[str, Any]:

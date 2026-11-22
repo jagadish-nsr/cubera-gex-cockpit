@@ -10,6 +10,10 @@ let lastGex = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let validTimer = null;
 let resizeTimer = null;
+/** @type {boolean} */
+let assetSwitchInFlight = false;
+/** @type {ReturnType<typeof setTimeout>|null} */
+let assetFollowupTimer = null;
 
 async function api(path, opts) {
   const res = await fetch(path, {
@@ -573,6 +577,17 @@ function spotDigits(underlying) {
   return 1;
 }
 
+function setAssetSwitcherBusy(mount, busy, pendingAsset) {
+  if (!mount) return;
+  mount.classList.toggle("is-switching", !!busy);
+  mount.setAttribute("aria-busy", busy ? "true" : "false");
+  if (busy && pendingAsset) {
+    mount.dataset.pending = pendingAsset;
+  } else {
+    delete mount.dataset.pending;
+  }
+}
+
 function renderAssetSwitcher(data) {
   const mount = $("#asset-switcher");
   if (!mount) return;
@@ -588,32 +603,70 @@ function renderAssetSwitcher(data) {
     return;
   }
   const active = data.underlying || "BTC";
+  const pending = mount.dataset.pending || "";
+  const busy = assetSwitchInFlight;
   mount.hidden = false;
+  setAssetSwitcherBusy(mount, busy, pending || null);
   mount.innerHTML = assets
     .map((a) => {
       const sym = a.symbol || "";
       const on = !!a.enabled;
-      const pressed = sym === active;
+      const pressed = busy && pending ? sym === pending : sym === active;
+      const disable = !on || busy;
       return `<button type="button" class="asset-btn" data-asset="${escapeHtml(sym)}"
-        aria-pressed="${pressed}" ${on ? "" : "disabled"}
-        title="${on ? `Switch to ${escapeHtml(sym)}` : `${escapeHtml(sym)} disabled (assets.${String(sym).toLowerCase()})`}">${escapeHtml(sym)}</button>`;
+        aria-pressed="${pressed}" ${disable ? "disabled" : ""}
+        title="${
+          busy
+            ? `Switching to ${escapeHtml(pending || active)}…`
+            : on
+              ? `Switch to ${escapeHtml(sym)}`
+              : `${escapeHtml(sym)} disabled (assets.${String(sym).toLowerCase()})`
+        }">${escapeHtml(sym)}</button>`;
     })
     .join("");
 
   mount.querySelectorAll(".asset-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      if (assetSwitchInFlight) return;
       if (btn.disabled || btn.getAttribute("aria-pressed") === "true") return;
       const underlying = btn.getAttribute("data-asset");
+      if (!underlying) return;
+      assetSwitchInFlight = true;
+      setAssetSwitcherBusy(mount, true, underlying);
+      // Optimistic hero labels so the desk sees the flip immediately.
+      const ul = $("#underlying-label");
+      const spot = $("#spot-value");
+      if (ul) ul.textContent = underlying;
+      if (spot) spot.textContent = "…";
+      mount.querySelectorAll(".asset-btn").forEach((b) => {
+        b.disabled = true;
+        b.setAttribute("aria-pressed", b.getAttribute("data-asset") === underlying ? "true" : "false");
+      });
       try {
-        btn.disabled = true;
-        await api("/api/underlying", {
+        const switched = await api("/api/underlying", {
           method: "PATCH",
           body: JSON.stringify({ underlying, actor: "cockpit-ui" }),
         });
+        if (switched?.spot != null && spot) {
+          spot.textContent = fmt(switched.spot, spotDigits(underlying));
+        }
+        // Clear busy before snapshot render so the switcher re-enables.
+        assetSwitchInFlight = false;
+        setAssetSwitcherBusy(mount, false, null);
         await loadSnapshot();
+        // Live WS may upgrade fixture → REST shortly after; one quiet follow-up.
+        if (assetFollowupTimer) clearTimeout(assetFollowupTimer);
+        assetFollowupTimer = setTimeout(() => {
+          loadSnapshot().catch(() => {});
+        }, 1800);
       } catch (err) {
         console.error(err);
-        btn.disabled = false;
+        assetSwitchInFlight = false;
+        setAssetSwitcherBusy(mount, false, null);
+        await loadSnapshot().catch(() => {});
+      } finally {
+        assetSwitchInFlight = false;
+        setAssetSwitcherBusy($("#asset-switcher"), false, null);
       }
     });
   });

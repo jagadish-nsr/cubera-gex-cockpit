@@ -5,4 +5,4 @@ Providers, feature flags, and durable storage are first-class so slices can
 plug in/out without rewriting the UI or engine.
 """
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
