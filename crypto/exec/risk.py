@@ -1,6 +1,7 @@
-"""Paper risk sizing and daily-loss → Advisory flip.
+"""Risk sizing and daily-loss → Advisory flip.
 
 Risk is enforced in code (not only UI). Live Auto is out of scope.
+Live Confirm uses the same fraction/caps with ``live_equity_usd`` when gated on.
 """
 
 from __future__ import annotations
@@ -38,12 +39,20 @@ def paper_equity_usd() -> float:
     return float(_risk_cfg().get("paper_equity_usd") or 10_000.0)
 
 
+def live_equity_usd() -> float:
+    return float(_risk_cfg().get("live_equity_usd") or _risk_cfg().get("paper_equity_usd") or 10_000.0)
+
+
 def risk_fraction() -> float:
     return float(_risk_cfg().get("risk_fraction") or 0.005)
 
 
 def daily_loss_limit_usd() -> float:
     return float(_risk_cfg().get("daily_loss_limit_usd") or 250.0)
+
+
+def size_cap_usd() -> float:
+    return float(_risk_cfg().get("size_cap_usd") or 2500.0)
 
 
 def size_from_stop(
@@ -111,42 +120,124 @@ def evaluate_daily_loss(
     )
 
 
-def resolve_exec_mode(*, daily_loss_hit: bool = False) -> dict[str, Any]:
-    """Advisory default; Paper Confirm only when both paper+confirm flags on and risk ok."""
+def resolve_exec_mode(
+    *,
+    daily_loss_hit: bool = False,
+    live_gate_ok: Optional[bool] = None,
+) -> dict[str, Any]:
+    """Advisory default; Paper/Live Confirm only when flags + risk (+ live gate) ok.
+
+    Priority when both paper and live flags are on: Live Confirm if the live
+    gate passes; otherwise fall through to paper Confirm when paper is on.
+    Auto is never enabled.
+    """
     paper = get_flag("exec.paper", default=False)
+    live = get_flag("exec.live", default=False)
     confirm = get_flag("exec.confirm", default=False)
+    auto = get_flag("exec.auto", default=False)
+
+    if auto:
+        return {
+            "mode": "advisory",
+            "badge": "Advisory",
+            "paper": paper,
+            "live": live,
+            "confirm": False,
+            "can_confirm": False,
+            "reason": "exec.auto is refused — Auto not supported; Confirm cleared path blocked",
+        }
+
     if daily_loss_hit:
         return {
             "mode": "advisory",
             "badge": "Advisory",
             "paper": paper,
+            "live": live,
             "confirm": False,
             "can_confirm": False,
             "reason": "daily loss limit — Confirm disabled",
         }
+
+    if live and confirm:
+        gate_ok = live_gate_ok
+        if gate_ok is None:
+            from crypto.exec.live_gate import evaluate_live_gate
+
+            gate_ok = evaluate_live_gate(require_flags=True).ok
+        if gate_ok:
+            return {
+                "mode": "live_confirm",
+                "badge": "Live Confirm",
+                "paper": paper,
+                "live": True,
+                "confirm": True,
+                "can_confirm": True,
+                "reason": "live Confirm enabled (real capital — gated)",
+            }
+        # Live requested but gate failed — do not silently fall into live.
+        # Paper Confirm still available if paper flag is on.
+        if paper:
+            return {
+                "mode": "paper_confirm",
+                "badge": "Paper Confirm",
+                "paper": True,
+                "live": True,
+                "confirm": True,
+                "can_confirm": True,
+                "reason": (
+                    "exec.live on but live gate failed — using paper Confirm; "
+                    "fix DELTA_LIVE_* keys, ack, and IP whitelist ack for live"
+                ),
+            }
+        return {
+            "mode": "advisory",
+            "badge": "Advisory",
+            "paper": False,
+            "live": True,
+            "confirm": True,
+            "can_confirm": False,
+            "reason": "exec.live + exec.confirm on but live gate failed — fail closed",
+        }
+
     if paper and confirm:
         return {
             "mode": "paper_confirm",
             "badge": "Paper Confirm",
             "paper": True,
+            "live": False,
             "confirm": True,
             "can_confirm": True,
             "reason": "paper Confirm enabled (demo/sim only)",
         }
+
+    if live and not confirm:
+        return {
+            "mode": "advisory",
+            "badge": "Advisory",
+            "paper": paper,
+            "live": True,
+            "confirm": False,
+            "can_confirm": False,
+            "reason": "exec.live on; Confirm flag off — Advisory default",
+        }
+
     if paper:
         return {
             "mode": "advisory",
             "badge": "Advisory",
             "paper": True,
+            "live": False,
             "confirm": False,
             "can_confirm": False,
             "reason": "paper ledger on; Confirm flag off — Advisory default",
         }
+
     return {
         "mode": "advisory",
         "badge": "Advisory",
         "paper": False,
+        "live": False,
         "confirm": False,
         "can_confirm": False,
-        "reason": "Advisory only — exec.paper off",
+        "reason": "Advisory only — exec.paper / exec.live off",
     }

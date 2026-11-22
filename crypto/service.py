@@ -118,7 +118,11 @@ class CockpitService:
         exec_svc = get_execution_service()
         exec_status = await exec_svc.status()
         exec_mode = exec_status.get("exec_mode") or {}
-        open_trades = exec_svc.ledger.open_intents()[:5] if get_flag("exec.paper") else []
+        open_trades = (
+            exec_svc.ledger.open_intents()[:5]
+            if (get_flag("exec.paper") or get_flag("exec.live"))
+            else []
+        )
 
         signal_out = None
         if get_flag("ui.go_cards", default=True):

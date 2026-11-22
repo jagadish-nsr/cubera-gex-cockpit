@@ -184,17 +184,20 @@ function renderFlow(orderflow, gex) {
 
 function paperStatusLine(signal) {
   const ps = signal.paper_status || {};
+  const mode = signal.exec_mode || "";
+  const live = mode === "live_confirm";
+  const label = live ? "Live" : "Paper";
   const latest = ps.latest_open;
   if (latest) {
-    return `Paper · ${latest.status} · ${latest.instrument} · $${fmt(latest.size_usd, 0)} · ${latest.adapter || "sim"}`;
+    return `${label} · ${latest.status} · ${latest.instrument} · $${fmt(latest.size_usd, 0)} · ${latest.adapter || "sim"}`;
   }
   if (signal.can_confirm) {
-    return `Paper Confirm ready · adapter ${ps.adapter || "sim"} · open ${ps.open_intents ?? 0}`;
+    return `${live ? "Live" : "Paper"} Confirm ready · adapter ${ps.adapter || "sim"} · open ${ps.open_intents ?? 0}`;
   }
   if (ps.open_intents) {
-    return `Paper · ${ps.open_intents} open intent(s) · Confirm off`;
+    return `${label} · ${ps.open_intents} open intent(s) · Confirm off`;
   }
-  return "Advisory · no paper intent";
+  return "Advisory · no open intent";
 }
 
 function validUntilState(iso) {
@@ -222,10 +225,17 @@ function renderCard(signal, exec) {
   const entry = Array.isArray(signal.entry_zone)
     ? signal.entry_zone.map((x) => fmt(x, 0)).join(" – ")
     : fmt(signal.entry_zone, 0);
-  const confirmLabel = canConfirm ? "Confirm paper" : "Confirm disabled";
+  const liveMode = (signal.exec_mode || exec?.exec_mode?.mode) === "live_confirm";
+  const confirmLabel = canConfirm
+    ? liveMode
+      ? "Confirm live"
+      : "Confirm paper"
+    : "Confirm disabled";
   const confirmTitle = canConfirm
-    ? "Submit paper/sim bracket (never live capital)"
-    : "Enable exec.paper + exec.confirm (and stay inside daily loss)";
+    ? liveMode
+      ? "Submit LIVE bracket on Delta India — real capital"
+      : "Submit paper/sim bracket (demo/sim only)"
+    : "Enable exec.paper or exec.live + exec.confirm (and pass risk / live gate)";
   const rr = riskReward(signal.entry_zone, signal.target, signal.stop);
   const rrPct = rr == null ? 0 : Math.min(100, Math.round((rr / 3) * 100));
   const until = validUntilState(signal.valid_until);
@@ -489,15 +499,15 @@ function wireKillSwitch(exec) {
   btn.classList.toggle("is-armed", !!exec?.kill_switch_armed);
   if (!enabled) {
     btn.textContent = "Kill switch";
-    btn.title = "Enable exec.paper to use kill switch";
+    btn.title = "Enable exec.paper or exec.live to use kill switch";
     return;
   }
   if (exec.kill_switch_armed) {
     btn.textContent = "Confirm kill";
-    btn.title = "Second tap — cancel open paper intents";
+    btn.title = "Second tap — cancel open intents";
   } else {
     btn.textContent = "Kill switch";
-    btn.title = "First tap arms; second tap cancels paper intents";
+    btn.title = "First tap arms; second tap cancels open intents";
   }
 }
 
@@ -509,7 +519,12 @@ async function loadSnapshot() {
   const badge = $("#mode-badge");
   if (badge) {
     const badgeText =
-      data.mode_badge || (data.mode === "paper_confirm" ? "Paper Confirm" : "Advisory");
+      data.mode_badge ||
+      (data.mode === "live_confirm"
+        ? "Live Confirm"
+        : data.mode === "paper_confirm"
+          ? "Paper Confirm"
+          : "Advisory");
     badge.textContent = badgeText;
     badge.dataset.mode = data.mode || "advisory";
   }
@@ -520,10 +535,13 @@ async function loadSnapshot() {
   const paperPill = $("#paper-pill");
   if (paperPill) {
     const paperOn = !!flags["exec.paper"];
-    paperPill.hidden = !paperOn;
-    if (paperOn) {
-      const adapter = exec.adapter || "sim";
-      paperPill.textContent = `paper · ${adapter} · open ${exec.open_intents ?? 0}`;
+    const liveOn = !!flags["exec.live"];
+    paperPill.hidden = !(paperOn || liveOn);
+    if (paperOn || liveOn) {
+      const adapter = exec.adapter || (liveOn ? "live" : "sim");
+      const kind =
+        data.mode === "live_confirm" ? "live" : paperOn ? "paper" : "live-gated";
+      paperPill.textContent = `${kind} · ${adapter} · open ${exec.open_intents ?? 0}`;
     }
   }
 
@@ -585,7 +603,7 @@ async function loadSnapshot() {
 
   const ledgerRow = $("#ledger-row");
   if (ledgerRow) {
-    ledgerRow.hidden = !flags["exec.paper"];
+    ledgerRow.hidden = !(flags["exec.paper"] || flags["exec.live"]);
     const ln = $("#ledger-note");
     if (ln) {
       const dl = exec.daily_loss || {};

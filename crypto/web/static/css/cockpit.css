@@ -200,6 +200,12 @@ body {
   color: var(--teal);
 }
 
+.mode-badge[data-mode="live_confirm"] {
+  color: #8b1e1e;
+  background: rgba(180, 40, 40, 0.12);
+  border-color: rgba(180, 40, 40, 0.35);
+}
+
 .mode-badge[data-mode="paper_confirm"] {
   background: rgba(46, 196, 182, 0.22);
   border-color: rgba(46, 196, 182, 0.55);
