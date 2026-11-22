@@ -38,7 +38,15 @@ assets:
     cryptopanic_currencies: SOL
 
 database:
+  # Relative paths resolve against the repo root (not process cwd).
   url: sqlite:///./data/crypto/cubera.db
+  # Rotate the live DB when it exceeds this size; keep newest N archives.
+  rotate_max_bytes: 524288000   # 500 MiB
+  rotate_keep: 5
+
+# Local feed + paper session recording (never enables exec.live).
+recording:
+  enabled: true
 
 providers:
   option_chain:

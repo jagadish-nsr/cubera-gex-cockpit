@@ -48,12 +48,22 @@ on this path.
    curl -s localhost:8760/api/exec/status | python3 -m json.tool
    ```
 6. **Kill switch** — two taps (arm → confirm) cancels open intents and flips Confirm off
-7. **Export**
+7. **Export trades**
    ```bash
    curl -s 'localhost:8760/api/exec/ledger/export?format=csv' -o paper_trades.csv
    curl -s 'localhost:8760/api/exec/ledger/export?format=json' -o paper_trades.json
    ```
    Or use Operator → Export CSV / Export JSON.
+8. **Session summary** (GO / confirms / vetoes / PnL / tick counts)
+   ```bash
+   curl -s localhost:8760/api/session/summary | python3 -m json.tool
+   curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json
+   curl -s 'localhost:8760/api/session/export?format=csv' -o paper_session.csv
+   # after stop (or anytime against the SQLite file):
+   ./run_crypto_session_summary.sh json paper_session.json
+   ```
+   Feed ticks + features keep landing in `data/crypto/cubera.db` for the whole
+   run. See [feed-recording.md](feed-recording.md).
 
 ## API Confirm (optional)
 
@@ -74,5 +84,5 @@ curl -s -X POST localhost:8760/api/exec/kill \
 
 ## Non-goals
 
-Live Confirm, Auto, production Delta India keys, Gemma/multi-asset beyond
-existing flags.
+Live Confirm, Auto, production Delta India keys, paid Tardis, Gemma/multi-asset
+beyond existing flags.

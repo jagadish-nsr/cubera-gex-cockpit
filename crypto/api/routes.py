@@ -30,6 +30,11 @@ class UnderlyingPatch(BaseModel):
 async def health() -> dict[str, Any]:
     init_db()
     cfg = load_config()
+    from crypto.store.db import store_status
+    from crypto.store.session import current_session
+
+    sess = current_session()
+    store = store_status()
     return {
         "ok": True,
         "service": "cryptocubera",
@@ -37,6 +42,11 @@ async def health() -> dict[str, Any]:
         "mode": cfg.get("mode"),
         "underlying": get_active_underlying(),
         "assets": list_assets(),
+        "store": {
+            "path": store.get("path"),
+            "size_bytes": store.get("size_bytes"),
+        },
+        "session_id": (sess or {}).get("session_id"),
     }
 
 
@@ -97,6 +107,93 @@ async def feeds_status() -> dict[str, Any]:
     from crypto.feeds.manager import get_feed_manager
 
     return get_feed_manager().status()
+
+
+@router.get("/store/status")
+async def api_store_status() -> dict[str, Any]:
+    """SQLite path, size, and last rotation (local recording hygiene)."""
+    from crypto.store.db import store_status
+
+    return store_status()
+
+
+@router.get("/session")
+async def api_session() -> dict[str, Any]:
+    """Current paper/advisory recording session (started on server boot)."""
+    from crypto.store.session import current_session, recording_enabled, start_session
+
+    sess = current_session()
+    if sess is None and recording_enabled():
+        sess = start_session()
+    return {"recording_enabled": recording_enabled(), "session": sess}
+
+
+@router.get("/session/summary")
+async def api_session_summary(session_id: str | None = None) -> dict[str, Any]:
+    """GO / confirms / vetoes / PnL / tick counts for the active (or named) session."""
+    from crypto.store.session import build_summary, current_session
+
+    sid = session_id or ((current_session() or {}).get("session_id"))
+    return build_summary(session_id=sid)
+
+
+@router.get("/session/export")
+async def api_session_export(
+    format: str = "json",
+    session_id: str | None = None,
+) -> Any:
+    """Export paper session summary as JSON or CSV."""
+    from fastapi.responses import PlainTextResponse, Response
+
+    from crypto.store.session import (
+        current_session,
+        export_summary_csv,
+        export_summary_json,
+    )
+
+    sid = session_id or ((current_session() or {}).get("session_id"))
+    fmt = (format or "json").lower()
+    if fmt == "csv":
+        return Response(
+            content=export_summary_csv(session_id=sid),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": "attachment; filename=paper_session_summary.csv"
+            },
+        )
+    if fmt == "json":
+        return PlainTextResponse(
+            content=export_summary_json(session_id=sid),
+            media_type="application/json",
+            headers={
+                "Content-Disposition": "attachment; filename=paper_session_summary.json"
+            },
+        )
+    raise HTTPException(status_code=400, detail="format must be json or csv")
+
+
+@router.get("/session/list")
+async def api_session_list(limit: int = 50) -> dict[str, Any]:
+    from crypto.store.session import list_sessions
+
+    return {"sessions": list_sessions(limit=min(limit, 200))}
+
+
+class SessionEndBody(BaseModel):
+    session_id: str | None = None
+    write_summary: bool = True
+
+
+@router.post("/session/end")
+async def api_session_end(body: SessionEndBody | None = Body(default=None)) -> dict[str, Any]:
+    """Close the active recording session and snapshot the summary into SQLite."""
+    from crypto.store.session import end_session
+
+    body = body or SessionEndBody()
+    result = end_session(session_id=body.session_id, write_summary=body.write_summary)
+    if not result.get("ok"):
+        raise HTTPException(status_code=404, detail=result)
+    return result
 
 
 @router.get("/feeds/fields")

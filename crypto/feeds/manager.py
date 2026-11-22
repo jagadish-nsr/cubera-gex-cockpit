@@ -42,9 +42,12 @@ class FeedManager:
             try:
                 self.store = StoreWriter()
             except Exception as exc:  # noqa: BLE001
-                log.debug("store init failed: %s", exc)
+                log.error("store init failed (ticks will drop): %s", exc)
                 return
-        self.store.write_tick(venue, channel, payload, exchange_ts=exchange_ts)
+        try:
+            self.store.write_tick(venue, channel, payload, exchange_ts=exchange_ts)
+        except Exception as exc:  # noqa: BLE001 — never kill the WS loop
+            log.error("persist tick failed %s/%s: %s", venue, channel, exc)
 
     async def start(self) -> dict[str, Any]:
         cfg = load_config()
