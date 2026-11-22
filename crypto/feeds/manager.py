@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from crypto.config import get_flag, load_config
+from crypto.config import get_active_underlying, get_asset_config, get_flag, load_config
 from crypto.feeds.state import LiveFeedState, get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S
 from crypto.providers.delta.ws import DEFAULT_REST as DELTA_REST
@@ -68,34 +68,42 @@ class FeedManager:
             "stale_threshold_s": self.state.stale_threshold_s,
         }
 
+        underlying = get_active_underlying()
+        asset = get_asset_config(underlying)
+        summary["underlying"] = underlying
+
         if deribit_on:
             dcfg = feeds_cfg.get("deribit") or {}
+            currency = str(asset.get("deribit_currency") or underlying)
             self.deribit = DeribitWsCollector(
                 self.state,
                 ws_url=dcfg.get("ws_url") or DERIBIT_WS,
                 rest_url=dcfg.get("rest_url") or DERIBIT_REST,
-                currency=cfg.get("underlying") or "BTC",
+                currency=currency,
                 max_expiries=int(dcfg.get("max_expiries") or 2),
                 strike_band_pct=float(dcfg.get("strike_band_pct") or 0.08),
                 persist=self._persist,
             )
             await self.deribit.start()
             summary["deribit"] = True
-            log.info("Deribit live feed collector started")
+            summary["deribit_currency"] = currency
+            log.info("Deribit live feed collector started for %s", currency)
 
         if delta_on:
             dcfg = feeds_cfg.get("delta") or {}
+            symbols = list(asset.get("delta_symbols") or dcfg.get("symbols") or ["BTCUSD"])
             self.delta = DeltaWsCollector(
                 self.state,
                 ws_url=dcfg.get("ws_url") or DELTA_WS,
                 rest_url=dcfg.get("rest_url") or DELTA_REST,
-                symbols=list(dcfg.get("symbols") or ["BTCUSD"]),
+                symbols=symbols,
                 persist=self._persist,
                 snapshot_options=bool(dcfg.get("snapshot_options", True)),
             )
             await self.delta.start()
             summary["delta"] = True
-            log.info("Delta live feed collector started")
+            summary["delta_symbols"] = symbols
+            log.info("Delta live feed collector started for %s", symbols)
 
         self._started = summary["deribit"] or summary["delta"]
         if not self._started:

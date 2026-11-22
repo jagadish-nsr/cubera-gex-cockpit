@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from crypto import __version__
-from crypto.config import list_flags, load_config
+from crypto.config import get_active_underlying, list_assets, list_flags, load_config
 from crypto.service import get_service
 from crypto.store.db import init_db
 
@@ -21,6 +21,11 @@ class FlagPatch(BaseModel):
     actor: str = "operator"
 
 
+class UnderlyingPatch(BaseModel):
+    underlying: str = Field(..., examples=["ETH"])
+    actor: str = "operator"
+
+
 @router.get("/health")
 async def health() -> dict[str, Any]:
     init_db()
@@ -30,7 +35,8 @@ async def health() -> dict[str, Any]:
         "service": "cryptocubera",
         "version": __version__,
         "mode": cfg.get("mode"),
-        "underlying": cfg.get("underlying"),
+        "underlying": get_active_underlying(),
+        "assets": list_assets(),
     }
 
 
@@ -60,6 +66,30 @@ async def providers() -> dict[str, Any]:
         "active": svc.registry.active_summary(),
         "catalog": svc.registry.list_providers(),
     }
+
+
+@router.get("/assets")
+async def assets() -> dict[str, Any]:
+    """List configured underlyings and which asset flags are on."""
+    return {
+        "underlying": get_active_underlying(),
+        "assets": list_assets(),
+        "flags": {
+            "assets.btc": list_flags().get("assets.btc"),
+            "assets.eth": list_flags().get("assets.eth"),
+            "assets.sol": list_flags().get("assets.sol"),
+            "ui.asset_switcher": list_flags().get("ui.asset_switcher"),
+        },
+    }
+
+
+@router.patch("/underlying")
+async def patch_underlying(body: UnderlyingPatch) -> dict[str, Any]:
+    """Switch active underlying (BTC default; ETH/SOL require assets.* flags)."""
+    try:
+        return get_service().switch_underlying(body.underlying, actor=body.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/feeds")

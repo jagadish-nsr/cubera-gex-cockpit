@@ -22,6 +22,7 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | Piece | Location |
 | --- | --- |
 | Provider registry | `crypto/providers/` |
+| Multi-asset (BTC / ETH / SOL) | `config/crypto.yaml` `assets:` + `assets.*` flags |
 | Feature flags | `config/crypto.yaml` + `PATCH /api/flags` |
 | SQLite store | `data/crypto/cubera.db` (schema in `crypto/store/`) |
 | Dual GEX + setups + vetoes | `crypto/engine/` |
@@ -31,8 +32,35 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | Replay CLI | `python3 -m crypto.replay_cli <bundle.json>` |
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
-| Cockpit UI | `crypto/web/` |
-| API | `GET /api/snapshot`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| Cockpit UI | `crypto/web/` (asset switcher in topbar) |
+| API | `GET /api/snapshot`, `/api/assets`, `PATCH /api/underlying`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+
+## Multi-asset (BTC · ETH · SOL)
+
+Same GEX / setups / intel path per underlying. **BTC is the default** and always enabled. ETH and SOL are behind feature flags.
+
+| Flag | Default | Role |
+| --- | --- | --- |
+| `assets.btc` | **true** (locked on) | Bitcoin — default active underlying |
+| `assets.eth` | false | Enable Ethereum chain + switcher |
+| `assets.sol` | false | Enable Solana chain + switcher |
+| `ui.asset_switcher` | true | Topbar BTC / ETH / SOL control |
+
+Per-asset provider params live under `assets:` in `config/crypto.yaml` (Deribit currency/perp, Delta symbols, fixture file, CryptoPanic currencies). Mock fixtures: `crypto/fixtures/{btc,eth,sol}_chain.json`.
+
+```bash
+# Enable ETH then SOL (env), keep BTC selected by default
+CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1 python3 -m crypto.server --port 8760
+
+# Or switch active underlying
+curl -X PATCH localhost:8760/api/underlying \
+  -H 'content-type: application/json' \
+  -d '{"underlying":"ETH","actor":"cli"}'
+
+curl -s localhost:8760/api/assets | python3 -m json.tool
+```
+
+Operator panel also groups `assets.*` flags. Disabling the active ETH/SOL flag falls back to BTC. Live collectors pick Deribit currency / Delta symbols from the active asset.
 
 ## Quant engine (rules baseline)
 
@@ -76,6 +104,10 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 
 | Flag | Default | Role |
 | --- | --- | --- |
+| `assets.btc` | true | Bitcoin underlying (always on) |
+| `assets.eth` | **false** | Ethereum underlying |
+| `assets.sol` | **false** | Solana underlying |
+| `ui.asset_switcher` | true | Cockpit asset switcher |
 | `engine.gex_flow_model` | true | Dual-model agreement gate |
 | `engine.signal_rules` | true | Setup evaluation |
 | `intel.news` | true | Intelligence feed + CryptoPanic/mock ingest |
@@ -84,7 +116,7 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 | `inference.feature_export` | **false** | Export feature vector on snapshot |
 | `inference.regime_classifier` | **false** | Placeholder regime classifier (never creates GO) |
 
-Env override example: `CRYPTO_FLAG_INFERENCE_FEATURE_EXPORT=1` (maps to `inference.feature_export`).
+Env override example: `CRYPTO_FLAG_ASSETS_ETH=1` (maps to `assets.eth`); `CRYPTO_FLAG_INFERENCE_FEATURE_EXPORT=1` (maps to `inference.feature_export`).
 
 Key parameters (also `GET /api/engine/params`):
 

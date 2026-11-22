@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from crypto.config import get_flag, list_flags, load_config, set_flag
+from crypto.config import (
+    get_active_underlying,
+    get_asset_config,
+    get_flag,
+    list_assets,
+    list_flags,
+    load_config,
+    set_flag,
+    set_underlying,
+)
 from crypto.engine.gex import compute_gex_features
 from crypto.engine.inference import run_inference
 from crypto.engine.orderflow import OrderflowState, compute_orderflow_features
@@ -14,7 +23,12 @@ from crypto.engine.vetoes import stub_risk_state
 from crypto.feeds.manager import live_feeds_requested
 from crypto.feeds.state import get_feed_state
 from crypto.feeds.stale import STALE_THRESHOLD_S, age_seconds, is_stale
-from crypto.intel.pipeline import events_for_api, intel_to_news_event, run_intel_pipeline
+from crypto.intel.pipeline import (
+    events_for_api,
+    filter_events_for_asset,
+    intel_to_news_event,
+    run_intel_pipeline,
+)
 from crypto.providers.registry import get_registry
 from crypto.store.writer import StoreWriter
 
@@ -53,13 +67,15 @@ class CockpitService:
 
     async def snapshot(self) -> dict[str, Any]:
         cfg = load_config()
-        underlying = cfg.get("underlying") or "BTC"
+        underlying = get_active_underlying()
+        asset = get_asset_config(underlying)
         feed = get_feed_state()
 
         chain_p = self.registry.option_chain()
         perp_p = self.registry.perp()
         snap = await chain_p.fetch_chain(underlying)
-        perp = await perp_p.fetch_perp(f"{underlying}-PERP")
+        perp_symbol = str(asset.get("deribit_perp") or f"{underlying}-PERPETUAL")
+        perp = await perp_p.fetch_perp(perp_symbol)
 
         self.store.write_chain(snap)
 
@@ -72,7 +88,9 @@ class CockpitService:
         # Append recent option/perp prints into orderflow rolling state
         if feed.recent_trades:
             self._orderflow_state.append_trades(feed.recent_trades[-200:])
-        orderflow = compute_orderflow_features(perp, state=self._orderflow_state)
+        orderflow = compute_orderflow_features(
+            perp, state=self._orderflow_state, underlying=underlying
+        )
         self.store.write_orderflow_features(orderflow)
 
         intel_flag = get_flag("intel.news", default=True)
@@ -81,8 +99,11 @@ class CockpitService:
         intel = await run_intel_pipeline(
             news_p,
             include_calendar=include_cal and intel_flag,
+            underlying=underlying,
         )
         intel_events = intel["events"]
+        # Display feed filtered to active asset; blackout already asset-aware
+        display_events = filter_events_for_asset(intel_events, underlying)
         blackout_info = intel["blackout"]
         if intel_events:
             self.store.write_events([intel_to_news_event(e) for e in intel_events])
@@ -145,6 +166,13 @@ class CockpitService:
             "mode": exec_mode.get("mode") or cfg.get("mode") or "advisory",
             "mode_badge": exec_mode.get("badge") or "Advisory",
             "underlying": underlying,
+            "asset": {
+                "symbol": underlying,
+                "label": asset.get("label") or underlying,
+                "deribit_perp": asset.get("deribit_perp"),
+                "delta_symbols": list(asset.get("delta_symbols") or []),
+            },
+            "assets": list_assets(),
             "spot": snap.spot,
             "providers": self.registry.active_summary(),
             "provider_catalog": self.registry.list_providers(),
@@ -163,6 +191,7 @@ class CockpitService:
                 "fetched_at": snap.fetched_at.isoformat(),
                 "age_s": age_seconds(snap.fetched_at),
                 "stale": chain_stale,
+                "underlying": underlying,
             },
             "feeds": feed.status(),
             "gex": _serialize_gex(gex) if get_flag("ui.gex_map", default=True) else None,
@@ -171,12 +200,13 @@ class CockpitService:
             else None,
             "signal": signal_out,
             "inference": inference,
-            "news": events_for_api(intel_events) if intel_flag else [],
+            "news": events_for_api(display_events) if intel_flag else [],
             "intel": {
                 "provider": intel.get("provider"),
                 "blackout": blackout_info,
-                "n_events": len(intel_events),
+                "n_events": len(display_events),
                 "flag": intel_flag,
+                "underlying": underlying,
                 "gemma": get_flag("intel.gemma", default=False),
             },
             "execution": exec_status,
@@ -188,6 +218,12 @@ class CockpitService:
         self.store.audit_flag(name, result["previous"], result["value"], actor)
         # Refresh registry so provider picks respect new flags
         self.registry = get_registry(reload=True)
+        return result
+
+    def switch_underlying(self, symbol: str, actor: str = "operator") -> dict[str, Any]:
+        result = set_underlying(symbol, actor=actor)
+        # Clear per-asset tape state so ETH/SOL don't inherit BTC CVD
+        self._orderflow_state = OrderflowState()
         return result
 
 

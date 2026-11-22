@@ -393,6 +393,7 @@ function renderNews(news) {
 }
 
 const FLAG_GROUPS = [
+  { id: "assets", title: "Assets", match: (k) => k.startsWith("assets.") },
   { id: "feeds", title: "Feeds", match: (k) => k.startsWith("feeds.") },
   { id: "engine", title: "Engine", match: (k) => k.startsWith("engine.") },
   { id: "intel", title: "Intelligence", match: (k) => k.startsWith("intel.") },
@@ -406,6 +407,7 @@ const FLAG_GROUPS = [
     id: "other",
     title: "Other",
     match: (k) =>
+      !k.startsWith("assets.") &&
       !k.startsWith("feeds.") &&
       !k.startsWith("engine.") &&
       !k.startsWith("intel.") &&
@@ -414,6 +416,59 @@ const FLAG_GROUPS = [
       !k.startsWith("paper."),
   },
 ];
+
+function spotDigits(underlying) {
+  const u = String(underlying || "BTC").toUpperCase();
+  if (u === "SOL") return 2;
+  if (u === "ETH") return 1;
+  return 1;
+}
+
+function renderAssetSwitcher(data) {
+  const mount = $("#asset-switcher");
+  if (!mount) return;
+  const flags = data.flags || {};
+  if (!flags["ui.asset_switcher"]) {
+    mount.hidden = true;
+    mount.innerHTML = "";
+    return;
+  }
+  const assets = Array.isArray(data.assets) ? data.assets : [];
+  if (!assets.length) {
+    mount.hidden = true;
+    return;
+  }
+  const active = data.underlying || "BTC";
+  mount.hidden = false;
+  mount.innerHTML = assets
+    .map((a) => {
+      const sym = a.symbol || "";
+      const on = !!a.enabled;
+      const pressed = sym === active;
+      return `<button type="button" class="asset-btn" data-asset="${escapeHtml(sym)}"
+        aria-pressed="${pressed}" ${on ? "" : "disabled"}
+        title="${on ? `Switch to ${escapeHtml(sym)}` : `${escapeHtml(sym)} disabled (assets.${String(sym).toLowerCase()})`}">${escapeHtml(sym)}</button>`;
+    })
+    .join("");
+
+  mount.querySelectorAll(".asset-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (btn.disabled || btn.getAttribute("aria-pressed") === "true") return;
+      const underlying = btn.getAttribute("data-asset");
+      try {
+        btn.disabled = true;
+        await api("/api/underlying", {
+          method: "PATCH",
+          body: JSON.stringify({ underlying, actor: "cockpit-ui" }),
+        });
+        await loadSnapshot();
+      } catch (err) {
+        console.error(err);
+        btn.disabled = false;
+      }
+    });
+  });
+}
 
 function renderFlags(flags) {
   const grid = $("#flag-grid");
@@ -528,8 +583,10 @@ async function loadSnapshot() {
     badge.textContent = badgeText;
     badge.dataset.mode = data.mode || "advisory";
   }
-  $("#underlying-label").textContent = data.underlying || "BTC";
-  $("#spot-value").textContent = fmt(data.spot, 1);
+  const underlying = data.underlying || "BTC";
+  $("#underlying-label").textContent = underlying;
+  $("#spot-value").textContent = fmt(data.spot, spotDigits(underlying));
+  renderAssetSwitcher(data);
   setLivePill(data.chain?.source || data.providers?.option_chain || "—");
 
   const paperPill = $("#paper-pill");

@@ -2,9 +2,40 @@
 # Providers are plugged in by name; enable/priority control selection.
 # Feature flags gate UI slices and live feeds (restart or PATCH /api/flags).
 
+# Active underlying (BTC default). Switch via PATCH /api/underlying or UI.
 underlying: BTC
 currency: USD
 mode: advisory  # advisory | confirm | auto (confirm/auto disabled until wired)
+
+# Per-asset provider params. Enable with assets.<symbol> flags (BTC always on).
+assets:
+  BTC:
+    label: Bitcoin
+    feature_flag: assets.btc
+    fixture: btc_chain.json
+    deribit_currency: BTC
+    deribit_perp: BTC-PERPETUAL
+    delta_symbols: [BTCUSD]
+    binance_perp: BTCUSDT
+    cryptopanic_currencies: BTC
+  ETH:
+    label: Ethereum
+    feature_flag: assets.eth
+    fixture: eth_chain.json
+    deribit_currency: ETH
+    deribit_perp: ETH-PERPETUAL
+    delta_symbols: [ETHUSD]
+    binance_perp: ETHUSDT
+    cryptopanic_currencies: ETH
+  SOL:
+    label: Solana
+    feature_flag: assets.sol
+    fixture: sol_chain.json
+    deribit_currency: SOL
+    deribit_perp: SOL-PERPETUAL
+    delta_symbols: [SOLUSD]
+    binance_perp: SOLUSDT
+    cryptopanic_currencies: SOL
 
 database:
   url: sqlite:///./data/crypto/cubera.db
@@ -75,6 +106,10 @@ providers:
       feature_flag: exec.paper
 
 feature_flags:
+  # Per-asset gates (BTC default on; ETH/SOL off until enabled)
+  assets.btc: true
+  assets.eth: false
+  assets.sol: false
   feeds.mock: true
   feeds.deribit: false
   feeds.delta: false
@@ -89,6 +124,7 @@ feature_flags:
   ui.go_cards: true
   ui.regime_strip: true
   ui.operator_panel: true
+  ui.asset_switcher: true
   exec.paper: false
   exec.confirm: false
   exec.live: false
@@ -147,7 +183,8 @@ intel:
   calendar_stubs: true
   cryptopanic:
     # Live only when CRYPTOPANIC_TOKEN is set; otherwise mock fixtures.
-    currencies: BTC,ETH
+    # Overridden per active asset via assets.<U>.cryptopanic_currencies when set.
+    currencies: BTC,ETH,SOL
     attribution: "Powered by CryptoPanic"
 
 # Local Gemma 12B (Ollama-compatible). Language only — never creates GO / prices.
@@ -170,6 +207,7 @@ feeds:
   delta:
     ws_url: wss://public-socket.india.delta.exchange
     rest_url: https://api.india.delta.exchange
+    # Default symbols; active asset overrides via assets.<U>.delta_symbols
     symbols: [BTCUSD]
     snapshot_options: true
     # Paper/demo trading only — never use production trading keys here.

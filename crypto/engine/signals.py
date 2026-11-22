@@ -17,6 +17,16 @@ from crypto.providers.mock.fixtures import load_fixture
 from crypto.providers.types import PerpSnapshot
 
 
+def _fixture_underlying(gex: dict[str, Any], perp: PerpSnapshot) -> str:
+    u = str(gex.get("underlying") or "").strip().upper()
+    if u:
+        return u
+    sym = (perp.symbol or "").upper()
+    for token in ("-PERPETUAL", "-PERP", "USD", "USDT"):
+        sym = sym.replace(token, "")
+    return (sym.split("-")[0] if sym else "BTC") or "BTC"
+
+
 def build_signal_card(
     gex: dict[str, Any],
     perp: PerpSnapshot,
@@ -82,7 +92,7 @@ def build_signal_card(
     ) and not live_signal_path
 
     if use_fixture_tmpl:
-        tmpl = load_fixture().get("signal_template") or {}
+        tmpl = load_fixture(_fixture_underlying(gex, perp)).get("signal_template") or {}
         if veto.blocked:
             return _nogo("hard veto", gex, perp, now, veto.vetoes, tmpl, versions=versions)
         if gex.get("models_agree") and gex.get("regime") == "positive_gamma":

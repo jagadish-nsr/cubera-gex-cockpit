@@ -6,11 +6,16 @@ import logging
 
 import httpx
 
-from crypto.config import get_flag, load_config
+from crypto.config import get_asset_config, get_flag, load_config
 from crypto.providers.mock.perp import MockPerpProvider
 from crypto.providers.types import PerpSnapshot, utcnow
 
 log = logging.getLogger(__name__)
+
+
+def _underlying_from_symbol(symbol: str) -> str:
+    raw = (symbol or "BTC").upper().replace("-PERPETUAL", "").replace("-PERP", "")
+    return (raw.split("-")[0] if raw else "BTC") or "BTC"
 
 
 class DeribitPerpProvider:
@@ -32,11 +37,14 @@ class DeribitPerpProvider:
         base = (cfg.get("live_spike") or {}).get(
             "deribit_base_url", "https://www.deribit.com/api/v2"
         )
+        underlying = _underlying_from_symbol(symbol)
+        asset = get_asset_config(underlying)
+        instrument = str(asset.get("deribit_perp") or f"{underlying}-PERPETUAL")
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
                     f"{base.rstrip('/')}/public/ticker",
-                    params={"instrument_name": "BTC-PERPETUAL"},
+                    params={"instrument_name": instrument},
                 )
                 resp.raise_for_status()
                 result = (resp.json() or {}).get("result") or {}
@@ -49,8 +57,9 @@ class DeribitPerpProvider:
                 snap.index = index
                 snap.funding_rate = funding
                 snap.open_interest = oi
+                snap.symbol = instrument
                 snap.source = "deribit-public"
                 snap.fetched_at = utcnow()
         except Exception as exc:  # noqa: BLE001
-            log.warning("Deribit perp spike failed: %s", exc)
+            log.warning("Deribit perp spike failed (%s): %s", instrument, exc)
         return snap
