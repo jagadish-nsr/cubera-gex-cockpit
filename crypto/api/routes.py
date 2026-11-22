@@ -145,3 +145,91 @@ async def intel_blackout() -> dict[str, Any]:
         return {"active": False, "note": "intel.news flag off"}
     snap = await get_service().snapshot()
     return (snap.get("intel") or {}).get("blackout") or {"active": False}
+
+
+class ConfirmBody(BaseModel):
+    """Optional card override; default uses latest snapshot GO card."""
+
+    card: dict[str, Any] | None = None
+    actor: str = "operator"
+
+
+class KillBody(BaseModel):
+    confirmed: bool = False
+    actor: str = "operator"
+
+
+@router.get("/exec/status")
+async def exec_status() -> dict[str, Any]:
+    from crypto.exec.service import get_execution_service
+
+    return await get_execution_service().status()
+
+
+@router.post("/exec/confirm")
+async def exec_confirm(body: ConfirmBody | None = Body(default=None)) -> dict[str, Any]:
+    """One-tap Confirm: submit paper/sim bracket from a GO card. Never live capital."""
+    from crypto.config import get_flag
+    from crypto.exec.service import get_execution_service
+
+    body = body or ConfirmBody()
+    if not get_flag("exec.paper", default=False):
+        raise HTTPException(status_code=403, detail="exec.paper is off")
+    if not get_flag("exec.confirm", default=False):
+        raise HTTPException(
+            status_code=403,
+            detail="exec.confirm is off — Advisory default; enable Confirm for paper submits",
+        )
+
+    card = body.card
+    if card is None:
+        snap = await get_service().snapshot()
+        card = snap.get("signal")
+    if not card:
+        raise HTTPException(status_code=404, detail="No GO card available")
+
+    result = await get_execution_service().confirm_from_card(card, actor=body.actor)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@router.get("/exec/ledger")
+async def exec_ledger(limit: int = 100, status: str | None = None) -> dict[str, Any]:
+    from crypto.exec.service import get_execution_service
+
+    ledger = get_execution_service().ledger
+    return {"trades": ledger.list_trades(status=status, limit=min(limit, 500))}
+
+
+@router.get("/exec/ledger/export")
+async def exec_ledger_export(format: str = "json") -> Any:
+    """Export paper ledger as JSON or CSV (tax/reporting hygiene)."""
+    from fastapi.responses import PlainTextResponse, Response
+
+    from crypto.exec.service import get_execution_service
+
+    ledger = get_execution_service().ledger
+    fmt = (format or "json").lower()
+    if fmt == "csv":
+        return Response(
+            content=ledger.export_csv(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=paper_trades.csv"},
+        )
+    if fmt == "json":
+        return PlainTextResponse(
+            content=ledger.export_json(),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=paper_trades.json"},
+        )
+    raise HTTPException(status_code=400, detail="format must be json or csv")
+
+
+@router.post("/exec/kill")
+async def exec_kill(body: KillBody | None = Body(default=None)) -> dict[str, Any]:
+    """Two-tap kill switch: first arms, second with confirmed=true cancels paper intents."""
+    from crypto.exec.service import get_execution_service
+
+    body = body or KillBody()
+    return await get_execution_service().kill(confirmed=body.confirmed, actor=body.actor)

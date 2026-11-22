@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>CryptoCubera</title>
-  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory only." />
+  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory default; paper Confirm optional." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
@@ -23,8 +23,9 @@
       <span class="brand-name">CryptoCubera</span>
     </div>
     <div class="topbar-meta">
-      <span class="mode-badge" id="mode-badge">Advisory</span>
+      <span class="mode-badge" id="mode-badge" data-mode="advisory">Advisory</span>
       <span class="live-pill" id="source-pill">fixture</span>
+      <span class="paper-pill" id="paper-pill" hidden>paper off</span>
       <button type="button" class="icon-btn" id="refresh-btn" title="Refresh snapshot">↻</button>
     </div>
   </header>
@@ -86,14 +87,19 @@
       <p class="section-sub">Feature flags — toggle slices without redeploy.</p>
       <div class="flag-grid" id="flag-grid"></div>
       <div class="exec-row">
-        <button type="button" class="kill-btn" id="kill-btn" disabled title="Disabled until execution is wired">Kill switch</button>
+        <button type="button" class="kill-btn" id="kill-btn" disabled title="Enable exec.paper to arm kill switch">Kill switch</button>
         <span class="exec-note" id="exec-note">Advisory · no live orders</span>
+      </div>
+      <div class="ledger-row" id="ledger-row" hidden>
+        <a class="ledger-link" href="/api/exec/ledger/export?format=csv">Export CSV</a>
+        <a class="ledger-link" href="/api/exec/ledger/export?format=json">Export JSON</a>
+        <span class="exec-note" id="ledger-note"></span>
       </div>
     </section>
   </main>
 
   <footer class="foot">
-    <span>Decision support, not financial advice.</span>
+    <span>Decision support, not financial advice. Paper only — never live capital.</span>
     <span id="providers-line"></span>
   </footer>
 

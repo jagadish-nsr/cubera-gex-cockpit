@@ -113,9 +113,28 @@ class CockpitService:
             threshold_s=float((cfg.get("feeds") or {}).get("stale_threshold_s") or STALE_THRESHOLD_S),
         )
 
+        from crypto.exec.service import get_execution_service
+
+        exec_svc = get_execution_service()
+        exec_status = await exec_svc.status()
+        exec_mode = exec_status.get("exec_mode") or {}
+        open_trades = exec_svc.ledger.open_intents()[:5] if get_flag("exec.paper") else []
+
+        signal_out = None
+        if get_flag("ui.go_cards", default=True):
+            signal_out = _serialize_card(card)
+            signal_out["exec_mode"] = exec_mode.get("mode") or "advisory"
+            signal_out["can_confirm"] = bool(exec_mode.get("can_confirm"))
+            signal_out["paper_status"] = {
+                "open_intents": exec_status.get("open_intents") or 0,
+                "adapter": exec_status.get("adapter"),
+                "latest_open": open_trades[0] if open_trades else None,
+            }
+
         return {
             "brand": "CryptoCubera",
-            "mode": cfg.get("mode") or "advisory",
+            "mode": exec_mode.get("mode") or cfg.get("mode") or "advisory",
+            "mode_badge": exec_mode.get("badge") or "Advisory",
             "underlying": underlying,
             "spot": snap.spot,
             "providers": self.registry.active_summary(),
@@ -141,7 +160,7 @@ class CockpitService:
             "orderflow": _serialize_orderflow(orderflow)
             if get_flag("ui.regime_strip", default=True)
             else None,
-            "signal": _serialize_card(card) if get_flag("ui.go_cards", default=True) else None,
+            "signal": signal_out,
             "inference": inference,
             "news": events_for_api(intel_events) if intel_flag else [],
             "intel": {
@@ -150,11 +169,8 @@ class CockpitService:
                 "n_events": len(intel_events),
                 "flag": intel_flag,
             },
-            "execution": {
-                "can_trade": False,
-                "kill_switch_armed": False,
-                "note": "Advisory only. Kill switch disabled until execution is wired.",
-            },
+            "execution": exec_status,
+            "paper_trades_open": open_trades,
         }
 
     def toggle_flag(self, name: str, value: bool, actor: str = "operator") -> dict[str, Any]:

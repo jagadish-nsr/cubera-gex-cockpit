@@ -29,6 +29,7 @@ def _register_builtins() -> None:
     from crypto.providers.deribit.chain import DeribitOptionChainProvider
     from crypto.providers.deribit.perp import DeribitPerpProvider
     from crypto.providers.delta.chain import DeltaOptionChainProvider
+    from crypto.providers.delta.execution import DeltaPaperExecutionVenue
     from crypto.providers.binance.perp import BinancePerpProvider
     from crypto.providers.cryptopanic.news import CryptoPanicNewsProvider
 
@@ -48,7 +49,7 @@ def _register_builtins() -> None:
     }
     _FACTORIES["execution"] = {
         "mock": MockExecutionVenue,
-        "delta": MockExecutionVenue,  # stub until paper wired
+        "delta": DeltaPaperExecutionVenue,
     }
 
 
@@ -147,11 +148,20 @@ class ProviderRegistry:
             raise RuntimeError("No news provider available")
         return self._instantiate("news", meta.name)
 
+    def execution(self):
+        """Paper/demo execution venue. Falls back to mock sim when paper flag off."""
+        meta = self._pick("execution")
+        if meta is None:
+            # Always have a sim venue available for tests / kill-switch
+            return self._instantiate("execution", "mock")
+        return self._instantiate("execution", meta.name)
+
     def active_summary(self) -> dict[str, str]:
         return {
             "option_chain": (self._pick("option_chain") or ProviderMeta("none", "option_chain", False, 0, "")).name,
             "perp": (self._pick("perp") or ProviderMeta("none", "perp", False, 0, "")).name,
             "news": (self._pick("news") or ProviderMeta("none", "news", False, 0, "")).name,
+            "execution": (self._pick("execution") or ProviderMeta("mock", "execution", True, 100, "exec.paper")).name,
         }
 
 
