@@ -11,7 +11,10 @@
   <link rel="stylesheet" href="/static/css/cockpit.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
   <div class="atmosphere" aria-hidden="true">
+    <div class="atm-grain"></div>
     <div class="atm-grid"></div>
     <div class="atm-glow atm-glow-a"></div>
     <div class="atm-glow atm-glow-b"></div>
@@ -26,12 +29,16 @@
       <span class="mode-badge" id="mode-badge" data-mode="advisory">Advisory</span>
       <span class="live-pill" id="source-pill">fixture</span>
       <span class="paper-pill" id="paper-pill" hidden>paper off</span>
-      <button type="button" class="icon-btn" id="refresh-btn" title="Refresh snapshot">↻</button>
+      <button type="button" class="icon-btn" id="refresh-btn" title="Refresh snapshot" aria-label="Refresh snapshot">↻</button>
     </div>
   </header>
 
-  <main class="stage">
-    <!-- Hero: brand + spot + GO status — one composition -->
+  <div class="blackout-banner" id="blackout-banner" hidden role="status" aria-live="polite">
+    <span class="blackout-kicker">Blackout</span>
+    <span class="blackout-copy" id="blackout-copy">Signal veto active</span>
+  </div>
+
+  <main class="stage" id="main">
     <section class="hero" id="hero">
       <div class="hero-brand">
         <h1 class="hero-title">CryptoCubera</h1>
@@ -46,14 +53,20 @@
           <span class="go-status-label">Status</span>
           <span class="go-status-value" id="go-status-value">…</span>
         </div>
+        <div class="hero-meta" id="hero-meta" hidden>
+          <span class="hero-meta-k">Setup</span>
+          <span class="hero-meta-v" id="hero-setup">—</span>
+        </div>
       </div>
     </section>
 
-    <!-- Full-bleed GEX visual plane -->
     <section class="gex-plane" id="gex-section" hidden>
       <div class="gex-plane-head">
-        <h2 class="section-title">GEX map</h2>
-        <p class="section-sub" id="gex-regime-line">Regime loading…</p>
+        <div>
+          <h2 class="section-title">GEX map</h2>
+          <p class="section-sub">Strike × net gamma. Walls and flip are positioning, not a forecast.</p>
+        </div>
+        <p class="gex-regime-chip" id="gex-regime-line">Regime loading…</p>
       </div>
       <div class="gex-canvas-wrap">
         <canvas id="gex-canvas" width="1200" height="420" role="img" aria-label="Strike versus gamma exposure"></canvas>
@@ -61,31 +74,36 @@
       </div>
     </section>
 
-    <!-- Regime & flow strip -->
     <section class="flow-strip" id="flow-section" hidden>
-      <h2 class="section-title sr-only">Regime and flow</h2>
+      <div class="section-head">
+        <h2 class="section-title">Regime &amp; flow</h2>
+        <p class="section-sub">Convention vs flow agreement, plus tape context.</p>
+      </div>
       <div class="flow-grid" id="flow-grid"></div>
     </section>
 
-    <!-- GO card (interactive only) -->
     <section class="setups" id="setups-section" hidden>
-      <h2 class="section-title">Setup</h2>
-      <p class="section-sub">Rule-based card. Not a guaranteed call.</p>
+      <div class="section-head">
+        <h2 class="section-title">Setup</h2>
+        <p class="section-sub">Rule-based card with defined risk. Not a guaranteed call.</p>
+      </div>
       <div id="go-card-mount"></div>
     </section>
 
-    <!-- Intelligence -->
     <section class="intel" id="intel-section" hidden>
-      <h2 class="section-title">Intelligence</h2>
-      <p class="section-sub">Flags events. Never places trades.</p>
+      <div class="section-head">
+        <h2 class="section-title">Intelligence</h2>
+        <p class="section-sub">IMMINENT · BREAKING · WATCH — flags events, never places trades.</p>
+      </div>
       <ul class="intel-list" id="intel-list"></ul>
     </section>
 
-    <!-- Operator panel -->
     <section class="operator" id="operator-section" hidden>
-      <h2 class="section-title">Operator</h2>
-      <p class="section-sub">Feature flags — toggle slices without redeploy.</p>
-      <div class="flag-grid" id="flag-grid"></div>
+      <div class="section-head">
+        <h2 class="section-title">Operator</h2>
+        <p class="section-sub">Feature flags — toggle slices without redeploy.</p>
+      </div>
+      <div class="flag-groups" id="flag-grid"></div>
       <div class="exec-row">
         <button type="button" class="kill-btn" id="kill-btn" disabled title="Enable exec.paper to arm kill switch">Kill switch</button>
         <span class="exec-note" id="exec-note">Advisory · no live orders</span>
