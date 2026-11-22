@@ -75,13 +75,31 @@ def intel_to_news_event(e: IntelEvent) -> NewsEvent:
 
 
 def enrich_event(event: IntelEvent, *, seen_titles: list[str], now: datetime) -> IntelEvent:
-    """Classify + score one event."""
-    classified = classify_headline(
-        event.title,
-        assets_hint=event.assets,
-        venues_hint=event.venues,
-        event_type_hint=event.event_type,
-    )
+    """Classify + score one event.
+
+    When ``intel.gemma`` is on, try local Gemma first; timeout / invalid JSON
+    falls back to keyword rules. Gemma never creates a GO.
+    """
+    if get_flag("intel.gemma", default=False):
+        from crypto.gemma.classify import classify_with_gemma
+
+        classified = classify_with_gemma(
+            event.title,
+            source=event.source,
+            assets_hint=event.assets,
+            venues_hint=event.venues,
+            event_type_hint=event.event_type,
+        )
+        event.raw = dict(event.raw or {})
+        event.raw["classify_source"] = classified.get("source")
+        event.raw["classify_confidence"] = classified.get("confidence")
+    else:
+        classified = classify_headline(
+            event.title,
+            assets_hint=event.assets,
+            venues_hint=event.venues,
+            event_type_hint=event.event_type,
+        )
     event.event_type = str(classified["event_type"])
     event.assets = list(classified["assets"])  # type: ignore[arg-type]
     event.venues = list(classified["venues"])  # type: ignore[arg-type]

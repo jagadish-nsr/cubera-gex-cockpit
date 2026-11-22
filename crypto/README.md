@@ -32,7 +32,7 @@ Mock/fixture mode is the default. The UI is reviewable without API keys.
 | Live feeds (Phase 0) | `crypto/feeds/` + `providers/deribit|delta/` |
 | Field findings | `crypto/docs/feed-fields.md` |
 | Cockpit UI | `crypto/web/` |
-| API | `GET /api/snapshot`, `/api/intel/*`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
+| API | `GET /api/snapshot`, `/api/intel/*`, `POST /api/intel/digest`, `/api/exec/*`, `/api/flags`, `/api/providers`, `/api/feeds`, `/api/engine/params`, `/api/health` |
 
 ## Quant engine (rules baseline)
 
@@ -80,6 +80,7 @@ Configurable under `engine.setups` in `config/crypto.yaml` (starting parameters 
 | `engine.signal_rules` | true | Setup evaluation |
 | `intel.news` | true | Intelligence feed + CryptoPanic/mock ingest |
 | `intel.calendar` | true | Macro / maintenance calendar stubs |
+| `intel.gemma` | **false** | Local Gemma 12B classify / GO prose / digests |
 | `inference.feature_export` | **false** | Export feature vector on snapshot |
 | `inference.regime_classifier` | **false** | Placeholder regime classifier (never creates GO) |
 
@@ -111,16 +112,61 @@ Off by default. When flagged, snapshot includes an advisory feature vector and/o
 
 ## Market intelligence and alerts
 
-Ingest → normalize → keyword-classify → score → `IMMINENT` / `BREAKING` / `WATCH`. Never places trades. Gemma is out of scope (keyword rules only).
+Ingest → normalize → classify → score → `IMMINENT` / `BREAKING` / `WATCH`. Never places trades. Keyword rules are the default; optional local Gemma 12B is flag-gated.
 
 | Piece | Role |
 | --- | --- |
 | `crypto/intel/schema.py` | Normalized event (type, assets, venues, novelty, score, tier, blackout stamps) |
-| `crypto/intel/classify.py` | Keyword event_type / asset / venue tags |
+| `crypto/intel/classify.py` | Keyword event_type / asset / venue tags (fallback) |
+| `crypto/gemma/` | Local Gemma: classify, GO prose, digests (schema-validated) |
 | `crypto/intel/score.py` | Impact score; scheduled windows → IMMINENT |
 | `crypto/intel/calendar.py` | CPI / FOMC / expiry / Delta maintenance stubs |
 | `crypto/intel/blackout.py` | 30-minute hard-veto window for the signal path |
 | `events` table | Persists scored events (`event_type`, `novelty`, `venues`, `occurs_at`, `blackout_until` + JSON payload) |
+
+### Local Gemma 12B language layer
+
+Language only — headlines, GO-card wording, digests. **No tools. Never creates a GO or invents prices** (numbers come from structured engine fields; invented numbers are rejected). Timeout or unavailable runtime → keyword rules / templates. `mock_when_unavailable: true` keeps the cockpit offline-friendly.
+
+| Task | Output | Fallback |
+| --- | --- | --- |
+| Headline classify | `{event_type, assets, venues, confidence}` | `crypto/intel/classify.py` keywords |
+| GO card reasons | exactly 3 lines | engine / template reasons |
+| Digests | morning / post_trade / veto | template digest |
+
+Point at a local Ollama-compatible runtime (Gemma 12B pulled locally):
+
+```bash
+# 1) Run Ollama (or any /api/chat compatible host) with a 12B Gemma tag
+ollama pull gemma2:12b
+ollama serve   # default http://localhost:11434
+
+# 2) Point CryptoCubera at it and enable the flag
+export CRYPTO_GEMMA_BASE_URL=http://localhost:11434   # or OLLAMA_HOST
+export CRYPTO_GEMMA_MODEL=gemma2:12b                  # or OLLAMA_MODEL
+export CRYPTO_GEMMA_TIMEOUT_S=8
+CRYPTO_FLAG_INTEL_GEMMA=1 python3 -m crypto.server --port 8760
+
+# Status + digest
+curl -s localhost:8760/api/intel/gemma | python3 -m json.tool
+curl -s -X POST localhost:8760/api/intel/digest \
+  -H 'content-type: application/json' \
+  -d '{"kind":"morning"}' | python3 -m json.tool
+```
+
+Config block (`config/crypto.yaml`):
+
+```yaml
+gemma:
+  base_url: http://localhost:11434
+  model: gemma2:12b
+  timeout_s: 8
+  mock_when_unavailable: true
+feature_flags:
+  intel.gemma: false   # flip on when runtime is ready
+```
+
+Without a runtime, leave `intel.gemma` off (default) or keep it on with `mock_when_unavailable` — classify falls back to keywords; digests/GO prose use templates.
 
 ### Enable without a CryptoPanic token (default)
 

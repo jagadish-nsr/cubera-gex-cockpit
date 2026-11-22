@@ -1,7 +1,8 @@
 """Normalized market-intelligence event schema.
 
 One schema for headlines, calendar stubs, and venue maintenance.
-Gemma is out of scope — keyword rules fill event_type / assets / venues.
+Keyword rules are the default; optional Gemma fills event_type / assets /
+venues when ``intel.gemma`` is on (schema-validated, timeout → keywords).
 """
 
 from __future__ import annotations

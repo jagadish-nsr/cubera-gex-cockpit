@@ -104,6 +104,11 @@ class CockpitService:
             chain_fetched_at=snap.fetched_at,
             live_signal_path=live_path,
         )
+        if get_flag("intel.gemma", default=False):
+            from crypto.gemma.go_prose import explain_go_card
+
+            # Language only — never flips NO-GO → GO or invents levels.
+            card = explain_go_card(card)
         self.store.write_signal(card)
 
         inference = run_inference(gex, orderflow)
@@ -168,6 +173,7 @@ class CockpitService:
                 "blackout": blackout_info,
                 "n_events": len(intel_events),
                 "flag": intel_flag,
+                "gemma": get_flag("intel.gemma", default=False),
             },
             "execution": exec_status,
             "paper_trades_open": open_trades,

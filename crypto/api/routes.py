@@ -147,6 +147,52 @@ async def intel_blackout() -> dict[str, Any]:
     return (snap.get("intel") or {}).get("blackout") or {"active": False}
 
 
+class DigestBody(BaseModel):
+    """Desk digest request. Language only — never creates a GO."""
+
+    kind: str = Field("morning", examples=["morning", "post_trade", "veto"])
+    force_mock: bool = False
+
+
+@router.post("/intel/digest")
+async def intel_digest(body: DigestBody | None = Body(default=None)) -> dict[str, Any]:
+    """Morning / post-trade / veto digest (Gemma when ``intel.gemma`` on)."""
+    from crypto.config import get_flag
+    from crypto.gemma.digests import build_digest
+
+    body = body or DigestBody()
+    snap = await get_service().snapshot()
+    card = snap.get("signal") or {}
+    events = snap.get("news") or []
+    vetoes = list(card.get("veto_reasons") or [])
+    digest = build_digest(
+        body.kind,
+        events=events,
+        card=card,
+        vetoes=vetoes,
+        force_mock=body.force_mock,
+    )
+    digest["gemma_flag"] = get_flag("intel.gemma", default=False)
+    return digest
+
+
+@router.get("/intel/gemma")
+async def intel_gemma_status() -> dict[str, Any]:
+    """Gemma language-layer status (flag, config, no secrets)."""
+    from crypto.gemma.client import gemma_available, gemma_config, gemma_enabled
+
+    cfg = gemma_config()
+    return {
+        "enabled": gemma_enabled(),
+        "available": gemma_available(probe=False),
+        "base_url": cfg["base_url"],
+        "model": cfg["model"],
+        "timeout_s": cfg["timeout_s"],
+        "mock_when_unavailable": cfg["mock_when_unavailable"],
+        "note": "Language only — schema-validated; timeout→keywords; never creates GO.",
+    }
+
+
 class ConfirmBody(BaseModel):
     """Optional card override; default uses latest snapshot GO card."""
 
