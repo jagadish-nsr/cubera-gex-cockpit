@@ -1,0 +1,102 @@
+{
+  "underlying": "BTC",
+  "spot": 97240.0,
+  "mark_iv": 0.48,
+  "dvol": 52.3,
+  "source": "fixture",
+  "note": "Synthetic BTC Deribit-shaped chain for UI review. Not live market data.",
+  "contracts": [
+    {"instrument": "BTC-28NOV25-90000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 90000, "option_type": "P", "oi": 420, "iv": 0.55, "gamma": 0.000018, "delta": -0.18, "mid": 820, "bid": 800, "ask": 840, "volume": 55},
+    {"instrument": "BTC-28NOV25-92000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 92000, "option_type": "P", "oi": 610, "iv": 0.52, "gamma": 0.000024, "delta": -0.26, "mid": 1180, "bid": 1150, "ask": 1210, "volume": 72},
+    {"instrument": "BTC-28NOV25-94000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 94000, "option_type": "P", "oi": 880, "iv": 0.50, "gamma": 0.000032, "delta": -0.35, "mid": 1680, "bid": 1640, "ask": 1720, "volume": 110},
+    {"instrument": "BTC-28NOV25-95000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 95000, "option_type": "P", "oi": 1240, "iv": 0.49, "gamma": 0.000038, "delta": -0.40, "mid": 2050, "bid": 2010, "ask": 2090, "volume": 145},
+    {"instrument": "BTC-28NOV25-96000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 96000, "option_type": "P", "oi": 1560, "iv": 0.485, "gamma": 0.000042, "delta": -0.45, "mid": 2480, "bid": 2430, "ask": 2530, "volume": 310},
+    {"instrument": "BTC-28NOV25-97000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 97000, "option_type": "P", "oi": 1820, "iv": 0.48, "gamma": 0.000045, "delta": -0.50, "mid": 2980, "bid": 2920, "ask": 3040, "volume": 360},
+    {"instrument": "BTC-28NOV25-98000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 98000, "option_type": "P", "oi": 1490, "iv": 0.475, "gamma": 0.000043, "delta": -0.55, "mid": 3520, "bid": 3460, "ask": 3580, "volume": 290},
+    {"instrument": "BTC-28NOV25-100000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 100000, "option_type": "P", "oi": 980, "iv": 0.47, "gamma": 0.000034, "delta": -0.64, "mid": 4680, "bid": 4600, "ask": 4760, "volume": 95},
+    {"instrument": "BTC-28NOV25-90000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 90000, "option_type": "C", "oi": 310, "iv": 0.54, "gamma": 0.000016, "delta": 0.82, "mid": 7850, "bid": 7780, "ask": 7920, "volume": 40},
+    {"instrument": "BTC-28NOV25-92000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 92000, "option_type": "C", "oi": 540, "iv": 0.51, "gamma": 0.000022, "delta": 0.74, "mid": 6120, "bid": 6060, "ask": 6180, "volume": 68},
+    {"instrument": "BTC-28NOV25-94000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 94000, "option_type": "C", "oi": 920, "iv": 0.495, "gamma": 0.000030, "delta": 0.65, "mid": 4580, "bid": 4520, "ask": 4640, "volume": 125},
+    {"instrument": "BTC-28NOV25-95000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 95000, "option_type": "C", "oi": 1380, "iv": 0.49, "gamma": 0.000036, "delta": 0.60, "mid": 3920, "bid": 3860, "ask": 3980, "volume": 90},
+    {"instrument": "BTC-28NOV25-96000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 96000, "option_type": "C", "oi": 1710, "iv": 0.485, "gamma": 0.000041, "delta": 0.55, "mid": 3320, "bid": 3260, "ask": 3380, "volume": 110},
+    {"instrument": "BTC-28NOV25-97000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 97000, "option_type": "C", "oi": 2100, "iv": 0.48, "gamma": 0.000046, "delta": 0.50, "mid": 2780, "bid": 2730, "ask": 2830, "volume": 130},
+    {"instrument": "BTC-28NOV25-98000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 98000, "option_type": "C", "oi": 2450, "iv": 0.475, "gamma": 0.000048, "delta": 0.45, "mid": 2280, "bid": 2230, "ask": 2330, "volume": 140},
+    {"instrument": "BTC-28NOV25-99000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 99000, "option_type": "C", "oi": 1980, "iv": 0.47, "gamma": 0.000044, "delta": 0.40, "mid": 1840, "bid": 1800, "ask": 1880, "volume": 100},
+    {"instrument": "BTC-28NOV25-100000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 100000, "option_type": "C", "oi": 2860, "iv": 0.465, "gamma": 0.000040, "delta": 0.36, "mid": 1460, "bid": 1420, "ask": 1500, "volume": 120},
+    {"instrument": "BTC-28NOV25-102000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 102000, "option_type": "C", "oi": 1620, "iv": 0.46, "gamma": 0.000028, "delta": 0.28, "mid": 920, "bid": 890, "ask": 950, "volume": 140},
+    {"instrument": "BTC-28NOV25-104000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 104000, "option_type": "C", "oi": 980, "iv": 0.455, "gamma": 0.000020, "delta": 0.21, "mid": 540, "bid": 520, "ask": 560, "volume": 85},
+    {"instrument": "BTC-28NOV25-106000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 106000, "option_type": "C", "oi": 640, "iv": 0.45, "gamma": 0.000014, "delta": 0.15, "mid": 310, "bid": 295, "ask": 325, "volume": 50},
+    {"instrument": "BTC-27DEC25-90000-P", "expiry": "2025-12-27T08:00:00Z", "strike": 90000, "option_type": "P", "oi": 720, "iv": 0.56, "gamma": 0.000012, "delta": -0.22, "mid": 2100, "bid": 2050, "ask": 2150, "volume": 30},
+    {"instrument": "BTC-27DEC25-95000-P", "expiry": "2025-12-27T08:00:00Z", "strike": 95000, "option_type": "P", "oi": 1100, "iv": 0.52, "gamma": 0.000020, "delta": -0.38, "mid": 3800, "bid": 3720, "ask": 3880, "volume": 45},
+    {"instrument": "BTC-27DEC25-97000-P", "expiry": "2025-12-27T08:00:00Z", "strike": 97000, "option_type": "P", "oi": 980, "iv": 0.51, "gamma": 0.000022, "delta": -0.46, "mid": 4700, "bid": 4600, "ask": 4800, "volume": 38},
+    {"instrument": "BTC-27DEC25-100000-C", "expiry": "2025-12-27T08:00:00Z", "strike": 100000, "option_type": "C", "oi": 1540, "iv": 0.50, "gamma": 0.000021, "delta": 0.42, "mid": 4200, "bid": 4120, "ask": 4280, "volume": 60},
+    {"instrument": "BTC-27DEC25-105000-C", "expiry": "2025-12-27T08:00:00Z", "strike": 105000, "option_type": "C", "oi": 890, "iv": 0.49, "gamma": 0.000015, "delta": 0.30, "mid": 2400, "bid": 2340, "ask": 2460, "volume": 35}
+  ],
+  "perp": {
+    "venue": "deribit",
+    "symbol": "BTC-PERPETUAL",
+    "mark": 97255.0,
+    "index": 97240.0,
+    "funding_rate": 0.00012,
+    "open_interest": 482000000,
+    "cvd_1m": 42.5,
+    "cvd_5m": 186.0,
+    "cvd_15m": -95.2,
+    "book_imbalance": 0.18
+  },
+  "news": [
+    {
+      "event_id": "fx-btc-hack-alert",
+      "title": "Major DeFi protocol hack drains bridge liquidity — BTC and ETH wobble",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["BTC", "ETH"],
+      "event_type": "hack",
+      "source_reliability": 0.92,
+      "prior_move_proxy": 0.85,
+      "impact_note": "Fixture breaking-class headline for classifier/score tests."
+    },
+    {
+      "event_id": "fx-funding-flip",
+      "title": "Perp funding flipped positive after two negative prints",
+    "url": "https://docs.deribit.com/api-reference/market-data/public-ticker",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["BTC"],
+      "event_type": "funding",
+      "impact_note": "Mild long bias returning; not a standalone GO."
+    },
+    {
+      "event_id": "fx-etf-flow",
+      "title": "US spot BTC ETF complex saw net inflow yesterday (third-party)",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-digest",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["BTC"],
+      "event_type": "etf_flow",
+      "impact_note": "Cross-check only; not in the free live stack yet."
+    }
+  ],
+  "signal_template": {
+    "status": "GO",
+    "setup": "positive_gamma_fade",
+    "instrument": "BTCUSD",
+    "side": "sell",
+    "entry_zone": [97480, 97620],
+    "target": 96800,
+    "stop": 98150,
+    "size_cap_usd": 2500,
+    "score": 72,
+    "reasons": [
+      "Convention and flow GEX both positive around spot (pin/fade bias).",
+      "Spot stretched ~1.6× ATR above the 97k magnet; CVD 15m diverging.",
+      "Call wall at 100k / put wall at 96k; stop beyond nearer wall."
+    ],
+    "invalidation": "Close above 98150 or convention/flow regime disagreement.",
+    "valid_minutes": 25
+  }
+}

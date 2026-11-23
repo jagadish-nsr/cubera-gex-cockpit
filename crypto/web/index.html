@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CryptoCubera</title>
+  <meta name="description" content="CryptoCubera — modular crypto GEX decision support. Advisory / Paper / Manual Decision. Never auto-executes." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@300;400;500;600&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/cockpit.css" />
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div class="atmosphere" aria-hidden="true">
+    <div class="atm-grain"></div>
+    <div class="atm-grid"></div>
+    <div class="atm-glow atm-glow-a"></div>
+    <div class="atm-glow atm-glow-b"></div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">CryptoCubera</span>
+    </div>
+    <div class="topbar-meta">
+      <div class="asset-switcher" id="asset-switcher" role="group" aria-label="Underlying asset" hidden></div>
+      <span class="mode-badge" id="mode-badge" data-mode="advisory">Advisory</span>
+      <span class="live-pill" id="source-pill">fixture</span>
+      <span class="paper-pill" id="paper-pill" hidden>paper off</span>
+      <button type="button" class="icon-btn" id="refresh-btn" title="Refresh snapshot" aria-label="Refresh snapshot">↻</button>
+    </div>
+  </header>
+
+  <div class="blackout-banner" id="blackout-banner" hidden role="status" aria-live="polite">
+    <span class="blackout-kicker">Blackout</span>
+    <span class="blackout-copy" id="blackout-copy">Signal veto active</span>
+  </div>
+
+  <main class="stage" id="main">
+    <section class="hero" id="hero">
+      <div class="hero-brand">
+        <h1 class="hero-title">CryptoCubera</h1>
+        <p class="hero-lede">Gamma map. Ranked setups. You confirm.</p>
+      </div>
+      <div class="hero-status">
+        <div class="spot-block">
+          <span class="spot-label" id="underlying-label">BTC</span>
+          <span class="spot-value" id="spot-value">—</span>
+        </div>
+        <div class="go-status" id="go-status" data-status="loading">
+          <span class="go-status-label">Status</span>
+          <span class="go-status-value" id="go-status-value">…</span>
+        </div>
+        <div class="hero-meta" id="hero-meta" hidden>
+          <span class="hero-meta-k">Setup</span>
+          <span class="hero-meta-v" id="hero-setup">—</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="gex-plane" id="gex-section" hidden>
+      <div class="gex-plane-head">
+        <div>
+          <h2 class="section-title">GEX map</h2>
+          <p class="section-sub">Strike × net gamma. Walls and flip are positioning, not a forecast.</p>
+        </div>
+        <p class="gex-regime-chip" id="gex-regime-line">Regime loading…</p>
+      </div>
+      <div class="gex-canvas-wrap">
+        <canvas id="gex-canvas" width="1200" height="420" role="img" aria-label="Strike versus gamma exposure"></canvas>
+        <div class="gex-levels" id="gex-levels"></div>
+      </div>
+    </section>
+
+    <section class="flow-strip" id="flow-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Regime &amp; flow</h2>
+        <p class="section-sub">Convention vs flow agreement, plus tape context.</p>
+      </div>
+      <div class="flow-grid" id="flow-grid"></div>
+    </section>
+
+    <section class="flow-alerts" id="flow-alerts-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Orderflow alerts</h2>
+        <p class="section-sub">CryptoCubera tape signals for BTC / ETH / SOL — decision support, never auto-place.</p>
+      </div>
+      <ul class="flow-alert-list" id="flow-alert-list" aria-live="polite"></ul>
+    </section>
+
+    <section class="setups" id="setups-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Setup</h2>
+        <p class="section-sub">Rule-based card with defined risk. Not a guaranteed call.</p>
+      </div>
+      <div id="go-card-mount"></div>
+    </section>
+
+    <section class="intel" id="intel-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Intelligence</h2>
+        <p class="section-sub">IMMINENT · BREAKING · WATCH — flags events, never places trades.</p>
+      </div>
+      <ul class="intel-list" id="intel-list"></ul>
+      <div class="further-reading" id="further-reading" hidden>
+        <h3 class="further-reading-title">Further reading</h3>
+        <ul class="further-reading-list" id="further-reading-list"></ul>
+      </div>
+    </section>
+
+    <section class="operator" id="operator-section" hidden>
+      <div class="section-head">
+        <h2 class="section-title">Operator</h2>
+        <p class="section-sub">Feature flags — toggle slices without redeploy.</p>
+      </div>
+      <div class="flag-groups" id="flag-grid"></div>
+      <div class="exec-row">
+        <button type="button" class="kill-btn" id="kill-btn" disabled title="Enable exec.paper (+ exec.confirm) for paper kill switch. Manual Decision does not place live orders.">Kill switch</button>
+        <span class="exec-note" id="exec-note">Advisory · Confirm off</span>
+      </div>
+      <div class="ledger-row" id="ledger-row" hidden>
+        <a class="ledger-link" href="/api/exec/ledger/export?format=csv">Export CSV</a>
+        <a class="ledger-link" href="/api/exec/ledger/export?format=json">Export JSON</a>
+        <a class="ledger-link" href="/api/exec/decision">Decision JSON</a>
+        <span class="exec-note" id="ledger-note"></span>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-host" id="toast-host" aria-live="polite" aria-atomic="true"></div>
+
+  <footer class="foot">
+    <span>Decision support, not financial advice. Modes: Advisory · Paper · Manual Decision. No Auto. Confirm never places live orders.</span>
+    <span id="providers-line"></span>
+  </footer>
+
+  <script src="/static/js/cockpit.js" type="module"></script>
+</body>
+</html>

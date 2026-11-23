@@ -1,0 +1,99 @@
+{
+  "underlying": "ETH",
+  "spot": 3240.0,
+  "mark_iv": 0.62,
+  "dvol": 68.4,
+  "source": "fixture",
+  "note": "Synthetic ETH Deribit-shaped chain for UI review. Not live market data.",
+  "contracts": [
+    {"instrument": "ETH-28NOV25-2800-P", "expiry": "2025-11-28T08:00:00Z", "strike": 2800, "option_type": "P", "oi": 380, "iv": 0.70, "gamma": 0.00055, "delta": -0.18, "mid": 42, "bid": 40, "ask": 44, "volume": 48},
+    {"instrument": "ETH-28NOV25-3000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3000, "option_type": "P", "oi": 560, "iv": 0.66, "gamma": 0.00072, "delta": -0.26, "mid": 68, "bid": 66, "ask": 70, "volume": 65},
+    {"instrument": "ETH-28NOV25-3100-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3100, "option_type": "P", "oi": 820, "iv": 0.64, "gamma": 0.00092, "delta": -0.35, "mid": 98, "bid": 95, "ask": 101, "volume": 95},
+    {"instrument": "ETH-28NOV25-3200-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3200, "option_type": "P", "oi": 1180, "iv": 0.63, "gamma": 0.00108, "delta": -0.42, "mid": 128, "bid": 124, "ask": 132, "volume": 130},
+    {"instrument": "ETH-28NOV25-3240-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3240, "option_type": "P", "oi": 1480, "iv": 0.62, "gamma": 0.00115, "delta": -0.48, "mid": 148, "bid": 144, "ask": 152, "volume": 280},
+    {"instrument": "ETH-28NOV25-3300-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3300, "option_type": "P", "oi": 1720, "iv": 0.615, "gamma": 0.00118, "delta": -0.55, "mid": 178, "bid": 174, "ask": 182, "volume": 320},
+    {"instrument": "ETH-28NOV25-3400-P", "expiry": "2025-11-28T08:00:00Z", "strike": 3400, "option_type": "P", "oi": 1320, "iv": 0.61, "gamma": 0.00102, "delta": -0.64, "mid": 245, "bid": 240, "ask": 250, "volume": 88},
+    {"instrument": "ETH-28NOV25-2800-C", "expiry": "2025-11-28T08:00:00Z", "strike": 2800, "option_type": "C", "oi": 290, "iv": 0.69, "gamma": 0.00048, "delta": 0.82, "mid": 470, "bid": 462, "ask": 478, "volume": 36},
+    {"instrument": "ETH-28NOV25-3000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3000, "option_type": "C", "oi": 510, "iv": 0.65, "gamma": 0.00068, "delta": 0.74, "mid": 310, "bid": 304, "ask": 316, "volume": 62},
+    {"instrument": "ETH-28NOV25-3100-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3100, "option_type": "C", "oi": 880, "iv": 0.635, "gamma": 0.00088, "delta": 0.65, "mid": 220, "bid": 214, "ask": 226, "volume": 110},
+    {"instrument": "ETH-28NOV25-3200-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3200, "option_type": "C", "oi": 1320, "iv": 0.625, "gamma": 0.00105, "delta": 0.58, "mid": 165, "bid": 160, "ask": 170, "volume": 85},
+    {"instrument": "ETH-28NOV25-3240-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3240, "option_type": "C", "oi": 1640, "iv": 0.62, "gamma": 0.00114, "delta": 0.52, "mid": 142, "bid": 138, "ask": 146, "volume": 120},
+    {"instrument": "ETH-28NOV25-3300-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3300, "option_type": "C", "oi": 1980, "iv": 0.615, "gamma": 0.00120, "delta": 0.45, "mid": 118, "bid": 114, "ask": 122, "volume": 135},
+    {"instrument": "ETH-28NOV25-3400-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3400, "option_type": "C", "oi": 2260, "iv": 0.61, "gamma": 0.00110, "delta": 0.36, "mid": 78, "bid": 75, "ask": 81, "volume": 125},
+    {"instrument": "ETH-28NOV25-3500-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3500, "option_type": "C", "oi": 1580, "iv": 0.605, "gamma": 0.00090, "delta": 0.28, "mid": 48, "bid": 46, "ask": 50, "volume": 95},
+    {"instrument": "ETH-28NOV25-3600-C", "expiry": "2025-11-28T08:00:00Z", "strike": 3600, "option_type": "C", "oi": 920, "iv": 0.60, "gamma": 0.00068, "delta": 0.21, "mid": 28, "bid": 26, "ask": 30, "volume": 70},
+    {"instrument": "ETH-27DEC25-3000-P", "expiry": "2025-12-27T08:00:00Z", "strike": 3000, "option_type": "P", "oi": 640, "iv": 0.68, "gamma": 0.00042, "delta": -0.28, "mid": 145, "bid": 140, "ask": 150, "volume": 28},
+    {"instrument": "ETH-27DEC25-3200-P", "expiry": "2025-12-27T08:00:00Z", "strike": 3200, "option_type": "P", "oi": 980, "iv": 0.65, "gamma": 0.00058, "delta": -0.42, "mid": 210, "bid": 204, "ask": 216, "volume": 40},
+    {"instrument": "ETH-27DEC25-3400-C", "expiry": "2025-12-27T08:00:00Z", "strike": 3400, "option_type": "C", "oi": 1420, "iv": 0.64, "gamma": 0.00055, "delta": 0.42, "mid": 195, "bid": 188, "ask": 202, "volume": 55},
+    {"instrument": "ETH-27DEC25-3600-C", "expiry": "2025-12-27T08:00:00Z", "strike": 3600, "option_type": "C", "oi": 780, "iv": 0.63, "gamma": 0.00040, "delta": 0.30, "mid": 105, "bid": 100, "ask": 110, "volume": 32}
+  ],
+  "perp": {
+    "venue": "deribit",
+    "symbol": "ETH-PERPETUAL",
+    "mark": 3245.0,
+    "index": 3240.0,
+    "funding_rate": 0.00008,
+    "open_interest": 312000000,
+    "cvd_1m": 28.0,
+    "cvd_5m": 142.0,
+    "cvd_15m": -64.0,
+    "book_imbalance": 0.14
+  },
+  "news": [
+    {
+      "event_id": "fx-eth-upgrade-watch",
+      "title": "Ethereum client teams flag upcoming network upgrade window",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["ETH"],
+      "event_type": "listing",
+      "source_reliability": 0.8,
+      "prior_move_proxy": 0.45,
+      "impact_note": "Fixture ETH headline for classifier/score tests."
+    },
+    {
+      "event_id": "fx-eth-funding",
+      "title": "ETH perp funding flipped positive after two negative prints",
+    "url": "https://docs.deribit.com/api-reference/market-data/public-ticker",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["ETH"],
+      "event_type": "funding",
+      "impact_note": "Mild long bias returning; not a standalone GO."
+    },
+    {
+      "event_id": "fx-eth-btc-hack",
+      "title": "Major DeFi protocol hack drains bridge liquidity — BTC and ETH wobble",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["BTC", "ETH"],
+      "event_type": "hack",
+      "source_reliability": 0.92,
+      "prior_move_proxy": 0.85,
+      "impact_note": "Cross-asset fixture for multi-asset intel filter."
+    }
+  ],
+  "signal_template": {
+    "status": "GO",
+    "setup": "positive_gamma_fade",
+    "instrument": "ETHUSD",
+    "side": "sell",
+    "entry_zone": [3255, 3265],
+    "target": 3200,
+    "stop": 3310,
+    "size_cap_usd": 2500,
+    "score": 71,
+    "reasons": [
+      "Convention and flow GEX both positive around spot (pin/fade bias).",
+      "Spot stretched above the 3240 magnet; CVD 15m diverging.",
+      "Call wall at 3300 / put wall at 3200; stop beyond nearer wall."
+    ],
+    "invalidation": "Close above 3310 or convention/flow regime disagreement.",
+    "valid_minutes": 25
+  }
+}

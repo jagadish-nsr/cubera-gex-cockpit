@@ -1,12 +1,36 @@
-# gex — Nifty, Bank Nifty, and Sensex GEX
+# Cubera GEX Cockpit
 
-Decision support for NSE and BSE index options. Pulls the live chain, computes
-call-gamma and put-gamma concentration, the call−put balance (flip and signed
-total), and max pain, and prints a one-sentence book-balance line. **Not
-financial advice. No order execution.**
+Two decision-support surfaces share this repo:
 
-> **Just want to run it?** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
-> The web cockpit is at **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
+1. **NSE / BSE index options** (Nifty, Bank Nifty, Sensex) — legacy Cubera cockpit below.
+2. **CryptoCubera** — modular crypto GEX foundation (Deribit signal venue / Delta execution path). See **[crypto/README.md](crypto/README.md)**.
+
+```bash
+./run_crypto.sh          # CryptoCubera → http://localhost:8760 (Advisory / mock)
+./run_crypto_paper.sh    # Manual Decision + ETH/SOL + Gemma + public MD (live_place=0)
+# Optional paper sim: CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh
+# Advisory live feeds only: CRYPTO_LIVE_FEEDS=1 CRYPTO_FLAG_FEEDS_DERIBIT=1 CRYPTO_FLAG_FEEDS_DELTA=1 ./run_crypto.sh
+./run_prod.sh            # NSE Cubera  → http://localhost:8640
+```
+
+### CryptoCubera paper ops (Manual Decision + ETH/SOL + Gemma + live MD)
+
+1. **Start** — `./run_crypto_paper.sh` → http://localhost:8760 (badge **Manual Decision**; BTC default; ETH/SOL on; Gemma on; public Deribit/Delta feeds on; soft-fallback to mock if WS fails)
+2. **Switch asset** — topbar BTC / ETH / SOL (or `PATCH /api/underlying`)
+3. **Copy / Export** — GO card → Copy levels / Export JSON (hand place on Delta); optional Log decision
+4. **Session export** — `curl -s 'localhost:8760/api/session/export?format=json' -o paper_session.json`
+
+Optional paper sim: `CRYPTO_PAPER_SIM=1 ./run_crypto_paper.sh`. Optional:
+`ollama serve` + `gemma2:12b` for real Gemma answers; without Ollama the paper
+path soft-falls back to keywords/templates. Full checklist:
+**[crypto/docs/paper-runbook.md](crypto/docs/paper-runbook.md)**. Preference: no
+auto trade placement — `exec.live_place` stays off (feeds ≠ exchange POST).
+
+**Not financial advice.** CryptoCubera defaults to Advisory; preferred paper-ops
+path is Manual Decision (copy/export). Paper sim OK. Auto stays off.
+
+> **NSE handoff:** See **[docs/HANDOFF.md](docs/HANDOFF.md)**.
+> NSE web cockpit: **http://localhost:8640** (`./run_prod.sh`, or `python3 web_server.py --port 8640`).
 > Dev is **http://localhost:8650** (`./run_dev.sh`).
 > Automatic background data collection is Windows-only for now (`setup_data_collection.ps1`);
 > on macOS use cron/launchd, or leave the server open (it self-captures while running).

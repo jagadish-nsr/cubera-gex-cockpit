@@ -1,0 +1,97 @@
+{
+  "underlying": "SOL",
+  "spot": 182.0,
+  "mark_iv": 0.78,
+  "dvol": 84.2,
+  "source": "fixture",
+  "note": "Synthetic SOL Deribit-shaped chain for UI review. Not live market data.",
+  "contracts": [
+    {"instrument": "SOL-28NOV25-150-P", "expiry": "2025-11-28T08:00:00Z", "strike": 150, "option_type": "P", "oi": 920, "iv": 0.88, "gamma": 0.0085, "delta": -0.16, "mid": 2.4, "bid": 2.2, "ask": 2.6, "volume": 110},
+    {"instrument": "SOL-28NOV25-160-P", "expiry": "2025-11-28T08:00:00Z", "strike": 160, "option_type": "P", "oi": 1180, "iv": 0.84, "gamma": 0.0110, "delta": -0.24, "mid": 3.8, "bid": 3.6, "ask": 4.0, "volume": 140},
+    {"instrument": "SOL-28NOV25-170-P", "expiry": "2025-11-28T08:00:00Z", "strike": 170, "option_type": "P", "oi": 1560, "iv": 0.81, "gamma": 0.0142, "delta": -0.34, "mid": 5.9, "bid": 5.6, "ask": 6.2, "volume": 190},
+    {"instrument": "SOL-28NOV25-175-P", "expiry": "2025-11-28T08:00:00Z", "strike": 175, "option_type": "P", "oi": 1820, "iv": 0.80, "gamma": 0.0158, "delta": -0.40, "mid": 7.4, "bid": 7.1, "ask": 7.7, "volume": 220},
+    {"instrument": "SOL-28NOV25-180-P", "expiry": "2025-11-28T08:00:00Z", "strike": 180, "option_type": "P", "oi": 1680, "iv": 0.79, "gamma": 0.0170, "delta": -0.47, "mid": 9.2, "bid": 8.9, "ask": 9.5, "volume": 310},
+    {"instrument": "SOL-28NOV25-185-P", "expiry": "2025-11-28T08:00:00Z", "strike": 185, "option_type": "P", "oi": 1420, "iv": 0.78, "gamma": 0.0172, "delta": -0.54, "mid": 11.4, "bid": 11.0, "ask": 11.8, "volume": 280},
+    {"instrument": "SOL-28NOV25-195-P", "expiry": "2025-11-28T08:00:00Z", "strike": 195, "option_type": "P", "oi": 1240, "iv": 0.77, "gamma": 0.0145, "delta": -0.66, "mid": 17.2, "bid": 16.6, "ask": 17.8, "volume": 95},
+    {"instrument": "SOL-28NOV25-150-C", "expiry": "2025-11-28T08:00:00Z", "strike": 150, "option_type": "C", "oi": 640, "iv": 0.86, "gamma": 0.0078, "delta": 0.84, "mid": 34.0, "bid": 33.2, "ask": 34.8, "volume": 70},
+    {"instrument": "SOL-28NOV25-160-C", "expiry": "2025-11-28T08:00:00Z", "strike": 160, "option_type": "C", "oi": 980, "iv": 0.83, "gamma": 0.0105, "delta": 0.76, "mid": 24.5, "bid": 23.8, "ask": 25.2, "volume": 105},
+    {"instrument": "SOL-28NOV25-170-C", "expiry": "2025-11-28T08:00:00Z", "strike": 170, "option_type": "C", "oi": 1480, "iv": 0.80, "gamma": 0.0138, "delta": 0.66, "mid": 16.8, "bid": 16.2, "ask": 17.4, "volume": 160},
+    {"instrument": "SOL-28NOV25-175-C", "expiry": "2025-11-28T08:00:00Z", "strike": 175, "option_type": "C", "oi": 1760, "iv": 0.79, "gamma": 0.0155, "delta": 0.60, "mid": 13.6, "bid": 13.1, "ask": 14.1, "volume": 145},
+    {"instrument": "SOL-28NOV25-180-C", "expiry": "2025-11-28T08:00:00Z", "strike": 180, "option_type": "C", "oi": 2380, "iv": 0.785, "gamma": 0.0168, "delta": 0.53, "mid": 10.8, "bid": 10.4, "ask": 11.2, "volume": 175},
+    {"instrument": "SOL-28NOV25-185-C", "expiry": "2025-11-28T08:00:00Z", "strike": 185, "option_type": "C", "oi": 2860, "iv": 0.78, "gamma": 0.0174, "delta": 0.46, "mid": 8.4, "bid": 8.0, "ask": 8.8, "volume": 190},
+    {"instrument": "SOL-28NOV25-195-C", "expiry": "2025-11-28T08:00:00Z", "strike": 195, "option_type": "C", "oi": 2680, "iv": 0.77, "gamma": 0.0158, "delta": 0.34, "mid": 4.9, "bid": 4.6, "ask": 5.2, "volume": 160},
+    {"instrument": "SOL-28NOV25-205-C", "expiry": "2025-11-28T08:00:00Z", "strike": 205, "option_type": "C", "oi": 1520, "iv": 0.76, "gamma": 0.0120, "delta": 0.24, "mid": 2.6, "bid": 2.4, "ask": 2.8, "volume": 110},
+    {"instrument": "SOL-28NOV25-215-C", "expiry": "2025-11-28T08:00:00Z", "strike": 215, "option_type": "C", "oi": 880, "iv": 0.75, "gamma": 0.0085, "delta": 0.16, "mid": 1.3, "bid": 1.2, "ask": 1.4, "volume": 75},
+    {"instrument": "SOL-27DEC25-160-P", "expiry": "2025-12-27T08:00:00Z", "strike": 160, "option_type": "P", "oi": 740, "iv": 0.85, "gamma": 0.0065, "delta": -0.28, "mid": 9.5, "bid": 9.0, "ask": 10.0, "volume": 40},
+    {"instrument": "SOL-27DEC25-180-P", "expiry": "2025-12-27T08:00:00Z", "strike": 180, "option_type": "P", "oi": 1120, "iv": 0.82, "gamma": 0.0088, "delta": -0.44, "mid": 14.8, "bid": 14.2, "ask": 15.4, "volume": 55},
+    {"instrument": "SOL-27DEC25-195-C", "expiry": "2025-12-27T08:00:00Z", "strike": 195, "option_type": "C", "oi": 1340, "iv": 0.80, "gamma": 0.0082, "delta": 0.40, "mid": 12.2, "bid": 11.6, "ask": 12.8, "volume": 60},
+    {"instrument": "SOL-27DEC25-210-C", "expiry": "2025-12-27T08:00:00Z", "strike": 210, "option_type": "C", "oi": 760, "iv": 0.78, "gamma": 0.0058, "delta": 0.28, "mid": 6.4, "bid": 6.0, "ask": 6.8, "volume": 35}
+  ],
+  "perp": {
+    "venue": "deribit",
+    "symbol": "SOL-PERPETUAL",
+    "mark": 182.4,
+    "index": 182.0,
+    "funding_rate": 0.00015,
+    "open_interest": 98000000,
+    "cvd_1m": 18.5,
+    "cvd_5m": 96.0,
+    "cvd_15m": -42.0,
+    "book_imbalance": 0.12
+  },
+  "news": [
+    {
+      "event_id": "fx-sol-unlock-watch",
+      "title": "Large SOL token unlock calendar entry approaches",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["SOL"],
+      "event_type": "listing",
+      "source_reliability": 0.75,
+      "prior_move_proxy": 0.55,
+      "impact_note": "Fixture SOL headline for classifier/score tests."
+    },
+    {
+      "event_id": "fx-sol-funding",
+      "title": "SOL perp funding spiked after liquidation cluster",
+    "url": "https://docs.deribit.com/api-reference/market-data/public-ticker",
+      "source": "fixture-tape",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["SOL"],
+      "event_type": "funding",
+      "impact_note": "Tape-derived fixture; not a standalone GO."
+    },
+    {
+      "event_id": "fx-sol-outage",
+      "title": "Solana validators report brief network congestion (fixture)",
+    "url": "https://cryptopanic.com/",
+      "source": "fixture-digest",
+      "tier": "WATCH",
+      "score": 0.0,
+      "assets": ["SOL"],
+      "event_type": "outage",
+      "impact_note": "Watch-tier fixture for SOL intel filter."
+    }
+  ],
+  "signal_template": {
+    "status": "GO",
+    "setup": "positive_gamma_fade",
+    "instrument": "SOLUSD",
+    "side": "sell",
+    "entry_zone": [183.2, 184.0],
+    "target": 178.0,
+    "stop": 187.5,
+    "size_cap_usd": 2500,
+    "score": 70,
+    "reasons": [
+      "Convention and flow GEX both positive around spot (pin/fade bias).",
+      "Spot stretched above the 182 magnet; CVD 15m diverging.",
+      "Call wall at 185 / put wall at 180; stop beyond nearer wall."
+    ],
+    "invalidation": "Close above 187.5 or convention/flow regime disagreement.",
+    "valid_minutes": 25
+  }
+}

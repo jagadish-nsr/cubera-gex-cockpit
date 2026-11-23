@@ -1,0 +1,283 @@
+# CryptoCubera foundation config
+# Providers are plugged in by name; enable/priority control selection.
+# Feature flags gate UI slices and live feeds (restart or PATCH /api/flags).
+
+# Active underlying (BTC default). Switch via PATCH /api/underlying or UI.
+underlying: BTC
+# Quote / execution currency is per-asset (Delta India pairs below) — not a
+# single USD fiat code. Deribit still uses BTC/ETH/SOL for option-chain MD.
+mode: advisory  # advisory | confirm | auto (confirm/auto disabled until wired)
+
+# Per-asset provider params. Enable with assets.<symbol> flags (BTC always on).
+assets:
+  BTC:
+    label: Bitcoin
+    feature_flag: assets.btc
+    fixture: btc_chain.json
+    currency: BTCUSD
+    deribit_currency: BTC
+    deribit_perp: BTC-PERPETUAL
+    delta_symbols: [BTCUSD]
+    binance_perp: BTCUSDT
+    cryptopanic_currencies: BTC
+  ETH:
+    label: Ethereum
+    feature_flag: assets.eth
+    fixture: eth_chain.json
+    currency: ETHUSD
+    deribit_currency: ETH
+    deribit_perp: ETH-PERPETUAL
+    delta_symbols: [ETHUSD]
+    binance_perp: ETHUSDT
+    cryptopanic_currencies: ETH
+  SOL:
+    label: Solana
+    feature_flag: assets.sol
+    fixture: sol_chain.json
+    currency: SOLUSD
+    deribit_currency: SOL
+    deribit_perp: SOL-PERPETUAL
+    delta_symbols: [SOLUSD]
+    binance_perp: SOLUSDT
+    cryptopanic_currencies: SOL
+
+database:
+  # Relative paths resolve against the repo root (not process cwd).
+  url: sqlite:///./data/crypto/cubera.db
+  # Rotate the live DB when it exceeds this size; keep newest N archives.
+  rotate_max_bytes: 524288000   # 500 MiB
+  rotate_keep: 5
+
+# Local feed + paper session recording (never enables exec.live).
+recording:
+  enabled: true
+
+providers:
+  option_chain:
+    # Lower priority number wins when multiple flags are on.
+    - name: deribit
+      enabled: true
+      priority: 5
+      feature_flag: feeds.deribit
+      credentials_ref: DERIBIT_CLIENT_ID
+      rate_limits:
+        rest_per_min: 60
+    - name: delta
+      enabled: true
+      priority: 6
+      feature_flag: feeds.delta
+      rate_limits:
+        rest_units_per_5min: 20000
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: feeds.mock
+
+  perp:
+    - name: deribit
+      enabled: true
+      priority: 5
+      feature_flag: feeds.deribit
+    - name: binance
+      enabled: false
+      priority: 20
+      feature_flag: feeds.perp_binance
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: feeds.mock
+
+  news:
+    # CryptoPanic wins when enabled; without CRYPTOPANIC_TOKEN it serves mock fixtures.
+    - name: cryptopanic
+      enabled: true
+      priority: 5
+      feature_flag: intel.news
+      credentials_ref: CRYPTOPANIC_TOKEN
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: intel.news
+
+  execution:
+    # Live Confirm (highest priority when exec.live on + gate passes).
+    - name: delta_live
+      enabled: true
+      priority: 1
+      feature_flag: exec.live
+      credentials_ref: DELTA_LIVE_API_KEY
+    # Prefer Delta paper/demo when flagged; mock sim always available as fallback.
+    - name: delta
+      enabled: true
+      priority: 5
+      feature_flag: exec.paper
+      credentials_ref: DELTA_PAPER_API_KEY
+    - name: mock
+      enabled: true
+      priority: 50
+      feature_flag: exec.paper
+
+feature_flags:
+  # Per-asset gates. BTC always on as the default active underlying.
+  # YAML keeps ETH/SOL off for Advisory; ./run_crypto_paper.sh turns them on
+  # (CRYPTO_FLAG_ASSETS_ETH=1 CRYPTO_FLAG_ASSETS_SOL=1) so the switcher works.
+  assets.btc: true
+  assets.eth: false
+  assets.sol: false
+  feeds.mock: true
+  # Advisory default off; ./run_crypto_paper.sh sets CRYPTO_LIVE_FEEDS=1 +
+  # CRYPTO_FLAG_FEEDS_DERIBIT/DELTA=1. Soft-fallback to mock if WS/REST fails.
+  feeds.deribit: false
+  feeds.delta: false
+  feeds.perp_binance: false
+  engine.gex_flow_model: true
+  engine.signal_rules: true
+  intel.news: true
+  intel.calendar: true
+  # Local Gemma 12B language layer — off for Advisory; paper helper turns on
+  # (CRYPTO_FLAG_INTEL_GEMMA=1) with mock/keywords soft-fallback when Ollama is absent.
+  intel.gemma: false
+  ui.gex_map: true
+  ui.go_cards: true
+  ui.regime_strip: true
+  # CryptoCubera orderflow tape alerts (BTC/ETH/SOL) — not equity Sentinel
+  ui.flow_alerts: true
+  ui.operator_panel: true
+  ui.asset_switcher: true
+  # Preferred paper ops: ./run_crypto_paper.sh → Manual Decision
+  # (CRYPTO_FLAG_EXEC_LIVE=1 + CRYPTO_FLAG_EXEC_CONFIRM=1; live_place=0).
+  # Copy/export levels; Confirm never places on Delta.
+  # Optional paper sim: CRYPTO_PAPER_SIM=1 → exec.paper + confirm; live off.
+  exec.paper: false
+  exec.confirm: false
+  exec.live: false
+  # Exchange POST from Confirm — always refused. Kept off; Manual Decision only.
+  exec.live_place: false
+  # Auto is intentionally absent / always refused if ever set
+  exec.auto: false
+  # Inference scaffold — off by default (no live model / no GO from classifier)
+  inference.feature_export: false
+  inference.regime_classifier: false
+
+# Risk (enforced for Confirm path). Live uses live_equity_usd when gated on.
+risk:
+  paper_equity_usd: 10000
+  live_equity_usd: 10000        # used only for Live Confirm sizing
+  risk_fraction: 0.005          # 0.5% of equity per trade
+  daily_loss_limit_usd: 250     # hit → flip Confirm off (Advisory)
+  size_cap_usd: 2500            # hard ceiling (also on GO card)
+
+# Quant engine parameters (starting values — calibrate in walk-forward)
+engine:
+  atr_pct: 0.004
+  size_cap_usd: 2500
+  card_valid_minutes: 20
+  model_version: rules-v1
+  rules_version: setups-v1
+  setups:
+    negative_gamma_breakout:
+      cvd_5m_min: 50
+      require_imbalance_align: true
+      require_oi_confirm: false
+      target_atr_mult: 1.75
+      stop_atr_mult: 0.75
+      base_score: 65
+    positive_gamma_fade:
+      stretch_atr_mult: 1.5
+      entry_band_pct: 0.001
+      stop_atr_mult: 1.0
+      base_score: 68
+    flip_cross:
+      cross_band_pct: 0.0015
+      cvd_1m_min: 20
+      target_atr_mult: 1.5
+      base_score: 62
+  # Crypto-native orderflow tape alerts (CRY-22). BTC/ETH/SOL only.
+  # Never wired to NSE Sentinel / Nifty / Bank Nifty / Sensex.
+  flow_alerts:
+    cvd_impulse_5m_min: 80
+    cvd_impulse_1m_min: 15
+    require_imbalance_align: true
+    divergence_15m_min: 40
+    divergence_1m_min: 10
+    wall_band_pct: 0.004
+    exhaustion_1m_min: 50
+    exhaustion_15m_oppose_min: 20
+    min_score: 60
+    cooldown_s: 90
+    max_alerts: 6
+  vetoes:
+    stale_threshold_s: 2.0
+    # Stub hooks — raise to force NO-GO; not live risk telemetry
+    risk_daily_loss_stub: false
+    risk_margin_cap_stub: false
+    venue_not_operational_stub: false
+    # Prefer real intel blackout (calendar IMMINENT window). Stub still available.
+    scheduled_event_within_30m_stub: false
+
+# Market intelligence (Phase 3 slice). Keyword rules default; Gemma optional.
+intel:
+  blackout_window_minutes: 30   # hard veto horizon (design plan)
+  imminent_horizon_minutes: 60  # IMMINENT alert tier
+  calendar_stubs: true
+  cryptopanic:
+    # Live only when CRYPTOPANIC_TOKEN is set; otherwise mock fixtures.
+    # Overridden per active asset via assets.<U>.cryptopanic_currencies when set.
+    currencies: BTC,ETH,SOL
+    attribution: "Powered by CryptoPanic"
+  # Curated crypto further-reading (cockpit Intelligence section).
+  # Crypto desk only — do not add NSE equity index links here.
+  further_reading:
+    - title: "Deribit market data — ticker & greeks"
+      url: "https://docs.deribit.com/api-reference/market-data/public-ticker"
+      note: "Option chain greeks, IV, open interest (signal venue)."
+    - title: "Deribit options data collection"
+      url: "https://docs.deribit.com/articles/options-data-collection-best-practices"
+      note: "Best practices for streaming ticker / mark IV / chain."
+    - title: "Delta Exchange India API"
+      url: "https://docs.delta.exchange/"
+      note: "INR execution venue docs (orders never auto-placed here)."
+    - title: "CryptoPanic API"
+      url: "https://cryptopanic.com/developers/api/"
+      note: "Headline ingest used by the intelligence feed."
+    - title: "Glassnode studio (GEX cross-check)"
+      url: "https://studio.glassnode.com/"
+      note: "Cross-check dealer-flow gamma ideas; not the live feed."
+
+# Local Gemma 12B (Ollama-compatible). Language only — never creates GO / prices.
+# ./run_crypto_paper.sh enables intel.gemma by default; mock_when_unavailable soft-falls
+# back to keywords/templates when Ollama is down. Point CRYPTO_GEMMA_BASE_URL / OLLAMA_HOST.
+gemma:
+  base_url: http://localhost:11434
+  model: gemma2:12b
+  timeout_s: 8
+  mock_when_unavailable: true
+
+# Live feed collectors (Phase 0). YAML default off; also require CRYPTO_LIVE_FEEDS=1
+# (or live_spike.* below). ./run_crypto_paper.sh enables both env + Deribit/Delta
+# flags for public MD only — never turns on exec.live. Providers soft-fall back
+# to mock fixtures when WS/REST miss.
+feeds:
+  stale_threshold_s: 2.0
+  deribit:
+    ws_url: wss://www.deribit.com/ws/api/v2
+    rest_url: https://www.deribit.com/api/v2
+    max_expiries: 2
+    strike_band_pct: 0.08
+  delta:
+    ws_url: wss://public-socket.india.delta.exchange
+    rest_url: https://api.india.delta.exchange
+    # Default symbols; active asset overrides via assets.<U>.delta_symbols
+    symbols: [BTCUSD]
+    snapshot_options: true
+    # Paper/demo trading only — never use production trading keys here.
+    paper_rest_url: https://cdn-ind.testnet.deltaex.org
+    # Live Confirm REST (India production). Requires DELTA_LIVE_* + acks.
+    live_rest_url: https://api.india.delta.exchange
+
+# Optional live spike. Never blocks the UI.
+live_spike:
+  deribit_ticker: false
+  deribit_ws: false
+  delta_ws: false
+  deribit_base_url: https://www.deribit.com/api/v2

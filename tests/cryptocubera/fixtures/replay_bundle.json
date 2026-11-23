@@ -1,0 +1,36 @@
+{
+  "underlying": "BTC",
+  "spot": 97240.0,
+  "mark_iv": 0.48,
+  "dvol": 52.3,
+  "source": "replay-fixture",
+  "fetched_at": "2026-11-22T04:00:00Z",
+  "contracts": [
+    {"instrument": "BTC-28NOV25-96000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 96000, "option_type": "P", "oi": 1560, "iv": 0.485, "gamma": 0.000042, "delta": -0.45, "mid": 2480, "volume": 310},
+    {"instrument": "BTC-28NOV25-97000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 97000, "option_type": "P", "oi": 1820, "iv": 0.48, "gamma": 0.000045, "delta": -0.50, "mid": 2980, "volume": 360},
+    {"instrument": "BTC-28NOV25-98000-P", "expiry": "2025-11-28T08:00:00Z", "strike": 98000, "option_type": "P", "oi": 1490, "iv": 0.475, "gamma": 0.000043, "delta": -0.55, "mid": 3520, "volume": 290},
+    {"instrument": "BTC-28NOV25-96000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 96000, "option_type": "C", "oi": 1710, "iv": 0.485, "gamma": 0.000041, "delta": 0.55, "mid": 3320, "volume": 110},
+    {"instrument": "BTC-28NOV25-97000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 97000, "option_type": "C", "oi": 2100, "iv": 0.48, "gamma": 0.000046, "delta": 0.50, "mid": 2780, "volume": 130},
+    {"instrument": "BTC-28NOV25-98000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 98000, "option_type": "C", "oi": 2450, "iv": 0.475, "gamma": 0.000048, "delta": 0.45, "mid": 2280, "volume": 140},
+    {"instrument": "BTC-28NOV25-100000-C", "expiry": "2025-11-28T08:00:00Z", "strike": 100000, "option_type": "C", "oi": 2860, "iv": 0.465, "gamma": 0.000040, "delta": 0.36, "mid": 1460, "volume": 120}
+  ],
+  "trades": [
+    {"timestamp": 1795320000000, "direction": "buy", "price": 0.03, "amount": 40.0, "instrument_name": "BTC-28NOV25-97000-P"},
+    {"timestamp": 1795320001000, "direction": "buy", "price": 0.029, "amount": 35.0, "instrument_name": "BTC-28NOV25-97000-P"},
+    {"timestamp": 1795320002000, "direction": "sell", "price": 0.028, "amount": 5.0, "instrument_name": "BTC-28NOV25-97000-C"},
+    {"timestamp": 1795320003000, "direction": "buy", "price": 0.01, "amount": 100.0, "instrument_name": "BTC-28NOV25-97000-P", "block_trade_id": "BLOCK-TEST", "block_trade_leg_count": 2}
+  ],
+  "perp": {
+    "venue": "replay",
+    "symbol": "BTC-PERPETUAL",
+    "mark": 97600.0,
+    "index": 97240.0,
+    "funding_rate": 0.0001,
+    "open_interest": 500000000,
+    "cvd_1m": -40.0,
+    "cvd_5m": -120.0,
+    "cvd_15m": -200.0,
+    "book_imbalance": -0.2,
+    "fetched_at": "2026-11-22T04:00:01Z"
+  }
+}
