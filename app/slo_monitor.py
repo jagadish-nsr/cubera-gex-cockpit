@@ -125,6 +125,10 @@ def probe_vwap_blackout(*, since_minutes: int = VWAP_WINDOW_MIN) -> dict[str, An
         if ts < since:
             continue
         parts = [str(row.get("message") or "")]
+        parsed_fields = row.get("fields")
+        if isinstance(parsed_fields, dict):
+            parts.append(str(parsed_fields.get("reason") or ""))
+            parts.append(str(parsed_fields.get("message") or ""))
         raw = row.get("fields_json") or ""
         parts.append(str(raw))
         if raw:
@@ -149,8 +153,32 @@ def probe_vwap_blackout(*, since_minutes: int = VWAP_WINDOW_MIN) -> dict[str, An
     }
 
 
-def _count_session_1m_bars(symbol: str) -> int:
+def _count_session_1m_bars(
+    symbol: str, *, session_date: str | None = None, db_path: Any = None,
+) -> int:
     try:
+        if db_path is not None:
+            import sqlite3
+            from pathlib import Path
+            p = Path(db_path)
+            if not p.exists():
+                return 0
+            day = session_date or ""
+            start = f"{day}T00:00:00"
+            end = f"{day}T23:59:59.999999+99:99"
+            con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=3)
+            try:
+                row = con.execute(
+                    """
+                    SELECT COUNT(*) FROM sentinel_bars
+                     WHERE symbol = ? AND timeframe = '1m'
+                       AND ts >= ? AND ts <= ?
+                    """,
+                    (f"{symbol}-FUT", start, end),
+                ).fetchone()
+                return int(row[0] if row else 0)
+            finally:
+                con.close()
         from sentinel.storage.db import list_recent_bars
         bars = list_recent_bars(
             f"{symbol}-FUT",
@@ -177,18 +205,51 @@ def _elapsed_expected_bars(now: datetime) -> int:
     return max(0, (cutoff.hour * 60 + cutoff.minute) - (start.hour * 60 + start.minute) + 1)
 
 
-def probe_tape_completeness(*, now: datetime, market_open: bool) -> dict[str, Any]:
+def probe_tape_completeness(
+    *, now: datetime, market_open: bool, root: Any = None,
+) -> dict[str, Any]:
     """Per-index 1m bar counts vs expected elapsed / full-day grid."""
+    from pathlib import Path
+    from data.holidays import is_trading_day
+
     symbols = ("NIFTY", "BANKNIFTY", "SENSEX")
+    if not is_trading_day(now.date()):
+        return {
+            "ok": True,
+            "closed": False,
+            "severity": "",
+            "reason": "non_trading_day",
+            "worst_frac": 1.0,
+            "per_symbol": {},
+            "expected_live": 0,
+        }
+
+    sentinel_db = None
+    if root is not None:
+        sentinel_db = Path(root) / "data" / "sentinel.db"
+        if not sentinel_db.exists():
+            return {
+                "ok": True,
+                "closed": False,
+                "severity": "",
+                "reason": "no_sentinel_db",
+                "worst_frac": 1.0,
+                "per_symbol": {},
+                "expected_live": 0,
+            }
+
     expected_live = _elapsed_expected_bars(now)
     # Full cash continuous grid ~09:15–15:30 inclusive ≈ 376; session evals ~380–384 with FNO.
     expected_full = 376
     closed = (not market_open) and now.time().replace(tzinfo=None) >= time(15, 45)
+    day_iso = now.date().isoformat()
 
     per: dict[str, Any] = {}
     worst_frac = 1.0
     for sym in symbols:
-        bars = _count_session_1m_bars(sym)
+        bars = _count_session_1m_bars(
+            sym, session_date=day_iso, db_path=sentinel_db,
+        )
         exp = expected_full if closed else max(1, expected_live)
         frac = (bars / exp) if exp else 1.0
         worst_frac = min(worst_frac, frac)

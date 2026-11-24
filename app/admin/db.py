@@ -14,9 +14,39 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 _lock = threading.Lock()
+_read_lock = threading.Lock()
 _db_path: Path | None = None
 _ready = False
 _conn: sqlite3.Connection | None = None
+_read_conn: sqlite3.Connection | None = None
+
+
+def safe_json_dumps(mapping: dict | None, max_chars: int = 4000) -> str:
+    """Serialize ``mapping`` to valid JSON bounded to ``max_chars`` characters.
+
+    Never slices a serialized JSON string raw (which produces corrupt,
+    unterminated JSON when stack traces or error payloads are long).
+    """
+    body = dict(mapping or {})
+    raw = json.dumps(body, default=str)
+    if len(raw) <= max_chars:
+        return raw
+    trimmed: dict = {}
+    per_val_budget = max(96, (max_chars - 128) // max(1, len(body)))
+    for key, val in body.items():
+        sval = val if isinstance(val, str) else str(val)
+        if isinstance(val, (int, float, bool)) or val is None:
+            trimmed[str(key)[:64]] = val
+        elif len(sval) > per_val_budget:
+            trimmed[str(key)[:64]] = sval[: max(32, per_val_budget - 16)] + "...[truncated]"
+        else:
+            trimmed[str(key)[:64]] = val
+    trimmed["_truncated"] = True
+    raw2 = json.dumps(trimmed, default=str)
+    if len(raw2) <= max_chars:
+        return raw2
+    preview_len = max(32, max_chars - 64)
+    return json.dumps({"_truncated": True, "preview": raw[:preview_len]})
 
 
 class _CachedConnection:
@@ -39,6 +69,18 @@ def _drop_cached_connection() -> None:
     global _conn
     conn = _conn
     _conn = None
+    if conn is None:
+        return
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
+
+
+def _drop_read_connection() -> None:
+    global _read_conn
+    conn = _read_conn
+    _read_conn = None
     if conn is None:
         return
     try:
@@ -90,6 +132,7 @@ CREATE TABLE IF NOT EXISTS ops_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ops_events_ts ON ops_events(ts);
 CREATE INDEX IF NOT EXISTS idx_ops_events_proc ON ops_events(process, event, ts);
+CREATE INDEX IF NOT EXISTS idx_ops_events_event_ts ON ops_events(event, ts);
 
 CREATE TABLE IF NOT EXISTS ops_status (
     process          TEXT NOT NULL,
@@ -112,6 +155,8 @@ def set_db_path(path: Path | None) -> None:
     global _db_path, _ready
     with _lock:
         _drop_cached_connection()
+        with _read_lock:
+            _drop_read_connection()
         _db_path = path
         _ready = False
 
@@ -148,6 +193,54 @@ def _connect() -> _CachedConnection:
         _ready = True
     _conn = conn
     return _CachedConnection(conn)
+
+
+class _CachedReadConnection:
+    """Dedicated WAL reader handle so admin/SLO reads never wait on writers."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def close(self) -> None:
+        try:
+            self._conn.rollback()
+        except sqlite3.Error:
+            _drop_read_connection()
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
+def _ensure_ready() -> None:
+    if _ready:
+        return
+    with _lock:
+        conn = _connect()
+        conn.close()
+
+
+def _connect_read() -> _CachedReadConnection:
+    """Return this process's read-only WAL connection. Caller holds ``_read_lock``."""
+    global _read_conn
+    _ensure_ready()
+    if _read_conn is not None:
+        return _CachedReadConnection(_read_conn)
+    path = db_path()
+    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=3)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 3000")
+    conn.execute("PRAGMA query_only = ON")
+    _read_conn = conn
+    return _CachedReadConnection(conn)
+
+
+def _flush_pending_http_obs() -> None:
+    """Drain any queued async HTTP obs rows before reading ops_events."""
+    try:
+        from app.obs.http import flush_http_obs
+        flush_http_obs(timeout=1.0)
+    except Exception:
+        pass
 
 
 def _row_dict(row: sqlite3.Row | None) -> dict | None:
@@ -239,8 +332,9 @@ def list_alerts(*, unread_only: bool = False, severity: str | None = None,
         clauses.append("severity = ?")
         params.append(severity)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 f"SELECT * FROM admin_alerts{where} ORDER BY updated_at DESC",
@@ -252,8 +346,9 @@ def list_alerts(*, unread_only: bool = False, severity: str | None = None,
 
 
 def badge_count() -> int:
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             row = conn.execute(
                 """
@@ -335,8 +430,9 @@ def update_task(task_id: str, **fields) -> None:
 
 
 def get_task(task_id: str) -> dict | None:
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             return _row_dict(conn.execute(
                 "SELECT * FROM admin_tasks WHERE task_id = ?",
@@ -357,8 +453,9 @@ def active_tasks() -> list[dict]:
 
 def _tasks_in_status(*statuses: str) -> list[dict]:
     marks = ", ".join("?" for _ in statuses)
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 f"SELECT * FROM admin_tasks WHERE status IN ({marks})",
@@ -421,8 +518,10 @@ def list_ops_events(
         params.append(level)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(int(limit))
-    with _lock:
-        conn = _connect()
+    _flush_pending_http_obs()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 f"SELECT * FROM ops_events{where} ORDER BY ts DESC, id DESC LIMIT ?",
@@ -462,7 +561,7 @@ def upsert_ops_status(
     beat: bool = False,
 ) -> None:
     """Overwrite one process/workflow row. Heartbeats refresh ``beat_at`` only."""
-    detail_json = json.dumps(detail or {}, default=str)[:2000]
+    detail_json = safe_json_dumps(detail or {}, max_chars=2000)
     with _lock:
         conn = _connect()
         try:
@@ -548,8 +647,10 @@ def list_ops_status(*, process: str | None = None, name: str | None = None) -> l
         clauses.append("name = ?")
         params.append(name)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    with _lock:
-        conn = _connect()
+    _flush_pending_http_obs()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 f"SELECT * FROM ops_status{where} ORDER BY process, name",
@@ -590,17 +691,19 @@ def count_events_by_name(since_iso: str, names: list[str]) -> dict[str, int]:
     if not names:
         return out
     placeholders = ",".join("?" for _ in names)
-    with _lock:
-        conn = _connect()
+    _flush_pending_http_obs()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 f"""
                 SELECT event, COUNT(*) AS c
                   FROM ops_events
-                 WHERE ts >= ? AND event IN ({placeholders})
+                 WHERE event IN ({placeholders}) AND ts >= ?
                  GROUP BY event
                 """,
-                [since_iso, *names],
+                [*names, since_iso],
             ).fetchall()
         finally:
             conn.close()
@@ -613,8 +716,9 @@ def list_readiness_minutes(session_date: str) -> list[dict]:
     """``slo.readiness.minute`` rows for cash window 09:20–15:20 IST on ``session_date``."""
     start = f"{session_date}T09:20:00+05:30"
     end = f"{session_date}T15:20:00+05:30"
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 """
@@ -648,8 +752,9 @@ def _percentile(vals: list[float], q: float) -> float:
 
 def summarize_chain_latency(since_iso: str) -> dict:
     """Per-symbol + ALL rollup for chain.published duration / network / compute."""
-    with _lock:
-        conn = _connect()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 """
@@ -700,14 +805,16 @@ def summarize_chain_latency(since_iso: str) -> dict:
 
 def summarize_http_journal(since_iso: str) -> dict:
     """Top routes from journaled http.error / http.slow since ``since_iso``."""
-    with _lock:
-        conn = _connect()
+    _flush_pending_http_obs()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 """
                 SELECT event, duration_ms, fields_json
                   FROM ops_events
-                 WHERE ts >= ? AND event IN ('http.error', 'http.slow')
+                 WHERE event IN ('http.error', 'http.slow') AND ts >= ?
                 """,
                 (since_iso,),
             ).fetchall()
@@ -740,8 +847,10 @@ def summarize_http_journal(since_iso: str) -> dict:
 
 def latest_workflow_ok(name_prefix: str = "chain.") -> dict[str, str | None]:
     """Map workflow name → last_ok_at for names starting with ``name_prefix``."""
-    with _lock:
-        conn = _connect()
+    _flush_pending_http_obs()
+    _ensure_ready()
+    with _read_lock:
+        conn = _connect_read()
         try:
             rows = conn.execute(
                 """

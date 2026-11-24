@@ -29,6 +29,11 @@ def process_name() -> str:
 def reset(log_dir: Path | None = None) -> None:
     """Drop handlers this package attached. Tests use this between cases."""
     global _configured, _process, _log_dir
+    try:
+        from app.obs.http import flush_http_obs
+        flush_http_obs(timeout=1.0)
+    except Exception:
+        pass
     root = logging.getLogger()
     for handler in list(root.handlers):
         if getattr(handler, "_cubera_obs", False):
