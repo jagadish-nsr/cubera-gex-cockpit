@@ -78,6 +78,8 @@ def test_http_429_pushes_shared_stamp_forward(tmp_path, monkeypatch):
         import requests
 
         monkeypatch.setattr(requests, "post", lambda *a, **kw: _Resp429())
+        # Stub the auth header so the test never needs a local Dhan token.
+        monkeypatch.setattr(dl, "_headers", lambda: {"access-token": "test"})
         resp = dl._post("/marketfeed/quote", {"IDX_I": [13]})
         assert resp.status_code == 429
 
