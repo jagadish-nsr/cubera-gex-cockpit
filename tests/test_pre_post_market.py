@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from data.pre_post_market import (
     IST,
+    _discovery_clock,
     acknowledge_pre_market_chime,
     calculate_pre_market_option_shocks,
     classify_opening_gap,
@@ -512,6 +513,12 @@ class TestPrePostMarket(unittest.TestCase):
             ticker._STORE.pop("NIFTY", None)
             ppm._PRE_MARKET_CACHE.clear()
 
+    def test_discovery_clock_rejects_tz_crumbs(self):
+        now = datetime(2026, 11, 23, 9, 17, 40, tzinfo=IST)
+        self.assertEqual(_discovery_clock("04+00:00", now), "09:17:40")
+        self.assertEqual(_discovery_clock("2026-11-23 09:17:40+05:30", now), "09:17:40")
+        self.assertEqual(_discovery_clock("09:17:50", now), "09:17:50")
+
     def test_classify_opening_gap_regimes(self):
         # 1. Call Wall test
         cw_res = classify_opening_gap(gap_pts=50.0, gap_pct=0.22, spot=22700.0, call_wall=22700.0, put_wall=22400.0)
@@ -534,14 +541,46 @@ class TestPrePostMarket(unittest.TestCase):
         ba_res = classify_opening_gap(gap_pts=15.0, gap_pct=0.07, spot=22515.0, call_wall=23000.0, put_wall=22000.0)
         self.assertEqual(ba_res["regime"], "AUCTION_BALANCED")
 
-        # 6. Call Wall Breach Squeeze (> CW + 10) needs same-direction gap ≥ +0.15%
-        cws_res = classify_opening_gap(gap_pts=150.0, gap_pct=0.66, spot=22720.0, call_wall=22700.0, put_wall=22400.0)
+        # 6. Call Wall Breach Squeeze needs clearance ≥ one strike step (Nifty 50)
+        #    and same-direction gap ≥ +0.15%. Thin +20 pts → wall test, not CE structure.
+        thin_cw = classify_opening_gap(
+            gap_pts=150.0, gap_pct=0.66, spot=22720.0, call_wall=22700.0, put_wall=22400.0,
+            strike_step=50,
+        )
+        self.assertEqual(thin_cw["regime"], "SHORT_GAMMA_WALL_TEST")
+        self.assertIn("THIN", thin_cw["badge"])
+        self.assertEqual(thin_cw["favored_play"], "WATCH THE CALL STRIKE")
+
+        cws_res = classify_opening_gap(
+            gap_pts=150.0, gap_pct=0.66, spot=22755.0, call_wall=22700.0, put_wall=22400.0,
+            strike_step=50,
+        )
         self.assertEqual(cws_res["regime"], "CALL_WALL_BREACH_SQUEEZE")
         self.assertIn("CALL STRIKE", cws_res["favored_play"])
         self.assertNotIn("SQUEEZE", cws_res["favored_play"])
 
-        # 7. Put Wall Breakdown Cascade (< PW - 10) needs same-direction gap ≤ −0.15%
-        pwc_res = classify_opening_gap(gap_pts=-150.0, gap_pct=-0.67, spot=22380.0, call_wall=22700.0, put_wall=22400.0)
+        # 23-Nov BN shape: +12 pts through CW on a 100-pt step must not stage CE hold.
+        bn_thin = classify_opening_gap(
+            gap_pts=376.85, gap_pct=0.58, spot=65012.05,
+            call_wall=65000.0, put_wall=64500.0, flip=64324.7,
+            strike_step=100,
+        )
+        self.assertEqual(bn_thin["regime"], "SHORT_GAMMA_WALL_TEST")
+        self.assertIn("THIN", bn_thin["badge"])
+        self.assertNotEqual(bn_thin["regime"], "CALL_WALL_BREACH_SQUEEZE")
+
+        # 7. Put Wall Breakdown Cascade needs clearance ≥ one strike step.
+        thin_pw = classify_opening_gap(
+            gap_pts=-150.0, gap_pct=-0.67, spot=22380.0, call_wall=22700.0, put_wall=22400.0,
+            strike_step=50,
+        )
+        self.assertEqual(thin_pw["regime"], "PUT_WALL_BREAKDOWN_TEST")
+        self.assertIn("THIN", thin_pw["badge"])
+
+        pwc_res = classify_opening_gap(
+            gap_pts=-150.0, gap_pct=-0.67, spot=22345.0, call_wall=22700.0, put_wall=22400.0,
+            strike_step=50,
+        )
         self.assertEqual(pwc_res["regime"], "PUT_WALL_BREAKDOWN_CASCADE")
         self.assertIn("PUT STRIKE", pwc_res["favored_play"])
         self.assertNotIn("CASCADE", pwc_res["favored_play"])

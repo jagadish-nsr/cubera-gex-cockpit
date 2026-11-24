@@ -15,6 +15,7 @@ from analytics.premarket_path import (
     list_path_events,
     regime_path_stats,
     reseal_discovery,
+    sample_due_checkpoints,
     score_path,
     seal_discovery,
     thesis_state_at,
@@ -195,6 +196,92 @@ def test_persist_opening_watch_reseals_on_upgrade(path_db):
     assert len(disc) == 1
     assert disc[0]["spot"] == 82067.75
     assert disc[0]["note"] == "regime=AUCTION_BALANCED"
+
+
+def test_reseal_refreshes_walls_when_spot_unchanged(path_db):
+    """23-Nov BN: same open/regime but map_strip CW corrected 64500→65000."""
+    date = "2026-11-23"
+    stale = _seed_auction(
+        "BANKNIFTY", date,
+        spot=65012.05, prev=64635.2, gap_pts=376.85, gap_pct=0.58,
+        regime="CALL_WALL_BREACH_SQUEEZE", favored="WATCH HOLD ABOVE CALL STRIKE",
+        cw=64500.0, pw=63000.0, flip=64324.7,
+    )
+    first = seal_discovery("BANKNIFTY", stale)
+    assert first is not None
+    assert abs(float(first["spot_vs_cw_pts"]) - (65012.05 - 64500.0)) < 0.1
+
+    fixed = dict(stale)
+    fixed.update({"call_wall": 65000.0, "put_wall": 64500.0})
+    # Rebuild watch map_strip so auction row matches, then reseal from state walls.
+    ppm.save_opening_watch(
+        "BANKNIFTY",
+        {
+            "status": "STAGED",
+            "regime": fixed["gap_regime"],
+            "map_strip": {
+                "open": fixed["discovered_spot"],
+                "call_wall": 65000.0,
+                "put_wall": 64500.0,
+                "gamma_flip": fixed["gamma_flip"],
+                "prev_close": fixed["prev_close"],
+                "gap_pts": fixed["gap_pts"],
+                "gap_pct": fixed["gap_pct"],
+            },
+        },
+        trade_date=date,
+    )
+    rewritten = reseal_discovery("BANKNIFTY", fixed)
+    assert rewritten is not None
+    assert abs(float(rewritten["spot_vs_cw_pts"]) - 12.05) < 0.1
+    assert abs(float(rewritten["spot_vs_pw_pts"]) - (65012.05 - 64500.0)) < 0.1
+
+
+def test_checkpoints_wait_for_discovery(path_db, monkeypatch):
+    date = "2026-11-23"
+    # Auction row exists (morning briefing) but DISCOVERY not sealed yet.
+    _seed_auction("NIFTY", date, spot=25929.0, cw=25500.0, pw=25500.0)
+    monkeypatch.setattr(
+        "analytics.premarket_path._spot_now", lambda _sym: 25971.0,
+    )
+    now = datetime(2026, 11, 23, 9, 16, tzinfo=IST)
+    assert sample_due_checkpoints("NIFTY", now) == []
+    assert list_path_events("NIFTY", date) == []
+
+    state = {
+        "date": date,
+        "is_discovered": True,
+        "discovered_spot": 25929.15,
+        "prev_close": 25800.6,
+        "gap_regime": "GAP_UP_INTO_POS_GAMMA",
+        "gap_fill_status": "UNFILLED",
+        "call_wall": 26000.0,
+        "put_wall": 26000.0,
+        "gamma_flip": 25806.5,
+    }
+    ppm.save_pre_market_state("NIFTY", state)
+    ppm.save_opening_watch(
+        "NIFTY",
+        {
+            "status": "STAGED",
+            "regime": "GAP_UP_INTO_POS_GAMMA",
+            "map_strip": {
+                "open": 25929.15,
+                "call_wall": 26000.0,
+                "put_wall": 26000.0,
+                "gamma_flip": 25806.5,
+                "prev_close": 25800.6,
+            },
+        },
+        trade_date=date,
+    )
+    assert seal_discovery("NIFTY", state) is not None
+    fired = sample_due_checkpoints("NIFTY", now)
+    assert "T0915" in fired
+    evs = list_path_events("NIFTY", date)
+    assert [e["checkpoint"] for e in evs] == ["DISCOVERY", "T0915"]
+    t0915 = evs[1]
+    assert abs(float(t0915["spot_vs_cw_pts"]) - (25971.0 - 26000.0)) < 0.1
 
 
 def test_score_path_moderate_drift(path_db):

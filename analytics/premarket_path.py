@@ -364,8 +364,17 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
             return None
         auction = dict(row)
         open_px, cw, pw, flip, prev = _walls_from_row(auction)
-        # Prefer the just-upgraded state over a stale auction read race.
+        # Prefer the just-upgraded state over a stale auction / map_strip race.
         open_px = spot if spot > 0 else open_px
+        cw_s = float(state.get("call_wall") or 0)
+        pw_s = float(state.get("put_wall") or 0)
+        flip_s = float(state.get("gamma_flip") or 0)
+        if cw_s > 0:
+            cw = cw_s
+        if pw_s > 0:
+            pw = pw_s
+        if flip_s > 0:
+            flip = flip_s
         regime = str(state.get("gap_regime") or auction.get("gap_regime") or "")
         step = float(config.strike_step_for(sym))
         thesis = thesis_state_at(
@@ -380,7 +389,8 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
             step=step,
         )
         existing = conn.execute(
-            "SELECT seq, spot, note, thesis_state FROM premarket_path_events "
+            "SELECT seq, spot, note, thesis_state, spot_vs_cw_pts, spot_vs_pw_pts "
+            "FROM premarket_path_events "
             "WHERE trade_date = ? AND symbol = ? AND checkpoint = 'DISCOVERY'",
             (t_date, sym),
         ).fetchone()
@@ -391,10 +401,20 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
         new_vs_flip = round(spot - flip, 2) if flip else None
         new_vs_cw = round(spot - cw, 2) if cw else None
         new_vs_pw = round(spot - pw, 2) if pw else None
+        # Also refresh when sealed walls moved (23-Nov BN DISCOVERY kept CW=64500).
+        def _dist_changed(old_v, new_v) -> bool:
+            if new_v is None and old_v is None:
+                return False
+            if new_v is None or old_v is None:
+                return True
+            return abs(float(old_v) - float(new_v)) >= 0.05
+
         unchanged = (
             abs(float(old.get("spot") or 0) - spot) < 0.05
             and str(old.get("note") or "") == note
             and str(old.get("thesis_state") or "") == thesis
+            and not _dist_changed(old.get("spot_vs_cw_pts"), new_vs_cw)
+            and not _dist_changed(old.get("spot_vs_pw_pts"), new_vs_pw)
         )
         if unchanged:
             return None
@@ -690,7 +710,11 @@ def regime_path_stats(
 
 
 def sample_due_checkpoints(symbol: str, now: datetime | None = None) -> list[str]:
-    """Fire any session checkpoints whose IST minute has arrived (idempotent)."""
+    """Fire any session checkpoints whose IST minute has arrived (idempotent).
+
+    Requires today's DISCOVERY seal first. Sampling T0915 before discovery
+    (23-Nov Nifty/Sensex) wrote stale prior-book walls and bogus thesis states.
+    """
     now_ist = now or datetime.now(IST)
     from data.session_calendar import is_live_session_day
     if not is_live_session_day(now_ist.date()):
@@ -703,6 +727,11 @@ def sample_due_checkpoints(symbol: str, now: datetime | None = None) -> list[str
         return []
     fired: list[str] = []
     t_date = now_ist.strftime("%Y-%m-%d")
+    sym = config.index_key(symbol)
+    get_conn, db_lock = _db()
+    with db_lock, get_conn() as conn:
+        if not _checkpoint_exists(conn, t_date, sym, "DISCOVERY"):
+            return []
     for thresh, ck in _SESSION_CHECKPOINT_MINS:
         if mins >= thresh:
             ev = append_path_event(symbol, ck, spot, trade_date=t_date)

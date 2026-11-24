@@ -545,6 +545,85 @@ def _store_live_print(symbol: str, today: date) -> tuple[float, float, float, st
         return 0.0, 0.0, 0.0, ""
 
 
+PREOPEN_TAPE_DIR = Path("data/journal/preopen_tape")
+_TAPE_WINDOW = (8 * 60 + 50, 9 * 60 + 25)  # IST minute-of-day, inclusive start / exclusive end
+
+
+def _tape_sample(
+    symbol: str,
+    now: datetime,
+    ohlc: dict | None,
+    print_px: float,
+    prev_close: float,
+    open_source: str,
+    as_of: str,
+) -> None:
+    """Read-only pre-open tape: one JSON line per poll. Never changes discovery.
+
+    Records what each source said at each poll so the 09:08 provisional print can be
+    compared with the official day-open on the next live session (Nov 23 flip case).
+    Fails silent — logging must never block the poller.
+    """
+    try:
+        mins = now.hour * 60 + now.minute
+        if not (_TAPE_WINDOW[0] <= mins < _TAPE_WINDOW[1]):
+            return
+        from app.spot_ticker import _STORE, _ws_is_live_for
+        rec = _STORE.get(symbol) or {}
+        s_ohlc = rec.get("ohlc") or {}
+        s_quote = rec.get("quote") or {}
+        ws_at = rec.get("ws_at")
+        row = {
+            "ts": now.isoformat(timespec="milliseconds"),
+            "symbol": symbol,
+            "print_px": round(float(print_px or 0.0), 2),
+            "prev_close": round(float(prev_close or 0.0), 2),
+            "open_source": open_source or "",
+            "as_of": str(as_of or ""),
+            "dhan_open": (ohlc or {}).get("open"),
+            "dhan_ltp": (ohlc or {}).get("ltp"),
+            "dhan_prev": (ohlc or {}).get("prev_close"),
+            "dhan_as_of": (ohlc or {}).get("as_of"),
+            "store_open": s_ohlc.get("open"),
+            "store_ltp": s_ohlc.get("ltp"),
+            "store_prev": s_ohlc.get("prev_close"),
+            "store_as_of": s_ohlc.get("as_of"),
+            "store_quote_ltp": s_quote.get("ltp") or s_quote.get("spot"),
+            "ws_live": bool(_ws_is_live_for(symbol)),
+            "ws_at_age_s": round(time.time() - float(ws_at), 1) if ws_at else None,
+        }
+        PREOPEN_TAPE_DIR.mkdir(parents=True, exist_ok=True)
+        path = PREOPEN_TAPE_DIR / f"{now.strftime('%Y-%m-%d')}_{symbol}.jsonl"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 — tape is observability only
+        log.debug("preopen tape skipped for %s: %s", symbol, exc)
+
+
+def _looks_like_clock(text: str) -> bool:
+    """True for HH:MM:SS or HH:MM — reject tz crumbs like '04+00:00'."""
+    import re
+    s = str(text or "").strip()
+    return bool(re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", s))
+
+
+def _discovery_clock(as_of: str, now: datetime) -> str:
+    """HH:MM:SS for discovered_at. Never slice raw as_of (Sensex '04+00:00')."""
+    import re
+    raw = str(as_of or "").strip()
+    if _looks_like_clock(raw):
+        return raw if raw.count(":") == 2 else f"{raw}:00"
+    # Drop trailing tz offset (+05:30 / -00:00) before extracting the clock.
+    cleaned = re.sub(r"[+-]\d{2}:?\d{2}$", "", raw).strip()
+    m = re.search(r"(\d{2}):(\d{2}):(\d{2})", cleaned)
+    if m:
+        return f"{m.group(1)}:{m.group(2)}:{m.group(3)}"
+    m2 = re.search(r"(\d{2}):(\d{2})\b", cleaned)
+    if m2:
+        return f"{m2.group(1)}:{m2.group(2)}:00"
+    return now.strftime("%H:%M:%S")
+
+
 def _resolve_discovery_print(
     symbol: str,
     now: datetime,
@@ -673,7 +752,10 @@ def _apply_missed_open(state: dict, symbol: str, now: datetime) -> dict:
         net_gex_val = float(raw_net) if raw_net is not None else None
     except (TypeError, ValueError):
         net_gex_val = None
-    gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
+    gap_cls = classify_opening_gap(
+        gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val,
+        strike_step=config.strike_step_for(symbol),
+    )
     state["is_discovered"] = True
     state["discovered_spot"] = disc_spot
     state["prev_close"] = p_close
@@ -1179,6 +1261,7 @@ def get_pre_market_state(
         print_px, prev_close, open_source, as_of = _resolve_discovery_print(
             symbol.upper(), now_ist, ohlc, fallback_prev=float(fallback_spot or 0.0),
         )
+        _tape_sample(symbol.upper(), now_ist, ohlc, print_px, prev_close, open_source, as_of)
         now_mins = now_ist.hour * 60 + now_ist.minute
         lock_min = _matching_lock_min(now_ist)
         is_disc = (
@@ -1210,7 +1293,10 @@ def get_pre_market_state(
             else:
                 is_filled = True
 
-            gap_cls = classify_opening_gap(gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val)
+            gap_cls = classify_opening_gap(
+                gap_pts, gap_pct, disc_spot, cw_val, pw_val, flip_val, net_gex_val,
+                strike_step=config.strike_step_for(symbol),
+            )
 
             prior_src = str((upgrade_from_ltp or {}).get("open_source") or "")
             keep_discovered_at = (
@@ -1230,10 +1316,10 @@ def get_pre_market_state(
             state["regime_badge"] = gap_cls.get("badge", "")
             state["regime_color"] = gap_cls.get("color", "")
             state["regime_briefing"] = gap_cls.get("briefing", "")
-            if keep_discovered_at and upgrade_from_ltp.get("discovered_at"):
-                state["discovered_at"] = upgrade_from_ltp["discovered_at"]
+            if keep_discovered_at and _looks_like_clock(str(upgrade_from_ltp.get("discovered_at") or "")):
+                state["discovered_at"] = str(upgrade_from_ltp["discovered_at"])
             else:
-                state["discovered_at"] = as_of[-8:] if len(as_of) >= 8 else now_ist.strftime("%H:%M:%S")
+                state["discovered_at"] = _discovery_clock(as_of, now_ist)
             state["open_source"] = open_source
             state["status_text"] = (
                 f"Equilibrium Discovered: ₹{disc_spot:,.1f} ({gap_pts:+.1f} pts / {gap_pct:+.2f}%)"
@@ -1512,6 +1598,7 @@ def classify_opening_gap(
     put_wall: float = 0.0,
     flip: float = 0.0,
     net_gex: float | None = None,
+    strike_step: float | int | None = None,
 ) -> dict:
     """Locate the opening print on the book.
 
@@ -1520,9 +1607,12 @@ def classify_opening_gap(
     Missing net_gex is unavailable; exact 0 is balanced.
 
     Wall breach / cascade labels require a same-direction gap of at least
-    ±0.15%. A flat or opposite-direction open that merely sits through a
-    gamma strike is map location (AUCTION_BALANCED / MODERATE_DRIFT), not a
-    squeeze or cascade — those ids feed CE/PE structure staging.
+    ±0.15% and clearance of at least one listed strike step beyond the wall.
+    A thin print (open barely through the wall — e.g. BN 23-Nov +12 pts on
+    a 100-pt step) is SHORT_GAMMA / PUT test, not CE/PE structure staging.
+    A flat or opposite-direction open that merely sits through a gamma strike
+    is map location (AUCTION_BALANCED / MODERATE_DRIFT), not a squeeze or
+    cascade — those ids feed CE/PE structure staging.
     """
     above_balance = flip > 0 and spot >= flip
     book = _book_label(net_gex)
@@ -1530,10 +1620,19 @@ def classify_opening_gap(
     flip_txt = f"₹{flip:,.0f}" if flip else "unavailable"
     wall_note = ""
 
-    through_call = call_wall > 0 and spot >= call_wall + 10.0
-    at_call = call_wall > 0 and (call_wall - 15.0) <= spot < (call_wall + 10.0)
-    through_put = put_wall > 0 and spot <= put_wall - 10.0
-    at_put = put_wall > 0 and (put_wall - 10.0) < spot <= (put_wall + 15.0)
+    try:
+        step = float(strike_step) if strike_step is not None else 50.0
+    except (TypeError, ValueError):
+        step = 50.0
+    if step <= 0:
+        step = 50.0
+    # One listed step beyond the wall. Thin prints inside that band are wall tests.
+    clear_buf = max(step, 25.0)
+
+    through_call = call_wall > 0 and spot >= call_wall + clear_buf
+    at_call = call_wall > 0 and (call_wall - 15.0) <= spot < (call_wall + clear_buf)
+    through_put = put_wall > 0 and spot <= put_wall - clear_buf
+    at_put = put_wall > 0 and (put_wall - clear_buf) < spot <= (put_wall + 15.0)
     # Same strike for call and put gamma — GO soft-flags this; never invent squeeze/cascade.
     shared_gamma = call_wall > 0 and put_wall > 0 and abs(call_wall - put_wall) < 1.0
 
@@ -1548,15 +1647,28 @@ def classify_opening_gap(
         favored_play = "WATCH HOLD ABOVE CALL STRIKE"
     elif at_call or (through_call and shared_gamma and gap_pct >= 0.15):
         regime = "SHORT_GAMMA_WALL_TEST"
-        badge = "⚖️ SHARED GAMMA STRIKE" if shared_gamma else "🚨 AT CALL-GAMMA STRIKE"
-        color = "var(--warn)"
+        thin = call_wall > 0 and spot >= call_wall + 10.0 and spot < call_wall + clear_buf
         if shared_gamma:
+            badge = "⚖️ SHARED GAMMA STRIKE"
+            color = "var(--warn)"
             briefing = (
                 f"Indicative open at ₹{spot:,.0f} vs shared call/put-gamma ₹{call_wall:,.0f}. "
                 f"Book is {book} (balance {flip_txt}). One strike is not a squeeze or a cascade."
             )
             favored_play = "WATCH THE SHARED GAMMA STRIKE"
+        elif thin:
+            badge = "⚠️ THIN CALL-GAMMA CLEARANCE"
+            color = "var(--warn)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} is only "
+                f"{spot - call_wall:.0f} pts through call-gamma ₹{call_wall:,.0f} "
+                f"(clearance needs ≥{clear_buf:.0f} pts / one strike step). "
+                f"Book is {book} (balance {flip_txt}). Thin clearance is a wall test, not a hold-above structure."
+            )
+            favored_play = "WATCH THE CALL STRIKE"
         else:
+            badge = "🚨 AT CALL-GAMMA STRIKE"
+            color = "var(--warn)"
             briefing = (
                 f"Indicative open at ₹{spot:,.0f} is at the call-gamma strike (₹{call_wall:,.0f}). "
                 f"Book is {book} (balance {flip_txt}). A touch is not a squeeze."
@@ -1573,15 +1685,28 @@ def classify_opening_gap(
         favored_play = "WATCH HOLD BELOW PUT STRIKE"
     elif at_put or (through_put and shared_gamma and gap_pct <= -0.15):
         regime = "PUT_WALL_BREAKDOWN_TEST"
-        badge = "⚖️ SHARED GAMMA STRIKE" if shared_gamma else "⚠️ AT PUT-GAMMA STRIKE"
-        color = "var(--stop)"
+        thin = put_wall > 0 and spot <= put_wall - 10.0 and spot > put_wall - clear_buf
         if shared_gamma:
+            badge = "⚖️ SHARED GAMMA STRIKE"
+            color = "var(--stop)"
             briefing = (
                 f"Indicative open at ₹{spot:,.0f} vs shared call/put-gamma ₹{put_wall:,.0f}. "
                 f"Book is {book} (balance {flip_txt}). One strike is not a cascade."
             )
             favored_play = "WATCH THE SHARED GAMMA STRIKE"
+        elif thin:
+            badge = "⚠️ THIN PUT-GAMMA CLEARANCE"
+            color = "var(--stop)"
+            briefing = (
+                f"Indicative open at ₹{spot:,.0f} is only "
+                f"{put_wall - spot:.0f} pts through put-gamma ₹{put_wall:,.0f} "
+                f"(clearance needs ≥{clear_buf:.0f} pts / one strike step). "
+                f"Book is {book} (balance {flip_txt}). Thin clearance is a wall test, not a hold-below structure."
+            )
+            favored_play = "WATCH THE PUT STRIKE"
         else:
+            badge = "⚠️ AT PUT-GAMMA STRIKE"
+            color = "var(--stop)"
             briefing = (
                 f"Indicative open at ₹{spot:,.0f} is at the put-gamma strike (₹{put_wall:,.0f}). "
                 f"Book is {book} (balance {flip_txt}). A touch is not a defense."
@@ -1599,6 +1724,17 @@ def classify_opening_gap(
         )
         regime = ""
     else:
+        # Barely through the wall without enough gap for a wall-test label — still map note.
+        if call_wall > 0 and spot >= call_wall + 10.0 and spot < call_wall + clear_buf:
+            wall_note = (
+                f" Open sits thinly through call-gamma ₹{call_wall:,.0f} "
+                f"(+{spot - call_wall:.0f} pts) — location only, not a squeeze."
+            )
+        elif put_wall > 0 and spot <= put_wall - 10.0 and spot > put_wall - clear_buf:
+            wall_note = (
+                f" Open sits thinly through put-gamma ₹{put_wall:,.0f} "
+                f"(-{put_wall - spot:.0f} pts) — location only, not a cascade."
+            )
         regime = ""
 
     if regime:
