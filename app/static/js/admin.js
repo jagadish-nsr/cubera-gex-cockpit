@@ -8,6 +8,13 @@
   let pollTimer = null;
   let activeTask = null;
   let obsWindow = "15m";
+  let chromeInFlight = false;
+  let lastVerifyExchangeAt = 0;
+
+  function isAdminTabActive() {
+    const pane = document.getElementById("tab-admin");
+    return Boolean(pane && pane.classList.contains("active"));
+  }
 
   function isoDate(day) {
     const z = function (n) { return String(n).padStart(2, "0"); };
@@ -167,7 +174,11 @@
     }
   });
 
-  async function refreshAdminChrome() {
+  async function refreshAdminChrome(forceFull) {
+    const full = forceFull === true;
+    if (!full && document.hidden) return;
+    if (chromeInFlight) return;
+    chromeInFlight = true;
     try {
       const res = await fetch("/api/admin/status");
       if (!res.ok) {
@@ -177,12 +188,20 @@
       }
       const data = await res.json();
       paintStatus(data);
-      loadOps();
-      loadSessionChecklist();
-      loadVerifyExchange();
+      if (full || isAdminTabActive()) {
+        loadOps();
+        loadSessionChecklist();
+        const now = Date.now();
+        if (full || now - lastVerifyExchangeAt >= 300000) {
+          lastVerifyExchangeAt = now;
+          loadVerifyExchange();
+        }
+      }
     } catch (err) {
       const alerts = document.getElementById("admin-kpi-alerts");
       if (alerts) alerts.textContent = "Status unreachable";
+    } finally {
+      chromeInFlight = false;
     }
   }
 
@@ -669,7 +688,7 @@
 
   function loadAdmin() {
     ensureDates();
-    refreshAdminChrome();
+    refreshAdminChrome(true);
     loadAlerts();
   }
 

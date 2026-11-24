@@ -75,6 +75,83 @@
     speechSynth: window.speechSynthesis || null,
   };
 
+  const _inflightPolls = Object.create(null);
+  const _lastPollAt = Object.create(null);
+
+  async function runSingleFlight(key, fn) {
+    if (_inflightPolls[key]) return;
+    _inflightPolls[key] = true;
+    _lastPollAt[key] = Date.now();
+    try {
+      return await fn();
+    } finally {
+      _inflightPolls[key] = false;
+    }
+  }
+
+  function isLiveOrPreBellSession() {
+    if (state.isMarketOpen === undefined) return true;
+    return Boolean(state.isMarketOpen) || isClientPreBellWindow();
+  }
+
+  function shouldSkipVisualPoll(key, offSessionMinGapMs) {
+    if (document.hidden) return true;
+    if (isLiveOrPreBellSession()) return false;
+    const last = _lastPollAt[key] || 0;
+    return Date.now() - last < (offSessionMinGapMs || 60000);
+  }
+
+  function shouldSkipAlertPoll(key, offSessionMinGapMs) {
+    if (isLiveOrPreBellSession()) return false;
+    if (document.hidden) return true;
+    const last = _lastPollAt[key] || 0;
+    return Date.now() - last < (offSessionMinGapMs || 120000);
+  }
+
+  function shouldSkipStatusPoll() {
+    const last = _lastPollAt.status || 0;
+    const live = isLiveOrPreBellSession();
+    const minGap = live ? (document.hidden ? 15000 : 4500) : (document.hidden ? 60000 : 30000);
+    return Date.now() - last < minGap;
+  }
+
+  const _goOpenCache = { key: "", ts: 0, promise: null, data: null };
+
+  function invalidateGoOpenCache() {
+    _goOpenCache.key = "";
+    _goOpenCache.ts = 0;
+    _goOpenCache.promise = null;
+    _goOpenCache.data = null;
+  }
+
+  async function fetchGoOpenCached(sym, win) {
+    const s = String(sym || state.symbol || "NIFTY").toUpperCase();
+    const w = String(win || state.window || "current_week");
+    const key = `${s}|${w}`;
+    const now = Date.now();
+    if (_goOpenCache.key === key && _goOpenCache.data && now - _goOpenCache.ts < 2500) {
+      return { ok: true, data: _goOpenCache.data };
+    }
+    if (_goOpenCache.key === key && _goOpenCache.promise) {
+      return _goOpenCache.promise;
+    }
+    _goOpenCache.key = key;
+    _goOpenCache.promise = (async () => {
+      try {
+        const res = await fetch(`/api/go/open?symbol=${encodeURIComponent(s)}&window=${encodeURIComponent(w)}`);
+        const data = await res.json().catch(() => ({ open: [] }));
+        if (res.ok) {
+          _goOpenCache.ts = Date.now();
+          _goOpenCache.data = data;
+        }
+        return { ok: res.ok, data };
+      } finally {
+        _goOpenCache.promise = null;
+      }
+    })();
+    return _goOpenCache.promise;
+  }
+
   function pad2(n) {
     return String(n).padStart(2, "0");
   }
@@ -984,14 +1061,16 @@
   }
 
   async function pollWallChaseWatch() {
-    try {
-      const win = state.window || "current_week";
-      const res = await fetch(`/api/wall-chase-watch?window=${encodeURIComponent(win)}`);
-      if (!res.ok) return;
-      const data = await res.json();
-      state.wallChaseNotifyLastPoll = Date.now();
-      processWallChaseWatches(data && data.watches);
-    } catch (e) { /* quiet — background poll */ }
+    return runSingleFlight("wallChaseWatch", async () => {
+      try {
+        const win = state.window || "current_week";
+        const res = await fetch(`/api/wall-chase-watch?window=${encodeURIComponent(win)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        state.wallChaseNotifyLastPoll = Date.now();
+        processWallChaseWatches(data && data.watches);
+      } catch (e) { /* quiet — background poll */ }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1812,8 +1891,11 @@
     gr.inflight = true;
     gr.lastStartedAt = now;
     try {
-      if (typeof loadGoDesk === "function") await loadGoDesk();
-      if (typeof loadGoDeskFeed === "function") await loadGoDeskFeed();
+      if (state.activeTab === "tab-recommendations") {
+        if (typeof loadGoDeskFeed === "function") await loadGoDeskFeed();
+      } else {
+        if (typeof loadGoDesk === "function") await loadGoDesk();
+      }
     } catch (e) {
       /* non-fatal */
     } finally {
@@ -1908,16 +1990,18 @@
   }
 
   async function pollSentinelSignals() {
-    try {
-      const sym = (state.symbol || "NIFTY").toUpperCase();
-      const res = await fetch(`/api/sentinel-signals?symbol=${encodeURIComponent(sym)}&limit=15`);
-      if (!res.ok) return;
-      const data = await res.json();
-      // Ensure response matches currently active symbol before processing
-      if (data && data.signals && (data.symbol || "").toUpperCase() === (state.symbol || "").toUpperCase()) {
-        processSentinelSignals(data.signals, sym);
-      }
-    } catch (e) { }
+    return runSingleFlight("sentinelSignals", async () => {
+      try {
+        const sym = (state.symbol || "NIFTY").toUpperCase();
+        const res = await fetch(`/api/sentinel-signals?symbol=${encodeURIComponent(sym)}&limit=15`);
+        if (!res.ok) return;
+        const data = await res.json();
+        // Ensure response matches currently active symbol before processing
+        if (data && data.signals && (data.symbol || "").toUpperCase() === (state.symbol || "").toUpperCase()) {
+          processSentinelSignals(data.signals, sym);
+        }
+      } catch (e) { }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -2362,14 +2446,17 @@
         try {
           const tick = JSON.parse(event.data);
           ReliabilityController.noteTick();
-          paintWallKpisFromTick(tick);
           if (tick.type === "TICK" && tick.is_market_open) {
-            handleLiveTick(tick);
-          } else if (tick.type === "STATUS") {
-            const clockEl = document.getElementById("header-clock");
-            if (clockEl && tick.ist_time) {
-              const cleanTime = String(tick.ist_time).replace(/\bIST\b/gi, "").trim();
-              clockEl.textContent = `${cleanTime} IST`;
+            handleLiveTickEdges(tick);
+            scheduleLiveTickPaint(tick);
+          } else {
+            paintWallKpisFromTick(tick);
+            if (tick.type === "STATUS") {
+              const clockEl = document.getElementById("header-clock");
+              if (clockEl && tick.ist_time) {
+                const cleanTime = String(tick.ist_time).replace(/\bIST\b/gi, "").trim();
+                clockEl.textContent = `${cleanTime} IST`;
+              }
             }
           }
         } catch (err) { }
@@ -2389,6 +2476,50 @@
       };
     } catch (e) {
       scheduleWsReconnect("connect_error");
+    }
+  }
+
+  let _pendingWsTick = null;
+  let _wsTickRaf = 0;
+
+  function handleLiveTickEdges(tick) {
+    if (!tick) return;
+    const tickSym = (tick.symbol || "").toUpperCase();
+    const activeSym = (state.symbol || "").toUpperCase();
+    if (!tickSym || !activeSym || tickSym !== activeSym) return;
+    if (tick.spot != null) state.spot = tick.spot;
+    // Siren intensity follows live spot spikes while blast is ACTIVE
+    if (state.lastCockpitDash && state.lastCockpitDash.gamma_blast) {
+      syncGammaBlastAudio(state.lastCockpitDash.gamma_blast, tick.spot);
+    }
+    // Sub-second wall / premium-cross edges from the live tick tape (expiry afternoon).
+    if (tick.wall_event === "call_wall_cross") {
+      showToast(`Spot through call wall ${Number(tick.call_wall || 0).toLocaleString("en-IN")}`, "⚡");
+    } else if (tick.wall_event === "put_wall_cross") {
+      showToast(`Spot through put wall ${Number(tick.put_wall || 0).toLocaleString("en-IN")}`, "⚡");
+    }
+    const cross = tick.blast_live && tick.blast_live.last_cross;
+    if (cross && cross.epoch && cross.epoch !== state._lastBlastCrossEpoch) {
+      state._lastBlastCrossEpoch = cross.epoch;
+      const dir = cross.to === "call_rich" ? "up through" : "down through";
+      showToast(`Anchor parity crossed ${dir} ${Number(cross.strike || 0).toLocaleString("en-IN")}`, "⚡");
+    }
+  }
+
+  function flushPendingLiveTick() {
+    _wsTickRaf = 0;
+    const tick = _pendingWsTick;
+    _pendingWsTick = null;
+    if (!tick) return;
+    paintWallKpisFromTick(tick);
+    handleLiveTick(tick);
+  }
+
+  function scheduleLiveTickPaint(tick) {
+    _pendingWsTick = tick;
+    if (document.hidden) return;
+    if (!_wsTickRaf) {
+      _wsTickRaf = window.requestAnimationFrame(flushPendingLiveTick);
     }
   }
 
@@ -2448,23 +2579,6 @@
     paintRecLiveQuotes(tick.rec_quotes);
     patchCockpitDashFromTick(tick);
     if (state.lastCockpitDash) updateMarketAlertTape(state.lastCockpitDash);
-
-    // Siren intensity follows live spot spikes while blast is ACTIVE
-    if (state.lastCockpitDash && state.lastCockpitDash.gamma_blast) {
-      syncGammaBlastAudio(state.lastCockpitDash.gamma_blast, tick.spot);
-    }
-    // Sub-second wall / premium-cross edges from the live tick tape (expiry afternoon).
-    if (tick.wall_event === "call_wall_cross") {
-      showToast(`Spot through call wall ${Number(tick.call_wall || 0).toLocaleString("en-IN")}`, "⚡");
-    } else if (tick.wall_event === "put_wall_cross") {
-      showToast(`Spot through put wall ${Number(tick.put_wall || 0).toLocaleString("en-IN")}`, "⚡");
-    }
-    const cross = tick.blast_live && tick.blast_live.last_cross;
-    if (cross && cross.epoch && cross.epoch !== state._lastBlastCrossEpoch) {
-      state._lastBlastCrossEpoch = cross.epoch;
-      const dir = cross.to === "call_rich" ? "up through" : "down through";
-      showToast(`Anchor parity crossed ${dir} ${Number(cross.strike || 0).toLocaleString("en-IN")}`, "⚡");
-    }
   }
 
   function paintRecLiveQuotes(quotes) {
@@ -2640,6 +2754,9 @@
   }
 
   async function loadStatus() {
+    if (_inflightPolls.status) return;
+    _inflightPolls.status = true;
+    _lastPollAt.status = Date.now();
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/status?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
@@ -2857,6 +2974,8 @@
       }
     } catch (e) {
       console.error("Error loading status:", e);
+    } finally {
+      _inflightPolls.status = false;
     }
   }
 
@@ -3560,6 +3679,7 @@
       } else {
         showToast("Closed staged GO");
       }
+      invalidateGoOpenCache();
       loadGoOpenPanel();
       loadGoAlerts();
       if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
@@ -3571,6 +3691,7 @@
   async function refreshGoOpenMarks() {
     try {
       await fetch(`/api/go/alerts?symbol=${encodeURIComponent(state.symbol)}&refresh=true`);
+      invalidateGoOpenCache();
       loadGoOpenPanel();
       showToast("Open marks refreshed");
     } catch (e) {
@@ -3618,6 +3739,7 @@
       }
       if (data.auto_stage && data.auto_stage.status === "auto_staged") {
         showToast(`Auto-staged ${data.auto_stage.trade_id} · paper P&L study`);
+        invalidateGoOpenCache();
         loadGoOpenPanel();
       } else if (data.auto_stage && data.auto_stage.status === "blocked_conflict") {
         showToast("Auto-stage blocked — opposite open still LIVE");
@@ -3738,9 +3860,8 @@
     const root = document.getElementById("go-open-panel");
     if (!root) return;
     try {
-      const res = await fetch(`/api/go/open?symbol=${encodeURIComponent(state.symbol)}&window=${encodeURIComponent(state.window || "current_week")}`);
-      const data = await res.json();
-      if (!res.ok) return;
+      const { ok, data } = await fetchGoOpenCached(state.symbol, state.window || "current_week");
+      if (!ok) return;
       const opens = data.open || [];
       if (!opens.length) {
         root.innerHTML = "";
@@ -3799,14 +3920,14 @@
     const root = document.getElementById("go-scorecard");
     if (!root) return;
     try {
-      const [effRes, openRes, btRes, wrRes] = await Promise.all([
+      const [effRes, openCached, btRes, wrRes] = await Promise.all([
         fetch(`/api/go/efficiency?symbol=${encodeURIComponent(state.symbol)}`),
-        fetch(`/api/go/open?symbol=${encodeURIComponent(state.symbol)}`),
+        fetchGoOpenCached(state.symbol, state.window || "current_week").catch(() => ({ ok: false, data: { open: [] } })),
         fetch(`/api/go/backtest-slice?symbol=${encodeURIComponent(state.symbol)}`),
         fetch(`/api/go/writer/risk?portfolio=true&window=${encodeURIComponent(state.window || "current_week")}`),
       ]);
       const eff = await effRes.json();
-      const openPayload = await openRes.json().catch(() => ({ open: [] }));
+      const openPayload = (openCached && openCached.data) || { open: [] };
       const bt = await btRes.json().catch(() => ({ templates: [] }));
       const wr = await wrRes.json().catch(() => ({ books: [] }));
       const c = eff.counts || {};
@@ -3976,6 +4097,7 @@
         return;
       }
       showToast(`Staged ${data.trade_id} — confirm at broker`);
+      invalidateGoOpenCache();
       if (typeof loadGoDeskFeed === "function") loadGoDeskFeed();
       loadGoOpenPanel();
       loadGoDigest();
@@ -4037,6 +4159,9 @@
   });
 
   async function loadCockpit() {
+    if (_inflightPolls.cockpit) return;
+    _inflightPolls.cockpit = true;
+    _lastPollAt.cockpit = Date.now();
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
       const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
@@ -4814,6 +4939,8 @@
       updateMarketAlertTape(data);
     } catch (e) {
       console.error("Error loading cockpit:", e);
+    } finally {
+      _inflightPolls.cockpit = false;
     }
   }
 
@@ -6915,6 +7042,9 @@
   }
 
   async function loadRecommendations() {
+    if (_inflightPolls.recommendations) return;
+    _inflightPolls.recommendations = true;
+    _lastPollAt.recommendations = Date.now();
     try {
       loadGoDeskFeed();
       const res = await fetch(`/api/recommendations?symbol=${state.symbol}&window=${state.window}&capital=${state.capital}&risk=${state.riskPct}`);
@@ -7035,11 +7165,13 @@
       renderClusterList("tactical-pe-container", data.tactical_tier ? data.tactical_tier.pe_clusters : [], "PE", data.pe_tactical_active);
 
       // Also render recommendation history table & Sentinel recommendations
-      loadRecommendationHistory();
+      loadRecommendationHistory({ background: true });
       loadSentinelRecommendations();
     } catch (e) {
       setFetchDegraded("Recommendations", e.message || "network error");
       console.error("Error loading recommendations:", e);
+    } finally {
+      _inflightPolls.recommendations = false;
     }
   }
 
@@ -7049,6 +7181,8 @@
   async function loadSentinelRecommendations() {
     const tbody = document.getElementById("sentinel-rec-tbody");
     if (!tbody) return;
+    if (_inflightPolls.sentinelRecs) return;
+    _inflightPolls.sentinelRecs = true;
 
     const sessionSel = document.getElementById("sentinel-rec-session-select");
     const sessionVal = sessionSel ? sessionSel.value : "today";
@@ -7071,6 +7205,8 @@
       if (tbody) {
         tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--stop)">Failed to load Sentinel recommendations. Click Refresh to retry.</td></tr>`;
       }
+    } finally {
+      _inflightPolls.sentinelRecs = false;
     }
   }
   window.loadSentinelRecommendations = loadSentinelRecommendations;
@@ -7296,9 +7432,10 @@
   window._currentRecHistoryTierFilter = window._currentRecHistoryTierFilter || "all";
   window._cachedRecHistoryData = null;
 
-  async function loadRecommendationHistory() {
+  async function loadRecommendationHistory(opts) {
     const tbody = document.getElementById("rec-history-tbody");
     if (!tbody) return;
+    if (_inflightPolls.recHistory) return;
 
     const sessionSel = document.getElementById("rec-history-session-select");
     const sessionDate = sessionSel ? sessionSel.value : "today";
@@ -7311,19 +7448,34 @@
     const statusVal = statusSel ? statusSel.value : "all";
 
     const tierVal = window._currentRecHistoryTierFilter || "all";
+    const historyKey = `${sym}|${sessionDate}|${tierVal}|${statusVal}`;
+    const isBackground = Boolean(opts && opts.background === true);
+    if (
+      isBackground &&
+      window._lastRecHistoryKey === historyKey &&
+      window._cachedRecHistoryData &&
+      Date.now() - (window._lastRecHistoryAt || 0) < 30000
+    ) {
+      return;
+    }
 
+    _inflightPolls.recHistory = true;
     try {
       const url = `/api/recommendations/history?symbol=${encodeURIComponent(sym)}&session_date=${encodeURIComponent(sessionDate)}&tier=${encodeURIComponent(tierVal)}&status=${encodeURIComponent(statusVal)}&limit=150`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       window._cachedRecHistoryData = data;
+      window._lastRecHistoryKey = historyKey;
+      window._lastRecHistoryAt = Date.now();
       renderRecommendationHistory(data);
     } catch (err) {
       console.warn("Failed to load recommendation history:", err);
       if (tbody && (!window._cachedRecHistoryData || !window._cachedRecHistoryData.history)) {
         tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--stop)">Failed to load recommendation history. Click Refresh to retry.</td></tr>`;
       }
+    } finally {
+      _inflightPolls.recHistory = false;
     }
   }
 
@@ -8063,6 +8215,9 @@
   };
 
   async function loadSentinelTape() {
+    if (_inflightPolls.sentinelTape) return;
+    _inflightPolls.sentinelTape = true;
+    _lastPollAt.sentinelTape = Date.now();
     try {
       const requestedSym = (state.symbol || "NIFTY").toUpperCase();
       const res = await fetch(`/api/sentinel-tape?symbol=${encodeURIComponent(requestedSym)}&timeframe=${sentinelState.timeframe}`);
@@ -8507,6 +8662,8 @@
     } catch (e) {
       setFetchDegraded("Sentinel", e.message || "network error");
       console.error("Error loading sentinel tape:", e);
+    } finally {
+      _inflightPolls.sentinelTape = false;
     }
   }
 
@@ -11162,24 +11319,28 @@
     }).catch((err) => notePrefCatch("select-index", err));
     initWebSocket();
     const pollPinAlerts = async () => {
-      try {
-        const res = await fetch("/api/recommendations/alerts");
-        const data = await res.json();
-        const alerts = data.alerts || [];
-        if (!alerts.length) return;
-        alerts.forEach((a) => {
-          showToast(`${a.event_type}: ${a.message || a.rec_id}`);
-          if (state.soundEnabled) playCautionChime();
-        });
-        await fetch("/api/recommendations/alerts/ack", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ event_ids: alerts.map((a) => a.event_id) }),
-        });
-      } catch (e) { }
+      return runSingleFlight("pinAlerts", async () => {
+        try {
+          const res = await fetch("/api/recommendations/alerts");
+          const data = await res.json();
+          const alerts = data.alerts || [];
+          if (!alerts.length) return;
+          alerts.forEach((a) => {
+            showToast(`${a.event_type}: ${a.message || a.rec_id}`);
+            if (state.soundEnabled) playCautionChime();
+          });
+          await fetch("/api/recommendations/alerts/ack", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ event_ids: alerts.map((a) => a.event_id) }),
+          });
+        } catch (e) { }
+      });
     };
     pollPinAlerts();
-    setInterval(pollPinAlerts, 20000);
+    setInterval(() => {
+      if (!shouldSkipAlertPoll("pinAlerts", 120000)) pollPinAlerts();
+    }, 20000);
     const closeBtn = document.getElementById("journal-close-confirm");
     if (closeBtn) {
       closeBtn.addEventListener("click", () => {
@@ -11196,30 +11357,51 @@
 
     if (window.refreshAdminChrome) {
       window.refreshAdminChrome();
-      setInterval(window.refreshAdminChrome, 30000);
+      setInterval(() => {
+        if (isLiveOrPreBellSession() || Date.now() - (_lastPollAt.adminChrome || 0) >= 60000) {
+          _lastPollAt.adminChrome = Date.now();
+          window.refreshAdminChrome();
+        }
+      }, 30000);
     }
 
     // Mount Cockpit TradingView chart immediately
     renderCockpitChart(state.symbol, cockpitChartState.timeframe, cockpitChartState.engine);
     refreshAll();
-    setInterval(loadStatus, 5000);
     setInterval(() => {
-      if (state.activeTab === "tab-cockpit") loadCockpit();
+      if (!shouldSkipStatusPoll()) loadStatus();
+    }, 5000);
+    setInterval(() => {
+      if (state.activeTab === "tab-cockpit" && !shouldSkipVisualPoll("cockpit", 60000)) {
+        loadCockpit();
+      }
     }, 20000);
     setInterval(() => {
-      if (state.activeTab === "tab-sentinel") loadSentinelTape();
+      if (state.activeTab === "tab-sentinel" && !shouldSkipVisualPoll("sentinelTape", 60000)) {
+        loadSentinelTape();
+      }
     }, 10000);
     setInterval(() => {
-      if (state.activeTab === "tab-recommendations") {
+      if (state.activeTab === "tab-recommendations" && !shouldSkipVisualPoll("recommendations", 60000)) {
         loadRecommendations();
       }
     }, 8000);
-    setInterval(pollSentinelSignals, 8000);
+    setInterval(() => {
+      if (!shouldSkipAlertPoll("sentinelSignals", 120000)) pollSentinelSignals();
+    }, 8000);
     pollSentinelSignals();
     // Cross-index wall-chase watches — notify + twin temple bell regardless of selected index
     ensureNotificationPermission();
-    setInterval(pollWallChaseWatch, 12000);
+    setInterval(() => {
+      if (!shouldSkipAlertPoll("wallChaseWatch", 120000)) pollWallChaseWatch();
+    }, 12000);
     pollWallChaseWatch();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        if (_pendingWsTick) flushPendingLiveTick();
+        refreshAll();
+      }
+    });
     setInterval(() => {
       if (!isClientPreBellWindow()) syncCockpitPreBellCard(false);
     }, 1000);
