@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path("data/journal/market_snapshot.db")
 _LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
 _IST = timezone(timedelta(hours=5, minutes=30))
 _CASH_CLOSE_MINUTES = 15 * 60 + 30
 
@@ -26,34 +27,47 @@ _CASH_CLOSE_MINUTES = 15 * 60 + 30
 def _get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db() -> None:
     """Initialize the session snapshot table."""
-    with _LOCK, _get_connection() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS session_snapshots (
-                symbol TEXT PRIMARY KEY,
-                spot REAL,
-                prev_close REAL,
-                open REAL,
-                high REAL,
-                low REAL,
-                call_wall REAL,
-                put_wall REAL,
-                gamma_flip REAL,
-                max_pain REAL,
-                net_gex REAL,
-                pcr REAL,
-                vix REAL,
-                as_of TEXT,
-                source TEXT,
-                updated_at TEXT
-            )
-        """)
-        conn.commit()
+    path_key = str(DB_PATH.resolve())
+    with _LOCK:
+        with _get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_snapshots (
+                    symbol TEXT PRIMARY KEY,
+                    spot REAL,
+                    prev_close REAL,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    call_wall REAL,
+                    put_wall REAL,
+                    gamma_flip REAL,
+                    max_pain REAL,
+                    net_gex REAL,
+                    pcr REAL,
+                    vix REAL,
+                    as_of TEXT,
+                    source TEXT,
+                    updated_at TEXT
+                )
+            """)
+            conn.commit()
+        _SCHEMA_READY_PATHS.add(path_key)
+
+
+def _init_db_once() -> None:
+    path_key = str(DB_PATH.resolve())
+    if path_key in _SCHEMA_READY_PATHS and DB_PATH.exists():
+        return
+    init_db()
 
 
 def _attach_shared_gamma(item: dict) -> None:
@@ -200,7 +214,7 @@ def save_snapshot(
     if any(k in (source or "").lower() for k in ("demo", "synthetic", "mock", "test")):
         return
     sym = symbol.upper().strip()
-    init_db()
+    _init_db_once()
     now_iso = datetime.now(timezone.utc).isoformat()
 
     # Off-hours must not restamp the registry as a future calendar day. A 06:30
@@ -284,7 +298,7 @@ def save_snapshot(
 def get_snapshot(symbol: str) -> dict[str, Any] | None:
     """Retrieve the authentic session snapshot from SQLite or bootstrap from real cache."""
     sym = symbol.upper().strip()
-    init_db()
+    _init_db_once()
 
     with _LOCK, _get_connection() as conn:
         row = conn.execute("SELECT * FROM session_snapshots WHERE symbol = ?", (sym,)).fetchone()

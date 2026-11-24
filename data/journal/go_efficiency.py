@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "go_efficiency.db"
 _LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
 
 # Same cost model as data.journal.store (H8) — VERIFY vs broker schedule.
 DEFAULT_BROKERAGE_PER_ORDER_INR = 20.0
@@ -47,9 +48,14 @@ def _now_ist() -> str:
 
 def _conn() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path_key = str(_DB_PATH.resolve())
+    existed = _DB_PATH.exists()
     conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA busy_timeout=5000;")
+    if existed and path_key in _SCHEMA_READY_PATHS:
+        return conn
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS go_events (
@@ -100,12 +106,16 @@ def _conn() -> sqlite3.Connection:
         "CREATE INDEX IF NOT EXISTS idx_go_events_sym ON go_events (symbol, ts DESC)"
     )
     conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_go_events_ts ON go_events (ts DESC)"
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_go_events_dec ON go_events (decision_id, event_type)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_go_open_sym ON go_open (symbol, status)"
     )
     conn.commit()
+    _SCHEMA_READY_PATHS.add(path_key)
     return conn
 
 
@@ -269,8 +279,15 @@ def _write_settlement(
 
 def ensure_schema() -> None:
     with _LOCK:
+        _SCHEMA_READY_PATHS.discard(str(_DB_PATH.resolve()))
         c = _conn()
         c.close()
+
+
+def _ensure_schema_once() -> None:
+    if str(_DB_PATH.resolve()) in _SCHEMA_READY_PATHS and _DB_PATH.exists():
+        return
+    ensure_schema()
 
 
 # In-process last EMIT fingerprint per symbol (poll flood killer).
@@ -313,7 +330,7 @@ def record_event(
     EMIT is deduped by ``emit_fingerprint`` unless ``force=True``. Returns
     None when an identical board was already ledgered (no new row).
     """
-    ensure_schema()
+    _ensure_schema_once()
     et = str(event_type or "").upper()
     if et not in ("EMIT", "STAGE", "SKIP"):
         raise ValueError(f"invalid event_type {event_type!r}")
@@ -436,7 +453,7 @@ def mark_open(
     Once armed, ``trail_stop`` ratchets with peak premium (never loosens).
     Hit → status TRAIL_STOP and settle at the stop (not a gap-through mark).
     """
-    ensure_schema()
+    _ensure_schema_once()
     with _LOCK:
         conn = _conn()
         conn.row_factory = sqlite3.Row
@@ -592,7 +609,7 @@ def mark_open(
 
 def list_marked(symbol: str | None = None) -> list[dict[str, Any]]:
     """Open + closed/trail rows for backtest-style MFE/MAE slices."""
-    ensure_schema()
+    _ensure_schema_once()
     conn = _conn()
     conn.row_factory = sqlite3.Row
     try:
@@ -632,7 +649,7 @@ def close_open(
 
     If ``exit_premium`` is omitted, uses the last mark (or entry).
     """
-    ensure_schema()
+    _ensure_schema_once()
     with _LOCK:
         conn = _conn()
         conn.row_factory = sqlite3.Row
@@ -742,7 +759,7 @@ def close_all_open_at_session_end(
 
 
 def list_open(symbol: str | None = None, *, include_decision: bool = False) -> list[dict[str, Any]]:
-    ensure_schema()
+    _ensure_schema_once()
     conn = _conn()
     conn.row_factory = sqlite3.Row
     try:
@@ -809,7 +826,7 @@ def _ts_date(ts_raw: str | None) -> str | None:
 
 def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
     """Descriptive counts for Scorecard / Efficiency tab."""
-    ensure_schema()
+    _ensure_schema_once()
     session_day = _ist_today_str()
     conn = _conn()
     conn.row_factory = sqlite3.Row
@@ -823,10 +840,10 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
             session_event_rows = conn.execute(
                 """
                 SELECT * FROM go_events
-                WHERE symbol = ? AND ts LIKE ?
+                WHERE symbol = ? AND ts >= ? AND ts < ?
                 ORDER BY ts DESC
                 """,
-                (symbol.upper(), f"{session_day}%"),
+                (symbol.upper(), session_day, f"{session_day}\uffff"),
             ).fetchall()
             open_rows = conn.execute(
                 """
@@ -846,10 +863,10 @@ def summarize(symbol: str | None = None, limit: int = 200) -> dict[str, Any]:
             session_event_rows = conn.execute(
                 """
                 SELECT * FROM go_events
-                WHERE ts LIKE ?
+                WHERE ts >= ? AND ts < ?
                 ORDER BY ts DESC
                 """,
-                (f"{session_day}%",),
+                (session_day, f"{session_day}\uffff"),
             ).fetchall()
             open_rows = conn.execute(
                 """

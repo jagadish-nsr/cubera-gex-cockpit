@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "sentinel.db"
 _WRITE_LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
 
 
 class SentinelReadOnlyError(RuntimeError):
@@ -56,10 +57,14 @@ def _assert_writes_allowed(op: str) -> None:
 def _get_write_conn() -> sqlite3.Connection:
     _assert_writes_allowed("connect")
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path_key = str(_DB_PATH.resolve())
+    existed = _DB_PATH.exists()
     conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
     conn.execute("PRAGMA busy_timeout = 5000;")
+    if existed and path_key in _SCHEMA_READY_PATHS:
+        return conn
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sentinel_bars (
             instrument_id    TEXT NOT NULL,
@@ -148,6 +153,9 @@ def _get_write_conn() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_signals_ts ON sentinel_signals (instrument_id, bar_start_ts DESC)
     """)
     conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_signals_all_ts ON sentinel_signals (bar_start_ts DESC)
+    """)
+    conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_daily_cvd ON sentinel_daily_cvd (instrument_id, trade_date DESC)
     """)
     # Automatic column migrations for new metrics & actionable signal parameters
@@ -168,21 +176,25 @@ def _get_write_conn() -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
     conn.commit()
+    _SCHEMA_READY_PATHS.add(path_key)
     return conn
 
 
 def _get_read_conn() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not _DB_PATH.exists():
+    if not _DB_PATH.exists() and sentinel_writes_allowed():
         ensure_sentinel_schema()
     uri = f"file:{_DB_PATH}?mode=ro"
     try:
-        conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+        conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=3.0)
+        conn.execute("PRAGMA busy_timeout = 3000;")
         conn.row_factory = sqlite3.Row
         return conn
     except sqlite3.OperationalError:
-        ensure_sentinel_schema()
-        conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+        if sentinel_writes_allowed():
+            ensure_sentinel_schema()
+        conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False, timeout=3.0)
+        conn.execute("PRAGMA busy_timeout = 3000;")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -190,6 +202,7 @@ def _get_read_conn() -> sqlite3.Connection:
 
 def ensure_sentinel_schema() -> None:
     with _WRITE_LOCK:
+        _SCHEMA_READY_PATHS.discard(str(_DB_PATH.resolve()))
         conn = _get_write_conn()
         conn.close()
 
@@ -360,8 +373,8 @@ def list_recent_bars(
             if is_active_market_day:
                 today_exists = conn.execute("""
                     SELECT 1 FROM sentinel_bars
-                    WHERE instrument_id = ? AND start_ts LIKE ? AND start_ts <= ? LIMIT 1
-                """, (instrument_id, f"{today_str}%", now_max)).fetchone()
+                    WHERE instrument_id = ? AND start_ts >= ? AND start_ts < ? AND start_ts <= ? LIMIT 1
+                """, (instrument_id, today_str, f"{today_str}\uffff", now_max)).fetchone()
 
                 if today_exists:
                     target_date = today_str
@@ -415,9 +428,9 @@ def list_recent_bars(
             if target_date:
                 rows = conn.execute("""
                     SELECT * FROM sentinel_bars
-                    WHERE instrument_id = ? AND timeframe = ? AND start_ts LIKE ? AND start_ts <= ?
+                    WHERE instrument_id = ? AND timeframe = ? AND start_ts >= ? AND start_ts < ? AND start_ts <= ?
                     ORDER BY start_ts DESC LIMIT ?
-                """, (instrument_id, timeframe, f"{target_date}%", now_max, limit)).fetchall()
+                """, (instrument_id, timeframe, target_date, f"{target_date}\uffff", now_max, limit)).fetchall()
             else:
                 rows = []
         else:
@@ -511,8 +524,8 @@ def _session_date_for_query(
 
     if is_active_market_day:
         today_exists = conn.execute(
-            f"SELECT 1 FROM {table} WHERE {id_clause}{ts_column} LIKE ? AND {ts_column} <= ? LIMIT 1",
-            (*id_args, f"{today_str}%", now_max),
+            f"SELECT 1 FROM {table} WHERE {id_clause}{ts_column} >= ? AND {ts_column} < ? AND {ts_column} <= ? LIMIT 1",
+            (*id_args, today_str, f"{today_str}\uffff", now_max),
         ).fetchone()
         if today_exists:
             return today_str
@@ -564,15 +577,15 @@ def list_recent_signals(
             elif instrument_id:
                 rows = conn.execute("""
                     SELECT * FROM sentinel_signals
-                    WHERE instrument_id = ? AND bar_start_ts LIKE ? AND bar_start_ts <= ?
+                    WHERE instrument_id = ? AND bar_start_ts >= ? AND bar_start_ts < ? AND bar_start_ts <= ?
                     ORDER BY bar_start_ts DESC LIMIT ?
-                """, (instrument_id, f"{target_date}%", now_max, limit)).fetchall()
+                """, (instrument_id, target_date, f"{target_date}\uffff", now_max, limit)).fetchall()
             else:
                 rows = conn.execute("""
                     SELECT * FROM sentinel_signals
-                    WHERE bar_start_ts LIKE ? AND bar_start_ts <= ?
+                    WHERE bar_start_ts >= ? AND bar_start_ts < ? AND bar_start_ts <= ?
                     ORDER BY bar_start_ts DESC LIMIT ?
-                """, (f"{target_date}%", now_max, limit)).fetchall()
+                """, (target_date, f"{target_date}\uffff", now_max, limit)).fetchall()
         elif instrument_id:
             rows = conn.execute("""
                 SELECT * FROM sentinel_signals

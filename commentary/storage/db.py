@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "commentary.db"
 _WRITE_LOCK = threading.Lock()
+_SCHEMA_READY_PATHS: set[str] = set()
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # Per-symbol recent rows. A single shared list used to return Nifty when the
@@ -78,7 +79,22 @@ def _get_read_conn() -> sqlite3.Connection:
 
 def ensure_commentary_schema() -> None:
     """Initialize commentary database tables with indexes."""
-    with _WRITE_LOCK, _get_write_conn() as conn:
+    path_key = str(_DB_PATH.resolve())
+    with _WRITE_LOCK:
+        with _get_write_conn() as conn:
+            _init_commentary_schema_on_conn(conn)
+        _SCHEMA_READY_PATHS.add(path_key)
+
+
+def _ensure_commentary_schema_once() -> None:
+    path_key = str(_DB_PATH.resolve())
+    if path_key in _SCHEMA_READY_PATHS and _DB_PATH.exists():
+        return
+    ensure_commentary_schema()
+
+
+def _init_commentary_schema_on_conn(conn: sqlite3.Connection) -> None:
+    if True:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS commentary_entries (
             entry_id TEXT PRIMARY KEY,
@@ -160,7 +176,7 @@ def save_commentary_entry(entry: CommentaryEntry, symbol: str = "NIFTY") -> bool
     The same headline for the same symbol inside one minute is one print.
     Returns False when this call was that repeat.
     """
-    ensure_commentary_schema()
+    _ensure_commentary_schema_once()
     from commentary.models import to_ist
     entry_ts = to_ist(entry.ts)
     entry_ts_str = entry_ts.isoformat()
@@ -279,18 +295,18 @@ def find_session_gap(symbol: str, session_date: str) -> dict[str, Any] | None:
     A process restart must not narrate the open again. The cash gap is the
     one that was published, not a later futures print.
     """
-    ensure_commentary_schema()
+    _ensure_commentary_schema_once()
     day = str(session_date)[:10]
     with _get_read_conn() as conn:
         row = conn.execute(
             """
             SELECT facts_json FROM commentary_entries
-            WHERE symbol = ? AND substr(ts, 1, 10) = ?
+            WHERE symbol = ? AND ts >= ? AND ts < ?
               AND (tags_json LIKE '%GAP_UP%' OR tags_json LIKE '%GAP_DOWN%')
             ORDER BY ts ASC
             LIMIT 1
             """,
-            (symbol.upper(), day),
+            (symbol.upper(), day, f"{day}\uffff"),
         ).fetchone()
     if row is None:
         return None
@@ -306,7 +322,7 @@ def find_session_gap(symbol: str, session_date: str) -> dict[str, Any] | None:
 
 def get_recent_commentary_entries(symbol: str = "NIFTY", limit: int = 50) -> list[dict[str, Any]]:
     """Retrieve recent commentary entries with low-latency cache backed by SQLite WAL."""
-    ensure_commentary_schema()
+    _ensure_commentary_schema_once()
     from commentary.models import to_ist
 
     sym_key = symbol.upper()

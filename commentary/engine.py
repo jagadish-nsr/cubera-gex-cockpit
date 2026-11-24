@@ -174,12 +174,13 @@ class SessionCommentaryEngine:
         if not candles_1m:
             try:
                 import sqlite3
-                con = sqlite3.connect("data/sentinel.db")
+                con = sqlite3.connect("file:data/sentinel.db?mode=ro", uri=True, timeout=3.0)
+                con.execute("PRAGMA busy_timeout = 3000;")
                 cur = con.cursor()
                 inst_id = f"{symbol.upper()}-FUT"
                 cur.execute(
                     "SELECT start_ts, open, high, low, close, volume_units, vwap FROM sentinel_bars "
-                    "WHERE instrument_id=? AND start_ts <= ? ORDER BY start_ts DESC LIMIT 60",
+                    "WHERE instrument_id=? AND timeframe='1m' AND start_ts <= ? ORDER BY start_ts DESC LIMIT 60",
                     (inst_id, now_ist.isoformat()),
                 )
                 rows = cur.fetchall()
@@ -377,12 +378,14 @@ class SessionCommentaryEngine:
         all_bars: list[dict[str, Any]] = []
         sig_rows: list[tuple] = []
         try:
-            con = sqlite3.connect("data/sentinel.db")
+            con = sqlite3.connect("file:data/sentinel.db?mode=ro", uri=True, timeout=3.0)
+            con.execute("PRAGMA busy_timeout = 3000;")
             cur = con.cursor()
+            day_hi = f"{session_date}\uffff"
             cur.execute(
                 "SELECT start_ts, open, high, low, close, volume_units, vwap FROM sentinel_bars "
-                "WHERE instrument_id=? AND start_ts LIKE ? ORDER BY start_ts ASC",
-                (f"{sym}-FUT", f"{session_date}%"),
+                "WHERE instrument_id=? AND timeframe='1m' AND start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                (f"{sym}-FUT", session_date, day_hi),
             )
             all_bars = [
                 {"start_ts": r[0], "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5]), "vwap": float(r[6])}
@@ -390,8 +393,8 @@ class SessionCommentaryEngine:
             ]
             cur.execute(
                 "SELECT bar_start_ts, type, category, bias, score, insight_text FROM sentinel_signals "
-                "WHERE instrument_id=? AND bar_start_ts LIKE ? ORDER BY bar_start_ts ASC",
-                (f"{sym}-FUT", f"{session_date}%"),
+                "WHERE instrument_id=? AND bar_start_ts >= ? AND bar_start_ts < ? ORDER BY bar_start_ts ASC",
+                (f"{sym}-FUT", session_date, day_hi),
             )
             sig_rows = cur.fetchall()
             con.close()
