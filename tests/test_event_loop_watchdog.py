@@ -86,3 +86,21 @@ def test_mode_from_env_maps_hard_and_soft(monkeypatch):
     assert mode_from_env() == "soft"
     monkeypatch.delenv("COCKPIT_WATCHDOG", raising=False)
     assert mode_from_env() is None
+
+
+def test_restart_still_execvs_when_obs_event_deadlocks(monkeypatch):
+    import threading
+    import time
+
+    hang = threading.Event()
+    monkeypatch.setattr(os, "write", lambda fd, data: len(data))
+    replaced = []
+    monkeypatch.setattr(os, "execv", lambda exe, argv: replaced.append((exe, argv)))
+    monkeypatch.setattr("app.obs.event", lambda *a, **kw: hang.wait(timeout=10.0))
+
+    t0 = time.perf_counter()
+    _default_restart()
+    elapsed = time.perf_counter() - t0
+    hang.set()
+    assert replaced and replaced[0][0] == sys.executable
+    assert elapsed < 3.0

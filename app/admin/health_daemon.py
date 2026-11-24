@@ -125,7 +125,7 @@ def evaluate_alerts(
     _process_alert(now, stamp)
     _obs_perf_alerts(now, stamp)
     if include_slo:
-        _slo_alerts(now, stamp)
+        _slo_alerts(now, stamp, root=root)
     _prune_events(now)
     return {"badge_count": db.badge_count()}
 
@@ -709,7 +709,7 @@ def _obs_perf_alerts(now: datetime, stamp: str) -> None:
             db.resolve_alert(silent_fp, stamp)
 
 
-def _slo_alerts(now: datetime, stamp: str) -> None:
+def _slo_alerts(now: datetime, stamp: str, *, root: Path | None = None) -> None:
     """Minute readiness rollup + consecutive not-ready / VWAP / tape burns."""
     import config
     from app.readiness import build_readiness
@@ -774,7 +774,9 @@ def _slo_alerts(now: datetime, stamp: str) -> None:
 
     tape_fp = "SLO|tape-completeness"
     try:
-        tape = probe_tape_completeness(now=as_ist(now), market_open=market_open)
+        tape = probe_tape_completeness(
+            now=as_ist(now), market_open=market_open, root=root,
+        )
     except Exception:
         log.exception("slo tape probe failed")
         tape = {"ok": True, "severity": "", "reason": ""}

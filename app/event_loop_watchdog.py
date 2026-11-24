@@ -79,25 +79,44 @@ def main_thread_stack(limit: int = 40) -> str:
     return "".join(lines[-limit:]).rstrip()
 
 
+def _emit_watchdog_obs(
+    name: str, message: str, stack: str, *, timeout_s: float = 1.5, **extra,
+) -> None:
+    """Record watchdog event on a bounded helper thread so SQLite lock stalls
+    can never block ``os.execv`` recovery."""
+    def _write() -> None:
+        try:
+            from app.obs import event
+            event(
+                name,
+                level="ERROR",
+                ok=False,
+                workflow="watchdog",
+                message=message,
+                stack=stack,
+                **extra,
+            )
+        except Exception:
+            pass
+
+    worker = threading.Thread(target=_write, name="watchdog-obs", daemon=True)
+    worker.start()
+    worker.join(timeout=max(0.1, float(timeout_s)))
+
+
 def _default_restart() -> None:
     stack = main_thread_stack()
-    try:
-        from app.obs import event
-        event(
-            "watchdog.restart",
-            level="ERROR",
-            ok=False,
-            workflow="watchdog",
-            message="event loop stalled; restarting process",
-            stack=stack,
-        )
-    except Exception:
-        pass
     try:
         os.write(2, b"event loop stalled; restarting process\n")
         os.write(2, stack.encode("utf-8", errors="replace") + b"\n")
     except Exception:
         pass
+    _emit_watchdog_obs(
+        "watchdog.restart",
+        "event loop stalled; restarting process",
+        stack,
+        timeout_s=1.5,
+    )
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
@@ -105,23 +124,17 @@ def _soft_alert() -> None:
     """Log-only stall signal for 8650/dev — never replaces the process."""
     stack = main_thread_stack()
     try:
-        from app.obs import event
-        event(
-            "watchdog.stall",
-            level="ERROR",
-            ok=False,
-            workflow="watchdog",
-            message="event loop stalled; soft watchdog (log-only, no restart)",
-            stack=stack,
-            mode="soft",
-        )
-    except Exception:
-        pass
-    try:
         os.write(2, b"event loop stalled; soft watchdog (log-only, no restart)\n")
         os.write(2, stack.encode("utf-8", errors="replace") + b"\n")
     except Exception:
         pass
+    _emit_watchdog_obs(
+        "watchdog.stall",
+        "event loop stalled; soft watchdog (log-only, no restart)",
+        stack,
+        timeout_s=1.5,
+        mode="soft",
+    )
 
 
 def start(

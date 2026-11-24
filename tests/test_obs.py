@@ -401,3 +401,59 @@ def test_chain_latency_rollup_reads_network_compute():
     assert summary["NIFTY"]["n"] == 2
     assert summary["NIFTY"]["network_avg_ms"] == 19000.0
     assert summary["ALL"]["n"] == 2
+
+
+def test_huge_event_fields_stay_valid_json_and_event_ts_index_exists():
+    huge_stack = "Frame line -> some/deep/path.py:123\n" * 400  # >14,000 chars
+    event("watchdog.stall", level="ERROR", ok=False, stack=huge_stack)
+    rows = db.list_ops_events(event="watchdog.stall", limit=5)
+    assert len(rows) == 1
+    assert rows[0]["fields"].get("_truncated") is True
+    assert "stack" in rows[0]["fields"] or "preview" in rows[0]["fields"]
+
+    # Verify composite (event, ts) index exists for fast SLO/admin rollups.
+    import sqlite3
+    con = sqlite3.connect(str(db.db_path()))
+    idx_names = {
+        r[1] for r in con.execute("PRAGMA index_list('ops_events')").fetchall()
+    }
+    con.close()
+    assert "idx_ops_events_event_ts" in idx_names
+
+
+def test_obs_http_middleware_does_not_stall_loop_when_db_lock_is_held():
+    import time
+
+    app = FastAPI()
+    install(app)
+
+    @app.get("/boom")
+    def boom():
+        return Response(status_code=503)
+
+    # Ensure DB schema is initialized before holding write lock.
+    event("boot.probe")
+    released = threading.Event()
+    acquired = threading.Event()
+
+    def hold_db_write_lock():
+        with db._lock:
+            acquired.set()
+            released.wait(timeout=2.0)
+
+    blocker = threading.Thread(target=hold_db_write_lock, daemon=True)
+    blocker.start()
+    assert acquired.wait(timeout=1.0)
+    try:
+        t0 = time.perf_counter()
+        status, _headers, _body = _asgi(app, "GET", "/boom")
+        elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        assert status == 503
+        # Middleware must enqueue without waiting on db._lock!
+        assert elapsed_ms < 150.0
+    finally:
+        released.set()
+        blocker.join(timeout=1.0)
+
+    rows = db.list_ops_events(event="http.error")
+    assert any(r["fields"].get("route") == "/boom" for r in rows)

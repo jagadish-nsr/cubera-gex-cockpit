@@ -116,7 +116,6 @@ def _event(
     log.log(level_no, text, extra={"obs": payload})
     if not _persist():
         return trace
-    import json
     stamp = _stamp()
     db.insert_ops_event({
         "ts": stamp,
@@ -127,7 +126,7 @@ def _event(
         "symbol": sym,
         "duration_ms": duration_ms,
         "message": text,
-        "fields_json": json.dumps(payload, default=str)[:4000],
+        "fields_json": db.safe_json_dumps(payload, max_chars=4000),
     })
     gauge(
         workflow or name,
