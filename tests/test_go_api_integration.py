@@ -148,7 +148,7 @@ def _fire_decision(mode: str = "directional") -> GoDecision:
 def _stub_compose(monkeypatch, decision: GoDecision | None = None):
     d = decision or _fire_decision()
 
-    async def _compose(sym, win, mode, delta_pref):
+    async def _compose(sym, win, mode, delta_pref, *, _dash=None, _shared_ctx=None):
         if mode == "structure":
             return _fire_decision("structure")
         if mode == "writer":
@@ -354,7 +354,7 @@ def test_go_auto_stage_blocks_opposite_side_conflict(monkeypatch):
     assert len(go_eff.list_open("NIFTY")) == 1
 
     # Strip FIRE bear while bull open → working.conflict on decision payload
-    async def _compose_bear(sym, win, mode, delta_pref):
+    async def _compose_bear(sym, win, mode, delta_pref, *, _dash=None, _shared_ctx=None):
         return SimpleNamespace(to_dict=lambda: bear, state="FIRE")
 
     monkeypatch.setattr(web_server, "_compose_go_decision", _compose_bear)
@@ -630,7 +630,7 @@ def test_go_action_flatten_resolves_open_by_fingerprint(monkeypatch):
 def test_go_feed_accepts_delta_pref_query(monkeypatch):
     calls = []
 
-    async def _compose(sym, win, mode, delta_pref):
+    async def _compose(sym, win, mode, delta_pref, *, _dash=None, _shared_ctx=None):
         calls.append(float(delta_pref))
         return _fire_decision(mode if mode in ("directional", "structure", "writer") else "directional")
 
@@ -668,7 +668,7 @@ def test_go_prefs_webhook_and_notify_dedupe(monkeypatch):
     # Force FIRE
     assert d.state == "FIRE" or True
     # Compose returns FIRE decision
-    async def _compose_fire(sym, win, mode, delta_pref):
+    async def _compose_fire(sym, win, mode, delta_pref, *, _dash=None, _shared_ctx=None):
         return _fire_decision()
 
     monkeypatch.setattr(web_server, "_compose_go_decision", _compose_fire)
