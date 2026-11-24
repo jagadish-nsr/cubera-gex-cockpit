@@ -42,21 +42,74 @@ echo "Rolling back Production to: ${TARGET_TAG}..."
 # 1. Checkout target tag in prod worktree
 git -C "${PROD_DIR}" checkout "${TARGET_TAG}"
 
-# 2. Terminate existing prod server
-OLD_PID=$(lsof -ti :${PROD_PORT} || echo "")
-if [[ -n "${OLD_PID}" ]]; then
-    echo "Terminating current production process (PID: ${OLD_PID})..."
-    kill -15 ${OLD_PID} || true
-    sleep 2
+# 2. Terminate supervisor first (so it cannot respawn children), then ingest + listen socket
+if [[ -f "${PROD_DIR}/logs/prod_supervisor.pid" ]]; then
+    OLD_SUP=$(cat "${PROD_DIR}/logs/prod_supervisor.pid" 2>/dev/null || true)
+    if [[ -n "${OLD_SUP}" ]] && kill -0 "${OLD_SUP}" 2>/dev/null; then
+        echo "Terminating production supervisor (PID: ${OLD_SUP})..."
+        kill -15 "${OLD_SUP}" 2>/dev/null || true
+    fi
+    rm -f "${PROD_DIR}/logs/prod_supervisor.pid"
 fi
+if [[ -f "${PROD_DIR}/logs/ingest.pid" ]]; then
+    OLD_INGEST=$(cat "${PROD_DIR}/logs/ingest.pid" 2>/dev/null || true)
+    if [[ -n "${OLD_INGEST}" ]] && kill -0 "${OLD_INGEST}" 2>/dev/null; then
+        echo "Terminating production ingest (PID: ${OLD_INGEST})..."
+        kill -15 "${OLD_INGEST}" 2>/dev/null || true
+    fi
+fi
+OLD_PID=$(lsof -nP -iTCP:${PROD_PORT} -sTCP:LISTEN -t || true)
+if [[ -n "${OLD_PID}" ]]; then
+    echo "Terminating current production serve listener (PID: ${OLD_PID})..."
+    kill -15 ${OLD_PID} 2>/dev/null || true
+fi
+sleep 2
 
-# 3. Launch rolled-back version
-echo "Restarting production server on port ${PROD_PORT} with ${TARGET_TAG}..."
-cd "${PROD_DIR}"
-nohup python3 web_server.py --port ${PROD_PORT} > "${PROD_DIR}/logs/prod.log" 2>&1 &
-NEW_PID=$!
-echo "${NEW_PID}" > "${PROD_DIR}/logs/prod_server.pid"
-cd "${DEV_DIR}"
+# 3. Launch rolled-back version (dual ingest + EXTERNAL serve if supported by tag, else legacy combined)
+echo "Restarting production stack on port ${PROD_PORT} with ${TARGET_TAG}..."
+mkdir -p "${PROD_DIR}/logs"
+if [[ -f "${PROD_DIR}/scripts/run_ingest.py" ]]; then
+    NEW_PIDS=$(PROD_DIR="${PROD_DIR}" PROD_PORT="${PROD_PORT}" python3 - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+prod = Path(os.environ["PROD_DIR"])
+(prod / "logs").mkdir(parents=True, exist_ok=True)
+ingest_log = open(prod / "logs" / "ingest.log", "a")
+serve_log = open(prod / "logs" / "prod.log", "a")
+ingest = subprocess.Popen(
+    ["python3", "scripts/run_ingest.py"],
+    cwd=prod,
+    stdout=ingest_log,
+    stderr=subprocess.STDOUT,
+    start_new_session=True,
+)
+env = os.environ.copy()
+env["COCKPIT_INGEST_EXTERNAL"] = "1"
+env["COCKPIT_ROLE"] = "serve"
+serve = subprocess.Popen(
+    ["python3", "web_server.py", "--port", os.environ["PROD_PORT"]],
+    cwd=prod,
+    stdout=serve_log,
+    stderr=subprocess.STDOUT,
+    env=env,
+    start_new_session=True,
+)
+(prod / "logs" / "ingest.pid").write_text(str(ingest.pid))
+(prod / "logs" / "prod_server.pid").write_text(str(serve.pid))
+print(f"{ingest.pid},{serve.pid}")
+PY
+    )
+    INGEST_NEW="${NEW_PIDS%%,*}"
+    NEW_PID="${NEW_PIDS##*,}"
+    echo "  • Started dual stack: Ingest PID ${INGEST_NEW} · Serve PID ${NEW_PID}"
+else
+    cd "${PROD_DIR}"
+    nohup python3 web_server.py --port ${PROD_PORT} > "${PROD_DIR}/logs/prod.log" 2>&1 &
+    NEW_PID=$!
+    echo "${NEW_PID}" > "${PROD_DIR}/logs/prod_server.pid"
+    cd "${DEV_DIR}"
+fi
 
 # 4. Verify health + readiness schema (same keys promote Stage 5 / H2 asserts)
 echo "Verifying health..."

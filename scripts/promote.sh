@@ -207,6 +207,15 @@ fi
 
 # Reload production dual processes (ingest + serve) on port 8640
 echo "  • Gracefully reloading Production (ingest + serve) on port ${PROD_PORT}..."
+# Stop supervised run_prod.sh parent FIRST so its 2s poll cannot respawn children while we stop them
+if [[ -f "${PROD_DIR}/logs/prod_supervisor.pid" ]]; then
+    OLD_SUP=$(cat "${PROD_DIR}/logs/prod_supervisor.pid" 2>/dev/null || true)
+    if [[ -n "${OLD_SUP}" ]] && kill -0 "${OLD_SUP}" 2>/dev/null; then
+        echo "    Found running prod supervisor (PID: ${OLD_SUP}). Terminating cleanly..."
+        kill -15 "${OLD_SUP}" 2>/dev/null || true
+    fi
+    rm -f "${PROD_DIR}/logs/prod_supervisor.pid"
+fi
 OLD_PID=$(lsof -nP -iTCP:${PROD_PORT} -sTCP:LISTEN -t || true)
 if [[ -n "${OLD_PID}" ]]; then
     echo "    Found running prod serve (PID: ${OLD_PID}). Terminating cleanly..."
@@ -217,13 +226,6 @@ if [[ -f "${PROD_DIR}/logs/ingest.pid" ]]; then
     if [[ -n "${OLD_INGEST}" ]] && kill -0 "${OLD_INGEST}" 2>/dev/null; then
         echo "    Found running ingest (PID: ${OLD_INGEST}). Terminating cleanly..."
         kill -15 "${OLD_INGEST}" || true
-    fi
-fi
-# Also stop a supervised run_prod.sh parent if present
-if [[ -f "${PROD_DIR}/logs/prod_supervisor.pid" ]]; then
-    OLD_SUP=$(cat "${PROD_DIR}/logs/prod_supervisor.pid" 2>/dev/null || true)
-    if [[ -n "${OLD_SUP}" ]] && kill -0 "${OLD_SUP}" 2>/dev/null; then
-        kill -15 "${OLD_SUP}" || true
     fi
 fi
 sleep 2

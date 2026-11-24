@@ -412,6 +412,7 @@ def _run(symbols: tuple[str, ...]) -> None:
 
     spot_ids = {k: v for k, v in _SPOT_SCRIPS.items() if k in symbols}
     _STATUS["started_at"] = time.time()
+    fast_drops = 0
 
     while not _STOP.is_set():
         # Re-resolve futures map each reconnect attempt (handles daily roll)
@@ -443,13 +444,21 @@ def _run(symbols: tuple[str, ...]) -> None:
         continuous_open = config.is_market_open()
 
         try:
-            from data.dhan import _secret
+            from data.dhan import _secret, token_status
             token = _secret("DHAN_ACCESS_TOKEN", ".dhan_token")
             client = _secret("DHAN_CLIENT_ID", ".dhan_client_id")
             if not token or not client:
                 _STATUS["ws_error"] = "missing Dhan credentials — retrying in 30s"
                 _STATUS["ws_connected"] = False
-                _STOP.wait(30)
+                _RECONNECT.wait(30)
+                _RECONNECT.clear()
+                continue
+            ts = token_status()
+            if ts.get("expired") is True and not ts.get("malformed"):
+                _STATUS["ws_error"] = "Dhan token expired — retrying in 30s"
+                _STATUS["ws_connected"] = False
+                _RECONNECT.wait(30)
+                _RECONNECT.clear()
                 continue
 
             url = f"{_FEED_URL}?version=2&token={token}&clientId={client}&authType=2"
@@ -457,12 +466,18 @@ def _run(symbols: tuple[str, ...]) -> None:
         except RuntimeError as e:
             _STATUS["ws_error"] = str(e)
             _STATUS["ws_connected"] = False
-            _STOP.wait(30)
+            _RECONNECT.wait(30)
+            _RECONNECT.clear()
             continue
         except Exception as e:  # noqa: BLE001
-            _STATUS["ws_error"] = f"connect: {type(e).__name__}"
+            status_code = getattr(e, "status_code", None)
+            _STATUS["ws_error"] = (
+                f"connect: HTTP {status_code}" if status_code else f"connect: {type(e).__name__}"
+            )
             _STATUS["ws_connected"] = False
-            _STOP.wait(5)
+            wait_s = 30 if status_code in (401, 403, 429) else 5
+            _RECONNECT.wait(wait_s)
+            _RECONNECT.clear()
             continue
 
         # Spots / VIX on Quote from 09:00. Futures Full + FNO options only after
@@ -507,6 +522,7 @@ def _run(symbols: tuple[str, ...]) -> None:
         _STATUS["ws_error"] = (
             None if continuous_open else "Pre-open: index spot/VIX only (futures from 09:15)"
         )
+        conn_started = time.monotonic()
         ws.settimeout(1.0)
 
         spot_sec_set = set(spot_ids.values()) | {_VIX_SCRIP}
@@ -603,11 +619,18 @@ def _run(symbols: tuple[str, ...]) -> None:
                 pass
 
         if not _STOP.is_set():
-            # Token refresh reconnects immediately; otherwise brief pause.
+            # Token refresh reconnects immediately; otherwise ramp backoff on rapid server closes.
             if _RECONNECT.is_set():
+                fast_drops = 0
                 _RECONNECT.clear()
             else:
-                _STOP.wait(3)
+                alive_s = time.monotonic() - conn_started
+                fast_drops = 0 if alive_s >= 15.0 else (fast_drops + 1)
+                backoff_s = (3, 8, 18, 30)[min(fast_drops, 3)]
+                _RECONNECT.wait(backoff_s)
+                if _RECONNECT.is_set():
+                    fast_drops = 0
+                    _RECONNECT.clear()
 
 
 # ── Public API ───────────────────────────────────────────────────────────────────────────────────
