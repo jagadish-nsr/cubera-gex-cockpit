@@ -10,6 +10,7 @@ heartbeat. Do not run two ingest owners against the same journal (double-write).
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import sys
@@ -25,13 +26,41 @@ os.environ.pop("COCKPIT_INGEST_EXTERNAL", None)
 os.environ.setdefault("ENV_MODE", "production")
 os.environ.setdefault("COCKPIT_ENV", "prod")
 
+_SINGLETON_FH = None
+
+
+def acquire_ingest_singleton(lock_path: Path | None = None):
+    """Acquire an exclusive OS flock so two ingest writers can never run on one checkout."""
+    lp = Path(lock_path) if lock_path is not None else (ROOT / "logs" / "ingest.lock")
+    lp.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(lp, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.seek(0)
+        holder = fh.read().strip() or "unknown"
+        fh.close()
+        raise RuntimeError(f"Another ingest process already holds {lp} (PID {holder})")
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"{os.getpid()}\n")
+    fh.flush()
+    return fh
+
 
 def main() -> None:
+    global _SINGLETON_FH
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     log = logging.getLogger("cubera.ingest")
+
+    try:
+        _SINGLETON_FH = acquire_ingest_singleton()
+    except RuntimeError as exc:
+        log.error("%s — refusing dual ingest startup", exc)
+        sys.exit(2)
 
     from app.obs import boot, shutdown
 

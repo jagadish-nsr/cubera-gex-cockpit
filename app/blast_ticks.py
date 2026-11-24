@@ -301,24 +301,38 @@ class BlastTickCollector:
                 self._feed("blast_ticks.stopped", ok=False, error=self.status.error)
                 self.status.running = False
                 return
+        fast_drops = 0
         while not self._stop.is_set():
             try:
+                import config
+                if not config.is_market_open():
+                    self.status.connected = False
+                    self.status.error = "Market closed (FnO hours: 09:15 AM – 03:40 PM IST)"
+                    self._stop.wait(30)
+                    continue
+            except Exception:
+                pass
+            try:
                 ws = connect(self.contracts, tiers=(SUB_FULL,))
-            except RuntimeError as e:                        # missing token/clientId
+            except RuntimeError as e:                        # missing/expired token/clientId
                 self.status.error = str(e); self.status.connected = False
                 if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
                 self._stop.wait(30); continue
             except Exception as e:                           # noqa: BLE001 - handshake/network → retry
-                self.status.error = f"connect: {type(e).__name__}"; self.status.connected = False
+                sc = getattr(e, "status_code", None)
+                self.status.error = f"connect: HTTP {sc}" if sc else f"connect: {type(e).__name__}"
+                self.status.connected = False
                 if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
                     self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=type(e).__name__)
                     fail_note = time.monotonic()
-                self._stop.wait(5); continue
+                self._stop.wait(30 if sc in (401, 403, 429) else 5); continue
             self.status.connected = True
             self.status.error = None
-            self._feed("blast_ticks.reconnected" if ever_up else "blast_ticks.connected")
+            conn_started = time.monotonic()
+            if fast_drops == 0:
+                self._feed("blast_ticks.reconnected" if ever_up else "blast_ticks.connected")
             ever_up = True
             linked = True
             ws.settimeout(2.0)
@@ -395,9 +409,16 @@ class BlastTickCollector:
                     pass
                 self._flush(force=True)
                 if linked and not rolling:
-                    self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=self.status.error or "socket closed")
+                    if time.monotonic() - fail_note > _FAIL_THROTTLE_S:
+                        self._feed("blast_ticks.disconnected", level="WARNING", ok=False, error=self.status.error or "socket closed")
+                        fail_note = time.monotonic()
                     linked = False
             self.status.connected = False
+            if not rolling and not self._stop.is_set():
+                alive_s = time.monotonic() - conn_started
+                fast_drops = 0 if alive_s >= 15.0 else (fast_drops + 1)
+                backoff_s = (2, 5, 12, 30)[min(fast_drops, 3)]
+                self._stop.wait(backoff_s)
         self._flush(force=True)
         if self._lock_key:                                   # release our write-lock so tomorrow can claim
             import os

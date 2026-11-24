@@ -502,6 +502,25 @@ def main() -> None:
     ap.add_argument("--ignore-session", action="store_true",
                     help="capture even outside NSE hours (testing)")
     args = ap.parse_args()
+
+    import fcntl
+    lock_tag = (args.symbol.upper() if args.symbol else "ALL")
+    lock_path = ROOT / "data" / "journal" / f".log_timeseries_{lock_tag}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fh.seek(0)
+        lock_fh.truncate()
+        lock_fh.write(f"{os.getpid()}\n")
+        lock_fh.flush()
+    except OSError:
+        lock_fh.seek(0)
+        holder = lock_fh.read().strip() or "unknown"
+        lock_fh.close()
+        _print(f"log_timeseries ({lock_tag}) already running (PID {holder}) — skipping duplicate fire")
+        return
+
     from app.obs import boot, shutdown
     boot("log_timeseries", loop=True)
 

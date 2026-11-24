@@ -19,8 +19,11 @@ re-pasted daily via the dashboard). Rate limit: ``/optionchain`` is 1 request / 
 
 from __future__ import annotations
 
+import fcntl
+import os
 import threading
 import time
+from pathlib import Path
 
 from data.dhan import DHAN_BASE, DHAN_UNDERLYING, _headers, oi_shares_to_lots
 
@@ -71,6 +74,81 @@ _last_call = [0.0]
 _LIMITS = {"chain": _MIN_INTERVAL, "quote": 1.1}
 _BUCKETS = {k: {"last": 0.0, "hi": 0, "cv": threading.Condition(), "calls": []}
             for k in _LIMITS}
+# Cross-process rate gate: prod ingest + dev :8650 + cron scripts share one Dhan account quota.
+# Disabled automatically during pytest so fast synthetic _fresh() tests remain isolated unless opted in.
+_GATE_DIR = Path(os.environ.get("CUBERA_DHAN_GATE_DIR", "/tmp/cubera_dhan_gate"))
+_CROSS_PROCESS_GATE: bool | None = None
+
+
+def _use_cross_process_gate() -> bool:
+    if _CROSS_PROCESS_GATE is not None:
+        return bool(_CROSS_PROCESS_GATE)
+    return "PYTEST_CURRENT_TEST" not in os.environ
+
+
+def _cross_process_claim_slot(bucket: str, lim: float, now: float) -> float:
+    """Atomically check/claim a cross-process slot on ``bucket``.
+
+    Returns 0.0 if the slot was claimed at ``now``, else the remaining wait seconds (> 0).
+    Holds the OS flock only for microseconds — never sleeps while holding flock.
+    """
+    if not _use_cross_process_gate():
+        return 0.0
+    try:
+        _GATE_DIR.mkdir(parents=True, exist_ok=True)
+        stamp_path = _GATE_DIR / f"{bucket}.stamp"
+        with open(stamp_path, "a+", encoding="utf-8") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                fh.seek(0)
+                raw = fh.read().strip()
+                shared_last = float(raw) if raw else 0.0
+                # Guard against clock jump / future backoff stamp
+                wait = (shared_last + lim) - now
+                if wait > 0:
+                    return wait
+                fh.seek(0)
+                fh.truncate()
+                fh.write(f"{now:.6f}\n")
+                fh.flush()
+                return 0.0
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return 0.0
+
+
+def _note_rate_limit_429(bucket: str, retry_after_s: float | None = None) -> None:
+    """Push bucket's next allowed timestamp forward across threads + processes on HTTP 429."""
+    st = _BUCKETS.get(bucket)
+    lim = _LIMITS.get(bucket, 1.1)
+    cooldown = min(15.0, max(lim * 2.0, float(retry_after_s or 0.0), 3.5))
+    # Set virtual "last" such that (last + lim) == now + cooldown
+    virtual_last = time.time() + cooldown - lim
+    if st is not None:
+        with st["cv"]:
+            if virtual_last > st["last"]:
+                st["last"] = virtual_last
+            st["cv"].notify_all()
+    if _use_cross_process_gate():
+        try:
+            _GATE_DIR.mkdir(parents=True, exist_ok=True)
+            stamp_path = _GATE_DIR / f"{bucket}.stamp"
+            with open(stamp_path, "a+", encoding="utf-8") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    fh.seek(0)
+                    raw = fh.read().strip()
+                    cur = float(raw) if raw else 0.0
+                    if virtual_last > cur:
+                        fh.seek(0)
+                        fh.truncate()
+                        fh.write(f"{virtual_last:.6f}\n")
+                        fh.flush()
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
 
 
 def _gate(bucket: str = "chain", hi: bool = False) -> None:
@@ -90,12 +168,17 @@ def _gate(bucket: str = "chain", hi: bool = False) -> None:
                 now = time.time()
                 wait = lim - (now - st["last"])
                 if wait <= 0 and (hi or st["hi"] == 0):
-                    st["last"] = now
-                    st["calls"].append(now)
-                    del st["calls"][:-120]          # keep the recent window only
-                    st["cv"].notify_all()
-                    waited = (time.perf_counter() - t0) * 1000.0
-                    break
+                    xp_wait = _cross_process_claim_slot(bucket, lim, now)
+                    if xp_wait <= 0:
+                        st["last"] = now
+                        st["calls"].append(now)
+                        del st["calls"][:-120]          # keep the recent window only
+                        st["cv"].notify_all()
+                        waited = (time.perf_counter() - t0) * 1000.0
+                        break
+                    # Sync local st["last"] to reflect the external process's slot
+                    st["last"] = max(st["last"], now + xp_wait - lim)
+                    wait = xp_wait
                 st["cv"].wait(timeout=max(0.02, wait if wait > 0 else 0.05))
         finally:
             if hi:
@@ -141,8 +224,19 @@ def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
     """POST through the shared rate gate. The bucket is derived from the path so no call site can
     forget it — /marketfeed/* was entirely ungated before, which is where the 429s came from."""
     import requests
-    _gate("quote" if path.startswith("/marketfeed") else "chain", hi=hi)
-    return requests.post(f"{DHAN_BASE}{path}", json=body, headers=_headers(), timeout=timeout)
+    bucket = "quote" if path.startswith("/marketfeed") else "chain"
+    _gate(bucket, hi=hi)
+    resp = requests.post(f"{DHAN_BASE}{path}", json=body, headers=_headers(), timeout=timeout)
+    if getattr(resp, "status_code", None) == 429:
+        retry_after = None
+        hdrs = getattr(resp, "headers", None) or {}
+        if "Retry-After" in hdrs:
+            try:
+                retry_after = float(hdrs["Retry-After"])
+            except (TypeError, ValueError):
+                retry_after = None
+        _note_rate_limit_429(bucket, retry_after)
+    return resp
 
 
 def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20, force_live: bool = False) -> list[str]:

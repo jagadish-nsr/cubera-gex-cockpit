@@ -226,6 +226,15 @@ def connect(contracts: dict[int, dict], tiers=(SUB_FULL,), timeout: int = 12):
         raise RuntimeError("No Dhan access token (DHAN_ACCESS_TOKEN / data/.dhan_token).")
     if not client:
         raise RuntimeError("Dhan v2 feed needs a client id (DHAN_CLIENT_ID / data/.dhan_client_id).")
+    try:
+        from data.dhan import token_status
+        ts = token_status()
+        if ts.get("expired") is True and not ts.get("malformed"):
+            raise RuntimeError("Dhan access token expired — refresh data/.dhan_token.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
     url = f"{FEED_URL}?version=2&token={token}&clientId={client}&authType=2"
     ws = websocket.create_connection(url, timeout=timeout)
     instruments = _instrument_list(contracts)
