@@ -75,15 +75,28 @@ def latest_any_window(symbol: str):
     return best
 
 
+_WINDOW_ALIASES = {
+    "weekly": "current_week",
+}
+
+
 def latest(symbol: str, window: str | None = None):
     """The most recently published snapshot dict for ``symbol`` (or None). Never blocks.
 
-    With ``window`` set, looks up that key only. With ``window=None``, returns the
-    freshest snap across the bare symbol and any ``(symbol, window)`` keys so
-    readiness probes match publishers that store under ``current_week``.
+    With ``window`` set, looks up that key first, then falls back to canonical
+    window aliases (e.g. ``"weekly" -> "current_week"``) so routes requesting
+    ``"weekly"`` hit ``adopt_disk_snap`` / publisher entries stored under
+    ``"current_week"``. With ``window=None``, returns the freshest snap across
+    the bare symbol and any ``(symbol, window)`` keys.
     """
     if window:
-        return _STORE.get(_key(symbol, window))
+        hit = _STORE.get(_key(symbol, window))
+        if hit is not None:
+            return hit
+        alias = _WINDOW_ALIASES.get(str(window).strip().lower())
+        if alias:
+            return _STORE.get(_key(symbol, alias))
+        return None
     return latest_any_window(symbol)
 
 

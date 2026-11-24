@@ -41,6 +41,15 @@ def mirror_once(symbols: Iterable[str] = _DEFAULT_SYMBOLS) -> dict[str, bool]:
         if not sym:
             continue
         meta = read_snap_meta(sym)
+        try:
+            # Keep EXTERNAL serve's in-process _REC_BATCH aligned with ingest's
+            # latest_rec_{SYM}.pkl off the asyncio event loop as well.
+            import sys
+            ws_mod = sys.modules.get("web_server")
+            if ws_mod is not None and hasattr(ws_mod, "_refresh_external_rec_batch"):
+                ws_mod._refresh_external_rec_batch(sym, force_check=True)
+        except Exception:
+            log.debug("snap mirror rec refresh %s failed", sym, exc_info=True)
         if not meta:
             out[sym] = False
             continue

@@ -619,9 +619,11 @@ def _push_sentinel_gex(symbol: str) -> None:
 
 _CHAIN_INTERVAL_S = 30
 _CHAIN_LEAD_S = 10.0
-_WS_LIVE_SLEEP_S = 0.12
+_WS_LIVE_SLEEP_S = 0.25
 _WS_HEARTBEAT_S = 1.0
 _REC_BATCH: Dict[tuple, Any] = {}
+_REC_BATCH_MTIME: Dict[tuple, float] = {}
+_REC_BATCH_CHECK_AT: Dict[tuple, float] = {}
 _REC_LOCK = __import__("threading").Lock()
 _REC_THREAD = None
 _CHAIN_ARM_THREAD = None
@@ -629,20 +631,97 @@ _COMMENTARY_LOCKS: dict[str, __import__("threading").Lock] = {}
 _COMMENTARY_LOCK = None
 
 
+def _norm_window_key(window: str | None) -> str:
+    w = (window or "current_week").strip()
+    if not w or w.lower() == "weekly":
+        return "current_week"
+    return w
+
+
+def _refresh_external_rec_batch(
+    symbol: str, window: str | None = None, *, force_check: bool = False,
+):
+    """Align in-process ``_REC_BATCH`` with ingest's ``latest_rec_*.pkl`` on EXTERNAL serve.
+
+    Without mtime invalidation, EXTERNAL serve latched the first disk pickle on
+    boot and served frozen Trade Ideas / GO packages for the rest of the day.
+    """
+    sym = (symbol or "").upper().strip()
+    norm_win = _norm_window_key(window)
+    key = (sym, norm_win)
+    now_t = time.monotonic()
+    with _REC_LOCK:
+        mem = _REC_BATCH.get(key)
+        last_chk = _REC_BATCH_CHECK_AT.get(key, 0.0)
+        known_mtime = _REC_BATCH_MTIME.get(key)
+    if not force_check and mem is not None and (now_t - last_chk) < 2.0:
+        return mem
+
+    try:
+        from app.latest_rec import read_latest_rec, rec_mtime
+        disk_mtime = rec_mtime(sym)
+    except Exception as exc:
+        log.debug("latest_rec mtime %s: %s", sym, exc)
+        return mem
+
+    if disk_mtime is None:
+        with _REC_LOCK:
+            _REC_BATCH.pop(key, None)
+            _REC_BATCH_MTIME.pop(key, None)
+            _REC_BATCH_CHECK_AT[key] = now_t
+        return None
+
+    # Re-validate age at least every 15s even if mtime is unchanged so expired
+    # (>DEFAULT_MAX_AGE_S) batches clear cleanly instead of lingering forever.
+    needs_reload = (
+        mem is None
+        or known_mtime != disk_mtime
+        or force_check
+        or (now_t - last_chk) >= 15.0
+    )
+    if not needs_reload:
+        with _REC_LOCK:
+            _REC_BATCH_CHECK_AT[key] = now_t
+        return mem
+
+    try:
+        from app.latest_rec import read_latest_rec
+        disk = read_latest_rec(sym, window=norm_win)
+    except Exception as exc:
+        log.debug("latest_rec read %s: %s", sym, exc)
+        disk = None
+
+    with _REC_LOCK:
+        _REC_BATCH_CHECK_AT[key] = now_t
+        if disk is None:
+            _REC_BATCH.pop(key, None)
+            _REC_BATCH_MTIME.pop(key, None)
+            return None
+        _REC_BATCH[key] = disk
+        _REC_BATCH_MTIME[key] = disk_mtime
+        return disk
+
+
 def _latest_rec_batch(symbol: str, window: str):
     """In-process latch, else shared ``latest_rec_*.pkl`` written by ingest.
 
-    EXTERNAL serve never runs ``rec.publisher``; without the disk latch GO always
-    saw empty Ideas and fell back to sentinel-led packages (2026-11-13).
+    EXTERNAL serve never runs ``rec.publisher``; it refreshes whenever ingest's
+    pickle mtime advances and drops expired batches.
     """
-    key = ((symbol or "").upper(), window or "current_week")
+    if os.environ.get("COCKPIT_INGEST_EXTERNAL", "").strip() == "1":
+        return _refresh_external_rec_batch(symbol, window)
+
+    norm_win = _norm_window_key(window)
+    key = ((symbol or "").upper().strip(), norm_win)
     with _REC_LOCK:
         mem = _REC_BATCH.get(key)
+        if mem is None and window and window != norm_win:
+            mem = _REC_BATCH.get(((symbol or "").upper().strip(), window))
     if mem is not None:
         return mem
     try:
         from app.latest_rec import read_latest_rec
-        disk = read_latest_rec(symbol, window=window or "current_week")
+        disk = read_latest_rec(symbol, window=norm_win)
     except Exception as exc:
         log.debug("latest_rec read %s: %s", symbol, exc)
         return None
@@ -1272,10 +1351,13 @@ def _load_active_dashboard(symbol: str, window: Optional[str] = None) -> Dashboa
 async def _aload_active_dashboard(
     symbol: str, window: Optional[str] = None, timeout: float = 25.0
 ) -> Optional[DashboardData]:
-    """Async wrapper. Live hours read the published store or LKGS. Off-market
-    reads the pickle or the last-good chain. No broker I/O and no demo book."""
+    """Async wrapper. Runs sync SQLite/pickle/DEX work on a worker thread bounded
+    by ``timeout`` so dashboard loads never freeze the asyncio event loop."""
     try:
-        return _load_active_dashboard(symbol, window)
+        return await asyncio.wait_for(
+            asyncio.to_thread(_load_active_dashboard, symbol, window),
+            timeout=max(1.0, float(timeout or 25.0)),
+        )
     except Exception as exc:
         log.warning("dashboard read failed for %s: %s", symbol, exc)
         return None
@@ -1335,6 +1417,7 @@ def _serialize_trade_idea(
     *,
     record_lifecycle_events: bool = False,
     is_historical: bool = False,
+    preloaded_score_history: Optional[list] = None,
 ) -> dict:
     if not is_historical:
         try:
@@ -1470,7 +1553,11 @@ def _serialize_trade_idea(
             else None
         ),
         "spread_alternative": getattr(idea, "spread_alternative", None),
-        "score_history": get_score_history(idea.rec_id) or [],
+        "score_history": (
+            preloaded_score_history
+            if preloaded_score_history is not None
+            else (get_score_history(idea.rec_id) or [])
+        ),
         "pos_size": {
             "suggested_lots": pos_size.suggested_lots,
             "total_quantity": pos_size.total_quantity,
@@ -2651,6 +2738,10 @@ async def get_cockpit_data(
             status_code=503,
             content={"symbol": sym, "spot": 0, "kpis": {}, "error": "dashboard_unavailable"},
         )
+    return await asyncio.to_thread(_build_cockpit_data_sync, sym, win, idx, dash)
+
+
+def _build_cockpit_data_sync(sym: str, win: str, idx: Any, dash: DashboardData) -> dict:
     spot = _extract_active_spot(dash, sym)
 
     if config.is_market_open():
@@ -3773,6 +3864,14 @@ async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week"
         dash = await _aload_active_dashboard(sym, window)
         if dash is None or getattr(dash, "levels", None) is None:
             return empty
+        return await asyncio.to_thread(_wall_chase_watch_sync, sym, idx, dash, empty)
+    except Exception as exc:
+        log.debug("wall_chase_watch %s: %s", sym, exc)
+        return empty
+
+
+def _wall_chase_watch_sync(sym: str, idx: Any, dash: DashboardData, empty: dict) -> dict:
+    try:
         spot = float(_extract_active_spot(dash, sym) or 0.0)
         levels = dash.levels
         cw = float(getattr(levels, "call_wall", 0.0) or 0.0)
@@ -4161,9 +4260,17 @@ async def reprice_target_engine(payload: dict = Body(...)):
         sel_expiry = default_exp
     if not sel_expiry:
         raise HTTPException(status_code=503, detail="No resolvable expiry for reprice — refusing hardcoded fill")
-    sel_strike = float(payload.get("strike", spot))
-    sel_type = (payload.get("option_type") or payload.get("side") or "CE").upper()
-    step = getattr(idx, "strike_step", 100.0 if sym in ("BANKNIFTY", "SENSEX") else 50.0)
+    step = float(getattr(idx, "strike_step", 100.0 if sym in ("BANKNIFTY", "SENSEX") else 50.0) or 50.0)
+    raw_strike = payload.get("strike")
+    try:
+        sel_strike = float(raw_strike) if raw_strike not in (None, "") else 0.0
+    except (TypeError, ValueError):
+        sel_strike = 0.0
+    if sel_strike <= 0:
+        sel_strike = round(spot / step) * step if step > 0 else spot
+    sel_type = str(payload.get("option_type") or payload.get("side") or "CE").upper()
+    if sel_type not in ("CE", "PE"):
+        sel_type = "CE"
     is_sensex = sym == "SENSEX"
     is_bnf = sym == "BANKNIFTY"
     def_tgt_pts = 250.0 if is_sensex else (180.0 if is_bnf else 70.0)
@@ -4174,12 +4281,12 @@ async def reprice_target_engine(payload: dict = Body(...)):
     raw_tgt = payload.get("target_spot", payload.get("target"))
     raw_sl = payload.get("stop_loss_spot", payload.get("sl_spot"))
     try:
-        user_tgt_spot = float(raw_tgt) if raw_tgt is not None else (base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts))
+        user_tgt_spot = float(raw_tgt) if raw_tgt not in (None, "") else (base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts))
     except (TypeError, ValueError):
         user_tgt_spot = base_fut + (def_tgt_pts if sel_type == "CE" else -def_tgt_pts)
 
     try:
-        user_sl_spot = float(raw_sl) if raw_sl is not None else (base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts))
+        user_sl_spot = float(raw_sl) if raw_sl not in (None, "") else (base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts))
     except (TypeError, ValueError):
         user_sl_spot = base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts)
 
@@ -4188,8 +4295,12 @@ async def reprice_target_engine(payload: dict = Body(...)):
     if user_sl_spot <= 0 or abs(user_sl_spot - base_fut) > base_fut * 0.15:
         user_sl_spot = base_fut - (def_sl_pts if sel_type == "CE" else -def_sl_pts)
 
-    tgt_mins = int(payload.get("holding_mins", payload.get("holding_minutes", 60)))
-    iv_regime_shock = payload.get("iv_regime_shock", "Auto (Regime-Conditioned)")
+    raw_holding = payload.get("holding_mins", payload.get("holding_minutes", 60))
+    try:
+        tgt_mins = max(1, int(float(raw_holding))) if raw_holding not in (None, "") else 60
+    except (TypeError, ValueError):
+        tgt_mins = 60
+    iv_regime_shock = str(payload.get("iv_regime_shock") or "Auto (Regime-Conditioned)")
 
     now_dt = _get_ist_now()
     T_now = calculate_fractional_t(now_dt, sel_expiry)
@@ -4215,12 +4326,20 @@ async def reprice_target_engine(payload: dict = Body(...)):
             crow = match_rows.iloc[0]
             for col in ("mid", "ltp", "price", "last_price"):
                 val = crow.get(col)
-                if val is not None and float(val) > 0:
-                    market_ltp = float(val)
+                try:
+                    fval = float(val) if val not in (None, "") else 0.0
+                except (TypeError, ValueError):
+                    fval = 0.0
+                if fval == fval and fval > 0:
+                    market_ltp = fval
                     break
             raw_iv = crow.get("iv")
-            if raw_iv is not None and float(raw_iv) > 0:
-                parsed_iv = float(raw_iv) / 100.0 if float(raw_iv) > 1.0 else float(raw_iv)
+            try:
+                raw_iv_f = float(raw_iv) if raw_iv not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                raw_iv_f = 0.0
+            if raw_iv_f == raw_iv_f and raw_iv_f > 0:
+                parsed_iv = raw_iv_f / 100.0 if raw_iv_f > 1.0 else raw_iv_f
                 if 0.05 <= parsed_iv <= 0.90:
                     strike_iv = parsed_iv
 
@@ -4378,6 +4497,17 @@ async def get_recommendations(
     """Recommendations Tab: Sizing HUD, Higher Conviction (>85), Fallback (75-85), Clusters, State Machine.
     Off-market hours return Session Closed and empty clusters.
     """
+    return await asyncio.to_thread(
+        _get_recommendations_sync, symbol, window, capital, risk
+    )
+
+
+def _get_recommendations_sync(
+    symbol: Optional[str] = None,
+    window: Optional[str] = None,
+    capital: Optional[float] = None,
+    risk: Optional[float] = None,
+) -> dict:
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     if capital is not None:
@@ -5311,27 +5441,17 @@ def _go_opening_pack(sym: str, dash) -> dict:
     }
 
 
-async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float):
-    """Build one GoDecision from live dashboard + recommendation batch + Sentinel."""
-    from analytics.go_desk import (
-        build_directional_decision,
-        build_structure_decision,
-        build_writer_decision,
-    )
-    from structures.suggest import suggest_structures
+def _prepare_go_shared_ctx(sym: str, win: str, dash: DashboardData) -> dict[str, Any]:
+    """Compute Sentinel tape, structural map, opening pack, vol & blast once
+    off the event loop; reused across all 3 GO modes in ``/api/go/feed``."""
     from app.intraday_features import structure_vol_regime
 
-    idx = config.get_index(sym)
-    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
     levels = getattr(dash, "levels", None)
-    if levels is None:
-        raise HTTPException(status_code=503, detail="Levels unavailable for GO desk.")
-
     batch = _latest_rec_batch(sym, win)
     ideas = _go_collect_ideas(batch)
-    oi_ts = getattr(levels, "oi_timestamp", None)
+    oi_ts = getattr(levels, "oi_timestamp", None) if levels is not None else None
     oi_ts_s = oi_ts.isoformat() if hasattr(oi_ts, "isoformat") else (str(oi_ts) if oi_ts else None)
-    oi_stale = bool(getattr(levels, "oi_stale", False))
+    oi_stale = bool(getattr(levels, "oi_stale", False)) if levels is not None else False
     tape = _go_sentinel_context(sym)
     lunch_chop = _go_lunch_chop_now()
     structural_map = _go_structural_map(sym, dash)
@@ -5355,6 +5475,82 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
             blast_tag = "COILING"
     except Exception:
         pass
+
+    return {
+        "batch": batch,
+        "ideas": ideas,
+        "oi_ts_s": oi_ts_s,
+        "oi_stale": oi_stale,
+        "tape": tape,
+        "lunch_chop": lunch_chop,
+        "structural_map": structural_map,
+        "opening_pack": opening_pack,
+        "vol": vol,
+        "blast_safe": blast_safe,
+        "blast_tag": blast_tag,
+    }
+
+
+async def _compose_go_decision(
+    sym: str,
+    win: str,
+    mode: str,
+    delta_pref: float,
+    *,
+    _dash: Optional[DashboardData] = None,
+    _shared_ctx: Optional[dict] = None,
+):
+    """Build one GoDecision from live dashboard + recommendation batch + Sentinel."""
+    idx = config.get_index(sym)
+    dash = _dash if _dash is not None else _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+    levels = getattr(dash, "levels", None)
+    if levels is None:
+        raise HTTPException(status_code=503, detail="Levels unavailable for GO desk.")
+
+    mode_norm = (mode or "directional").lower()
+    next_dash = None
+    if mode_norm == "structure" and idx.has_weekly:
+        try:
+            next_dash = await _aload_active_dashboard(sym, "next_week")
+        except Exception as exc:
+            log.debug("go next_week chain: %s", exc)
+
+    return await asyncio.to_thread(
+        _compose_go_decision_sync,
+        sym, win, mode_norm, delta_pref, idx, dash, next_dash, _shared_ctx,
+    )
+
+
+def _compose_go_decision_sync(
+    sym: str,
+    win: str,
+    mode: str,
+    delta_pref: float,
+    idx: Any,
+    dash: DashboardData,
+    next_dash: Optional[DashboardData],
+    shared_ctx: Optional[dict],
+):
+    from analytics.go_desk import (
+        build_directional_decision,
+        build_structure_decision,
+        build_writer_decision,
+    )
+    from structures.suggest import suggest_structures
+
+    levels = getattr(dash, "levels", None)
+    ctx = shared_ctx if shared_ctx is not None else _prepare_go_shared_ctx(sym, win, dash)
+    batch = ctx["batch"]
+    ideas = ctx["ideas"]
+    oi_ts_s = ctx["oi_ts_s"]
+    oi_stale = ctx["oi_stale"]
+    tape = ctx["tape"]
+    lunch_chop = ctx["lunch_chop"]
+    structural_map = ctx["structural_map"]
+    opening_pack = ctx["opening_pack"]
+    vol = ctx["vol"]
+    blast_safe = ctx["blast_safe"]
+    blast_tag = ctx["blast_tag"]
 
     mode = (mode or "directional").lower()
     if mode not in ("directional", "structure", "writer"):
@@ -5406,11 +5602,7 @@ async def _compose_go_decision(sym: str, win: str, mode: str, delta_pref: float)
         next_df = None
         needs_next = primary and any(len(leg) > 3 and str(leg[3]) == "next" for leg in (primary.legs or []))
         if needs_next and idx.has_weekly:
-            try:
-                next_dash = await _aload_active_dashboard(sym, "next_week")
-                next_df = getattr(next_dash, "contracts", None)
-            except Exception as exc:
-                log.debug("go next_week chain: %s", exc)
+            next_df = getattr(next_dash, "contracts", None) if next_dash is not None else None
         if primary and getattr(primary, "legs", None):
             for leg in primary.legs:
                 action, typ, strike = leg[0], leg[1], leg[2]
@@ -5605,41 +5797,44 @@ async def get_go_decision(
     md = (mode or _GO_PREFS.get("mode") or "directional").lower()
     dp = float(delta_pref if delta_pref is not None else _GO_PREFS.get("delta_pref") or 0.50)
     decision = await _compose_go_decision(sym, win, md, dp)
-    payload = decision.to_dict()
-    notify = None
-    auto_stage = None
-    if payload.get("state") in ("FIRE", "SCOUT"):
+
+    def _finalize_decision_sync() -> dict:
+        payload = decision.to_dict()
+        notify = None
+        auto_stage = None
+        if payload.get("state") in ("FIRE", "SCOUT"):
+            try:
+                from data.journal import go_efficiency as go_eff
+                go_eff.record_event("EMIT", payload)
+            except Exception as exc:
+                log.debug("go EMIT ledger: %s", exc)
+            if payload.get("state") == "FIRE":
+                notify = _go_maybe_notify_fire(payload)
+                auto_stage = _go_maybe_auto_stage_fire(payload)
+        working = None
         try:
             from data.journal import go_efficiency as go_eff
-            go_eff.record_event("EMIT", payload)
-        except Exception as exc:
-            log.debug("go EMIT ledger: %s", exc)
-        if payload.get("state") == "FIRE":
-            notify = _go_maybe_notify_fire(payload)
-            auto_stage = _go_maybe_auto_stage_fire(payload)
-    # After auto-stage so a fresh OPEN is visible on the same response
-    working = None
-    try:
-        from data.journal import go_efficiency as go_eff
-        from analytics.go_desk import working_fire_advisory
+            from analytics.go_desk import working_fire_advisory
 
-        opens = go_eff.list_open(sym, include_decision=True)
-        working = working_fire_advisory(strip_decision=payload, open_rows=opens)
-    except Exception as exc:
-        log.debug("go working advisory: %s", exc)
-    prefs_out = dict(_GO_PREFS)
-    wu = str(prefs_out.get("webhook_url") or "")
-    if wu:
-        prefs_out["webhook_url"] = wu[:24] + "…" if len(wu) > 24 else wu
-    return {
-        "symbol": sym,
-        "window": win,
-        "prefs": prefs_out,
-        "decision": payload,
-        "notify": notify,
-        "auto_stage": auto_stage,
-        "working": working,
-    }
+            opens = go_eff.list_open(sym, include_decision=True)
+            working = working_fire_advisory(strip_decision=payload, open_rows=opens)
+        except Exception as exc:
+            log.debug("go working advisory: %s", exc)
+        prefs_out = dict(_GO_PREFS)
+        wu = str(prefs_out.get("webhook_url") or "")
+        if wu:
+            prefs_out["webhook_url"] = wu[:24] + "…" if len(wu) > 24 else wu
+        return {
+            "symbol": sym,
+            "window": win,
+            "prefs": prefs_out,
+            "decision": payload,
+            "notify": notify,
+            "auto_stage": auto_stage,
+            "working": working,
+        }
+
+    return await asyncio.to_thread(_finalize_decision_sync)
 
 
 @app.get("/api/go/feed")
@@ -5656,41 +5851,49 @@ async def get_go_feed(
     win = window or _ACTIVE_STATE["window"]
     md = (mode or _GO_PREFS.get("mode") or "directional").lower()
     dp = float(delta_pref if delta_pref is not None else _GO_PREFS.get("delta_pref") or 0.50)
-    primary = await _compose_go_decision(sym, win, md, dp)
+    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
+    if getattr(dash, "levels", None) is None:
+        raise HTTPException(status_code=503, detail="Levels unavailable for GO desk.")
+    shared_ctx = await asyncio.to_thread(_prepare_go_shared_ctx, sym, win, dash)
+    primary = await _compose_go_decision(sym, win, md, dp, _dash=dash, _shared_ctx=shared_ctx)
     feed = [primary]
     for alt in ("directional", "structure", "writer"):
         if alt == md:
             continue
         try:
-            feed.append(await _compose_go_decision(sym, win, alt, dp))
+            feed.append(await _compose_go_decision(sym, win, alt, dp, _dash=dash, _shared_ctx=shared_ctx))
         except Exception as exc:
             log.debug("go feed alt %s: %s", alt, exc)
-    ranked = rank_feed(feed)
-    items = [d.to_dict() for d in ranked]
-    auto_stage = None
-    # Ledger only mode-primary FIRE/SCOUT (avoid HOLD spam + alt triple-count)
-    if items and items[0].get("state") in ("FIRE", "SCOUT"):
-        try:
-            from data.journal import go_efficiency as go_eff
-            go_eff.record_event("EMIT", items[0])
-        except Exception as exc:
-            log.debug("go feed EMIT ledger: %s", exc)
-        if items[0].get("state") == "FIRE":
-            auto_stage = _go_maybe_auto_stage_fire(items[0])
-    return {
-        "symbol": sym,
-        "window": win,
-        "mode": md,
-        "items": items,
-        "auto_stage": auto_stage,
-    }
+
+    def _finalize_feed_sync() -> dict:
+        ranked = rank_feed(feed)
+        items = [d.to_dict() for d in ranked]
+        auto_stage = None
+        if items and items[0].get("state") in ("FIRE", "SCOUT"):
+            try:
+                from data.journal import go_efficiency as go_eff
+                go_eff.record_event("EMIT", items[0])
+            except Exception as exc:
+                log.debug("go feed EMIT ledger: %s", exc)
+            if items[0].get("state") == "FIRE":
+                auto_stage = _go_maybe_auto_stage_fire(items[0])
+        return {
+            "symbol": sym,
+            "window": win,
+            "mode": md,
+            "items": items,
+            "auto_stage": auto_stage,
+        }
+
+    return await asyncio.to_thread(_finalize_feed_sync)
 
 
 @app.get("/api/go/efficiency")
 async def get_go_efficiency(symbol: Optional[str] = None, limit: int = 200):
     from data.journal import go_efficiency as go_eff
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
-    return {"symbol": sym, **go_eff.summarize(sym, limit=limit)}
+    summary = await asyncio.to_thread(go_eff.summarize, sym, limit=limit)
+    return {"symbol": sym, **summary}
 
 
 @app.get("/api/go/open")
@@ -5701,7 +5904,7 @@ async def get_go_open(symbol: Optional[str] = None, window: Optional[str] = None
 
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
-    rows = go_eff.list_open(sym, include_decision=True)
+    rows = await asyncio.to_thread(go_eff.list_open, sym, include_decision=True)
     dash = await _aload_active_dashboard(sym, win)
     iv, _rv = _go_iv_rv(dash, sym)
     iv_dec = (float(iv) / 100.0) if iv is not None and float(iv) > 0 else None
@@ -5894,7 +6097,7 @@ async def get_go_digest(
 
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     mins = max(1, min(int(minutes or 15), 120))
-    eff = go_eff.summarize(sym, limit=80)
+    eff = await asyncio.to_thread(go_eff.summarize, sym, limit=80)
     go_events = eff.get("recent") or []
 
     inst_id = f"{sym}-FUT"
@@ -6232,13 +6435,14 @@ async def get_go_alerts(symbol: Optional[str] = None, window: Optional[str] = No
             refreshed = await _go_refresh_open_marks(sym, dash)
         except Exception as exc:
             log.debug("go mark refresh: %s", exc)
-    alerts = _go_position_alerts(sym, dash)
-    from data.journal import go_efficiency as go_eff
+    alerts, open_rows = await asyncio.to_thread(
+        lambda: (_go_position_alerts(sym, dash), __import__("data.journal.go_efficiency", fromlist=["list_open"]).list_open(sym))
+    )
     return {
         "symbol": sym,
         "refreshed_marks": refreshed,
         "alerts": alerts,
-        "open": go_eff.list_open(sym),
+        "open": open_rows,
     }
 
 
@@ -6285,6 +6489,18 @@ async def get_recommendations_history_endpoint(
     Enriches each record with peak score, score trajectory delta vs peak, current lifecycle state,
     and a serialized full_card payload for expander views.
     """
+    return await asyncio.to_thread(
+        _get_recommendations_history_sync, symbol, tier, status, session_date, limit
+    )
+
+
+def _get_recommendations_history_sync(
+    symbol: Optional[str] = None,
+    tier: Optional[str] = None,
+    status: Optional[str] = None,
+    session_date: Optional[str] = None,
+    limit: Optional[int] = 150,
+) -> dict:
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     acct_cap = float(_ACTIVE_STATE.get("account_capital", 500000.0))
     r_pct = float(_ACTIVE_STATE.get("risk_pct", 1.5)) / 100.0
@@ -6338,6 +6554,12 @@ async def get_recommendations_history_endpoint(
 
     from analytics.trade_ideas import _rehydrate_bookmarked_trade_idea
     from app.spot_ticker import latest_quote
+    from data.journal.recommendations_store import get_score_histories_batch
+
+    batch_score_hist = get_score_histories_batch(
+        [str(r.get("rec_id") or "") for r in raw_records if r.get("rec_id")],
+        limit_per_rec=8,
+    )
 
     quote_cache: dict[str, dict] = {}
 
@@ -6476,6 +6698,9 @@ async def get_recommendations_history_endpoint(
                     lot_size,
                     record_lifecycle_events=False,
                     is_historical=True,
+                    preloaded_score_history=batch_score_hist.get(
+                        str(r.get("rec_id") or ""), []
+                    ),
                 )
         except Exception as e_ser:
             log.debug("Error serializing history idea %s: %s", r.get("rec_id"), e_ser)
@@ -6805,6 +7030,17 @@ def _build_sentinel_tape(sym: str, tf: str, dash) -> dict:
         if n != n or n <= 0:
             return None
         return round(n, 1)
+
+    def _is_indian_session_bar(bar_obj) -> bool:
+        st_dt = getattr(bar_obj, "start_ts", None)
+        if st_dt is None:
+            return False
+        ts_ist = _to_ist_chart_timestamp(st_dt)
+        dt_ist = datetime.fromtimestamp(ts_ist, tz=timezone.utc)
+        mins = dt_ist.hour * 60 + dt_ist.minute
+        return 9 * 60 <= mins <= 15 * 60 + 40
+
+    raw_bars = [b for b in raw_bars if _is_indian_session_bar(b)]
 
     bars = []
     for b in raw_bars:
@@ -7239,6 +7475,11 @@ async def get_signal_efficiency(
 async def get_market_intel(symbol: Optional[str] = None):
     """Market Intelligence Tab: Macro verdict, Pre-Open Digest, sectors, heavyweights, news."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
+    dash = await _aload_active_dashboard(sym, "weekly")
+    return await asyncio.to_thread(_build_market_intel_sync, sym, dash)
+
+
+def _build_market_intel_sync(sym: str, dash: Optional[DashboardData]) -> dict:
     try:
         from data.sectors import fetch_sector_snap
         from data.heavyweights import fetch_heavyweight_snap, filter_heavyweight_news
@@ -7255,7 +7496,6 @@ async def get_market_intel(symbol: Optional[str] = None):
             news_snap["headlines"] = enrich_headlines_with_tags(news_snap.get("headlines") or [])
 
         # Compute authentic spot change pct from dashboard day_ohlc / levels
-        dash = await _aload_active_dashboard(sym, "weekly")
         spot = _extract_active_spot(dash, sym)
         spot_chg = 0.0
         ref_px = None
@@ -8271,6 +8511,10 @@ async def get_session_commentary(symbol: Optional[str] = None):
     """Session Commentary Tab: Strictly single trading session date narrative, Morning Anchor pre-market card, and post-market scorecard."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     dash = await _aload_active_dashboard(sym, "weekly")
+    return await asyncio.to_thread(_get_session_commentary_sync, sym, dash)
+
+
+def _get_session_commentary_sync(sym: str, dash: Optional[DashboardData]) -> dict:
     story_mgr = StoryStateManager()
     now_ist = _get_ist_now()
     phase = story_mgr.determine_phase(now_ist).replace("_", " ").title()
@@ -9501,6 +9745,8 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
         last_sym = None
         last_send = 0.0
         latest_bar_dict = None
+        client_prev_spot: dict[str, float] = {}
+        snap_cache: dict[str, tuple[float, Any]] = {}
         while True:
             sym = active_sym_box[0]
             if sym != last_sym:
@@ -9518,8 +9764,16 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
             dash = pub.get("data")
             lv = getattr(dash, "levels", None) if dash is not None else None
 
-            from data.market_snapshot import get_snapshot
-            snap = get_snapshot(sym) if lv is None else None
+            snap = None
+            if lv is None:
+                now_mono = time.monotonic()
+                cached_snap = snap_cache.get(sym)
+                if cached_snap is not None and (now_mono - cached_snap[0]) < 5.0:
+                    snap = cached_snap[1]
+                else:
+                    from data.market_snapshot import get_snapshot
+                    snap = await asyncio.to_thread(get_snapshot, sym)
+                    snap_cache[sym] = (now_mono, snap)
 
             def _ws_px(val):
                 try:
@@ -9574,15 +9828,13 @@ async def websocket_telemetry(websocket: WebSocket, symbol: Optional[str] = None
                 )
                 # Expiry-day blast edge: wall breach + live CE/PE parity from the Full tick tape.
                 wall_event = None
-                prev_spot = getattr(websocket_telemetry, "_prev_spot", {}).get(sym)
+                prev_spot = client_prev_spot.get(sym)
                 if prev_spot is not None:
                     if cw and prev_spot < cw <= spot:
                         wall_event = "call_wall_cross"
                     elif pw and prev_spot > pw >= spot:
                         wall_event = "put_wall_cross"
-                if not hasattr(websocket_telemetry, "_prev_spot"):
-                    websocket_telemetry._prev_spot = {}
-                websocket_telemetry._prev_spot[sym] = spot
+                client_prev_spot[sym] = spot
                 blast_live = None
                 try:
                     from app.blast_ticks import live_state as _blast_live_state

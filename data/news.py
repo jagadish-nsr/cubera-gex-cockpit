@@ -359,6 +359,58 @@ def score_news(
 
 _NEWS_CACHE: dict = {"at": 0.0, "data": None}
 _NEWS_LOCK = threading.Lock()
+_NEWS_REFRESH_INFLIGHT = False
+
+
+def _pull_feeds_sync(session, feed_urls, timeout: int, now_utc: datetime, limit: int, window_min: int) -> dict | None:
+    import requests
+    from concurrent.futures import ThreadPoolExecutor
+
+    items: list[tuple[datetime | None, str, str]] = []
+    ok = False
+    urls = list(feed_urls)
+    if session is not None or len(urls) <= 1:
+        s = session or requests.Session()
+        if session is None:
+            s.headers.update(_HEADERS)
+        for url in urls:
+            try:
+                r = s.get(url, timeout=timeout)
+                r.raise_for_status()
+                items.extend(parse_feed(r.content))
+                ok = True
+            except Exception:  # noqa: BLE001 - drop just this feed, keep the others
+                continue
+    else:
+        eff_timeout = min(float(timeout), 5.0)
+
+        def _one(u: str):
+            r = requests.get(u, headers=_HEADERS, timeout=eff_timeout)
+            r.raise_for_status()
+            return parse_feed(r.content)
+
+        with ThreadPoolExecutor(max_workers=min(4, len(urls))) as pool:
+            for fut in [pool.submit(_one, u) for u in urls]:
+                try:
+                    items.extend(fut.result())
+                    ok = True
+                except Exception:  # noqa: BLE001
+                    continue
+
+    if not ok:
+        try:
+            from app.obs import metrics as obs_metrics
+            obs_metrics.note_egress("news_miss")
+        except Exception:
+            pass
+        return None
+    return score_news(
+        items,
+        now_utc,
+        window_min=window_min,
+        headline_limit=limit,
+        headline_horizon_min=HEADLINE_HORIZON_MIN,
+    )
 
 
 def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
@@ -370,50 +422,58 @@ def fetch_news(session=None, timeout: int = 10, now_utc: datetime | None = None,
     Fail-soft (mirrors data/nse.fetch_india_vix): a single feed erroring is dropped
     and the rest still count; only if EVERY feed fails do we return None, so a news
     miss never breaks a GEX snapshot. ``top`` is the highest-impact fresh headline.
-    Cached in-memory with a 5-minute TTL to eliminate repetitive network latency.
-
-    Default ``headline_limit`` is the digest cap so Market Intelligence / pre-open
-    digest share one fetch. Phase B burst metrics still use ``window_min`` (25).
+    Cached in-memory with a 5-minute TTL + stale-while-revalidate background
+    refresh so RSS timeouts never stall HTTP routes.
     """
     import time
-    global _NEWS_CACHE
+    global _NEWS_CACHE, _NEWS_REFRESH_INFLIGHT
 
     now_t = time.time()
-    if not force and (now_t - _NEWS_CACHE["at"] < 300.0) and _NEWS_CACHE["data"] is not None:
-        return _NEWS_CACHE["data"]
+    cached_data = _NEWS_CACHE["data"]
+    is_default_live = (
+        session is None
+        and not force
+        and feed_urls is FEED_URLS
+        and now_utc is None
+        and headline_limit is None
+        and window_min == WINDOW_MIN
+    )
+    if not force and (now_t - _NEWS_CACHE["at"] < 300.0) and cached_data is not None:
+        return cached_data
 
-    import requests
+    # Stale-while-revalidate: serve last good headlines immediately while one
+    # background worker refreshes RSS in parallel.
+    if is_default_live and cached_data is not None:
+        should_spawn = False
+        with _NEWS_LOCK:
+            if not _NEWS_REFRESH_INFLIGHT:
+                _NEWS_REFRESH_INFLIGHT = True
+                should_spawn = True
+        if should_spawn:
+            def _bg_refresh() -> None:
+                global _NEWS_REFRESH_INFLIGHT
+                try:
+                    res_bg = _pull_feeds_sync(
+                        None, FEED_URLS, timeout, datetime.now(timezone.utc),
+                        HEADLINE_LIMIT_DIGEST, WINDOW_MIN,
+                    )
+                    if res_bg is not None:
+                        with _NEWS_LOCK:
+                            _NEWS_CACHE["at"] = time.time()
+                            _NEWS_CACHE["data"] = res_bg
+                finally:
+                    with _NEWS_LOCK:
+                        _NEWS_REFRESH_INFLIGHT = False
 
-    now_utc = now_utc or datetime.now(timezone.utc)
+            threading.Thread(target=_bg_refresh, name="news-rss-refresh", daemon=True).start()
+        return cached_data
+
+    eff_now_utc = now_utc or datetime.now(timezone.utc)
     limit = HEADLINE_LIMIT_DIGEST if headline_limit is None else int(headline_limit)
     try:
-        s = session or requests.Session()
-        if session is None:
-            s.headers.update(_HEADERS)
-        items: list[tuple[datetime | None, str, str]] = []
-        ok = False
-        for url in feed_urls:
-            try:
-                r = s.get(url, timeout=timeout)
-                r.raise_for_status()
-                items.extend(parse_feed(r.content))
-                ok = True
-            except Exception:  # noqa: BLE001 - drop just this feed, keep the others
-                continue
-        if not ok:
-            try:
-                from app.obs import metrics as obs_metrics
-                obs_metrics.note_egress("news_miss")
-            except Exception:
-                pass
+        res = _pull_feeds_sync(session, feed_urls, timeout, eff_now_utc, limit, window_min)
+        if res is None:
             return None
-        res = score_news(
-            items,
-            now_utc,
-            window_min=window_min,
-            headline_limit=limit,
-            headline_horizon_min=HEADLINE_HORIZON_MIN,
-        )
         with _NEWS_LOCK:
             _NEWS_CACHE["at"] = now_t
             _NEWS_CACHE["data"] = res

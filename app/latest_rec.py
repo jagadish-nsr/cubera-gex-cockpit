@@ -22,8 +22,24 @@ DEFAULT_DIR = Path("data") / "journal"
 DEFAULT_MAX_AGE_S = 120.0
 
 
-def rec_path_for(symbol: str, directory: str | Path = DEFAULT_DIR) -> Path:
-    return Path(directory) / f"latest_rec_{(symbol or '').upper().strip()}.pkl"
+def _norm_rec_window(window: str | None) -> str:
+    w = (window or "current_week").strip()
+    if not w or w.lower() == "weekly":
+        return "current_week"
+    return w
+
+
+def rec_path_for(symbol: str, directory: str | Path | None = None) -> Path:
+    return Path(directory if directory is not None else DEFAULT_DIR) / f"latest_rec_{(symbol or '').upper().strip()}.pkl"
+
+
+def rec_mtime(symbol: str, directory: str | Path | None = None) -> float | None:
+    """Return mtime of ``latest_rec_{SYMBOL}.pkl`` or None if absent."""
+    path = rec_path_for(symbol, directory)
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return None
 
 
 def write_latest_rec(
@@ -31,14 +47,14 @@ def write_latest_rec(
     batch: Any,
     *,
     window: str | None = None,
-    directory: str | Path = DEFAULT_DIR,
+    directory: str | Path | None = None,
 ) -> Path:
     """Atomic pickle of the live RecommendationBatch for serve latch reads."""
     path = rec_path_for(symbol, directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "symbol": (symbol or "").upper().strip(),
-        "window": window or "current_week",
+        "window": _norm_rec_window(window),
         "written_at_epoch": time.time(),
         "batch": batch,
     }
@@ -60,7 +76,7 @@ def write_latest_rec(
     return path
 
 
-def clear_latest_rec(symbol: str, *, directory: str | Path = DEFAULT_DIR) -> None:
+def clear_latest_rec(symbol: str, *, directory: str | Path | None = None) -> None:
     path = rec_path_for(symbol, directory)
     try:
         path.unlink(missing_ok=True)
@@ -76,7 +92,7 @@ def read_latest_rec(
     symbol: str,
     *,
     window: str | None = None,
-    directory: str | Path = DEFAULT_DIR,
+    directory: str | Path | None = None,
     max_age_s: float = DEFAULT_MAX_AGE_S,
 ) -> Any | None:
     """Return the shared RecommendationBatch, or None if missing/stale/wrong window."""
@@ -91,8 +107,8 @@ def read_latest_rec(
         return None
     if not isinstance(payload, dict) or payload.get("batch") is None:
         return None
-    want = (window or "current_week")
-    got = str(payload.get("window") or "current_week")
+    want = _norm_rec_window(window)
+    got = _norm_rec_window(str(payload.get("window") or "current_week"))
     if got != want:
         return None
     try:

@@ -68,9 +68,21 @@ def write_snap_meta(
         "degraded_reason": str(degraded_reason or ""),
         "written_at_epoch": time.time(),
     }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 
