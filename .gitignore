@@ -48,13 +48,6 @@ data/journal/dhan_intraday/
 data/market_snapshot.db
 data/sentinel.db*
 
-# CryptoCubera local store (+ rotated archives cubera.<stamp>.db)
-data/crypto/*.db
-data/crypto/*.db-*
-data/crypto/*.db-shm
-data/crypto/*.db-wal
-data/crypto/session_exports/
-
 *.log
 bin/
 

@@ -1,1 +1,0 @@
-"""CryptoCubera HTTP API."""

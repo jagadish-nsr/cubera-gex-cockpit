@@ -68,6 +68,7 @@ US pin reading.
 7. **Tune toward the loss that matters:** real P&L survival.
 
 ## Hard rules
+- **Index options only.** Nifty, Bank Nifty, and Sensex. Do not add or restore a crypto package, feed, cockpit, or launch script (`crypto/`, `tests/cryptocubera/`, `config/crypto.yaml`, `run_crypto*.sh`). A search hit on an old git branch is history, not a reason to bring that code back.
 - **No auto-execution.** Every order staged, explicit user confirm.
 - **Verify-live, never guess** the NSE lot size and the weekly/monthly expiry
   rules. Marked VERIFY in `config.py` / `data/expiry.py`.

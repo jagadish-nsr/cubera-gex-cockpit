@@ -65,7 +65,7 @@ spot component is removed. See the memory note `tick-data-ic-research` for the c
 
 | Setting | Contemporaneous | Predictive (lagged / future return = IC) |
 |---|---|---|
-| Crypto OFI (Markwick) | R² ≈ 0.40 | OOS R² ≈ 0.03, hit 53%, Sharpe 0.12 |
+| Markwick OFI | R² ≈ 0.40 | OOS R² ≈ 0.03, hit 53%, Sharpe 0.12 |
 | Large-tick Nasdaq (deep-book OFI) | RMSE −68–74% | peaks ~1–2 min, decays > 1 day |
 | BankNifty options, spot-adjusted (Verma) | — | Spearman −0.009, t −0.76 (≈ 0) |
 | BankNifty futures 10s→1s (2507.22712) | correlation/regime signal | "associative, not causal" |
