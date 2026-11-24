@@ -5851,10 +5851,14 @@ async def get_go_feed(
     win = window or _ACTIVE_STATE["window"]
     md = (mode or _GO_PREFS.get("mode") or "directional").lower()
     dp = float(delta_pref if delta_pref is not None else _GO_PREFS.get("delta_pref") or 0.50)
-    dash = _dash_or_503(await _aload_active_dashboard(sym, win), sym)
-    if getattr(dash, "levels", None) is None:
-        raise HTTPException(status_code=503, detail="Levels unavailable for GO desk.")
-    shared_ctx = await asyncio.to_thread(_prepare_go_shared_ctx, sym, win, dash)
+    # Load once for the shared context. With no usable book, the composer owns
+    # the 503 exactly as the single-mode endpoint does.
+    dash = await _aload_active_dashboard(sym, win)
+    if dash is not None and getattr(dash, "levels", None) is None:
+        dash = None
+    shared_ctx = None
+    if dash is not None:
+        shared_ctx = await asyncio.to_thread(_prepare_go_shared_ctx, sym, win, dash)
     primary = await _compose_go_decision(sym, win, md, dp, _dash=dash, _shared_ctx=shared_ctx)
     feed = [primary]
     for alt in ("directional", "structure", "writer"):
