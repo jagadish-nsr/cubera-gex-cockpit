@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[2]
 _DB_PATH = ROOT / "data" / "journal" / "recommendations.db"
 _WRITE_LOCK = threading.RLock()
 _THREAD_DB = threading.local()
+_SCHEMA_READY_PATHS: set[str] = set()
+_EFFECTIVENESS_CACHE: dict[tuple[str, str], tuple[float, list[dict]]] = {}
+_EFFECTIVENESS_LOCK = threading.Lock()
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -87,7 +90,25 @@ def _get_read_conn() -> sqlite3.Connection:
 
 def ensure_schema() -> None:
     """Initialize SQLite tables for recommendations, score trajectories, events, and ML telemetry."""
-    with _WRITE_LOCK, _get_write_conn() as conn:
+    target = active_db_path()
+    path_key = str(target.resolve())
+    with _WRITE_LOCK:
+        with _get_write_conn() as conn:
+            _init_schema_on_conn(conn)
+        _SCHEMA_READY_PATHS.add(path_key)
+
+
+def _ensure_schema_once() -> None:
+    """Fast-path schema guard for hot read/write operations."""
+    target = active_db_path()
+    path_key = str(target.resolve())
+    if path_key in _SCHEMA_READY_PATHS and target.exists():
+        return
+    ensure_schema()
+
+
+def _init_schema_on_conn(conn: sqlite3.Connection) -> None:
+    if True:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS recommendation_records (
             rec_id TEXT PRIMARY KEY,
@@ -269,6 +290,15 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_rec_last_appeared ON recommendation_records(last_appeared)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rec_triggered_at ON recommendation_records(triggered_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rec_badge_status ON recommendation_records(play_badge, symbol, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ml_feat_strat ON ml_features_dataset(strategy_name, symbol)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_rec_highest_tier ON recommendation_records(highest_tier, highest_score)"
         )
 
@@ -321,7 +351,7 @@ def _prime_cache() -> None:
     global _CACHE_INITIALIZED
     if _CACHE_INITIALIZED:
         return
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             rows = conn.execute(
@@ -337,7 +367,7 @@ def _prime_cache() -> None:
 
 def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> str:
     """Save or update a recommendation record. Preserves existing bookmark status and triggered_at."""
-    ensure_schema()
+    _ensure_schema_once()
     rec_id = idea_dict["rec_id"]
 
     with _WRITE_LOCK, _get_write_conn() as conn:
@@ -468,6 +498,8 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
             int(is_fresh_day),
         ))
         conn.commit()
+        with _EFFECTIVENESS_LOCK:
+            _EFFECTIVENESS_CACHE.clear()
 
         # Update in-memory bookmark cache if bookmarked
         if is_bm:
@@ -481,7 +513,7 @@ def save_or_update_recommendation(idea_dict: dict, payload_json: str = "") -> st
 
 def toggle_bookmark(rec_id: str) -> bool:
     """Toggle bookmark status for a recommendation. Returns new bookmarked state (True/False)."""
-    ensure_schema()
+    _ensure_schema_once()
     _prime_cache()
 
     try:
@@ -542,7 +574,7 @@ def get_bookmarked_record(rec_id: str) -> dict | None:
 
 def get_recommendation_record(rec_id: str) -> dict | None:
     """Return the raw recommendation record by rec_id from SQLite, or None if not found."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             row = conn.execute(
@@ -582,7 +614,7 @@ def get_recommendation_history(
 
     Returns a list of dicts with calculated peak tier, trajectory, and stored attributes.
     """
-    ensure_schema()
+    _ensure_schema_once()
     query = """
         SELECT *
         FROM recommendation_records
@@ -595,14 +627,17 @@ def get_recommendation_history(
         params.append(symbol.upper())
 
     if session_date and session_date.lower() not in ("all", ""):
-        if session_date.lower() == "today":
-            today_str = datetime.now(IST).strftime("%Y-%m-%d")
-            query += " AND (substr(triggered_at, 1, 10) = ? OR substr(last_appeared, 1, 10) = ?)"
-            params.extend([today_str, today_str])
-        else:
-            s_date = session_date[:10]
-            query += " AND (substr(triggered_at, 1, 10) = ? OR substr(last_appeared, 1, 10) = ?)"
-            params.extend([s_date, s_date])
+        s_date = (
+            datetime.now(IST).strftime("%Y-%m-%d")
+            if session_date.lower() == "today"
+            else session_date[:10]
+        )
+        s_hi = f"{s_date}\uffff"
+        query += (
+            " AND ((triggered_at >= ? AND triggered_at < ?) "
+            "OR (last_appeared >= ? AND last_appeared < ?))"
+        )
+        params.extend([s_date, s_hi, s_date, s_hi])
 
     if tier and tier.lower() not in ("all", ""):
         t = tier.lower()
@@ -656,7 +691,7 @@ def append_score_history(
         except Exception:
             pass
 
-    ensure_schema()
+    _ensure_schema_once()
     now_ts = _now_ist_str()
 
     with _WRITE_LOCK, _get_write_conn() as conn:
@@ -741,7 +776,7 @@ def append_score_history(
 
 def get_score_history(rec_id: str, limit: int = 20) -> list[dict]:
     """Retrieve score evolution log for rec_id."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             rows = conn.execute(
@@ -752,6 +787,50 @@ def get_score_history(rec_id: str, limit: int = 20) -> list[dict]:
     except Exception as e:
         log.warning(f"Failed to get score history for {rec_id}: {e}")
         return []
+
+
+def get_score_histories_batch(rec_ids: list[str], limit_per_rec: int = 8) -> dict[str, list[dict]]:
+    """Fetch compact score trajectories for many rec_ids in one SQLite round-trip.
+
+    Omits bulky ``factors_json`` blobs so ``/api/recommendations/history`` stays
+    lightweight instead of running 150 separate queries and shipping ~2.5 MB JSON.
+    """
+    unique_ids = [str(r) for r in dict.fromkeys(rec_ids or []) if r]
+    if not unique_ids:
+        return {}
+    _ensure_schema_once()
+    out: dict[str, list[dict]] = {rid: [] for rid in unique_ids}
+    lim = max(1, int(limit_per_rec))
+    try:
+        with _get_read_conn() as conn:
+            for start in range(0, len(unique_ids), 400):
+                chunk = unique_ids[start : start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"""
+                    SELECT rec_id, recorded_at, score, score_delta
+                      FROM (
+                        SELECT rec_id, recorded_at, score, score_delta, history_id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY rec_id ORDER BY history_id DESC
+                               ) AS rn
+                          FROM recommendation_score_history
+                         WHERE rec_id IN ({placeholders})
+                      )
+                     WHERE rn <= ?
+                     ORDER BY rec_id, history_id DESC
+                    """,
+                    [*chunk, lim],
+                ).fetchall()
+                for row in rows:
+                    out.setdefault(row["rec_id"], []).append({
+                        "recorded_at": row["recorded_at"],
+                        "score": row["score"],
+                        "score_delta": row["score_delta"],
+                    })
+    except Exception as e:
+        log.warning("Failed batch score history lookup: %s", e)
+    return out
 
 
 def record_event(
@@ -765,7 +844,7 @@ def record_event(
     was_bookmarked: bool,
 ) -> int:
     """Record a lifecycle event (TGT1_HIT, TGT2_HIT, SL_HIT, INVALIDATED). Returns event_id."""
-    ensure_schema()
+    _ensure_schema_once()
     now_ts = _now_ist_str()
 
     with _WRITE_LOCK, _get_write_conn() as conn:
@@ -807,6 +886,8 @@ def record_event(
               )
         """, (rec_status, now_ts, rec_id, rec_status))
         conn.commit()
+        with _EFFECTIVENESS_LOCK:
+            _EFFECTIVENESS_CACHE.clear()
 
         # Update in-memory cache if bookmarked
         if was_bookmarked and rec_id in _BOOKMARK_CACHE:
@@ -878,15 +959,15 @@ def evaluate_recommendation_lifecycle(
     if current_spot <= 0:
         return []
 
-    ensure_schema()
+    _ensure_schema_once()
     options_ltp_map = options_ltp_map or {}
     events_triggered = []
     trade_date = session_date or datetime.now(IST).strftime("%Y-%m-%d")
 
     with _get_read_conn() as conn:
         active_recs = conn.execute(
-            "SELECT * FROM recommendation_records WHERE symbol = ? AND status = 'ACTIVE' AND substr(triggered_at, 1, 10) = ?",
-            (symbol.upper(), trade_date)
+            "SELECT * FROM recommendation_records WHERE symbol = ? AND status = 'ACTIVE' AND triggered_at >= ? AND triggered_at < ?",
+            (symbol.upper(), trade_date, f"{trade_date}\uffff")
         ).fetchall()
 
     for r in active_recs:
@@ -958,7 +1039,7 @@ def evaluate_recommendation_lifecycle(
 
 def get_unacknowledged_alerts(only_bookmarked: bool = True) -> list[dict]:
     """Retrieve unacknowledged events for audio chimes and alert toasts."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             query = """
@@ -980,7 +1061,7 @@ def acknowledge_alerts(event_ids: list[int]) -> None:
     """Mark events as acknowledged after toast and audio chime have fired."""
     if not event_ids:
         return
-    ensure_schema()
+    _ensure_schema_once()
     with _WRITE_LOCK, _get_write_conn() as conn:
         placeholders = ",".join("?" * len(event_ids))
         conn.execute(
@@ -992,7 +1073,7 @@ def acknowledge_alerts(event_ids: list[int]) -> None:
 
 def log_ml_features(feat_dict: dict) -> None:
     """Store quantitative point-in-time features for future AI/ML modeling."""
-    ensure_schema()
+    _ensure_schema_once()
     with _WRITE_LOCK, _get_write_conn() as conn:
         conn.execute("""
             INSERT INTO ml_features_dataset (
@@ -1030,7 +1111,7 @@ def update_ml_outcome(
     holding_time_minutes: float,
 ) -> None:
     """Update target outcome labels on recommendation completion for ML training ground-truth."""
-    ensure_schema()
+    _ensure_schema_once()
     with _WRITE_LOCK, _get_write_conn() as conn:
         conn.execute("""
             UPDATE ml_features_dataset SET
@@ -1046,11 +1127,21 @@ def update_ml_outcome(
             float(holding_time_minutes), sample_id
         ))
         conn.commit()
+        with _EFFECTIVENESS_LOCK:
+            _EFFECTIVENESS_CACHE.clear()
 
 
 def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
-    """Compute empirical effectiveness metrics across the 7 institutional strategies."""
-    ensure_schema()
+    """Compute empirical effectiveness metrics across the 7 institutional strategies.
+
+    Uses 2 grouped SQLite queries (instead of 35 per-badge table scans) plus a
+    short 5s TTL cache when reading the default ledger.
+    """
+    _ensure_schema_once()
+    sym_norm = symbol.upper() if (symbol and symbol.upper() != "ALL") else "ALL"
+    path_key = str(active_db_path().resolve())
+    now_mono = time.monotonic()
+
     strategies = [
         ("MOMENTUM", "ATM Momentum Play (Δ ~0.50)"),
         ("STRUCTURE", "Institutional Structure Play (Δ ~0.40)"),
@@ -1064,70 +1155,138 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
     results = []
     try:
         with _get_read_conn() as conn:
-            where_clause = "WHERE symbol = ?" if (symbol and symbol.upper() != "ALL") else ""
-            params = (symbol.upper(),) if (symbol and symbol.upper() != "ALL") else ()
+            is_real_sqlite = isinstance(conn, sqlite3.Connection)
+            if is_real_sqlite:
+                with _EFFECTIVENESS_LOCK:
+                    cached = _EFFECTIVENESS_CACHE.get((path_key, sym_norm))
+                    if cached is not None and (now_mono - cached[0]) < 5.0:
+                        return [dict(item) for item in cached[1]]
 
-            for badge, name in strategies:
-                badge_where = f"{where_clause} {'AND' if where_clause else 'WHERE'} play_badge = ?"
-                b_params = params + (badge,)
+                if sym_norm != "ALL":
+                    status_rows = conn.execute(
+                        """
+                        SELECT play_badge, COALESCE(status, 'ACTIVE') AS st, COUNT(*) AS n
+                          FROM recommendation_records
+                         WHERE symbol = ?
+                         GROUP BY play_badge, COALESCE(status, 'ACTIVE')
+                        """,
+                        (sym_norm,),
+                    ).fetchall()
+                    rr_rows = conn.execute(
+                        """
+                        SELECT strategy_name, AVG(realized_rr) AS avg_rr
+                          FROM ml_features_dataset
+                         WHERE symbol = ? AND realized_rr IS NOT NULL
+                         GROUP BY strategy_name
+                        """,
+                        (sym_norm,),
+                    ).fetchall()
+                else:
+                    status_rows = conn.execute(
+                        """
+                        SELECT play_badge, COALESCE(status, 'ACTIVE') AS st, COUNT(*) AS n
+                          FROM recommendation_records
+                         GROUP BY play_badge, COALESCE(status, 'ACTIVE')
+                        """
+                    ).fetchall()
+                    rr_rows = conn.execute(
+                        """
+                        SELECT strategy_name, AVG(realized_rr) AS avg_rr
+                          FROM ml_features_dataset
+                         WHERE realized_rr IS NOT NULL
+                         GROUP BY strategy_name
+                        """
+                    ).fetchall()
 
-                total = conn.execute(
-                    f"SELECT COUNT(*) FROM recommendation_records {badge_where}", b_params
-                ).fetchone()[0]
+                counts_by_badge: dict[str, dict[str, int]] = {}
+                for r in status_rows:
+                    b = str(r["play_badge"] or "")
+                    st = str(r["st"] or "ACTIVE")
+                    slot = counts_by_badge.setdefault(b, {})
+                    slot[st] = slot.get(st, 0) + int(r["n"] or 0)
 
-                t1_hits = conn.execute(
-                    f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status IN ('TGT1_HIT', 'TGT2_HIT')", b_params
-                ).fetchone()[0]
+                rr_by_badge: dict[str, float] = {
+                    str(r["strategy_name"]): round(float(r["avg_rr"]), 2)
+                    for r in rr_rows
+                    if r["avg_rr"] is not None
+                }
 
-                t2_hits = conn.execute(
-                    f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status = 'TGT2_HIT'", b_params
-                ).fetchone()[0]
+                for badge, name in strategies:
+                    slot = counts_by_badge.get(badge, {})
+                    total = sum(slot.values())
+                    t2_hits = slot.get("TGT2_HIT", 0)
+                    t1_hits = slot.get("TGT1_HIT", 0) + t2_hits
+                    sl_hits = slot.get("SL_HIT", 0)
+                    invals = slot.get("INVALIDATED", 0)
 
-                sl_hits = conn.execute(
-                    f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status = 'SL_HIT'", b_params
-                ).fetchone()[0]
-
-                invals = conn.execute(
-                    f"SELECT COUNT(*) FROM recommendation_records {badge_where} AND status = 'INVALIDATED'", b_params
-                ).fetchone()[0]
-
-                t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
-                t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
-                sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
-                inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
-                avg_rr = None
-                if total > 0:
-                    # realized_rr is written on the ML row, not recommendation_records.
-                    if symbol and symbol.upper() != "ALL":
-                        rr_sql = (
-                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
-                            "WHERE symbol = ? AND strategy_name = ? AND realized_rr IS NOT NULL"
-                        )
-                        rr_params = (symbol.upper(), badge)
-                    else:
-                        rr_sql = (
-                            "SELECT AVG(realized_rr) FROM ml_features_dataset "
-                            "WHERE strategy_name = ? AND realized_rr IS NOT NULL"
-                        )
-                        rr_params = (badge,)
-                    rr_row = conn.execute(rr_sql, rr_params).fetchone()
-                    if rr_row and rr_row[0] is not None:
-                        avg_rr = round(float(rr_row[0]), 2)
-                results.append({
-                    "badge": badge,
-                    "name": name,
-                    "total": total,
-                    "t1_hits": t1_hits,
-                    "t1_rate": t1_rate,
-                    "t2_hits": t2_hits,
-                    "t2_rate": t2_rate,
-                    "sl_hits": sl_hits,
-                    "sl_rate": sl_rate,
-                    "invals": invals,
-                    "inv_rate": inv_rate,
-                    "avg_rr": avg_rr,
-                    "win_loss": round(t1_hits / max(1, sl_hits + invals), 2) if total else 0.0,
-                })
+                    t1_rate = round((t1_hits / total) * 100, 1) if total > 0 else 0.0
+                    t2_rate = round((t2_hits / total) * 100, 1) if total > 0 else 0.0
+                    sl_rate = round((sl_hits / total) * 100, 1) if total > 0 else 0.0
+                    inv_rate = round((invals / total) * 100, 1) if total > 0 else 0.0
+                    avg_rr = rr_by_badge.get(badge) if total > 0 else None
+                    results.append({
+                        "badge": badge,
+                        "name": name,
+                        "total": total,
+                        "t1_hits": t1_hits,
+                        "t1_rate": t1_rate,
+                        "t2_hits": t2_hits,
+                        "t2_rate": t2_rate,
+                        "sl_hits": sl_hits,
+                        "sl_rate": sl_rate,
+                        "invals": invals,
+                        "inv_rate": inv_rate,
+                        "avg_rr": avg_rr,
+                        "win_loss": round(t1_hits / max(1, sl_hits + invals), 2) if total else 0.0,
+                    })
+                with _EFFECTIVENESS_LOCK:
+                    _EFFECTIVENESS_CACHE[(path_key, sym_norm)] = (now_mono, [dict(x) for x in results])
+            else:
+                # Compatibility fallback for unit-test fake connections implementing only fetchone()
+                rec_sym_filter = "AND symbol = ?" if sym_norm != "ALL" else ""
+                rec_params = (sym_norm,) if sym_norm != "ALL" else ()
+                for badge, name in strategies:
+                    total = int((conn.execute(
+                        f"SELECT COUNT(*) FROM recommendation_records WHERE play_badge = ? {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone() or [0])[0] or 0)
+                    t1_only = int((conn.execute(
+                        f"SELECT COUNT(*) FROM recommendation_records WHERE play_badge = ? AND status = 'TGT1_HIT' {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone() or [0])[0] or 0)
+                    t2_hits = int((conn.execute(
+                        f"SELECT COUNT(*) FROM recommendation_records WHERE play_badge = ? AND status = 'TGT2_HIT' {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone() or [0])[0] or 0)
+                    sl_hits = int((conn.execute(
+                        f"SELECT COUNT(*) FROM recommendation_records WHERE play_badge = ? AND status = 'SL_HIT' {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone() or [0])[0] or 0)
+                    invals = int((conn.execute(
+                        f"SELECT COUNT(*) FROM recommendation_records WHERE play_badge = ? AND status = 'INVALIDATED' {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone() or [0])[0] or 0)
+                    rr_row = conn.execute(
+                        f"SELECT AVG(realized_rr) FROM ml_features_dataset WHERE strategy_name = ? AND realized_rr IS NOT NULL {rec_sym_filter}",
+                        (badge, *rec_params),
+                    ).fetchone()
+                    t1_hits = t1_only + t2_hits
+                    avg_rr = round(float(rr_row[0]), 2) if (total > 0 and rr_row and rr_row[0] is not None) else None
+                    results.append({
+                        "badge": badge,
+                        "name": name,
+                        "total": total,
+                        "t1_hits": t1_hits,
+                        "t1_rate": round((t1_hits / total) * 100, 1) if total > 0 else 0.0,
+                        "t2_hits": t2_hits,
+                        "t2_rate": round((t2_hits / total) * 100, 1) if total > 0 else 0.0,
+                        "sl_hits": sl_hits,
+                        "sl_rate": round((sl_hits / total) * 100, 1) if total > 0 else 0.0,
+                        "invals": invals,
+                        "inv_rate": round((invals / total) * 100, 1) if total > 0 else 0.0,
+                        "avg_rr": avg_rr,
+                        "win_loss": round(t1_hits / max(1, sl_hits + invals), 2) if total else 0.0,
+                    })
     except Exception as e:
         log.warning(f"Error computing strategy effectiveness: {e}")
 
@@ -1160,7 +1319,7 @@ def summarize_effectiveness(rows: list[dict] | None) -> dict:
 
 def save_or_update_sentinel_recommendation(rec: dict) -> None:
     """Save or update a Sentinel signal-based trade recommendation."""
-    ensure_schema()
+    _ensure_schema_once()
     now_ts = _now_ist_str()
     sig_json = rec.get("contributing_signals_json")
     if isinstance(sig_json, (list, dict)):
@@ -1245,7 +1404,7 @@ def save_or_update_sentinel_recommendation(rec: dict) -> None:
 
 def get_active_sentinel_recommendation(symbol: str, strike: float, side: str) -> dict | None:
     """Retrieve currently ACTIVE recommendation for a specific strike & side."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             row = conn.execute("""
@@ -1268,7 +1427,7 @@ def get_active_sentinel_recommendation(symbol: str, strike: float, side: str) ->
 
 def list_active_sentinel_recommendations(symbol: str | None = None) -> list[dict]:
     """Retrieve all currently ACTIVE Sentinel recommendations."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             if symbol and symbol.upper() != "ALL":
@@ -1305,7 +1464,7 @@ def list_sentinel_recommendations(
     limit: int = 100,
 ) -> list[dict]:
     """List Sentinel trade recommendations ordered by triggered_at DESC."""
-    ensure_schema()
+    _ensure_schema_once()
     try:
         with _get_read_conn() as conn:
             query = "SELECT * FROM sentinel_trade_recommendations WHERE 1=1"
@@ -1361,7 +1520,7 @@ def update_sentinel_recommendation_status(
     outcome_ts: str | None = None,
 ) -> None:
     """Transition Sentinel recommendation to terminal status (TARGET_HIT, SL_HIT, INVALIDATED)."""
-    ensure_schema()
+    _ensure_schema_once()
     now_ts = outcome_ts or _now_ist_str()
     with _WRITE_LOCK, _get_write_conn() as conn:
         conn.execute("""

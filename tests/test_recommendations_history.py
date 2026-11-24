@@ -45,17 +45,29 @@ def isolated_rec_db(tmp_path, monkeypatch):
 
 def test_cockpit_js_syntax_integrity():
     """Verify app/static/js/cockpit.js parses with 100% balanced braces and no early IIFE closure."""
+    import shutil
+    import subprocess
+
     js_path = os.path.join(os.path.dirname(__file__), "..", "app", "static", "js", "cockpit.js")
+    if shutil.which("node"):
+        proc = subprocess.run(["node", "--check", js_path], capture_output=True, text=True)
+        assert proc.returncode == 0, f"node --check failed:\n{proc.stderr}"
+
     with open(js_path, "r") as f:
         text = f.read()
 
-    in_str = None
+    # Stack of active contexts: ("code", open_line, open_col) | ("str", quote) | ("tpl_expr", depth) | ("regex",)
     in_line_comment = False
     in_block_comment = False
+    in_regex = False
+    in_regex_charclass = False
+    str_stack: list[str] = []
+    tpl_brace_depths: list[int] = []
     line = 1
     col = 0
     bracket_stack = []
     scope_closed_lines = []
+    prev_non_ws = ""
 
     i = 0
     n = len(text)
@@ -80,13 +92,39 @@ def test_cockpit_js_syntax_integrity():
                 continue
             i += 1
             continue
-        if in_str:
+        if in_regex:
             if c == "\\":
                 i += 2
                 col += 1
                 continue
-            if c == in_str:
-                in_str = None
+            if c == "[":
+                in_regex_charclass = True
+            elif c == "]":
+                in_regex_charclass = False
+            elif c == "/" and not in_regex_charclass:
+                in_regex = False
+                prev_non_ws = "/"
+            i += 1
+            continue
+
+        if str_stack:
+            q = str_stack[-1]
+            if c == "\\":
+                i += 2
+                col += 1
+                continue
+            if q == "`" and c == "$" and i + 1 < n and text[i + 1] == "{":
+                # Temporarily exit template string into JS expression until matching }
+                str_stack.pop()
+                tpl_brace_depths.append(len(bracket_stack))
+                bracket_stack.append((line, col))
+                prev_non_ws = "{"
+                i += 2
+                col += 1
+                continue
+            if c == q:
+                str_stack.pop()
+                prev_non_ws = q
             i += 1
             continue
 
@@ -101,19 +139,31 @@ def test_cockpit_js_syntax_integrity():
                 i += 2
                 col += 1
                 continue
+            elif prev_non_ws in ("", "(", ",", "=", ":", "[", "!", "&", "|", "?", "{", "}", ";"):
+                in_regex = True
+                in_regex_charclass = False
+                i += 1
+                continue
 
         if c in ("\"", "'", "`"):
-            in_str = c
+            str_stack.append(c)
             i += 1
             continue
 
         if c == "{":
             bracket_stack.append((line, col))
+            prev_non_ws = c
         elif c == "}":
             assert len(bracket_stack) > 0, f"Extra closing brace found at line {line}, col {col}"
             bracket_stack.pop()
-            if len(bracket_stack) == 0:
+            if tpl_brace_depths and len(bracket_stack) == tpl_brace_depths[-1]:
+                tpl_brace_depths.pop()
+                str_stack.append("`")
+            elif len(bracket_stack) == 0:
                 scope_closed_lines.append(line)
+            prev_non_ws = c
+        elif not c.isspace():
+            prev_non_ws = c
 
         i += 1
 

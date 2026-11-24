@@ -43,18 +43,37 @@ _PM_THREADS: dict[str, threading.Thread] = {}
 _POST_THREADS: dict[str, threading.Thread] = {}
 _POST_POLL_START_MIN = 15 * 60 + 30
 _POST_POLL_END_MIN = 16 * 60 + 10
+_PM_SCHEMA_READY_PATHS: set[str] = set()
 
 
 def _get_db_conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_pre_post_db() -> None:
     """Initialize persistent pre/post-market auction registry table."""
-    with _DB_LOCK, _get_db_conn() as conn:
+    path_key = str(DB_PATH.resolve())
+    with _DB_LOCK:
+        with _get_db_conn() as conn:
+            _init_pre_post_on_conn(conn)
+        _PM_SCHEMA_READY_PATHS.add(path_key)
+
+
+def _init_pre_post_db_once() -> None:
+    path_key = str(DB_PATH.resolve())
+    if path_key in _PM_SCHEMA_READY_PATHS and DB_PATH.exists():
+        return
+    init_pre_post_db()
+
+
+def _init_pre_post_on_conn(conn: sqlite3.Connection) -> None:
+    if True:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS market_auctions_history (
                 trade_date TEXT NOT NULL,
@@ -149,7 +168,7 @@ def save_opening_watch(symbol: str, watch: dict, trade_date: str | None = None) 
     if str(watch.get("status") or "") != "STAGED":
         return
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         t_date = trade_date or datetime.now(IST).strftime("%Y-%m-%d")
         payload = json.dumps(watch)
@@ -210,7 +229,7 @@ def persist_opening_watch_from_state(symbol: str, state: dict) -> dict | None:
 def save_pre_market_state(symbol: str, state: dict, shocks: dict | None = None) -> None:
     """Persist discovered pre-market equilibrium state into SQLite."""
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         trade_date = state.get("date") or datetime.now(IST).strftime("%Y-%m-%d")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -287,7 +306,7 @@ def save_option_shocks(symbol: str, shocks: dict, trade_date: str | None = None)
     if not shocks:
         return
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         t_date = trade_date or datetime.now(IST).strftime("%Y-%m-%d")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -325,7 +344,7 @@ def save_option_shocks(symbol: str, shocks: dict, trade_date: str | None = None)
 def update_gap_fill_status(symbol: str, status: str, trade_date: str | None = None) -> None:
     """Update dynamic gap fill status in DB and memory cache."""
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         t_date = trade_date or datetime.now(IST).strftime("%Y-%m-%d")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -349,7 +368,7 @@ def update_gap_fill_status(symbol: str, status: str, trade_date: str | None = No
 def save_post_market_state(symbol: str, state: dict) -> None:
     """Persist post-market settlement & pinning scorecard into SQLite."""
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         trade_date = state.get("date") or datetime.now(IST).strftime("%Y-%m-%d")
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -440,7 +459,7 @@ def save_post_market_state(symbol: str, state: dict) -> None:
 def get_persisted_auction_record(symbol: str, trade_date: str | None = None) -> dict | None:
     """Retrieve persisted auction record for symbol and date from SQLite."""
     try:
-        init_pre_post_db()
+        _init_pre_post_db_once()
         sym = symbol.upper().strip()
         t_date = trade_date or datetime.now(IST).strftime("%Y-%m-%d")
 
