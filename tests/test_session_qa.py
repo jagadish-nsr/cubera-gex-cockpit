@@ -229,3 +229,57 @@ def test_faq_polish_accepted_when_grounded(monkeypatch):
     assert out["source"] == "genai"
     assert out["model"] == "gemma-test"
     assert "24,600" in out["answer"]
+
+
+def test_verify_accepts_numbers_from_commentary_headlines():
+    """Numbers living in string leaves (commentary headlines) are citable."""
+    ctx = _sample_context()
+    ctx["commentary"] = [
+        {"headline": "Put Wall migration 25,700 to 25,500", "phase": "closing_30m", "ts": "15:16"},
+        {"headline": "PCR Skew Extended: 1.45", "phase": "closing_30m", "ts": "15:35"},
+    ]
+    text = "Put wall moved from 25,700 to 25,500 per the tape. " + CONFIRM_LINE
+    ok, viol = verify_qa_answer(text, ctx)
+    assert ok is True, viol
+
+
+def test_verify_still_rejects_number_absent_everywhere():
+    ctx = _sample_context()
+    ok, viol = verify_qa_answer("Magnet is the secret 25111 strike. " + CONFIRM_LINE, ctx)
+    assert ok is False
+    assert any("25111" in v for v in viol)
+
+
+def test_freeform_ungrounded_is_not_llm_off(monkeypatch):
+    import analytics.llm_client as lc
+    from analytics.session_qa import _FREEFORM_UNGROUNDED
+
+    monkeypatch.setattr(lc, "llm_enabled", lambda feat: True)
+    monkeypatch.setattr(lc, "model_name", lambda: "gemma-test")
+    monkeypatch.setattr(lc, "complete_chat", lambda *a, **k: "Magnet is 25111. " + CONFIRM_LINE)
+    out = ask_session_qa("NIFTY", question="Where is the magnet?", context=_sample_context())
+    assert out["source"] == "refuse"
+    assert out["answer"] == _FREEFORM_UNGROUNDED
+    assert "LLM off" not in out["answer"]
+    assert out["reject_reason"] == "ungrounded"
+
+
+def test_freeform_llm_off_says_off(monkeypatch):
+    import analytics.llm_client as lc
+    from analytics.session_qa import _FREEFORM_OFF
+
+    monkeypatch.setattr(lc, "llm_enabled", lambda feat: False)
+    out = ask_session_qa("NIFTY", question="Where is the call wall?", context=_sample_context())
+    assert out["answer"] == _FREEFORM_OFF
+    assert out["reject_reason"] == "llm_off"
+
+
+def test_freeform_no_answer_says_no_answer(monkeypatch):
+    import analytics.llm_client as lc
+    from analytics.session_qa import _FREEFORM_NO_ANSWER
+
+    monkeypatch.setattr(lc, "llm_enabled", lambda feat: True)
+    monkeypatch.setattr(lc, "complete_chat", lambda *a, **k: "")
+    out = ask_session_qa("NIFTY", question="Where is the call wall?", context=_sample_context())
+    assert out["answer"] == _FREEFORM_NO_ANSWER
+    assert out["reject_reason"] == "no_answer"

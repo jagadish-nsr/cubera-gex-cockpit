@@ -19,9 +19,20 @@ IST = timezone(timedelta(hours=5, minutes=30))
 SIGN_CONVENTION = "short_call_short_put"
 CONFIRM_LINE = "Decision support only — you confirm; chat never stages orders."
 
-_FREEFORM_REFUSE = (
-    "Open ask is unavailable right now (LLM off or down). "
+# Three different refusals so the trader can tell what actually happened.
+_FREEFORM_OFF = (
+    "Open ask is off: CUBERA_LLM is not enabled on this server. "
     "Try an FAQ chip for a stamped brief from the session book. "
+    + CONFIRM_LINE
+)
+_FREEFORM_NO_ANSWER = (
+    "Open ask got no answer from the local model (timeout or model not loaded). "
+    "Try an FAQ chip for a stamped brief from the session book. "
+    + CONFIRM_LINE
+)
+_FREEFORM_UNGROUNDED = (
+    "Open ask answered, but it cited a number that is not in the session pack, "
+    "so the answer was withheld. Rephrase without new levels, or use an FAQ chip. "
     + CONFIRM_LINE
 )
 
@@ -816,6 +827,34 @@ def render_faq_brief(faq_id: str, context: dict[str, Any]) -> str:
     return text
 
 
+def _fact_numbers_from_context(context: dict[str, Any]) -> list[float]:
+    """Numbers the model may cite: typed fields plus digits inside string leaves.
+
+    Commentary headlines (e.g. ``Put Wall migration 25,700 to 25,500``) live in the
+    pack as strings; a typed-only harvest would false-reject a grounded cite.
+    """
+    from commentary.narrator.verifier import (
+        _extract_all_numbers_from_dict,
+        _extract_numbers_from_text,
+    )
+
+    facts = dict(context or {})
+    fact_nums: list[float] = list(_extract_all_numbers_from_dict(facts))
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, (list, tuple, set)):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, str) and node.strip():
+            fact_nums.extend(_extract_numbers_from_text(node))
+
+    _walk(facts)
+    return fact_nums
+
+
 def verify_qa_answer(text: str, context: dict[str, Any]) -> tuple[bool, list[str]]:
     """Reject hype / execution language and strike-like numbers absent from the pack.
 
@@ -823,7 +862,6 @@ def verify_qa_answer(text: str, context: dict[str, Any]) -> tuple[bool, list[str
     stamps and GEX abbreviations do not false-reject grounded prose.
     """
     from commentary.narrator.verifier import (
-        _extract_all_numbers_from_dict,
         _extract_numbers_from_text,
         _matches_any_fact,
         verify_commentary,
@@ -836,7 +874,7 @@ def verify_qa_answer(text: str, context: dict[str, Any]) -> tuple[bool, list[str
         custom_forbidden=_QA_FORBIDDEN,
         strict_numeric=False,
     )
-    fact_nums = _extract_all_numbers_from_dict(facts)
+    fact_nums = _fact_numbers_from_context(facts)
     # GEX abbreviated forms in briefs (+2.02B) — allow the scaled mantissa.
     for raw in list(fact_nums):
         abs_r = abs(raw)
@@ -975,6 +1013,20 @@ def ask_session_qa(
             "symbol": sym,
         }
 
+    from analytics.llm_client import llm_enabled
+
+    if not llm_enabled("qa"):
+        return {
+            "answer": _FREEFORM_OFF,
+            "source": "refuse",
+            "faq_id": None,
+            "model": None,
+            "context_as_of": ctx.get("as_of"),
+            "citations": citations,
+            "symbol": sym,
+            "reject_reason": "llm_off",
+        }
+
     raw, model = _try_llm_polish_or_answer(
         context=ctx,
         question=q,
@@ -982,28 +1034,39 @@ def ask_session_qa(
         history=history,
         heuristic=None,
     )
-    if raw:
-        ok, violations = verify_qa_answer(raw, ctx)
-        if ok:
-            return {
-                "answer": raw,
-                "source": "genai",
-                "faq_id": None,
-                "model": model,
-                "context_as_of": ctx.get("as_of"),
-                "citations": citations,
-                "symbol": sym,
-            }
-        log.info("session_qa freeform rejected: %s", violations[:3])
-
+    if not raw:
+        return {
+            "answer": _FREEFORM_NO_ANSWER,
+            "source": "refuse",
+            "faq_id": None,
+            "model": None,
+            "context_as_of": ctx.get("as_of"),
+            "citations": citations,
+            "symbol": sym,
+            "reject_reason": "no_answer",
+        }
+    ok, violations = verify_qa_answer(raw, ctx)
+    if ok:
+        return {
+            "answer": raw,
+            "source": "genai",
+            "faq_id": None,
+            "model": model,
+            "context_as_of": ctx.get("as_of"),
+            "citations": citations,
+            "symbol": sym,
+        }
+    log.info("session_qa freeform rejected: %s", violations[:3])
     return {
-        "answer": _FREEFORM_REFUSE,
+        "answer": _FREEFORM_UNGROUNDED,
         "source": "refuse",
         "faq_id": None,
-        "model": None,
+        "model": model,
         "context_as_of": ctx.get("as_of"),
         "citations": citations,
         "symbol": sym,
+        "reject_reason": "ungrounded",
+        "violations": violations[:5],
     }
 
 
