@@ -10,6 +10,7 @@ from commentary.config_loader import (
     get_detector_config,
     get_forbidden_phrases,
 )
+import commentary.detectors.gap as gap_mod
 from commentary.detectors.gap import OpeningGapDetector
 from commentary.detectors.session_structure import SessionStructureDetector
 from commentary.detectors.walls import WallGexShiftDetector
@@ -63,7 +64,8 @@ def test_config_loader():
     assert "sure shot" in forbidden
 
 
-def test_opening_gap_detector():
+def test_opening_gap_detector(monkeypatch):
+    monkeypatch.setattr(gap_mod, "_journal_cash_open", lambda symbol, day: 24850.0)
     t0 = datetime(2026, 10, 13, 9, 15, tzinfo=IST)
     state = StoryState(phase="opening_15m")
     detector = OpeningGapDetector()
@@ -238,7 +240,8 @@ def test_call_wall_far_from_spot_is_not_a_break():
     assert all(e.type != "WALL_BREAK" for e in events)
 
 
-def test_opening_gap_keeps_a_real_session_gap():
+def test_opening_gap_keeps_a_real_session_gap(monkeypatch):
+    monkeypatch.setattr(gap_mod, "_journal_cash_open", lambda symbol, day: 22524.4)
     detector = OpeningGapDetector()
     events = detector.detect(_gap_view(22524.4, 22600.0, 22524.4, em=80.0), StoryState(phase="opening_15m"))
     assert len(events) == 1
@@ -321,17 +324,18 @@ def test_walls_and_gex_detector():
     assert any(e.type == "REGIME_CHANGE" and e.facts["new_regime"] == "PUT_HEAVY" for e in evts_regime)
 
 
+def _sbar(hhmm, o, h, l, c, day="2026-10-13"):
+    return {"start_ts": f"{day}T{hhmm}:00+05:30", "open": o, "high": h, "low": l, "close": c}
+
+
 def test_session_structure_detector():
     t0 = datetime(2026, 10, 13, 9, 30, tzinfo=IST)
     state = StoryState(phase="morning")
     detector = SessionStructureDetector()
 
-    # Create 15 1-min candles with High 24,850 and Low 24,780
-    candles_15 = [
-        {"open": 24800.0, "high": 24820.0, "low": 24790.0, "close": 24810.0}
-        for _ in range(14)
-    ]
-    candles_15.append({"open": 24810.0, "high": 24850.0, "low": 24780.0, "close": 24830.0})
+    # 15 session bars 09:15-09:29, High 24,850 and Low 24,780
+    candles_15 = [_sbar(f"09:{15 + i:02d}", 24800.0, 24820.0, 24790.0, 24810.0) for i in range(14)]
+    candles_15.append(_sbar("09:29", 24810.0, 24850.0, 24780.0, 24830.0))
 
     pit = PointInTimeView(
         as_of=t0,
@@ -354,11 +358,11 @@ def test_session_structure_detector():
     assert detector._orb_high == 24850.0
     assert detector._orb_low == 24780.0
 
-    # Breakout above ORB High
+    # Breakout above ORB High on the futures close (09:30 bar closes 24,865)
     pit_break = PointInTimeView(
         as_of=t0 + timedelta(minutes=2),
         symbol="NIFTY",
-        spot=24865.0,  # > 24850.0
+        spot=24840.0,  # index spot is not the breakout basis
         prior_close=24800.0,
         atm_iv=0.14,
         expected_move_1d=120.0,
@@ -367,8 +371,32 @@ def test_session_structure_detector():
         gamma_flip=24750.0,
         max_pain=24800.0,
         net_gex_sign=1,
-        candles_1m=candles_15,
+        candles_1m=candles_15 + [_sbar("09:30", 24830.0, 24870.0, 24825.0, 24865.0)],
         extra_facts={"session_vwap": 24820.0},
     )
     evts_break = detector.detect(pit_break, state)
     assert any(e.type == "ORB_BREAK_UP" and e.facts["extension_pts"] == 15.0 for e in evts_break)
+
+
+def test_orb_is_not_published_before_the_window_closes():
+    """25-Nov: the 135.3-pt range was stamped 09:15:20 from prior-session bars."""
+    detector = SessionStructureDetector()
+    one_bar = [_sbar("09:15", 83700.0, 83750.0, 83650.0, 83720.0)]
+    pit = PointInTimeView(
+        as_of=datetime(2026, 10, 13, 9, 15, 20, tzinfo=IST),
+        symbol="SENSEX",
+        spot=83808.4,
+        prior_close=82436.0,
+        atm_iv=0.14,
+        expected_move_1d=120.0,
+        call_wall=84000.0,
+        put_wall=83000.0,
+        gamma_flip=83500.0,
+        max_pain=83500.0,
+        net_gex_sign=1,
+        candles_1m=one_bar,
+    )
+    assert not any(e.type == "ORB_ESTABLISHED" for e in detector.detect(pit, StoryState(phase="opening_15m")))
+    assert detector._orb_established is False
+
+

@@ -8,6 +8,7 @@ from typing import Any
 from commentary.config_loader import get_detector_config
 from commentary.detectors.base import BaseDetector
 from commentary.models import Event, PointInTimeView, StoryState
+from commentary.session_bars import futures_basis_price
 
 
 class VwapDynamicsDetector(BaseDetector):
@@ -37,7 +38,10 @@ class VwapDynamicsDetector(BaseDetector):
         if vwap <= 0.0:
             return events
 
-        dist = spot - vwap
+        # Same basis as the VWAP: the futures close against the futures VWAP. Index spot
+        # minus futures VWAP mixed two prices and flipped the sign on 6 cards on 25-Nov.
+        px = futures_basis_price(pit_view)
+        dist = px - vwap
         curr_side = 1 if dist >= 0 else -1
 
         # 2. VWAP Hold / Absorption Bounce (Spot dips to within 10 pts of VWAP and holds)
@@ -50,6 +54,8 @@ class VwapDynamicsDetector(BaseDetector):
                     type="VWAP_HOLD_BOUNCE",
                     facts={
                         "spot": round(spot, 1),
+                        "futures_close": round(px, 1),
+                        "basis": "FUT",
                         "vwap": round(vwap, 1),
                         "dist_pts": round(dist, 1),
                         "side": "SUPPORT" if dist >= 0 else "RESISTANCE",
@@ -71,6 +77,8 @@ class VwapDynamicsDetector(BaseDetector):
                         type="VWAP_BAND_EXTENSION",
                         facts={
                             "spot": round(spot, 1),
+                            "futures_close": round(px, 1),
+                            "basis": "FUT",
                             "vwap": round(vwap, 1),
                             "extension_pts": round(dist, 1),
                             "direction": direction,

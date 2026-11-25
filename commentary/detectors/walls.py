@@ -15,6 +15,14 @@ from commentary.models import Event, PointInTimeView, StoryState
 # points behind it.
 _MAX_WALL_VS_SPOT = 0.02
 
+# Break and test events need a live print. Before 09:15 IST spot is the carried-over
+# prior close (25-Nov: "Put Wall Broken" at 09:14:50 with spot == prior close).
+_OPEN_MIN = 9 * 60 + 15
+
+
+def _clock_minute(as_of: datetime) -> int:
+    return as_of.hour * 60 + as_of.minute
+
 
 def _wall_near_spot(spot: float, wall: float) -> bool:
     if spot <= 0 or wall <= 0:
@@ -36,6 +44,10 @@ class WallGexShiftDetector(BaseDetector):
         self._prev_gex_sign: int | None = None
         self._tested_walls: set[float] = set()
         self._broken_walls: set[float] = set()
+        # The wall the reader last saw on a card. A migration card starts from here, so
+        # every "from" matches the previous card's "to" (25-Nov: 4 chains did not link).
+        self._shown_cw: float | None = None
+        self._shown_pw: float | None = None
 
     def detect(self, pit_view: PointInTimeView, state: StoryState) -> list[Event]:
         events: list[Event] = []
@@ -47,8 +59,14 @@ class WallGexShiftDetector(BaseDetector):
         sigma_1d = pit_view.sigma_1d
         test_band_pts = max(10.0, sigma_1d * self.wall_test_sigma_band)
 
-        # 1. Wall Migration Check
-        if self._prev_call_wall is not None and _wall_near_spot(spot, cw) and cw != self._prev_call_wall:
+        if self._shown_cw is None and cw:
+            self._shown_cw = cw
+        if self._shown_pw is None and pw:
+            self._shown_pw = pw
+        pre_open = _clock_minute(pit_view.as_of) < _OPEN_MIN
+
+        # 1. Wall Migration Check (from the wall last shown, to the new wall)
+        if self._shown_cw is not None and _wall_near_spot(spot, cw) and cw != self._shown_cw:
             events.append(
                 Event(
                     id=f"evt_{int(pit_view.as_of.timestamp())}_CW_MIGRATION",
@@ -56,14 +74,15 @@ class WallGexShiftDetector(BaseDetector):
                     type="WALL_MIGRATION",
                     facts={
                         "wall_type": "CALL_WALL",
-                        "old_strike": self._prev_call_wall,
+                        "old_strike": self._shown_cw,
                         "new_strike": cw,
                         "spot": spot,
                     },
                     magnitude_sigma=0.7,
                 )
             )
-        if self._prev_put_wall is not None and _wall_near_spot(spot, pw) and pw != self._prev_put_wall:
+            self._shown_cw = cw
+        if self._shown_pw is not None and _wall_near_spot(spot, pw) and pw != self._shown_pw:
             events.append(
                 Event(
                     id=f"evt_{int(pit_view.as_of.timestamp())}_PW_MIGRATION",
@@ -71,13 +90,14 @@ class WallGexShiftDetector(BaseDetector):
                     type="WALL_MIGRATION",
                     facts={
                         "wall_type": "PUT_WALL",
-                        "old_strike": self._prev_put_wall,
+                        "old_strike": self._shown_pw,
                         "new_strike": pw,
                         "spot": spot,
                     },
                     magnitude_sigma=0.7,
                 )
             )
+            self._shown_pw = pw
 
         # 2. Gamma Flip Crossing Check
         if self._prev_flip is not None and flip > 0:
@@ -115,9 +135,9 @@ class WallGexShiftDetector(BaseDetector):
                 )
             )
 
-        # 4. Wall Test & Wall Break Checks
+        # 4. Wall Test & Wall Break Checks (live prints only; none before the open)
         # Call Wall Test / Break
-        if _wall_near_spot(spot, cw):
+        if not pre_open and _wall_near_spot(spot, cw):
             dist_cw = cw - spot
             if dist_cw < -5.0:  # Spot closed above Call Wall
                 if cw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=cw):
@@ -151,7 +171,7 @@ class WallGexShiftDetector(BaseDetector):
                         )
 
         # Put Wall Test / Break
-        if _wall_near_spot(spot, pw):
+        if not pre_open and _wall_near_spot(spot, pw):
             dist_pw = spot - pw
             if dist_pw < -5.0:  # Spot closed below Put Wall
                 if pw not in self._broken_walls and not self.is_cooling_down(pit_view.as_of, level=pw):

@@ -8,6 +8,14 @@ from typing import Any
 from commentary.config_loader import get_detector_config
 from commentary.detectors.base import BaseDetector
 from commentary.models import Event, PointInTimeView, StoryState
+from commentary.session_bars import bar_start_ist, futures_basis_price, as_ist
+
+_OPEN_MIN = 9 * 60 + 15  # 09:15 IST cash open
+
+
+def _minute_of_day(value: datetime) -> int:
+    local = as_ist(value)
+    return local.hour * 60 + local.minute
 
 
 class SessionStructureDetector(BaseDetector):
@@ -27,18 +35,31 @@ class SessionStructureDetector(BaseDetector):
 
     def detect(self, pit_view: PointInTimeView, state: StoryState) -> list[Event]:
         events: list[Event] = []
+        # candles_1m is today's session only (engine.session_bars). Breaks and VWAP
+        # crosses compare the futures close with the futures ORB / futures VWAP, so
+        # both sides share one basis. Index spot is not used here.
         candles = pit_view.candles_1m
         spot = pit_view.spot
+        px = futures_basis_price(pit_view)
 
         if not candles:
             return events
 
-        # 1. Establish Opening 15-min Range (ORB)
+        # 1. Establish Opening 15-min Range (ORB) from the 09:15-09:29 futures bars.
+        # The range is final only when the 15th bar has closed, so emission waits for 09:30.
         if not self._orb_established:
-            if len(candles) >= self.orb_window_minutes:
-                first_15 = candles[:self.orb_window_minutes]
-                self._orb_high = max(float(c.get("high", spot)) for c in first_15)
-                self._orb_low = min(float(c.get("low", spot)) for c in first_15)
+            first_15 = candles[:self.orb_window_minutes]
+            first_start = bar_start_ist(first_15[0]) if first_15 else None
+            as_of_min = _minute_of_day(pit_view.as_of)
+            window_closed = (
+                len(first_15) >= self.orb_window_minutes
+                and first_start is not None
+                and _minute_of_day(first_start) == _OPEN_MIN
+                and as_of_min >= _OPEN_MIN + self.orb_window_minutes
+            )
+            if window_closed:
+                self._orb_high = max(float(c.get("high", px)) for c in first_15)
+                self._orb_low = min(float(c.get("low", px)) for c in first_15)
                 self._orb_established = True
                 events.append(
                     Event(
@@ -50,14 +71,16 @@ class SessionStructureDetector(BaseDetector):
                             "orb_low": round(self._orb_low, 1),
                             "orb_range_pts": round(self._orb_high - self._orb_low, 1),
                             "spot": round(spot, 1),
+                            "basis": "FUT",
+                            "window": "09:15-09:29",
                         },
                         magnitude_sigma=0.5,
                     )
                 )
 
-        # 2. Check ORB Breakouts
+        # 2. Check ORB Breakouts (futures close vs futures ORB)
         if self._orb_established and self._orb_high and self._orb_low:
-            if spot > self._orb_high and not self._orb_broken_up:
+            if px > self._orb_high and not self._orb_broken_up:
                 self._orb_broken_up = True
                 events.append(
                     Event(
@@ -67,12 +90,13 @@ class SessionStructureDetector(BaseDetector):
                         facts={
                             "orb_high": round(self._orb_high, 1),
                             "spot": round(spot, 1),
-                            "extension_pts": round(spot - self._orb_high, 1),
+                            "futures_close": round(px, 1),
+                            "extension_pts": round(px - self._orb_high, 1),
                         },
                         magnitude_sigma=0.75,
                     )
                 )
-            elif spot < self._orb_low and not self._orb_broken_down:
+            elif px < self._orb_low and not self._orb_broken_down:
                 self._orb_broken_down = True
                 events.append(
                     Event(
@@ -82,7 +106,8 @@ class SessionStructureDetector(BaseDetector):
                         facts={
                             "orb_low": round(self._orb_low, 1),
                             "spot": round(spot, 1),
-                            "extension_pts": round(self._orb_low - spot, 1),
+                            "futures_close": round(px, 1),
+                            "extension_pts": round(self._orb_low - px, 1),
                         },
                         magnitude_sigma=0.75,
                     )
@@ -91,7 +116,7 @@ class SessionStructureDetector(BaseDetector):
         # 3. Check Session VWAP Crosses if VWAP is in candles/facts
         session_vwap = pit_view.extra_facts.get("session_vwap")
         if session_vwap and session_vwap > 0:
-            curr_side = 1 if spot >= session_vwap else -1
+            curr_side = 1 if px >= session_vwap else -1
             if self._prev_vwap_side is not None and curr_side != self._prev_vwap_side:
                 if not self.is_cooling_down(pit_view.as_of, level=session_vwap):
                     self.mark_fired(pit_view.as_of, level=session_vwap)
@@ -103,7 +128,9 @@ class SessionStructureDetector(BaseDetector):
                             type=cross_type,
                             facts={
                                 "spot": round(spot, 1),
+                                "futures_close": round(px, 1),
                                 "vwap": round(session_vwap, 1),
+                                "basis": "FUT",
                                 "cross_direction": "ABOVE" if curr_side > 0 else "BELOW",
                             },
                             magnitude_sigma=0.65,
