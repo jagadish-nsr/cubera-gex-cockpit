@@ -323,7 +323,7 @@ def _grade_confidence(
     if fresh:
         bits += 1
         floor = int((sig or {}).get("_score_floor") or SIGNAL_MIN_SCORE)
-        reasons.append(f"Fresh orderflow print ≥{floor}: {_signal_label(sig)}.")
+        reasons.append(f"Tape signal {_signal_label(sig)} is fresh (score floor {floor}).")
     else:
         floor = CHASE_TAPE_MIN_SCORE if chase_side_for_zone(zone) else SIGNAL_MIN_SCORE
         reasons.append(f"No fresh orderflow print ≥{floor}.")

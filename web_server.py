@@ -3695,6 +3695,40 @@ def _wall_chase_commentary_fingerprint(row: dict) -> str:
     ])
 
 
+def _cut_sentences(text: object, limit: int = 280) -> str:
+    """Whole sentences up to `limit` characters. Never stops mid-word."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    head = flat[:limit]
+    stop = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+    if stop >= 40:
+        return head[: stop + 1]
+    return head.rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+def _clock_only(stamp: object) -> str:
+    """'2026-11-25 10:40:44 IST' -> '10:40:44'. Leaves other shapes unchanged."""
+    parts = str(stamp or "").split()
+    for part in parts:
+        if part.count(":") == 2:
+            return part
+    return str(stamp or "")
+
+
+def _distinct_chase_events(headlines: object) -> list[str]:
+    """Event headlines with exact repeats removed (same wall, same text, printed twice)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in headlines or []:
+        text = " ".join(str(item or "").split())
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
 def _log_wall_chase_to_commentary(row: dict) -> dict | None:
     """Publish a rich wall-chase watch into that index's Session Commentary (rising edge)."""
     sym = str(row.get("symbol") or "").upper()
@@ -3716,35 +3750,22 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
     stretch = row.get("stretch") or {}
     now_ist = _get_ist_now()
     side = str(row.get("side") or "")
-    n_ev = int(row.get("n_events") or 0)
     stance = str(row.get("stance") or "WATCH")
-    badge = str(row.get("badge") or f"🏃 WALL CHASE ×{n_ev}")
-    headline = f"🏃 WALL CHASE ×{n_ev} · {stance} · {sym}"
+    badge = str(row.get("badge") or "")
+    # Distinct walls, not repeated prints of one strike (25-Nov: "x2" was one 84,000 break twice).
+    walls_moved = _distinct_chase_events(stretch.get("event_headlines") or [])
+    n_raw = int(row.get("n_events") or 0)
+    headline = f"🏃 WALL CHASE · {stance} · {sym}"
 
-    stretch_line = (
-        f"Stretch (map ladder, not a forecast): first wall {_fmt_lvl(stretch.get('first_wall'))} → "
-        f"last {_fmt_lvl(stretch.get('last_wall'))} "
-        f"(span {stretch.get('wall_span_pts', 0)} pts). "
-        f"Run from first wall {stretch.get('run_pts', 0)} pts; "
-        f"through current wall {stretch.get('through_pts', 0)} pts. "
-        f"Next map strike {_fmt_lvl(stretch.get('next_map_strike'))} "
-        f"({stretch.get('stretch_to_next_pts', 0)} pts from spot). "
-        f"Potential stretch if one more step migrates: "
-        f"{stretch.get('potential_stretch_pts', 0)} pts "
-        f"(run so far + {stretch.get('strike_step', 0):.0f} strike step)."
-    )
     map_line = (
         f"Map: spot {_fmt_lvl(row.get('spot'))}; call wall {_fmt_lvl(row.get('call_wall'))}; "
-        f"put wall {_fmt_lvl(row.get('put_wall'))}; magnet {_fmt_lvl(row.get('magnet'))}; "
-        f"flip {_fmt_lvl(row.get('flip'))}; zone {row.get('zone') or '—'}."
+        f"put wall {_fmt_lvl(row.get('put_wall'))}; zone {row.get('zone') or '—'}."
     )
     tape_line = (
-        f"Tape: {row.get('signal_type') or '—'} "
+        f"Tape: {row.get('signal_type') or 'none'} "
         f"score {int(row.get('signal_score') or 0)}; "
         f"confidence {row.get('confidence') or '—'}."
     )
-    events = stretch.get("event_headlines") or []
-    events_line = "Events: " + (" · ".join(events) if events else f"{side} ×{n_ev} in chase window")
     note = str(stretch.get("note") or (
         "Walls are OI/gamma concentration under short_call_short_put. "
         "NSE hedging unmeasured; OI lags. Human confirms. No auto-execution."
@@ -3783,7 +3804,7 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             source="WALL_CHASE",
             map_side=map_side or None,
             extra_facts={
-                "n_events": n_ev,
+                "n_events": len(walls_moved),
                 "signal_type": str(row.get("signal_type") or ""),
                 "signal_score": int(row.get("signal_score") or 0),
                 "badge": badge,
@@ -3799,25 +3820,24 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
     except Exception as exc:
         log.debug("watch episode open %s: %s", sym, exc)
 
-    triggered_line = (
-        f"Triggered at: {episode.triggered_at if episode else _fmt_ist_clock(now_ist)}. "
-        f"Invalidation (kill): {_fmt_lvl(episode.kill_level) if episode else '—'} "
-        f"· Target: {_fmt_lvl(episode.target_level) if episode else '—'}."
-    )
+    # One kill and one target: the ledger values the episode is scored on.
+    kill_txt = _fmt_lvl(episode.kill_level) if episode else _fmt_lvl(0)
+    target_txt = _fmt_lvl(episode.target_level) if episode else _fmt_lvl(stretch.get("next_map_strike"))
+    triggered_at = _clock_only(episode.triggered_at) if episode else _fmt_ist_clock(now_ist)
     full_body = "\n\n".join(
         part for part in (
-            f"Outcome: {row.get('outcome') or stance}",
-            f"Drivers: {row.get('drivers') or ''}".rstrip(),
-            f"Risk: {row.get('risk') or ''}".rstrip(),
-            map_line,
+            f"Triggered at {triggered_at} IST at spot {_fmt_lvl(row.get('spot'))}. "
+            f"Kill {kill_txt} (ledger). Target {target_txt}.",
+            (
+                "Walls moved (distinct): " + " · ".join(walls_moved)
+                if walls_moved else f"Wall chase: {side or 'map'} prints in the window."
+            ),
             tape_line,
-            events_line,
-            stretch_line,
-            triggered_line,
-            f"Trigger: {row.get('trigger') or '—'}",
-            f"Kill: {row.get('kill') or '—'}",
+            f"Trigger: {row.get('trigger')}" if row.get("trigger") else "",
+            f"Drivers: {_cut_sentences(row.get('drivers'), 280)}" if row.get("drivers") else "",
+            map_line,
             note,
-        ) if part and not part.endswith(": ")
+        ) if part
     )
 
     entry_id = f"wallchase-{sym.lower()}-{int(now_ist.timestamp())}"
@@ -3836,7 +3856,9 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             "confidence": str(row.get("confidence") or ""),
             "zone": str(row.get("zone") or ""),
             "side": side,
-            "n_events": n_ev,
+            "n_events": len(walls_moved),
+            "n_events_raw": n_raw,
+            "walls_moved": walls_moved,
             "signal_type": str(row.get("signal_type") or ""),
             "signal_score": int(row.get("signal_score") or 0),
             "spot": row.get("spot"),
@@ -3989,7 +4011,7 @@ def _wall_chase_watch_sync(sym: str, idx: Any, dash: DashboardData, empty: dict)
             "badge": str(alert.get("badge") or ""),
             "scenario": str(alert.get("scenario") or ""),
             "outcome": str(alert.get("outcome") or ""),
-            "drivers": str(alert.get("drivers") or "")[:400],
+            "drivers": str(alert.get("drivers") or ""),
             "risk": str(alert.get("risk") or ""),
             "trigger": str(alert.get("trigger") or ""),
             "kill": str(alert.get("kill") or ""),
@@ -8458,19 +8480,33 @@ async def log_market_alert(payload: dict = Body(...)):
             log.debug("alert-tape watch episode: %s", exc)
 
     entry_id = f"alert-{sym.lower()}-{int(now_ist.timestamp())}"
-    triggered_bit = (
-        f"Triggered at: {episode.triggered_at}. "
-        f"Invalidation {_fmt_lvl(episode.kill_level)} · Target {_fmt_lvl(episode.target_level)}."
-        if episode else f"Triggered at: {_fmt_ist_clock(now_ist)}."
-    )
-    full_body = "\n\n".join(
-        part for part in (
+    trigger_txt = str(payload.get("trigger") or "").strip()
+    # One kill per card: when a watch episode is open, the ledger kill is the only kill printed.
+    # The Risk line repeats trigger and kill, so it is shown only when no episode carries them.
+    if episode:
+        body_parts = (
             f"Outcome: {outcome}" if outcome else "",
-            f"Drivers: {drivers}" if drivers else "",
+            (
+                f"Triggered at {_clock_only(episode.triggered_at)} IST. "
+                + (f"Trigger: {trigger_txt}. " if trigger_txt else "")
+                + f"Kill {_fmt_lvl(episode.kill_level)} (ledger). Target {_fmt_lvl(episode.target_level)}."
+            ),
+            f"Drivers: {_cut_sentences(drivers, 280)}" if drivers else "",
+        )
+    else:
+        body_parts = (
+            f"Outcome: {outcome}" if outcome else "",
+            f"Drivers: {_cut_sentences(drivers, 280)}" if drivers else "",
             f"Risk: {risk}" if risk else "",
-            triggered_bit if stance in ("CALL WATCH", "PUT WATCH") else "",
-        ) if part
-    )
+        )
+    full_body = "\n\n".join(part for part in body_parts if part)
+
+    # A tape-owned card (TAPE_*) is about the tape print. The wall-chase chip describes the
+    # wall state, so it stays off that card (the wall-chase card itself is unchanged).
+    shown_badge = str(badge)
+    if str(scenario or "").upper().startswith("TAPE_") and "WALL CHASE" in shown_badge.upper():
+        kept = [p for p in shown_badge.split(" · ") if "WALL CHASE" not in p.upper()]
+        shown_badge = " · ".join(kept) if kept else shown_badge
 
     tags = ["MARKET_STATE_ALERT", scenario]
     if episode:
@@ -8480,12 +8516,12 @@ async def log_market_alert(payload: dict = Body(...)):
         ts=now_ist,
         phase="MARKET_ALERT",
         event_ids=[f"evt-{int(now_ist.timestamp())}"],
-        headline=str(badge),
+        headline=shown_badge,
         body=full_body,
         tags=tags,
         facts={
             "scenario": scenario,
-            "badge": badge,
+            "badge": shown_badge,
             "ttl_minutes": 30,
             "diagnostics": drivers,
             "triggered_at": episode.triggered_at if episode else _fmt_ist_clock(now_ist),

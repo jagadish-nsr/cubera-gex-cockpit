@@ -32,7 +32,8 @@ The day was a **trend-up with two-way chop** on Nifty and Bank Nifty, and a
 10:45–11:32 and at 12:59. Nifty and Bank Nifty stayed POSITIVE all day.
 
 **Verdict in one line.** Plumbing is much better than 23-Nov (chain publishes
-all day, readiness journal present, commentary flowing, Sensex recorded, GO
+all day, readiness journal present, commentary flowing (but 43 of 125 cards
+are wrong, see the commentary audit), Sensex recorded, GO
 closes at session end, side≠stance fix verified live). The live data is still
 **degraded for much of the session** and the CALL/PUT chase alerts are
 **noisy with poor hit rate**. The chase problems are in the design of the
@@ -175,9 +176,14 @@ leaves outcomes unresolved.
 | Phases | pre_open, opening_15m, morning, midday, afternoon, closing_30m, MARKET_ALERT |
 | Cards with a WALL CHASE chip | **12** cards for **5** WALL_CHASE episodes |
 
-The cards are readable, and the 09:15 gap-up/opening range/wall migration
-lines match the timeseries. The MARKET_ALERT stream is the noisy part (see
-next section).
+The cards are readable, but this earlier reading was wrong. A line-by-line
+audit of all 125 cards (`docs/session-commentary-audit-2026-11-25.md`) finds
+**36 OK · 46 CHECK · 43 WRONG**. The 09:15 opening range is prior-session data:
+the Sensex "135.3 pts" range is the 20-Nov 14:38–14:52 high-low, not today's
+09:15–09:29 range (futures: 547 pts). The Sensex gap is +1,372 but the 09:15
+cash print gives +1,308. The NIFTY gap was published at 11:43. VWAP stretch
+compares index spot with futures VWAP (6 sign flips). The MARKET_ALERT stream
+is also noisy (see next section).
 
 ---
 
@@ -252,7 +258,8 @@ resolve spot. Ballpark only, from n = 13.
 
 4. **No cooldown after a kill (re-arm within the minute).** The 09:54 PUT
    was killed at 10:19:00. A new PUT (ALERT_TAPE) armed at 10:19:02 and
-   was killed in 36 seconds. Another armed at 10:21:21, 1.7 min later.
+   was killed in 38 seconds (ledger 10:19:02 to 10:19:40). Another armed at
+   10:21:21, 1.7 min later.
 
 5. **Most episodes open inside PINNED.** 10 of 13 episodes were opened with
    zone `PINNED` (spot between walls). The wall-chase rule needs a chase zone
@@ -262,7 +269,11 @@ resolve spot. Ballpark only, from n = 13.
 
 6. **Two invalidation levels on one card.** The 14:01 PUT WATCH says "clear
    ₹83,500" in its trigger text but has kill ₹83,985 (above spot). A reader
-   cannot tell which level invalidates the idea.
+   cannot tell which level invalidates the idea. The problem is wider than
+   that: on **5 of 8 ALERT_TAPE episodes and 1 WALL_CHASE episode** the kill printed on the card differs
+   from the ledger `kill_level` the episode is scored on (for example the 12:21
+   card prints ₹84,436, the ledger holds 84,276.1). Outcomes are therefore not
+   measured against the level the reader was shown.
 
 7. **Duplicate cards.** Each WALL_CHASE episode produces a primary card and one
    or two follow-up "WALL CHASE ×2 · 📡 SIGNAL" cards with the same stance
@@ -312,7 +323,7 @@ zone gate on tape alerts.
 | Order flow / tape | **Weak** | Tape dark 14:51 → 15:30. Sensex bull CVD 0 of 9 |
 | GO desk | **Good** | +₹24.9k, 8 of 10 wins, SESSION_END fix verified. Biggest loser held to close |
 | Recommendations | **Weak** | 61 ACTIVE from today, 752 stale ACTIVE, no EOD expiry |
-| Commentary | **Good** | 125 entries, 23-Nov had 2. No LLM narratives. Duplicate cards |
+| Commentary | **Poor** | 125 entries, 43 WRONG, 46 CHECK. ORB from prior-session bars, VWAP stretch on mixed basis, stale pre-open breaks, broken migration chains. No LLM narratives. Audit: `docs/session-commentary-audit-2026-11-25.md` |
 | Blast (Nifty) | **N/A** | Not an expiry day |
 | Target engine | **Unknown** | 0 persisted runs; on-demand only |
 | CALL/PUT chase | **Poor** | 2 of 13 hits. Side fix verified, design issues dominate |
@@ -358,6 +369,35 @@ zone gate on tape alerts.
 14. **Recs end-of-day expiry.** Expire ACTIVE recs at `SESSION_END` as GO does,
     and clear the 752 stale rows.
 15. **Heartbeat write failure** at 19:04. Find the traceback.
+
+**Commentary (from the 25-Nov card audit)**
+
+Status (dev tree, uncommitted, prod tree not deployed):
+- Items 19–25 are fixed in code. Tests: `tests/test_commentary_25nov_fixes.py` (18 pass).
+- The 43 WRONG stored cards are rewritten in `commentary.db`. The originals are in the
+  `commentary_corrections` table, and a backup is at
+  `data/journal/commentary.db.before-25nov-correction.bak`.
+- Not changed: the 46 CHECK cards, `commentary_bites`, and session recaps. Nine stored
+  alert cards still print the printed kill on their Risk line, and the ledger may differ.
+- Verified by replay: Sensex ORB 547.4, NIFTY ORB 122.2, gap +1,308.2 at 09:16:20.
+
+19. **Opening range from today's bars.** `sentinel_bars` is queried with no
+    session bound. At 09:15 the "first 15 bars" of its 60-bar window were
+    20-Nov 14:38–14:52. Bound the query to today's 09:15 bars and emit the
+    range at 09:30, not 09:15.
+20. **One basis for VWAP stretch.** Index spot is compared with futures VWAP
+    (19 WRONG cards, 6 sign flips). Use the same series for both.
+21. **Gap from the 09:15 cash print.** Stop treating the first spot seen at
+    09:15–09:20 as the open. Do not publish a gap after the open as a new event.
+22. **No pre-open breaks from carried-over spot.** The 09:14:50 NIFTY put-wall
+    break used the prior close as spot.
+23. **Printed kill equals ledger kill.** Six cards print a kill that differs
+    from `kill_level` in the ledger.
+24. **Wall-chase card: one line.** Dedupe repeated prints of one wall, cap
+    Drivers by sentence rather than at 400 characters, do not repeat
+    trigger/kill, drop the stretch ladder, and link the resolution card.
+25. **Wall-migration chains must link.** Four cards start where the previous
+    card did not end. Three migrations flip back at the next sample.
 
 **Low (ops hygiene)**
 

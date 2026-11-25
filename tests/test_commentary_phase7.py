@@ -65,7 +65,10 @@ def test_demotion_policy_triggers():
     assert "Automatic demotion" in reason
 
 
-def test_replay_harness_execution():
+def test_replay_harness_execution(monkeypatch):
+    import commentary.detectors.gap as gap_mod
+
+    monkeypatch.setattr(gap_mod, "_journal_cash_open", lambda symbol, day: 24650.0)
     ist = dt.timezone(dt.timedelta(hours=5, minutes=30))
     t0 = dt.datetime(2026, 10, 13, 9, 15, tzinfo=ist)
     snapshots = [

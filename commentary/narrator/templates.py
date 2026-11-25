@@ -6,6 +6,14 @@ from typing import Any
 from commentary.models import Event, SuggestionBite
 
 
+
+def _late_note(facts: dict[str, Any]) -> str:
+    """Say so when a gap card is published after the 09:30 on-time window."""
+    if facts.get("late_publish"):
+        at = facts.get("published_at") or "later"
+        return f" Published late at {at}; the open itself is the 09:15 print."
+    return ""
+
 def _book_words(regime: str) -> str:
     text = str(regime or "").upper()
     if "CALL" in text or "POSITIVE" in text:
@@ -32,8 +40,9 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         sym = f.get("symbol") or "Nifty"
         headline = f"Gap-Up Open: +{gap_pts:,.1f} pts (+{gap_pct:.2f}%)"
         body = (
-            f"{sym} opened higher at ₹{open_p:,.1f}, up {gap_pts:+.1f} pts ({gap_pct:+.2f}%) "
+            f"{sym} opened higher at the 09:15 cash print ₹{open_p:,.1f}, up {gap_pts:+.1f} pts ({gap_pct:+.2f}%) "
             f"versus prior close. Current spot is testing towards the ₹{cw:,.0f} Call Wall."
+            + _late_note(f)
         )
 
     elif evt_type == "GAP_DOWN":
@@ -44,8 +53,9 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         sym = f.get("symbol") or "Nifty"
         headline = f"Gap-Down Open: {gap_pts:,.1f} pts ({gap_pct:.2f}%)"
         body = (
-            f"{sym} opened lower at ₹{open_p:,.1f}, down {gap_pts:,.1f} pts ({gap_pct:.2f}%) "
+            f"{sym} opened lower at the 09:15 cash print ₹{open_p:,.1f}, down {gap_pts:,.1f} pts ({gap_pct:.2f}%) "
             f"versus prior close. Downside pressure tests towards the ₹{pw:,.0f} Put Wall."
+            + _late_note(f)
         )
 
     elif evt_type == "GAP_FILLED":
@@ -97,29 +107,35 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         l = f.get("orb_low", 0.0)
         rng = f.get("orb_range_pts", 0.0)
         headline = f"Opening 15m Range Set: {rng:,.1f} pts"
-        body = f"The initial 15-minute range is established between ₹{l:,.1f} and ₹{h:,.1f} ({rng:.1f} pts range)."
+        basis = "futures" if f.get("basis") == "FUT" else "spot"
+        window = f.get("window", "09:15-09:29")
+        body = (
+            f"The opening 15-minute range ({window}, {basis} basis) is ₹{l:,.1f} to ₹{h:,.1f} "
+            f"({rng:.1f} pts)."
+        )
 
     elif evt_type == "ORB_BREAK_UP":
         h = f.get("orb_high", 0.0)
-        spot = f.get("spot", 0.0)
+        spot = f.get("futures_close", f.get("spot", 0.0))
         ext = f.get("extension_pts", 0.0)
         headline = f"Opening Range Breakout (Upside): +{ext:.1f} pts"
-        body = f"Spot ₹{spot:,.1f} pushed above the opening range high of ₹{h:,.1f} by {ext:.1f} pts."
+        body = f"Futures ₹{spot:,.1f} pushed above the opening range high of ₹{h:,.1f} by {ext:.1f} pts."
 
     elif evt_type == "ORB_BREAK_DOWN":
         l = f.get("orb_low", 0.0)
-        spot = f.get("spot", 0.0)
+        spot = f.get("futures_close", f.get("spot", 0.0))
         ext = f.get("extension_pts", 0.0)
         headline = f"Opening Range Breakdown: -{ext:.1f} pts"
-        body = f"Spot ₹{spot:,.1f} broke below the opening range low of ₹{l:,.1f} by {ext:.1f} pts."
+        body = f"Futures ₹{spot:,.1f} broke below the opening range low of ₹{l:,.1f} by {ext:.1f} pts."
 
     elif evt_type in ("VWAP_RECLAIM", "VWAP_LOSS"):
         direction = f.get("cross_direction", "")
         vwap = f.get("vwap", 0.0)
         spot = f.get("spot", 0.0)
         action = "reclaimed" if evt_type == "VWAP_RECLAIM" else "lost"
+        px = f.get("futures_close", spot)
         headline = f"Session VWAP {action.title()} at ₹{vwap:,.1f}"
-        body = f"Spot ₹{spot:,.1f} {action} Session VWAP (₹{vwap:,.1f}), trading {direction.lower()} intraday volume average."
+        body = f"Futures ₹{px:,.1f} {action} Session VWAP (₹{vwap:,.1f}, futures), trading {direction.lower()} intraday volume average."
 
     elif evt_type == "IMPULSIVE_MOVE":
         direction = f.get("direction", "")
@@ -233,7 +249,7 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         delta_pcr = f.get("delta_pcr", 0.0)
         spot = f.get("spot", 0.0)
         if direction == "BULLISH":
-            headline = f"PCR Surge: {old_pcr:.2f} → {new_pcr:.2f} (+{delta_pcr:+.2f})"
+            headline = f"PCR Surge: {old_pcr:.2f} → {new_pcr:.2f} ({delta_pcr:+.2f})"
             body = f"Put-call ratio expanded to {new_pcr:.2f}. More put open interest relative to calls at spot ₹{spot:,.1f}. That is not a floor."
         elif direction == "BEARISH":
             headline = f"PCR Contraction: {old_pcr:.2f} → {new_pcr:.2f} ({delta_pcr:+.2f})"
@@ -247,16 +263,21 @@ def render_event_template(event: Event, context: dict[str, Any] | None = None) -
         vwap = f.get("vwap", 0.0)
         spot = f.get("spot", 0.0)
         side = f.get("side", "SUPPORT")
+        px = f.get("futures_close", spot)
         headline = f"Session VWAP Held as {side.title()} at ₹{vwap:,.1f}"
-        body = f"Spot ₹{spot:,.1f} tested Session VWAP (₹{vwap:,.1f}) and successfully held, confirming intraday buyer defense."
+        body = f"Futures ₹{px:,.1f} tested Session VWAP (₹{vwap:,.1f}, futures) and held within 12 pts."
 
     elif evt_type == "VWAP_BAND_EXTENSION":
         direction = f.get("direction", "OVERBOUGHT")
         ext = f.get("extension_pts", 0.0)
         vwap = f.get("vwap", 0.0)
         spot = f.get("spot", 0.0)
+        px = f.get("futures_close", spot)
         headline = f"VWAP Stretch: {direction.title()} ({ext:+.1f} pts)"
-        body = f"Spot ₹{spot:,.1f} is stretched {ext:+.1f} pts away from Session VWAP (₹{vwap:,.1f}), entering {direction.lower()} mean-reversion territory."
+        body = (
+            f"Futures ₹{px:,.1f} is {ext:+.1f} pts from futures Session VWAP (₹{vwap:,.1f}). "
+            f"Same basis on both sides, so the sign is real. Reversion is a measure, not a call."
+        )
 
     elif evt_type == "SECTOR_LEADERSHIP":
         leader = f.get("leader", "")

@@ -15,10 +15,8 @@ from commentary.models import Event, PointInTimeView, StoryState
 # inside this band; the 15% circuit check below is the hard backstop.
 _MAX_PRIOR_VS_SPOT = 0.06
 
-# The cash open is the 09:15 print. After 09:20 the live spot has left the
-# open, and a futures candle in that window is the basis, not the gap.
-_OPEN_START_MIN = 9 * 60 + 15
-_OPEN_END_MIN = 9 * 60 + 20
+# A gap published after this minute is labelled late. It is still the 09:15 print.
+_ON_TIME_UNTIL_MIN = 9 * 60 + 30
 _JOURNAL = Path(__file__).resolve().parents[2] / "data" / "journal" / "timeseries"
 
 
@@ -78,10 +76,12 @@ class OpeningGapDetector(BaseDetector):
         self._initial_gap_fired = True
 
     def _cash_open(self, pit_view: PointInTimeView) -> float | None:
-        """Cash open. A futures candle is the basis, not this print."""
-        minute = _clock_minute(pit_view.as_of)
-        if _OPEN_START_MIN <= minute <= _OPEN_END_MIN:
-            return float(pit_view.spot)
+        """Cash open: the 09:15 print from the journal, or None until it exists.
+
+        The live spot seen at the first poll (09:15:20) is not the open. On 25-Nov the
+        Sensex card used 83,808 while the 09:15 print was 83,744 (gap +1,372 vs +1,308).
+        A futures candle is the basis, not this print either.
+        """
         if self._journal_open is None:
             found = _journal_cash_open(pit_view.symbol, pit_view.as_of.date().isoformat())
             if found > 0:
@@ -129,6 +129,7 @@ class OpeningGapDetector(BaseDetector):
                 self.mark_fired(pit_view.as_of, level=open_p)
 
                 evt_type = "GAP_UP" if gap_pts > 0 else "GAP_DOWN"
+                published_min = _clock_minute(pit_view.as_of)
                 nearest_wall = pit_view.call_wall if gap_pts > 0 else pit_view.put_wall
                 dist_wall = abs(open_p - nearest_wall)
 
@@ -143,6 +144,9 @@ class OpeningGapDetector(BaseDetector):
                     "dist_to_wall": round(dist_wall, 1),
                     "call_wall": round(pit_view.call_wall, 1),
                     "put_wall": round(pit_view.put_wall, 1),
+                    "open_source": "cash_print_0915_journal",
+                    "late_publish": published_min > _ON_TIME_UNTIL_MIN,
+                    "published_at": pit_view.as_of.strftime("%H:%M:%S"),
                 }
 
                 events.append(

@@ -28,6 +28,7 @@ from commentary.detectors.vwap_dynamics import VwapDynamicsDetector
 from commentary.detectors.sector_breadth import SectorBreadthDetector
 from commentary.detectors.straddle_decay import StraddleDecayDetector
 from commentary.scoring import SignificanceScorer
+from commentary.session_bars import session_bars, session_open_iso
 from commentary.story_state import StoryStateManager
 from commentary.narrator.client import NarratorClient
 from commentary.bites.engine import BiteEngine
@@ -170,7 +171,9 @@ class SessionCommentaryEngine:
         except Exception:
             pass
 
-        # Fetch 1-minute candles from sentinel.db if not explicitly provided
+        # Fetch today's session 1m candles from sentinel.db if not explicitly provided.
+        # Bounded by 09:15 IST of today, not "the last 60 bars": a restart at 11:00
+        # must still see the 09:15-09:29 opening range.
         if not candles_1m:
             try:
                 import sqlite3
@@ -180,18 +183,22 @@ class SessionCommentaryEngine:
                 inst_id = f"{symbol.upper()}-FUT"
                 cur.execute(
                     "SELECT start_ts, open, high, low, close, volume_units, vwap FROM sentinel_bars "
-                    "WHERE instrument_id=? AND timeframe='1m' AND start_ts <= ? ORDER BY start_ts DESC LIMIT 60",
-                    (inst_id, now_ist.isoformat()),
+                    "WHERE instrument_id=? AND timeframe='1m' AND start_ts >= ? AND start_ts <= ? "
+                    "ORDER BY start_ts ASC",
+                    (inst_id, session_open_iso(now_ist), now_ist.isoformat()),
                 )
                 rows = cur.fetchall()
                 con.close()
                 if rows:
                     candles_1m = [
                         {"start_ts": r[0], "open": float(r[1]), "high": float(r[2]), "low": float(r[3]), "close": float(r[4]), "volume": float(r[5]), "vwap": float(r[6])}
-                        for r in reversed(rows)
+                        for r in rows
                     ]
             except Exception as e:
                 logger.debug("Could not fetch sentinel bars: %s", e)
+
+        # Only today's session bars reach the detectors. Prior-session bars are not data for today.
+        candles_1m = session_bars(candles_1m, now_ist)
 
         # Build extra facts for level-down detectors
         extra_facts: dict[str, Any] = {}
@@ -436,7 +443,7 @@ class SessionCommentaryEngine:
             except Exception:
                 continue
 
-            cur_bars = [b for b in all_bars if b["start_ts"] <= as_of_dt.isoformat()]
+            cur_bars = session_bars(all_bars, as_of_dt)
             cur_sigs = [
                 {"signal_type": r[1], "category": r[2], "bias": r[3], "score": r[4], "insight_text": r[5]}
                 for r in sig_rows if r[0] <= as_of_dt.isoformat()
@@ -445,13 +452,11 @@ class SessionCommentaryEngine:
             spot = float(row["spot"])
 
             if cur_bars:
-                fut_close = cur_bars[-1]["close"]
-                fut_vwap = cur_bars[-1]["vwap"]
-                # Translate futures VWAP to spot space using contemporaneous basis
-                basis = fut_close - spot
-                vwap_val = round(fut_vwap - basis, 1)
+                # Futures VWAP, the same series as the live path. Detectors compare it
+                # with the futures close (session_bars.futures_basis_price), not with spot.
+                vwap_val = round(float(cur_bars[-1]["vwap"]), 1)
             else:
-                vwap_val = spot
+                vwap_val = 0.0  # no session bars yet: no VWAP, detectors stay silent
 
             pcr_val = float(row.get("pcr_oi", 1.0) or 1.0)
 
