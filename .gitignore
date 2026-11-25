@@ -51,3 +51,10 @@ data/sentinel.db*
 *.log
 bin/
 
+data/journal/span/
+data/journal/gamma_blast_oi_tape/
+data/journal/gamma_blast_score/
+data/journal/preopen_tape/
+data/journal/watch_episodes/
+data/journal/pre_open_digest_*.json
+data/journal/ingest.heartbeat

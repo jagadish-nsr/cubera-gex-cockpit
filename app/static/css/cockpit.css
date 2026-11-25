@@ -1408,6 +1408,28 @@ body {
   margin-left: 6px;
 }
 
+.liquidation-map-card .liquidation-canvas-wrap {
+  width: 100%;
+  height: 168px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.liquidation-map-card canvas {
+  width: 100%;
+  height: 168px;
+  display: block;
+}
+.liquidation-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  color: var(--ink-mute);
+}
+
 /* Structural map — compact focus list (Cockpit · between chart and ladder) */
 .structural-map-card {
   border-color: color-mix(in srgb, var(--spark) 28%, var(--line));

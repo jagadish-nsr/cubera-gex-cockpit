@@ -10,6 +10,8 @@ from analytics.watch_episode import (
     derive_watch_levels,
     evaluate_watch_episode,
     open_watch_episode,
+    resolve_episode_side,
+    side_from_stance,
     _journal_path,
 )
 
@@ -90,4 +92,51 @@ def test_reuse_active_same_side_within_15m(tmp_path, monkeypatch):
         now_ist=now + timedelta(minutes=5), kill_text="Kill ₹25,500",
         stretch={"next_map_strike": 25650},
     )
+    assert a is not None and b is not None
     assert a.episode_id == b.episode_id
+
+
+def test_side_follows_stance_not_map_side(tmp_path, monkeypatch):
+    """23-Nov: CALL map migrations + PUT WATCH must not open CALL geometry."""
+    monkeypatch.setattr("analytics.watch_episode._journal_path", lambda: tmp_path)
+    assert side_from_stance("PUT WATCH") == "PUT"
+    assert resolve_episode_side(stance="PUT WATCH", map_side="CALL") is None
+    assert resolve_episode_side(stance="PUT WATCH", side="CALL") == "PUT"
+    assert resolve_episode_side(stance="PUT WATCH", map_side="PUT") == "PUT"
+
+    now = datetime(2026, 11, 23, 15, 20, tzinfo=IST)
+    skipped = open_watch_episode(
+        symbol="NIFTY",
+        side="CALL",
+        stance="PUT WATCH",
+        spot=25366,
+        now_ist=now,
+        map_side="CALL",
+        kill_text="Price gets back through ₹25,415",
+        trigger_text="Hold the bearish tape idea; clear ₹25,350 if walls are split.",
+        put_wall=25350,
+        call_wall=25400,
+        stretch={"next_map_strike": 25550, "last_wall": 25400},
+    )
+    assert skipped is None
+
+    ep = open_watch_episode(
+        symbol="NIFTY",
+        side="CALL",  # stale arg — stance wins
+        stance="PUT WATCH",
+        spot=25366,
+        now_ist=now,
+        map_side="PUT",
+        kill_text="Price gets back through ₹25,415",
+        trigger_text="Hold below ₹25,350 with tape agreement.",
+        put_wall=25350,
+        call_wall=25400,
+        stretch={"next_map_strike": 25300, "last_wall": 25350},
+        strike_step=50,
+    )
+    assert ep is not None
+    assert ep.side == "PUT"
+    assert ep.stance == "PUT WATCH"
+    assert ep.facts.get("map_side") == "PUT"
+    # PUT geometry: target at or below spot
+    assert ep.target_level <= ep.spot

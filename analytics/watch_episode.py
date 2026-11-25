@@ -34,6 +34,40 @@ def _f(val: Any, default: float = 0.0) -> float:
         return default
 
 
+def side_from_stance(stance: str | None) -> str:
+    """CALL / PUT from a WATCH stance; empty when STAY OUT or unknown."""
+    s = str(stance or "").upper()
+    if "CALL" in s and "WATCH" in s:
+        return "CALL"
+    if "PUT" in s and "WATCH" in s:
+        return "PUT"
+    return ""
+
+
+def resolve_episode_side(
+    *,
+    stance: str | None,
+    side: str | None = None,
+    map_side: str | None = None,
+) -> str | None:
+    """Episode geometry side must match the WATCH stance.
+
+    Returns CALL/PUT, or None when the caller should skip opening (map-side
+    wall-chase disagrees with tape stance — 23-Nov side≠stance bug).
+    When stance is a WATCH, it wins over a stale ``side`` argument; only
+    ``map_side`` may veto.
+    """
+    stance_side = side_from_stance(stance)
+    map_u = str(map_side or "").upper()
+    if stance_side:
+        if map_u in ("CALL", "PUT") and map_u != stance_side:
+            return None
+        return stance_side
+    # Fall back to explicit side only when stance is not a WATCH.
+    raw = str(side or map_side or "").upper()
+    return raw if raw in ("CALL", "PUT") else None
+
+
 def _parse_rupee_levels(text: str | None) -> list[float]:
     out: list[float] = []
     for m in _INR_RE.finditer(str(text or "")):
@@ -157,15 +191,27 @@ def open_watch_episode(
     zone: str = "",
     source: str = "WALL_CHASE",
     extra_facts: dict | None = None,
-) -> WatchEpisode:
-    """Create + persist an ACTIVE watch episode (caller dedupes rising edge)."""
+    map_side: str | None = None,
+) -> WatchEpisode | None:
+    """Create + persist an ACTIVE watch episode (caller dedupes rising edge).
+
+    Side is taken from the WATCH stance. Kill/target geometry follows that
+    side — never the opposite wall-chase map side. Returns None when map_side
+    (or an explicit side) disagrees with stance.
+    """
     now = now_ist or datetime.now(tz=IST)
     if now.tzinfo is None:
         now = now.replace(tzinfo=IST)
     else:
         now = now.astimezone(IST)
     sym = str(symbol or "NIFTY").upper()
-    side_u = str(side or "").upper()
+    facts = dict(extra_facts or {})
+    map_u = str(map_side if map_side is not None else facts.get("map_side") or "").upper()
+    side_u = resolve_episode_side(stance=stance, side=side, map_side=map_u or None)
+    if not side_u:
+        return None
+    if map_u in ("CALL", "PUT"):
+        facts["map_side"] = map_u
     # Reuse an already-ACTIVE same-side episode inside 15m (tape + wall-chase both fire).
     for prior in list_active_episodes(sym):
         if prior.side == side_u and (now.timestamp() - prior.triggered_ts) < 15 * 60:
@@ -197,7 +243,7 @@ def open_watch_episode(
         zone=str(zone or ""),
         source=str(source or "WALL_CHASE"),
         status="ACTIVE",
-        facts=dict(extra_facts or {}),
+        facts=facts,
     )
     _save_episode(ep)
     return ep

@@ -834,7 +834,24 @@
             </div>
           </div>
 
-          <!-- Structural reaction map: compact focus list · between chart and ladder -->
+            <section class="ladder-card liquidation-map-card" id="liquidation-map-card" aria-label="Margin-stress map">
+              <div class="structural-map-head">
+                <h3>Margin-stress map</h3>
+                <span id="liquidation-flags" class="structural-map-spot-pill">—</span>
+              </div>
+              <p id="liquidation-reading" class="structural-map-summary">Minimum-margin estimate. NSE does not publish who was squared off.</p>
+              <div class="liquidation-canvas-wrap">
+                <canvas id="liquidation-canvas" role="img" aria-label="Futures price versus margin-stress inventory"></canvas>
+              </div>
+              <div class="liquidation-legend">
+                <span>Red bars: long inventory stressed under the minimum margin</span>
+                <span>Green bars: short inventory stressed over the minimum margin</span>
+                <span>Dark marks: OI left while price traded that band</span>
+                <span>Blue line: last futures close</span>
+              </div>
+            </section>
+
+            <!-- Structural reaction map: compact focus list · between chart and ladder -->
           <section class="ladder-card structural-map-card" id="structural-map-card" aria-label="Structural reaction map">
             <div class="structural-map-head">
               <h3>Structural map</h3>

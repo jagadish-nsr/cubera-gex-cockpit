@@ -2529,6 +2529,25 @@ async def get_status(symbol: Optional[str] = None, window: Optional[str] = None)
     }
 
 
+@app.get("/api/liquidation")
+async def get_liquidation_map(symbol: Optional[str] = None):
+    """Margin-stress bins for the latest local futures session. No network."""
+    sym = config.index_key(symbol or _ACTIVE_STATE["symbol"])
+    try:
+        from analytics.liquidation_feed import load_liquidation_map
+        return load_liquidation_map(sym)
+    except Exception as exc:
+        log.warning("liquidation map: %s", exc)
+        return JSONResponse(status_code=500, content={
+            "symbol": sym,
+            "empty": True,
+            "reason": "error",
+            "bins": [],
+            "reading": "Margin-stress map could not be read.",
+            "error": str(exc),
+        })
+
+
 @app.get("/api/premarket/path")
 async def get_premarket_path(symbol: Optional[str] = None, date: Optional[str] = None):
     """Read-only path events + scored efficiency for one index/session."""
@@ -3734,13 +3753,23 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
     from commentary.models import CommentaryEntry
     from commentary.storage.db import save_commentary_entry
 
-    # Explicit watch ledger: triggered_at + kill/target for later resolution
+    # Explicit watch ledger: triggered_at + kill/target for later resolution.
+    # Episode side follows stance (tape WATCH), never the opposite map side.
     episode = None
     try:
-        from analytics.watch_episode import open_watch_episode
+        from analytics.watch_episode import open_watch_episode, side_from_stance
+        stance_side = side_from_stance(stance)
+        map_side = str(side or "").upper()
+        if stance_side and map_side in ("CALL", "PUT") and map_side != stance_side:
+            return {
+                "status": "skipped_side_mismatch",
+                "symbol": sym,
+                "stance": stance,
+                "map_side": map_side,
+            }
         episode = open_watch_episode(
             symbol=sym,
-            side=side or ("CALL" if "CALL" in stance else "PUT"),
+            side=stance_side or map_side or "CALL",
             stance=stance,
             spot=float(row.get("spot") or 0.0),
             now_ist=now_ist,
@@ -3752,6 +3781,7 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
             strike_step=float((stretch or {}).get("strike_step") or 50.0),
             zone=str(row.get("zone") or ""),
             source="WALL_CHASE",
+            map_side=map_side or None,
             extra_facts={
                 "n_events": n_ev,
                 "signal_type": str(row.get("signal_type") or ""),
@@ -3759,6 +3789,13 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
                 "badge": badge,
             },
         )
+        if episode is None:
+            return {
+                "status": "skipped_side_mismatch",
+                "symbol": sym,
+                "stance": stance,
+                "map_side": map_side,
+            }
     except Exception as exc:
         log.debug("watch episode open %s: %s", sym, exc)
 
@@ -3910,8 +3947,16 @@ def _wall_chase_watch_sync(sym: str, idx: Any, dash: DashboardData, empty: dict)
         alert = evaluate_market_alert(payload) or {}
         active = bool(alert.get("wall_chase"))
         stance = str(alert.get("stance") or "STAY OUT")
-        notify = active and stance in ("CALL WATCH", "PUT WATCH")
         side = str(alert.get("wall_chase_side") or "")
+        from analytics.watch_episode import side_from_stance
+        stance_side = side_from_stance(stance)
+        # Notify only when map chase side agrees with WATCH stance (23-Nov bug).
+        notify = (
+            active
+            and stance in ("CALL WATCH", "PUT WATCH")
+            and bool(stance_side)
+            and (not side or side == stance_side)
+        )
         geo = classify_zone(spot, cw, pw, step)
         stretch = compute_chase_stretch(
             side=side,
@@ -3931,6 +3976,8 @@ def _wall_chase_watch_sync(sym: str, idx: Any, dash: DashboardData, empty: dict)
             "active": active,
             "notify": notify,
             "side": side,
+            "episode_side": stance_side,
+            "side_mismatch": bool(side and stance_side and side != stance_side),
             "n_events": int(alert.get("wall_chase_n") or 0),
             "stance": stance,
             "zone": str(alert.get("zone") or geo.get("zone") or ""),
@@ -10380,6 +10427,23 @@ def main():
         os.environ["ENV_MODE"] = "development"
     else:
         os.environ.setdefault("ENV_MODE", "production")
+
+    # 23-Nov split-brain: :8640 was bound from the DEV checkout while cron
+    # wrote into the prod worktree. Refuse unless explicitly overridden.
+    if (
+        args.port == 8640
+        and not args.dev
+        and not args.reload
+        and os.environ.get("COCKPIT_ALLOW_DEV_ON_8640") != "1"
+    ):
+        root = Path(__file__).resolve().parent
+        if root.name != "cubera-gex-cockpit-prod":
+            log.error(
+                "Refusing to bind :8640 from %s — start run_prod.sh from "
+                "cubera-gex-cockpit-prod (or set COCKPIT_ALLOW_DEV_ON_8640=1).",
+                root,
+            )
+            raise SystemExit(2)
 
     log.info(
         "Starting Cubera GEX Cockpit [%s] v%s on http://%s:%d (reload=%s)",

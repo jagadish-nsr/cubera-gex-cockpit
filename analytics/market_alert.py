@@ -560,7 +560,7 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         drivers_full = _say(drivers, reason_bits)
         risk = _risk_line(trigger, kill, watch=watch)
         badge_out = f"{badge} · {confidence}"
-        return _maybe_llm_polish_alert(pack(
+        out = pack(
             scenario=scenario,
             badge=badge_out,
             theme=theme,
@@ -576,7 +576,22 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
             body=outcome,
             action=risk,
             diagnostics=drivers_full,
-        ))
+        )
+        # Map-side chase must agree with WATCH stance for notify consumers.
+        # Opposite wall migrations + opposing tape stay visible as STAY OUT /
+        # plain WATCH — not as a wall-chase rising edge (23-Nov side≠stance).
+        ws = str(out.get("wall_chase_side") or "")
+        if watch and ws:
+            want = "CALL" if stance == "CALL WATCH" else "PUT"
+            if ws != want:
+                out["wall_chase"] = False
+                badge_clean = str(out.get("badge") or "")
+                if "WALL CHASE" in badge_clean:
+                    parts = [p for p in badge_clean.split(" · ") if "WALL CHASE" not in p]
+                    out["badge"] = " · ".join(parts) if parts else badge_clean
+        elif out.get("wall_chase") and not watch:
+            out["wall_chase"] = False
+        return _maybe_llm_polish_alert(out)
 
     if is_morning:
         pm = dash.get("pre_market") or {}

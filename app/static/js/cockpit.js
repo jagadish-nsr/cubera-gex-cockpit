@@ -3156,6 +3156,117 @@
     }
   };
 
+  function paintLiquidationMap(data) {
+    const reading = document.getElementById("liquidation-reading");
+    const flags = document.getElementById("liquidation-flags");
+    const canvas = document.getElementById("liquidation-canvas");
+    const payload = data || {};
+    if (reading) {
+      reading.textContent = payload.reading || "Margin-stress map unavailable.";
+    }
+    if (flags) {
+      const bits = [];
+      if (payload.symbol) bits.push(payload.symbol);
+      if (payload.margin_frac_long != null) bits.push(`r long ${payload.margin_frac_long}`);
+      if (payload.margin_frac_short != null) bits.push(`r short ${payload.margin_frac_short}`);
+      if (payload.square_off_frac != null) bits.push(`f ${payload.square_off_frac}`);
+      if (payload.span_date) bits.push(`SPAN ${payload.span_date}`);
+      bits.push(payload.client_split ? `client file ${payload.participant_date || ""}` : "total OI");
+      if (payload.participant_stale) bits.push("participant file stale");
+      if (payload.roll_window) bits.push("roll window");
+      if (payload.tape_first_day && payload.tape_day) {
+        bits.push(`tape ${payload.tape_first_day}–${payload.tape_day} (${payload.sessions_used} sessions)`);
+      } else if (payload.tape_day) {
+        bits.push(`tape ${payload.tape_day}`);
+      }
+      if (payload.tape_stale) bits.push("tape older than SPAN file");
+      flags.textContent = bits.join(" · ") || "—";
+    }
+    if (!canvas) return;
+    const cssW = canvas.clientWidth || canvas.parentElement?.clientWidth || 900;
+    const cssH = 168;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
+    const bins = Array.isArray(payload.bins) ? payload.bins : [];
+    ctx.font = "12px sans-serif";
+    if (!bins.length) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText(payload.reason === "margin_frac_unset" ? "Margin fraction unset" : "No bands on this tape", 12, 28);
+      return;
+    }
+    const prices = bins.map((b) => Number(b.price));
+    if (payload.spot != null) prices.push(Number(payload.spot));
+    const minP = Math.min(...prices);
+    const maxP = Math.max(...prices);
+    const span = maxP - minP || Number(payload.bin_step) || 50;
+    const lo = minP - span * 0.08;
+    const hi = maxP + span * 0.08;
+    const xOf = (p) => 16 + ((p - lo) / (hi - lo)) * (cssW - 32);
+    const maxLot = Math.max(
+      1,
+      ...bins.map((b) => Math.max(
+        Number(b.long_heat) || 0,
+        Number(b.short_heat) || 0,
+        Number(b.long_unwind) || 0,
+        Number(b.short_unwind) || 0,
+      )),
+    );
+    const mid = cssH / 2;
+    const barW = Math.max(2, Math.min(16, ((cssW - 32) / bins.length) * 0.65));
+    ctx.strokeStyle = "rgba(148,163,184,0.35)";
+    ctx.beginPath();
+    ctx.moveTo(12, mid);
+    ctx.lineTo(cssW - 12, mid);
+    ctx.stroke();
+    bins.forEach((b) => {
+      const x = xOf(Number(b.price));
+      const longH = ((Number(b.long_heat) || 0) / maxLot) * (mid - 16);
+      const shortH = ((Number(b.short_heat) || 0) / maxLot) * (mid - 16);
+      ctx.fillStyle = "rgba(239,68,68,0.45)";
+      ctx.fillRect(x - barW / 2, mid, barW, longH);
+      ctx.fillStyle = "rgba(34,197,94,0.45)";
+      ctx.fillRect(x - barW / 2, mid - shortH, barW, shortH);
+      if (Number(b.long_unwind) > 0) {
+        const mark = ((Number(b.long_unwind) || 0) / maxLot) * (mid - 16);
+        ctx.fillStyle = "#7f1d1d";
+        ctx.fillRect(x - 1.5, mid + Math.max(mark, 4) - 4, 3, 6);
+      }
+      if (Number(b.short_unwind) > 0) {
+        const mark = ((Number(b.short_unwind) || 0) / maxLot) * (mid - 16);
+        ctx.fillStyle = "#14532d";
+        ctx.fillRect(x - 1.5, mid - Math.max(mark, 4), 3, 6);
+      }
+    });
+    if (payload.spot != null) {
+      const x = xOf(Number(payload.spot));
+      ctx.strokeStyle = "#38bdf8";
+      ctx.beginPath();
+      ctx.moveTo(x, 8);
+      ctx.lineTo(x, cssH - 8);
+      ctx.stroke();
+    }
+  }
+
+  async function refreshLiquidationMap(symbol) {
+    try {
+      const res = await fetch(`/api/liquidation?symbol=${encodeURIComponent(symbol || "")}`);
+      const data = await res.json().catch(() => ({}));
+      if ((state.symbol || "").toUpperCase() !== String(symbol || "").toUpperCase()) return;
+      paintLiquidationMap(data);
+    } catch (err) {
+      paintLiquidationMap({
+        reading: "Margin-stress map could not be read.",
+        empty: true,
+        reason: "error",
+      });
+    }
+  }
+
   function paintStructuralMap(smap) {
     const spotEl = document.getElementById("structural-map-spot");
     const summaryEl = document.getElementById("structural-map-summary");
@@ -4164,6 +4275,7 @@
     _lastPollAt.cockpit = Date.now();
     try {
       const requestedSym = (state.symbol || "").toUpperCase();
+      refreshLiquidationMap(requestedSym);
       const res = await fetch(`/api/cockpit-data?symbol=${encodeURIComponent(requestedSym)}&window=${state.window}`);
       const data = await res.json().catch(() => ({}));
       if (!(await noteFetchResult("Cockpit", res, data))) {
@@ -10117,7 +10229,7 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .split('"').join("&quot;");
   }
 
   function renderSessionQaThread() {

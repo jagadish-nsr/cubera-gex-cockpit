@@ -97,6 +97,55 @@ def test_above_call_with_cont_bull_69_is_call_watch():
     assert "Stop beyond the wall" in alert["risk"] or "broken call wall" in alert["trigger"].lower()
 
 
+def test_call_wall_chase_with_bearish_tape_does_not_flag_chase_active():
+    """23-Nov: CALL wall migrations + PUT WATCH must not set wall_chase for notify."""
+    now = datetime(2026, 11, 23, 15, 20, tzinfo=IST).timestamp()
+    alert = evaluate_market_alert(
+        {
+            "spot": 25366,
+            "strike_step": 50,
+            "is_market_open": True,
+            "as_of_time": "15:20:00 IST",
+            "kpis": {
+                "call_wall": {"val": 25400},
+                "put_wall": {"val": 25350},
+                "gamma_flip": {"val": 25370},
+                "regime": {"val": "NEGATIVE"},
+            },
+            "orderflow_alerts": [
+                {
+                    "type": "CONTINUATION_BEAR",
+                    "category": "BEARISH",
+                    "score": 80,
+                    "status": "NEW",
+                    "ts": now - 20,
+                    "insight_text": "Seller continuation.",
+                    "invalidation_level": 25415,
+                }
+            ],
+            "wall_events": [
+                {
+                    "kind": "WALL_MIGRATION",
+                    "side": "CALL",
+                    "headline": "Call Wall Migrated from ₹25,450 to ₹25,400",
+                    "ts": now - 900,
+                },
+                {
+                    "kind": "WALL_BREAK",
+                    "side": "CALL",
+                    "headline": "Call Wall Broken at ₹25,400",
+                    "ts": now - 400,
+                },
+            ],
+        },
+        now_ts=now,
+    )
+    assert alert["stance"] == "PUT WATCH"
+    assert alert["wall_chase_side"] == "CALL"
+    assert alert["wall_chase"] is False
+    assert "WALL CHASE" not in str(alert.get("badge") or "")
+
+
 def test_evaluate_wall_chase_needs_two_same_side():
     now = 1_700_000_000.0
     one = evaluate_wall_chase(

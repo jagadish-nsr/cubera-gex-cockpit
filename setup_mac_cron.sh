@@ -28,6 +28,28 @@ for launcher in run_timeseries.sh run_logger.sh run_participant_oi.sh run_future
     fi
 done
 
+# Margin-stress inputs (NSE SPAN file + Dhan futures tape). A tree gets these lines only
+# once it has the launcher, so prod picks them up after the code is promoted and this
+# script is run again.
+liquidation_lines() {
+    local dir="$1"
+    local eod="$2"
+    local label="$3"
+    if [[ -x "${dir}/run_liquidation_inputs.sh" ]]; then
+        cat <<EOF
+# ${label} margin-stress inputs: NSE SPAN file (out ~17:10) and Dhan futures tape, Mon-Fri
+# 18:00 normally lands both. 21:00 retries if NSE or Dhan was late. Holidays are skipped.
+${eod} 18 * * 1-5 ${dir}/run_liquidation_inputs.sh
+${eod} 21 * * 1-5 ${dir}/run_liquidation_inputs.sh
+EOF
+    fi
+}
+
+if [[ ! -x "${DEV_DIR}/run_liquidation_inputs.sh" ]]; then
+    echo "Missing launcher: ${DEV_DIR}/run_liquidation_inputs.sh" >&2
+    exit 1
+fi
+
 block() {
     local dir="$1"
     local ts="$2"
@@ -47,6 +69,7 @@ ${eod} 18 * * 1-5 ${dir}/run_participant_oi.sh
 ${eod} 18 * * 1-5 ${dir}/run_futures_buildup.sh
 ${eod} 21 * * 1-5 ${dir}/run_participant_oi.sh
 ${eod} 21 * * 1-5 ${dir}/run_futures_buildup.sh
+$(liquidation_lines "${dir}" "${eod}" "${label}")
 EOF
 }
 
@@ -81,6 +104,7 @@ filtered="$(printf '%s\n' "${current}" | awk '
     /run_muhurat_collect\.sh/ { next }
     /run_muhurat_big_money\.sh/ { next }
     /run_blast_ticks\.sh/ { next }
+    /run_liquidation_inputs\.sh/ { next }
     /Indian-GEX Automated Data Collection/ { next }
     /Timeseries snapshots:/ { next }
     /Logger snapshots:/ { next }

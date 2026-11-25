@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 # Load .env (if present) before reading any os.environ values below.
 # python-dotenv is optional — if not installed the .env is simply ignored and
@@ -59,6 +60,19 @@ INDICES: dict[str, Index] = {
     "SENSEX":    Index("SENSEX",    "Sensex",     20,  True,  6000, "BSE", regime_proxy="NIFTY", strike_step=100),
 }
 DEFAULT_INDEX = "NIFTY"
+
+# Margin-stress map. SPAN plus exposure, as a fraction of futures notional.
+# Exposure margin, as a fraction of futures notional. NSE margins page: "3% of the
+# notional value of a futures contract" for index futures. Checked 2026-11-24;
+# the page showed no revision date, so re-check against the current circular.
+FUTURES_EXPOSURE_FRAC: float = 0.03
+
+# SPAN part of r comes from NSE Clearing's end-of-day file nsccl.YYYYMMDD.s.spn,
+# read from this folder (kept out of git under data/journal/).
+SPAN_DIR = Path(__file__).resolve().parent / "data" / "journal" / "span"
+# Fraction of the posted margin used up before a broker squares off. Not published
+# by NSE; a modelling choice. 1.0 = the whole margin is gone (user choice 2026-11-24).
+FUTURES_SQUARE_OFF_FRAC: float | None = 1.0
 
 
 def index_key(symbol: str | None) -> str:
