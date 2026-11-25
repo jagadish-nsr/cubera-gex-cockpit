@@ -3167,8 +3167,8 @@
     if (flags) {
       const bits = [];
       if (payload.symbol) bits.push(payload.symbol);
-      if (payload.margin_frac_long != null) bits.push(`r long ${payload.margin_frac_long}`);
-      if (payload.margin_frac_short != null) bits.push(`r short ${payload.margin_frac_short}`);
+      if (payload.margin_frac_long != null) bits.push(`r long ${(Number(payload.margin_frac_long) * 100).toFixed(2)}%`);
+      if (payload.margin_frac_short != null) bits.push(`r short ${(Number(payload.margin_frac_short) * 100).toFixed(2)}%`);
       if (payload.square_off_frac != null) bits.push(`f ${payload.square_off_frac}`);
       if (payload.span_date) bits.push(`SPAN ${payload.span_date}`);
       bits.push(payload.client_split ? `client file ${payload.participant_date || ""}` : "total OI");
@@ -3184,10 +3184,11 @@
     }
     if (!canvas) return;
     const cssW = canvas.clientWidth || canvas.parentElement?.clientWidth || 900;
-    const cssH = 168;
+    const cssH = 360;
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.floor(cssW * dpr);
     canvas.height = Math.floor(cssH * dpr);
+    canvas.style.height = `${cssH}px`;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -3199,14 +3200,20 @@
       ctx.fillText(payload.reason === "margin_frac_unset" ? "Margin fraction unset" : "No bands on this tape", 12, 28);
       return;
     }
+    // Horizontal ladder: price runs top (high) to bottom (low). Long stress extends
+    // left of the centre line, short stress extends right.
     const prices = bins.map((b) => Number(b.price));
     if (payload.spot != null) prices.push(Number(payload.spot));
-    const minP = Math.min(...prices);
-    const maxP = Math.max(...prices);
-    const span = maxP - minP || Number(payload.bin_step) || 50;
-    const lo = minP - span * 0.08;
-    const hi = maxP + span * 0.08;
-    const xOf = (p) => 16 + ((p - lo) / (hi - lo)) * (cssW - 32);
+    const step = Number(payload.bin_step) || 50;
+    const lo = Math.min(...prices) - step;
+    const hi = Math.max(...prices) + step;
+    const PAD_TOP = 22;
+    const PAD_BOTTOM = 8;
+    const LABEL_W = 70;
+    const plotH = cssH - PAD_TOP - PAD_BOTTOM;
+    const yOf = (p) => PAD_TOP + ((hi - p) / (hi - lo)) * plotH;
+    const midX = LABEL_W + (cssW - LABEL_W) / 2;
+    const halfW = (cssW - LABEL_W) / 2 - 8;
     const maxLot = Math.max(
       1,
       ...bins.map((b) => Math.max(
@@ -3216,39 +3223,72 @@
         Number(b.short_unwind) || 0,
       )),
     );
-    const mid = cssH / 2;
-    const barW = Math.max(2, Math.min(16, ((cssW - 32) / bins.length) * 0.65));
-    ctx.strokeStyle = "rgba(148,163,184,0.35)";
+    const rowH = Math.max(2, Math.min(10, (plotH / ((hi - lo) / step)) * 0.8));
+
+    // Price gridlines and labels, on a round step that gives roughly 6-8 ticks.
+    const rawTick = (hi - lo) / 7;
+    const tickSteps = [25, 50, 100, 250, 500, 1000, 2000, 2500, 5000];
+    const tick = tickSteps.find((s) => s >= rawTick) || Math.ceil(rawTick / 1000) * 1000;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#94a3b8";
+    for (let p = Math.ceil(lo / tick) * tick; p <= hi; p += tick) {
+      const y = yOf(p);
+      ctx.strokeStyle = "rgba(148,163,184,0.15)";
+      ctx.beginPath();
+      ctx.moveTo(LABEL_W, y);
+      ctx.lineTo(cssW - 8, y);
+      ctx.stroke();
+      ctx.fillText(p.toLocaleString("en-IN"), LABEL_W - 6, y);
+    }
+
+    // Centre line and side headers.
+    ctx.strokeStyle = "rgba(148,163,184,0.45)";
     ctx.beginPath();
-    ctx.moveTo(12, mid);
-    ctx.lineTo(cssW - 12, mid);
+    ctx.moveTo(midX, PAD_TOP);
+    ctx.lineTo(midX, cssH - PAD_BOTTOM);
     ctx.stroke();
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#f87171";
+    ctx.fillText("LONG stress ◀", midX - 6, 14);
+    ctx.textAlign = "left";
+    ctx.fillStyle = "#4ade80";
+    ctx.fillText("▶ SHORT stress", midX + 6, 14);
+
     bins.forEach((b) => {
-      const x = xOf(Number(b.price));
-      const longH = ((Number(b.long_heat) || 0) / maxLot) * (mid - 16);
-      const shortH = ((Number(b.short_heat) || 0) / maxLot) * (mid - 16);
-      ctx.fillStyle = "rgba(239,68,68,0.45)";
-      ctx.fillRect(x - barW / 2, mid, barW, longH);
-      ctx.fillStyle = "rgba(34,197,94,0.45)";
-      ctx.fillRect(x - barW / 2, mid - shortH, barW, shortH);
+      const y = yOf(Number(b.price));
+      const longW = ((Number(b.long_heat) || 0) / maxLot) * halfW;
+      const shortW = ((Number(b.short_heat) || 0) / maxLot) * halfW;
+      ctx.fillStyle = "rgba(239,68,68,0.5)";
+      ctx.fillRect(midX - longW, y - rowH / 2, longW, rowH);
+      ctx.fillStyle = "rgba(34,197,94,0.5)";
+      ctx.fillRect(midX, y - rowH / 2, shortW, rowH);
       if (Number(b.long_unwind) > 0) {
-        const mark = ((Number(b.long_unwind) || 0) / maxLot) * (mid - 16);
+        const w = ((Number(b.long_unwind) || 0) / maxLot) * halfW;
         ctx.fillStyle = "#7f1d1d";
-        ctx.fillRect(x - 1.5, mid + Math.max(mark, 4) - 4, 3, 6);
+        ctx.fillRect(midX - Math.max(w, 3), y - rowH / 2, 3, rowH);
       }
       if (Number(b.short_unwind) > 0) {
-        const mark = ((Number(b.short_unwind) || 0) / maxLot) * (mid - 16);
+        const w = ((Number(b.short_unwind) || 0) / maxLot) * halfW;
         ctx.fillStyle = "#14532d";
-        ctx.fillRect(x - 1.5, mid - Math.max(mark, 4), 3, 6);
+        ctx.fillRect(midX + Math.max(w, 3) - 3, y - rowH / 2, 3, rowH);
       }
     });
+
     if (payload.spot != null) {
-      const x = xOf(Number(payload.spot));
+      const y = yOf(Number(payload.spot));
       ctx.strokeStyle = "#38bdf8";
       ctx.beginPath();
-      ctx.moveTo(x, 8);
-      ctx.lineTo(x, cssH - 8);
+      ctx.moveTo(LABEL_W, y);
+      ctx.lineTo(cssW - 8, y);
       ctx.stroke();
+      ctx.fillStyle = "#38bdf8";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(`spot ${Number(payload.spot).toLocaleString("en-IN")}`, 4, y - 9);
     }
   }
 
