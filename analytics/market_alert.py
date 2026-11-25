@@ -589,8 +589,6 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
                 if "WALL CHASE" in badge_clean:
                     parts = [p for p in badge_clean.split(" · ") if "WALL CHASE" not in p]
                     out["badge"] = " · ".join(parts) if parts else badge_clean
-        elif out.get("wall_chase") and not watch:
-            out["wall_chase"] = False
         return _maybe_llm_polish_alert(out)
 
     if is_morning:
@@ -851,13 +849,23 @@ def evaluate_market_alert(dash: dict, *, now_ts: float | None = None) -> dict | 
         )
 
     # Fresh signal on a middle zone: upgrade matching side to WATCH; mismatch stays out.
+    # Avoid introducing a second conflicting wall level when the signal carries an explicit invalidation.
+    sig_inval = _f(sig.get("invalidation_level")) if sig else 0.0
     if sig and zone in MIDDLE_ZONES:
         if sig_side == "CALL":
             base["stance"] = "CALL WATCH"
-            base["trigger"] = f"Hold the bullish tape idea; clear {_inr(cw)} if walls are split."
+            base["trigger"] = (
+                "Hold the bullish tape idea while above invalidation."
+                if sig_inval > 0
+                else f"Hold the bullish tape idea; clear {_inr(cw)} if walls are split."
+            )
         elif sig_side == "PUT":
             base["stance"] = "PUT WATCH"
-            base["trigger"] = f"Hold the bearish tape idea; clear {_inr(pw)} if walls are split."
+            base["trigger"] = (
+                "Hold the bearish tape idea while below invalidation."
+                if sig_inval > 0
+                else f"Hold the bearish tape idea; clear {_inr(pw)} if walls are split."
+            )
 
     # Extension / wall-chase promote (2-week sample): ABOVE_CALL / ABOVE_MAGNET
     # with CONT_BULL must not stay STAY OUT — that blocked Sensex 19 Nov 14:00.

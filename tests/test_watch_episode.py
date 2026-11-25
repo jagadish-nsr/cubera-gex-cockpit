@@ -140,3 +140,95 @@ def test_side_follows_stance_not_map_side(tmp_path, monkeypatch):
     assert ep.facts.get("map_side") == "PUT"
     # PUT geometry: target at or below spot
     assert ep.target_level <= ep.spot
+
+
+def test_reuse_active_same_side_beyond_15m_prevents_stacking(tmp_path, monkeypatch):
+    """25-Nov: 11:06 CALL stayed ACTIVE for 80m; later CALLs must reuse, not stack."""
+    monkeypatch.setattr("analytics.watch_episode._journal_path", lambda: tmp_path)
+    now = datetime(2026, 11, 25, 11, 6, tzinfo=IST)
+    first = open_watch_episode(
+        symbol="SENSEX", side="CALL", stance="CALL WATCH", spot=84330,
+        now_ist=now, kill_text="Kill ₹84,200", stretch={"next_map_strike": 84600},
+        strike_step=100,
+    )
+    second = open_watch_episode(
+        symbol="SENSEX", side="CALL", stance="CALL WATCH", spot=84390,
+        now_ist=now + timedelta(minutes=32), kill_text="Kill ₹84,250",
+        stretch={"next_map_strike": 84600}, strike_step=100,
+    )
+    assert first is not None and second is not None
+    assert first.episode_id == second.episode_id
+
+
+def test_post_kill_cooldown_blocks_immediate_rearm(tmp_path, monkeypatch):
+    """25-Nov: 09:54 PUT killed at 10:19 must not re-arm 36s later."""
+    monkeypatch.setattr("analytics.watch_episode._journal_path", lambda: tmp_path)
+    t0 = datetime(2026, 11, 25, 9, 54, tzinfo=IST)
+    ep = open_watch_episode(
+        symbol="SENSEX", side="PUT", stance="PUT WATCH", spot=83874,
+        now_ist=t0, kill_text="Kill ₹83,960", stretch={"next_map_strike": 83600},
+        strike_step=100,
+    )
+    assert ep is not None
+    t_kill = datetime(2026, 11, 25, 10, 19, 0, tzinfo=IST)
+    killed = evaluate_watch_episode(ep, spot=83970, now_ts=t_kill.timestamp())
+    assert killed.status == "INVALIDATED"
+
+    # 36s and 2m after kill -> blocked
+    assert open_watch_episode(
+        symbol="SENSEX", side="PUT", stance="PUT WATCH", spot=83933,
+        now_ist=t_kill + timedelta(seconds=36), kill_text="Kill ₹84,020",
+        strike_step=100,
+    ) is None
+    assert open_watch_episode(
+        symbol="SENSEX", side="PUT", stance="PUT WATCH", spot=84011,
+        now_ist=t_kill + timedelta(minutes=2), kill_text="Kill ₹84,100",
+        strike_step=100,
+    ) is None
+
+    # Opposite side (CALL) is NOT blocked by PUT kill cooldown
+    call_ep = open_watch_episode(
+        symbol="SENSEX", side="CALL", stance="CALL WATCH", spot=84015,
+        now_ist=t_kill + timedelta(minutes=2), kill_text="Kill ₹83,900",
+        strike_step=100,
+    )
+    assert call_ep is not None and call_ep.side == "CALL"
+
+    # After 5m cooldown -> PUT allowed again
+    later_put = open_watch_episode(
+        symbol="SENSEX", side="PUT", stance="PUT WATCH", spot=83900,
+        now_ist=t_kill + timedelta(minutes=6), kill_text="Kill ₹84,000",
+        strike_step=100,
+    )
+    assert later_put is not None and later_put.side == "PUT"
+
+
+def test_derive_levels_enforces_min_kill_and_reachable_target_cap():
+    """25-Nov: no 15.7-pt noise kills, no 60-pt half-risk fallback, no 997-pt targets."""
+    # Noise-tight kill (15.7 pts on Sensex) widened to >= 80 pts
+    tight = derive_watch_levels(
+        symbol="SENSEX", side="CALL", spot=83965.7,
+        kill_text="Fail back below ₹83,950", call_wall=84000, put_wall=83800,
+        strike_step=100,
+    )
+    assert 83965.7 - tight["kill_level"] >= 80.0
+
+    # Unreachable 997-pt WALL_CHASE target capped to <= 400 pts (or nearest reachable put_wall)
+    far = derive_watch_levels(
+        symbol="SENSEX", side="PUT", spot=83897.3,
+        kill_text="Price gets back through ₹83,985",
+        stretch={"next_map_strike": 82900, "last_wall": 83000},
+        call_wall=85000, put_wall=83500, strike_step=100,
+    )
+    assert far["target_level"] == 83500.0  # nearest reachable put_wall (397.3 pts <= 400)
+    assert far["kill_level"] == 83985.0
+
+    # No reachable wall -> capped at 400 pts on Sensex
+    far_no_wall = derive_watch_levels(
+        symbol="SENSEX", side="PUT", spot=83897.3,
+        kill_text="Price gets back through ₹83,985",
+        stretch={"next_map_strike": 82900, "last_wall": 83000},
+        call_wall=85000, put_wall=83000, strike_step=100,
+    )
+    assert round(83897.3 - far_no_wall["target_level"], 1) == 400.0
+

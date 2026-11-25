@@ -451,3 +451,75 @@ def test_session_efficiency_slice_today():
     assert sess["verdict"] == "paper_edge_positive"
     assert "net-positive" in sess["line"]
     assert sess["stage_rate_vs_fire_emit"] == 1.0
+
+
+def test_directional_pre_trail_hard_stop_caps_bleed():
+    """25-Nov: 13:11 Sensex VOL_DISPERSION bled −57% with no stop before trail armed."""
+    from data.journal.go_efficiency import record_event, mark_open, list_open
+
+    decision = {
+        "id": "d_hard_stop",
+        "symbol": "SENSEX",
+        "mode": "directional",
+        "state": "FIRE",
+        "score": 85,
+        "strategy_key": "VOL_DISPERSION",
+        "contracts": [{"action": "BUY", "opt_type": "CE", "strike": 83500, "ltp": 500}],
+        "context": {"spot": 83515, "lot_size": 20},
+        "risk": {"credit_or_debit": -500},
+    }
+    record_event("STAGE", decision, trade_id="pt_hard_stop")
+
+    # −20% drop (500 → 400): stays OPEN
+    u1 = mark_open("d_hard_stop", mark_premium=-400.0, mark_spot=83400)
+    assert u1["status"] == "OPEN"
+
+    # −44% drop (500 → 280): breaches 35% hard stop → settled at −325 (not −280)
+    u2 = mark_open("d_hard_stop", mark_premium=-280.0, mark_spot=83200)
+    assert u2["status"] == "CLOSED"
+    assert u2["exit_reason"] == "HARD_STOP"
+    assert u2["mark_premium"] == -325.0
+    # Gross = (-500 - (-325)) * 20 = -3500; brokerage 40 + slippage 10 = -3550
+    assert u2["net_pnl_inr"] == -3550.0
+    assert list_open("SENSEX") == []
+
+
+def test_recommendations_expire_active_at_session_end(tmp_path, monkeypatch):
+    """25-Nov: ACTIVE recs must expire after F&O close (15:40 IST), once per day."""
+    from datetime import datetime, timezone, timedelta
+    import data.journal.recommendations_store as rs
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    db = tmp_path / "recs.db"
+    monkeypatch.setattr(rs, "_DB_PATH", db)
+    monkeypatch.setattr(rs, "_REC_SESSION_END_DATE", None)
+    rs._SCHEMA_READY_PATHS.clear()
+    rs.ensure_schema()
+
+    with rs._get_write_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO recommendation_records (
+                rec_id, symbol, side, strike, option_symbol, play_type, play_badge,
+                triggered_at, initial_spot, initial_ltp, initial_score, current_score,
+                conviction_tier, target_1, target_1_spot, target_2, target_2_spot,
+                stop_loss, spot_invalidation, spot_invalidation_text, risk_reward_ratio,
+                entry_trigger, rationale, catalyst_tags_json, status, payload_json
+            ) VALUES (
+                'r1', 'NIFTY', 'CE', 25800, 'NIFTY25800CE', 'MOMENTUM', 'MOM',
+                '2026-11-25 11:00:00', 25800, 120, 80, 80,
+                'HIGH', 150, 25900, 180, 26000,
+                90, 25700, 'Below 25700', '1:2',
+                'Break', 'Test', '[]', 'ACTIVE', '{}'
+            )
+            """
+        )
+        conn.commit()
+
+    # Before 15:40 IST -> no-op
+    assert rs.expire_active_at_session_end(now=datetime(2026, 11, 25, 15, 20, tzinfo=ist)) == 0
+    # After 15:40 IST -> expires r1
+    assert rs.expire_active_at_session_end(now=datetime(2026, 11, 25, 15, 41, tzinfo=ist)) == 1
+    # Second call same day -> no-op
+    assert rs.expire_active_at_session_end(now=datetime(2026, 11, 25, 15, 45, tzinfo=ist)) == 0
+

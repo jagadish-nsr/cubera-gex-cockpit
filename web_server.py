@@ -3791,7 +3791,7 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
         )
         if episode is None:
             return {
-                "status": "skipped_side_mismatch",
+                "status": "skipped_cooldown_or_mismatch",
                 "symbol": sym,
                 "stance": stance,
                 "map_side": map_side,
@@ -3949,15 +3949,20 @@ def _wall_chase_watch_sync(sym: str, idx: Any, dash: DashboardData, empty: dict)
         stance = str(alert.get("stance") or "STAY OUT")
         side = str(alert.get("wall_chase_side") or "")
         from analytics.watch_episode import side_from_stance
+        from analytics.wall_chase import chase_side_for_zone
         stance_side = side_from_stance(stance)
-        # Notify only when map chase side agrees with WATCH stance (23-Nov bug).
+        geo = classify_zone(spot, cw, pw, step)
+        zone = str(alert.get("zone") or geo.get("zone") or "")
+        zone_chase_side = chase_side_for_zone(zone)
+        # Notify only when map chase side agrees with WATCH stance AND spot is in
+        # a matching chase zone (not PINNED between walls — 25-Nov chase audit).
         notify = (
             active
             and stance in ("CALL WATCH", "PUT WATCH")
             and bool(stance_side)
             and (not side or side == stance_side)
+            and zone_chase_side == stance_side
         )
-        geo = classify_zone(spot, cw, pw, step)
         stretch = compute_chase_stretch(
             side=side,
             spot=spot,
@@ -8414,24 +8419,41 @@ async def log_market_alert(payload: dict = Body(...)):
     from commentary.models import CommentaryEntry, to_ist
     from commentary.storage.db import save_commentary_entry
 
+    # Avoid duplicate WALL CHASE cards when _log_wall_chase_to_commentary already
+    # logged the same wall-chase episode for this symbol within cooldown.
+    if "WALL CHASE" in str(badge).upper():
+        last_wc = float(_WALL_CHASE_COMMENTARY_AT.get(sym) or 0.0)
+        if last_wc and (now_ist.timestamp() - last_wc) < _WALL_CHASE_COMMENTARY_COOLDOWN_S:
+            return {
+                "status": "ok",
+                "deduped": True,
+                "reason": "wall_chase_already_logged",
+                "logged_at": _fmt_ist_clock(now_ist),
+            }
+
     episode = None
     if stance in ("CALL WATCH", "PUT WATCH"):
         try:
             from analytics.watch_episode import open_watch_episode
+            from analytics.wall_chase import chase_side_for_zone
             side = "CALL" if "CALL" in stance else "PUT"
-            episode = open_watch_episode(
-                symbol=sym,
-                side=side,
-                stance=stance,
-                spot=float(payload.get("spot") or 0.0),
-                now_ist=now_ist,
-                kill_text=str(payload.get("kill") or payload.get("risk") or ""),
-                trigger_text=str(payload.get("trigger") or ""),
-                call_wall=float(payload.get("call_wall") or 0.0),
-                put_wall=float(payload.get("put_wall") or 0.0),
-                zone=str(payload.get("zone") or ""),
-                source="ALERT_TAPE",
-            )
+            zone_str = str(payload.get("zone") or "")
+            # Only open a WATCH episode when spot is in a matching chase zone
+            # (not PINNED between walls — 25-Nov chase audit).
+            if chase_side_for_zone(zone_str) == side:
+                episode = open_watch_episode(
+                    symbol=sym,
+                    side=side,
+                    stance=stance,
+                    spot=float(payload.get("spot") or 0.0),
+                    now_ist=now_ist,
+                    kill_text=str(payload.get("kill") or payload.get("risk") or ""),
+                    trigger_text=str(payload.get("trigger") or ""),
+                    call_wall=float(payload.get("call_wall") or 0.0),
+                    put_wall=float(payload.get("put_wall") or 0.0),
+                    zone=zone_str,
+                    source="ALERT_TAPE",
+                )
         except Exception as exc:
             log.debug("alert-tape watch episode: %s", exc)
 
@@ -10444,6 +10466,25 @@ def main():
                 root,
             )
             raise SystemExit(2)
+
+    # Pre-bind port check: if another process already holds this port, exit
+    # BEFORE uvicorn triggers FastAPI @app.on_event("startup") (25-Nov: a
+    # duplicate supervisor loop logged 28,776 process.started + lane rows/day
+    # before crashing on Errno 48).
+    if not args.reload:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _probe:
+            _probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                _probe.bind((args.host, args.port))
+            except OSError as exc:
+                log.error(
+                    "Port %s:%d already in use (%s) — exiting before app startup.",
+                    args.host,
+                    args.port,
+                    exc,
+                )
+                raise SystemExit(1)
 
     log.info(
         "Starting Cubera GEX Cockpit [%s] v%s on http://%s:%d (reload=%s)",

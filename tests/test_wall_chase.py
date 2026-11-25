@@ -226,3 +226,39 @@ def test_parse_strikes_and_chase_stretch_sensex_shape():
     assert stretch["stretch_to_next_pts"] == 47.0  # 82800 - 82753
     assert stretch["potential_stretch_pts"] == 353.0  # run + one 100-pt step
     assert "short_call_short_put" in stretch["note"]
+
+
+def test_middle_zone_tape_alert_uses_single_invalidation_level():
+    """25-Nov: when tape has invalidation_level, trigger must not name a second wall level."""
+    now = datetime(2026, 11, 25, 14, 1, tzinfo=IST).timestamp()
+    alert = evaluate_market_alert(
+        {
+            "spot": 83897.34,
+            "strike_step": 100,
+            "is_market_open": True,
+            "as_of_time": "14:01:00 IST",
+            "kpis": {
+                "call_wall": {"val": 85000},
+                "put_wall": {"val": 83500},
+                "gamma_flip": {"val": 83700},
+                "regime": {"val": "POSITIVE"},
+            },
+            "orderflow_alerts": [
+                {
+                    "type": "ABSORPTION_BEAR",
+                    "category": "BEARISH",
+                    "score": 95,
+                    "status": "NEW",
+                    "ts": now - 15,
+                    "insight_text": "Passive absorption at resistance.",
+                    "invalidation_level": 83985,
+                }
+            ],
+        },
+        now_ts=now,
+    )
+    assert alert["zone"] == "PINNED"
+    assert alert["stance"] == "PUT WATCH"
+    assert "83,985" in alert["kill"]
+    assert "83,500" not in alert["trigger"]
+

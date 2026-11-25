@@ -479,7 +479,8 @@ def mark_open(
             status = row["status"]
             settle_premium = mark_px
 
-            # Ratcheting directional trail from abs premiums when not supplied
+            # Ratcheting directional trail + pre-trail hard stop from abs premiums
+            hard_stop_hit = False
             if trail is None and str(row["mode"] or "") == "directional" and entry != 0:
                 from analytics.go_desk import evaluate_trail
 
@@ -510,13 +511,23 @@ def mark_open(
                             settle_premium = -abs(float(trail_stop))
                         else:
                             settle_premium = abs(float(trail_stop))
+                elif entry < 0:
+                    # Pre-trail hard stop for long directional options: cap max loss
+                    # at 35% of entry premium before trail arms (25-Nov Sensex
+                    # VOL_DISPERSION bled −57% all the way to SESSION_END).
+                    hard_stop_abs = round(entry_abs * (1.0 - 0.35), 2)
+                    if mark_abs <= hard_stop_abs:
+                        status = "CLOSED"
+                        hard_stop_hit = True
+                        settle_premium = -hard_stop_abs
                 trail = {
                     "armed": bool(trail_armed),
                     "trail_stop": trail_stop,
-                    "stopped": status == "TRAIL_STOP",
+                    "stopped": status == "TRAIL_STOP" or hard_stop_hit,
+                    "hard_stop": hard_stop_hit,
                     "pnl_pct": fresh.get("pnl_pct"),
                     "peak_ltp": fresh.get("peak_ltp"),
-                    "settle_premium": settle_premium if status == "TRAIL_STOP" else None,
+                    "settle_premium": settle_premium if (status == "TRAIL_STOP" or hard_stop_hit) else None,
                 }
             elif trail:
                 trail_armed = 1 if trail.get("armed") else trail_armed
@@ -542,7 +553,10 @@ def mark_open(
 
             now = _now_ist()
             mark_spot_v = mark_spot if mark_spot is not None else row["mark_spot"]
-            stored_mark = settle_premium if status == "TRAIL_STOP" else mark_px
+            settled_exit_reason = (
+                "TRAIL_STOP" if status == "TRAIL_STOP" else ("HARD_STOP" if hard_stop_hit else None)
+            )
+            stored_mark = settle_premium if settled_exit_reason else mark_px
             conn.execute(
                 """
                 UPDATE go_open SET
@@ -576,15 +590,15 @@ def mark_open(
             out["unrealized_pnl_inr"] = unrealized_pnl_inr(
                 entry, float(stored_mark), lot
             )
-            if status == "TRAIL_STOP" and row["net_pnl_inr"] is None:
+            if settled_exit_reason and row["net_pnl_inr"] is None:
                 settled = _write_settlement(
                     conn,
                     decision_id=decision_id,
                     entry_premium=entry,
                     exit_premium=float(settle_premium),
                     exit_spot=float(mark_spot_v) if mark_spot_v is not None else None,
-                    exit_reason="TRAIL_STOP",
-                    status="TRAIL_STOP",
+                    exit_reason=settled_exit_reason,
+                    status=status,
                     lot_size=lot,
                     n_legs=n_legs,
                 )
@@ -593,14 +607,15 @@ def mark_open(
                     "brokerage_cost": settled["brokerage_cost"],
                     "slippage_cost": settled["slippage_cost"],
                     "net_pnl_inr": settled["net_pnl_inr"],
-                    "exit_reason": "TRAIL_STOP",
+                    "exit_reason": settled_exit_reason,
                     "closed_at": settled["closed_at"],
                 })
             conn.commit()
-            if status == "TRAIL_STOP" and row["net_pnl_inr"] is None:
+            if settled_exit_reason and row["net_pnl_inr"] is None:
                 _close_linked_paper(
                     row["trade_id"],
                     exit_premium=float(settle_premium),
+                    exit_reason=settled_exit_reason,
                 )
             return out
         finally:

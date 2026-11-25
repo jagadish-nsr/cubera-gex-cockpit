@@ -31,6 +31,63 @@ _SCHEMA_READY_PATHS: set[str] = set()
 _EFFECTIVENESS_CACHE: dict[tuple[str, str], tuple[float, list[dict]]] = {}
 _EFFECTIVENESS_LOCK = threading.Lock()
 IST = timezone(timedelta(hours=5, minutes=30))
+_REC_SESSION_END_DATE: str | None = None
+_REC_FNO_CLOSE_MIN = 15 * 60 + 40  # 15:40 IST (matches go_efficiency)
+
+
+def expire_active_at_session_end(
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> int:
+    """Expire leftover ACTIVE recommendations after F&O close (once per IST day).
+
+    25-Nov audit: 61 today + 752 historical recommendations stayed ACTIVE forever
+    because GO settled at SESSION_END while recommendations had no EOD expiry.
+    """
+    global _REC_SESSION_END_DATE
+    ts_now = now or datetime.now(IST)
+    if ts_now.tzinfo is None:
+        ts_now = ts_now.replace(tzinfo=IST)
+    else:
+        ts_now = ts_now.astimezone(IST)
+    if not force:
+        if ts_now.weekday() >= 5:
+            return 0
+        if (ts_now.hour * 60 + ts_now.minute) < _REC_FNO_CLOSE_MIN:
+            return 0
+    day = ts_now.strftime("%Y-%m-%d")
+    if not force and _REC_SESSION_END_DATE == day:
+        return 0
+
+    _ensure_schema_once()
+    now_str = ts_now.strftime("%Y-%m-%d %H:%M:%S")
+    expired = 0
+    with _WRITE_LOCK:
+        with _get_write_conn() as conn:
+            cur1 = conn.execute(
+                """
+                UPDATE recommendation_records
+                SET status = 'EXPIRED', outcome_ts = COALESCE(outcome_ts, ?)
+                WHERE status = 'ACTIVE'
+                  AND substr(triggered_at, 1, 10) <= ?
+                """,
+                (now_str, day),
+            )
+            expired += max(0, cur1.rowcount)
+            cur2 = conn.execute(
+                """
+                UPDATE sentinel_trade_recommendations
+                SET status = 'EXPIRED', updated_at = ?
+                WHERE status = 'ACTIVE'
+                  AND substr(created_at, 1, 10) <= ?
+                """,
+                (now_str, day),
+            )
+            expired += max(0, cur2.rowcount)
+            conn.commit()
+    _REC_SESSION_END_DATE = day
+    return expired
 
 
 def active_db_path() -> Path:

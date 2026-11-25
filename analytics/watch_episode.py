@@ -21,8 +21,11 @@ _INR_RE = re.compile(r"₹\s*([\d,]+(?:\.\d+)?)")
 
 # Soft defaults when kill/target text has no parseable strike
 _DEFAULT_RISK = {"NIFTY": 40.0, "BANKNIFTY": 100.0, "SENSEX": 120.0}
+_MIN_KILL_DIST = {"NIFTY": 25.0, "BANKNIFTY": 60.0, "SENSEX": 80.0}
+_MAX_TARGET_DIST = {"NIFTY": 150.0, "BANKNIFTY": 350.0, "SENSEX": 400.0}
 _DEFAULT_TARGET_MULT = 1.5
 _MAX_AGE_S = 3 * 60 * 60  # expire open watches after 3h
+_KILL_COOLDOWN_S = 5 * 60  # no same-side re-arm for 5m after INVALIDATED
 
 
 def _f(val: Any, default: float = 0.0) -> float:
@@ -127,10 +130,15 @@ def derive_watch_levels(
 ) -> dict:
     """Pick kill (invalidation) and target strikes for a WATCH episode."""
     side_u = str(side or "").upper()
+    sym_u = str(symbol or "NIFTY").upper()
     spot_f = _f(spot)
     step = max(_f(strike_step, 50.0), 1.0)
     stretch = stretch or {}
-    risk = float(_DEFAULT_RISK.get(str(symbol or "NIFTY").upper(), 50.0))
+    risk = float(_DEFAULT_RISK.get(sym_u, 50.0))
+    min_kill = float(_MIN_KILL_DIST.get(sym_u, risk * 0.6))
+    max_tgt = float(_MAX_TARGET_DIST.get(sym_u, risk * 3.5))
+    cw_f = _f(call_wall)
+    pw_f = _f(put_wall)
 
     kill = _f(invalidation_level)
     if kill <= 0:
@@ -142,9 +150,9 @@ def derive_watch_levels(
         first = _f(stretch.get("first_wall"))
         last = _f(stretch.get("last_wall"))
         if side_u == "CALL":
-            kill = first or last or _f(call_wall) or (spot_f - risk)
+            kill = first or last or cw_f or (spot_f - risk)
         else:
-            kill = first or last or _f(put_wall) or (spot_f + risk)
+            kill = first or last or pw_f or (spot_f + risk)
 
     target = _f(stretch.get("next_map_strike"))
     if target <= 0:
@@ -154,17 +162,39 @@ def derive_watch_levels(
         else:
             target = (last - step) if last > 0 else (spot_f - risk * _DEFAULT_TARGET_MULT)
 
-    # Sanity: CALL target above spot, kill at/below; PUT mirrored
+    # Sanity + structural bounds:
+    # - CALL: target above spot (capped to reachable intraday range), kill below spot (outside 1m noise).
+    # - PUT: mirrored.
     if side_u == "CALL":
         if target <= spot_f:
             target = spot_f + max(step, risk)
+        if (target - spot_f) > max_tgt:
+            if spot_f < cw_f <= (spot_f + max_tgt):
+                target = cw_f
+            else:
+                target = spot_f + max_tgt
         if kill >= spot_f:
-            kill = spot_f - max(step * 0.5, risk * 0.5)
+            if 0 < pw_f < spot_f and (spot_f - pw_f) <= (risk * 2.5):
+                kill = pw_f
+            else:
+                kill = spot_f - max(step, risk)
+        if (spot_f - kill) < min_kill:
+            kill = spot_f - min_kill
     elif side_u == "PUT":
         if target >= spot_f:
             target = spot_f - max(step, risk)
+        if (spot_f - target) > max_tgt:
+            if (spot_f - max_tgt) <= pw_f < spot_f:
+                target = pw_f
+            else:
+                target = spot_f - max_tgt
         if kill <= spot_f:
-            kill = spot_f + max(step * 0.5, risk * 0.5)
+            if cw_f > spot_f and (cw_f - spot_f) <= (risk * 2.5):
+                kill = cw_f
+            else:
+                kill = spot_f + max(step, risk)
+        if (kill - spot_f) < min_kill:
+            kill = spot_f + min_kill
 
     return {
         "kill_level": round(kill, 1),
@@ -212,10 +242,14 @@ def open_watch_episode(
         return None
     if map_u in ("CALL", "PUT"):
         facts["map_side"] = map_u
-    # Reuse an already-ACTIVE same-side episode inside 15m (tape + wall-chase both fire).
+    # Reuse any already-ACTIVE same-side episode (prevents stacking multiple
+    # episodes on one move while the initial thesis is still open).
     for prior in list_active_episodes(sym):
-        if prior.side == side_u and (now.timestamp() - prior.triggered_ts) < 15 * 60:
+        if prior.side == side_u:
             return prior
+    # Post-kill cooldown: do not immediately re-arm the same side after INVALIDATED.
+    if _in_kill_cooldown(sym, side_u, now.timestamp()):
+        return None
     levels = derive_watch_levels(
         symbol=sym,
         side=side_u,
@@ -300,6 +334,35 @@ def evaluate_watch_episode(
     else:
         _save_episode(ep)
     return ep
+
+
+def _in_kill_cooldown(
+    symbol: str,
+    side: str,
+    now_ts: float,
+    *,
+    cooldown_s: float = _KILL_COOLDOWN_S,
+) -> bool:
+    """True when a same-side episode was INVALIDATED within cooldown_s."""
+    sym = str(symbol or "").upper()
+    side_u = str(side or "").upper()
+    if not sym or side_u not in ("CALL", "PUT") or cooldown_s <= 0:
+        return False
+    for path in _journal_path().glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if str(data.get("symbol") or "").upper() != sym:
+            continue
+        if str(data.get("side") or "").upper() != side_u:
+            continue
+        if str(data.get("status") or "").upper() != "INVALIDATED":
+            continue
+        rts = _f(data.get("resolved_ts"))
+        if rts > 0 and 0.0 <= (now_ts - rts) < float(cooldown_s):
+            return True
+    return False
 
 
 def list_active_episodes(symbol: str | None = None) -> list[WatchEpisode]:

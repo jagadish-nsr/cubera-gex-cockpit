@@ -83,7 +83,7 @@ def write_beat(*, role: str | None = None, detail: dict[str, Any] | None = None)
         "role": role or os.environ.get("COCKPIT_ROLE", "combined"),
         "detail": merged,
     }
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     os.replace(tmp, path)
     return path

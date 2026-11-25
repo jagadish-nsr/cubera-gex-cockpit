@@ -1447,7 +1447,8 @@ def _post_market_loop(symbol: str) -> None:
             get_post_market_state(symbol, force_refresh=True, now=now)
         except Exception as exc:
             log.debug("post-market poller %s: %s", symbol, exc)
-        # Once per day after F&O close: settle leftover OPEN staged GOs.
+        # Once per day after F&O close: settle leftover OPEN staged GOs and
+        # expire leftover ACTIVE recommendations.
         # Run from the Nifty poller only so the three indices do not race.
         if symbol.upper() == "NIFTY":
             try:
@@ -1455,6 +1456,11 @@ def _post_market_loop(symbol: str) -> None:
                 go_eff.close_all_open_at_session_end(now=now)
             except Exception as exc:
                 log.debug("go session-end close: %s", exc)
+            try:
+                from data.journal import recommendations_store as rec_store
+                rec_store.expire_active_at_session_end(now=now)
+            except Exception as exc:
+                log.debug("rec session-end expire: %s", exc)
         time.sleep(30.0)
 
 
