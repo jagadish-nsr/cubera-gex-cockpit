@@ -334,13 +334,21 @@ def evaluate_watch_episode(
     if adv > 0:
         ep.mae_pts = round(min(_f(ep.mae_pts), -adv), 1)
 
+    # An open watch lives until 3 h after trigger or the cash close, whichever is first.
+    # Stamping it when the next evaluation happens to run put 26-Nov expiries at 20:19.
+    session_close = datetime.combine(trig_day, dtime(15, 30), tzinfo=IST).timestamp()
+    deadline = min(_f(ep.triggered_ts) + _MAX_AGE_S, session_close)
+
     status = ""
     if hit_kill:
         status = "INVALIDATED"
     elif hit_tgt:
         status = "TARGET_HIT"
-    elif (now - _f(ep.triggered_ts)) >= _MAX_AGE_S:
+    elif now >= deadline:
         status = "EXPIRED"
+        now = deadline
+        ep.facts = {**(ep.facts or {}), "expired_reason": (
+            "session close" if deadline == session_close else "3h without target or kill")}
 
     if status:
         ep.status = status
