@@ -489,6 +489,15 @@ def _print(s: str) -> None:
     print(s, flush=True)
 
 
+def _release_fire_lock(lock_fh) -> None:
+    import fcntl
+    try:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+    except (OSError, ValueError):
+        pass
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Intraday index GEX time-series capture.")
     ap.add_argument("--once", action="store_true", help="single snapshot then exit")
@@ -560,6 +569,9 @@ def main() -> None:
                 )
                 if _is_expiry_day(data) or extra:
                     _print(f"{ist:%H:%M} IST  expiry blast — 1-min capture until the F&O close")
+                    # The blast loop has its own lock. Holding the 5-min fire lock through it
+                    # skipped every later fire: 26 Nov, no timeseries rows 13:05 → close.
+                    _release_fire_lock(lock_fh)
                     _run_blast_window(args.symbol, not_today)
         if failed and args.symbol:
             shutdown(ok=False, error="capture failed")
