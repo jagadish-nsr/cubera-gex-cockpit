@@ -232,3 +232,55 @@ def test_derive_levels_enforces_min_kill_and_reachable_target_cap():
     )
     assert round(83897.3 - far_no_wall["target_level"], 1) == 400.0
 
+
+
+def _open_call(tmp_path, monkeypatch, now):
+    monkeypatch.setattr("analytics.watch_episode._journal_path", lambda: tmp_path)
+    return open_watch_episode(
+        symbol="SENSEX", side="CALL", stance="CALL WATCH", spot=83900, now_ist=now,
+        kill_text="Fail back below ₹83,800",
+        stretch={"last_wall": 83900, "next_map_strike": 84000, "strike_step": 100},
+        strike_step=100,
+    )
+
+
+def test_stale_active_copy_cannot_resurrect_a_resolved_episode(tmp_path, monkeypatch):
+    """25 Nov Sensex: a resolved CALL WATCH was written back ACTIVE by a stale copy."""
+    now = datetime(2026, 11, 25, 11, 6, tzinfo=IST)
+    ep = _open_call(tmp_path, monkeypatch, now)
+    stale_copy = type(ep)(**ep.to_dict())  # what a second evaluator holds in memory
+    killed = evaluate_watch_episode(ep, spot=83700, now_ts=now.timestamp() + 600)
+    assert killed.status == "INVALIDATED"
+
+    # The stale evaluator now sees a spot that does not resolve anything.
+    out = evaluate_watch_episode(stale_copy, spot=83890, now_ts=now.timestamp() + 700)
+    assert out.status == "INVALIDATED"  # returns the resolved on-disk state
+    on_disk = json.loads((tmp_path / f"{ep.episode_id}.json").read_text())
+    assert on_disk["status"] == "INVALIDATED"
+    assert on_disk["resolve_spot"] == 83700.0
+
+    # Even a direct ACTIVE save is refused over a resolved file.
+    from analytics.watch_episode import _save_episode
+    _save_episode(stale_copy)
+    assert json.loads((tmp_path / f"{ep.episode_id}.json").read_text())["status"] == "INVALIDATED"
+
+
+def test_episode_never_resolves_on_another_days_spot(tmp_path, monkeypatch):
+    """23 Nov Bank Nifty: resolved at 09:38 next morning, TARGET_HIT on the new day's spot."""
+    now = datetime(2026, 11, 23, 14, 58, tzinfo=IST)
+    ep = _open_call(tmp_path, monkeypatch, now)
+    next_day = datetime(2026, 11, 25, 9, 38, tzinfo=IST)
+    # 84,300 would be a target hit on the same day; on the next day it must not count.
+    out = evaluate_watch_episode(ep, spot=84300, now_ts=next_day.timestamp())
+    assert out.status == "EXPIRED"
+    assert out.resolve_spot == 0.0
+    assert out.mfe_pts == 0.0  # the new day's move was not folded in
+    assert out.resolved_at == "2026-11-23 15:30:00 IST"
+    assert "no cross-day spot" in out.facts["expired_reason"]
+
+
+def test_same_day_after_the_close_still_resolves_on_that_days_spot(tmp_path, monkeypatch):
+    now = datetime(2026, 11, 25, 15, 0, tzinfo=IST)
+    ep = _open_call(tmp_path, monkeypatch, now)
+    out = evaluate_watch_episode(ep, spot=83700, now_ts=datetime(2026, 11, 25, 15, 33, tzinfo=IST).timestamp())
+    assert out.status == "INVALIDATED"

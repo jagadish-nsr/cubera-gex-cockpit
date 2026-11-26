@@ -8,10 +8,11 @@ explicit kill/target levels. Human confirms; no auto-execution.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, time as dtime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -296,6 +297,25 @@ def evaluate_watch_episode(
     if spot_f <= 0:
         return ep
     now = float(now_ts if now_ts is not None else datetime.now(tz=IST).timestamp())
+    # Another evaluator may have resolved this episode since our copy was read.
+    # Saving our stale ACTIVE copy back used to resurrect it (25 Nov Sensex: a 11:06
+    # CALL WATCH sat ACTIVE under five newer same-side episodes until 12:26).
+    on_disk = load_episode(ep.episode_id)
+    if on_disk is not None and on_disk.status != "ACTIVE":
+        return on_disk
+    # An episode belongs to one session. A spot from another day is not its price:
+    # 23 Nov Bank Nifty watches were resolved at 09:38 the next morning with the
+    # new day's spot, one of them TARGET_HIT with a +173 pt move that never happened.
+    trig_day = datetime.fromtimestamp(_f(ep.triggered_ts), tz=IST).date()
+    if datetime.fromtimestamp(now, tz=IST).date() != trig_day:
+        close = datetime.combine(trig_day, dtime(15, 30), tzinfo=IST)
+        ep.status = "EXPIRED"
+        ep.resolved_ts = close.timestamp()
+        ep.resolved_at = close.strftime("%Y-%m-%d %H:%M:%S IST")
+        ep.resolve_spot = 0.0
+        ep.facts = {**(ep.facts or {}), "expired_reason": "session ended unresolved; no cross-day spot used"}
+        _save_episode(ep)
+        return ep
     side = str(ep.side or "").upper()
     entry = _f(ep.spot)
     if side == "CALL":
@@ -396,7 +416,17 @@ def load_episode(episode_id: str) -> WatchEpisode | None:
 def _save_episode(ep: WatchEpisode) -> None:
     path = _journal_path() / f"{ep.episode_id}.json"
     with _LOCK:
-        path.write_text(json.dumps(ep.to_dict(), indent=2), encoding="utf-8")
+        if ep.status == "ACTIVE" and path.exists():
+            # Never write an ACTIVE copy over a resolved file.
+            try:
+                disk_status = str(json.loads(path.read_text(encoding="utf-8")).get("status") or "")
+            except Exception:
+                disk_status = ""
+            if disk_status and disk_status != "ACTIVE":
+                return
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(ep.to_dict(), indent=2), encoding="utf-8")
+        os.replace(tmp, path)
 
 
 def evaluate_open_watches_for_symbol(
