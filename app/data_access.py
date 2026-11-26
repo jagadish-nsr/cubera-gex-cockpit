@@ -82,6 +82,29 @@ def _wait_worker(fut, timeout: float, label: str):
         return None
 
 
+# A fetch that outlives the 35s wait keeps its worker and its place at the Dhan gate. Without
+# single-flight the next 30s cycle queued a second fetch behind it, then a third (26 Nov: worker
+# times of 100-340s). One chain fetch per (symbol, expiry cap) runs at a time; later callers join it.
+_INFLIGHT: dict[tuple, _cf.Future] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _submit_chain_once(ex: _cf.ThreadPoolExecutor, idx, live_source, max_expiries, force_live):
+    """Submit the chain fetch, or return the one already running for this key."""
+    key = (idx.symbol, max_expiries, bool(force_live), live_source)
+    with _INFLIGHT_LOCK:
+        running = _INFLIGHT.get(key)
+        if running is not None and not running.done():
+            return running
+        fut = ex.submit(
+            _fetch_live_chain_timed, idx, live_source,
+            max_expiries=max_expiries, force_live=force_live,
+            submitted_at=time.perf_counter(),
+        )
+        _INFLIGHT[key] = fut
+        return fut
+
+
 def _get_executor() -> _cf.ThreadPoolExecutor:
     global _EXECUTOR
     with _EXECUTOR_LOCK:
@@ -206,6 +229,9 @@ def _fetch_live_chain(idx, live_source: str | None, max_expiries: int | None = N
                 except Exception:  # noqa: BLE001
                     ohlc = dhan_live.fetch_index_ohlc(idx.symbol, skip_cache=force_live)
                 return payload, "dhan", ohlc, None
+            except dhan_live.DhanChainYield:
+                # Prod ingest owns the quota; an NSE scrape here would be a second, different book.
+                raise
             except Exception as e:  # noqa: BLE001 - fall back to NSE, flagged
                 note = f"Dhan unavailable ({type(e).__name__}: {str(e)[:120]}) — using NSE."
         else:
@@ -296,6 +322,44 @@ def _ensure_bundle_dex(bundle):
         bundle.view = from_levels(bundle.levels)
     except Exception:
         pass
+    return bundle
+
+
+_OWNER_BOOK_MAX_AGE_S = 120.0
+
+
+def _owner_published_book(symbol: str, max_age_s: float = _OWNER_BOOK_MAX_AGE_S):
+    """The chain owner's last published book, read from its checkout, when still fresh.
+
+    A process that yields the Dhan quota shows the same book prod ingest published,
+    with that book's own degraded flag, instead of its own aging LKGS copy.
+    """
+    import pickle
+    from pathlib import Path
+    from data import dhan_live
+    owner = dhan_live.read_chain_owner()
+    root = (owner or {}).get("root")
+    if not root:
+        return None
+    path = Path(root) / "data" / "journal" / f"latest_snap_{symbol.upper()}.pkl"
+    try:
+        with open(path, "rb") as fh:
+            raw = pickle.load(fh)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(raw, dict) or "data" not in raw:
+        return None
+    bundle, fetched = raw.get("data"), raw.get("fetched_at")
+    if bundle is None or not hasattr(bundle, "levels") or not isinstance(fetched, datetime):
+        return None
+    src = str(getattr(bundle, "source", "") or "").lower()
+    if any(k in src for k in ("demo", "synthetic", "mock", "test")):
+        return None
+    if fetched.tzinfo is None:
+        fetched = fetched.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - fetched.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > max_age_s:
+        return None
     return bundle
 
 
@@ -406,11 +470,7 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 (2 if window in ("next_week", "weekly", "monthly") else None)
             )
             _fx = {
-                "chain": _ex.submit(
-                    _fetch_live_chain_timed, idx, live_source,
-                    max_expiries=max_exps, force_live=force_live,
-                    submitted_at=time.perf_counter(),
-                ),
+                "chain": _submit_chain_once(_ex, idx, live_source, max_exps, force_live),
                 "news": _ex.submit(fetch_news),
                 "sectors": _ex.submit(fetch_sector_snap, prefer_dhan=_dhan),
             }
@@ -462,7 +522,14 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
                 cb.record_success()
 
         except Exception as exc:
-            cb.record_failure(str(exc))
+            from data.dhan_live import DhanChainYield
+            if isinstance(exc, DhanChainYield):
+                # Not a feed failure: the breaker stays closed. Serve the owner's book.
+                owned = _owner_published_book(idx.symbol)
+                if owned is not None:
+                    return owned
+            else:
+                cb.record_failure(str(exc))
             deg_data, is_deg, stale_sec, reason = lkgs.get_degraded_snapshot(
                 idx.symbol,
                 reason=f"Live feed error: {exc}",

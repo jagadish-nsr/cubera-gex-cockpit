@@ -86,6 +86,12 @@ def write_beat(*, role: str | None = None, detail: dict[str, Any] | None = None)
     tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+    # The chain-quota lease must stay fresh while the breaker holds the chain loop idle.
+    try:
+        from data.dhan_live import write_chain_owner_lease
+        write_chain_owner_lease()
+    except Exception:  # noqa: BLE001 - the heartbeat must not fail on the lease
+        pass
     return path
 
 

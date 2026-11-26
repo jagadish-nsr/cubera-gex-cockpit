@@ -45,7 +45,7 @@ if [[ "${COCKPIT_COMBINED:-0}" == "1" ]]; then
   echo "  CUBERA GEX COCKPIT — PRODUCTION (COMBINED / legacy)"
   echo "  URL  : http://localhost:${PROD_PORT}"
   echo "======================================================================"
-  exec python3 web_server.py --port "${PROD_PORT}"
+  CUBERA_DHAN_CHAIN_OWNER=1 exec python3 web_server.py --port "${PROD_PORT}"
 fi
 
 echo "======================================================================"
