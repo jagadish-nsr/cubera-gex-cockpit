@@ -25,6 +25,8 @@ os.environ.setdefault("COCKPIT_ROLE", "ingest")
 os.environ.pop("COCKPIT_INGEST_EXTERNAL", None)
 os.environ.setdefault("ENV_MODE", "production")
 os.environ.setdefault("COCKPIT_ENV", "prod")
+# Prod ingest is the one process that spends the Dhan /optionchain budget in session.
+os.environ.setdefault("CUBERA_DHAN_CHAIN_OWNER", "1")
 
 _SINGLETON_FH = None
 

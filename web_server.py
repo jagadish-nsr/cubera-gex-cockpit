@@ -124,6 +124,8 @@ configure("web")
 log = logging.getLogger("cubera.web_server")
 
 ROOT_DIR = Path(__file__).resolve().parent
+# Live snapshot journal. Tests redirect this to a temp dir; they must never write here.
+JOURNAL_DIR = ROOT_DIR / "data" / "journal"
 STATIC_DIR = ROOT_DIR / "app" / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -443,6 +445,16 @@ def _fmt_gex(val: float) -> str:
 
 def _same_strike(a: float, b: float, step: float) -> bool:
     return abs(float(a) - float(b)) <= max(0.51, float(step) * 0.01)
+
+
+def _strike_balance_gex(call_gex: float, put_gex: float) -> float:
+    """Call-gamma magnitude minus put-gamma magnitude at one strike.
+
+    Both legs are stored negative (short_call_short_put). So the balance is
+    ``-call_gex + put_gex``. Positive = call-heavy, negative = put-heavy.
+    Summed over the chain this is the KPI writer imbalance.
+    """
+    return -float(call_gex) + float(put_gex)
 
 
 def _standing_oi(dash, spot: float, band_pts: float) -> dict:
@@ -1095,7 +1107,7 @@ def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
 
 def _unpickle_latest_snap(sym: str, journal: Path | None = None):
     import pickle
-    base = journal if journal is not None else (ROOT_DIR / "data" / "journal")
+    base = journal if journal is not None else JOURNAL_DIR
     snap_path = base / f"latest_snap_{sym}.pkl"
     if not snap_path.exists():
         return None
@@ -2968,7 +2980,8 @@ def _build_cockpit_data_sync(sym: str, win: str, idx: Any, dash: DashboardData) 
         if prow is not None:
             call_gex = float(prow.get("call_gex") or 0.0)
             put_gex = float(prow.get("put_gex") or 0.0)
-            net_stk_gex = float(prow.get("net_gex") or 0.0)
+            # Column is call-minus-put balance, not the stored call+put total.
+            net_stk_gex = _strike_balance_gex(call_gex, put_gex)
             net_stk_dex = float(prow.get("net_dex") or 0.0)
         elif stk in strike_oi_map:
             call_gex = strike_oi_map[stk]["C"]
@@ -4713,6 +4726,11 @@ _GO_LAST_FIRE_NOTIFY: dict[str, str] = {}  # fingerprint → decision_id
 _GO_LAST_FIRE_STAGE: dict[str, str] = {}  # auto-stage fp → decision_id
 _GO_STAGING_INFLIGHT: set[str] = set()
 _GO_AUTO_STAGE_LOCK = threading.Lock()
+# 26 Nov (Sensex expiry): auto-stage bought ₹0.1 calls at 15:30-15:32 and SESSION_END
+# settled them at 15:40. No new study entry once the cash close starts the settlement
+# window, and none on a contract too cheap to carry a real stop.
+_GO_AUTO_STAGE_LAST_ENTRY_MIN = config.CASH_CLOSE_MIN
+_GO_AUTO_STAGE_MIN_PREMIUM = 1.0
 # TE dial is optional GO weight — cache so strip/feed polls do not re-run the
 # full Target Engine pipeline every few seconds (next-open latency risk).
 _GO_TE_DIAL_CACHE: dict[str, tuple[float, float | None]] = {}
@@ -4934,6 +4952,21 @@ def _go_stage_decision(decision: dict, *, notes: str | None = None) -> dict[str,
     }
 
 
+def _go_auto_stage_late_or_cheap(decision: dict, now: datetime | None = None) -> str:
+    """Skip reason for a FIRE auto-stage past the entry cutoff or below the premium floor."""
+    ist = (now or datetime.now(IST)).astimezone(IST)
+    if ist.hour * 60 + ist.minute >= _GO_AUTO_STAGE_LAST_ENTRY_MIN:
+        return "after_entry_cutoff"
+    for c in decision.get("contracts") or []:
+        try:
+            ltp = float(c.get("ltp"))
+        except (TypeError, ValueError):
+            continue
+        if ltp < _GO_AUTO_STAGE_MIN_PREMIUM:
+            return "premium_below_floor"
+    return ""
+
+
 def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
     """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
     if not _GO_PREFS.get("auto_stage_fire"):
@@ -4944,6 +4977,9 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
         return None
     if not (decision.get("contracts") or []):
         return {"status": "skipped", "detail": "no contracts"}
+    late = _go_auto_stage_late_or_cheap(decision)
+    if late:
+        return {"status": "skipped", "detail": late}
     try:
         from analytics.go_desk import evidence_pack_complete
 

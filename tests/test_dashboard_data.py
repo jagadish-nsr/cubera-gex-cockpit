@@ -21,8 +21,20 @@ def test_load_dashboard_demo():
     assert abs(d.levels.call_wall - d.levels.spot) < d.levels.spot * 0.2
 
 
-def test_load_dashboard_sensex():
-    d = load_dashboard(symbol="SENSEX", window="current_week")
+class _MidWeekClock(datetime):
+    """Wed 25 Nov 2026 11:00 IST. A wall clock made these tests read the live cache
+    (or call Dhan in session) and fail every Sensex expiry evening, when the near
+    book has rolled off and walls are 0 by design."""
+
+    @classmethod
+    def now(cls, tz=None):
+        t = datetime(2026, 11, 25, 5, 30, tzinfo=timezone.utc)
+        return t if tz is None else t.astimezone(tz)
+
+
+def test_load_dashboard_sensex(monkeypatch):
+    monkeypatch.setattr("app.data_access.datetime", _MidWeekClock)
+    d = load_dashboard(symbol="SENSEX", window="current_week", use_demo=True)
     assert isinstance(d, DashboardData)
     assert d.symbol == "SENSEX"
     assert d.levels.spot >= 70000.0
@@ -104,8 +116,9 @@ def test_chain_timeout_serves_the_journal_snapshot(monkeypatch, tmp_path):
     assert "last journal snapshot" in restored.degraded_reason
 
 
-def test_load_dashboard_banknifty():
-    d = load_dashboard(symbol="BANKNIFTY", window="monthly")
+def test_load_dashboard_banknifty(monkeypatch):
+    monkeypatch.setattr("app.data_access.datetime", _MidWeekClock)
+    d = load_dashboard(symbol="BANKNIFTY", window="monthly", use_demo=True)
     assert isinstance(d, DashboardData)
     assert d.symbol == "BANKNIFTY"
     assert d.levels.spot >= 40000.0

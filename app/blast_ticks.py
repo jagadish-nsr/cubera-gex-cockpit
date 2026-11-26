@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_blast_pair, resolve_blast_set
+from data.dhan_feed import (
+    SUB_FULL, connect, decode_packet, ltt_to_epoch, resolve_blast_pair, resolve_blast_set,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "journal" / "blast_ticks"          # gitignored (under data/journal/)
@@ -363,7 +365,7 @@ class BlastTickCollector:
                         self.last_ltp[int(tick.security_id)] = float(tick.ltp)
                     if c is None:
                         continue
-                    epoch = (int(tick.ltt) - _IST_OFFSET_S) if tick.ltt else int(time.time())
+                    epoch = ltt_to_epoch(tick.ltt)
                     self.status.last_tick_epoch = epoch
                     self.status.n_ticks += 1
                     self.status.per_side[c["side"]] = self.status.per_side.get(c["side"], 0) + 1

@@ -178,6 +178,19 @@ def test_generate_recommendations_near_book_expired_is_explicit():
     assert "0DTE near book rolled off" in batch.executive_summary
 
 
+def test_generate_recommendations_shared_gamma_strike_does_not_raise():
+    """25 Nov: call wall == put wall skipped the sigma block and every publish raised."""
+    data = MockDashboardData(spot=24500.0, symbol="NIFTY")
+    data.levels.call_wall = 24500.0
+    data.levels.put_wall = 24500.0
+    batch = generate_trade_recommendations(data, min_score=0)
+    assert batch.symbol == "NIFTY"
+    assert batch.spot == 24500.0
+    # The corridor-only vanna-charm play is skipped; the ratio reversal is still built.
+    badges = {t.play_badge for t in batch.all_ce_candidates + batch.all_pe_candidates}
+    assert "VANNA-CHARM" not in badges
+
+
 def test_generate_recommendations_bias_influence():
     data = MockDashboardData(spot=24500.0)
 

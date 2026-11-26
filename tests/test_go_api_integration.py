@@ -35,6 +35,8 @@ def _iso_go_dbs(tmp_path, monkeypatch):
     monkeypatch.setattr(go_eff, "_DB_PATH", tmp_path / "go_efficiency.db")
     # Session open for stage/auto-stage paths; closed-session cases override.
     monkeypatch.setattr(config, "is_market_open", lambda *a, **k: True)
+    # The 15:30 entry cutoff reads the wall clock; keep these runs clock-independent.
+    monkeypatch.setattr(web_server, "_GO_AUTO_STAGE_LAST_ENTRY_MIN", 24 * 60)
     journal_store.ensure_schema()
     go_eff.ensure_schema()
     web_server._GO_PREFS.update({

@@ -108,12 +108,18 @@ def test_atm_ce_keeps_chain_quote_when_targets_not_actionable():
     assert atm_row.pe is not None and atm_row.pe.ltp > 0
 
 
-def test_atm_ce_actionable_with_soft_chain_iv_and_short_wall_hop():
+def test_atm_ce_actionable_with_soft_chain_iv_and_short_wall_hop(monkeypatch):
     """Live-shape regression: soft chain IV + short call-wall hop must not FAIL ATM CE.
 
     Pre-fix: chain IV ~11.7% under LTP-implied ~13%+ and a flat −0.75 crush
     left BS(T1) ≤ LTP on a ~50–60pt hop → empty CE wing / non-actionable T1.
     """
+    import analytics.strike_ladder as sl
+    real_to_ist = sl.to_ist
+    # The live shape is 13 Nov 10:00 against the 17 Nov expiry. On the wall clock that
+    # expiry is past, T=0, and the test stopped meaning anything after 17 Nov.
+    pinned = datetime(2026, 11, 13, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    monkeypatch.setattr(sl, "to_ist", lambda *a, **k: real_to_ist(*a, **k) if a or k else pinned)
     spot = 25144.0
     atm = 25150.0
     expiry = "2026-11-17"

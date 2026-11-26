@@ -118,6 +118,93 @@ def _cross_process_claim_slot(bucket: str, lim: float, now: float) -> float:
         return 0.0
 
 
+# ── chain quota owner ─────────────────────────────────────────────────────────────────────────
+# One Dhan account, one /optionchain budget (~19 calls/min). On 26 Nov a dev :8650 in combined
+# mode and the dev/prod timeseries cron pulled chains beside prod ingest; gate waits reached
+# 30-340 s and every index served LKGS-degraded books. In session only the process started with
+# CUBERA_DHAN_CHAIN_OWNER=1 (prod ingest) spends that budget. Any other process yields while the
+# owner's lease is fresh and reads the published book instead. CUBERA_DHAN_CHAIN_YIELD=0 opts a
+# process out (explicit, logged by the caller's failure path).
+_OWNER_LEASE_S = 60.0
+_OWNER_REFRESH_S = 10.0
+_owner_last_write = [0.0]
+
+
+class DhanChainYield(RuntimeError):
+    """This process must not spend the shared /optionchain budget right now."""
+
+
+def is_chain_owner() -> bool:
+    return os.environ.get("CUBERA_DHAN_CHAIN_OWNER", "").strip() == "1"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def write_chain_owner_lease(now: float | None = None, force: bool = False) -> bool:
+    """Owner only: stamp ``chain.owner`` with pid, checkout and time. Returns True when written."""
+    if not is_chain_owner() or not _use_cross_process_gate():
+        return False
+    now = time.time() if now is None else float(now)
+    if not force and (now - _owner_last_write[0]) < _OWNER_REFRESH_S:
+        return False
+    import json
+    try:
+        _GATE_DIR.mkdir(parents=True, exist_ok=True)
+        path = _GATE_DIR / "chain.owner"
+        tmp = _GATE_DIR / f"chain.owner.{os.getpid()}.tmp"
+        tmp.write_text(json.dumps({"pid": os.getpid(), "root": str(Path.cwd()), "ts": now}))
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    _owner_last_write[0] = now
+    return True
+
+
+def read_chain_owner(now: float | None = None) -> dict | None:
+    """The live owner lease, or None when missing, stale, or its process is gone."""
+    import json
+    now = time.time() if now is None else float(now)
+    try:
+        raw = json.loads((_GATE_DIR / "chain.owner").read_text())
+        ts = float(raw.get("ts") or 0.0)
+        pid = int(raw.get("pid") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if pid <= 0 or (now - ts) > _OWNER_LEASE_S or not _pid_alive(pid):
+        return None
+    return raw
+
+
+def chain_yield_reason(now: float | None = None, session_open: bool | None = None) -> str:
+    """Why this process must not call /optionchain now, or "" when it may."""
+    if is_chain_owner():
+        return ""
+    if os.environ.get("CUBERA_DHAN_CHAIN_YIELD", "").strip() == "0":
+        return ""
+    if not _use_cross_process_gate():
+        return ""
+    if session_open is None:
+        import config
+        session_open = bool(config.is_chain_ingest_open())
+    if not session_open:
+        return ""
+    owner = read_chain_owner(now)
+    if not owner or int(owner.get("pid") or 0) == os.getpid():
+        return ""
+    return (f"chain quota owned by ingest pid {owner.get('pid')} ({owner.get('root')}); "
+            "this process reads the published book")
+
+
 def _note_rate_limit_429(bucket: str, retry_after_s: float | None = None) -> None:
     """Push bucket's next allowed timestamp forward across threads + processes on HTTP 429."""
     st = _BUCKETS.get(bucket)
@@ -241,6 +328,11 @@ def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
     forget it — /marketfeed/* was entirely ungated before, which is where the 429s came from."""
     import requests
     bucket = "quote" if path.startswith("/marketfeed") else "chain"
+    if bucket == "chain":
+        reason = chain_yield_reason()
+        if reason:
+            raise DhanChainYield(reason)
+        write_chain_owner_lease()
     t_gate = time.perf_counter()
     _gate(bucket, hi=hi)
     t_http = time.perf_counter()
@@ -265,16 +357,46 @@ def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
     return resp
 
 
+# The expiry list changes once a day. Re-asking for it on every chain pull spent one of the
+# 1-per-3.1s /optionchain slots per fetch (26 Nov: calls=2 for a 1-expiry window, ~1/3 of the
+# budget). In session it is reused for the IST day, refreshed at most every _EXP_TTL_S.
+_EXP_TTL_S = 1800.0
+_EXP_CACHE: dict[str, tuple[str, float, list[str]]] = {}   # symbol -> (ist_date, fetched_epoch, list)
+_EXP_LOCK = threading.Lock()
+
+
+def _ist_today() -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date().isoformat()
+
+
+def _live_expiries(exps: list[str], today: str) -> list[str]:
+    return [e for e in exps if str(e) >= today]
+
+
+def _cached_expiries(symbol: str, today: str, now: float) -> list[str] | None:
+    with _EXP_LOCK:
+        hit = _EXP_CACHE.get(symbol)
+    if hit and hit[0] == today and (now - hit[1]) < _EXP_TTL_S:
+        live = _live_expiries(hit[2], today)
+        if live:
+            return live
+    return None
+
+
 def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20, force_live: bool = False) -> list[str]:
     """Upcoming expiries (YYYY-MM-DD, ascending) for the index, or [] on any soft failure.
 
     Off-market, a file already on disk is returned and Dhan is not called.
+    In session, the list fetched earlier the same IST day is reused for ``_EXP_TTL_S``.
+    A failed refresh falls back to the last list that still has a live expiry.
     ``force_live`` is the explicit sync (manual, 06:30 IST, or a new session token).
     """
     import config
     import json
     from pathlib import Path
-    cache_exps = Path(f"data/.cache/last_exps_{symbol.upper()}.json")
+    sym = symbol.upper()
+    cache_exps = Path(f"data/.cache/last_exps_{sym}.json")
     if not force_live and not config.is_market_open() and cache_exps.exists():
         try:
             with open(cache_exps, "r") as f:
@@ -284,22 +406,40 @@ def fetch_expiry_list(symbol: str = "NIFTY", timeout: int = 20, force_live: bool
         except Exception:
             pass
 
+    today = _ist_today()
+    now = time.time()
+    if not force_live:
+        hit = _cached_expiries(sym, today, now)
+        if hit:
+            return hit
+
     seg, scrip = _seg_scrip(symbol)
+    res: list[str] = []
     try:
         r = _post("/optionchain/expirylist", {"UnderlyingScrip": scrip, "UnderlyingSeg": seg}, timeout)
-        if not r.ok:
-            return []
-        res = sorted((r.json() or {}).get("data") or [])
-        if res:
-            try:
-                cache_exps.parent.mkdir(parents=True, exist_ok=True)
-                with open(cache_exps, "w") as f:
-                    json.dump(res, f)
-            except Exception:
-                pass
-        return res
+        if r.ok:
+            res = sorted((r.json() or {}).get("data") or [])
+    except DhanChainYield:
+        raise
     except Exception:  # noqa: BLE001
-        return []
+        res = []
+    if res:
+        with _EXP_LOCK:
+            _EXP_CACHE[sym] = (today, now, list(res))
+        try:
+            cache_exps.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_exps, "w") as f:
+                json.dump(res, f)
+        except Exception:
+            pass
+        return res
+    with _EXP_LOCK:
+        hit = _EXP_CACHE.get(sym)
+    if hit:
+        live = _live_expiries(hit[2], today)
+        if live:
+            return live
+    return []
 
 
 def _trade_time(cell) -> "datetime | None":
@@ -723,6 +863,8 @@ def fetch_chain(symbol: str = "NIFTY", expiries: list[str] | None = None,
             rows, sp = _to_nse_rows(r.json(), e, lot_size=lot)
             merged.extend(rows)
             spot = spot or sp
+        except DhanChainYield:
+            raise
         except Exception as ex:  # noqa: BLE001
             errors.append(f"{e}: {type(ex).__name__} {str(ex)[:120]}")
     if not merged or spot is None:

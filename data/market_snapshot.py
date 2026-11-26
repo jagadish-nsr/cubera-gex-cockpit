@@ -82,6 +82,37 @@ def _attach_shared_gamma(item: dict) -> None:
         item["wall_note"] = "shared gamma strike"
 
 
+def book_degenerate_reason(
+    call_wall: float | None,
+    put_wall: float | None,
+    flip: float | None,
+    net_gex: float | None,
+    spot: float | None,
+) -> str:
+    """Why a stored book carries no gamma information, or "" when it looks usable.
+
+    An expired chain has zero gamma everywhere. The close row then holds net GEX of
+    exactly 0, a flip equal to spot, and walls that are only the nearest strike.
+    On 23 Nov the Nifty and Bank Nifty weekly series expired (24 Nov was a holiday),
+    and the 25 Nov premarket card quoted that row as "shared gamma strike ₹25,350"
+    while the live chain published at 09:07 held the real book. Exact zero is the
+    signal: a live book never sums to 0.0.
+    """
+    try:
+        net = None if net_gex is None else float(net_gex)
+        cw = float(call_wall or 0.0)
+        pw = float(put_wall or 0.0)
+        fl = float(flip or 0.0)
+        px = float(spot or 0.0)
+    except (TypeError, ValueError):
+        return "book fields are not numbers"
+    if net is not None and net == 0.0:
+        return "net GEX is exactly zero (empty or expired chain)"
+    if fl > 0 and px > 0 and abs(fl - px) <= 1.0 and cw > 0 and abs(cw - pw) < 1.0:
+        return "flip equals spot with one shared strike (empty or expired chain)"
+    return ""
+
+
 def _book_source_label(source: str) -> str:
     text = (source or "").lower()
     if "fallback" in text or text.startswith("nse"):
@@ -508,7 +539,11 @@ def resolve_offmarket_snapshot(symbol: str, now: datetime | None = None) -> dict
             return local
 
     session = last_completed_session_date(now)
-    if local and snapshot_session_date(local) == session:
+    # A row from today's session (pre-open spot, or after 15:30 before the close row
+    # lands) is newer than the last completed session, not stale. 26 Nov: ~2,600
+    # "snapshot 2026-11-26 is before the last session 2026-11-25" warnings.
+    local_session = snapshot_session_date(local) if local else None
+    if local and local_session is not None and local_session >= session:
         local = dict(local)
         local["stale_session"] = False
         local["expected_session"] = session.isoformat()
@@ -533,7 +568,8 @@ def resolve_offmarket_snapshot(symbol: str, now: datetime | None = None) -> dict
         return None
     best = dict(best)
     best["expected_session"] = session.isoformat()
-    best["stale_session"] = snapshot_session_date(best) != session
+    best_session = snapshot_session_date(best)
+    best["stale_session"] = best_session is None or best_session < session
     if best.get("journal") and Path(best["journal"]).resolve() != local_journal:
         best["adopted_from"] = "sibling"
         log.warning(

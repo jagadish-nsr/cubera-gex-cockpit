@@ -60,6 +60,30 @@ class Tick:
     ask: float | None = None          # best ask price (Full)
 
 
+_IST_OFFSET_S = 19800
+_LTT_MATCH_S = 7200
+
+
+def ltt_to_epoch(ltt: int | None, now: float | None = None) -> int:
+    """Dhan packet LTT → true unix seconds.
+
+    Dhan has sent both an IST-wall-as-epoch and a true epoch. Always subtracting 5:30
+    stamped 25-26 Nov blast ticks and big-money prints 07:30-10:09 for a 13:00-15:39 tape.
+    A live LTT within 2h of now (shifted or not) is matched to the right form, as
+    ``sentinel.feed.parser`` does. Far from now (replay of a past day) keeps the IST form.
+    """
+    import time as _time
+    t = float(_time.time() if now is None else now)
+    if not ltt or ltt <= 0:
+        return int(t)
+    ltt = int(ltt)
+    if abs(ltt - (t + _IST_OFFSET_S)) < _LTT_MATCH_S:
+        return ltt - _IST_OFFSET_S
+    if abs(ltt - t) < _LTT_MATCH_S:
+        return ltt
+    return ltt - _IST_OFFSET_S
+
+
 def decode_packet(frame: bytes) -> Tick | None:
     """Decode one binary feed packet into a Tick, or None if too short / unknown code. Offsets are
     LOCKED (see the module docstring); a code we don't model returns a bare Tick with just header."""

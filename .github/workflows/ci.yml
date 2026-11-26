@@ -27,6 +27,10 @@ jobs:
           pip install -r requirements.txt
           pip install pytest
 
+      - name: Run Session-Start Contract (core paths at the 09:07 arm)
+        run: |
+          python -m pytest -v tests/test_session_start_contract.py tests/test_readiness.py tests/test_readiness_external.py
+
       - name: Run Web Server Endpoint Integration Tests
         run: |
           python -m pytest -v tests/test_web_server_endpoints.py

@@ -32,6 +32,7 @@ from app.data_access import load_dashboard  # noqa: E402
 _WIN_START_IST = (13, 0)     # gamma-blast window 13:00 through the F&O close
 # Own chain each. Bank Nifty is monthly; Sensex is Thursday. Do not substring-match NIFTY.
 BLAST_SYMBOLS = ("NIFTY", "BANKNIFTY", "SENSEX")
+_BLAST_BOOK_MAX_AGE_S = 90.0   # a 1-min tape row from a published book at most 3 publishes old
 
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -66,17 +67,20 @@ def resolve_symbols(explicit: str | None) -> tuple[str, ...]:
 
 
 def capture_once(force: bool = False, symbol: str | None = None) -> str:
-    # Empty chain → reuse the live process's fresh published book (same as timeseries),
-    # so one flaky pull does not punch a hole in the 1-min blast tape.
-    try:
-        data = load_dashboard(symbol=symbol)  # live NSE, single fetch
-    except Exception as exc:
-        if "no contracts" not in str(exc):
-            raise
-        from scripts.log_timeseries import published_book
-        data = published_book(symbol or "NIFTY")
-        if data is None:
-            raise
+    # The live process publishes every 30s. Its fresh book is the minute's chain, so this
+    # cron does not pull Dhan beside prod ingest (26 Nov: 153 live pulls 13:07-15:39, all
+    # timed out). A live pull is the fallback when that book is missing or old.
+    from scripts.log_timeseries import published_book
+    data = published_book(symbol or "NIFTY", max_age_s=_BLAST_BOOK_MAX_AGE_S)
+    if data is None:
+        try:
+            data = load_dashboard(symbol=symbol)
+        except Exception as exc:
+            if "no contracts" not in str(exc):
+                raise
+            data = published_book(symbol or "NIFTY")
+            if data is None:
+                raise
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     ist_today = ist.date()
     nearest = data.expiries[0] if data.expiries else None

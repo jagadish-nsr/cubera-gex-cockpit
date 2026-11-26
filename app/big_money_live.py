@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.big_money import IST, _IST_OFFSET_S, BigMoneyDetector, append_event
-from data.dhan_feed import SUB_FULL, connect, decode_packet, resolve_futures
+from data.dhan_feed import SUB_FULL, connect, decode_packet, ltt_to_epoch, resolve_futures
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = ROOT / "data" / "journal" / "big_money_raw"           # gitignored (under data/journal/)
@@ -210,7 +210,7 @@ class Collector:
                     c = contracts.get(tick.security_id)
                     if c is None:
                         continue
-                    epoch = (int(tick.ltt) - _IST_OFFSET_S) if tick.ltt else int(time.time())
+                    epoch = ltt_to_epoch(tick.ltt)
                     self.status.last_tick_epoch = epoch
                     self.status.per_symbol[c["symbol"]] = self.status.per_symbol.get(c["symbol"], 0) + 1
                     if self.save_raw:

@@ -38,6 +38,7 @@ _DB_LOCK = threading.Lock()
 _PRE_MARKET_CACHE: dict[str, dict] = {}     # symbol -> pre-market state dict
 _POST_MARKET_CACHE: dict[str, dict] = {}    # symbol -> post-market state dict
 _CHIME_TRIGGERED_DAYS: set[tuple[str, str]] = set()  # (symbol, "YYYY-MM-DD")
+_BOOK_WARNED: set[tuple[str, str, str]] = set()  # (symbol, "YYYY-MM-DD", reason): log once
 _CACHE_LOCK = threading.Lock()
 _PM_THREADS: dict[str, threading.Thread] = {}
 _POST_THREADS: dict[str, threading.Thread] = {}
@@ -494,7 +495,9 @@ _PM_POLL_START_MIN = 8 * 60 + 50
 _PM_POLL_END_MIN = 9 * 60 + 22
 _PM_POLL_HARD_END_MIN = 9 * 60 + 30  # stay awake until discovered, never past this
 _MORNING_BRIEFING_MIN = 6 * 60 + 30
-_LTP_OPEN_SOURCES = frozenset({"dhan-ltp", "spot-ltp", "ws-ltp"})
+_LTP_OPEN_SOURCES = frozenset({"dhan-ltp", "spot-ltp", "ws-ltp", "spot-open"})
+# A WS-store open further than this from the live print is not the day open.
+_STORE_OPEN_MAX_DEVIATION = 0.005
 
 
 def _cash_open_has_passed(now: datetime) -> bool:
@@ -652,6 +655,24 @@ def _resolve_discovery_print(
         return ltp, (prev or fallback_prev), "dhan-ltp", as_of
 
     store_open, store_ltp, store_prev, store_as_of = _store_live_print(symbol, today)
+    if store_open > 0 and store_ltp > 0 and (
+        abs(store_open - store_ltp) / store_ltp > _STORE_OPEN_MAX_DEVIATION
+    ):
+        # Before the official open the WS packet's open field is a constant that does
+        # not track the auction (23 and 25 Nov: Nifty 25,368.00 and Bank Nifty
+        # 62,656.65 against live prints 1-2% away; the pre-open tape has every poll).
+        # An open that far from the live print is not an open. Fall through to LTP.
+        log_key = (symbol.upper(), today.isoformat(), f"store-open:{store_open:.2f}")
+        with _CACHE_LOCK:
+            first_log = log_key not in _BOOK_WARNED
+            _BOOK_WARNED.add(log_key)
+        if first_log:
+            log.info(
+                "%s store open %.2f ignored: %.2f%% from live print %.2f",
+                symbol.upper(), store_open,
+                100.0 * abs(store_open - store_ltp) / store_ltp, store_ltp,
+            )
+        store_open = 0.0
     if after_match and store_open > 0:
         return store_open, (store_prev or prev or fallback_prev), "spot-open", store_as_of or as_of
     if after_match and store_ltp > 0:
@@ -1142,6 +1163,42 @@ def get_pre_market_state(
         pw_val = float(snap.get("put_wall") or 0.0)
         flip_val = float(snap.get("gamma_flip") or 0.0)
         net_gex_raw = snap.get("net_gex")
+
+    # Which book the walls come from. The stored row is the last session's close.
+    # After 09:07 the chain publisher has the live book for today's series, which
+    # is the same book the dashboard shows from 09:15. Prefer it. A stored book of
+    # an expired chain (zero gamma) is not a book at all: say so, do not quote it.
+    book_source = "prior-session" if (cw_val > 0 or pw_val > 0 or flip_val > 0) else "unavailable"
+    book_note = ""
+    book_spot = 0.0
+    book_as_of = str(snap.get("as_of") or "")
+    live_book = None if phase_code == "PRE_MARKET_SETUP" else _published_book(symbol, now_ist)
+    if live_book is not None:
+        cw_val = live_book["call_wall"]
+        pw_val = live_book["put_wall"]
+        flip_val = live_book["gamma_flip"]
+        net_gex_raw = live_book["net_gex"]
+        book_source = "live-chain"
+        book_as_of = live_book["as_of"]
+        book_spot = float(live_book.get("spot") or 0.0)
+    else:
+        from data.market_snapshot import book_degenerate_reason
+        degenerate = book_degenerate_reason(cw_val, pw_val, flip_val, net_gex_raw, session_spot)
+        if degenerate:
+            warn_key = (symbol.upper(), today_str, degenerate)
+            with _CACHE_LOCK:
+                first_warning = warn_key not in _BOOK_WARNED
+                _BOOK_WARNED.add(warn_key)
+            if first_warning:
+                log.warning(
+                    "%s stored book refused for the %s card: %s (walls %.0f/%.0f flip %.0f). "
+                    "No live chain book yet.",
+                    symbol.upper(), phase_code, degenerate, cw_val, pw_val, flip_val,
+                )
+            cw_val = pw_val = flip_val = 0.0
+            net_gex_raw = None
+            book_source = "unavailable"
+            book_note = degenerate
     try:
         net_gex_val = float(net_gex_raw) if net_gex_raw is not None else None
     except (TypeError, ValueError):
@@ -1189,6 +1246,9 @@ def get_pre_market_state(
         "put_wall": pw_val,
         "gamma_flip": flip_val,
         "net_gex": net_gex_val,
+        "book_source": book_source,
+        "book_note": book_note,
+        "book_as_of": book_as_of,
         "fii_bias": fii_bias,
         "fii_net_fut": fii_net_fut,
         "prior_session_cvd": prior_cvd,
@@ -1308,6 +1368,17 @@ def get_pre_market_state(
             state["is_discovered"] = True
             state["discovered_spot"] = disc_spot
             state["prev_close"] = p_close
+            # An LTP → day-open upgrade copies the first lock. Carry the book the
+            # regime was just classified on, or reseal reads the first lock's walls.
+            state["call_wall"] = cw_val
+            state["put_wall"] = pw_val
+            state["gamma_flip"] = flip_val
+            state["net_gex"] = net_gex_val
+            state["book_source"] = book_source
+            state["book_note"] = book_note or (
+                _book_spot_note(book_spot, disc_spot) if book_source == "live-chain" else ""
+            )
+            state["book_as_of"] = book_as_of
             state["gap_pts"] = gap_pts
             state["gap_pct"] = gap_pct
             state["gap_fill_status"] = "FILLED" if is_filled else "UNFILLED"
@@ -1527,6 +1598,88 @@ def _contracts_from_published(symbol: str):
     return None
 
 
+def _published_book(symbol: str, now_ist: datetime) -> dict | None:
+    """Today's live chain book (walls, flip, net GEX), or None when it is not usable.
+
+    Same publisher the dashboard reads, in memory first and the ingest pickle second.
+    Refused when degraded, OI stale, published on another IST day, missing a wall or
+    flip, or carrying a zero-gamma book (an expired series).
+    """
+    from data.market_snapshot import book_degenerate_reason
+
+    pub = None
+    try:
+        from app.live_fetcher import latest as chain_latest
+        pub = chain_latest(symbol, "current_week") or chain_latest(symbol)
+    except Exception:
+        pub = None
+    data = pub.get("data") if pub else None
+    fetched = pub.get("fetched") if pub else None
+    if data is None:
+        try:
+            import pickle
+            p = Path("data/journal") / f"latest_snap_{symbol.upper()}.pkl"
+            if p.exists():
+                with open(p, "rb") as f:
+                    wrap = pickle.load(f)
+                if isinstance(wrap, dict):
+                    data = wrap.get("data")
+                    fetched = wrap.get("fetched_at") or wrap.get("fetched")
+        except Exception:
+            data = None
+    if data is None or bool(getattr(data, "is_degraded", False)):
+        return None
+    lv = getattr(data, "levels", None)
+    if lv is None or bool(getattr(lv, "oi_stale", False)):
+        return None
+    if fetched is None or not hasattr(fetched, "astimezone"):
+        return None
+    try:
+        fetched_ist = fetched.astimezone(IST)
+        if fetched_ist.date() != now_ist.astimezone(IST).date():
+            return None
+        cw = float(getattr(lv, "call_wall", 0.0) or 0.0)
+        pw = float(getattr(lv, "put_wall", 0.0) or 0.0)
+        flip = float(getattr(lv, "flip", 0.0) or 0.0)
+        net_raw = getattr(lv, "total_net_gex", None)
+        net = None if net_raw is None else float(net_raw)
+        spot = float(getattr(lv, "spot", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if cw <= 0 or pw <= 0 or flip <= 0 or net is None:
+        return None
+    if book_degenerate_reason(cw, pw, flip, net, spot):
+        return None
+    return {
+        "call_wall": cw,
+        "put_wall": pw,
+        "gamma_flip": flip,
+        "net_gex": net,
+        "spot": spot,
+        "as_of": fetched_ist.isoformat(timespec="seconds"),
+    }
+
+
+# A chain book computed this far from the open print was priced at the prior close.
+_BOOK_SPOT_STALE_FRAC = 0.0025
+
+
+def _book_spot_note(book_spot: float, open_px: float) -> str:
+    """Say so when the walls were computed at a spot the open has since left.
+
+    Gamma peaks move with spot. 25 Nov Sensex: the 09:07 chain (spot 82,436) had walls
+    83,000 / 81,500; once it repriced at the 83,437 open they were 84,000 / 83,000.
+    """
+    if book_spot <= 0 or open_px <= 0:
+        return ""
+    if abs(book_spot - open_px) / open_px <= _BOOK_SPOT_STALE_FRAC:
+        return ""
+    return (
+        f"Chain book was computed at spot {book_spot:,.0f}, the open is {open_px:,.0f}. "
+        "Walls and flip can shift once the chain reprices at the open."
+    )
+
+
 def acknowledge_pre_market_chime(symbol: str = "NIFTY") -> None:
     """Mark morning chime bell as played for today so it does not repeat."""
     today_str = datetime.now(IST).strftime("%Y-%m-%d")
@@ -1634,6 +1787,24 @@ def classify_opening_gap(
         step = 50.0
     # One listed step beyond the wall. Thin prints inside that band are wall tests.
     clear_buf = max(step, 25.0)
+
+    # No walls and no flip means no book (expired series, chain not published).
+    # Reading the gap against a placeholder strike is how 25 Nov quoted a "shared
+    # gamma strike" at the prior close. Report the gap and nothing about gamma.
+    if call_wall <= 0 and put_wall <= 0 and flip <= 0:
+        return {
+            "regime": "BOOK_UNAVAILABLE",
+            "badge": "⚠️ NO USABLE BOOK",
+            "color": "var(--warn)",
+            "briefing": (
+                f"Opening gap of {gap_pts:+.1f} pts ({gap_pct:+.2f}%) at ₹{spot:,.0f}. "
+                "No usable gamma book yet (expired series or the chain has not published). "
+                "There is no wall, balance or book sign to read the open against."
+            ),
+            "favored_play": "MAP ONLY — NO BOOK",
+            "gap_pts": gap_pts,
+            "gap_pct": gap_pct,
+        }
 
     through_call = call_wall > 0 and spot >= call_wall + clear_buf
     at_call = call_wall > 0 and (call_wall - 15.0) <= spot < (call_wall + clear_buf)

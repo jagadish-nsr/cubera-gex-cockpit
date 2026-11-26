@@ -4,6 +4,7 @@ The recommendation journal under data/journal is the live book. These tests
 use a temporary database.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -78,6 +79,12 @@ def _batch(spot: float = 24510.0):
     mock_data.raw_agg = {"pcr": 1.1}
     mock_data.levels = MagicMock(
         spot=spot, call_wall=24600.0, put_wall=24400.0, gamma_flip=24480.0,
+    )
+    # The engine refuses without a real bar VWAP; a MagicMock bar is not a number.
+    mock_data.latest_bar = SimpleNamespace(
+        vwap=spot, vwap_sigma_1=spot + 40.0, vwap_lower_1=spot - 40.0,
+        vwap_sigma_2=spot + 80.0, vwap_lower_2=spot - 80.0, rvol_tod=1.0,
+        close=spot, high=spot + 20.0, low=spot - 20.0, cvd=0.0, oi_fresh=True,
     )
     with patch("analytics.trade_ideas._evaluate_ce_strategies", return_value=[]), \
          patch("analytics.trade_ideas._evaluate_pe_strategies", return_value=[]):

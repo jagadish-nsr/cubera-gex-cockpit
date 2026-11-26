@@ -127,13 +127,19 @@ def thesis_state_at(
         if spot >= pw + step:
             return "INVALIDATED"
         return "PENDING"
+    if r == "BOOK_UNAVAILABLE":
+        # No walls and no flip were known at discovery: nothing to hold or breach.
+        return "NO_BOOK"
     if r == "GAP_UP_INTO_POS_GAMMA":
-        # NO FADE: breach if gap fills and price extends through prior against open.
-        if fill and prev > 0 and spot >= prev:
+        # NO FADE: breach if the gap fills and price extends through the prior close
+        # against the open (down, for a gap up). Through = at or below prev.
+        # The check read `spot >= prev` until 25 Nov: it flagged a gap that was still
+        # above prev and called MAP_OK a 580-pt fade (23 Nov Nifty 25,349 vs prev 25,800).
+        if fill and prev > 0 and spot <= prev:
             return "MAP_BREACH"
         return "MAP_OK"
     if r == "GAP_DOWN_INTO_POS_GAMMA":
-        if fill and prev > 0 and spot <= prev:
+        if fill and prev > 0 and spot >= prev:
             return "MAP_BREACH"
         return "MAP_OK"
     if r == "GAP_UP_RUNAWAY":
@@ -316,6 +322,15 @@ def append_path_event(
         return event
 
 
+def _discovery_note(state: dict) -> str:
+    """Regime and the book it was read on. A reader must see which book it was."""
+    note = f"regime={state.get('gap_regime') or ''}"
+    book = str(state.get("book_source") or "")
+    if book:
+        note += f" book={book}"
+    return note
+
+
 def seal_discovery(symbol: str, state: dict) -> dict | None:
     """Write DISCOVERY checkpoint from a just-discovered pre-market state."""
     if not state or not state.get("is_discovered"):
@@ -330,8 +345,86 @@ def seal_discovery(symbol: str, state: dict) -> dict | None:
         spot,
         trade_date=state.get("date"),
         gap_fill=state.get("gap_fill_status") or "UNFILLED",
-        note=f"regime={state.get('gap_regime') or ''}",
+        note=_discovery_note(state),
     )
+
+
+def _refresh_checkpoints(
+    conn,
+    sym: str,
+    t_date: str,
+    *,
+    old_open: float,
+    open_px: float,
+    cw: float,
+    pw: float,
+    flip: float,
+    prev: float,
+    regime: str,
+    step: float,
+) -> int:
+    """Recompute rows after DISCOVERY against the reseated open and book.
+
+    23 Nov: the official open reached the desk at ~09:17:40, after T0915 was
+    sampled against the provisional print and stale walls. The rows kept those
+    offsets and thesis states, so Nifty read INVALIDATED against a map that was
+    MAP-only. Spots are the recorded ones. The gap-fill flag is rebuilt from the
+    spots seen so far and keeps a recorded FILLED only when the gap direction
+    is unchanged (the intraday extremes between checkpoints are not stored).
+    """
+    rows = conn.execute(
+        "SELECT seq, checkpoint, spot, gap_fill, spot_vs_open_pts, spot_vs_flip_pts, "
+        "spot_vs_cw_pts, spot_vs_pw_pts, thesis_state, note "
+        "FROM premarket_path_events "
+        "WHERE trade_date = ? AND symbol = ? AND checkpoint != 'DISCOVERY' "
+        "ORDER BY seq ASC",
+        (t_date, sym),
+    ).fetchall()
+    if not rows:
+        return 0
+    gap_dir_new = (open_px - prev) > 0 if prev > 0 else None
+    gap_dir_old = (old_open - prev) > 0 if prev > 0 else None
+    same_dir = gap_dir_new is not None and gap_dir_new == gap_dir_old
+    seen = [open_px]
+    changed = 0
+    for r in rows:
+        spot = float(r["spot"] or 0)
+        if spot <= 0:
+            continue
+        seen.append(spot)
+        if prev > 0 and open_px > prev:
+            coarse = min(seen) <= prev
+        elif prev > 0 and open_px < prev:
+            coarse = max(seen) >= prev
+        else:
+            coarse = True
+        filled = coarse or (same_dir and str(r["gap_fill"] or "").upper() == "FILLED")
+        gfill = "FILLED" if filled else "UNFILLED"
+        thesis = thesis_state_at(
+            regime, open_px=open_px, spot=spot, cw=cw, pw=pw, flip=flip,
+            prev=prev, gap_fill=gfill, step=step,
+        )
+        vs_open = round(spot - open_px, 2) if open_px else None
+        vs_flip = round(spot - flip, 2) if flip else None
+        vs_cw = round(spot - cw, 2) if cw else None
+        vs_pw = round(spot - pw, 2) if pw else None
+        if (
+            vs_open == r["spot_vs_open_pts"] and vs_flip == r["spot_vs_flip_pts"]
+            and vs_cw == r["spot_vs_cw_pts"] and vs_pw == r["spot_vs_pw_pts"]
+            and gfill == str(r["gap_fill"] or "").upper() and thesis == r["thesis_state"]
+        ):
+            continue
+        note = str(r["note"] or "")
+        if "recomputed after reseal" not in note:
+            note = f"{note} recomputed after reseal".strip()
+        conn.execute(
+            "UPDATE premarket_path_events SET spot_vs_open_pts = ?, spot_vs_flip_pts = ?, "
+            "spot_vs_cw_pts = ?, spot_vs_pw_pts = ?, gap_fill = ?, thesis_state = ?, note = ? "
+            "WHERE trade_date = ? AND symbol = ? AND seq = ?",
+            (vs_open, vs_flip, vs_cw, vs_pw, gfill, thesis, note, t_date, sym, r["seq"]),
+        )
+        changed += 1
+    return changed
 
 
 def reseal_discovery(symbol: str, state: dict) -> dict | None:
@@ -351,7 +444,7 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
     ensure_path_schema()
     sym = config.index_key(symbol)
     t_date = state.get("date") or datetime.now(IST).strftime("%Y-%m-%d")
-    note = f"regime={state.get('gap_regime') or ''}"
+    note = _discovery_note(state)
     gfill = str(state.get("gap_fill_status") or "UNFILLED").upper()
 
     get_conn, db_lock = _db()
@@ -369,12 +462,16 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
         cw_s = float(state.get("call_wall") or 0)
         pw_s = float(state.get("put_wall") or 0)
         flip_s = float(state.get("gamma_flip") or 0)
-        if cw_s > 0:
-            cw = cw_s
-        if pw_s > 0:
-            pw = pw_s
-        if flip_s > 0:
-            flip = flip_s
+        if state.get("book_source"):
+            # The state names its book. Zeros mean "no book", not "keep the old walls".
+            cw, pw, flip = cw_s, pw_s, flip_s
+        else:
+            if cw_s > 0:
+                cw = cw_s
+            if pw_s > 0:
+                pw = pw_s
+            if flip_s > 0:
+                flip = flip_s
         regime = str(state.get("gap_regime") or auction.get("gap_regime") or "")
         step = float(config.strike_step_for(sym))
         thesis = thesis_state_at(
@@ -435,7 +532,16 @@ def reseal_discovery(symbol: str, state: dict) -> dict | None:
                 t_date, sym,
             ),
         )
+        refreshed = _refresh_checkpoints(
+            conn, sym, t_date,
+            old_open=float(old.get("spot") or spot),
+            open_px=open_px, cw=cw, pw=pw, flip=flip,
+            prev=float(state.get("prev_close") or prev or 0),
+            regime=regime, step=step,
+        )
         conn.commit()
+        if refreshed:
+            log.info("path checkpoints recomputed %s %s: %d row(s)", sym, t_date, refreshed)
         log.info(
             "path DISCOVERY resealed %s %s spot %.2f→%.2f note %r→%r",
             sym, t_date, float(old.get("spot") or 0), spot,
@@ -561,8 +667,14 @@ def score_path(symbol: str, trade_date: str | None = None) -> dict | None:
         if e.get("thesis_state"):
             last_thesis = str(e["thesis_state"])
             break
+    # A session with no usable book at discovery has no thesis to score. Scoring it
+    # anyway gave 25 Nov Nifty/Bank Nifty 96% against a placeholder strike and put
+    # that into the base rate every later card quotes.
+    unscored = regime.upper() == "BOOK_UNAVAILABLE" or last_thesis == "NO_BOOK"
     # Final outcome enum
-    if last_thesis in ("HOLDING",):
+    if unscored:
+        outcome = "NO_BOOK"
+    elif last_thesis in ("HOLDING",):
         outcome = "HOLD"
     elif last_thesis in ("INVALIDATED",):
         outcome = "FAIL"
@@ -576,8 +688,9 @@ def score_path(symbol: str, trade_date: str | None = None) -> dict | None:
     t_comp = _thesis_component(last_thesis)
     e_comp = _excursion_component(regime, mfe, mae, open_px)
     g_comp = _gap_component(regime, str(auction.get("gap_fill_status") or ""))
-    eff = round(0.60 * t_comp + 0.25 * e_comp + 0.15 * g_comp, 1)
+    eff = None if unscored else round(0.60 * t_comp + 0.25 * e_comp + 0.15 * g_comp, 1)
     detail = {
+        "unscored": "no usable book at discovery" if unscored else "",
         "thesis_state": last_thesis,
         "thesis_component": t_comp,
         "excursion_component": round(e_comp, 1),
@@ -629,8 +742,8 @@ def score_path(symbol: str, trade_date: str | None = None) -> dict | None:
         "events": events,
     }
     log.info(
-        "path scored %s %s outcome=%s eff=%.1f mfe=%.1f mae=%.1f",
-        sym, t_date, outcome, eff, mfe, mae,
+        "path scored %s %s outcome=%s eff=%s mfe=%.1f mae=%.1f",
+        sym, t_date, outcome, "n/a" if eff is None else f"{eff:.1f}", mfe, mae,
     )
     return out
 

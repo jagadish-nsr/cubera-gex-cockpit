@@ -14,6 +14,7 @@ echo "  🛠️ STARTING CUBERA GEX COCKPIT — DEVELOPMENT MODE"
 echo "  URL  : http://localhost:8650"
 echo "  Mode : Hot Reload Active"
 echo "  Watchdog : soft (log-only stalls; no process restart)"
+echo "  Dhan chain: yields to prod ingest in session (CUBERA_DHAN_CHAIN_YIELD=0 overrides)"
 echo "======================================================================"
 
 # Soft watchdog: stalls emit watchdog.stall events; never execv on 8650.

@@ -486,6 +486,12 @@ def build_readiness(*, market_open: bool | None = None) -> dict[str, Any]:
     open_cbs = [s for s, c in circuits.items() if not c.get("ok")]
     if open_cbs:
         reasons.append("circuit_open:" + ",".join(open_cbs))
+    # A last-known-good book is usable for display, not a live read. EXTERNAL serve
+    # cannot see ingest's breakers, so the degraded flag on the published snap is the
+    # only signal. 26 Nov: 216 of 375 session minutes CHAIN_DEGRADED while ready=true.
+    degraded = [s for s, c in chains.items() if c.get("degraded")]
+    if degraded:
+        reasons.append("chain_degraded:" + ",".join(degraded))
     if ingest.get("required") and not ingest.get("ok"):
         reasons.append(ingest.get("reason") or "ingest_heartbeat_stale")
     if not token.get("ok"):

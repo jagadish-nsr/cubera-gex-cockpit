@@ -16,7 +16,9 @@ from web_server import (
     _next_session_levels,
 )
 import config
+import web_server
 import data.journal.store as journal_store
+import sentinel.storage.db as sentinel_db
 
 
 async def asgi_request(method: str, path: str, body: dict = None, headers: dict = None):
@@ -73,13 +75,16 @@ async def asgi_request(method: str, path: str, body: dict = None, headers: dict 
     return response_status[0], response_headers, content
 
 
-def _seed_ci_dashboard_pickle(symbol: str = "NIFTY") -> None:
-    """Write a non-DEMO off-market book so CI can exercise persistence paths.
+def _seed_ci_dashboard_pickle(symbol: str, journal_dir) -> None:
+    """Write a non-DEMO off-market book into a TEMP journal so CI can exercise persistence paths.
 
     ``/api/status`` ignores ``DEMO-SYNTHETIC`` sources for header spot, so the
     seeded bundle is relabeled ``ci-fixture`` after ``load_dashboard(use_demo)``.
     Also seeds a few Sentinel bars + daily CVD so tape persistence tests work
     without Dhan credentials.
+
+    The fixture book is centred on the demo spot 24,500. It must never reach
+    ``data/journal``: the cockpit would serve it as the live book.
     """
     from datetime import datetime, timedelta, timezone
     from pathlib import Path
@@ -100,18 +105,21 @@ def _seed_ci_dashboard_pickle(symbol: str = "NIFTY") -> None:
         "ltp": spot,
     }
     dash.fetched_at = datetime.now(timezone.utc)
-    path = snap_path_for(symbol)
+    path = snap_path_for(symbol, journal_dir)
     write_latest_snap(path, {"data": dash, "window": "weekly"})
     write_snap_meta(
         symbol,
         fetched_at_epoch=dash.fetched_at.timestamp(),
         window="weekly",
-        directory=Path("data/journal"),
+        directory=journal_dir,
     )
 
     ensure_sentinel_schema()
     inst = f"{symbol.upper()}-FUT"
-    t0 = datetime.now(timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=5)
+    # Fixed 10:00 IST on the previous day: always in the past and inside the 09:00-15:40
+    # tape window. A "now - 5 min" stamp fails outside market hours.
+    ist = timezone(timedelta(hours=5, minutes=30))
+    t0 = (datetime.now(ist) - timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
     for i in range(5):
         px = spot + i
         save_bar(
@@ -154,13 +162,31 @@ def _seed_ci_dashboard_pickle(symbol: str = "NIFTY") -> None:
 
 @pytest.fixture(autouse=True)
 def fresh_journal_db(tmp_path, monkeypatch):
-    """Isolate journal tests to a fresh temporary database and baseline off-market state."""
+    """Isolate every write to a temp dir: journal DB, snapshot journal, and Sentinel DB.
+
+    Earlier this seeded ``data/journal/latest_snap_NIFTY.pkl`` and ``data/sentinel.db``
+    on every run, so the live cockpit served a 24,500 demo fixture as the market book.
+    """
     tmp_db_path = tmp_path / "test_web_journal.db"
+    journal_dir = tmp_path / "journal"
     monkeypatch.setattr(journal_store, "_DB_PATH", tmp_db_path)
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", tmp_path / "sentinel.db")
+    monkeypatch.setattr(web_server, "JOURNAL_DIR", journal_dir)
     monkeypatch.setattr(config, "is_market_open", lambda *args, **kwargs: False)
     journal_store.ensure_schema()
-    _seed_ci_dashboard_pickle("NIFTY")
+    _seed_ci_dashboard_pickle("NIFTY", journal_dir)
+    assert tmp_path in (journal_dir / "x").parents, "test snapshot must stay in tmp_path"
     yield tmp_db_path
+
+
+def test_cockpit_ladder_net_gex_is_call_minus_put_per_strike():
+    """Every ladder row's Net GEX equals call magnitude minus put magnitude at that strike."""
+    status, _, content = asyncio.run(asgi_request("GET", "/api/cockpit-data?symbol=NIFTY"))
+    assert status == 200
+    rows = json.loads(content)["ladder"]
+    assert rows
+    for r in rows:
+        assert r["net_gex"] == pytest.approx(-r["call_gex"] + r["put_gex"], abs=1.0)
 
 
 def test_get_root_cockpit_html():
