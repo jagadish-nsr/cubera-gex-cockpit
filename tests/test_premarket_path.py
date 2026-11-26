@@ -101,13 +101,43 @@ def test_thesis_no_fade_breach_when_gap_fills_through_prior():
         open_px=24500.0, spot=24480.0, cw=24700.0, pw=24300.0,
         flip=24400.0, prev=24380.0, gap_fill="UNFILLED",
     )
-    breach = thesis_state_at(
+    # Filled, but spot is back above the prior close: the gap faded and recovered.
+    recovered = thesis_state_at(
         "GAP_UP_INTO_POS_GAMMA",
         open_px=24500.0, spot=24400.0, cw=24700.0, pw=24300.0,
         flip=24400.0, prev=24380.0, gap_fill="FILLED",
     )
+    # Filled and through the prior close against the open: the no-fade map failed.
+    breach = thesis_state_at(
+        "GAP_UP_INTO_POS_GAMMA",
+        open_px=24500.0, spot=24370.0, cw=24700.0, pw=24300.0,
+        flip=24400.0, prev=24380.0, gap_fill="FILLED",
+    )
     assert ok == "MAP_OK"
+    assert recovered == "MAP_OK"
     assert breach == "MAP_BREACH"
+
+
+def test_thesis_no_fade_23_nov_nifty_fade_is_a_breach():
+    """23 Nov Nifty: open 25,929, prior close 25,800.6, settled 25,349.65 (-580 from open).
+
+    The check was inverted: it called this MAP_OK and a still-intact gap MAP_BREACH.
+    """
+    kw = dict(open_px=25929.15, cw=26000.0, pw=26000.0, flip=25806.5, prev=25800.6)
+    assert thesis_state_at("GAP_UP_INTO_POS_GAMMA", spot=25349.65, gap_fill="FILLED", **kw) == "MAP_BREACH"
+    assert thesis_state_at("GAP_UP_INTO_POS_GAMMA", spot=25971.0, gap_fill="FILLED", **kw) == "MAP_OK"
+    assert thesis_state_at("GAP_UP_INTO_POS_GAMMA", spot=25971.0, gap_fill="UNFILLED", **kw) == "MAP_OK"
+    # Mirror: gap down, through the prior close upward is the breach.
+    kd = dict(open_px=24500.0, cw=24800.0, pw=24300.0, flip=24600.0, prev=24650.0)
+    assert thesis_state_at("GAP_DOWN_INTO_POS_GAMMA", spot=24660.0, gap_fill="FILLED", **kd) == "MAP_BREACH"
+    assert thesis_state_at("GAP_DOWN_INTO_POS_GAMMA", spot=24600.0, gap_fill="FILLED", **kd) == "MAP_OK"
+
+
+def test_thesis_book_unavailable_is_no_book():
+    assert thesis_state_at(
+        "BOOK_UNAVAILABLE", open_px=25658.35, spot=25700.0, cw=0.0, pw=0.0,
+        flip=0.0, prev=25349.65, gap_fill="UNFILLED",
+    ) == "NO_BOOK"
 
 
 def test_seal_and_idempotent_checkpoints(path_db):
@@ -412,3 +442,91 @@ def test_low_n_does_not_demote(path_db):
     assert w["side_hint"] == "CE"
     assert w["structure"] is not None
     assert (w.get("history") or {}).get("n", 0) == 0
+
+
+def test_reseal_recomputes_checkpoints_sampled_on_the_provisional_open(path_db):
+    """23 Nov Nifty: T0915 was sampled on the 25,368 print before the official 25,929 open."""
+    date = "2026-11-23"
+    prov = _seed_auction(
+        "NIFTY", date,
+        spot=25368.0, prev=25800.6, gap_pts=-432.6, gap_pct=-1.68,
+        regime="PUT_WALL_BREAKDOWN_TEST", favored="WATCH THE SHARED GAMMA STRIKE",
+        cw=25500.0, pw=25500.0, flip=25816.0,
+    )
+    assert seal_discovery("NIFTY", prov) is not None
+    t0915 = append_path_event("NIFTY", "T0915", 25971.0, trade_date=date)
+    assert t0915["thesis_state"] == "INVALIDATED"  # read against the provisional put wall
+    assert t0915["spot_vs_open_pts"] == pytest.approx(603.0)
+
+    official = dict(prov)
+    official.update({
+        "discovered_spot": 25929.15, "gap_pts": 128.55, "gap_pct": 0.50,
+        "gap_regime": "GAP_UP_INTO_POS_GAMMA", "favored_play": "MAP ONLY — NO FADE",
+        "open_source": "dhan-open", "gap_fill_status": "UNFILLED",
+        "call_wall": 26000.0, "put_wall": 25800.0, "gamma_flip": 25806.5,
+        "book_source": "live-chain",
+    })
+    ppm.save_pre_market_state("NIFTY", official)
+    ppm.save_opening_watch("NIFTY", {
+        "status": "STAGED", "regime": official["gap_regime"],
+        "map_strip": {
+            "open": 25929.15, "call_wall": 26000.0, "put_wall": 25800.0,
+            "gamma_flip": 25806.5, "prev_close": 25800.6,
+            "gap_pts": 128.55, "gap_pct": 0.50,
+        },
+    }, trade_date=date)
+    assert reseal_discovery("NIFTY", official) is not None
+
+    evs = {e["checkpoint"]: e for e in list_path_events("NIFTY", date)}
+    t = evs["T0915"]
+    assert t["thesis_state"] == "MAP_OK"
+    assert t["spot_vs_open_pts"] == pytest.approx(41.85)
+    assert t["spot_vs_cw_pts"] == pytest.approx(-29.0)
+    assert t["spot_vs_pw_pts"] == pytest.approx(171.0)
+    assert t["gap_fill"] == "UNFILLED"
+    assert "recomputed after reseal" in t["note"]
+    assert evs["DISCOVERY"]["note"] == "regime=GAP_UP_INTO_POS_GAMMA book=live-chain"
+    # Second call has nothing left to change.
+    assert reseal_discovery("NIFTY", official) is None
+
+
+def test_reseal_with_no_book_zeroes_walls_instead_of_keeping_the_old_ones(path_db):
+    date = "2026-11-25"
+    stale = _seed_auction(
+        "NIFTY", date, spot=25658.35, prev=25349.65, gap_pts=308.7, gap_pct=1.22,
+        regime="SHORT_GAMMA_WALL_TEST", cw=25350.0, pw=25350.0, flip=25349.65,
+    )
+    assert seal_discovery("NIFTY", stale) is not None
+    nobook = dict(stale)
+    nobook.update({
+        "gap_regime": "BOOK_UNAVAILABLE", "favored_play": "MAP ONLY — NO BOOK",
+        "call_wall": 0.0, "put_wall": 0.0, "gamma_flip": 0.0, "book_source": "unavailable",
+    })
+    ppm.save_pre_market_state("NIFTY", nobook)
+    ppm.save_opening_watch("NIFTY", {
+        "status": "STAGED", "regime": "BOOK_UNAVAILABLE",
+        "map_strip": {"open": 25658.35, "call_wall": 0.0, "put_wall": 0.0,
+                      "gamma_flip": 0.0, "prev_close": 25349.65},
+    }, trade_date=date)
+    out = reseal_discovery("NIFTY", nobook)
+    assert out is not None
+    assert out["thesis_state"] == "NO_BOOK"
+    assert out["spot_vs_cw_pts"] is None and out["spot_vs_pw_pts"] is None
+    assert out["note"] == "regime=BOOK_UNAVAILABLE book=unavailable"
+
+
+def test_no_book_session_is_not_scored_and_stays_out_of_the_base_rate(path_db):
+    date = "2026-11-25"
+    state = _seed_auction(
+        "NIFTY", date, spot=25658.35, prev=25349.65, gap_pts=308.7, gap_pct=1.22,
+        regime="BOOK_UNAVAILABLE", favored="MAP ONLY — NO BOOK", cw=0.0, pw=0.0, flip=0.0,
+    )
+    seal_discovery("NIFTY", state)
+    append_path_event("NIFTY", "T1000", 25774.0, trade_date=date)
+    scored = score_path("NIFTY", date)
+    assert scored["thesis_outcome"] == "NO_BOOK"
+    assert scored["path_efficiency_pct"] is None
+    assert "no usable book" in scored["detail"]["unscored"]
+    rec = ppm.get_persisted_auction_record("NIFTY", date)
+    assert rec["path_efficiency_pct"] is None
+    assert regime_path_stats("NIFTY", "BOOK_UNAVAILABLE")["n"] == 0

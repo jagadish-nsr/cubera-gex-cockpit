@@ -497,6 +497,14 @@ def build_pre_open_watch(
         caution_bits.append(
             "Call and put gamma share one strike — map location only, not a squeeze/cascade structure."
         )
+    if regime == "BOOK_UNAVAILABLE":
+        title = "Opening gap only — no usable gamma book"
+        caution_bits.append(
+            "No usable gamma book at discovery (expired series or chain not published). "
+            "Wall and balance levels are not shown; this card carries the gap only."
+        )
+    elif str(pm.get("book_note") or "").strip():
+        caution_bits.append(str(pm["book_note"]).strip())
     if caution_hist:
         caution_bits.append(caution_hist)
     if structure is not None:
@@ -539,6 +547,7 @@ def build_pre_open_watch(
             "gap_pts": float(pm.get("gap_pts") or 0),
             "gap_pct": float(pm.get("gap_pct") or 0),
             "shared_gamma": shared_gamma,
+            "book_source": str(pm.get("book_source") or ""),
         },
         history=history,
     )

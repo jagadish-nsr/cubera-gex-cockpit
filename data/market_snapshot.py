@@ -82,6 +82,37 @@ def _attach_shared_gamma(item: dict) -> None:
         item["wall_note"] = "shared gamma strike"
 
 
+def book_degenerate_reason(
+    call_wall: float | None,
+    put_wall: float | None,
+    flip: float | None,
+    net_gex: float | None,
+    spot: float | None,
+) -> str:
+    """Why a stored book carries no gamma information, or "" when it looks usable.
+
+    An expired chain has zero gamma everywhere. The close row then holds net GEX of
+    exactly 0, a flip equal to spot, and walls that are only the nearest strike.
+    On 23 Nov the Nifty and Bank Nifty weekly series expired (24 Nov was a holiday),
+    and the 25 Nov premarket card quoted that row as "shared gamma strike ₹25,350"
+    while the live chain published at 09:07 held the real book. Exact zero is the
+    signal: a live book never sums to 0.0.
+    """
+    try:
+        net = None if net_gex is None else float(net_gex)
+        cw = float(call_wall or 0.0)
+        pw = float(put_wall or 0.0)
+        fl = float(flip or 0.0)
+        px = float(spot or 0.0)
+    except (TypeError, ValueError):
+        return "book fields are not numbers"
+    if net is not None and net == 0.0:
+        return "net GEX is exactly zero (empty or expired chain)"
+    if fl > 0 and px > 0 and abs(fl - px) <= 1.0 and cw > 0 and abs(cw - pw) < 1.0:
+        return "flip equals spot with one shared strike (empty or expired chain)"
+    return ""
+
+
 def _book_source_label(source: str) -> str:
     text = (source or "").lower()
     if "fallback" in text or text.startswith("nse"):
