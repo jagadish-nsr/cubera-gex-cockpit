@@ -13,6 +13,23 @@ def disable_live_llm(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def guard_live_dhan_http(monkeypatch):
+    """No unit test may call the Dhan API. Under pytest the cross-process rate gate is off,
+    so a live call here spends prod ingest's /optionchain quota unseen. Tests that need a
+    response patch ``requests.post`` or ``dhan_live._post`` themselves (that wins)."""
+    import requests
+
+    real_post = requests.post
+
+    def _post(url, *a, **k):
+        if "dhan.co" in str(url):
+            raise AssertionError(f"unit test tried a live Dhan call: {url}")
+        return real_post(url, *a, **k)
+
+    monkeypatch.setattr(requests, "post", _post)
+
+
+@pytest.fixture(autouse=True)
 def guard_live_sentinel_db(tmp_path, monkeypatch):
     """Safety guard: no unit test may write data/sentinel.db (the live tape ledger).
 

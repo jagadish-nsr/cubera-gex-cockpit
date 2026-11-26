@@ -592,11 +592,13 @@ def test_chain_ltp_backup_allows_bn_sensex_when_ws_missing(monkeypatch):
     monkeypatch.setattr(rec_store, "resolve_live_option_ltp", lambda *args, **kwargs: None)
     monkeypatch.setattr(sr, "_ensure_option_ws_subscription", lambda *args, **kwargs: None)
     monkeypatch.setattr(sr, "_chain_option_ltp", lambda *args, **kwargs: 412.5)
-    # Keep other gates green
+    # Keep other gates green. A fixed past expiry prices T=0 and the BS target gate refuses,
+    # so the contract sits a few days out from whenever this runs.
+    exp = (datetime.now(timezone(timedelta(hours=5, minutes=30))) + timedelta(days=3)).date()
     monkeypatch.setattr(sr, "_resolve_contract_context", lambda symbol: {
-        "expiry": "2026-11-11",
-        "expiry_tag": "11 NOV",
-        "dte_days": 0.1,
+        "expiry": exp.isoformat(),
+        "expiry_tag": exp.strftime("%d %b").upper(),
+        "dte_days": 3.0,
         "atm_iv": 0.12,
     })
 

@@ -67,6 +67,7 @@ REQUIRED_RELIABILITY_TESTS=(
   tests/test_readiness_external.py
   tests/test_latest_rec.py
   tests/test_sentinel_readonly.py
+  tests/test_session_start_contract.py
 )
 RELIABILITY_PYTEST_ARGS=()
 for rel in "${REQUIRED_RELIABILITY_TESTS[@]}"; do
