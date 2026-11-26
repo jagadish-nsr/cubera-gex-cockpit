@@ -3910,10 +3910,8 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
         return {"status": "error", "symbol": sym, "message": str(exc)}
 
 
-async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week") -> dict:
-    """Compose one cross-index wall-chase watch row (map + tape, no direction pay)."""
-    sym = (sym or "NIFTY").upper()
-    empty = {
+def _wall_chase_empty_row(sym: str) -> dict:
+    return {
         "symbol": sym,
         "active": False,
         "notify": False,
@@ -3932,12 +3930,17 @@ async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week"
         "stretch": {},
         "commentary": None,
     }
+
+
+def _wall_chase_watch_row_sync(sym: str, window: str) -> dict:
+    """Compose one cross-index wall-chase watch row (map + tape, no direction pay)."""
+    empty = _wall_chase_empty_row(sym)
     try:
         idx = config.get_index(sym)
-        dash = await _aload_active_dashboard(sym, window)
+        dash = _load_active_dashboard(sym, window)
         if dash is None or getattr(dash, "levels", None) is None:
             return empty
-        return await asyncio.to_thread(_wall_chase_watch_sync, sym, idx, dash, empty)
+        return _wall_chase_watch_sync(sym, idx, dash, empty)
     except Exception as exc:
         log.debug("wall_chase_watch %s: %s", sym, exc)
         return empty
@@ -4064,16 +4067,43 @@ async def get_wall_chase_watch(window: Optional[str] = None):
     successive wall break/migrate + momentum tape promote CALL/PUT WATCH.
     """
     win = window or "current_week"
-    watches = list(await asyncio.gather(
-        _wall_chase_watch_for_symbol("NIFTY", window=win),
-        _wall_chase_watch_for_symbol("BANKNIFTY", window=win),
-        _wall_chase_watch_for_symbol("SENSEX", window=win),
-    ))
+    now = time.monotonic()
+    hit = _WCW_CACHE.get(win)
+    if hit is not None and now - hit[0] < _WCW_TTL_S:
+        return hit[1]
+    lock = _WCW_LOCKS.setdefault((id(asyncio.get_running_loop()), win), asyncio.Lock())
+    async with lock:
+        hit = _WCW_CACHE.get(win)
+        if hit is not None and time.monotonic() - hit[0] < _WCW_TTL_S:
+            return hit[1]
+        out = await asyncio.to_thread(_wall_chase_watch_all_sync, win)
+        _WCW_CACHE[win] = (time.monotonic(), out)
+        return out
+
+
+# Each call is ~2 ms of work per index (26-Nov profile). It was slow in session (p50
+# 2.2 s, max 71 s) from six hops onto the shared thread pool, queued behind other
+# routes. One hop, and one build shared by every tab polling inside the TTL.
+_WCW_TTL_S = 3.0
+_WCW_CACHE: dict[str, tuple[float, dict]] = {}
+_WCW_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+
+
+def _wall_chase_watch_all_sync(win: str) -> dict:
+    t0 = time.perf_counter()
+    watches = []
+    timing: dict[str, float] = {}
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        t = time.perf_counter()
+        watches.append(_wall_chase_watch_row_sync(sym, win))
+        timing[sym] = round((time.perf_counter() - t) * 1000.0, 1)
+    timing["total"] = round((time.perf_counter() - t0) * 1000.0, 1)
     return {
         "window": win,
         "as_of": _get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST"),
         "watches": watches,
         "notify_count": sum(1 for w in watches if w.get("notify")),
+        "timing_ms": timing,
     }
 
 

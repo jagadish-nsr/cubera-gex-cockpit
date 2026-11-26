@@ -1433,3 +1433,29 @@ def test_watch_episodes_endpoint():
         assert "target_level" in ep
         assert ep.get("status") in ("ACTIVE", "TARGET_HIT", "INVALIDATED", "EXPIRED")
 
+
+
+def test_wall_chase_watch_polls_share_one_build(monkeypatch):
+    """26-Nov: p50 2.2 s from six thread-pool hops per poll. Now one hop, shared inside the TTL."""
+    import web_server
+
+    calls = []
+
+    def _row(sym, win):
+        calls.append(sym)
+        return web_server._wall_chase_empty_row(sym)
+
+    monkeypatch.setattr(web_server, "_wall_chase_watch_row_sync", _row)
+    monkeypatch.setattr(web_server, "_WCW_CACHE", {})
+
+    async def _three_polls():
+        return await asyncio.gather(*(web_server.get_wall_chase_watch("current_week") for _ in range(3)))
+
+    first, second, third = asyncio.run(_three_polls())
+    assert calls == ["NIFTY", "BANKNIFTY", "SENSEX"]
+    assert first is second is third
+    assert set(first["timing_ms"]) == {"NIFTY", "BANKNIFTY", "SENSEX", "total"}
+
+    monkeypatch.setattr(web_server, "_WCW_TTL_S", 0.0)
+    asyncio.run(web_server.get_wall_chase_watch("current_week"))
+    assert len(calls) == 6
