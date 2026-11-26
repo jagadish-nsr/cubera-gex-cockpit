@@ -523,6 +523,9 @@ def test_recommendations_and_1click_execution():
     assert "is_market_closed" in rec_data or "higher_conviction" in rec_data or "trade_setups" in rec_data
     assert "tactical_tier" in rec_data
     assert isinstance(rec_data["effectiveness_summary"]["total_tracked"], int)
+    # 26-Nov: evidence block (resolved-only win rates) for the Trade Recs strip
+    assert "trade_recs" in rec_data["evidence"] and "sentinel" in rec_data["evidence"]
+    assert rec_data["evidence"]["trade_recs"].get("min_n") == 30
     assert rec_data["effectiveness_summary"]["avg_realized_rr"] is None or isinstance(
         rec_data["effectiveness_summary"]["avg_realized_rr"], (int, float)
     )

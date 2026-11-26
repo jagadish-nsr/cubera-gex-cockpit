@@ -7193,6 +7193,68 @@
     }
   }
 
+  // 26-Nov: show what the book has actually paid for, from RESOLVED setups only.
+  // Tier is the last-saved label; the verdict line says when the tier is not predicting outcomes.
+  function renderRecEvidence(ev) {
+    const tr = ev && ev.trade_recs;
+    if (!tr || !tr.resolved_n) {
+      window._recEvidence = null;
+      return;
+    }
+    window._recEvidence = tr;
+    let strip = document.getElementById("rec-evidence-strip");
+    if (!strip) {
+      strip = document.createElement("div");
+      strip.id = "rec-evidence-strip";
+      const anchor = document.getElementById("eff-total-tracked")?.closest("div[style*='margin-bottom:16px']");
+      if (!anchor || !anchor.parentNode) return;
+      anchor.parentNode.insertBefore(strip, anchor);
+    }
+    const minN = tr.min_n || 30;
+    const cell = (label, b) => {
+      if (!b) return `<span style="color:var(--ink-mute)">${label} —</span>`;
+      const thin = b.n < minN;
+      const col = thin ? "var(--ink-mute)" : (b.win_rate >= 50 ? "var(--go)" : "var(--stop)");
+      return `<span>${label} <b style="color:${col}">${b.win_rate}%</b> <span style="color:var(--ink-mute)">n=${b.n}${thin ? " (thin)" : ""}</span></span>`;
+    };
+    const tierCells = ["HIGH", "MEDIUM", "LOW"].map((t) => cell(t, tr.by_tier && tr.by_tier[t])).join(" · ");
+    const playCells = Object.entries(tr.by_play || {})
+      .slice(0, 7)
+      .map(([p, b]) => cell(p, b))
+      .join(" · ");
+    const borderCol = tr.tier_inverted ? "rgba(239,68,68,.45)" : "var(--line)";
+    const verdictCol = tr.tier_inverted ? "var(--stop)" : "var(--ink-mute)";
+    strip.innerHTML = `
+      <div style="background:var(--surface-2);border:1px solid ${borderCol};border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:0.76rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+          <span style="font-size:0.72rem;font-weight:750;text-transform:uppercase;color:var(--ink-mute)">🧭 Evidence · resolved setups only</span>
+          <span style="font-family:var(--mono);color:var(--ink-mute)">${tr.resolved_n} resolved · win ${tr.win_rate ?? "—"}% (TGT before SL / invalidation)</span>
+        </div>
+        <div style="font-family:var(--mono);line-height:1.7">By conviction tier: ${tierCells}</div>
+        <div style="font-family:var(--mono);line-height:1.7">By play: ${playCells || "—"}</div>
+        <div style="margin-top:6px;color:${verdictCol}">${tr.verdict || ""} <span style="color:var(--ink-mute)">Tier is the last-saved label.</span></div>
+      </div>`;
+  }
+
+  // Per-card chip: how this play and tier have actually performed on resolved setups.
+  function evidenceChipsForIdea(idea) {
+    const ev = window._recEvidence;
+    if (!ev) return "";
+    const pb = ev.by_play && ev.by_play[idea.play_badge];
+    const tb = ev.by_tier && idea.conviction_tier && ev.by_tier[idea.conviction_tier];
+    const chip = (text, bad, tip) =>
+      `<span title="${tip}" style="font-size:0.64rem;border:1px solid var(--line);color:${bad ? "var(--stop)" : "var(--ink-mute)"};padding:1px 5px;border-radius:3px;font-family:var(--mono)">${text}</span>`;
+    let html = "";
+    if (pb) {
+      html += chip(`play hist ${pb.win_rate}% · n=${pb.n}`, pb.n >= 30 && pb.win_rate < 40, "Historical win rate for this play, resolved setups only");
+    }
+    if (tb) {
+      const inv = Boolean(ev.tier_inverted && idea.conviction_tier === "HIGH");
+      html += chip(`${idea.conviction_tier} hist ${tb.win_rate}% · n=${tb.n}`, inv, "Historical win rate for this conviction tier, resolved setups only");
+    }
+    return html;
+  }
+
   async function loadRecommendations() {
     if (_inflightPolls.recommendations) return;
     _inflightPolls.recommendations = true;
@@ -7241,6 +7303,7 @@
         if (invalRateEl) invalRateEl.textContent = `${eff.spot_invalidation_rate}%`;
         if (avgRrEl) avgRrEl.textContent = eff.avg_realized_rr == null ? "—" : `1 : ${eff.avg_realized_rr}`;
       }
+      renderRecEvidence(data.evidence);
 
       if (data.is_market_closed) {
         const ow = data.opening_watch || state.openingWatch || null;
@@ -7447,6 +7510,23 @@
     if (contractEl && metrics.contract) {
       const c = metrics.contract;
       contractEl.textContent = `Target = ${c.target} · Stop = ${c.stop} · Paper = ${c.paper}`;
+    }
+    // 26-Nov: live evidence (pre-cost option points) by symbol, so the book shows where it has paid.
+    const sev = data && data.evidence;
+    if (contractEl && sev && sev.resolved_n) {
+      let line = document.getElementById("sentinel-evidence-line");
+      if (!line) {
+        line = document.createElement("div");
+        line.id = "sentinel-evidence-line";
+        line.style.cssText = "font-size:0.72rem;color:var(--ink-mute);font-family:var(--mono);margin-top:4px";
+        contractEl.insertAdjacentElement("afterend", line);
+      }
+      const fmt = (v) => (v >= 0 ? "+" : "") + v;
+      const bySym = Object.entries(sev.by_symbol || {})
+        .map(([s, b]) => `${s} ${fmt(b.mean_pts)} pts (hit ${b.hit_rate}%, n=${b.n}${b.n < (sev.min_n || 30) ? ", thin" : ""})`)
+        .join(" · ");
+      const replay = sev.excluded_untagged ? ` · ${sev.excluded_untagged} replay rows excluded` : "";
+      line.textContent = `Live evidence: ${sev.resolved_n} closed · hit ${sev.hit_rate}% · mean ${fmt(sev.mean_pts)} pts pre-cost · ${bySym}${replay}`;
     }
 
     const badgeEl = document.getElementById("sentinel-rec-count-badge");
@@ -8223,6 +8303,7 @@
       const multiNote = (cluster.ideas && cluster.ideas.length > 1)
         ? `<span style="font-size:0.64rem;background:rgba(56,189,248,.12);color:var(--spark);border:1px solid rgba(56,189,248,.3);padding:1px 5px;border-radius:3px;font-weight:750">${cluster.ideas.length} strats</span>`
         : "";
+      const evidenceChips = evidenceChipsForIdea(best);
 
       card.innerHTML = `
         <!-- Mini Card (default) — same pattern as Cockpit watchlist -->
@@ -8238,6 +8319,7 @@
             <b class="rec-symbol ${best.side.toLowerCase()}" style="color:${sideColor};font-size:0.88rem">${best.option_symbol}</b>
             <span style="font-size:0.68rem;background:var(--surface-3);color:var(--spark);padding:2px 6px;border-radius:4px;font-weight:750">${best.play_badge}</span>
             ${multiNote}
+            ${evidenceChips}
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span style="font-size:0.74rem;color:var(--ink-mute)">Score: <b style="color:${best.conviction_color || "var(--spark)"}">${best.quality_score}/100</b></span>

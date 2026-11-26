@@ -1518,6 +1518,7 @@ def _serialize_trade_idea(
         "play_type": idea.play_type,
         "quality_score": idea.quality_score,
         "conviction_label": idea.conviction_label,
+        "conviction_tier": getattr(idea, "conviction_tier", "") or "",
         "conviction_color": idea.conviction_color,
         "current_ltp": curr_ltp,
         "is_ws_live": bool(getattr(idea, "is_ws_live", False)),
@@ -4574,6 +4575,25 @@ async def reprice_target_engine(payload: dict = Body(...)):
     }
 
 
+def _sweep_stale_recommendations_safe() -> None:
+    """Retire ACTIVE ideas last seen on an earlier session (once per IST day). Never raises."""
+    try:
+        from data.journal import recommendations_store as _rs
+        _rs.sweep_prior_session_active()
+    except Exception as exc:  # pragma: no cover - defensive; the endpoint must still answer
+        log.warning("stale recommendation sweep failed: %s", exc)
+
+
+def _recommendation_evidence_safe() -> dict:
+    """Win-rate evidence for the Trade Recommendations and Sentinel views. Never raises."""
+    try:
+        from data.journal import recommendations_store as _rs
+        return _rs.get_recommendation_evidence()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("recommendation evidence unavailable: %s", exc)
+        return {"trade_recs": {}, "sentinel": {}, "error": str(exc)}
+
+
 @app.get("/api/recommendations")
 async def get_recommendations(
     symbol: Optional[str] = None,
@@ -4595,6 +4615,7 @@ def _get_recommendations_sync(
     capital: Optional[float] = None,
     risk: Optional[float] = None,
 ) -> dict:
+    _sweep_stale_recommendations_safe()
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     if capital is not None:
@@ -4649,6 +4670,7 @@ def _get_recommendations_sync(
             "tactical_tier": {"ce_clusters": [], "pe_clusters": []},
             "effectiveness": eff_metrics,
             "effectiveness_summary": eff_summary,
+            "evidence": _recommendation_evidence_safe(),
         }
 
     recs = _latest_rec_batch(sym, win)
@@ -4707,6 +4729,7 @@ def _get_recommendations_sync(
         },
         "effectiveness": eff_metrics,
         "effectiveness_summary": eff_summary,
+        "evidence": _recommendation_evidence_safe(),
     }
 
 
@@ -6910,6 +6933,7 @@ async def get_sentinel_recommendations_endpoint(
         "status_filter": status,
         "auto_paper": is_auto_paper_enabled(),
         "metrics": metrics,
+        "evidence": _recommendation_evidence_safe().get("sentinel", {}),
         "recommendations": recs,
     }
 
