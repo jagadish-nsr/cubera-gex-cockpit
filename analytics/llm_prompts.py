@@ -18,6 +18,12 @@ _DESK_RULES = (
 )
 
 
+def _dumps(payload: Any) -> str:
+    # Facts carry datetimes and dates (expiry, as_of). 26 Nov: 107 narrator calls died on
+    # "Object of type datetime is not JSON serializable" and fell back to the heuristic.
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def digest_narrative_messages(
     events: list[dict[str, Any]],
     *,
@@ -42,14 +48,11 @@ def digest_narrative_messages(
         "End by noting that full linked headlines are in Real-Time News. "
         "Mention catalyst intensity only if overnight_impact >= 4."
     )
-    user = json.dumps(
-        {
-            "catalyst_risk": catalyst_risk,
-            "overnight_impact": int(overnight_impact or 0),
-            "events": slim,
-        },
-        ensure_ascii=False,
-    )
+    user = _dumps({
+        "catalyst_risk": catalyst_risk,
+        "overnight_impact": int(overnight_impact or 0),
+        "events": slim,
+    })
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -81,7 +84,7 @@ def alert_tape_messages(alert: dict[str, Any]) -> list[dict[str, str]]:
         "You must not change stance, confidence, trigger, or kill. "
         "Do not invent wall levels or scores. Do not say fade/momentum from regime alone."
     )
-    user = json.dumps(payload, ensure_ascii=False)
+    user = _dumps(payload)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -112,7 +115,7 @@ def positioning_card_messages(flow: dict[str, Any]) -> list[dict[str, str]]:
     )
     return [
         {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": _dumps(payload)},
     ]
 
 
@@ -163,7 +166,7 @@ def choppiness_card_messages(chop: dict[str, Any]) -> list[dict[str, str]]:
     )
     return [
         {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": _dumps(payload)},
     ]
 
 
@@ -264,7 +267,7 @@ def session_qa_messages(
         if role not in ("user", "assistant"):
             role = "user"
         messages.append({"role": role, "content": content[:1200]})
-    messages.append({"role": "user", "content": json.dumps(payload, ensure_ascii=False)})
+    messages.append({"role": "user", "content": _dumps(payload)})
     return messages
 
 
@@ -328,7 +331,7 @@ def commentary_story_messages(
     }
     return [
         {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        {"role": "user", "content": _dumps(payload)},
     ]
 
 
