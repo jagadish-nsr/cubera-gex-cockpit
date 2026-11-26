@@ -114,6 +114,24 @@ def _conn() -> sqlite3.Connection:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_go_open_sym ON go_open (symbol, status)"
     )
+    # 26-Nov: one row per mark written, with the chain row each leg was priced from.
+    # Logging only; it never changes a mark or a settlement.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS go_mark_audit (
+            audit_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id   TEXT NOT NULL,
+            ts            TEXT NOT NULL,
+            source        TEXT NOT NULL,
+            mark_premium  REAL,
+            mark_spot     REAL,
+            legs_json     TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_go_mark_audit_dec ON go_mark_audit (decision_id, ts)"
+    )
     conn.commit()
     _SCHEMA_READY_PATHS.add(path_key)
     return conn
@@ -439,6 +457,43 @@ def _entry_premium(decision: dict) -> float | None:
         px = float(c["ltp"])
         net += px if str(c.get("action")).upper() == "SELL" else -px
     return round(net, 2) if priced else None
+
+
+def record_mark_audit(
+    decision_id: str,
+    *,
+    source: str,
+    mark_premium: float | None,
+    mark_spot: float | None,
+    legs: list[dict] | None = None,
+) -> None:
+    """Trace the inputs behind one mark (26-Nov). Logging only.
+
+    ``legs`` holds, per leg, the strike, side, requested and used expiry, and the
+    price taken from the chain. It lets a bad mark be traced to its source row.
+    """
+    _ensure_schema_once()
+    with _LOCK:
+        conn = _conn()
+        try:
+            conn.execute(
+                """
+                INSERT INTO go_mark_audit
+                    (decision_id, ts, source, mark_premium, mark_spot, legs_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(decision_id),
+                    _now_ist(),
+                    str(source),
+                    None if mark_premium is None else float(mark_premium),
+                    None if mark_spot is None else float(mark_spot),
+                    json.dumps(legs or [], default=str),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def mark_open(
@@ -771,6 +826,24 @@ def close_all_open_at_session_end(
     if closed:
         log.info("go session-end closed %d open position(s) on %s", len(closed), day)
     return closed
+
+
+def linked_go_row(trade_id: str) -> dict[str, Any] | None:
+    """The go_open row a paper trade was staged from (status, exit_premium, exit_reason, closed_at)."""
+    if not trade_id:
+        return None
+    _ensure_schema_once()
+    conn = _conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT status, exit_premium, exit_reason, closed_at FROM go_open "
+            "WHERE trade_id = ? ORDER BY opened_at DESC LIMIT 1",
+            (str(trade_id),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def list_open(symbol: str | None = None, *, include_decision: bool = False) -> list[dict[str, Any]]:

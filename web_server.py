@@ -1518,6 +1518,7 @@ def _serialize_trade_idea(
         "play_type": idea.play_type,
         "quality_score": idea.quality_score,
         "conviction_label": idea.conviction_label,
+        "conviction_tier": getattr(idea, "conviction_tier", "") or "",
         "conviction_color": idea.conviction_color,
         "current_ltp": curr_ltp,
         "is_ws_live": bool(getattr(idea, "is_ws_live", False)),
@@ -1894,21 +1895,22 @@ def _expiry_ord(value) -> int:
     return 10**12
 
 
-def _chain_leg_ltp(
+def _chain_leg_row(
     contracts_df,
     strike: float,
     right: str,
     expiry: str | None = None,
-) -> Optional[float]:
-    """Last price of one listed leg. None when the chain has no positive print.
+) -> tuple[Optional[float], Optional[str]]:
+    """(price, expiry used) for one listed leg. (None, None) when the chain has no positive print.
 
     Several expiries share a strike. The front expiry is the leg that was
-    staged. A later expiry's premium is not this contract's mark.
+    staged. A later expiry's premium is not this contract's mark. The expiry
+    used is returned so every mark can be traced to its source row (26-Nov).
     """
     if contracts_df is None or not hasattr(contracts_df, "empty") or contracts_df.empty:
-        return None
+        return None, None
     if "strike" not in contracts_df.columns or "type" not in contracts_df.columns:
-        return None
+        return None, None
     want = "C" if str(right).upper().startswith("C") else "P"
     try:
         sub = contracts_df[
@@ -1916,9 +1918,9 @@ def _chain_leg_ltp(
             & (contracts_df["type"].astype(str).str.upper().str.startswith(want))
         ]
     except Exception:
-        return None
+        return None, None
     if sub.empty:
-        return None
+        return None, None
     if "expiry" in sub.columns and len(sub) > 1:
         if expiry:
             named = sub[sub["expiry"].astype(str) == str(expiry)]
@@ -1927,12 +1929,23 @@ def _chain_leg_ltp(
         if len(sub) > 1:
             front = min(sub["expiry"].unique(), key=_expiry_ord)
             sub = sub[sub["expiry"] == front]
+    used_expiry = str(sub["expiry"].iloc[0]) if "expiry" in sub.columns else None
     for col in ("ltp", "last_price", "close", "premium", "mid"):
         if col in sub.columns:
             val = float(sub[col].iloc[0] or 0)
             if val > 0:
-                return round(val, 2)
-    return None
+                return round(val, 2), used_expiry
+    return None, None
+
+
+def _chain_leg_ltp(
+    contracts_df,
+    strike: float,
+    right: str,
+    expiry: str | None = None,
+) -> Optional[float]:
+    """Last price of one listed leg. None when the chain has no positive print."""
+    return _chain_leg_row(contracts_df, strike, right, expiry)[0]
 
 
 def _atm_straddle_pts(contracts_df, spot: float):
@@ -3909,10 +3922,8 @@ def _log_wall_chase_to_commentary(row: dict) -> dict | None:
         return {"status": "error", "symbol": sym, "message": str(exc)}
 
 
-async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week") -> dict:
-    """Compose one cross-index wall-chase watch row (map + tape, no direction pay)."""
-    sym = (sym or "NIFTY").upper()
-    empty = {
+def _wall_chase_empty_row(sym: str) -> dict:
+    return {
         "symbol": sym,
         "active": False,
         "notify": False,
@@ -3931,12 +3942,17 @@ async def _wall_chase_watch_for_symbol(sym: str, *, window: str = "current_week"
         "stretch": {},
         "commentary": None,
     }
+
+
+def _wall_chase_watch_row_sync(sym: str, window: str) -> dict:
+    """Compose one cross-index wall-chase watch row (map + tape, no direction pay)."""
+    empty = _wall_chase_empty_row(sym)
     try:
         idx = config.get_index(sym)
-        dash = await _aload_active_dashboard(sym, window)
+        dash = _load_active_dashboard(sym, window)
         if dash is None or getattr(dash, "levels", None) is None:
             return empty
-        return await asyncio.to_thread(_wall_chase_watch_sync, sym, idx, dash, empty)
+        return _wall_chase_watch_sync(sym, idx, dash, empty)
     except Exception as exc:
         log.debug("wall_chase_watch %s: %s", sym, exc)
         return empty
@@ -4063,16 +4079,43 @@ async def get_wall_chase_watch(window: Optional[str] = None):
     successive wall break/migrate + momentum tape promote CALL/PUT WATCH.
     """
     win = window or "current_week"
-    watches = list(await asyncio.gather(
-        _wall_chase_watch_for_symbol("NIFTY", window=win),
-        _wall_chase_watch_for_symbol("BANKNIFTY", window=win),
-        _wall_chase_watch_for_symbol("SENSEX", window=win),
-    ))
+    now = time.monotonic()
+    hit = _WCW_CACHE.get(win)
+    if hit is not None and now - hit[0] < _WCW_TTL_S:
+        return hit[1]
+    lock = _WCW_LOCKS.setdefault((id(asyncio.get_running_loop()), win), asyncio.Lock())
+    async with lock:
+        hit = _WCW_CACHE.get(win)
+        if hit is not None and time.monotonic() - hit[0] < _WCW_TTL_S:
+            return hit[1]
+        out = await asyncio.to_thread(_wall_chase_watch_all_sync, win)
+        _WCW_CACHE[win] = (time.monotonic(), out)
+        return out
+
+
+# Each call is ~2 ms of work per index (26-Nov profile). It was slow in session (p50
+# 2.2 s, max 71 s) from six hops onto the shared thread pool, queued behind other
+# routes. One hop, and one build shared by every tab polling inside the TTL.
+_WCW_TTL_S = 3.0
+_WCW_CACHE: dict[str, tuple[float, dict]] = {}
+_WCW_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+
+
+def _wall_chase_watch_all_sync(win: str) -> dict:
+    t0 = time.perf_counter()
+    watches = []
+    timing: dict[str, float] = {}
+    for sym in ("NIFTY", "BANKNIFTY", "SENSEX"):
+        t = time.perf_counter()
+        watches.append(_wall_chase_watch_row_sync(sym, win))
+        timing[sym] = round((time.perf_counter() - t) * 1000.0, 1)
+    timing["total"] = round((time.perf_counter() - t0) * 1000.0, 1)
     return {
         "window": win,
         "as_of": _get_ist_now().strftime("%Y-%m-%d %H:%M:%S IST"),
         "watches": watches,
         "notify_count": sum(1 for w in watches if w.get("notify")),
+        "timing_ms": timing,
     }
 
 
@@ -4574,6 +4617,25 @@ async def reprice_target_engine(payload: dict = Body(...)):
     }
 
 
+def _sweep_stale_recommendations_safe() -> None:
+    """Retire ACTIVE ideas last seen on an earlier session (once per IST day). Never raises."""
+    try:
+        from data.journal import recommendations_store as _rs
+        _rs.sweep_prior_session_active()
+    except Exception as exc:  # pragma: no cover - defensive; the endpoint must still answer
+        log.warning("stale recommendation sweep failed: %s", exc)
+
+
+def _recommendation_evidence_safe() -> dict:
+    """Win-rate evidence for the Trade Recommendations and Sentinel views. Never raises."""
+    try:
+        from data.journal import recommendations_store as _rs
+        return _rs.get_recommendation_evidence()
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("recommendation evidence unavailable: %s", exc)
+        return {"trade_recs": {}, "sentinel": {}, "error": str(exc)}
+
+
 @app.get("/api/recommendations")
 async def get_recommendations(
     symbol: Optional[str] = None,
@@ -4595,6 +4657,7 @@ def _get_recommendations_sync(
     capital: Optional[float] = None,
     risk: Optional[float] = None,
 ) -> dict:
+    _sweep_stale_recommendations_safe()
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     win = window or _ACTIVE_STATE["window"]
     if capital is not None:
@@ -4649,6 +4712,7 @@ def _get_recommendations_sync(
             "tactical_tier": {"ce_clusters": [], "pe_clusters": []},
             "effectiveness": eff_metrics,
             "effectiveness_summary": eff_summary,
+            "evidence": _recommendation_evidence_safe(),
         }
 
     recs = _latest_rec_batch(sym, win)
@@ -4707,6 +4771,7 @@ def _get_recommendations_sync(
         },
         "effectiveness": eff_metrics,
         "effectiveness_summary": eff_summary,
+        "evidence": _recommendation_evidence_safe(),
     }
 
 
@@ -4968,6 +5033,28 @@ def _go_auto_stage_late_or_cheap(decision: dict, now: datetime | None = None) ->
 
 
 def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
+    """Auto-stage FIRE into paper journal; every FIRE it declines is recorded in ``go_skips``."""
+    result = _go_auto_stage_fire_decide(decision)
+    if not isinstance(result, dict) or str(decision.get("state") or "") != "FIRE":
+        return result
+    status = str(result.get("status") or "")
+    reason = ""
+    if status == "skipped" and result.get("detail") != "session_closed":
+        reason = str(result.get("detail") or "skipped")
+    elif status == "blocked_conflict":
+        reason = "opposite_side_open"
+    if reason:
+        try:
+            skip_id = journal_store.record_auto_go_skip(
+                decision, reason, _go_auto_stage_fingerprint(decision))
+            if skip_id:
+                result["skip_id"] = skip_id
+        except Exception as exc:
+            log.warning("go auto-skip record failed (%s): %s", reason, exc)
+    return result
+
+
+def _go_auto_stage_fire_decide(decision: dict) -> dict | None:
     """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
     if not _GO_PREFS.get("auto_stage_fire"):
         return None
@@ -5158,6 +5245,18 @@ def _go_position_alerts(sym: str, dash=None) -> list[dict]:
     return out
 
 
+def _record_mark_audit_safe(decision_id, source, mark_premium, mark_spot, legs) -> None:
+    """Write the mark audit row. Logging only: a failure here must never block a mark."""
+    try:
+        from data.journal import go_efficiency as go_eff
+        go_eff.record_mark_audit(
+            str(decision_id), source=source, mark_premium=mark_premium,
+            mark_spot=mark_spot, legs=legs,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("go mark audit write failed: %s", exc)
+
+
 async def _go_refresh_open_marks(sym: str, dash) -> int:
     """Reprice open staged GOs from live chain LTPs. Returns update count."""
     from data.journal import go_efficiency as go_eff
@@ -5181,10 +5280,19 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
             continue
         net = 0.0
         priced = 0
+        audit_legs = []
         for leg in legs:
             opt = str(leg.get("opt_type") or leg.get("type") or "CE")
             strike = float(leg.get("strike") or 0)
-            px = _chain_leg_ltp(contracts_df, strike, opt, expiry=leg.get("expiry") or None)
+            px, used_expiry = _chain_leg_row(contracts_df, strike, opt, expiry=leg.get("expiry") or None)
+            audit_legs.append({
+                "action": str(leg.get("action") or ""),
+                "opt": opt,
+                "strike": strike,
+                "expiry_requested": leg.get("expiry") or None,
+                "expiry_used": used_expiry,
+                "price": px,
+            })
             if px is None:
                 continue
             priced += 1
@@ -5199,6 +5307,7 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
             mark_premium=round(net, 2),
             mark_spot=spot,
         )
+        _record_mark_audit_safe(row["decision_id"], "chain_refresh", round(net, 2), spot, audit_legs)
         updated += 1
     return updated
 
@@ -6078,6 +6187,7 @@ async def post_go_mark(payload: dict = Body(...)):
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="No OPEN staged GO for that decision_id")
+    _record_mark_audit_safe(decision_id, "api_mark", mark_premium, mark_spot_f, [])
     return {"status": "ok", "open": updated}
 
 
@@ -6910,6 +7020,7 @@ async def get_sentinel_recommendations_endpoint(
         "status_filter": status,
         "auto_paper": is_auto_paper_enabled(),
         "metrics": metrics,
+        "evidence": _recommendation_evidence_safe().get("sentinel", {}),
         "recommendations": recs,
     }
 

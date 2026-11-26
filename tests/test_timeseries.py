@@ -279,3 +279,38 @@ def test_capture_prefers_published_book_over_live_fetch(monkeypatch):
         assert data.symbol == sym
         assert "[published book]" in msg
     assert written == ["BANKNIFTY", "SENSEX"]
+
+
+def test_degraded_chain_marks_the_row_stale():
+    """25/26-Nov: chains served degraded all day while the stale column stayed False."""
+    data = load_dashboard(window="all", use_demo=True)
+    assert ts.build_row(data)["stale"] is False
+    data.is_degraded = True
+    assert ts.build_row(data)["stale"] is True
+
+
+def test_frozen_spot_with_moving_atm_premium_marks_the_row_stale(monkeypatch):
+    import scripts.log_timeseries as log_ts
+
+    fetched = datetime.now(timezone.utc)
+    book = SimpleNamespace(symbol="NIFTY", source="dhan", fetched_at=fetched, expiries=[],
+                           levels=SimpleNamespace(spot=23731.8, near_book_expired=False))
+    rows_written = []
+    monkeypatch.setattr(log_ts, "published_book", lambda symbol, max_age_s=180: book)
+    monkeypatch.setattr(log_ts, "build_row", lambda data: {
+        "date_ist": "2026-11-03", "time_ist": "10:20", "spot": 23731.8, "stale": False,
+        "regime": "POSITIVE", "mode_label": "CALL-HEAVY", "put_wall": 23600, "call_wall": 23800,
+        "magnet": 23700, "pcr_oi": 1.0, "news_count": 0, "news_impact": 0,
+    })
+    # 3 Nov: spot sat on 23,731.8 while the 23,700 call went from 49 to 55.
+    monkeypatch.setattr(log_ts, "build_strike_rows", lambda data: [
+        {"spot": 23731.8, "strike": 23700.0, "call_ltp": 55.0, "put_ltp": 20.0}])
+    monkeypatch.setattr("app.timeseries.last_strike_snapshot", lambda path: [
+        {"spot": 23731.8, "strike": 23700.0, "call_ltp": 49.0, "put_ltp": 22.0}])
+    monkeypatch.setattr(log_ts, "append_if_due",
+                        lambda row, **k: (rows_written.append(row), (SimpleNamespace(name="x.csv"), True))[1])
+    monkeypatch.setattr(log_ts, "append_strike_rows", lambda *a, **k: None)
+    monkeypatch.setattr(log_ts, "_is_expiry_day", lambda data: False)
+    monkeypatch.setattr("app.futures_buildup.capture_futures_from_ws", lambda **k: None)
+    log_ts.capture_once(symbol="NIFTY")
+    assert rows_written[0]["stale"] is True

@@ -160,6 +160,15 @@ def _get_write_conn() -> sqlite3.Connection:
             decision_json TEXT NOT NULL
         )
     """)
+    for col_sql in (
+        "ALTER TABLE go_skips ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+        "ALTER TABLE go_skips ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE go_skips ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+    ):
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # already present
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_pt_status ON paper_trades (status)
     """)
@@ -298,8 +307,11 @@ def close_trade(
     brokerage_per_order: float = DEFAULT_BROKERAGE_PER_ORDER_INR,
     slippage_pts: float = DEFAULT_SLIPPAGE_PTS_PER_LEG,
     notes: str = "",
+    exit_ts: str | None = None,
 ) -> PaperTrade | None:
     """Close an OPEN paper trade and calculate realised P&L net of costs.
+
+    ``exit_ts`` defaults to now; a late settlement passes the time the exit really happened.
 
     For a credit spread: gross_pnl = entry_premium - exit_premium
                          (profit when exit_premium < entry_premium = buyback cheaper)
@@ -326,7 +338,7 @@ def close_trade(
     gross_inr = gross * trade.lot_size
     net_inr = gross_inr - total_brok - total_slip
 
-    exit_ts = _now_ist()
+    exit_ts = exit_ts or _now_ist()
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
@@ -351,6 +363,40 @@ def close_trade(
 
     log.info("Closed paper trade %s: gross=₹%.0f net=₹%.0f (after costs)",
              trade_id, gross_inr, net_inr)
+    return get_trade(trade_id)
+
+
+def void_trade(trade_id: str, exit_reason: str, notes: str = "") -> PaperTrade | None:
+    """Close an OPEN trade with zero P&L and zero costs: there is no exit price to settle at.
+
+    Used only for auto-entries whose exit was never recorded. Inventing a price would put
+    fiction into the ledger; a void keeps the row out of the realised P&L.
+    """
+    trade = get_trade(trade_id)
+    if trade is None or trade.status != "OPEN":
+        return trade
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            conn.execute("""
+                UPDATE paper_trades SET
+                    status = 'CLOSED',
+                    exit_ts = ?,
+                    exit_net_premium = entry_net_premium,
+                    gross_pnl = 0,
+                    brokerage_cost = 0,
+                    slippage_cost = 0,
+                    net_realized_pnl = 0,
+                    exit_reason = ?,
+                    notes = CASE WHEN ? != '' THEN
+                        CASE WHEN notes != '' THEN notes || char(10) || ? ELSE ? END
+                        ELSE notes END
+                WHERE trade_id = ? AND status = 'OPEN'
+            """, (_now_ist(), exit_reason, notes, notes, notes, trade_id))
+            conn.commit()
+        finally:
+            conn.close()
+    log.warning("Voided paper trade %s (%s): %s", trade_id, exit_reason, notes)
     return get_trade(trade_id)
 
 
@@ -505,32 +551,65 @@ def _write_trade(trade: PaperTrade) -> None:
             conn.close()
 
 
-def record_go_skip(decision: dict) -> str:
+def _insert_go_skip(conn, decision: dict, source: str, reason: str, fingerprint: str) -> str:
+    skip_id = f"gs_{uuid.uuid4().hex[:10]}"
+    conn.execute(
+        """
+        INSERT INTO go_skips (
+            skip_id, decision_id, symbol, mode, state, score,
+            strategy_key, skipped_at, decision_json, source, reason, fingerprint
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            skip_id,
+            str(decision.get("id") or ""),
+            str(decision.get("symbol") or "").upper(),
+            str(decision.get("mode") or ""),
+            str(decision.get("state") or ""),
+            float(decision.get("score") or 0),
+            str(decision.get("strategy_key") or ""),
+            _now_ist(),
+            json.dumps(_safe_json_dict(decision), default=str),
+            source,
+            reason,
+            fingerprint,
+        ),
+    )
+    return skip_id
+
+
+def record_go_skip(decision: dict, *, reason: str = "") -> str:
     """Persist an immutable Skip-FIRE record for process / opportunity review."""
     ensure_schema()
-    skip_id = f"gs_{uuid.uuid4().hex[:10]}"
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
-            conn.execute(
-                """
-                INSERT INTO go_skips (
-                    skip_id, decision_id, symbol, mode, state, score,
-                    strategy_key, skipped_at, decision_json
-                ) VALUES (?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    skip_id,
-                    str(decision.get("id") or ""),
-                    str(decision.get("symbol") or "").upper(),
-                    str(decision.get("mode") or ""),
-                    str(decision.get("state") or ""),
-                    float(decision.get("score") or 0),
-                    str(decision.get("strategy_key") or ""),
-                    _now_ist(),
-                    json.dumps(_safe_json_dict(decision), default=str),
-                ),
-            )
+            skip_id = _insert_go_skip(conn, decision, "manual", reason, "")
+            conn.commit()
+        finally:
+            conn.close()
+    return skip_id
+
+
+def record_auto_go_skip(decision: dict, reason: str, fingerprint: str) -> str | None:
+    """Record a FIRE that auto-stage declined, once per IST day per (fingerprint, reason).
+
+    Decision ids are a fresh UUID every poll, so the fingerprint is the dedupe key. Returns the new
+    skip_id, or None when today's row already exists.
+    """
+    ensure_schema()
+    day = _now_ist()[:10]
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            seen = conn.execute(
+                "SELECT 1 FROM go_skips WHERE source='auto' AND fingerprint=? AND reason=? "
+                "AND substr(skipped_at,1,10)=? LIMIT 1",
+                (fingerprint, reason, day),
+            ).fetchone()
+            if seen:
+                return None
+            skip_id = _insert_go_skip(conn, decision, "auto", reason, fingerprint)
             conn.commit()
         finally:
             conn.close()

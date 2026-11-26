@@ -241,6 +241,7 @@ def save_snapshot(
     vix: float | None = None,
     as_of: str | None = None,
     source: str = "dhan",
+    near_book_expired: bool = False,
 ) -> None:
     if any(k in (source or "").lower() for k in ("demo", "synthetic", "mock", "test")):
         return
@@ -272,6 +273,13 @@ def save_snapshot(
     with _LOCK, _get_connection() as conn:
         existing = conn.execute("SELECT * FROM session_snapshots WHERE symbol = ?", (sym,)).fetchone()
         ex = dict(existing) if existing else {}
+        if as_of and ex:
+            in_session = snapshot_session_date({"as_of": as_of})
+            ex_session = snapshot_session_date(ex)
+            if in_session and ex_session and in_session < ex_session:
+                log.warning("%s refusing snapshot write as_of=%s older than stored session %s",
+                            sym, as_of, ex_session)
+                return
 
         min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
         new_spot = float(spot) if spot is not None and spot > min_valid else ex.get("spot")
@@ -292,6 +300,13 @@ def save_snapshot(
                 new_pc = float(kept)
             else:
                 new_pc = None
+        # The first write of a new session: the stored spot is the prior session's close.
+        # Sensex ticks carry no previous close, so its prev_close stayed NULL (26-Nov).
+        fed_pc = prev_close is not None and prev_close > min_valid and new_pc == float(prev_close)
+        in_day = snapshot_session_date({"as_of": as_of}) if as_of else None
+        ex_day = snapshot_session_date(ex)
+        if not fed_pc and in_day and ex_day and in_day > ex_day and ex.get("spot"):
+            new_pc = float(ex["spot"])
         new_open = float(open_px) if open_px is not None and open_px > min_valid else ex.get("open")
         new_high = float(high) if high is not None and high > min_valid else ex.get("high")
         new_low = float(low) if low is not None and low > min_valid else ex.get("low")
@@ -311,6 +326,11 @@ def save_snapshot(
         new_vix = float(vix) if vix is not None else ex.get("vix")
         new_as_of = as_of or ex.get("as_of") or now_iso
         new_source = source or ex.get("source") or "dhan"
+        if near_book_expired:
+            # The rolled-off book reports flip = spot and zero GEX. Neither is a level.
+            new_flip = None
+            new_net_gex = None
+            new_source += ":near-book-expired"
 
         conn.execute("""
             INSERT OR REPLACE INTO session_snapshots (

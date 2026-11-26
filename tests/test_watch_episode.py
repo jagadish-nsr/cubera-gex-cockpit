@@ -284,3 +284,23 @@ def test_same_day_after_the_close_still_resolves_on_that_days_spot(tmp_path, mon
     ep = _open_call(tmp_path, monkeypatch, now)
     out = evaluate_watch_episode(ep, spot=83700, now_ts=datetime(2026, 11, 25, 15, 33, tzinfo=IST).timestamp())
     assert out.status == "INVALIDATED"
+
+
+def test_unresolved_watch_expires_at_the_close_not_when_next_evaluated(tmp_path, monkeypatch):
+    """26 Nov Sensex: 12:51 PUT and 14:42 CALL were stamped EXPIRED at 20:19:29."""
+    now = datetime(2026, 11, 26, 14, 42, 15, tzinfo=IST)
+    ep = _open_call(tmp_path, monkeypatch, now)
+    late = datetime(2026, 11, 26, 20, 19, 29, tzinfo=IST)
+    out = evaluate_watch_episode(ep, spot=83910, now_ts=late.timestamp())
+    assert out.status == "EXPIRED"
+    assert out.resolved_at == "2026-11-26 15:30:00 IST"
+    assert out.facts["expired_reason"] == "session close"
+
+
+def test_unresolved_watch_expires_three_hours_after_trigger(tmp_path, monkeypatch):
+    now = datetime(2026, 11, 26, 10, 0, tzinfo=IST)
+    ep = _open_call(tmp_path, monkeypatch, now)
+    out = evaluate_watch_episode(ep, spot=83910, now_ts=datetime(2026, 11, 26, 14, 0, tzinfo=IST).timestamp())
+    assert out.status == "EXPIRED"
+    assert out.resolved_at == "2026-11-26 13:00:00 IST"
+    assert out.facts["expired_reason"] == "3h without target or kill"

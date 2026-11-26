@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -238,8 +238,12 @@ def build_pre_open_digest(
     session_date: date | None = None,
     overnight_window_min: int | None = None,
     window_label: str | None = None,
+    cutoff_ist: datetime | None = None,
 ) -> dict:
-    """Build a sectional overnight digest (US / Asia / geo / India). Pure / fail-soft."""
+    """Build a sectional overnight digest (US / Asia / geo / India). Pure / fail-soft.
+
+    ``cutoff_ist`` drops headlines published after it (the cash open for a late build).
+    """
     if now_ist is None:
         now_ist = datetime.now(IST)
     elif now_ist.tzinfo is None:
@@ -273,22 +277,23 @@ def build_pre_open_digest(
             window_label=window_label,
         )
 
-    overnight: list[dict] = []
-    for h in raw_hls:
-        if not isinstance(h, dict):
-            continue
-        title = str(h.get("title") or "").strip()
-        if not title:
-            continue
-        try:
-            age = int(h.get("age_min", 10**9))
-        except (TypeError, ValueError):
-            age = 10**9
-        if age <= int(overnight_window_min):
-            overnight.append(h)
+    # Built after the cash open, the window still ends at the open: a 13:13 build on
+    # 26-Nov carried "Sensex jumped 350 points" into the pre-open digest.
+    min_age = 0
+    if cutoff_ist is not None and now_ist > cutoff_ist:
+        min_age = int((now_ist - cutoff_ist).total_seconds() // 60)
+        as_of = cutoff_ist.strftime("%H:%M IST")
 
+    def _age(h: dict) -> int:
+        try:
+            return int(h.get("age_min", 10**9))
+        except (TypeError, ValueError):
+            return 10**9
+
+    titled = [h for h in raw_hls if isinstance(h, dict) and str(h.get("title") or "").strip()]
+    overnight = [h for h in titled if min_age <= _age(h) <= int(overnight_window_min)]
     if not overnight:
-        overnight = [h for h in raw_hls if isinstance(h, dict) and str(h.get("title") or "").strip()]
+        overnight = [h for h in titled if _age(h) >= min_age]
 
     try:
         from data.news import is_market_mover
@@ -507,13 +512,58 @@ def resolve_pre_open_digest(
         if sealed is not None and sealed.get("event_count", 0) > 0:
             return sealed
 
-    digest = build_pre_open_digest(news_snap, sector_snap, now_ist=now_ist, session_date=sess)
+    cutoff = None
+    if post_open:
+        from data.session_calendar import clock_for
+        open_min = clock_for(sess).open_min
+        cutoff = datetime.combine(sess, dtime(open_min // 60, open_min % 60), tzinfo=IST)
+    digest = build_pre_open_digest(news_snap, sector_snap, now_ist=now_ist, session_date=sess,
+                                   cutoff_ist=cutoff)
     if digest.get("status") == "OK" and digest.get("event_count", 0) > 0:
         if phase in seal_phases:
             return seal_digest(digest, sess)
         if post_open and load_sealed_digest(sess) is None:
+            digest["sealed_late"] = True
             return seal_digest(digest, sess)
     return digest
+
+
+_SEALER: threading.Thread | None = None
+
+
+def _seal_loop() -> None:
+    """Seal during pre-open whether or not anyone opens Market Intel (26-Nov sealed at 13:13)."""
+    import time
+
+    from data.pre_post_market import get_current_session_phase
+
+    while True:
+        try:
+            phase, _, _ = get_current_session_phase()
+            sess = datetime.now(IST).date()
+            if phase in ("PRE_MARKET_ENTRY", "PRE_MARKET_DISCOVERY") and load_sealed_digest(sess) is None:
+                from data.news import fetch_news
+                from data.sectors import fetch_sector_snap
+
+                news = fetch_news()
+                if news and isinstance(news, dict):
+                    news = dict(news)
+                    news["headlines"] = enrich_headlines_with_tags(news.get("headlines") or [])
+                out = resolve_pre_open_digest(news, fetch_sector_snap(), session_phase=phase)
+                log.info("pre-open digest sealer: %s sealed=%s events=%s",
+                         phase, out.get("sealed"), out.get("event_count"))
+        except Exception as ex:  # noqa: BLE001 - one bad cycle must not stop the sealer
+            log.warning("pre-open digest sealer: %s", ex)
+        time.sleep(30.0)
+
+
+def ensure_digest_sealer() -> None:
+    global _SEALER
+    with _SEAL_LOCK:
+        if _SEALER is not None and _SEALER.is_alive():
+            return
+        _SEALER = threading.Thread(target=_seal_loop, name="pre-open-digest-sealer", daemon=True)
+        _SEALER.start()
 
 
 

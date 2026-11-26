@@ -1270,7 +1270,10 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
 
                 for badge, name in strategies:
                     slot = counts_by_badge.get(badge, {})
-                    total = sum(slot.values())
+                    # Rates are over RESOLVED setups only. Counting still-open ACTIVE rows
+                    # in the denominator understated every hit rate (26-Nov audit).
+                    open_n = slot.get("ACTIVE", 0)
+                    total = sum(slot.get(s, 0) for s in _REC_RESOLVED_STATUSES)
                     t2_hits = slot.get("TGT2_HIT", 0)
                     t1_hits = slot.get("TGT1_HIT", 0) + t2_hits
                     sl_hits = slot.get("SL_HIT", 0)
@@ -1285,6 +1288,7 @@ def get_strategy_effectiveness_metrics(symbol: str | None = None) -> list[dict]:
                         "badge": badge,
                         "name": name,
                         "total": total,
+                        "open": open_n,
                         "t1_hits": t1_hits,
                         "t1_rate": t1_rate,
                         "t2_hits": t2_hits,
@@ -1360,7 +1364,8 @@ def summarize_effectiveness(rows: list[dict] | None) -> dict:
     rr_vals = [float(m["avg_rr"]) for m in items if isinstance(m.get("avg_rr"), (int, float))]
     avg_rr = round(sum(rr_vals) / len(rr_vals), 2) if rr_vals else None
     return {
-        "total_tracked": total,
+        "total_tracked": total,  # resolved setups only; rates are over this denominator
+        "open_setups": sum(int(m.get("open") or 0) for m in items),
         "target_hit_rate": round(t1 / total * 100.0, 1) if total else 0.0,
         "stop_loss_rate": round(sl / total * 100.0, 1) if total else 0.0,
         "spot_invalidation_rate": round(inv / total * 100.0, 1) if total else 0.0,
@@ -1373,6 +1378,170 @@ def summarize_effectiveness(rows: list[dict] | None) -> dict:
 # ===========================================================================
 # Sentinel OrderFlow Signal-Based Recommendations Store
 # ===========================================================================
+
+# ===========================================================================
+# Evidence & stale-idea hygiene (26-Nov): what the book has actually paid for.
+# ===========================================================================
+
+EVIDENCE_MIN_N = 30
+_REC_RESOLVED_STATUSES = ("TGT1_HIT", "TGT2_HIT", "SL_HIT", "INVALIDATED")
+_REC_WIN_STATUSES = frozenset(("TGT1_HIT", "TGT2_HIT"))
+_PRIOR_SWEEP_DAY: str | None = None
+
+
+def sweep_prior_session_active(*, now: datetime | None = None, force: bool = False) -> int:
+    """Expire Trade Recommendation rows still ACTIVE that were last seen on an earlier IST day.
+
+    Runs at most once per IST day per process unless ``force``. The live engine
+    re-saves (and re-activates) a row whenever it reappears, so this only retires
+    ideas nobody has seen since their session ended. Sentinel rows are not swept:
+    they are closed by the lifecycle, and an open paper trade may still reference one.
+    """
+    global _PRIOR_SWEEP_DAY
+    ts_now = now or datetime.now(IST)
+    ts_now = ts_now.replace(tzinfo=IST) if ts_now.tzinfo is None else ts_now.astimezone(IST)
+    day = ts_now.strftime("%Y-%m-%d")
+    if not force and _PRIOR_SWEEP_DAY == day:
+        return 0
+    _ensure_schema_once()
+    now_str = ts_now.strftime("%Y-%m-%d %H:%M:%S")
+    with _WRITE_LOCK:
+        with _get_write_conn() as conn:
+            cur = conn.execute(
+                """
+                UPDATE recommendation_records
+                   SET status = 'EXPIRED', outcome_ts = COALESCE(outcome_ts, ?)
+                 WHERE status = 'ACTIVE'
+                   AND substr(COALESCE(last_appeared, triggered_at), 1, 10) < ?
+                """,
+                (now_str, day),
+            )
+            conn.commit()
+            expired = max(0, cur.rowcount)
+    _PRIOR_SWEEP_DAY = day
+    if expired:
+        log.info("Expired %d Trade Recommendation(s) last seen before %s", expired, day)
+    return expired
+
+
+def summarize_recommendation_evidence(rows: list[dict]) -> dict:
+    """Win rate by conviction tier, play and symbol over resolved Trade Recommendations.
+
+    Win = reached TGT1 or TGT2 before SL or invalidation. Rows still ACTIVE/EXPIRED
+    are not counted. ``tier`` is the last-saved conviction tier: the table keeps no
+    entry-time tier, so treat it as an approximation of the label at entry.
+    """
+    def bucket(field: str) -> dict:
+        acc: dict[str, dict[str, int]] = {}
+        for r in rows:
+            b = acc.setdefault(str(r.get(field) or "UNKNOWN"), {"n": 0, "wins": 0})
+            b["n"] += 1
+            b["wins"] += 1 if r.get("status") in _REC_WIN_STATUSES else 0
+        return {
+            k: {"n": v["n"], "win_rate": round(v["wins"] / v["n"] * 100.0, 1)}
+            for k, v in sorted(acc.items(), key=lambda kv: -kv[1]["n"])
+        }
+
+    n = len(rows)
+    wins = sum(1 for r in rows if r.get("status") in _REC_WIN_STATUSES)
+    by_tier = bucket("tier")
+    high = by_tier.get("HIGH")
+    low = by_tier.get("LOW")
+    tier_inverted = bool(
+        high and low and high["n"] >= EVIDENCE_MIN_N and low["n"] >= EVIDENCE_MIN_N
+        and high["win_rate"] < low["win_rate"]
+    )
+    if high and low and high["n"] >= EVIDENCE_MIN_N and low["n"] >= EVIDENCE_MIN_N:
+        if tier_inverted:
+            verdict = (
+                f"HIGH tier is underperforming LOW ({high['win_rate']}% vs {low['win_rate']}% win, "
+                f"n={high['n']} / n={low['n']}). Do not read the tier as a quality signal."
+            )
+        else:
+            verdict = f"Tier ordering holds so far: HIGH {high['win_rate']}% vs LOW {low['win_rate']}% win."
+    else:
+        verdict = f"Too few resolved setups to rank tiers yet (need {EVIDENCE_MIN_N} per tier)."
+    return {
+        "resolved_n": n,
+        "win_rate": round(wins / n * 100.0, 1) if n else None,
+        "by_tier": by_tier,
+        "by_play": bucket("play"),
+        "by_symbol": bucket("symbol"),
+        "tier_inverted": tier_inverted,
+        "min_n": EVIDENCE_MIN_N,
+        "verdict": verdict,
+    }
+
+
+def summarize_sentinel_evidence(rows: list[dict]) -> dict:
+    """Live Sentinel outcomes in option points (exit - entry), pre-cost.
+
+    Rows with no ``latest_signal_type`` are the 6-Nov batch replay (no live signal
+    behind them). They are excluded here and counted in ``excluded_untagged``.
+    """
+    import statistics
+
+    live = []
+    excluded = 0
+    for r in rows:
+        if not r.get("latest_signal_type"):
+            excluded += 1
+            continue
+        if r.get("exit_price") is None or r.get("option_entry") is None:
+            continue
+        live.append({**r, "pts": float(r["exit_price"]) - float(r["option_entry"])})
+
+    def bucket(field: str) -> dict:
+        acc: dict[str, list[dict]] = {}
+        for r in live:
+            acc.setdefault(str(r.get(field) or "UNKNOWN"), []).append(r)
+        return {
+            k: {
+                "n": len(v),
+                "hit_rate": round(sum(1 for x in v if x["status"] == "TARGET_HIT") / len(v) * 100.0, 1),
+                "mean_pts": round(statistics.mean(x["pts"] for x in v), 1),
+            }
+            for k, v in sorted(acc.items(), key=lambda kv: -len(kv[1]))
+        }
+
+    n = len(live)
+    return {
+        "resolved_n": n,
+        "hit_rate": round(sum(1 for x in live if x["status"] == "TARGET_HIT") / n * 100.0, 1) if n else None,
+        "mean_pts": round(statistics.mean(x["pts"] for x in live), 1) if n else None,
+        "median_pts": round(statistics.median(x["pts"] for x in live), 1) if n else None,
+        "excluded_untagged": excluded,
+        "by_symbol": bucket("symbol"),
+        "by_signal_type": bucket("latest_signal_type"),
+        "min_n": EVIDENCE_MIN_N,
+    }
+
+
+def get_recommendation_evidence() -> dict:
+    """Evidence block for both Trade Recommendations and the Sentinel book."""
+    _ensure_schema_once()
+    placeholders = ",".join("?" for _ in _REC_RESOLVED_STATUSES)
+    with _get_read_conn() as conn:
+        rec_rows = conn.execute(
+            f"""
+            SELECT conviction_tier AS tier, play_badge AS play, symbol, status
+              FROM recommendation_records
+             WHERE status IN ({placeholders})
+            """,
+            _REC_RESOLVED_STATUSES,
+        ).fetchall()
+        sen_rows = conn.execute(
+            """
+            SELECT symbol, latest_signal_type, status, option_entry, exit_price
+              FROM sentinel_trade_recommendations
+             WHERE status IN ('TARGET_HIT', 'SPOT_INVAL', 'SL_HIT')
+            """
+        ).fetchall()
+    return {
+        "trade_recs": summarize_recommendation_evidence([dict(r) for r in rec_rows]),
+        "sentinel": summarize_sentinel_evidence([dict(r) for r in sen_rows]),
+    }
+
 
 def save_or_update_sentinel_recommendation(rec: dict) -> None:
     """Save or update a Sentinel signal-based trade recommendation."""
@@ -1480,6 +1649,20 @@ def get_active_sentinel_recommendation(symbol: str, strike: float, side: str) ->
     except Exception as e:
         log.warning(f"Error fetching active sentinel recommendation: {e}")
         return None
+
+
+def get_sentinel_recommendation_for_paper(paper_trade_id: str) -> dict | None:
+    """The Sentinel recommendation (any status) that opened ``paper_trade_id``."""
+    if not paper_trade_id:
+        return None
+    _ensure_schema_once()
+    with _get_read_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM sentinel_trade_recommendations WHERE paper_trade_id = ? "
+            "ORDER BY triggered_at DESC LIMIT 1",
+            (str(paper_trade_id),),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def list_active_sentinel_recommendations(symbol: str | None = None) -> list[dict]:

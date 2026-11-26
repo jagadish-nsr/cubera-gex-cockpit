@@ -376,6 +376,63 @@ def test_go_auto_stage_skipped_when_session_closed(monkeypatch):
     assert data.get("auto_stage", {}).get("status") == "skipped"
     assert data.get("auto_stage", {}).get("detail") == "session_closed"
     assert go_eff.list_open("NIFTY") == []
+    assert _go_skip_rows() == []                    # a closed session is not a declined FIRE
+
+
+def _go_skip_rows():
+    import sqlite3
+    conn = sqlite3.connect(journal_store._DB_PATH)
+    try:
+        return conn.execute(
+            "SELECT source, reason, fingerprint, symbol, state FROM go_skips ORDER BY skipped_at"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _cheap_fire(decision_id):
+    return {
+        "id": decision_id, "symbol": "SENSEX", "mode": "directional", "state": "FIRE",
+        "score": 80, "strategy_key": "ABSORPTION_BEAR",
+        "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 84000, "ltp": 0.1}],
+        "context": {"spot": 84100, "lot_size": 20},
+    }
+
+
+def test_declined_fire_is_recorded_once_per_day(monkeypatch):
+    """26-Nov: FIREs auto-stage declined left no trace, so go_skips stayed empty."""
+    monkeypatch.setattr(web_server, "_GO_AUTO_STAGE_MIN_PREMIUM", 1.0)
+    first = web_server._go_maybe_auto_stage_fire(_cheap_fire("poll-1"))
+    again = web_server._go_maybe_auto_stage_fire(_cheap_fire("poll-2"))   # new UUID, same FIRE
+    assert first["detail"] == "premium_below_floor" and first.get("skip_id")
+    assert again["detail"] == "premium_below_floor" and "skip_id" not in again
+    rows = _go_skip_rows()
+    assert len(rows) == 1
+    source, reason, fp, sym, state = rows[0]
+    assert (source, reason, sym, state) == ("auto", "premium_below_floor", "SENSEX", "FIRE")
+    assert fp == web_server._go_auto_stage_fingerprint(_cheap_fire("x"))
+
+
+def test_opposite_side_block_is_recorded_as_a_skip():
+    bull = _fire_decision("directional").to_dict()
+    go_eff.record_event("STAGE", bull, trade_id="pt_bull")
+    bear = {
+        "id": "bear_conflict", "symbol": "NIFTY", "mode": "directional", "state": "FIRE",
+        "score": 88, "strategy_key": "CONTINUATION_BEAR",
+        "contracts": [{"action": "BUY", "opt_type": "PE", "strike": 25200, "ltp": 70}],
+        "context": {"spot": 25400, "lot_size": 65},
+        "evidence": [
+            {"factor": "sentinel_or_idea", "pass": True, "weight": 1.0},
+            {"factor": "cvd_vwap", "pass": True, "weight": 1.0},
+        ],
+    }
+    assert web_server._go_maybe_auto_stage_fire(bear)["status"] == "blocked_conflict"
+    assert [r[1] for r in _go_skip_rows()] == ["opposite_side_open"]
+
+
+def test_manual_skip_is_tagged_manual():
+    asyncio.run(asgi_request("POST", "/api/go/skip", body={"decision": _cheap_fire("manual-1")}))
+    assert [(r[0], r[1]) for r in _go_skip_rows()] == [("manual", "")]
 
 
 def test_go_manual_stage_refused_when_session_closed(monkeypatch):

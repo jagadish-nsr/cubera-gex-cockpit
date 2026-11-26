@@ -237,6 +237,8 @@ def test_publish_snapshot_writes_the_pickle_and_refuses_a_demo(monkeypatch):
             child.unlink()
     snap_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(live_fetcher, "_SNAP_DIR", snap_dir)
+    # A running fetcher loop persists whatever _STORE holds at the close; never leave this fake book.
+    monkeypatch.setattr(live_fetcher, "_STORE", dict(live_fetcher._STORE))
     dash = _dash()
     fetched = live_fetcher.publish_snapshot("NIFTY", "current_week", dash)
     assert fetched == dash.fetched_at

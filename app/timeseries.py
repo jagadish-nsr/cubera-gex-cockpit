@@ -197,7 +197,8 @@ def build_row(data) -> dict:
         "expiry_weighting": L.expiry_weighting,
         "n_contracts": data.n_contracts,
         "source": data.source,
-        "stale": L.oi_stale,
+        # OI staleness alone was never true all of 25/26-Nov while chains served degraded.
+        "stale": bool(L.oi_stale) or bool(getattr(data, "is_degraded", False)),
     }
 
 
