@@ -58,6 +58,7 @@ def test_handle_spot_tick_does_not_invent_open_premarket(monkeypatch):
     from app.ws_spot_feed import _handle_spot_tick
 
     monkeypatch.setattr(config, "is_market_open", lambda *a, **k: False)
+    monkeypatch.setattr(st, "_bg_save_snapshot", lambda *a, **k: None)
     st._STORE.pop("NIFTY", None)
     try:
         _handle_spot_tick(
@@ -77,6 +78,8 @@ def test_handle_spot_tick_may_seed_open_after_bell(monkeypatch):
     from app.ws_spot_feed import _handle_spot_tick
 
     monkeypatch.setattr(config, "is_market_open", lambda *a, **k: True)
+    # The background save thread can outlive the test and its DB guard.
+    monkeypatch.setattr(st, "_bg_save_snapshot", lambda *a, **k: None)
     st._STORE.pop("NIFTY", None)
     try:
         _handle_spot_tick(

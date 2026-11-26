@@ -273,6 +273,13 @@ def save_snapshot(
     with _LOCK, _get_connection() as conn:
         existing = conn.execute("SELECT * FROM session_snapshots WHERE symbol = ?", (sym,)).fetchone()
         ex = dict(existing) if existing else {}
+        if as_of and ex:
+            in_session = snapshot_session_date({"as_of": as_of})
+            ex_session = snapshot_session_date(ex)
+            if in_session and ex_session and in_session < ex_session:
+                log.warning("%s refusing snapshot write as_of=%s older than stored session %s",
+                            sym, as_of, ex_session)
+                return
 
         min_valid = 40000.0 if sym in ("BANKNIFTY", "SENSEX") else 19000.0
         new_spot = float(spot) if spot is not None and spot > min_valid else ex.get("spot")

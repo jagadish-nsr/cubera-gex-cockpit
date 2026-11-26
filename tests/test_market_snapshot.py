@@ -492,3 +492,16 @@ def test_expired_near_book_stores_no_flip_and_no_gex(tmp_path, monkeypatch):
     assert snap["gamma_flip"] is None and snap["net_gex"] is None
     assert snap["source"] == "session-close:dhan:near-book-expired"
     assert snap["call_wall"] == 84500.0
+
+
+def test_an_older_session_never_overwrites_a_newer_row(tmp_path, monkeypatch):
+    """27-Nov: a leaked 27-Oct book (NIFTY 24,500) replaced the 26-Nov row and dropped prev close."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: True)
+    save_snapshot(symbol="NIFTY", spot=26010.5, prev_close=25930.0,
+                  as_of="2026-11-26T10:09:50+00:00", source="session-close:dhan")
+    save_snapshot(symbol="NIFTY", spot=24500.0, as_of="2026-10-27T01:00:00+00:00",
+                  source="session-close:dhan")
+    snap = get_snapshot("NIFTY")
+    assert snap["spot"] == 26010.5
+    assert snap["prev_close"] == 25930.0

@@ -44,6 +44,36 @@ def guard_live_sentinel_db(tmp_path, monkeypatch):
     yield db_path
 
 
+@pytest.fixture(scope="session")
+def _market_snapshot_copy(tmp_path_factory):
+    import shutil
+    import sqlite3
+    import data.market_snapshot as ms
+
+    dst = tmp_path_factory.mktemp("market_snapshot") / "market_snapshot.db"
+    if ms.DB_PATH.exists():
+        src = sqlite3.connect(str(ms.DB_PATH))
+        try:
+            out = sqlite3.connect(str(dst))
+            src.backup(out)
+            out.close()
+        finally:
+            src.close()
+    return dst
+
+
+@pytest.fixture(autouse=True)
+def guard_live_market_snapshot_db(_market_snapshot_copy, monkeypatch):
+    """No unit test may write data/journal/market_snapshot.db (the sealed session closes).
+
+    A spot-tick test's background save wrote NIFTY 25,250 as a ws-tick, and a leaked 27-Oct book
+    replaced the 26-Nov row. Promote runs these suites, so the prod file was exposed too. Tests
+    read a session copy of the real file, so tests that expect real closes still see them.
+    """
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", _market_snapshot_copy)
+    yield _market_snapshot_copy
+
+
 @pytest.fixture(autouse=True)
 def guard_live_recommendations_db(tmp_path, monkeypatch):
     """Safety guard: Never allow any unit test to touch or mutate data/journal/recommendations.db."""
