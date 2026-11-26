@@ -279,3 +279,129 @@ def test_capture_prefers_published_book_over_live_fetch(monkeypatch):
         assert data.symbol == sym
         assert "[published book]" in msg
     assert written == ["BANKNIFTY", "SENSEX"]
+
+
+# ---- Quote audit: bid/ask/IV/expiry and mid-vs-last source per strike ----------------
+
+def test_nearest_expiry_quotes_marks_mid_and_last(tmp_path):
+    from datetime import date
+    from data.nse import nearest_expiry_quotes
+    rows = [
+        # both sides quoted -> mid
+        {"expiry": date(2026, 7, 2), "strike": 100.0, "type": "C", "price": 5.0,
+         "bid": 4.8, "ask": 5.2, "iv": 0.14},
+        # put has only a last trade (no bid) -> last fallback
+        {"expiry": date(2026, 7, 2), "strike": 100.0, "type": "P", "price": 4.0,
+         "bid": None, "ask": 4.4, "iv": 0.15},
+        # later expiry is ignored
+        {"expiry": date(2026, 7, 9), "strike": 100.0, "type": "C", "price": 9.0,
+         "bid": 8.0, "ask": 10.0, "iv": 0.2},
+    ]
+    q = nearest_expiry_quotes(rows)
+    assert q[100.0] == {
+        "expiry": "2026-07-02",
+        "call_bid": 4.8, "call_ask": 5.2, "call_iv": 0.14, "call_src": "mid",
+        "put_bid": None, "put_ask": 4.4, "put_iv": 0.15, "put_src": "last",
+    }
+    assert nearest_expiry_quotes([]) == {}
+
+
+def test_parse_keeps_bid_and_ask_on_each_side():
+    from data.nse import parse_nse_option_chain
+    payload = {"records": {"underlyingValue": 100.0, "data": [{
+        "strikePrice": 100.0, "expiryDate": "02-Jul-2026",
+        "CE": {"strikePrice": 100.0, "expiryDate": "02-Jul-2026", "lastPrice": 5.0,
+               "buyPrice1": 4.8, "sellPrice1": 5.2, "impliedVolatility": 14.0},
+        "PE": {"strikePrice": 100.0, "expiryDate": "02-Jul-2026", "lastPrice": 4.0,
+               "buyPrice1": 0, "sellPrice1": 4.4, "impliedVolatility": 15.0},
+    }]}}
+    rows, _ = parse_nse_option_chain(payload)
+    ce = next(r for r in rows if r["type"] == "C")
+    pe = next(r for r in rows if r["type"] == "P")
+    assert (ce["bid"], ce["ask"], ce["price"]) == (4.8, 5.2, 5.0)
+    assert pe["bid"] is None and pe["ask"] == 4.4        # zero bid is "not quoted", not 0
+    assert pe["price"] == 4.0                            # last-trade fallback (no bid)
+
+
+def test_strike_rows_roundtrip_quote_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "OISTRIKES_DIR", tmp_path)
+    data = SimpleNamespace(
+        fetched_at=datetime(2026, 6, 30, 5, 0, tzinfo=timezone.utc),
+        levels=SimpleNamespace(spot=24010.7),
+        oi_strikes=[
+            {"strike": 24000.0, "call_oi": 1, "put_oi": 3, "call_ltp": 120.5,
+             "put_ltp": 110.25, "net_gex": 999, "expiry": "2026-07-02",
+             "call_bid": 119.0, "call_ask": 122.0, "call_iv": 0.1412345, "call_src": "mid",
+             "put_bid": None, "put_ask": 111.0, "put_iv": 0.15, "put_src": "last"},
+        ],
+    )
+    rows = ts.build_strike_rows(data)
+    assert set(rows[0]) == set(ts.STRIKE_FIELDS)
+    ts.append_strike_rows(rows)
+    df = ts.load_strikes_day("2026-06-30")
+    assert list(df.columns) == ts.STRIKE_FIELDS
+    r = df.iloc[0]
+    assert r["expiry"] == "2026-07-02"
+    assert (r["call_bid"], r["call_ask"], r["call_src"]) == (119.0, 122.0, "mid")
+    assert round(float(r["call_iv"]), 4) == 0.1412
+    assert math.isnan(float(r["put_bid"])) and r["put_src"] == "last"
+    assert r["call_ltp"] == 120.5 and r["net_gex"] == 999   # old columns unchanged
+
+
+def test_append_to_old_header_file_does_not_shift_columns(tmp_path, monkeypatch):
+    import csv
+    monkeypatch.setattr(ts, "OISTRIKES_DIR", tmp_path)
+    old_header = ts.STRIKE_FIELDS[:ts.STRIKE_FIELDS.index("expiry")]   # pre-change schema
+    path = ts.strikes_path_for("2026-06-30", None, tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=old_header)
+        w.writeheader()
+        w.writerow({k: "" for k in old_header} | {"date_ist": "2026-06-30", "strike": 1.0})
+    data = SimpleNamespace(
+        fetched_at=datetime(2026, 6, 30, 5, 0, tzinfo=timezone.utc),
+        levels=SimpleNamespace(spot=24010.7),
+        oi_strikes=[{"strike": 24000.0, "call_ltp": 120.5, "put_ltp": 110.25,
+                     "expiry": "2026-07-02", "call_bid": 119.0}],
+    )
+    ts.append_strike_rows(ts.build_strike_rows(data))
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    assert rows[0] == old_header
+    assert all(len(r) == len(old_header) for r in rows)        # no shifted cells
+    assert rows[2][old_header.index("call_ltp")] == "120.5"
+
+
+def test_degraded_chain_marks_the_row_stale():
+    """25/26-Nov: chains served degraded all day while the stale column stayed False."""
+    data = load_dashboard(window="all", use_demo=True)
+    assert ts.build_row(data)["stale"] is False
+    data.is_degraded = True
+    assert ts.build_row(data)["stale"] is True
+
+
+def test_frozen_spot_with_moving_atm_premium_marks_the_row_stale(monkeypatch):
+    import scripts.log_timeseries as log_ts
+
+    fetched = datetime.now(timezone.utc)
+    book = SimpleNamespace(symbol="NIFTY", source="dhan", fetched_at=fetched, expiries=[],
+                           levels=SimpleNamespace(spot=23731.8, near_book_expired=False))
+    rows_written = []
+    monkeypatch.setattr(log_ts, "published_book", lambda symbol, max_age_s=180: book)
+    monkeypatch.setattr(log_ts, "build_row", lambda data: {
+        "date_ist": "2026-11-03", "time_ist": "10:20", "spot": 23731.8, "stale": False,
+        "regime": "POSITIVE", "mode_label": "CALL-HEAVY", "put_wall": 23600, "call_wall": 23800,
+        "magnet": 23700, "pcr_oi": 1.0, "news_count": 0, "news_impact": 0,
+    })
+    # 3 Nov: spot sat on 23,731.8 while the 23,700 call went from 49 to 55.
+    monkeypatch.setattr(log_ts, "build_strike_rows", lambda data: [
+        {"spot": 23731.8, "strike": 23700.0, "call_ltp": 55.0, "put_ltp": 20.0}])
+    monkeypatch.setattr("app.timeseries.last_strike_snapshot", lambda path: [
+        {"spot": 23731.8, "strike": 23700.0, "call_ltp": 49.0, "put_ltp": 22.0}])
+    monkeypatch.setattr(log_ts, "append_if_due",
+                        lambda row, **k: (rows_written.append(row), (SimpleNamespace(name="x.csv"), True))[1])
+    monkeypatch.setattr(log_ts, "append_strike_rows", lambda *a, **k: None)
+    monkeypatch.setattr(log_ts, "_is_expiry_day", lambda data: False)
+    monkeypatch.setattr("app.futures_buildup.capture_futures_from_ws", lambda **k: None)
+    log_ts.capture_once(symbol="NIFTY")
+    assert rows_written[0]["stale"] is True

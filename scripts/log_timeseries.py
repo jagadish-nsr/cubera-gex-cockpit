@@ -200,6 +200,15 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
             from_published = True
     ist = data.fetched_at + timedelta(hours=5, minutes=30)
     row = build_row(data)
+    from app.timeseries import (
+        annotate_spot_check, last_strike_snapshot, oistrikes_dir_for, strikes_path_for,
+    )
+    strike_rows = build_strike_rows(data)
+    if strike_rows:
+        previous = last_strike_snapshot(
+            strikes_path_for(row["date_ist"], data.symbol, oistrikes_dir_for(data.source)))
+        annotate_spot_check(strike_rows, previous)
+        row["stale"] = bool(row["stale"]) or bool(strike_rows[0].get("spot_stale"))
     path, written = append_if_due(row, min_gap_minutes=min_gap, symbol=data.symbol)
 
     # Bundled gamma-blast: expiry day + blast window -> 1-min per-strike stream.
@@ -230,8 +239,6 @@ def capture_once(min_gap: float = 10.0, symbol: str | None = None) -> tuple[str,
     # Per-strike OI/ΔOI rides the SAME fetch; write it in lock-step with the main
     # row so the two captures never drift (skip writes nothing on either side). Routed to the
     # feed's own journal (Dhan -> oi_strikes_dhan) so sources never mix.
-    from app.timeseries import oistrikes_dir_for
-    strike_rows = build_strike_rows(data)
     append_strike_rows(strike_rows, date_ist=row["date_ist"], symbol=data.symbol,
                        directory=oistrikes_dir_for(data.source))
     extra = f" +{len(strike_rows)} strikes" if strike_rows else ""
