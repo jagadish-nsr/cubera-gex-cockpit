@@ -14,15 +14,12 @@ NSE payload in ``data/nse.aggregate_oi_volume``. Decision-support only.
 from __future__ import annotations
 
 import csv
-import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
 import config
-
-log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[1]
 # Each capture stream is namespaced by index under a per-symbol SUBFOLDER, e.g.
@@ -76,13 +73,6 @@ STRIKE_FIELDS = [
     # Chain spot versus the same snapshot's put-call parity. spot_stale is 1 when
     # the printed spot is unchanged and the at-the-money premiums have moved.
     "parity_spot", "spot_stale",
-    # Quote audit (appended last). Nearest expiry only. *_bid/*_ask = top of book (blank if
-    # not quoted). *_iv = vendor IV as a decimal. *_src = "mid" (both sides quoted, so
-    # call_ltp/put_ltp is the quote mid) or "last" (one side missing, so it is a last-trade
-    # fallback). Without this, a premium cannot be told apart as quoted or stale.
-    "expiry",
-    "call_bid", "call_ask", "call_iv", "call_src",
-    "put_bid", "put_ask", "put_iv", "put_src",
 ]
 
 # One row per snapshot. Keep this list and build_row() in lock-step.
@@ -343,11 +333,6 @@ def build_strike_rows(data) -> list[dict]:
             "put_oi_near": _f(s.get("put_oi_near")),
             "parity_spot": "",
             "spot_stale": 0,
-            "expiry": s.get("expiry") or "",
-            "call_bid": _f(s.get("call_bid"), 2), "call_ask": _f(s.get("call_ask"), 2),
-            "call_iv": _f(s.get("call_iv"), 4), "call_src": s.get("call_src") or "",
-            "put_bid": _f(s.get("put_bid"), 2), "put_ask": _f(s.get("put_ask"), 2),
-            "put_iv": _f(s.get("put_iv"), 4), "put_src": s.get("put_src") or "",
         })
     return annotate_spot_check(rows)
 
@@ -393,19 +378,8 @@ def append_strike_rows(rows: list[dict], date_ist: str | None = None,
     path = strikes_path_for(date_ist, symbol, directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     new_file = not path.exists()
-    fieldnames = STRIKE_FIELDS
-    if not new_file:
-        # A day file started before a schema change keeps its old header. Writing the new
-        # columns under it would shift every value after the first new column, so write
-        # only the columns that header has. The new quote fields are dropped for the rest
-        # of that day, and the file stays readable.
-        with open(path, "r", encoding="utf-8") as fh:
-            existing = next(csv.reader(fh), None) or []
-        if existing and existing != STRIKE_FIELDS:
-            log.warning("strike journal %s has an older header; writing its columns only", path)
-            fieldnames = existing
     with open(path, "a", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
+        w = csv.DictWriter(fh, fieldnames=STRIKE_FIELDS)
         if new_file:
             w.writeheader()
         w.writerows(rows)
