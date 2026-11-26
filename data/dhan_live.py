@@ -220,13 +220,39 @@ def _seg_scrip(symbol: str) -> tuple[str, int]:
 
 
 
+# Per-thread call timing. A chain fetch runs on one pool worker, so the gate waits and HTTP time
+# of its Dhan calls are summed here and read back by the same worker (diagnostics only; no
+# effect on what is fetched or returned).
+_CALL_TIMING = threading.local()
+
+
+def timing_begin() -> None:
+    _CALL_TIMING.acc = {"gate_ms": 0.0, "http_ms": 0.0, "calls": 0, "throttled_429": 0}
+
+
+def timing_take() -> dict:
+    acc = getattr(_CALL_TIMING, "acc", None)
+    _CALL_TIMING.acc = None
+    return dict(acc) if acc else {}
+
+
 def _post(path: str, body: dict, timeout: int = 30, hi: bool = False):
     """POST through the shared rate gate. The bucket is derived from the path so no call site can
     forget it — /marketfeed/* was entirely ungated before, which is where the 429s came from."""
     import requests
     bucket = "quote" if path.startswith("/marketfeed") else "chain"
+    t_gate = time.perf_counter()
     _gate(bucket, hi=hi)
+    t_http = time.perf_counter()
     resp = requests.post(f"{DHAN_BASE}{path}", json=body, headers=_headers(), timeout=timeout)
+    t_done = time.perf_counter()
+    acc = getattr(_CALL_TIMING, "acc", None)
+    if acc is not None:
+        acc["gate_ms"] += (t_http - t_gate) * 1000.0
+        acc["http_ms"] += (t_done - t_http) * 1000.0
+        acc["calls"] += 1
+        if getattr(resp, "status_code", None) == 429:
+            acc["throttled_429"] += 1
     if getattr(resp, "status_code", None) == 429:
         retry_after = None
         hdrs = getattr(resp, "headers", None) or {}

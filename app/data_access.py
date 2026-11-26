@@ -33,6 +33,40 @@ _EXECUTOR: _cf.ThreadPoolExecutor | None = None
 _EXECUTOR_LOCK = threading.Lock()
 
 
+# A chain fetch slower than this (on its worker, after it started) emits a chain.timing event
+# with the pool-queue, Dhan gate-wait and HTTP split. Faster fetches are not logged (volume).
+_CHAIN_TIMING_LOG_MS = 20000.0
+
+
+def _fetch_live_chain_timed(idx, live_source, max_expiries=None, force_live=False,
+                            submitted_at: float | None = None):
+    """``_fetch_live_chain`` with its timing kept for diagnostics. Same return value."""
+    from data import dhan_live
+    dhan_live.timing_begin()
+    t0 = time.perf_counter()
+    try:
+        return _fetch_live_chain(idx, live_source, max_expiries=max_expiries, force_live=force_live)
+    finally:
+        worker_ms = (time.perf_counter() - t0) * 1000.0
+        timing = dhan_live.timing_take()
+        if worker_ms >= _CHAIN_TIMING_LOG_MS:
+            try:
+                from app.obs import event
+                queue_ms = ((t0 - submitted_at) * 1000.0) if submitted_at is not None else None
+                event(
+                    "chain.timing", level="WARNING", symbol=idx.symbol,
+                    worker_ms=round(worker_ms, 1),
+                    queue_ms=round(queue_ms, 1) if queue_ms is not None else None,
+                    gate_ms=round(float(timing.get("gate_ms", 0.0)), 1),
+                    http_ms=round(float(timing.get("http_ms", 0.0)), 1),
+                    calls=int(timing.get("calls", 0)),
+                    throttled_429=int(timing.get("throttled_429", 0)),
+                    max_expiries=max_expiries,
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must never break the fetch
+                pass
+
+
 def _wait_worker(fut, timeout: float, label: str):
     """Wait for a pool task. A still-running request does not pin this caller.
 
@@ -373,8 +407,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             )
             _fx = {
                 "chain": _ex.submit(
-                    _fetch_live_chain, idx, live_source,
+                    _fetch_live_chain_timed, idx, live_source,
                     max_expiries=max_exps, force_live=force_live,
+                    submitted_at=time.perf_counter(),
                 ),
                 "news": _ex.submit(fetch_news),
                 "sectors": _ex.submit(fetch_sector_snap, prefer_dhan=_dhan),
