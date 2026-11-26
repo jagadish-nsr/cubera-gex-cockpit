@@ -200,9 +200,8 @@ class BigMoneyDetector:
         if c is None or tick.ltp is None:
             return []
         sym, lot, price = c["symbol"], c.get("lot"), float(tick.ltp)
-        import time as _time
-        # Dhan LTT is IST-wall-as-epoch → normalise to a true epoch (so _ts renders correct IST).
-        epoch = (int(tick.ltt) - _IST_OFFSET_S) if getattr(tick, "ltt", None) else int(_time.time())
+        from data.dhan_feed import ltt_to_epoch
+        epoch = ltt_to_epoch(getattr(tick, "ltt", None))
         out: list[Event] = []
 
         # update the symbol's window tracker first (volume + OI), so BOTH prints and bursts can carry
