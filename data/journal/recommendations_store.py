@@ -1482,6 +1482,20 @@ def get_active_sentinel_recommendation(symbol: str, strike: float, side: str) ->
         return None
 
 
+def get_sentinel_recommendation_for_paper(paper_trade_id: str) -> dict | None:
+    """The Sentinel recommendation (any status) that opened ``paper_trade_id``."""
+    if not paper_trade_id:
+        return None
+    _ensure_schema_once()
+    with _get_read_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM sentinel_trade_recommendations WHERE paper_trade_id = ? "
+            "ORDER BY triggered_at DESC LIMIT 1",
+            (str(paper_trade_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def list_active_sentinel_recommendations(symbol: str | None = None) -> list[dict]:
     """Retrieve all currently ACTIVE Sentinel recommendations."""
     _ensure_schema_once()

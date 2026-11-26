@@ -49,6 +49,7 @@ _AUTO_PAPER_LOCK = threading.Lock()
 
 _REFUSAL_COUNTS: dict[str, int] = {}
 _REFUSAL_LOCK = threading.Lock()
+_PAPER_OPEN_LOCK = threading.Lock()
 
 
 def _now_ist_str() -> str:
@@ -316,6 +317,47 @@ def _open_or_skip_paper(
 ) -> str | None:
     if not force and not is_auto_paper_enabled():
         return None
+    with _PAPER_OPEN_LOCK:
+        twin = _open_sentinel_paper_today(symbol, strike, side)
+        if twin:
+            log.info("Sentinel paper already OPEN for %s %d%s (%s); not opening a duplicate",
+                     symbol, int(strike), side, twin)
+            return twin
+        return _open_paper_unlocked(
+            symbol=symbol, side=side, strike=strike, entry_ltp=entry_ltp, expiry_tag=expiry_tag,
+            spot=spot, spot_target=spot_target, spot_inval=spot_inval, opt_target=opt_target,
+            opt_sl=opt_sl, signal=signal, lot_size=lot_size,
+        )
+
+
+def _open_sentinel_paper_today(symbol: str, strike: float, side: str) -> str | None:
+    """An OPEN Sentinel paper trade on this strike/side from today. The recommendation keeps one
+    paper_trade_id, so a second open orphans the first (13-Nov: five same-second twins)."""
+    today = _today_ist().isoformat()
+    for t in journal_store.list_open_trades(symbol):
+        if t.exit_by != "SENTINEL_ENGINE" or not str(t.entry_ts).startswith(today):
+            continue
+        leg = (t.legs or [{}])[0]
+        if float(leg.get("strike") or 0) == float(strike) and str(leg.get("type") or "").upper() == side.upper():
+            return t.trade_id
+    return None
+
+
+def _open_paper_unlocked(
+    *,
+    symbol: str,
+    side: str,
+    strike: float,
+    entry_ltp: float,
+    expiry_tag: str,
+    spot: float,
+    spot_target: float,
+    spot_inval: float,
+    opt_target: float,
+    opt_sl: float,
+    signal: SentinelSignal,
+    lot_size: int,
+) -> str | None:
     try:
         legs = [{
             "action": "BUY",

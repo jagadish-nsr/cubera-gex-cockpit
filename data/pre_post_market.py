@@ -1532,6 +1532,11 @@ def _post_market_loop(symbol: str) -> None:
                 rec_store.expire_active_at_session_end(now=now)
             except Exception as exc:
                 log.debug("rec session-end expire: %s", exc)
+            try:
+                from data.journal import paper_settlement
+                paper_settlement.settle_open_paper(now=now)
+            except Exception as exc:
+                log.warning("paper session-end settlement: %s", exc)
         time.sleep(30.0)
 
 

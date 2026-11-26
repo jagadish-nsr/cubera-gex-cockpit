@@ -298,8 +298,11 @@ def close_trade(
     brokerage_per_order: float = DEFAULT_BROKERAGE_PER_ORDER_INR,
     slippage_pts: float = DEFAULT_SLIPPAGE_PTS_PER_LEG,
     notes: str = "",
+    exit_ts: str | None = None,
 ) -> PaperTrade | None:
     """Close an OPEN paper trade and calculate realised P&L net of costs.
+
+    ``exit_ts`` defaults to now; a late settlement passes the time the exit really happened.
 
     For a credit spread: gross_pnl = entry_premium - exit_premium
                          (profit when exit_premium < entry_premium = buyback cheaper)
@@ -326,7 +329,7 @@ def close_trade(
     gross_inr = gross * trade.lot_size
     net_inr = gross_inr - total_brok - total_slip
 
-    exit_ts = _now_ist()
+    exit_ts = exit_ts or _now_ist()
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
@@ -351,6 +354,40 @@ def close_trade(
 
     log.info("Closed paper trade %s: gross=₹%.0f net=₹%.0f (after costs)",
              trade_id, gross_inr, net_inr)
+    return get_trade(trade_id)
+
+
+def void_trade(trade_id: str, exit_reason: str, notes: str = "") -> PaperTrade | None:
+    """Close an OPEN trade with zero P&L and zero costs: there is no exit price to settle at.
+
+    Used only for auto-entries whose exit was never recorded. Inventing a price would put
+    fiction into the ledger; a void keeps the row out of the realised P&L.
+    """
+    trade = get_trade(trade_id)
+    if trade is None or trade.status != "OPEN":
+        return trade
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            conn.execute("""
+                UPDATE paper_trades SET
+                    status = 'CLOSED',
+                    exit_ts = ?,
+                    exit_net_premium = entry_net_premium,
+                    gross_pnl = 0,
+                    brokerage_cost = 0,
+                    slippage_cost = 0,
+                    net_realized_pnl = 0,
+                    exit_reason = ?,
+                    notes = CASE WHEN ? != '' THEN
+                        CASE WHEN notes != '' THEN notes || char(10) || ? ELSE ? END
+                        ELSE notes END
+                WHERE trade_id = ? AND status = 'OPEN'
+            """, (_now_ist(), exit_reason, notes, notes, notes, trade_id))
+            conn.commit()
+        finally:
+            conn.close()
+    log.warning("Voided paper trade %s (%s): %s", trade_id, exit_reason, notes)
     return get_trade(trade_id)
 
 

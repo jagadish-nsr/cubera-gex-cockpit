@@ -773,6 +773,24 @@ def close_all_open_at_session_end(
     return closed
 
 
+def linked_go_row(trade_id: str) -> dict[str, Any] | None:
+    """The go_open row a paper trade was staged from (status, exit_premium, exit_reason, closed_at)."""
+    if not trade_id:
+        return None
+    _ensure_schema_once()
+    conn = _conn()
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT status, exit_premium, exit_reason, closed_at FROM go_open "
+            "WHERE trade_id = ? ORDER BY opened_at DESC LIMIT 1",
+            (str(trade_id),),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
 def list_open(symbol: str | None = None, *, include_decision: bool = False) -> list[dict[str, Any]]:
     _ensure_schema_once()
     conn = _conn()
