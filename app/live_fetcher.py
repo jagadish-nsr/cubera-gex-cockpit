@@ -355,6 +355,7 @@ def _persist_session_close(symbol: str, data) -> None:
             vix=vix,
             as_of=as_of,
             source=source,
+            near_book_expired=bool(getattr(lv, "near_book_expired", False)),
         )
     except Exception as exc:
         log.warning("session-close snapshot failed for %s: %s", symbol, exc)

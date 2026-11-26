@@ -460,3 +460,35 @@ def test_lkgs_store_skips_sqlite_when_market_closed(tmp_path, monkeypatch):
     assert snap["call_wall"] == 24000.0
     assert snap["as_of"] == "2026-11-04T10:10:20+00:00"
     assert mgr._registry["NIFTY"].data.levels.spot == 24344.2
+
+
+def test_new_session_takes_the_stored_close_as_previous_close(tmp_path, monkeypatch):
+    """26 Nov Sensex: ticks carry no previous close, so prev_close stayed NULL all day."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(symbol="SENSEX", spot=83950.4, as_of="2026-11-25T10:09:50+00:00", source="session-close:dhan")
+    # The tick packet's previous close falls back to the live price: rejected as a copy.
+    save_snapshot(symbol="SENSEX", spot=84020.1, prev_close=84020.1,
+                  as_of="2026-11-26T03:46:00+00:00", source="ws-tick")
+    assert get_snapshot("SENSEX")["prev_close"] == 83950.4
+    save_snapshot(symbol="SENSEX", spot=84328.59, as_of="2026-11-26T10:09:50+00:00", source="session-close:dhan")
+    assert get_snapshot("SENSEX")["prev_close"] == 83950.4
+
+
+def test_a_real_fed_previous_close_wins_over_the_stored_spot(tmp_path, monkeypatch):
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(symbol="NIFTY", spot=25800.0, as_of="2026-11-25T10:00:00+00:00", source="ws-tick")
+    save_snapshot(symbol="NIFTY", spot=25850.0, prev_close=25819.25,
+                  as_of="2026-11-26T03:46:00+00:00", source="ws-tick")
+    assert get_snapshot("NIFTY")["prev_close"] == 25819.25
+
+
+def test_expired_near_book_stores_no_flip_and_no_gex(tmp_path, monkeypatch):
+    """26 Nov 15:40 Sensex stored flip = spot (84,328.59) and net GEX 0 as if they were levels."""
+    monkeypatch.setattr("data.market_snapshot.DB_PATH", tmp_path / "snap.db")
+    save_snapshot(symbol="SENSEX", spot=84328.59, gamma_flip=84328.59, net_gex=0.0, call_wall=84500.0,
+                  put_wall=84000.0, as_of="2026-11-26T10:09:50+00:00", source="session-close:dhan",
+                  near_book_expired=True)
+    snap = get_snapshot("SENSEX")
+    assert snap["gamma_flip"] is None and snap["net_gex"] is None
+    assert snap["source"] == "session-close:dhan:near-book-expired"
+    assert snap["call_wall"] == 84500.0
