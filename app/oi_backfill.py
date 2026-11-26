@@ -63,9 +63,14 @@ def backfill_oi_strikes_dhan(symbol: str, date_ist: str, log=print) -> dict:
     from datetime import date as _date, datetime, timedelta, timezone
 
     from data.dhan import (DHAN_OPT_FLAG, DHAN_SEGMENT, DHAN_UNDERLYING, NIFTY_SECURITY_ID,
-                           fetch_option_matrix)
+                           _lot_size_for_symbol, fetch_option_matrix, oi_shares_to_lots)
     from app.timeseries import (OISTRIKES_DHAN_DIR, append_strike_rows, load_strikes_day)
 
+    # rollingoption OI is SHARES; the live capture in the same file is LOTS (data/dhan.py divides).
+    lot = _lot_size_for_symbol(symbol)
+    if lot <= 1:
+        log(f"  {symbol} {date_ist}: no lot size in config — refusing to write share-count OI")
+        return {"stamps": 0, "rows": 0, "had": 0}
     flag = DHAN_OPT_FLAG.get(symbol, "WEEK")
     sid = DHAN_UNDERLYING.get(symbol, NIFTY_SECURITY_ID)
     seg = DHAN_SEGMENT.get(symbol, "NSE_FNO")
@@ -98,10 +103,11 @@ def backfill_oi_strikes_dhan(symbol: str, date_ist: str, log=print) -> dict:
             spot_t = _v(r.spot) or spot_t
             cell = by_k.setdefault(k, {"call_oi": None, "put_oi": None,
                                        "call_ltp": None, "put_ltp": None})
+            oi = oi_shares_to_lots(_v(r.oi), lot)
             if r.side == "CE":
-                cell["call_oi"], cell["call_ltp"] = _v(r.oi), _v(r.close)
+                cell["call_oi"], cell["call_ltp"] = oi, _v(r.close)
             else:
-                cell["put_oi"], cell["put_ltp"] = _v(r.oi), _v(r.close)
+                cell["put_oi"], cell["put_ltp"] = oi, _v(r.close)
         batch = []
         for k, cell in sorted(by_k.items()):
             batch.append({
