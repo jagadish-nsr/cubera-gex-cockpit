@@ -1461,6 +1461,11 @@ def ensure_pre_market_pollers() -> None:
         ensure_path_pollers()
     except Exception as exc:
         log.debug("path pollers: %s", exc)
+    try:
+        from analytics.pre_open_digest import ensure_digest_sealer
+        ensure_digest_sealer()
+    except Exception as exc:
+        log.warning("pre-open digest sealer did not start: %s", exc)
 
 
 def _pre_market_loop(symbol: str) -> None:
