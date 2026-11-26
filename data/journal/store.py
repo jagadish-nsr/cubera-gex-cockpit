@@ -160,6 +160,15 @@ def _get_write_conn() -> sqlite3.Connection:
             decision_json TEXT NOT NULL
         )
     """)
+    for col_sql in (
+        "ALTER TABLE go_skips ADD COLUMN source TEXT NOT NULL DEFAULT 'manual'",
+        "ALTER TABLE go_skips ADD COLUMN reason TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE go_skips ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+    ):
+        try:
+            conn.execute(col_sql)
+        except sqlite3.OperationalError:
+            pass  # already present
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_pt_status ON paper_trades (status)
     """)
@@ -542,32 +551,65 @@ def _write_trade(trade: PaperTrade) -> None:
             conn.close()
 
 
-def record_go_skip(decision: dict) -> str:
+def _insert_go_skip(conn, decision: dict, source: str, reason: str, fingerprint: str) -> str:
+    skip_id = f"gs_{uuid.uuid4().hex[:10]}"
+    conn.execute(
+        """
+        INSERT INTO go_skips (
+            skip_id, decision_id, symbol, mode, state, score,
+            strategy_key, skipped_at, decision_json, source, reason, fingerprint
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            skip_id,
+            str(decision.get("id") or ""),
+            str(decision.get("symbol") or "").upper(),
+            str(decision.get("mode") or ""),
+            str(decision.get("state") or ""),
+            float(decision.get("score") or 0),
+            str(decision.get("strategy_key") or ""),
+            _now_ist(),
+            json.dumps(_safe_json_dict(decision), default=str),
+            source,
+            reason,
+            fingerprint,
+        ),
+    )
+    return skip_id
+
+
+def record_go_skip(decision: dict, *, reason: str = "") -> str:
     """Persist an immutable Skip-FIRE record for process / opportunity review."""
     ensure_schema()
-    skip_id = f"gs_{uuid.uuid4().hex[:10]}"
     with _WRITE_LOCK:
         conn = _get_write_conn()
         try:
-            conn.execute(
-                """
-                INSERT INTO go_skips (
-                    skip_id, decision_id, symbol, mode, state, score,
-                    strategy_key, skipped_at, decision_json
-                ) VALUES (?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    skip_id,
-                    str(decision.get("id") or ""),
-                    str(decision.get("symbol") or "").upper(),
-                    str(decision.get("mode") or ""),
-                    str(decision.get("state") or ""),
-                    float(decision.get("score") or 0),
-                    str(decision.get("strategy_key") or ""),
-                    _now_ist(),
-                    json.dumps(_safe_json_dict(decision), default=str),
-                ),
-            )
+            skip_id = _insert_go_skip(conn, decision, "manual", reason, "")
+            conn.commit()
+        finally:
+            conn.close()
+    return skip_id
+
+
+def record_auto_go_skip(decision: dict, reason: str, fingerprint: str) -> str | None:
+    """Record a FIRE that auto-stage declined, once per IST day per (fingerprint, reason).
+
+    Decision ids are a fresh UUID every poll, so the fingerprint is the dedupe key. Returns the new
+    skip_id, or None when today's row already exists.
+    """
+    ensure_schema()
+    day = _now_ist()[:10]
+    with _WRITE_LOCK:
+        conn = _get_write_conn()
+        try:
+            seen = conn.execute(
+                "SELECT 1 FROM go_skips WHERE source='auto' AND fingerprint=? AND reason=? "
+                "AND substr(skipped_at,1,10)=? LIMIT 1",
+                (fingerprint, reason, day),
+            ).fetchone()
+            if seen:
+                return None
+            skip_id = _insert_go_skip(conn, decision, "auto", reason, fingerprint)
             conn.commit()
         finally:
             conn.close()

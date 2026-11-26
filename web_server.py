@@ -5033,6 +5033,28 @@ def _go_auto_stage_late_or_cheap(decision: dict, now: datetime | None = None) ->
 
 
 def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
+    """Auto-stage FIRE into paper journal; every FIRE it declines is recorded in ``go_skips``."""
+    result = _go_auto_stage_fire_decide(decision)
+    if not isinstance(result, dict) or str(decision.get("state") or "") != "FIRE":
+        return result
+    status = str(result.get("status") or "")
+    reason = ""
+    if status == "skipped" and result.get("detail") != "session_closed":
+        reason = str(result.get("detail") or "skipped")
+    elif status == "blocked_conflict":
+        reason = "opposite_side_open"
+    if reason:
+        try:
+            skip_id = journal_store.record_auto_go_skip(
+                decision, reason, _go_auto_stage_fingerprint(decision))
+            if skip_id:
+                result["skip_id"] = skip_id
+        except Exception as exc:
+            log.warning("go auto-skip record failed (%s): %s", reason, exc)
+    return result
+
+
+def _go_auto_stage_fire_decide(decision: dict) -> dict | None:
     """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
     if not _GO_PREFS.get("auto_stage_fire"):
         return None
