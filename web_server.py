@@ -4726,6 +4726,11 @@ _GO_LAST_FIRE_NOTIFY: dict[str, str] = {}  # fingerprint → decision_id
 _GO_LAST_FIRE_STAGE: dict[str, str] = {}  # auto-stage fp → decision_id
 _GO_STAGING_INFLIGHT: set[str] = set()
 _GO_AUTO_STAGE_LOCK = threading.Lock()
+# 26 Nov (Sensex expiry): auto-stage bought ₹0.1 calls at 15:30-15:32 and SESSION_END
+# settled them at 15:40. No new study entry once the cash close starts the settlement
+# window, and none on a contract too cheap to carry a real stop.
+_GO_AUTO_STAGE_LAST_ENTRY_MIN = config.CASH_CLOSE_MIN
+_GO_AUTO_STAGE_MIN_PREMIUM = 1.0
 # TE dial is optional GO weight — cache so strip/feed polls do not re-run the
 # full Target Engine pipeline every few seconds (next-open latency risk).
 _GO_TE_DIAL_CACHE: dict[str, tuple[float, float | None]] = {}
@@ -4947,6 +4952,21 @@ def _go_stage_decision(decision: dict, *, notes: str | None = None) -> dict[str,
     }
 
 
+def _go_auto_stage_late_or_cheap(decision: dict, now: datetime | None = None) -> str:
+    """Skip reason for a FIRE auto-stage past the entry cutoff or below the premium floor."""
+    ist = (now or datetime.now(IST)).astimezone(IST)
+    if ist.hour * 60 + ist.minute >= _GO_AUTO_STAGE_LAST_ENTRY_MIN:
+        return "after_entry_cutoff"
+    for c in decision.get("contracts") or []:
+        try:
+            ltp = float(c.get("ltp"))
+        except (TypeError, ValueError):
+            continue
+        if ltp < _GO_AUTO_STAGE_MIN_PREMIUM:
+            return "premium_below_floor"
+    return ""
+
+
 def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
     """Auto-stage FIRE into paper journal for efficiency study. Dedupe while OPEN."""
     if not _GO_PREFS.get("auto_stage_fire"):
@@ -4957,6 +4977,9 @@ def _go_maybe_auto_stage_fire(decision: dict) -> dict | None:
         return None
     if not (decision.get("contracts") or []):
         return {"status": "skipped", "detail": "no contracts"}
+    late = _go_auto_stage_late_or_cheap(decision)
+    if late:
+        return {"status": "skipped", "detail": late}
     try:
         from analytics.go_desk import evidence_pack_complete
 
