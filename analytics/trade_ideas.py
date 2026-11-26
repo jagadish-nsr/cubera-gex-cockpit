@@ -2325,9 +2325,13 @@ def _evaluate_ce_strategies(
             )
         )
 
+    # The 90-minute sigma feeds the ratio risk reversal below as well, so it is
+    # defined outside the corridor guard. 25 Nov: a shared call/put strike skipped
+    # this block and every rec publish raised UnboundLocalError until 15:20.
+    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+
     # 5. CE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
-        sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
         vc_name, vc_tags = vanna_charm_label(dte_days)
         ce_vc_score, _, _ = _score(vc_name, ce_vc_doi)
         ce_vc_inval_spot = round(spot - max(sigma_90 * 0.6, eff_atr * 1.4), 0)
@@ -2792,9 +2796,11 @@ def _evaluate_pe_strategies(
             )
         )
 
+    # Same hoist as the CE side: the PE ratio risk reversal reads sigma_90 too.
+    sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
+
     # 5. PE 0DTE VANNA-CHARM — needs a real corridor width (skip shared gamma strike)
     if abs(call_wall - put_wall) >= step:
-        sigma_90 = _calc_horizon_sigma(spot, eff_iv, 90.0, step)
         vc_name, vc_tags = vanna_charm_label(dte_days)
         pe_vc_score, _, _ = _score(vc_name, pe_vc_doi)
         pe_vc_inval_spot = round(spot + max(sigma_90 * 0.6, eff_atr * 1.4), 0)
