@@ -1895,21 +1895,22 @@ def _expiry_ord(value) -> int:
     return 10**12
 
 
-def _chain_leg_ltp(
+def _chain_leg_row(
     contracts_df,
     strike: float,
     right: str,
     expiry: str | None = None,
-) -> Optional[float]:
-    """Last price of one listed leg. None when the chain has no positive print.
+) -> tuple[Optional[float], Optional[str]]:
+    """(price, expiry used) for one listed leg. (None, None) when the chain has no positive print.
 
     Several expiries share a strike. The front expiry is the leg that was
-    staged. A later expiry's premium is not this contract's mark.
+    staged. A later expiry's premium is not this contract's mark. The expiry
+    used is returned so every mark can be traced to its source row (26-Nov).
     """
     if contracts_df is None or not hasattr(contracts_df, "empty") or contracts_df.empty:
-        return None
+        return None, None
     if "strike" not in contracts_df.columns or "type" not in contracts_df.columns:
-        return None
+        return None, None
     want = "C" if str(right).upper().startswith("C") else "P"
     try:
         sub = contracts_df[
@@ -1917,9 +1918,9 @@ def _chain_leg_ltp(
             & (contracts_df["type"].astype(str).str.upper().str.startswith(want))
         ]
     except Exception:
-        return None
+        return None, None
     if sub.empty:
-        return None
+        return None, None
     if "expiry" in sub.columns and len(sub) > 1:
         if expiry:
             named = sub[sub["expiry"].astype(str) == str(expiry)]
@@ -1928,12 +1929,23 @@ def _chain_leg_ltp(
         if len(sub) > 1:
             front = min(sub["expiry"].unique(), key=_expiry_ord)
             sub = sub[sub["expiry"] == front]
+    used_expiry = str(sub["expiry"].iloc[0]) if "expiry" in sub.columns else None
     for col in ("ltp", "last_price", "close", "premium", "mid"):
         if col in sub.columns:
             val = float(sub[col].iloc[0] or 0)
             if val > 0:
-                return round(val, 2)
-    return None
+                return round(val, 2), used_expiry
+    return None, None
+
+
+def _chain_leg_ltp(
+    contracts_df,
+    strike: float,
+    right: str,
+    expiry: str | None = None,
+) -> Optional[float]:
+    """Last price of one listed leg. None when the chain has no positive print."""
+    return _chain_leg_row(contracts_df, strike, right, expiry)[0]
 
 
 def _atm_straddle_pts(contracts_df, spot: float):
@@ -5211,6 +5223,18 @@ def _go_position_alerts(sym: str, dash=None) -> list[dict]:
     return out
 
 
+def _record_mark_audit_safe(decision_id, source, mark_premium, mark_spot, legs) -> None:
+    """Write the mark audit row. Logging only: a failure here must never block a mark."""
+    try:
+        from data.journal import go_efficiency as go_eff
+        go_eff.record_mark_audit(
+            str(decision_id), source=source, mark_premium=mark_premium,
+            mark_spot=mark_spot, legs=legs,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("go mark audit write failed: %s", exc)
+
+
 async def _go_refresh_open_marks(sym: str, dash) -> int:
     """Reprice open staged GOs from live chain LTPs. Returns update count."""
     from data.journal import go_efficiency as go_eff
@@ -5234,10 +5258,19 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
             continue
         net = 0.0
         priced = 0
+        audit_legs = []
         for leg in legs:
             opt = str(leg.get("opt_type") or leg.get("type") or "CE")
             strike = float(leg.get("strike") or 0)
-            px = _chain_leg_ltp(contracts_df, strike, opt, expiry=leg.get("expiry") or None)
+            px, used_expiry = _chain_leg_row(contracts_df, strike, opt, expiry=leg.get("expiry") or None)
+            audit_legs.append({
+                "action": str(leg.get("action") or ""),
+                "opt": opt,
+                "strike": strike,
+                "expiry_requested": leg.get("expiry") or None,
+                "expiry_used": used_expiry,
+                "price": px,
+            })
             if px is None:
                 continue
             priced += 1
@@ -5252,6 +5285,7 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
             mark_premium=round(net, 2),
             mark_spot=spot,
         )
+        _record_mark_audit_safe(row["decision_id"], "chain_refresh", round(net, 2), spot, audit_legs)
         updated += 1
     return updated
 
@@ -6131,6 +6165,7 @@ async def post_go_mark(payload: dict = Body(...)):
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="No OPEN staged GO for that decision_id")
+    _record_mark_audit_safe(decision_id, "api_mark", mark_premium, mark_spot_f, [])
     return {"status": "ok", "open": updated}
 
 
