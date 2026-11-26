@@ -539,7 +539,11 @@ def resolve_offmarket_snapshot(symbol: str, now: datetime | None = None) -> dict
             return local
 
     session = last_completed_session_date(now)
-    if local and snapshot_session_date(local) == session:
+    # A row from today's session (pre-open spot, or after 15:30 before the close row
+    # lands) is newer than the last completed session, not stale. 26 Nov: ~2,600
+    # "snapshot 2026-11-26 is before the last session 2026-11-25" warnings.
+    local_session = snapshot_session_date(local) if local else None
+    if local and local_session is not None and local_session >= session:
         local = dict(local)
         local["stale_session"] = False
         local["expected_session"] = session.isoformat()
@@ -564,7 +568,8 @@ def resolve_offmarket_snapshot(symbol: str, now: datetime | None = None) -> dict
         return None
     best = dict(best)
     best["expected_session"] = session.isoformat()
-    best["stale_session"] = snapshot_session_date(best) != session
+    best_session = snapshot_session_date(best)
+    best["stale_session"] = best_session is None or best_session < session
     if best.get("journal") and Path(best["journal"]).resolve() != local_journal:
         best["adopted_from"] = "sibling"
         log.warning(
