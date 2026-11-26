@@ -331,6 +331,47 @@ did not rewrite them. That repair is in the follow-ups.
 
 ---
 
+## Follow-up status (27-Nov, v5.3.172)
+
+Items 1–3 shipped in v5.3.171. Items 4–12 are fixed on `dev` and promoted.
+The prod data repairs below were each run after a dry run, with a backup
+taken first.
+
+| # | Root cause | Fix | Prod data repaired |
+|---|---|---|---|
+| 4 | Old LTT decode subtracted 5:30 from true-epoch ticks | `scripts/repair_ltt_shift.py` (refuses a day with any row ≥ 10:10) | big_money 20/25/26-Nov (1,009 / 1,504 / 1,185 rows) now span 09:15–15:39; SENSEX blast 26-Nov (134,563 ticks) 13:00:55–15:39:58. Backups `big_money.db.bak-ltt-20261126-231617`, `blast_ticks/SENSEX/2026-11-26.csv.bak-ltt-20261126-231617` |
+| 5 | Sentinel and auto-stage `paper_trades` rows had no `go_open` row, so no sweep closed them; 13-Nov Sentinel opened twins in the same second | `data/journal/paper_settlement.py`, run by the 15:30–16:10 post-market loop: mirror the linked `go_open` close, void same-second twins, settle 0DTE at intrinsic on the expiry close, else mark at the rec's last same-day LTP, else void. `_open_or_skip_paper` reuses an open same-strike row | 7 Nifty rows mirrored to `go_open`, 5 twins voided at ₹0, 84400CE settled at 0 (−₹2,108 net). 0 OPEN rows left. Backup `paper_trades.db.bak-settle-20261126-235318` |
+| 6 | Watch expiry ran 3h from trigger, then on the next process start | Deadline is the earlier of 3h or 15:30 that day, stamped at the deadline | Two 26-Nov Sensex watches restamped to 15:30 (`restamped_from` kept; `*.bak-expiry-stamp`) |
+| 7 | The digest sealed only when `/api/market-intel` was requested | Ingest runs a sealer thread in pre-open; a late build drops headlines after the open and is marked `sealed_late` | — |
+| 8 | Session-close snapshot stored flip/GEX from an expired near book; first write of a session had no prior close | Flip and net GEX stored as NULL with `:near-book-expired`; first write of a new day carries the stored spot as prev close | SENSEX row: prev close 83,938.28 (from the 25-Nov 22:08 backup, cross-checked), flip/GEX NULL. Backup `market_snapshot.db.bak-sx-repair-*` |
+| 9 | Five thread-pool hops per poll queued behind other work (offline the build takes ~2 ms per index) | One hop, 3 s shared response, single-flight; `timing_ms` in the payload | — |
+| 10 | `stale` read only `oi_stale` | `stale` = OI stale, or chain degraded, or spot frozen while ATM premium moved vs the previous strike snapshot | — |
+| 11 | **Not a bug.** Independent Black-Scholes gamma on the 15:40 book (one expiry, 29-Dec): 66,000 has the largest call gamma, 8% ahead of 65,000; 65,000 has the largest put gamma, 24% ahead of 66,000. Real round-strike concentration on the December monthly. **The check found a different bug:** the Dhan 1-min backfill wrote OI in shares next to live rows in lots, so the footprint saw 20–65x OI jumps at every backfill/live boundary | Backfill divides by the config lot and refuses without one; `scripts/repair_backfill_oi_units.py` | 28 `oi_strikes_dhan` files (30-Oct to 26-Nov, all three indices). Backups `<date>.csv.bak-oiunits-20261127-005418`. A re-run refuses every file |
+| 12 | Auto-stage returned its skip reason to the poller and dropped it; only the manual Skip button wrote `go_skips` | Every declined FIRE is written once per IST day per (fingerprint, reason), with `source='auto'` and a `reason`. Manual skips are tagged `manual` | — |
+
+**Found along the way, fixed:** the test suite wrote into the real
+`market_snapshot.db`. A spot-tick test's background save stored NIFTY 25,250
+as a ws-tick, and a Dhan-sync test's fake 27-Oct book was persisted by a
+running fetcher loop, replacing the 26-Nov row. Promote runs these suites. The
+bogus NIFTY 25,250 in the 25-Nov 22:07 snapshot backup fits the same test,
+though I can't prove how it got there. Tests now read a session copy of the
+file, and `save_snapshot` refuses any write older than the stored session.
+Prod's three rows were checked and are clean.
+
+**Found along the way, not fixed:**
+
+- **Odd Nifty `go_open` closes.** Three trades closed on 17-Nov at
+  09:04:17, in pre-open, all at −222.38. One auto-stage trade was "entered"
+  at 17:50 on 13-Nov.
+- **Put/call IV gap on Bank Nifty.** On the 26-Nov book the 65,000 put
+  shows 19.5% IV against 15.8% for the call at the same strike. A gap that
+  size points to IV solved against spot without the ~400-point December
+  carry. The walls hold either way, but GEX magnitudes on the monthly book
+  are affected.
+- **`/api/cockpit-data` is slow for the same thread-pool reason** as item 9:
+  536 slow requests, and 5.3 s even off-hours.
+---
+
 ## Disclaimer
 
 Decision-support review, not financial advice. The human confirms all
