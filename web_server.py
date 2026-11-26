@@ -124,6 +124,8 @@ configure("web")
 log = logging.getLogger("cubera.web_server")
 
 ROOT_DIR = Path(__file__).resolve().parent
+# Live snapshot journal. Tests redirect this to a temp dir; they must never write here.
+JOURNAL_DIR = ROOT_DIR / "data" / "journal"
 STATIC_DIR = ROOT_DIR / "app" / "static"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -443,6 +445,16 @@ def _fmt_gex(val: float) -> str:
 
 def _same_strike(a: float, b: float, step: float) -> bool:
     return abs(float(a) - float(b)) <= max(0.51, float(step) * 0.01)
+
+
+def _strike_balance_gex(call_gex: float, put_gex: float) -> float:
+    """Call-gamma magnitude minus put-gamma magnitude at one strike.
+
+    Both legs are stored negative (short_call_short_put). So the balance is
+    ``-call_gex + put_gex``. Positive = call-heavy, negative = put-heavy.
+    Summed over the chain this is the KPI writer imbalance.
+    """
+    return -float(call_gex) + float(put_gex)
 
 
 def _standing_oi(dash, spot: float, band_pts: float) -> dict:
@@ -1095,7 +1107,7 @@ def _ensure_chain_ingest(symbol: str, window: Optional[str] = None) -> None:
 
 def _unpickle_latest_snap(sym: str, journal: Path | None = None):
     import pickle
-    base = journal if journal is not None else (ROOT_DIR / "data" / "journal")
+    base = journal if journal is not None else JOURNAL_DIR
     snap_path = base / f"latest_snap_{sym}.pkl"
     if not snap_path.exists():
         return None
@@ -2968,7 +2980,8 @@ def _build_cockpit_data_sync(sym: str, win: str, idx: Any, dash: DashboardData) 
         if prow is not None:
             call_gex = float(prow.get("call_gex") or 0.0)
             put_gex = float(prow.get("put_gex") or 0.0)
-            net_stk_gex = float(prow.get("net_gex") or 0.0)
+            # Column is call-minus-put balance, not the stored call+put total.
+            net_stk_gex = _strike_balance_gex(call_gex, put_gex)
             net_stk_dex = float(prow.get("net_dex") or 0.0)
         elif stk in strike_oi_map:
             call_gex = strike_oi_map[stk]["C"]

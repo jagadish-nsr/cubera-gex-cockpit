@@ -3,12 +3,28 @@
 import pytest
 import data.journal.recommendations_store as rs
 import analytics.trade_ideas as ti
+import sentinel.storage.db as sentinel_db
 
 
 @pytest.fixture(autouse=True)
 def disable_live_llm(monkeypatch):
     """Keep unit tests off live Ollama/Gemini unless a test re-enables CUBERA_LLM."""
     monkeypatch.setenv("CUBERA_LLM", "0")
+
+
+@pytest.fixture(autouse=True)
+def guard_live_sentinel_db(tmp_path, monkeypatch):
+    """Safety guard: no unit test may write data/sentinel.db (the live tape ledger).
+
+    Several sentinel suites seeded TEST-* and synthetic NIFTY-FUT bars into the live DB.
+    """
+    # Keep the basename "sentinel.db": list_recent_bars treats any other name as a
+    # mocked-date test DB and changes session isolation. The subdirectory keeps it
+    # clear of tests that build their own tmp_path/"sentinel.db".
+    db_path = tmp_path / "sentinel_guard" / "sentinel.db"
+    monkeypatch.setattr(sentinel_db, "_DB_PATH", db_path)
+    sentinel_db.ensure_sentinel_schema()
+    yield db_path
 
 
 @pytest.fixture(autouse=True)

@@ -4735,9 +4735,9 @@
           if (row.is_put_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.15);color:var(--go)">PUT WALL</span>';
           if (row.is_call_delta_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(249,115,22,.15);color:#f97316">CALL δ-WALL</span>';
           if (row.is_put_delta_wall) badgeHtml += '<span class="ladder-badge" style="background:rgba(14,165,233,.15);color:#0ea5e9">PUT δ-WALL</span>';
-          if (row.is_gamma_flip) badgeHtml += '<span class="ladder-badge" style="background:rgba(56,189,248,.15);color:var(--spark)">GAMMA FLIP</span>';
+          if (row.is_gamma_flip) badgeHtml += '<span class="ladder-badge" title="Spot-profile zero crossing of call−put GEX, shown on the nearest listed strike. The per-strike balance can change sign elsewhere." style="background:rgba(56,189,248,.15);color:var(--spark)">GAMMA FLIP</span>';
           if (row.is_max_pain) badgeHtml += '<span class="ladder-badge" style="background:rgba(234,179,8,.15);color:var(--warn)">MAX PAIN</span>';
-          if (row.is_magnet) badgeHtml += '<span class="ladder-badge" style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET</span>';
+          if (row.is_magnet) badgeHtml += '<span class="ladder-badge" title="Strike with the largest total |call GEX + put GEX| (peak gross gamma). Not a pull." style="background:rgba(168,85,247,.15);color:var(--purple)">MAGNET</span>';
           if (row.is_put_oi) badgeHtml += '<span class="ladder-badge" style="background:rgba(34,197,94,.08);color:var(--go)">PUT OI</span>';
           if (row.is_call_oi) badgeHtml += '<span class="ladder-badge" style="background:rgba(239,68,68,.08);color:var(--stop)">CALL OI</span>';
           if (row.is_spot) badgeHtml += '<span class="ladder-badge" style="background:var(--spark);color:#000">ATM SPOT</span>';
