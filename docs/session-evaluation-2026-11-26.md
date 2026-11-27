@@ -376,18 +376,25 @@ lifecycle skips recommendations triggered before today and idles outside the
 session. The housekeeper expires earlier-day recommendations at any hour,
 leaving `updated_at` alone so paper settlement still uses the entry-day mark.
 
+**Cross-day P&L voided (27-Nov 08:47, user-approved).** The audit found 11
+GO rows held overnight, not 3 (13-Nov to 20-Nov, +₹74,563 net together),
+plus 10 Sentinel paper rows closed on a later day (9-Nov to 25-Nov). No
+truthful same-day exit could be rebuilt: the minute journal
+(`oi_strikes_dhan`) tracks the nearest expiry, while these trades priced a
+different one (entry 269.4 against a journaled 160.8). The repair is
+`scripts/repair_void_cross_day.py`:
+- The 11 `go_open` rows are now status VOID with zero P&L, and the
+  original exit is kept in `decision_json`.
+- The 21 paper rows (11 GO mirrors and 10 Sentinel) are now
+  `VOID_CROSS_DAY` with zero P&L, and the original exit is in the notes.
+- The 10 linked Sentinel recommendations are now VOID.
+
+Backups are `*.bak-voidxday-20261127-084754`. GO's closed book is now 59
+trades at +₹40,890 net. The paper scorecard change that stops counting
+`VOID_*` rows as ₹0 losses is on `dev` and ships at the next promote.
+
 **Still open:**
 
-- **Cross-day P&L in the books.** The audit found 11 GO rows held overnight,
-  not 3 (13-Nov to 20-Nov, about +₹74,600 net together). The largest are
-  Bank Nifty 16→20-Nov at +₹71,160, and Nifty and Sensex 18→20-Nov at
-  −₹10,516 and −₹7,316. There are also 10 Sentinel paper rows closed on a
-  later day (9-Nov to 25-Nov, including the two gap "targets" above). The
-  minute journal (`oi_strikes_dhan`) tracks the nearest expiry, while these
-  trades priced a different one (entry 269.4 against a journaled 160.8), so
-  no truthful same-day exit can be rebuilt. Voiding them, or excluding them
-  from stats, is your call. Two GO/paper pairs also disagree: Bank Nifty
-  ₹71,160 against ₹74,933, and the 19-Nov Nifty trade ₹962 against ₹3,854.
 - **IV source for gamma.** Collect intraday vendor-vs-mid IV (the
   uncommitted quote-audit work journals `call_iv`/`put_iv` and bid/ask per
   strike), then decide whether gamma should use mid-implied IV under the

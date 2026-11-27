@@ -8266,6 +8266,8 @@ async def get_scorecard(symbol: Optional[str] = None):
     """Scorecard Tab: 5 Realized KPIs, Cumulative Equity Curve, Strategy & Regime breakdowns."""
     sym = (symbol or _ACTIVE_STATE["symbol"]).upper()
     closed = journal_store.list_closed_trades(symbol=sym if sym != "ALL" else None)
+    # A void has no honest exit; counting it as a ₹0 loss drags the win rate.
+    closed = [t for t in closed if not str(getattr(t, "exit_reason", "") or "").startswith("VOID_")]
 
     # Compute realized stats
     def _pnl(tr):
