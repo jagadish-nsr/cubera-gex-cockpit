@@ -125,6 +125,13 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
         iv = side.get("impliedVolatility")
         return (iv / 100.0) if iv else None  # percent -> decimal; 0/None -> None
 
+    def _pos(x):
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return v if v > 0 else None
+
     rows: list[dict] = []
     for row in data:
         for side_key, typ in (("CE", "C"), ("PE", "P")):
@@ -150,6 +157,10 @@ def parse_nse_option_chain(payload: dict) -> tuple[list[dict], float]:
                 "oi": side.get("openInterest") or 0.0,
                 "iv": _iv(side),
                 "price": _mid(side),
+                # Raw top-of-book, kept so the journal can say whether a premium was a
+                # quoted mid or a last-trade fallback (see nearest_expiry_quotes).
+                "bid": _pos(side.get("buyPrice1") or side.get("bidprice")),
+                "ask": _pos(side.get("sellPrice1") or side.get("askPrice")),
             }
             # Optional vendor greeks (Dhan live bridge). NSE omits these; never invent.
             # from_nse_results preserves them onto dash.contracts for 25Δ skew.
@@ -322,6 +333,39 @@ def nearest_expiry_premiums(rows: list[dict]) -> dict:
         k = float(r["strike"])
         cell = out.setdefault(k, {"call_ltp": None, "put_ltp": None})
         cell["call_ltp" if r["type"] == "C" else "put_ltp"] = r.get("price")
+    return out
+
+
+def nearest_expiry_quotes(rows: list[dict]) -> dict:
+    """Per-strike quote detail for the NEAREST expiry, for the journal.
+
+    Same expiry rule as ``nearest_expiry_premiums`` (min expiry). Returns
+    {strike: {"call_bid", "call_ask", "call_iv", "call_src", "put_bid", "put_ask",
+    "put_iv", "put_src", "expiry"}} where ``*_src`` is "mid" (both bid and ask quoted),
+    "last" (lastPrice fallback: one side missing), or None (no price). ``expiry`` is
+    ISO-8601. Missing values are None, never 0.
+    """
+    exps = [r["expiry"] for r in rows if r.get("expiry") is not None]
+    if not exps:
+        return {}
+    nearest = min(exps)
+    out: dict[float, dict] = {}
+    for r in rows:
+        if r.get("expiry") != nearest:
+            continue
+        k = float(r["strike"])
+        pfx = "call" if r["type"] == "C" else "put"
+        cell = out.setdefault(k, {"expiry": nearest.isoformat()})
+        bid, ask = r.get("bid"), r.get("ask")
+        cell[f"{pfx}_bid"] = bid
+        cell[f"{pfx}_ask"] = ask
+        cell[f"{pfx}_iv"] = r.get("iv")
+        if bid and ask:
+            cell[f"{pfx}_src"] = "mid"
+        elif r.get("price") is not None:
+            cell[f"{pfx}_src"] = "last"
+        else:
+            cell[f"{pfx}_src"] = None
     return out
 
 
