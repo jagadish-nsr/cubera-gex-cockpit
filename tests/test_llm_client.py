@@ -166,6 +166,10 @@ def test_alert_polish_applies_when_valid(monkeypatch):
         "zone": "BETWEEN",
         "diagnostics": "No fresh catalyst in the book for now.",
     }
+    from analytics.llm_background import drain
+
+    assert _maybe_llm_polish_alert(alert)["text_source"] == "heuristic"
+    assert drain()
     out = _maybe_llm_polish_alert(alert)
     assert out["text_source"] == "genai"
     assert out["headline"] == "Quiet mid-range"
