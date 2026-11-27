@@ -765,8 +765,17 @@ def evaluate_sentinel_recommendations_lifecycle(
     symbol = _resolve_symbol(symbol)
     if not symbol:
         return []
+    # Pre-open and post-close ticks are not tradable prints.
+    if not config.is_market_open():
+        return []
 
-    active_recs = rec_store.list_active_sentinel_recommendations(symbol)
+    # An earlier session's rec is settled at its own session-end mark (paper_settlement),
+    # never at today's price: 25-Nov's first tick "hit" 20-Nov targets on the gap (+₹59,849).
+    today = _today_ist().isoformat()
+    active_recs = [
+        r for r in rec_store.list_active_sentinel_recommendations(symbol)
+        if str(r.get("triggered_at") or r.get("created_at") or "")[:10] >= today
+    ]
     if not active_recs:
         return []
 

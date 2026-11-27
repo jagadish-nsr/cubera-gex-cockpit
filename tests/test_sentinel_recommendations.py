@@ -39,6 +39,7 @@ def isolate_databases(tmp_path, monkeypatch):
 
     rec_store.ensure_schema()
     journal_store.ensure_schema()
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: True)
 
     # Match production default (auto-paper on) and keep refusal counters clean.
     sr.set_auto_paper_enabled(True)
@@ -301,6 +302,59 @@ def test_target_hit_on_touch():
     assert pt_after.exit_reason == "TARGET"
     assert abs(pt_after.exit_net_premium) >= tgt_px
     assert pt_after.net_realized_pnl > 0
+
+
+def _age_rec(rec_id: str, day: str) -> None:
+    with rec_store._get_write_conn() as conn:
+        conn.execute(
+            "UPDATE sentinel_trade_recommendations SET triggered_at = ?, created_at = ?, updated_at = ? "
+            "WHERE rec_id = ?",
+            (f"{day} 15:06:00", f"{day} 15:07:07", f"{day} 15:29:00", rec_id),
+        )
+        conn.commit()
+
+
+def test_earlier_session_rec_never_hits_target_on_todays_gap():
+    """20-Nov rec, 25-Nov opening tick far above target: no TARGET, paper row untouched."""
+    sig = _make_signal(entry=24510.0, inval=24475.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
+    _age_rec(rec["rec_id"], "2026-11-20")
+
+    events = sr.evaluate_sentinel_recommendations_lifecycle(
+        symbol="NIFTY", current_spot=24800.0,
+        options_ltp_map={"24500_CE": rec["option_target"] * 3},
+    )
+    assert events == []
+    assert journal_store.get_trade(rec["paper_trade_id"]).status == "OPEN"
+
+
+def test_lifecycle_idle_outside_session(monkeypatch):
+    sig = _make_signal(entry=24510.0, inval=24475.0, target_pts=50.0)
+    rec = sr.on_sentinel_signal(sig, current_spot=24510.0)
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: False)
+    events = sr.evaluate_sentinel_recommendations_lifecycle(
+        symbol="NIFTY", current_spot=24800.0,
+        options_ltp_map={"24500_CE": rec["option_target"] + 5},
+    )
+    assert events == []
+
+
+def test_expire_stale_active_any_hour_keeps_entry_day_mark():
+    """Saturday 08:00: yesterday's rec expires, its 15:29 mark stamp survives; today's stays."""
+    old = sr.on_sentinel_signal(_make_signal(event_id="old"), current_spot=24510.0)
+    _age_rec(old["rec_id"], "2026-11-20")
+    fresh = sr.on_sentinel_signal(
+        _make_signal(event_id="new", entry=24710.0, inval=24680.0), current_spot=24710.0)
+    now = datetime(2026, 11, 21, 8, 0, tzinfo=IST)
+    _age_rec(fresh["rec_id"], "2026-11-21")
+
+    assert rec_store.expire_stale_active(now=now) == 1
+    with rec_store._get_read_conn() as conn:
+        by_id = {r[0]: r[1:] for r in conn.execute(
+            "SELECT rec_id, status, updated_at FROM sentinel_trade_recommendations")}
+    assert by_id[old["rec_id"]] == ("EXPIRED", "2026-11-20 15:29:00")
+    assert by_id[fresh["rec_id"]][0] == "ACTIVE"
+    assert rec_store.expire_stale_active(now=now) == 0
 
 
 def test_spot_inval_only_on_5m_candle_close_wicks_ignored():

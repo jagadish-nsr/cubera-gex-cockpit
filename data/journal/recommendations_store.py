@@ -90,6 +90,43 @@ def expire_active_at_session_end(
     return expired
 
 
+def expire_stale_active(*, now: datetime | None = None) -> int:
+    """Expire ACTIVE recommendations from an earlier IST day, at any hour on any day.
+
+    Catches what ``expire_active_at_session_end`` misses when nothing ran at 15:40.
+    ``updated_at`` is left alone: paper settlement prices a Sentinel row from the
+    rec's mark only when that mark is stamped on the entry day.
+    """
+    ts_now = now or datetime.now(IST)
+    ts_now = ts_now.replace(tzinfo=IST) if ts_now.tzinfo is None else ts_now.astimezone(IST)
+    today = ts_now.strftime("%Y-%m-%d")
+    _ensure_schema_once()
+    with _WRITE_LOCK:
+        with _get_write_conn() as conn:
+            n = conn.execute(
+                """
+                UPDATE recommendation_records
+                SET status = 'EXPIRED',
+                    outcome_ts = COALESCE(outcome_ts, substr(triggered_at, 1, 10) || ' 15:30:00')
+                WHERE status = 'ACTIVE' AND substr(triggered_at, 1, 10) < ?
+                """,
+                (today,),
+            ).rowcount
+            n += conn.execute(
+                """
+                UPDATE sentinel_trade_recommendations
+                SET status = 'EXPIRED',
+                    outcome_ts = COALESCE(outcome_ts, substr(created_at, 1, 10) || ' 15:30:00')
+                WHERE status = 'ACTIVE' AND substr(created_at, 1, 10) < ?
+                """,
+                (today,),
+            ).rowcount
+            conn.commit()
+    if n:
+        log.warning("expired %d ACTIVE recommendation(s) left over from an earlier session", n)
+    return max(0, n)
+
+
 def active_db_path() -> Path:
     """Database for this thread. A persist worker keeps the path it was queued with."""
     override = getattr(_THREAD_DB, "path", None)
