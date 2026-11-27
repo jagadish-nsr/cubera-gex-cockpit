@@ -367,12 +367,27 @@ Prod's three rows were checked and are clean.
 | `/api/cockpit-data` cold build 4–10 s | Not thread-pool queueing. 9.4 of 9.8 s were three synchronous Ollama calls (90 s timeout each): positioning card, chop card, alert voice | A cache miss returns the deterministic text and queues the rewrite on one background worker. Cold build 0.23 s |
 | Bank Nifty put/call IV gap | Measured, not what I guessed. Dhan's IVs match neither a zero-carry nor a parity-carry solve. Re-implied from mids under the parity forward (+305 pts), call and put agree within 0.5 vol pts (~17.5%); Dhan has calls 2–3 pts low and puts ~2 pts high. Nifty's gap is the other way (−1.5) | **Engine unchanged.** On the 26-Nov books, switching to mid-implied IV flips Bank Nifty's regime from POSITIVE to NEGATIVE and removes the Nifty and Bank Nifty flips, so it needs intraday evidence first. Now measured on every compute: `Levels.iv_parity_gap`, a flag and log line at ≥2 pts, and `kpis.regime.iv_parity_gap` in cockpit-data |
 
+**Sentinel had the same hole (v5.3.174).** The lifecycle evaluated every
+ACTIVE recommendation, whatever its trigger day, and a target exit pays
+`max(LTP, target)`. When the 15:40 expiry was missed, the next session's first
+tick "hit" the target at the gap price. On 25-Nov at 09:16:01 the 20-Nov Bank
+Nifty 64500 CE *and* 64600 PE both did (+₹18,002 and +₹41,847). Now the
+lifecycle skips recommendations triggered before today and idles outside the
+session. The housekeeper expires earlier-day recommendations at any hour,
+leaving `updated_at` alone so paper settlement still uses the entry-day mark.
+
 **Still open:**
 
-- **Fake gains on the three 17-Nov rows.** +₹1,234, +₹5,341 and
-  +₹5,398 net are still in `go_open` and in their mirrored paper rows. Their
-  13-Nov marks were overwritten by the bad mark, so no true exit price is
-  left. Voiding them (zero P&L) is your call.
+- **Cross-day P&L in the books.** The audit found 11 GO rows held overnight,
+  not 3 (13-Nov to 20-Nov, about +₹74,600 net together). The largest are
+  Bank Nifty 16→20-Nov at +₹71,160, and Nifty and Sensex 18→20-Nov at
+  −₹10,516 and −₹7,316. There are also 10 Sentinel paper rows closed on a
+  later day (9-Nov to 25-Nov, including the two gap "targets" above). The
+  minute journal (`oi_strikes_dhan`) tracks the nearest expiry, while these
+  trades priced a different one (entry 269.4 against a journaled 160.8), so
+  no truthful same-day exit can be rebuilt. Voiding them, or excluding them
+  from stats, is your call. Two GO/paper pairs also disagree: Bank Nifty
+  ₹71,160 against ₹74,933, and the 19-Nov Nifty trade ₹962 against ₹3,854.
 - **IV source for gamma.** Collect intraday vendor-vs-mid IV (the
   uncommitted quote-audit work journals `call_iv`/`put_iv` and bid/ask per
   strike), then decide whether gamma should use mid-implied IV under the
