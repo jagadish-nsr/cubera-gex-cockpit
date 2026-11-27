@@ -105,14 +105,16 @@ def test_stale_rows_close_at_last_mark_stamped_at_their_close(_dbs):
     assert ge.close_stale_open(now=monday_preopen) == []          # idempotent
 
 
-def test_housekeeping_tick_runs_go_then_paper(monkeypatch):
+def test_housekeeping_tick_runs_go_then_recs_then_paper(monkeypatch):
     import data.pre_post_market as ppm
 
     calls = []
     monkeypatch.setattr("data.journal.go_efficiency.close_stale_open",
                         lambda now=None: calls.append("go") or [{"decision_id": "x"}])
+    monkeypatch.setattr("data.journal.recommendations_store.expire_stale_active",
+                        lambda now=None: calls.append("recs") or 2)
     monkeypatch.setattr("data.journal.paper_settlement.settle_open_paper",
                         lambda now=None: calls.append("paper") or [])
     out = ppm.session_housekeeping_tick(datetime(2026, 11, 22, 10, 0, tzinfo=IST))   # a Sunday
-    assert calls == ["go", "paper"]
-    assert out == {"go": 1, "paper": 0}
+    assert calls == ["go", "recs", "paper"]
+    assert out == {"go": 1, "recs": 2, "paper": 0}

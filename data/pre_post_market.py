@@ -1480,12 +1480,17 @@ def session_housekeeping_tick(now: datetime | None = None) -> dict:
     no post-market window at all (13-Nov rows were still OPEN at Monday's pre-open).
     """
     now = now or datetime.now(IST)
-    out = {"go": 0, "paper": 0}
+    out = {"go": 0, "recs": 0, "paper": 0}
     try:
         from data.journal import go_efficiency as go_eff
         out["go"] = len(go_eff.close_stale_open(now=now))
     except Exception as exc:
         log.warning("housekeeping: stale GO close failed: %s", exc)
+    try:
+        from data.journal import recommendations_store as rec_store
+        out["recs"] = rec_store.expire_stale_active(now=now)
+    except Exception as exc:
+        log.warning("housekeeping: stale recommendation expiry failed: %s", exc)
     try:
         from data.journal import paper_settlement
         out["paper"] = len(paper_settlement.settle_open_paper(now=now))
