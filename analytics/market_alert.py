@@ -391,23 +391,57 @@ def _alert_polish_cache_key(alert: dict) -> str:
     ])
 
 
+def _rewrite_alert(key: str, base: dict) -> None:
+    import time as _time
+
+    from analytics.llm_client import complete_chat, model_name
+    from analytics.llm_prompts import alert_tape_messages, parse_alert_tape_rewrite
+
+    raw = complete_chat(
+        alert_tape_messages(base),
+        purpose="alert_tape",
+        temperature=0.2,
+        max_tokens=320,
+        timeout_s=90.0,
+    )
+    parsed = parse_alert_tape_rewrite(raw or "")
+    if not parsed:
+        return
+    headline, drivers = parsed
+    if not _alert_rewrite_ok(base, headline, drivers):
+        return
+    alert = dict(base)
+    alert["headline"] = headline
+    alert["drivers"] = drivers
+    alert["diagnostics"] = drivers
+    alert["text_source"] = "genai"
+    alert["llm_model"] = model_name()
+    _ALERT_LLM_CACHE[key] = (_time.time(), alert)
+    if len(_ALERT_LLM_CACHE) > 64:
+        # Drop oldest entries.
+        for old_key, _ in sorted(_ALERT_LLM_CACHE.items(), key=lambda kv: kv[1][0])[:16]:
+            _ALERT_LLM_CACHE.pop(old_key, None)
+
+
 def _maybe_llm_polish_alert(alert: dict) -> dict:
-    """Optional LLM polish of headline/drivers; fail-soft to template."""
+    """Optional LLM polish of headline/drivers; fail-soft to template.
+
+    A cache miss returns the template and queues the rewrite off the request path.
+    """
     if not isinstance(alert, dict):
         return alert
     alert = dict(alert)
     alert.setdefault("text_source", "heuristic")
     alert.setdefault("llm_model", None)
     try:
-        from analytics.llm_client import complete_chat, llm_enabled, model_name
-        from analytics.llm_prompts import alert_tape_messages, parse_alert_tape_rewrite
+        from analytics.llm_background import submit_once
+        from analytics.llm_client import llm_enabled
         if not llm_enabled("alert_tape"):
             return alert
         import time as _time
         key = _alert_polish_cache_key(alert)
-        now = _time.time()
         hit = _ALERT_LLM_CACHE.get(key)
-        if hit and (now - hit[0]) < _ALERT_LLM_CACHE_TTL_S:
+        if hit and (_time.time() - hit[0]) < _ALERT_LLM_CACHE_TTL_S:
             cached = dict(hit[1])
             # Keep live timestamp/badge/theme from this evaluation.
             for k in ("timestamp", "badge", "theme", "outcome", "body", "risk",
@@ -416,29 +450,7 @@ def _maybe_llm_polish_alert(alert: dict) -> dict:
                 if k in alert:
                     cached[k] = alert[k]
             return cached
-        raw = complete_chat(
-            alert_tape_messages(alert),
-            purpose="alert_tape",
-            temperature=0.2,
-            max_tokens=320,
-            timeout_s=90.0,
-        )
-        parsed = parse_alert_tape_rewrite(raw or "")
-        if not parsed:
-            return alert
-        headline, drivers = parsed
-        if not _alert_rewrite_ok(alert, headline, drivers):
-            return alert
-        alert["headline"] = headline
-        alert["drivers"] = drivers
-        alert["diagnostics"] = drivers
-        alert["text_source"] = "genai"
-        alert["llm_model"] = model_name()
-        _ALERT_LLM_CACHE[key] = (now, dict(alert))
-        if len(_ALERT_LLM_CACHE) > 64:
-            # Drop oldest entries.
-            for old_key, _ in sorted(_ALERT_LLM_CACHE.items(), key=lambda kv: kv[1][0])[:16]:
-                _ALERT_LLM_CACHE.pop(old_key, None)
+        submit_once(f"alert:{key}", lambda: _rewrite_alert(key, dict(alert)))
         return alert
     except Exception:  # noqa: BLE001
         return alert

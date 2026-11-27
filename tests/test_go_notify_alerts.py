@@ -95,6 +95,7 @@ def test_position_alerts_credit_and_wall(tmp_path, monkeypatch):
     import web_server as ws
 
     monkeypatch.setattr(ge, "_DB_PATH", tmp_path / "go_efficiency.db")
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: True)
     ge.ensure_schema()
 
     credit_d = {

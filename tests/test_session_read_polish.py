@@ -76,11 +76,18 @@ def test_polish_applies_when_valid(monkeypatch):
             "LIVE: Price up, open interest down."
         ),
     )
-    out = polish_positioning_flow({
+    from analytics.llm_background import drain
+
+    flow = {
         "headline": "raw",
         "overnight_line": "FII added overnight.",
         "live_line": "Price up, open interest down.",
-    })
+    }
+    first = polish_positioning_flow(flow)
+    assert first["text_source"] == "heuristic"          # the model never blocks the request
+    assert first["headline"] == "raw"
+    assert drain()
+    out = polish_positioning_flow(flow)
     assert out["text_source"] == "genai"
     assert out["headline"] == "Shorts covering the lift"
     assert out["llm_model"] == "gemma-test"

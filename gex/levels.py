@@ -9,6 +9,7 @@ Levels object so cli.py can log it.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -19,6 +20,34 @@ from data.schema import OptionsSnapshot
 from gex import core
 from gex.bs import bs_delta, bs_gamma
 from gex.flip import FlipResult, gamma_flip_profile
+
+log = logging.getLogger(__name__)
+
+IV_PARITY_GAP_FLAG_PTS = 2.0
+IV_PARITY_GAP_BAND = 0.03
+_IV_GAP_WARNED_AT: dict[str, float] = {}
+
+
+def vendor_iv_put_call_gap(contracts: pd.DataFrame, spot: float,
+                           band: float = IV_PARITY_GAP_BAND) -> dict[str, float]:
+    """Median (put IV − call IV) in vol points over strikes within ±band of spot, per expiry.
+
+    Only strikes quoting both legs count. An expiry with no such strike is omitted.
+    """
+    if contracts is None or contracts.empty or not spot:
+        return {}
+    near = contracts[(contracts["strike"] >= spot * (1 - band)) & (contracts["strike"] <= spot * (1 + band))]
+    out: dict[str, float] = {}
+    for exp, sub in near.groupby("expiry"):
+        piv = sub.pivot_table(index="strike", columns="type", values="iv", aggfunc="first")
+        if "C" not in piv or "P" not in piv:
+            continue
+        both = piv[["C", "P"]].dropna()
+        both = both[(both["C"] > 0) & (both["P"] > 0)]
+        if both.empty:
+            continue
+        out[str(exp)] = round(float((both["P"] - both["C"]).median()) * 100.0, 2)
+    return out
 
 
 @dataclass
@@ -46,6 +75,8 @@ class Levels:
     pcr_oi: float | None = None
     pcr_near: float | None = None
     near_book_expired: bool = False
+    # Median vendor IV (put − call) in vol points at the same strike, ±3% of spot, per expiry.
+    iv_parity_gap: dict = field(default_factory=dict)
     # DEX map (inventory, not a direction forecast)
     total_net_dex: float = 0.0
     call_delta_wall: float = 0.0
@@ -121,6 +152,19 @@ def compute_levels(
                 "no expiry produced a usable parity forward — cannot compute GEX. "
                 "Data is likely entirely empty. Try switching to 'weekly' or 'all' window."
             )
+
+    # Put and call at one strike and expiry share one IV under the parity forward. A large
+    # vendor gap means gamma inherits an inconsistent sigma (26-Nov BN Dec: puts +3.7 pts).
+    iv_parity_gap = vendor_iv_put_call_gap(usable, spot)
+    wide = {e: g for e, g in iv_parity_gap.items() if abs(g) >= IV_PARITY_GAP_FLAG_PTS}
+    if wide:
+        msg = (f"vendor IV put−call gap ≥{IV_PARITY_GAP_FLAG_PTS:g} vol pts near the money "
+               f"(gamma uses vendor IV): {wide}")
+        flags.append(msg)
+        import time as _time
+        if _time.time() - _IV_GAP_WARNED_AT.get(snapshot.underlying, 0.0) > 1800:
+            _IV_GAP_WARNED_AT[snapshot.underlying] = _time.time()
+            log.warning("%s %s", snapshot.underlying, msg)
 
     # 2. Back out IV from mid price where the vendor omitted it (flag the count).
     n_missing_iv = int(usable["iv"].isna().sum())
@@ -273,6 +317,7 @@ def compute_levels(
         pcr_oi=calc_pcr_oi,
         pcr_near=calc_pcr_near,
         near_book_expired=bool(named["near_book_expired"]),
+        iv_parity_gap=iv_parity_gap,
         total_net_dex=core.total_net_dex(per_dex) if not per_dex.empty else 0.0,
         call_delta_wall=float(call_d_wall or 0.0),
         put_delta_wall=float(put_d_wall or 0.0),

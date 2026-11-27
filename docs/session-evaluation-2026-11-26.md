@@ -358,18 +358,25 @@ though I can't prove how it got there. Tests now read a session copy of the
 file, and `save_snapshot` refuses any write older than the stored session.
 Prod's three rows were checked and are clean.
 
-**Found along the way, not fixed:**
+## Second pass (27-Nov morning, v5.3.173)
 
-- **Odd Nifty `go_open` closes.** Three trades closed on 17-Nov at
-  09:04:17, in pre-open, all at −222.38. One auto-stage trade was "entered"
-  at 17:50 on 13-Nov.
-- **Put/call IV gap on Bank Nifty.** On the 26-Nov book the 65,000 put
-  shows 19.5% IV against 15.8% for the call at the same strike. A gap that
-  size points to IV solved against spot without the ~400-point December
-  carry. The walls hold either way, but GEX magnitudes on the monthly book
-  are affected.
-- **`/api/cockpit-data` is slow for the same thread-pool reason** as item 9:
-  536 slow requests, and 5.3 s even off-hours.
+| Finding | Root cause | Fix |
+|---|---|---|
+| Three 13-Nov Nifty GO rows closed 17-Nov 09:04 (pre-open) at TRAIL_STOP | They were never closed on 13-Nov (one was staged at 17:50, before the stage gate existed). Monday's pre-open mark refresh priced them off the pre-open book and trail-stopped them | `mark_open` refuses outside the continuous session and on rows opened on an earlier day. `close_stale_open` closes earlier-day rows at their last in-session mark, stamped at that day's 15:30 close |
+| Paper settlement and GO session-end ran only 15:40–16:10 on a session day | No catch-up when ingest was down then, and none on weekends | Ingest runs a housekeeper at boot and every 5 min, on any day: stale GO close, then paper settlement |
+| `/api/cockpit-data` cold build 4–10 s | Not thread-pool queueing. 9.4 of 9.8 s were three synchronous Ollama calls (90 s timeout each): positioning card, chop card, alert voice | A cache miss returns the deterministic text and queues the rewrite on one background worker. Cold build 0.23 s |
+| Bank Nifty put/call IV gap | Measured, not what I guessed. Dhan's IVs match neither a zero-carry nor a parity-carry solve. Re-implied from mids under the parity forward (+305 pts), call and put agree within 0.5 vol pts (~17.5%); Dhan has calls 2–3 pts low and puts ~2 pts high. Nifty's gap is the other way (−1.5) | **Engine unchanged.** On the 26-Nov books, switching to mid-implied IV flips Bank Nifty's regime from POSITIVE to NEGATIVE and removes the Nifty and Bank Nifty flips, so it needs intraday evidence first. Now measured on every compute: `Levels.iv_parity_gap`, a flag and log line at ≥2 pts, and `kpis.regime.iv_parity_gap` in cockpit-data |
+
+**Still open:**
+
+- **Fake gains on the three 17-Nov rows.** +₹1,234, +₹5,341 and
+  +₹5,398 net are still in `go_open` and in their mirrored paper rows. Their
+  13-Nov marks were overwritten by the bad mark, so no true exit price is
+  left. Voiding them (zero P&L) is your call.
+- **IV source for gamma.** Collect intraday vendor-vs-mid IV (the
+  uncommitted quote-audit work journals `call_iv`/`put_iv` and bid/ask per
+  strike), then decide whether gamma should use mid-implied IV under the
+  parity forward.
 ---
 
 ## Disclaimer
