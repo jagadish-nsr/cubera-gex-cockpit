@@ -100,3 +100,24 @@ def test_other_sign_model_is_rejected():
             _fixture_contracts(), spot=SPOT, contract_size=100,
             dealer_sign_model="long_call_short_put",
         )
+
+
+def test_vendor_iv_put_call_gap_hand_check():
+    """26-Nov BN Dec, Dhan IV: 63000 C .153/P .192, 64000 C .155/P .191, 65000 C .157/P .195.
+
+    Gaps 3.9, 3.6, 3.8 vol pts -> median 3.8. 62000 is outside ±3% of 64000 and is ignored;
+    66000 has no put and is ignored.
+    """
+    import pandas as pd
+    from gex.levels import vendor_iv_put_call_gap
+
+    rows = [
+        ("2026-12-29", 62000.0, "C", 0.147), ("2026-12-29", 62000.0, "P", 0.300),
+        ("2026-12-29", 63000.0, "C", 0.153), ("2026-12-29", 63000.0, "P", 0.192),
+        ("2026-12-29", 64000.0, "C", 0.155), ("2026-12-29", 64000.0, "P", 0.191),
+        ("2026-12-29", 65000.0, "C", 0.157), ("2026-12-29", 65000.0, "P", 0.195),
+        ("2026-12-29", 66000.0, "C", 0.158),
+    ]
+    df = pd.DataFrame(rows, columns=["expiry", "strike", "type", "iv"])
+    assert vendor_iv_put_call_gap(df, 64000.0) == {"2026-12-29": 3.8}
+    assert vendor_iv_put_call_gap(df.iloc[0:0], 64000.0) == {}

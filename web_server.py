@@ -2860,7 +2860,12 @@ def _build_cockpit_data_sync(sym: str, win: str, idx: Any, dash: DashboardData) 
             "raw": round(bias_res.score, 2),
             "color": bias_color,
         },
-        "regime": {"val": str(dash.view.regime or "NEUTRAL").upper(), "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}"},
+        "regime": {
+            "val": str(dash.view.regime or "NEUTRAL").upper(),
+            "sub": f"Mode: {dash.view.mode_label or dash.view.bias or 'Neutral'}",
+            # Vendor put−call IV gap (vol pts) per expiry; gamma uses vendor IV as-is.
+            "iv_parity_gap": dict(getattr(dash.levels, "iv_parity_gap", None) or {}),
+        },
         "net_gex": {"val": _fmt_gex(net_gex_val), "sub": "Writer imbalance (call−put GEX)"},
         "net_dex": {
             "val": _fmt_gex(net_dex_val),
