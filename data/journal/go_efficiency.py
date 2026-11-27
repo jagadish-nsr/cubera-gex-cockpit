@@ -46,6 +46,35 @@ def _now_ist() -> str:
     return datetime.now(ist).isoformat(timespec="seconds")
 
 
+def _mark_refusal(opened_at: Any, now: datetime | None = None) -> str:
+    """Why a mark must not touch this position now ('' = allowed).
+
+    Only continuous-session prints are tradeable marks, and a position is marked only on the
+    session it was opened in; an earlier day's leftover is closed by ``close_stale_open``.
+    """
+    import config
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    when = (now or datetime.now(ist)).astimezone(ist)
+    if str(opened_at or "")[:10] < when.date().isoformat():
+        return f"opened {str(opened_at)[:10]}, an earlier session"
+    if not config.is_market_open(when):
+        return "outside the continuous session"
+    return ""
+
+
+def _session_close_stamp(day: str) -> str:
+    """ISO stamp of the cash close (index options settle then) for an IST day."""
+    from datetime import date as _date
+
+    from data.session_calendar import clock_for
+
+    d = _date.fromisoformat(day)
+    mins = int(clock_for(d).cash_close_min)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    return datetime(d.year, d.month, d.day, mins // 60, mins % 60, tzinfo=ist).isoformat(timespec="seconds")
+
+
 def _conn() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     path_key = str(_DB_PATH.resolve())
@@ -214,6 +243,7 @@ def _close_linked_paper(
     *,
     exit_premium: float,
     exit_reason: str = "TRAIL_STOP",
+    exit_ts: str | None = None,
 ) -> None:
     """The paper ledger is what the desk reads. A trail that only updates go_open
     leaves the same trade OPEN at the entry premium."""
@@ -225,7 +255,8 @@ def _close_linked_paper(
         existing = get_trade(str(trade_id))
         if existing is None or existing.status != "OPEN":
             return
-        close_trade(str(trade_id), float(exit_premium), exit_reason=str(exit_reason or "TRAIL_STOP"))
+        close_trade(str(trade_id), float(exit_premium), exit_reason=str(exit_reason or "TRAIL_STOP"),
+                    exit_ts=exit_ts)
     except Exception:
         log.warning("paper close failed for %s", trade_id, exc_info=True)
 
@@ -241,6 +272,7 @@ def _write_settlement(
     status: str,
     lot_size: int,
     n_legs: int,
+    closed_at: str | None = None,
 ) -> dict[str, Any]:
     settled = settle_pnl(
         entry_premium=entry_premium,
@@ -248,7 +280,7 @@ def _write_settlement(
         lot_size=lot_size,
         n_legs=n_legs,
     )
-    now = _now_ist()
+    now = closed_at or _now_ist()
     conn.execute(
         """
         UPDATE go_open SET
@@ -519,6 +551,11 @@ def mark_open(
             ).fetchone()
             if row is None:
                 return None
+            # 17-Nov 09:04: three 13-Nov rows were trail-stopped off the pre-open book.
+            refusal = _mark_refusal(row["opened_at"])
+            if refusal:
+                log.info("go mark refused for %s: %s", decision_id, refusal)
+                return None
             entry = float(row["entry_premium"] or 0)
             mark_px = float(mark_premium)
             # Signed net (SELL−BUY): long debit negative, short credit positive.
@@ -714,6 +751,7 @@ def close_open(
     exit_premium: float | None = None,
     exit_spot: float | None = None,
     exit_reason: str = "MANUAL",
+    closed_at: str | None = None,
 ) -> dict[str, Any] | None:
     """Close an OPEN staged GO and settle cost-aware ₹ P&L.
 
@@ -764,6 +802,7 @@ def close_open(
                 status=status,
                 lot_size=lot,
                 n_legs=n_legs,
+                closed_at=closed_at,
             )
             trade_id = row["trade_id"]
             conn.commit()
@@ -771,6 +810,7 @@ def close_open(
                 trade_id,
                 exit_premium=float(exit_premium),
                 exit_reason=reason,
+                exit_ts=closed_at,
             )
             return settled
         finally:
@@ -825,6 +865,36 @@ def close_all_open_at_session_end(
     _SESSION_END_CLOSED_DATE = day
     if closed:
         log.info("go session-end closed %d open position(s) on %s", len(closed), day)
+    return closed
+
+
+def close_stale_open(*, now: Any | None = None) -> list[dict[str, Any]]:
+    """Close every OPEN GO opened on an earlier IST day, at its last in-session mark.
+
+    The session-end sweep runs only 15:40–16:10 on a session day. A row left over when ingest
+    was down then (or staged after the close, 13-Nov 17:50) stayed OPEN until a later mark
+    closed it off the wrong book. Stamped at the opening day's cash close.
+    """
+    ist = timezone(timedelta(hours=5, minutes=30))
+    when = now or datetime.now(ist)
+    when = when.replace(tzinfo=ist) if when.tzinfo is None else when.astimezone(ist)
+    today = when.date().isoformat()
+    closed: list[dict[str, Any]] = []
+    for row in list_open():
+        day = str(row.get("opened_at") or "")[:10]
+        if not day or day >= today:
+            continue
+        settled = close_open(
+            row["decision_id"],
+            status="CLOSED",
+            exit_reason="SESSION_END",
+            closed_at=_session_close_stamp(day),
+        )
+        if settled and not settled.get("already_closed"):
+            closed.append(settled)
+    if closed:
+        log.warning("go closed %d position(s) left OPEN from an earlier session: %s",
+                    len(closed), [c["decision_id"] for c in closed])
     return closed
 
 

@@ -5302,11 +5302,12 @@ async def _go_refresh_open_marks(sym: str, dash) -> int:
                 net -= float(px)
         if priced == 0:
             continue
-        go_eff.mark_open(
+        if go_eff.mark_open(
             row["decision_id"],
             mark_premium=round(net, 2),
             mark_spot=spot,
-        )
+        ) is None:
+            continue
         _record_mark_audit_safe(row["decision_id"], "chain_refresh", round(net, 2), spot, audit_legs)
         updated += 1
     return updated
@@ -6186,7 +6187,10 @@ async def post_go_mark(payload: dict = Body(...)):
         mark_spot=mark_spot_f,
     )
     if updated is None:
-        raise HTTPException(status_code=404, detail="No OPEN staged GO for that decision_id")
+        raise HTTPException(
+            status_code=404,
+            detail="No markable GO: not OPEN, opened on an earlier session, or outside the continuous session",
+        )
     _record_mark_audit_safe(decision_id, "api_mark", mark_premium, mark_spot_f, [])
     return {"status": "ok", "open": updated}
 

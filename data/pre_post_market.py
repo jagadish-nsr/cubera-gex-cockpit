@@ -1466,6 +1466,47 @@ def ensure_pre_market_pollers() -> None:
         ensure_digest_sealer()
     except Exception as exc:
         log.warning("pre-open digest sealer did not start: %s", exc)
+    ensure_session_housekeeper()
+
+
+_HOUSEKEEPER: threading.Thread | None = None
+_HOUSEKEEPING_INTERVAL_S = 300.0
+
+
+def session_housekeeping_tick(now: datetime | None = None) -> dict:
+    """Settle what an earlier session left OPEN. Runs at boot and every 5 min, any day.
+
+    The 15:40–16:10 session-end sweeps miss rows when ingest is down then, and a weekend has
+    no post-market window at all (13-Nov rows were still OPEN at Monday's pre-open).
+    """
+    now = now or datetime.now(IST)
+    out = {"go": 0, "paper": 0}
+    try:
+        from data.journal import go_efficiency as go_eff
+        out["go"] = len(go_eff.close_stale_open(now=now))
+    except Exception as exc:
+        log.warning("housekeeping: stale GO close failed: %s", exc)
+    try:
+        from data.journal import paper_settlement
+        out["paper"] = len(paper_settlement.settle_open_paper(now=now))
+    except Exception as exc:
+        log.warning("housekeeping: paper settlement failed: %s", exc)
+    return out
+
+
+def _housekeeping_loop() -> None:
+    while True:
+        session_housekeeping_tick()
+        time.sleep(_HOUSEKEEPING_INTERVAL_S)
+
+
+def ensure_session_housekeeper() -> None:
+    global _HOUSEKEEPER
+    with _CACHE_LOCK:
+        if _HOUSEKEEPER is not None and _HOUSEKEEPER.is_alive():
+            return
+        _HOUSEKEEPER = threading.Thread(target=_housekeeping_loop, daemon=True, name="session-housekeeper")
+        _HOUSEKEEPER.start()
 
 
 def _pre_market_loop(symbol: str) -> None:

@@ -11,6 +11,8 @@ def tmp_go_eff_db(tmp_path, monkeypatch):
     import data.journal.store as paper
     monkeypatch.setattr(ge, "_DB_PATH", tmp_path / "go_efficiency.db")
     monkeypatch.setattr(paper, "_DB_PATH", tmp_path / "paper.db")
+    # Marks are refused outside the continuous session; these runs must not depend on the clock.
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: True)
     ge._LAST_EMIT_FP.clear()
     ge.ensure_schema()
     yield

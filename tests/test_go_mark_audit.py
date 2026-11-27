@@ -19,6 +19,7 @@ def ge(tmp_path, monkeypatch):
 
     monkeypatch.setattr(go_eff, "_DB_PATH", tmp_path / "go_efficiency.db")
     monkeypatch.setattr(paper, "_DB_PATH", tmp_path / "paper.db")
+    monkeypatch.setattr("config.is_market_open", lambda *a, **k: True)
     go_eff._SCHEMA_READY_PATHS.clear()
     return go_eff
 
