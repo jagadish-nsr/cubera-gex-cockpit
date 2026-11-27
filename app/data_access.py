@@ -425,8 +425,8 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
     lkgs = get_lkgs_manager()
 
     from data.nse import (aggregate_oi_volume, nearest_expiry_premiums,
-                          parse_nse_option_chain, per_strike_nearest_changes,
-                          per_strike_oi)
+                          nearest_expiry_quotes, parse_nse_option_chain,
+                          per_strike_nearest_changes, per_strike_oi)
 
     network_ms = 0.0
     t_compute0 = time.perf_counter()
@@ -594,6 +594,9 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
         # Enrich each strike with the nearest-expiry premium (for the crossover
         # watch) and the engine's gamma exposure (net_gex, for the Δgamma map).
         prem = nearest_expiry_premiums(rows)
+        # Quote detail (bid/ask/IV/expiry + mid-vs-last source) so the journal can
+        # audit premiums later. Additive: the premium fields above are unchanged.
+        quotes = nearest_expiry_quotes(rows)
         # Nearest-expiry OI-change + premium-change (both vs prev close) so the
         # footprint build-up tag is exact (aligned expiry + window), not approximate.
         nc = per_strike_nearest_changes(payload, spot=spot, band_pts=idx.band_pts)
@@ -607,6 +610,10 @@ def load_dashboard(window: str | None = None, use_demo: bool = False,
             p = prem.get(k, {})
             s["call_ltp"] = p.get("call_ltp")
             s["put_ltp"] = p.get("put_ltp")
+            q = quotes.get(k, {})
+            for _f in ("expiry", "call_bid", "call_ask", "call_iv", "call_src",
+                       "put_bid", "put_ask", "put_iv", "put_src"):
+                s[_f] = q.get(_f)
             s["net_gex"] = gex.get(k)
             s["net_dex"] = dex.get(k)
             c = nc.get(k, {})
